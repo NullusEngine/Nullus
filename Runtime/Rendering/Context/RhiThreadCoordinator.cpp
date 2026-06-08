@@ -483,6 +483,88 @@ namespace NLS::Render::Context
         void MarkReadbackDeviceLostIfNeeded(
             DriverImpl& impl,
             const Render::RHI::RHIReadbackResult& result,
+            const std::string& context);
+
+        void BeginPostSubmitBufferReadbacks(
+            DriverImpl& impl,
+            const RenderScenePackage& renderScenePackage,
+            const bool submittedSuccessfully,
+            const std::shared_ptr<Render::RHI::RHISemaphore>& lastComputeQueueCompletionSemaphore)
+        {
+            if (renderScenePackage.postSubmitBufferReadbacks.empty())
+                return;
+
+            for (const auto& request : renderScenePackage.postSubmitBufferReadbacks)
+            {
+                if (request.state == nullptr)
+                    continue;
+
+                {
+                    std::lock_guard lock(request.state->mutex);
+                    if (request.state->beginAttempted || request.state->beginInProgress)
+                        continue;
+
+                    if (!submittedSuccessfully)
+                    {
+                        request.state->beginAttempted = true;
+                        request.state->beginSucceeded = false;
+                        request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+                        request.state->resultMessage = "threaded frame was not submitted successfully";
+                        continue;
+                    }
+
+                    if (impl.explicitDevice == nullptr)
+                    {
+                        request.state->beginAttempted = true;
+                        request.state->beginSucceeded = false;
+                        request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+                        request.state->resultMessage = "explicit device is unavailable";
+                        continue;
+                    }
+
+                    if (request.waitForLastComputeQueueCompletion &&
+                        lastComputeQueueCompletionSemaphore == nullptr)
+                    {
+                        request.state->beginAttempted = true;
+                        request.state->beginSucceeded = false;
+                        request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+                        request.state->resultMessage = "post-submit readback requires a compute queue completion semaphore";
+                        continue;
+                    }
+
+                    request.state->beginInProgress = true;
+                }
+
+                auto readbackDesc = request.desc;
+                if (request.waitForLastComputeQueueCompletion &&
+                    lastComputeQueueCompletionSemaphore != nullptr &&
+                    std::find(
+                        readbackDesc.waitSemaphores.begin(),
+                        readbackDesc.waitSemaphores.end(),
+                        lastComputeQueueCompletionSemaphore) == readbackDesc.waitSemaphores.end())
+                {
+                    readbackDesc.waitSemaphores.push_back(lastComputeQueueCompletionSemaphore);
+                }
+                const auto result = impl.explicitDevice->BeginReadBuffer(readbackDesc);
+                {
+                    std::lock_guard lock(request.state->mutex);
+                    request.state->beginAttempted = true;
+                    request.state->beginInProgress = false;
+                    request.state->beginSucceeded = result.Succeeded() && result.completion != nullptr;
+                    request.state->resultCode = result.code;
+                    request.state->resultMessage = result.message;
+                    request.state->completion = result.completion;
+                }
+                MarkReadbackDeviceLostIfNeeded(
+                    impl,
+                    result,
+                    "RhiThreadCoordinator::BeginPostSubmitBufferReadbacks");
+            }
+        }
+
+        void MarkReadbackDeviceLostIfNeeded(
+            DriverImpl& impl,
+            const Render::RHI::RHIReadbackResult& result,
             const std::string& context)
         {
             if (!IsDeviceLostReadbackFailure(result))
@@ -844,7 +926,7 @@ namespace NLS::Render::Context
             transition.subresourceRange = !Render::RHI::IsEmptySubresourceRange(edge.targetTextureAccess->subresourceRange)
                 ? edge.targetTextureAccess->subresourceRange
                 : edge.sourceTextureAccess->subresourceRange;
-            transition.before = Render::RHI::ResourceState::Unknown;
+            transition.before = edge.sourceTextureAccess->state;
             transition.after = edge.targetTextureAccess->state;
             transition.sourceStages = edge.sourceTextureAccess->stages;
             transition.destinationStages = edge.targetTextureAccess->stages;
@@ -1583,6 +1665,48 @@ namespace NLS::Render::Context
             canUseDedicatedAsyncCompute &&
             sawComputeBatch;
         return submitPlan;
+    }
+
+    std::shared_ptr<Render::RHI::RHISemaphore> Detail::EnsureLastComputeQueueCompletionSemaphore(
+        DriverImpl& impl,
+        Render::RHI::RHIFrameContext& frameContext,
+        AsyncComputeSubmitPlan& submitPlan)
+    {
+        if (!submitPlan.usedDedicatedComputeQueueSubmission)
+            return nullptr;
+
+        for (auto batchIt = submitPlan.batches.rbegin(); batchIt != submitPlan.batches.rend(); ++batchIt)
+        {
+            if (batchIt->queueType != Render::RHI::QueueType::Compute)
+                continue;
+
+            std::shared_ptr<Render::RHI::RHISemaphore> handoffSemaphore =
+                frameContext.computeFinishedSemaphore;
+            if (handoffSemaphore == nullptr && impl.explicitDevice != nullptr)
+            {
+                handoffSemaphore = impl.explicitDevice->CreateSemaphore(
+                    "ThreadedPostSubmitReadbackComputeHandoff" +
+                    std::to_string(frameContext.frameIndex));
+                if (handoffSemaphore != nullptr)
+                    submitPlan.temporarySemaphores.push_back(handoffSemaphore);
+            }
+
+            if (handoffSemaphore == nullptr)
+                return nullptr;
+
+            if (std::find(
+                    batchIt->signalSemaphores.begin(),
+                    batchIt->signalSemaphores.end(),
+                    handoffSemaphore) == batchIt->signalSemaphores.end())
+            {
+                batchIt->signalSemaphores.push_back(handoffSemaphore);
+            }
+
+            submitPlan.lastComputeQueueCompletionSemaphore = handoffSemaphore;
+            return handoffSemaphore;
+        }
+
+        return nullptr;
     }
 
     std::vector<ParallelCommandWorkUnit> Detail::BuildParallelCommandWorkUnits(
@@ -4076,9 +4200,9 @@ namespace NLS::Render::Context
                         }
                     }
 
-                    if (passInput.targetsSwapchain &&
-                        frameContext.swapchainBackbufferView == nullptr)
-                    {
+					if (passInput.targetsSwapchain &&
+						frameContext.swapchainBackbufferView == nullptr)
+					{
                         Detail::LogSkippedPass(
                             renderScenePackage,
                             passInput,
@@ -4206,6 +4330,18 @@ namespace NLS::Render::Context
         bool frameFenceSignalMayHaveBeenQueued = false;
         bool frameFenceResetForSubmission = false;
         bool deviceLostDuringSubmit = false;
+        const bool postSubmitReadbackNeedsLastComputeCompletion =
+            std::any_of(
+                renderScenePackage.postSubmitBufferReadbacks.begin(),
+                renderScenePackage.postSubmitBufferReadbacks.end(),
+                [](const PostSubmitBufferReadbackRequest& request)
+                {
+                    return request.waitForLastComputeQueueCompletion;
+                });
+        if (postSubmitReadbackNeedsLastComputeCompletion)
+        {
+            EnsureLastComputeQueueCompletionSemaphore(impl, frameContext, submitPlan);
+        }
 
         size_t firstGraphicsBatchIndex = submitPlan.batches.size();
         size_t lastGraphicsBatchIndex = submitPlan.batches.size();
@@ -4384,6 +4520,18 @@ namespace NLS::Render::Context
                 recordingSucceeded &&
                 submissionFrame->currentFrameQueueOperationFailureCount == 0u &&
                 !submissionFrame->deviceLostDetected;
+            BeginPostSubmitBufferReadbacks(
+                impl,
+                renderScenePackage,
+                submissionFrame->submittedSuccessfully,
+                submitPlan.lastComputeQueueCompletionSemaphore);
+        }
+
+        if (impl.renderDocCaptureController != nullptr)
+        {
+            impl.renderDocCaptureController->OnPostFrame(
+                renderScenePackage.targetsSwapchain,
+                Render::FrameGraph::HasExternalSceneOutput(renderScenePackage));
         }
 
         FinalizeThreadedRhiFrameContext(
@@ -4687,6 +4835,7 @@ namespace NLS::Render::Context
         frameContext.uploadBytesReserved = 0u;
         frameContext.swapchainBackbufferView = nullptr;
         frameContext.explicitReadbackTexture = nullptr;
+        driver.m_impl->standalonePostSubmitBufferReadbacks.clear();
         if (acquireSwapchainImage && driver.m_impl->explicitSwapchain != nullptr)
         {
             std::optional<Render::RHI::RHIAcquiredImage> acquiredImage;
@@ -4746,11 +4895,12 @@ namespace NLS::Render::Context
         auto queue = driver.m_impl->explicitDevice->GetQueue(Render::RHI::QueueType::Graphics);
         Render::RHI::RHIQueueOperationResult submitResult;
         bool submitAttempted = false;
+        bool submitted = false;
         if (queue != nullptr)
         {
             submitAttempted = true;
             submitResult = queue->SubmitChecked(submitDesc);
-            const bool submitted = RecordQueueOperationResult(
+            submitted = RecordQueueOperationResult(
                 *driver.m_impl,
                 submitResult,
                 "RhiThreadCoordinator::EndStandaloneExplicitFrame::Submit");
@@ -4792,6 +4942,19 @@ namespace NLS::Render::Context
         {
             ClearSceneToUiWaitSemaphoreForFrame(*driver.m_impl, frameContext);
         }
+        RenderScenePackage standalonePostSubmitReadbacks;
+        standalonePostSubmitReadbacks.postSubmitBufferReadbacks =
+            std::move(driver.m_impl->standalonePostSubmitBufferReadbacks);
+        driver.m_impl->standalonePostSubmitBufferReadbacks.clear();
+        const bool frameSubmittedSuccessfully =
+            submitted &&
+            driver.m_impl->currentFrameQueueOperationFailureCount == 0u &&
+            !driver.m_impl->deviceLostDetected.load(std::memory_order_acquire);
+        BeginPostSubmitBufferReadbacks(
+            *driver.m_impl,
+            standalonePostSubmitReadbacks,
+            frameSubmittedSuccessfully,
+            nullptr);
         ClearUICompositionSignal(*driver.m_impl);
         const auto frameContextIndex = driver.m_impl->frameContexts.empty()
             ? 0u
@@ -4825,6 +4988,17 @@ namespace NLS::Render::Context
             frameContext.descriptorAllocator->EndFrame(driver.m_impl->currentFrameIndex);
         if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext.uploadContext != nullptr)
             frameContext.uploadContext->EndFrame(driver.m_impl->currentFrameIndex);
+
+        if (driver.m_impl->renderDocCaptureController != nullptr)
+        {
+            const bool outputMayBePresentedLater =
+                submitted &&
+                !presentSwapchain &&
+                frameContext.renderFinishedSemaphore != nullptr;
+            driver.m_impl->renderDocCaptureController->OnPostFrame(
+                willPresentSwapchain,
+                outputMayBePresentedLater);
+        }
 
         RememberCompletedReadbackTexture(*driver.m_impl, frameContext.explicitReadbackTexture);
         ++driver.m_impl->currentFrameIndex;

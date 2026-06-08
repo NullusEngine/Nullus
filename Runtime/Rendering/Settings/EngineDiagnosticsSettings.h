@@ -35,6 +35,8 @@ namespace NLS::Render::Settings
         bool editorLogScenePicking = false;
         bool editorLogSceneCameraInput = false;
         bool editorValidationOpenFrameInfo = false;
+        bool editorValidationDisableHZBOcclusion = false;
+        uint32_t editorValidationOcclusionStackCount = 0u;
         std::string editorValidationFocusView;
         std::string editorValidationExclusiveView;
         std::string editorValidationSelectGameObject;

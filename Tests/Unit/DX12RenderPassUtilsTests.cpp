@@ -198,4 +198,61 @@ TEST(DX12RenderPassUtilsTests, BackbufferClearWarningFilterSerializesDeviceWideI
     const auto commandSource = ReadRepoFile("Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
     EXPECT_NE(commandSource.find("ScopedDx12InfoQueueMessageScope"), std::string::npos);
 }
+
+TEST(DX12RenderPassUtilsTests, HZBOcclusionResourceStateContractsStayExplicitAndSubresourceAware)
+{
+    const auto commandSource = ReadRepoFile("Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
+
+    const auto toState = commandSource.find("NativeDX12CommandBuffer::ToD3D12ResourceState");
+    ASSERT_NE(toState, std::string::npos);
+    const auto shaderWrite = commandSource.find("ResourceState::ShaderWrite", toState);
+    ASSERT_NE(shaderWrite, std::string::npos);
+    EXPECT_NE(commandSource.find("D3D12_RESOURCE_STATE_UNORDERED_ACCESS", shaderWrite), std::string::npos);
+    const auto shaderRead = commandSource.find("ResourceState::ShaderRead", toState);
+    ASSERT_NE(shaderRead, std::string::npos);
+    EXPECT_NE(commandSource.find("D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE", shaderRead), std::string::npos);
+    EXPECT_NE(commandSource.find("D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE", shaderRead), std::string::npos);
+    EXPECT_NE(commandSource.find("ResourceState::DepthRead", toState), std::string::npos);
+    EXPECT_NE(commandSource.find("D3D12_RESOURCE_STATE_DEPTH_READ", toState), std::string::npos);
+    EXPECT_NE(commandSource.find("ResourceState::DepthWrite", toState), std::string::npos);
+    EXPECT_NE(commandSource.find("D3D12_RESOURCE_STATE_DEPTH_WRITE", toState), std::string::npos);
+
+    const auto barrierChecked = commandSource.find("NativeDX12CommandBuffer::BarrierChecked");
+    ASSERT_NE(barrierChecked, std::string::npos);
+    const auto textureBarrierLoop = commandSource.find("for (const auto& textureBarrier", barrierChecked);
+    ASSERT_NE(textureBarrierLoop, std::string::npos);
+    const auto sameState = commandSource.find("stateBefore == stateAfter", textureBarrierLoop);
+    ASSERT_NE(sameState, std::string::npos);
+    const auto uavBarrier = commandSource.find("D3D12_RESOURCE_BARRIER_TYPE_UAV", sameState);
+    ASSERT_NE(uavBarrier, std::string::npos);
+    EXPECT_LT(uavBarrier, commandSource.find("barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION", sameState));
+
+    const auto subresourceSplit = commandSource.find("BuildDX12BarrierSubresourceIndices", textureBarrierLoop);
+    ASSERT_NE(subresourceSplit, std::string::npos);
+    EXPECT_NE(commandSource.find("barrier.Transition.Subresource = subresourceIndex", subresourceSplit), std::string::npos);
+    EXPECT_NE(commandSource.find("nativeTexture->SetState(textureBarrier.after)", textureBarrierLoop), std::string::npos);
+    EXPECT_NE(commandSource.find("nativeTexture->MarkPartialStateDirty()", textureBarrierLoop), std::string::npos);
+
+    const auto beginRenderPass = commandSource.find("NativeDX12CommandBuffer::BeginRenderPass");
+    ASSERT_NE(beginRenderPass, std::string::npos);
+    const auto readOnlyDepth = commandSource.find("readOnlyDepthStencil", beginRenderPass);
+    ASSERT_NE(readOnlyDepth, std::string::npos);
+    EXPECT_NE(commandSource.find("D3D12_RESOURCE_STATE_DEPTH_READ", readOnlyDepth), std::string::npos);
+    EXPECT_NE(commandSource.find("RHIDepthStencilViewAccess::ReadOnlyDepthStencil", readOnlyDepth), std::string::npos);
+}
+
+TEST(DX12RenderPassUtilsTests, PartialUnknownTextureBarrierFilteringKeepsHZBStorageWrites)
+{
+    const auto commandSource = ReadRepoFile("Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
+
+    const auto filter = commandSource.find("bool ShouldFilterUnresolvedPartialTextureBarrier");
+    ASSERT_NE(filter, std::string::npos);
+    const auto filterEnd = commandSource.find("bool IsValidDX12BufferCopyEndpoint", filter);
+    ASSERT_NE(filterEnd, std::string::npos);
+    const auto filterBody = commandSource.substr(filter, filterEnd - filter);
+
+    EXPECT_NE(filterBody.find("barrier.before == NLS::Render::RHI::ResourceState::Unknown"), std::string::npos);
+    EXPECT_NE(filterBody.find("!coversWholeTexture"), std::string::npos);
+    EXPECT_NE(filterBody.find("IsD3D12CommonPromotionAllowedForTexture(barrier.after)"), std::string::npos);
+}
 #endif

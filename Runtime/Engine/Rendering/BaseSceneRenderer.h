@@ -3,6 +3,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -18,6 +19,8 @@
 #include <Vector3.h>
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/RenderScene.h"
+#include "Rendering/SceneOcclusion.h"
+#include "Rendering/SceneStreamingResidency.h"
 
 #include "EngineDef.h"
 
@@ -102,6 +105,8 @@ namespace NLS::Engine::Rendering
 		NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
 			bool hasSkyboxTexture = false) const;
 		bool HasPendingLightGridFrameInputs() const { return false; }
+		const SceneOcclusionPrimitivePacketBuildResult& GetLastHZBOcclusionPrimitivePacketBuildResult() const;
+		const SceneOcclusionHistory& GetHZBOcclusionHistoryForTesting() const;
 
 	protected:
 		void RefreshSceneLightingDescriptor(SceneSystem::Scene& scene);
@@ -111,6 +116,8 @@ namespace NLS::Engine::Rendering
 		static void RefreshFrameSnapshotVisibility(
 			NLS::Render::Context::FrameSnapshot& snapshot,
 			const AllDrawables& drawables);
+		virtual bool ShouldPublishCullReasonDebugSnapshots() const;
+		virtual uint64_t GetCullReasonDebugSnapshotMaxEntries() const;
 		bool CaptureThreadedPreparedDraw(
 			PipelineState pso,
 			const Drawable& drawable,
@@ -120,6 +127,12 @@ namespace NLS::Engine::Rendering
 			Render::Resources::MaterialPipelineStateOverrides pipelineOverrides,
 			Render::Settings::EComparaisonAlgorithm depthCompareOverride,
 			PreparedRecordedDraw& outDraw);
+		const SceneOcclusionFrameInput& GetLastHZBOcclusionFrameInput() const;
+		void BeginHZBOcclusionObservationFrame(
+			const SceneOcclusionFrameInput& frame,
+			std::span<const SceneOcclusionPrimitiveInput> primitiveInputs);
+		SceneOcclusionObservationStats CompleteHZBOcclusionObservationFrame(
+			std::span<const uint32_t> primitiveResultFlags);
 		static NLS::Render::Context::RenderScenePackage BuildSnapshotOwnedRenderScenePackage(
 			const NLS::Render::Context::FrameSnapshot& snapshot,
 			SnapshotRenderScenePackageBuildMode buildMode = SnapshotRenderScenePackageBuildMode::BuildDefaultPassInputs);
@@ -151,6 +164,8 @@ namespace NLS::Engine::Rendering
 		};
 
 		void InvalidateLightGridCompileContextCache() const;
+		void SetLastCullReasonDebugSnapshot(
+			const std::shared_ptr<const SceneCullReasonDebugSnapshot>& snapshot) const;
 		Material* ResolveDefaultSceneMaterial();
 		bool IsLightGridCompileContextCacheHit(
 			const NLS::Render::Data::FrameDescriptor& frameDescriptor,
@@ -169,5 +184,15 @@ namespace NLS::Engine::Rendering
 		std::unordered_map<SceneSystem::Scene*, RenderScene> m_additiveRenderScenes;
 		mutable std::mutex m_lightGridCompileContextCacheMutex;
 		mutable LightGridCompileContextCache m_lightGridCompileContextCache;
+		mutable NLS::Render::Context::LargeSceneCullReasonDebugSnapshot m_lastCullReasonDebugSnapshot;
+		SceneOcclusionPrimitivePacketBuildResult m_lastHZBOcclusionPrimitivePacketBuildResult;
+		SceneOcclusionFrameInput m_lastHZBOcclusionFrameInput;
+		SceneOcclusionHistory m_hzbOcclusionHistory;
+		SceneOcclusionObservationBatch m_hzbPendingOcclusionObservationBatch;
+		uint64_t m_hzbOcclusionFrameSerial = 0u;
+		SceneStreamingResidency m_streamingResidency;
+		RepresentationResidencySnapshot m_lastRepresentationResidency;
+		std::vector<uint64_t> m_lastStreamingDependencyPins;
+		uint64_t m_streamingResidencyFrameSerial = 0u;
 	};
 }

@@ -1694,12 +1694,30 @@ namespace
             return beginReadPixelsResult;
         }
 
+        NLS::Render::RHI::RHIReadbackResult BeginReadBuffer(
+            const NLS::Render::RHI::RHIBufferReadbackDesc& desc) override
+        {
+            ++beginBufferReadbackCalls;
+            lastBeginBufferReadbackDesc = desc;
+            return beginReadBufferResult;
+        }
+
         std::shared_ptr<NLS::Render::RHI::RHITexture> lastReadPixelsTexture;
         NLS::Render::RHI::RHIReadbackResult readPixelsResult {
             NLS::Render::RHI::RHIReadbackStatusCode::Success,
             {}
         };
         NLS::Render::RHI::RHIReadbackResult beginReadPixelsResult {
+            NLS::Render::RHI::RHIReadbackStatusCode::Success,
+            {},
+            std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
+                NLS::Render::RHI::RHICompletionStatusCode::Success,
+                {}
+            })
+        };
+        size_t beginBufferReadbackCalls = 0u;
+        NLS::Render::RHI::RHIBufferReadbackDesc lastBeginBufferReadbackDesc {};
+        NLS::Render::RHI::RHIReadbackResult beginReadBufferResult {
             NLS::Render::RHI::RHIReadbackStatusCode::Success,
             {},
             std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
@@ -1790,6 +1808,48 @@ TEST(ThreadedRenderingLifecycleTests, PublishesSnapshotIntoOpenSlotAndTracksInFl
     EXPECT_EQ(slot->stage, NLS::Render::Context::ThreadedFrameStage::Published);
     ASSERT_TRUE(slot->snapshot.has_value());
     EXPECT_EQ(slot->snapshot->frameId, 1u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, PublishesCullReasonDebugSnapshotWithoutSceneDrain)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 42u;
+    snapshot.renderWidth = 128u;
+    snapshot.renderHeight = 64u;
+    snapshot.largeSceneCullReasonSnapshot.frameSerial = 42u;
+    snapshot.largeSceneCullReasonSnapshot.sceneId = 0x90u;
+    snapshot.largeSceneCullReasonSnapshot.primitiveCount = 2u;
+    snapshot.largeSceneCullReasonSnapshot.visiblePrimitiveCount = 1u;
+    snapshot.largeSceneCullReasonSnapshot.reasonCounts[0] = 1u;
+    snapshot.largeSceneCullReasonSnapshot.reasonCounts[5] = 1u;
+    snapshot.largeSceneCullReasonSnapshot.entries.push_back({
+        0x90u,
+        7u,
+        3u,
+        5u,
+        0u,
+        10u,
+        11u,
+        false
+    });
+
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot));
+
+    size_t renderSlotIndex = std::numeric_limits<size_t>::max();
+    NLS::Render::Context::FrameSnapshot claimedSnapshot;
+    ASSERT_TRUE(lifecycle.TryBeginNextRenderScene(&renderSlotIndex, &claimedSnapshot));
+
+    EXPECT_EQ(renderSlotIndex, 0u);
+    EXPECT_EQ(claimedSnapshot.largeSceneCullReasonSnapshot.frameSerial, 42u);
+    EXPECT_EQ(claimedSnapshot.largeSceneCullReasonSnapshot.sceneId, 0x90u);
+    EXPECT_EQ(claimedSnapshot.largeSceneCullReasonSnapshot.reasonCounts[5], 1u);
+    ASSERT_EQ(claimedSnapshot.largeSceneCullReasonSnapshot.entries.size(), 1u);
+    EXPECT_EQ(claimedSnapshot.largeSceneCullReasonSnapshot.entries[0].primitiveIndex, 7u);
+    EXPECT_EQ(claimedSnapshot.largeSceneCullReasonSnapshot.entries[0].reason, 5u);
+    EXPECT_TRUE(claimedSnapshot.recordedDrawCommands.empty())
+        << "Debug cull snapshots ride the frame snapshot and must not require draw-command drains.";
 }
 
 TEST(ThreadedRenderingLifecycleTests, CopiesSlotStateForDiagnosticsWithoutExposingInternalPointer)
@@ -2441,6 +2501,47 @@ TEST(ThreadedRenderingLifecycleTests, PreparedFramePublishesIntoRenderSceneOwned
     EXPECT_EQ(renderReadySlotState->renderScenePackage->frameId, 21u);
 }
 
+TEST(ThreadedRenderingLifecycleTests, PreparedFrameStreamingDependencyPinsLiveUntilFrameRetirement)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 22u;
+    snapshot.visibleOpaqueDrawCount = 1u;
+
+    NLS::Render::Context::RenderScenePackage renderScenePackage;
+    renderScenePackage.frameId = snapshot.frameId;
+    renderScenePackage.visibleDrawCount = 1u;
+    renderScenePackage.hasVisibleDraws = true;
+    renderScenePackage.streamingDependencyPins = { 101u, 202u, 101u };
+
+    size_t publishedSlot = std::numeric_limits<size_t>::max();
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(snapshot, renderScenePackage, &publishedSlot));
+
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 101u, 202u }));
+
+    size_t renderSceneSlotIndex = std::numeric_limits<size_t>::max();
+    NLS::Render::Context::FrameSnapshot claimedSnapshot;
+    ASSERT_TRUE(lifecycle.TryBeginNextRenderScene(&renderSceneSlotIndex, &claimedSnapshot));
+    ASSERT_EQ(renderSceneSlotIndex, publishedSlot);
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 101u, 202u }));
+
+    NLS::Render::Context::RenderScenePreparingResolutionDesc resolutionDesc;
+    ASSERT_TRUE(lifecycle.ResolveRenderScenePreparing(publishedSlot, resolutionDesc));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 101u, 202u }));
+
+    ASSERT_TRUE(lifecycle.TryBeginRhiSubmission(publishedSlot));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 101u, 202u }));
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    submissionFrame.frameId = snapshot.frameId;
+    submissionFrame.submittedSuccessfully = true;
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(publishedSlot, submissionFrame));
+    ASSERT_TRUE(lifecycle.RetireFrame(publishedSlot));
+
+    EXPECT_TRUE(lifecycle.CollectStreamingDependencyPins().empty());
+}
+
 TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveRejectsDuplicateResolutionWhileBuilderIsRunning)
 {
     NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
@@ -2608,6 +2709,7 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesFallbackWhe
     snapshot.renderWidth = 640u;
     snapshot.renderHeight = 360u;
     snapshot.targetsSwapchain = false;
+    snapshot.streamingDependencyPins = { 303u, 404u, 303u };
 
     ASSERT_TRUE(lifecycle.TryPublishPreparedFrameBuilder(
         snapshot,
@@ -2615,10 +2717,12 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesFallbackWhe
         {
             throw std::runtime_error("expected prepared builder failure");
         }));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 303u, 404u }));
 
     size_t slotIndex = 99u;
     NLS::Render::Context::FrameSnapshot claimedSnapshot;
     ASSERT_TRUE(lifecycle.TryBeginNextRenderScene(&slotIndex, &claimedSnapshot));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 303u, 404u }));
 
     NLS::Render::Context::RenderScenePreparingResolutionDesc resolutionDesc;
     resolutionDesc.buildPreparedBuilderMissingRenderScenePackage =
@@ -2643,6 +2747,18 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesFallbackWhe
     EXPECT_EQ(renderReadySlotState->renderScenePackage->renderHeight, 360u);
     EXPECT_FALSE(renderReadySlotState->renderScenePackage->targetsSwapchain);
     EXPECT_EQ(renderReadySlotState->renderScenePackage->renderTargetUseCount, 2u);
+    EXPECT_EQ(renderReadySlotState->renderScenePackage->streamingDependencyPins, std::vector<uint64_t>({ 303u, 404u, 303u }));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 303u, 404u }));
+
+    ASSERT_TRUE(lifecycle.TryBeginRhiSubmission(slotIndex));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 303u, 404u }));
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    submissionFrame.frameId = snapshot.frameId;
+    submissionFrame.submittedSuccessfully = true;
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(slotIndex, submissionFrame));
+    ASSERT_TRUE(lifecycle.RetireFrame(slotIndex));
+    EXPECT_TRUE(lifecycle.CollectStreamingDependencyPins().empty());
 }
 
 TEST(ThreadedRenderingLifecycleTests, SnapshotHarnessResolveCompletesFallbackWhenHarnessBuilderThrows)
@@ -2653,12 +2769,15 @@ TEST(ThreadedRenderingLifecycleTests, SnapshotHarnessResolveCompletesFallbackWhe
     snapshot.frameId = 37u;
     snapshot.renderWidth = 800u;
     snapshot.renderHeight = 450u;
+    snapshot.streamingDependencyPins = { 505u, 606u, 505u };
 
     ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 505u, 606u }));
 
     size_t slotIndex = 99u;
     NLS::Render::Context::FrameSnapshot claimedSnapshot;
     ASSERT_TRUE(lifecycle.TryBeginNextRenderScene(&slotIndex, &claimedSnapshot));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 505u, 606u }));
 
     NLS::Render::Context::RenderScenePreparingResolutionDesc resolutionDesc;
     resolutionDesc.buildSnapshotHarnessRenderScenePackage =
@@ -2683,6 +2802,18 @@ TEST(ThreadedRenderingLifecycleTests, SnapshotHarnessResolveCompletesFallbackWhe
     EXPECT_EQ(renderReadySlotState->renderScenePackage->renderHeight, 450u);
     EXPECT_TRUE(renderReadySlotState->renderScenePackage->targetsSwapchain);
     EXPECT_EQ(renderReadySlotState->renderScenePackage->renderTargetUseCount, 1u);
+    EXPECT_EQ(renderReadySlotState->renderScenePackage->streamingDependencyPins, std::vector<uint64_t>({ 505u, 606u, 505u }));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 505u, 606u }));
+
+    ASSERT_TRUE(lifecycle.TryBeginRhiSubmission(slotIndex));
+    EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 505u, 606u }));
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    submissionFrame.frameId = snapshot.frameId;
+    submissionFrame.submittedSuccessfully = true;
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(slotIndex, submissionFrame));
+    ASSERT_TRUE(lifecycle.RetireFrame(slotIndex));
+    EXPECT_TRUE(lifecycle.CollectStreamingDependencyPins().empty());
 }
 
 TEST(ThreadedRenderingLifecycleTests, ReportsBackPressureWhenAllSlotsAreOccupied)
@@ -6037,6 +6168,299 @@ TEST(ThreadedRenderingLifecycleTests, SubmitFailureAfterQueuedGpuWorkRetainsReso
     EXPECT_TRUE(ContainsRetainedResource(keepAlive, frameContext.commandBuffer));
     EXPECT_EQ(impl->deferredThreadedFrameScopedRetirementFrameContexts.count(1u), 1u);
     EXPECT_EQ(impl->deferredThreadedFrameScopedRetirementFrameContexts.count(3u), 0u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, SuccessfulThreadedSubmitBeginsPostSubmitBufferReadback)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->frameContexts.resize(1u);
+
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    impl->explicitDevice = explicitDevice;
+
+    auto& frameContext = impl->frameContexts[0u];
+    frameContext.frameIndex = 9u;
+    frameContext.commandPool = std::make_shared<TestCommandPool>();
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.frameFence = std::make_shared<TestFence>();
+
+    NLS::Render::Context::Detail::AsyncComputeSubmitPlan submitPlan;
+    NLS::Render::Context::Detail::ThreadedQueueSubmissionBatch batch;
+    batch.queueType = NLS::Render::RHI::QueueType::Graphics;
+    batch.commandPools.push_back(frameContext.commandPool);
+    batch.commandBuffers.push_back(frameContext.commandBuffer);
+    submitPlan.batches.push_back(std::move(batch));
+
+    auto sourceBuffer = std::make_shared<TestBuffer>(64u);
+    auto destination = std::make_shared<std::array<uint32_t, 4>>();
+    auto readbackState =
+        std::make_shared<NLS::Render::Context::PostSubmitBufferReadbackState>();
+
+    NLS::Render::Context::PostSubmitBufferReadbackRequest readbackRequest;
+    readbackRequest.desc.source = sourceBuffer;
+    readbackRequest.desc.sourceOffset = 16u;
+    readbackRequest.desc.size = sizeof(*destination);
+    readbackRequest.desc.data = destination->data();
+    readbackRequest.desc.debugName = "ThreadedHZBResultReadback";
+    readbackRequest.state = readbackState;
+    readbackRequest.destinationKeepAlive = destination;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = 9001u;
+    package.targetsSwapchain = false;
+    package.postSubmitBufferReadbacks.push_back(readbackRequest);
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    NLS::Render::Context::Detail::ExecuteThreadedSubmitPlan(
+        *impl,
+        frameContext,
+        package,
+        submitPlan,
+        &submissionFrame,
+        0u);
+
+    EXPECT_TRUE(submissionFrame.submittedSuccessfully);
+    EXPECT_EQ(explicitDevice->GetTestQueue()->submitCalls, 1u);
+    EXPECT_EQ(explicitDevice->beginBufferReadbackCalls, 1u);
+    EXPECT_EQ(explicitDevice->lastBeginBufferReadbackDesc.source, sourceBuffer);
+    EXPECT_EQ(explicitDevice->lastBeginBufferReadbackDesc.sourceOffset, 16u);
+    EXPECT_EQ(explicitDevice->lastBeginBufferReadbackDesc.size, sizeof(*destination));
+    EXPECT_EQ(explicitDevice->lastBeginBufferReadbackDesc.data, destination->data());
+    EXPECT_EQ(explicitDevice->lastBeginBufferReadbackDesc.debugName, "ThreadedHZBResultReadback");
+
+    std::lock_guard lock(readbackState->mutex);
+    EXPECT_TRUE(readbackState->beginAttempted);
+    EXPECT_TRUE(readbackState->beginSucceeded);
+    EXPECT_EQ(readbackState->resultCode, NLS::Render::RHI::RHIReadbackStatusCode::Success);
+    EXPECT_NE(readbackState->completion, nullptr);
+}
+
+TEST(ThreadedRenderingLifecycleTests, PostSubmitBufferReadbackWaitsForLastDedicatedComputeProducer)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->frameContexts.resize(1u);
+
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().supportsAsyncCompute = true;
+    explicitDevice->MutableCapabilities().supportsDedicatedComputeQueue = true;
+    impl->explicitDevice = explicitDevice;
+
+    auto& frameContext = impl->frameContexts[0u];
+    frameContext.frameIndex = 12u;
+    frameContext.commandPool = std::make_shared<TestCommandPool>();
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.frameFence = std::make_shared<TestFence>();
+    auto computeFinishedSemaphore = std::make_shared<TestSemaphore>();
+    frameContext.computeFinishedSemaphore = computeFinishedSemaphore;
+
+    auto computeCommandPool = std::make_shared<TestCommandPool>();
+    auto computeCommandBuffer = std::make_shared<TestCommandBuffer>();
+    computeCommandBuffer->Begin();
+    computeCommandBuffer->Dispatch(1u, 1u, 1u);
+    computeCommandBuffer->End();
+    computeCommandPool->commandBuffer = computeCommandBuffer;
+
+    NLS::Render::Context::Detail::AsyncComputeSubmitPlan submitPlan;
+    NLS::Render::Context::Detail::ThreadedQueueSubmissionBatch computeBatch;
+    computeBatch.queueType = NLS::Render::RHI::QueueType::Compute;
+    computeBatch.commandPools.push_back(computeCommandPool);
+    computeBatch.commandBuffers.push_back(computeCommandBuffer);
+    submitPlan.batches.push_back(std::move(computeBatch));
+    submitPlan.usedDedicatedComputeQueueSubmission = true;
+
+    auto sourceBuffer = std::make_shared<TestBuffer>(64u);
+    auto destination = std::make_shared<std::array<uint32_t, 4>>();
+    auto readbackState =
+        std::make_shared<NLS::Render::Context::PostSubmitBufferReadbackState>();
+
+    NLS::Render::Context::PostSubmitBufferReadbackRequest readbackRequest;
+    readbackRequest.desc.source = sourceBuffer;
+    readbackRequest.desc.sourceState = NLS::Render::RHI::ResourceState::ShaderWrite;
+    readbackRequest.desc.size = sizeof(*destination);
+    readbackRequest.desc.data = destination->data();
+    readbackRequest.desc.debugName = "ThreadedHZBResultReadbackAfterCompute";
+    readbackRequest.state = readbackState;
+    readbackRequest.destinationKeepAlive = destination;
+    readbackRequest.waitForLastComputeQueueCompletion = true;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = 9004u;
+    package.targetsSwapchain = false;
+    package.postSubmitBufferReadbacks.push_back(readbackRequest);
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    NLS::Render::Context::Detail::ExecuteThreadedSubmitPlan(
+        *impl,
+        frameContext,
+        package,
+        submitPlan,
+        &submissionFrame,
+        0u);
+
+    EXPECT_TRUE(submissionFrame.submittedSuccessfully);
+    EXPECT_EQ(explicitDevice->GetComputeTestQueue()->submitCalls, 1u);
+    ASSERT_EQ(explicitDevice->GetComputeTestQueue()->lastSubmitDesc.signalSemaphores.size(), 1u);
+    EXPECT_EQ(explicitDevice->GetComputeTestQueue()->lastSubmitDesc.signalSemaphores.front(), computeFinishedSemaphore);
+    ASSERT_EQ(explicitDevice->lastBeginBufferReadbackDesc.waitSemaphores.size(), 1u);
+    EXPECT_EQ(explicitDevice->lastBeginBufferReadbackDesc.waitSemaphores.front(), computeFinishedSemaphore);
+    EXPECT_EQ(explicitDevice->beginBufferReadbackCalls, 1u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, FailedThreadedSubmitMarksPostSubmitBufferReadbackFailedWithoutDeviceCall)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->frameContexts.resize(1u);
+
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->GetTestQueue()->nextSubmitResult = {
+        NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
+        "simulated submit failure before post-submit readback"
+    };
+    impl->explicitDevice = explicitDevice;
+
+    auto& frameContext = impl->frameContexts[0u];
+    frameContext.frameIndex = 10u;
+    frameContext.commandPool = std::make_shared<TestCommandPool>();
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.frameFence = std::make_shared<TestFence>();
+
+    NLS::Render::Context::Detail::AsyncComputeSubmitPlan submitPlan;
+    NLS::Render::Context::Detail::ThreadedQueueSubmissionBatch batch;
+    batch.queueType = NLS::Render::RHI::QueueType::Graphics;
+    batch.commandPools.push_back(frameContext.commandPool);
+    batch.commandBuffers.push_back(frameContext.commandBuffer);
+    submitPlan.batches.push_back(std::move(batch));
+
+    auto readbackState =
+        std::make_shared<NLS::Render::Context::PostSubmitBufferReadbackState>();
+    NLS::Render::Context::PostSubmitBufferReadbackRequest readbackRequest;
+    readbackRequest.desc.source = std::make_shared<TestBuffer>(32u);
+    readbackRequest.desc.size = 4u;
+    readbackRequest.desc.debugName = "FailedSubmitReadback";
+    readbackRequest.state = readbackState;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = 9002u;
+    package.targetsSwapchain = false;
+    package.postSubmitBufferReadbacks.push_back(readbackRequest);
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    NLS::Render::Context::Detail::ExecuteThreadedSubmitPlan(
+        *impl,
+        frameContext,
+        package,
+        submitPlan,
+        &submissionFrame,
+        0u);
+
+    EXPECT_FALSE(submissionFrame.submittedSuccessfully);
+    EXPECT_EQ(explicitDevice->beginBufferReadbackCalls, 0u);
+
+    std::lock_guard lock(readbackState->mutex);
+    EXPECT_TRUE(readbackState->beginAttempted);
+    EXPECT_FALSE(readbackState->beginSucceeded);
+    EXPECT_EQ(readbackState->resultCode, NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure);
+    EXPECT_NE(readbackState->resultMessage.find("not submitted successfully"), std::string::npos);
+    EXPECT_EQ(readbackState->completion, nullptr);
+}
+
+TEST(ThreadedRenderingLifecycleTests, PostSubmitBufferReadbackDeviceLostMarksDriverDeviceLost)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->frameContexts.resize(1u);
+
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->beginReadBufferResult = {
+        NLS::Render::RHI::RHIReadbackStatusCode::DeviceLost,
+        "BeginReadBuffer device removed during post-submit readback"
+    };
+    impl->explicitDevice = explicitDevice;
+
+    auto& frameContext = impl->frameContexts[0u];
+    frameContext.frameIndex = 11u;
+    frameContext.commandPool = std::make_shared<TestCommandPool>();
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.frameFence = std::make_shared<TestFence>();
+
+    NLS::Render::Context::Detail::AsyncComputeSubmitPlan submitPlan;
+    NLS::Render::Context::Detail::ThreadedQueueSubmissionBatch batch;
+    batch.queueType = NLS::Render::RHI::QueueType::Graphics;
+    batch.commandPools.push_back(frameContext.commandPool);
+    batch.commandBuffers.push_back(frameContext.commandBuffer);
+    submitPlan.batches.push_back(std::move(batch));
+
+    auto readbackState =
+        std::make_shared<NLS::Render::Context::PostSubmitBufferReadbackState>();
+    NLS::Render::Context::PostSubmitBufferReadbackRequest readbackRequest;
+    readbackRequest.desc.source = std::make_shared<TestBuffer>(32u);
+    readbackRequest.desc.size = 4u;
+    readbackRequest.desc.debugName = "DeviceLostPostSubmitReadback";
+    readbackRequest.state = readbackState;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = 9003u;
+    package.targetsSwapchain = false;
+    package.postSubmitBufferReadbacks.push_back(readbackRequest);
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    NLS::Render::Context::Detail::ExecuteThreadedSubmitPlan(
+        *impl,
+        frameContext,
+        package,
+        submitPlan,
+        &submissionFrame,
+        0u);
+
+    EXPECT_TRUE(submissionFrame.submittedSuccessfully);
+    EXPECT_EQ(explicitDevice->beginBufferReadbackCalls, 1u);
+    EXPECT_TRUE(impl->deviceLostDetected.load(std::memory_order_acquire));
+    EXPECT_NE(impl->deviceLostReason.find("post-submit readback"), std::string::npos);
+
+    std::lock_guard lock(readbackState->mutex);
+    EXPECT_TRUE(readbackState->beginAttempted);
+    EXPECT_FALSE(readbackState->beginSucceeded);
+    EXPECT_EQ(readbackState->resultCode, NLS::Render::RHI::RHIReadbackStatusCode::DeviceLost);
+    EXPECT_EQ(readbackState->completion, nullptr);
 }
 
 TEST(ThreadedRenderingLifecycleTests, DeviceLostAfterQueuedGpuWorkDoesNotWaitOnUnsignalableFrameFence)
@@ -9839,6 +10263,147 @@ TEST(ThreadedRenderingLifecycleTests, SerialCommandPathConsumesPreparedParallelC
     EXPECT_EQ(computeSubmittedCommandBuffer->dispatchCalls, 1u);
 }
 
+TEST(ThreadedRenderingLifecycleTests, RhiWorkerRecordsPreparedComputeTextureBarriersAroundDispatch)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().supportsAsyncCompute = true;
+    explicitDevice->MutableCapabilities().supportsDedicatedComputeQueue = true;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.computeFinishedSemaphore = std::make_shared<TestSemaphore>();
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 405u;
+    snapshot.targetsSwapchain = false;
+    snapshot.visibleOpaqueDrawCount = 1u;
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
+
+    size_t slotIndex = 0u;
+    NLS::Render::Context::FrameSnapshot publishedSnapshot;
+    ASSERT_TRUE(lifecycle->TryBeginNextRenderScene(&slotIndex, &publishedSnapshot));
+
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.debugName = "ThreadedPreparedComputeTexture";
+    textureDesc.extent = { 64u, 64u, 1u };
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    textureDesc.format = NLS::Render::RHI::TextureFormat::R32F;
+    textureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+        NLS::Render::RHI::TextureUsageFlags::Storage;
+    auto texture = explicitDevice->CreateTexture(textureDesc);
+    auto computePipeline = std::make_shared<TestComputePipeline>("PreparedTextureComputePipeline");
+
+    NLS::Render::RHI::RHISubresourceRange range;
+    range.baseMipLevel = 1u;
+    range.mipLevelCount = 1u;
+    range.baseArrayLayer = 0u;
+    range.arrayLayerCount = 1u;
+
+    NLS::Render::Context::RecordedComputeDispatchInput dispatchInput;
+    dispatchInput.debugName = "PreparedTextureCompute";
+    dispatchInput.pipeline = computePipeline;
+    dispatchInput.groupCountX = 4u;
+    dispatchInput.groupCountY = 2u;
+    dispatchInput.groupCountZ = 1u;
+    dispatchInput.textureVisibilityTransitionsBefore.push_back({
+        texture,
+        range,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::AllCommands,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+    dispatchInput.exportedTextureVisibilityTransitions.push_back({
+        texture,
+        range,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+
+    NLS::Render::Context::RenderPassCommandInput computePassInput;
+    computePassInput.kind = NLS::Render::Context::RenderPassCommandKind::Compute;
+    computePassInput.debugName = "PreparedTextureCompute";
+    computePassInput.queueType = NLS::Render::RHI::QueueType::Compute;
+    computePassInput.renderWidth = 64u;
+    computePassInput.renderHeight = 64u;
+    computePassInput.computeDispatchInputs.push_back(dispatchInput);
+
+    NLS::Render::Context::ParallelCommandWorkUnit computeWorkUnit;
+    computeWorkUnit.commandInput = computePassInput;
+    computeWorkUnit.debugName = computePassInput.debugName;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = publishedSnapshot.frameId;
+    package.targetsSwapchain = false;
+    package.visibleDrawCount = 1u;
+    package.hasVisibleDraws = true;
+    package.frameDataReady = true;
+    package.objectDataReady = true;
+    package.renderWidth = 64u;
+    package.renderHeight = 64u;
+    package.containsParallelCommandWorkUnits = true;
+    package.parallelCommandWorkUnitCount = 1u;
+    package.parallelCommandWorkUnits = { computeWorkUnit };
+    package.hasAsyncComputeWorkload = true;
+    package.asyncComputeWorkloadCount = 1u;
+
+    ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    ASSERT_EQ(explicitDevice->GetComputeTestQueue()->submitCalls, 1u);
+    ASSERT_EQ(explicitDevice->GetComputeTestQueue()->lastSubmitDesc.commandBuffers.size(), 1u);
+    const auto computeSubmittedCommandBuffer = std::dynamic_pointer_cast<TestCommandBuffer>(
+        explicitDevice->GetComputeTestQueue()->lastSubmitDesc.commandBuffers.front());
+    ASSERT_NE(computeSubmittedCommandBuffer, nullptr);
+
+    EXPECT_EQ(
+        computeSubmittedCommandBuffer->events,
+        std::vector<std::string>({ "Begin", "Barrier", "Dispatch", "Barrier", "End" }));
+    ASSERT_EQ(computeSubmittedCommandBuffer->barrierHistory.size(), 2u);
+    ASSERT_EQ(computeSubmittedCommandBuffer->barrierHistory[0].textureBarriers.size(), 1u);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[0].textureBarriers[0].texture, texture);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[0].textureBarriers[0].subresourceRange.baseMipLevel, 1u);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[0].textureBarriers[0].before, NLS::Render::RHI::ResourceState::Unknown);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[0].textureBarriers[0].after, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[0].textureBarriers[0].destinationAccessMask, NLS::Render::RHI::AccessMask::ShaderWrite);
+    ASSERT_EQ(computeSubmittedCommandBuffer->barrierHistory[1].textureBarriers.size(), 1u);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[1].textureBarriers[0].texture, texture);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[1].textureBarriers[0].subresourceRange.baseMipLevel, 1u);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[1].textureBarriers[0].before, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[1].textureBarriers[0].after, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[1].textureBarriers[0].sourceAccessMask, NLS::Render::RHI::AccessMask::ShaderWrite);
+    EXPECT_EQ(computeSubmittedCommandBuffer->barrierHistory[1].textureBarriers[0].destinationAccessMask, NLS::Render::RHI::AccessMask::ShaderRead);
+}
+
 TEST(ThreadedRenderingLifecycleTests, AsyncComputeSchedulingBuildsGraphicsComputeGraphicsSubmissionChain)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -11968,6 +12533,197 @@ TEST(ThreadedRenderingLifecycleTests, TranslationMergeInsertsBarrierBatchForComp
             ++barrierBatchCount;
     }
     EXPECT_GE(barrierBatchCount, 1u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, DependencyTextureVisibilityPreservesProducerStateForPerMipHazards)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().supportsParallelCommandTranslation = true;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 411u;
+    snapshot.targetsSwapchain = false;
+    snapshot.visibleOpaqueDrawCount = 1u;
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
+
+    size_t slotIndex = 0u;
+    NLS::Render::Context::FrameSnapshot publishedSnapshot;
+    ASSERT_TRUE(lifecycle->TryBeginNextRenderScene(&slotIndex, &publishedSnapshot));
+
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.debugName = "PerMipHZB";
+    textureDesc.extent = { 64u, 64u, 1u };
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    textureDesc.format = NLS::Render::RHI::TextureFormat::R32F;
+    textureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+        NLS::Render::RHI::TextureUsageFlags::Storage;
+    textureDesc.mipLevels = 3u;
+    auto texture = std::make_shared<TestTexture>(textureDesc);
+    auto graphicsPipeline = std::make_shared<TestGraphicsPipeline>("HZBReadConsumer");
+    auto materialBindingSet = std::make_shared<TestBindingSet>("HZBReadMaterial");
+    auto mesh = std::make_shared<TestMesh>();
+
+    NLS::Render::RHI::RHISubresourceRange mipRange;
+    mipRange.baseMipLevel = 1u;
+    mipRange.mipLevelCount = 1u;
+    mipRange.baseArrayLayer = 0u;
+    mipRange.arrayLayerCount = 1u;
+
+    auto computePipeline = std::make_shared<TestComputePipeline>("HZBWriteMip");
+
+    NLS::Render::Context::RenderPassCommandInput computePassInput;
+    computePassInput.kind = NLS::Render::Context::RenderPassCommandKind::Compute;
+    computePassInput.debugName = "HZBWriteMip";
+    computePassInput.queueType = NLS::Render::RHI::QueueType::Compute;
+    computePassInput.renderWidth = 64u;
+    computePassInput.renderHeight = 64u;
+    computePassInput.textureResourceAccesses.push_back({
+        texture,
+        mipRange,
+        NLS::Render::Context::ResourceAccessMode::Write,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+    computePassInput.computeDispatchInputs.push_back({
+        "HZBWriteMip",
+        computePipeline,
+        {},
+        1u,
+        1u,
+        1u
+    });
+
+    NLS::Render::Context::RenderPassCommandInput readPassInput;
+    readPassInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    readPassInput.debugName = "HZBReadMip";
+    readPassInput.queueType = NLS::Render::RHI::QueueType::Graphics;
+    readPassInput.renderWidth = 64u;
+    readPassInput.renderHeight = 64u;
+    readPassInput.drawCount = 1u;
+    readPassInput.requiresFrameData = true;
+    readPassInput.requiresObjectData = true;
+    readPassInput.usesColorAttachment = true;
+    readPassInput.usesDepthStencilAttachment = true;
+    readPassInput.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+    readPassInput.dependencySourceWorkUnitIndex = 0u;
+    readPassInput.requiresDependencyVisibility = true;
+    readPassInput.textureResourceAccesses.push_back({
+        texture,
+        mipRange,
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    readPassInput.recordedDrawCommands.push_back({
+        graphicsPipeline,
+        nullptr,
+        nullptr,
+        nullptr,
+        materialBindingSet,
+        mesh,
+        1u
+    });
+
+    NLS::Render::Context::ParallelCommandWorkUnit computeWorkUnit;
+    computeWorkUnit.commandInput = computePassInput;
+    computeWorkUnit.debugName = computePassInput.debugName;
+    computeWorkUnit.eligibleForParallelTranslation = true;
+
+    NLS::Render::Context::ParallelCommandWorkUnit readWorkUnit;
+    readWorkUnit.commandInput = readPassInput;
+    readWorkUnit.debugName = readPassInput.debugName;
+    readWorkUnit.submissionOrder = 1u;
+    readWorkUnit.eligibleForParallelTranslation = true;
+
+    NLS::Render::Context::WorkUnitDependencyEdge textureDependency;
+    textureDependency.sourceWorkUnitIndex = 0u;
+    textureDependency.targetWorkUnitIndex = 1u;
+    textureDependency.kind = NLS::Render::Context::ThreadedDependencyKind::ResourceVisibility;
+    textureDependency.resourceKind = NLS::Render::Context::ThreadedDependencyResourceKind::Texture;
+    textureDependency.sourceTextureAccess = computePassInput.textureResourceAccesses.front();
+    textureDependency.targetTextureAccess = readPassInput.textureResourceAccesses.front();
+    readWorkUnit.incomingDependencyEdges.push_back(textureDependency);
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = publishedSnapshot.frameId;
+    package.targetsSwapchain = false;
+    package.visibleDrawCount = 1u;
+    package.opaqueDrawCount = 1u;
+    package.hasVisibleDraws = true;
+    package.frameDataReady = true;
+    package.objectDataReady = true;
+    package.renderWidth = 64u;
+    package.renderHeight = 64u;
+    package.containsParallelCommandWorkUnits = true;
+    package.parallelCommandWorkUnitCount = 2u;
+    package.parallelCommandWorkUnits = { computeWorkUnit, readWorkUnit };
+
+    ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    bool foundPerMipWriteToRead = false;
+    bool foundUnknownToRead = false;
+    for (const auto& submittedBufferBase : explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers)
+    {
+        const auto submittedBuffer = std::dynamic_pointer_cast<TestCommandBuffer>(submittedBufferBase);
+        if (submittedBuffer == nullptr)
+            continue;
+
+        for (const auto& barrierBatch : submittedBuffer->barrierHistory)
+        {
+            for (const auto& textureBarrier : barrierBatch.textureBarriers)
+            {
+                if (textureBarrier.texture != texture ||
+                    textureBarrier.subresourceRange.baseMipLevel != mipRange.baseMipLevel ||
+                    textureBarrier.subresourceRange.mipLevelCount != mipRange.mipLevelCount)
+                {
+                    continue;
+                }
+
+                if (textureBarrier.before == NLS::Render::RHI::ResourceState::ShaderWrite &&
+                    textureBarrier.after == NLS::Render::RHI::ResourceState::ShaderRead)
+                {
+                    foundPerMipWriteToRead = true;
+                }
+                if (textureBarrier.before == NLS::Render::RHI::ResourceState::Unknown &&
+                    textureBarrier.after == NLS::Render::RHI::ResourceState::ShaderRead)
+                {
+                    foundUnknownToRead = true;
+                }
+            }
+        }
+    }
+
+    EXPECT_TRUE(foundPerMipWriteToRead);
+    EXPECT_FALSE(foundUnknownToRead);
 }
 
 TEST(ThreadedRenderingLifecycleTests, TranslationVisibilityBatchFailureMarksSubmissionAsFailedRetirement)

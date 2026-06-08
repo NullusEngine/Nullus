@@ -49,6 +49,15 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Text& m_drawableCountText;
 		UI::Widgets::Text& m_drawCallOptimizationText;
 		UI::Widgets::Text& m_parallelWorkText;
+		UI::Widgets::Text& m_largeScenePrimitiveText;
+		UI::Widgets::Text& m_largeSceneVisibilityText;
+		UI::Widgets::Text& m_largeSceneCullReasonText;
+		UI::Widgets::Text& m_largeSceneSyncText;
+		UI::Widgets::Text& m_largeSceneFinalizationText;
+		UI::Widgets::Text& m_largeSceneResidencyText;
+		UI::Widgets::Text& m_largeSceneStreamingText;
+		UI::Widgets::Text& m_largeSceneHZBHistoryPruneText;
+		UI::Widgets::Text& m_largeSceneTimingText;
 		UI::Widgets::Text& m_gBufferMaterialSyncText;
 		UI::Widgets::Text& m_gBufferMaterialResolveText;
 		UI::Widgets::Text& m_preparedDrawStaticBaseCacheText;

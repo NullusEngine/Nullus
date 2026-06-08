@@ -110,6 +110,7 @@ namespace NLS::Render::Context
         package.externalSceneOutputIdentity = snapshot.externalOutputIdentity;
         package.externalSceneOutputIdentities = snapshot.externalOutputIdentities;
         package.externalSceneOutputTextureCount = snapshot.externalOutputTextureCount;
+        package.streamingDependencyPins = snapshot.streamingDependencyPins;
         package.opaqueDrawCount = snapshot.visibleOpaqueDrawCount;
         package.transparentDrawCount = snapshot.visibleTransparentDrawCount;
         package.skyboxDrawCount = snapshot.visibleSkyboxDrawCount;

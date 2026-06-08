@@ -31,9 +31,12 @@
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
+#include "Tests/Unit/TestServiceLocatorOverrides.h"
 
 namespace
 {
+using NLS::Tests::ScopedServiceOverride;
+
 std::filesystem::path MakeEditorAssetTestRoot()
 {
     const auto root =
@@ -153,33 +156,6 @@ NLS::Render::Context::Driver& EnsureEditorAssetDatabaseTestDriver()
     NLS::Core::ServiceLocator::Provide(*driver);
     return *driver;
 }
-
-template<typename T>
-class ScopedServiceOverride
-{
-public:
-    explicit ScopedServiceOverride(T& service)
-        : m_hadPrevious(NLS::Core::ServiceLocator::Contains<T>())
-        , m_previous(m_hadPrevious ? &NLS::Core::ServiceLocator::Get<T>() : nullptr)
-    {
-        NLS::Core::ServiceLocator::Provide<T>(service);
-    }
-
-    ~ScopedServiceOverride()
-    {
-        if (m_hadPrevious && m_previous)
-            NLS::Core::ServiceLocator::Provide<T>(*m_previous);
-        else
-            NLS::Core::ServiceLocator::Remove<T>();
-    }
-
-    ScopedServiceOverride(const ScopedServiceOverride&) = delete;
-    ScopedServiceOverride& operator=(const ScopedServiceOverride&) = delete;
-
-private:
-    bool m_hadPrevious = false;
-    T* m_previous = nullptr;
-};
 
 class ScopedShaderManagerAssetPaths final
 {

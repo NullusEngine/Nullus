@@ -20,6 +20,8 @@ namespace NLS::Editor::Launch
         std::printf("  --editor-validation-open-frame-info  Open Frame Info during startup validation\n");
         std::printf("  --editor-validation-select-gameobject <name>  Select a GameObject during startup validation\n");
         std::printf("  --editor-validation-create-asset <path>  Create an asset instance during startup validation\n");
+        std::printf("  --editor-validation-disable-hzb-occlusion  Disable HZB occlusion for A/B validation\n");
+        std::printf("  --editor-validation-occlusion-stack <N>  Create N overlapping cubes for occlusion validation\n");
         std::printf("  --editor-validation-scene-readback-output <path>  Write Scene View render target PNG during validation\n");
         std::printf("  --editor-validation-scene-readback-summary <path>  Write Scene View readback summary during validation\n");
         std::printf("  --editor-validation-scene-camera <pos;rot>  Force Scene View camera, e.g. 1,2,3;10,20,30\n");
@@ -117,6 +119,26 @@ namespace NLS::Editor::Launch
             {
                 parsed.diagnosticsSettings.editorValidationCreateAsset = argv[++i];
                 parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-disable-hzb-occlusion")
+            {
+                parsed.diagnosticsSettings.editorValidationDisableHZBOcclusion = true;
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-occlusion-stack" && i + 1 < argc)
+            {
+                try
+                {
+                    parsed.diagnosticsSettings.editorValidationOcclusionStackCount =
+                        static_cast<uint32_t>(std::stoul(argv[++i]));
+                    parsed.hasDiagnosticsOverride = true;
+                }
+                catch (...)
+                {
+                    std::fprintf(stderr, "[main] Invalid value for --editor-validation-occlusion-stack: %s\n", argv[i]);
+                    parsed.hasError = true;
+                    return parsed;
+                }
             }
             else if (arg == "--editor-validation-scene-readback-output" && i + 1 < argc)
             {

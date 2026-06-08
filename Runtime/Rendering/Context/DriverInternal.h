@@ -47,6 +47,7 @@ namespace NLS::Render::Context
         mutable std::mutex completedReadbackTextureMutex;
         std::shared_ptr<Render::RHI::RHITexture> completedReadbackTexture;
         std::vector<std::weak_ptr<Render::RHI::RHITexture>> completedReadbackTextureHistory;
+        std::vector<PostSubmitBufferReadbackRequest> standalonePostSubmitBufferReadbacks;
         bool hasPendingSwapchainResize = false;
         uint32_t pendingSwapchainWidth = 0u;
         uint32_t pendingSwapchainHeight = 0u;
@@ -105,6 +106,7 @@ namespace NLS::Render::Context
         {
             std::vector<ThreadedQueueSubmissionBatch> batches;
             std::vector<std::shared_ptr<Render::RHI::RHISemaphore>> temporarySemaphores;
+            std::shared_ptr<Render::RHI::RHISemaphore> lastComputeQueueCompletionSemaphore;
             bool usedDedicatedComputeQueueSubmission = false;
         };
 
@@ -180,6 +182,10 @@ namespace NLS::Render::Context
             AsyncComputeSubmitPlan& submitPlan,
             RhiSubmissionFrame* submissionFrame,
             size_t frameContextIndex);
+        NLS_RENDER_API std::shared_ptr<Render::RHI::RHISemaphore> EnsureLastComputeQueueCompletionSemaphore(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            AsyncComputeSubmitPlan& submitPlan);
         NLS_RENDER_API bool ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
             DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,

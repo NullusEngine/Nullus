@@ -17,6 +17,7 @@ Camera::Camera() :
 	m_clearStencilBuffer(true),
 	m_frustumGeometryCulling(false),
 	m_frustumLightCulling(false),
+	m_visibleLayerMask(kAllVisibleLayersMask),
 	m_frustum{}
 {
 }
@@ -34,6 +35,7 @@ Camera::Camera(Maths::Transform* p_transform) :
 	m_clearStencilBuffer(true),
 	m_frustumGeometryCulling(false),
 	m_frustumLightCulling(false),
+	m_visibleLayerMask(kAllVisibleLayersMask),
 	m_frustum{}
 {
 }
@@ -168,6 +170,18 @@ Settings::EProjectionMode Camera::GetProjectionMode() const
     return m_projectionMode;
 }
 
+uint32_t Camera::GetVisibleLayerMask() const
+{
+	return m_visibleLayerMask;
+}
+
+bool Camera::IsLayerVisible(const int p_layer) const
+{
+	return p_layer >= 0 &&
+		p_layer < 32 &&
+		(m_visibleLayerMask & (1u << static_cast<uint32_t>(p_layer))) != 0u;
+}
+
 void Camera::SetPosition(const Maths::Vector3& p_position)
 {
 	if (transform)
@@ -238,6 +252,11 @@ void Camera::SetFrustumLightCulling(bool p_enable)
 void Camera::SetProjectionMode(Settings::EProjectionMode p_projectionMode)
 {
     m_projectionMode = p_projectionMode;
+}
+
+void Camera::SetVisibleLayerMask(const uint32_t p_layerMask)
+{
+	m_visibleLayerMask = p_layerMask;
 }
 
 Maths::Matrix4 Camera::CalculateProjectionMatrix(uint16_t p_windowWidth, uint16_t p_windowHeight) const

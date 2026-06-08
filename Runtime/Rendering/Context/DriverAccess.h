@@ -99,10 +99,14 @@ namespace NLS::Render::Context
             PreparedRenderSceneBuilder renderSceneBuilder,
             size_t* publishedSlotIndex = nullptr,
             uint64_t* publishedFrameId = nullptr);
+        static bool QueueStandalonePostSubmitBufferReadback(
+            Driver& driver,
+            PostSubmitBufferReadbackRequest request);
         static bool TryDrainThreadedRendering(Driver& driver);
         static void DrainThreadedRendering(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
         static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);
+        static std::vector<uint64_t> CollectStreamingDependencyPins(const Driver& driver);
 
         static void SetViewport(
             Driver& driver,

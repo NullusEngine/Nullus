@@ -17,6 +17,7 @@
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/DebugGameObjectSelectionCollector.h"
 #include "Rendering/EditorHelperLifecycle.h"
+#include "Components/CameraComponent.h"
 #include "Engine/LayerMask.h"
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/Entities/Camera.h"
@@ -28,6 +29,8 @@
 #include "Rendering/SelectionOutlineMaskRenderer.h"
 #include "Rendering/DeferredSceneRenderer.h"
 #include "Rendering/ForwardSceneRenderer.h"
+#include "Rendering/SceneHLOD.h"
+#include "Rendering/SceneStreamingResidency.h"
 
 namespace
 {
@@ -323,6 +326,86 @@ TEST(EditorRenderPathContractTests, DebugSceneRendererUsesDeferredMainScenePath)
     EXPECT_FALSE((std::is_base_of_v<
         NLS::Engine::Rendering::ForwardSceneRenderer,
         NLS::Editor::Rendering::DebugSceneRenderer>));
+}
+
+TEST(EditorRenderPathContractTests, CamerasDefaultToAllLayersAndExposeViewLayerMasks)
+{
+    NLS::Render::Entities::Camera camera;
+
+    EXPECT_EQ(
+        camera.GetVisibleLayerMask(),
+        NLS::Render::Entities::Camera::kAllVisibleLayersMask);
+    EXPECT_TRUE(camera.IsLayerVisible(0));
+    EXPECT_TRUE(camera.IsLayerVisible(31));
+    EXPECT_FALSE(camera.IsLayerVisible(32));
+
+    camera.SetVisibleLayerMask(1u << 7u);
+
+    EXPECT_EQ(camera.GetVisibleLayerMask(), 1u << 7u);
+    EXPECT_FALSE(camera.IsLayerVisible(0));
+    EXPECT_TRUE(camera.IsLayerVisible(7));
+    EXPECT_FALSE(camera.IsLayerVisible(31));
+}
+
+TEST(EditorRenderPathContractTests, CameraComponentForwardsLayerMaskToRenderCamera)
+{
+    NLS::Engine::GameObject actor("LayerMaskedCamera");
+    auto* cameraComponent = actor.AddComponent<NLS::Engine::Components::CameraComponent>();
+    ASSERT_NE(cameraComponent, nullptr);
+    ASSERT_NE(cameraComponent->GetCamera(), nullptr);
+
+    EXPECT_EQ(
+        cameraComponent->GetVisibleLayers().GetMask(),
+        NLS::Render::Entities::Camera::kAllVisibleLayersMask);
+
+    cameraComponent->SetVisibleLayers(NLS::Engine::LayerMask(1u << 5u));
+
+    EXPECT_EQ(cameraComponent->GetVisibleLayers().GetMask(), 1u << 5u);
+    EXPECT_EQ(cameraComponent->GetCamera()->GetVisibleLayerMask(), 1u << 5u);
+    EXPECT_TRUE(cameraComponent->GetCamera()->IsLayerVisible(5));
+    EXPECT_FALSE(cameraComponent->GetCamera()->IsLayerVisible(0));
+}
+
+TEST(EditorRenderPathContractTests, SceneHLODEditorSelectionOverrideKeepsSelectedChildInspectable)
+{
+    using NLS::Engine::Rendering::HLODClusterRecord;
+    using NLS::Engine::Rendering::HLODCompatibilityFlags;
+    using NLS::Engine::Rendering::RepresentationResidencySnapshot;
+    using NLS::Engine::Rendering::SceneHLODSystem;
+    using NLS::Engine::Rendering::SceneHLODViewInput;
+    using NLS::Engine::Rendering::ScenePrimitiveHandle;
+
+    const ScenePrimitiveHandle firstChild { 0x61u, 0u, 1u };
+    const ScenePrimitiveHandle selectedChild { 0x61u, 1u, 1u };
+    const ScenePrimitiveHandle proxy { 0x61u, 10u, 1u };
+
+    HLODClusterRecord cluster;
+    cluster.clusterHandle = { 1u };
+    cluster.childPrimitives = { firstChild, selectedChild };
+    cluster.proxyPrimitive = proxy;
+    cluster.worldReferencePoint = { 0.0f, 0.0f, -250.0f };
+    cluster.worldSize = 100.0f;
+    cluster.activationScreenRelativeSize = 0.5f;
+    cluster.compatibilityFlags = HLODCompatibilityFlags::OpaqueOnly | HLODCompatibilityFlags::ProxySafe;
+
+    RepresentationResidencySnapshot residency;
+    residency.MarkReady(firstChild);
+    residency.MarkReady(selectedChild);
+    residency.MarkHLODProxyReady(proxy);
+
+    SceneHLODViewInput input;
+    input.cameraPosition = { 0.0f, 0.0f, 0.0f };
+    input.allowHLOD = true;
+    input.editorInspectionView = true;
+    input.selectedPrimitiveHandles = { selectedChild };
+
+    const auto result = SceneHLODSystem::SelectCluster(input, cluster, residency);
+
+    EXPECT_TRUE(result.usesProxy);
+    ASSERT_EQ(result.suppressedChildPrimitives.size(), 1u);
+    EXPECT_EQ(result.suppressedChildPrimitives.front(), firstChild);
+    ASSERT_EQ(result.inspectableChildPrimitives.size(), 1u);
+    EXPECT_EQ(result.inspectableChildPrimitives.front(), selectedChild);
 }
 
 TEST(EditorRenderPathContractTests, EditorPickingAndOutlineRetryDeferredMeshAndMaterialReferencesAtSubmitTime)
@@ -937,6 +1020,112 @@ TEST(EditorRenderPathContractTests, DebugGameObjectSelectionCollectorUsesSelecti
     ASSERT_FALSE(collectorHeader.empty());
     EXPECT_NE(collectorHeader.find("std::vector<SelectionMeshItem> selectionMeshItems"), std::string::npos);
     EXPECT_EQ(collectorHeader.find("modelRenderers"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, FrameInfoLargeSceneCountersConsumeFrameInfoSnapshotOnly)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/FrameInfoRendererStats.cpp");
+
+    ASSERT_FALSE(source.empty());
+    const auto updateBegin = source.find("void Editor::Panels::FrameInfo::UpdateForFrameInfo(");
+    ASSERT_NE(updateBegin, std::string::npos);
+    const auto updateBody = source.substr(updateBegin);
+
+    EXPECT_NE(updateBody.find("frameInfo.largeScene.registeredPrimitiveCount"), std::string::npos);
+    EXPECT_NE(updateBody.find("frameInfo.largeScene.visibilityTestedPrimitiveCount"), std::string::npos);
+    EXPECT_NE(updateBody.find("frameInfo.largeScene.finalizationTouchedPrimitiveCount"), std::string::npos);
+    EXPECT_NE(updateBody.find("frameInfo.largeScene.residentCpuBytes"), std::string::npos);
+    EXPECT_EQ(updateBody.find("GetScene("), std::string::npos);
+    EXPECT_EQ(updateBody.find("FastAccessComponents"), std::string::npos);
+    EXPECT_EQ(updateBody.find("GetGameObjects("), std::string::npos);
+    EXPECT_EQ(updateBody.find("GetMutableRendererStats"), std::string::npos);
+    EXPECT_EQ(updateBody.find("GetFrameInfo()"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, FrameInfoShowsCullReasonAndStreamingBudgetCountersFromSnapshot)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/FrameInfoRendererStats.cpp");
+
+    ASSERT_FALSE(source.empty());
+    const auto updateBegin = source.find("void Editor::Panels::FrameInfo::UpdateForFrameInfo(");
+    ASSERT_NE(updateBegin, std::string::npos);
+    const auto updateBody = source.substr(updateBegin);
+
+    EXPECT_NE(source.find("BuildLargeSceneCullReasonText("), std::string::npos);
+    EXPECT_NE(source.find("GetCullReasonDisplayBuckets()"), std::string::npos);
+    EXPECT_NE(updateBody.find("BuildLargeSceneCullReasonText(frameInfo.largeScene.culledByReason)"), std::string::npos);
+    EXPECT_NE(updateBody.find("frameInfo.largeScene.occlusionCulledCount"), std::string::npos);
+    EXPECT_NE(updateBody.find("frameInfo.largeScene.streamingRequestCount"), std::string::npos);
+    EXPECT_NE(updateBody.find("frameInfo.largeScene.streamingCommitCount"), std::string::npos);
+    EXPECT_NE(updateBody.find("frameInfo.largeScene.streamingEvictCount"), std::string::npos);
+    EXPECT_EQ(updateBody.find("GetScene("), std::string::npos);
+    EXPECT_EQ(updateBody.find("FastAccessComponents"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DebugSceneCullingOverlayConsumesFrameSnapshotOnly)
+{
+    const auto header = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.h");
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    ASSERT_FALSE(header.empty());
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(header.find("CullingOverlayOptions"), std::string::npos);
+    EXPECT_NE(header.find("SetCullingOverlayOptions"), std::string::npos);
+    EXPECT_NE(header.find("BuildCullingOverlayItems"), std::string::npos);
+    EXPECT_NE(header.find("BuildDebugSceneCullingOverlayItems"), std::string::npos);
+    EXPECT_NE(header.find("ShouldPublishCullReasonDebugSnapshots"), std::string::npos);
+    EXPECT_NE(header.find("const NLS::Render::Context::FrameSnapshot& snapshot"), std::string::npos);
+
+    const auto buildBegin = source.find("BuildDebugSceneCullingOverlayItems");
+    ASSERT_NE(buildBegin, std::string::npos);
+    const auto buildEnd = source.find("DebugSceneRenderer::SetCullingOverlayOptions", buildBegin);
+    ASSERT_NE(buildEnd, std::string::npos);
+    const auto buildBody = source.substr(buildBegin, buildEnd - buildBegin);
+
+    EXPECT_NE(buildBody.find("snapshot.largeSceneCullReasonSnapshot"), std::string::npos);
+    EXPECT_EQ(buildBody.find("FastAccessComponents"), std::string::npos);
+    EXPECT_EQ(buildBody.find("GetGameObjects("), std::string::npos);
+    EXPECT_EQ(buildBody.find("Synchronize("), std::string::npos);
+    EXPECT_EQ(buildBody.find("Drain"), std::string::npos);
+
+    EXPECT_NE(source.find("bool Editor::Rendering::DebugSceneRenderer::ShouldPublishCullReasonDebugSnapshots() const"), std::string::npos);
+    EXPECT_NE(source.find("ShouldPublishDebugSceneCullReasonSnapshots(m_cullingOverlayOptions)"), std::string::npos);
+    EXPECT_NE(source.find("return options.enabled && options.maxItems > 0u"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, BaseSceneRendererPublishesCullReasonSnapshotAfterVisibility)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+
+    ASSERT_FALSE(source.empty());
+    const auto beginFrameStart = source.find("void BaseSceneRenderer::BeginFrame(");
+    ASSERT_NE(beginFrameStart, std::string::npos);
+    const auto beginFrameEnd = source.find("std::optional<Render::Context::FrameSnapshot> BaseSceneRenderer::BuildFrameSnapshot", beginFrameStart);
+    ASSERT_NE(beginFrameEnd, std::string::npos);
+    const auto beginFrameBody = source.substr(beginFrameStart, beginFrameEnd - beginFrameStart);
+    const auto clearCullSnapshot = beginFrameBody.find("m_lastCullReasonDebugSnapshot = {}");
+    const auto buildInitialSnapshot = beginFrameBody.find("BuildFrameSnapshot(p_frameDescriptor)");
+    ASSERT_NE(clearCullSnapshot, std::string::npos);
+    ASSERT_NE(buildInitialSnapshot, std::string::npos);
+    EXPECT_LT(clearCullSnapshot, buildInitialSnapshot)
+        << "The initial BeginFrame snapshot must not publish stale cull reasons from the previous parsed scene.";
+
+    EXPECT_NE(source.find("snapshot->largeSceneCullReasonSnapshot = m_lastCullReasonDebugSnapshot"), std::string::npos);
+    EXPECT_NE(source.find("SetLastCullReasonDebugSnapshot(renderScene.GetLastCullReasonDebugSnapshot())"), std::string::npos);
+
+    const auto appendSceneBegin = source.find("auto appendSceneDrawables = [&]");
+    ASSERT_NE(appendSceneBegin, std::string::npos);
+    const auto gatherVisible = source.find("renderScene.GatherVisibleCommands", appendSceneBegin);
+    const auto publishCullSnapshot = source.find("SetLastCullReasonDebugSnapshot(renderScene.GetLastCullReasonDebugSnapshot())", appendSceneBegin);
+    ASSERT_NE(gatherVisible, std::string::npos);
+    ASSERT_NE(publishCullSnapshot, std::string::npos);
+    EXPECT_LT(gatherVisible, publishCullSnapshot)
+        << "Cull reasons must be published after visibility has produced a renderer snapshot, not by traversing Scene View state.";
 }
 
 TEST(EditorRenderPathContractTests, DebugGameObjectDebugDrawCollectsSelectedSubtreeAfterGate)

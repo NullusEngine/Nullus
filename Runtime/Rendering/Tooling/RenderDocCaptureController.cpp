@@ -53,16 +53,37 @@ namespace NLS::Render::Tooling
 		return ResolveRenderDocCaptureDeviceHandle(nativeInfo).handle;
 	}
 
+	bool CanQueueRenderDocCapture(
+		const bool available,
+		const bool captureQueued,
+		const bool manualCaptureActive,
+		const bool queuedCaptureActive,
+		const bool waitingForTriggeredCapture)
+	{
+		return available &&
+			!captureQueued &&
+			!manualCaptureActive &&
+			!queuedCaptureActive &&
+			!waitingForTriggeredCapture;
+	}
+
+	uint32_t ResolveRenderDocQueuedCaptureInitialCountdown()
+	{
+		return 2u;
+	}
+
 	RenderDocQueuedCaptureAction ResolveRenderDocQueuedCapturePreFrameAction(
 		const bool available,
 		const bool captureQueued,
 		const bool frameWillPresent,
 		const uint32_t presentCountdown)
 	{
-		if (!available || !captureQueued || !frameWillPresent)
+		if (!available || !captureQueued)
 			return RenderDocQueuedCaptureAction::None;
 		if (presentCountdown > 1)
-			return RenderDocQueuedCaptureAction::WaitForFutureFrame;
+			return frameWillPresent
+				? RenderDocQueuedCaptureAction::WaitForFutureFrame
+				: RenderDocQueuedCaptureAction::None;
 		return RenderDocQueuedCaptureAction::StartExplicitFrameCapture;
 	}
 
@@ -195,6 +216,7 @@ namespace
 		bool manualCaptureActive = false;
 		bool queuedCaptureActive = false;
 		bool waitingForTriggeredCapture = false;
+		bool triggeredCaptureMayResolveBaselinePath = false;
 		std::unordered_set<std::string> knownCaptureFiles;
 
 #if defined(_WIN32)
@@ -204,6 +226,8 @@ namespace
 		bool ownsRenderDocModule = false;
 		RENDERDOC_API_1_7_0* api = nullptr;
 		uint32_t knownCaptureCount = 0;
+		uint32_t triggeredCaptureBaselineCount = 0;
+		std::string triggeredCaptureBaselinePath;
 
 		~Impl()
 		{
@@ -223,10 +247,10 @@ namespace
 
 			const std::string contextPrefix = std::string(context != nullptr ? context : "RenderDoc");
 
-			// Clear any existing capture keys first, then set only F11.
+			// Nullus owns F11 and queues captures through the editor/game shortcut layer.
+			// Leaving RenderDoc's native hotkey active creates a second, immediate capture
+			// path that can race the queued whole-frame capture boundary.
 			api->SetCaptureKeys(nullptr, 0);
-			RENDERDOC_InputButton captureKeys[] = { eRENDERDOC_Key_F11 };
-			api->SetCaptureKeys(captureKeys, 1);
 
 			if (!settings.captureDirectory.empty())
 			{
@@ -234,7 +258,7 @@ namespace
 				NLS_LOG_INFO(contextPrefix + ": SetCaptureFilePathTemplate to: " + settings.captureDirectory);
 			}
 
-			NLS_LOG_INFO(contextPrefix + ": captureKey=F11");
+			NLS_LOG_INFO(contextPrefix + ": native capture keys disabled; Nullus queues captures via shortcuts");
 		}
 
 		void EnsureApiConnected(const char* context)
@@ -305,7 +329,7 @@ namespace
 				std::to_string(major) + "." +
 				std::to_string(minor) + "." +
 				std::to_string(patch) +
-				", captureKey=F11");
+				", native capture keys disabled");
 		}
 
 		// Connect to RenderDoc API without checking enabled flag
@@ -361,7 +385,7 @@ namespace
 				std::to_string(major) + "." +
 				std::to_string(minor) + "." +
 				std::to_string(patch) +
-				", captureKey=F11");
+				", native capture keys disabled");
 		}
 
 		std::filesystem::path ResolveInstallRoot() const
@@ -556,6 +580,64 @@ namespace
 			if (latestCapturePath.empty())
 				RefreshLatestCapturePathFallback();
 		}
+
+		bool OpenLatestCaptureFromImpl() const
+		{
+			if (latestCapturePath.empty())
+				return false;
+
+			if (!qrenderdocPath.empty())
+				return LaunchExecutable(qrenderdocPath, latestCapturePath);
+
+			Platform::SystemCalls::OpenFile(latestCapturePath);
+			return true;
+		}
+
+		void TriggerCaptureFallback(
+			const char* message,
+			const bool mayResolveBaselinePath = false)
+		{
+			if (!IsAvailable())
+				return;
+
+			triggeredCaptureBaselineCount = knownCaptureCount;
+			triggeredCaptureBaselinePath = latestCapturePath;
+			triggeredCaptureMayResolveBaselinePath = mayResolveBaselinePath;
+			api->TriggerCapture();
+			waitingForTriggeredCapture = true;
+			NLS_LOG_INFO(message != nullptr ? message : "RenderDoc TriggerCapture fallback issued.");
+		}
+
+		bool ResolveTriggeredCaptureIfAvailable(const char* context)
+		{
+			if (!IsAvailable() || !waitingForTriggeredCapture)
+				return false;
+
+			RefreshLatestCapturePath();
+			const bool captureCountAdvanced = knownCaptureCount > triggeredCaptureBaselineCount;
+			const bool capturePathChanged =
+				!latestCapturePath.empty() &&
+				latestCapturePath != triggeredCaptureBaselinePath;
+			const bool baselinePathResolved =
+				triggeredCaptureMayResolveBaselinePath &&
+				triggeredCaptureBaselinePath.empty() &&
+				!latestCapturePath.empty() &&
+				knownCaptureCount >= triggeredCaptureBaselineCount;
+			if (!captureCountAdvanced && !capturePathChanged && !baselinePathResolved)
+				return false;
+
+			waitingForTriggeredCapture = false;
+			triggeredCaptureMayResolveBaselinePath = false;
+			triggeredCaptureBaselinePath.clear();
+			triggeredCaptureBaselineCount = knownCaptureCount;
+			NLS_LOG_INFO(
+				std::string("RenderDoc TriggerCapture resolved ") +
+				(context != nullptr ? context : "asynchronously") +
+				": " + latestCapturePath);
+			if (settings.autoOpenReplayUI)
+				OpenLatestCaptureFromImpl();
+			return true;
+		}
 #endif
 	};
 
@@ -592,10 +674,18 @@ namespace
 #if defined(_WIN32)
 		m_impl->EnsureApiConnected("QueueCapture");
 #endif
-		if (!IsAvailable())
+		if (!CanQueueRenderDocCapture(
+				IsAvailable(),
+				m_impl->captureQueued,
+				m_impl->manualCaptureActive,
+				m_impl->queuedCaptureActive,
+				m_impl->waitingForTriggeredCapture))
+		{
+			NLS_LOG_INFO("RenderDoc capture request ignored because another capture is already pending or active.");
 			return false;
+		}
 
-		m_impl->presentCountdown = 1;
+		m_impl->presentCountdown = ResolveRenderDocQueuedCaptureInitialCountdown();
 		m_impl->pendingCaptureLabel = label;
 		m_impl->captureQueued = true;
 		NLS_LOG_INFO("RenderDoc queued next-frame capture: " + (label.empty() ? std::string("capture") : label));
@@ -665,9 +755,8 @@ namespace
 			return;
 		}
 
-		m_impl->api->TriggerCapture();
-		m_impl->waitingForTriggeredCapture = true;
-		NLS_LOG_INFO("RenderDoc queued StartFrameCapture before presentable frame -> failed, fell back to TriggerCapture().");
+		m_impl->TriggerCaptureFallback(
+			"RenderDoc queued StartFrameCapture before presentable frame -> failed, fell back to TriggerCapture().");
 #endif
 	}
 
@@ -697,35 +786,68 @@ namespace
 				}
 				else
 				{
-					m_impl->api->TriggerCapture();
-					m_impl->waitingForTriggeredCapture = true;
-					NLS_LOG_INFO("RenderDoc queued EndFrameCapture after present -> success, path unresolved; issued TriggerCapture fallback.");
+					m_impl->TriggerCaptureFallback(
+						"RenderDoc queued EndFrameCapture after present -> success, path unresolved; issued TriggerCapture fallback.",
+						true);
 				}
 			}
 			else
 			{
-				m_impl->api->TriggerCapture();
-				m_impl->waitingForTriggeredCapture = true;
-				NLS_LOG_INFO("RenderDoc queued EndFrameCapture after present -> failed, fell back to TriggerCapture().");
+				m_impl->TriggerCaptureFallback(
+					"RenderDoc queued EndFrameCapture after present -> failed, fell back to TriggerCapture().");
 			}
 			return;
 		}
 
-		if (!IsAvailable() || !m_impl->waitingForTriggeredCapture)
-			return;
+		m_impl->ResolveTriggeredCaptureIfAvailable("after post-present");
+#endif
+	}
 
-		const auto previousCaptureCount = m_impl->knownCaptureCount;
-		m_impl->RefreshLatestCapturePath();
-		if (!m_impl->latestCapturePath.empty())
+	void RenderDocCaptureController::OnPostFrame(
+		const bool frameWillPresent,
+		const bool outputMayBePresentedLater)
+	{
+#if defined(_WIN32)
+		if (!IsAvailable())
+			return;
+		m_impl->ResolveTriggeredCaptureIfAvailable("after post-frame");
+		if (!m_impl->queuedCaptureActive ||
+			frameWillPresent ||
+			outputMayBePresentedLater)
 		{
-			m_impl->waitingForTriggeredCapture = false;
-			if (m_impl->knownCaptureCount > previousCaptureCount)
-				NLS_LOG_INFO("RenderDoc TriggerCapture produced capture: " + m_impl->latestCapturePath);
-			else
-				NLS_LOG_INFO("RenderDoc capture path resolved asynchronously: " + m_impl->latestCapturePath);
-			if (m_impl->settings.autoOpenReplayUI)
-				OpenLatestCapture();
+			return;
 		}
+
+		bool ended = m_impl->api->EndFrameCapture(m_impl->captureDevice, m_impl->captureWindow) == 1;
+		if (!ended)
+			ended = m_impl->api->EndFrameCapture(nullptr, nullptr) == 1;
+		m_impl->queuedCaptureActive = false;
+		if (ended)
+		{
+			m_impl->RefreshLatestCapturePath();
+			if (!m_impl->latestCapturePath.empty())
+			{
+				NLS_LOG_INFO(
+					std::string("RenderDoc queued EndFrameCapture after offscreen frame -> success") +
+					", latest=\"" + m_impl->latestCapturePath + "\"");
+				if (m_impl->settings.autoOpenReplayUI)
+					OpenLatestCapture();
+			}
+			else
+			{
+				m_impl->TriggerCaptureFallback(
+					"RenderDoc queued EndFrameCapture after offscreen frame -> success, path unresolved; issued TriggerCapture fallback.",
+					true);
+			}
+		}
+		else
+		{
+			m_impl->TriggerCaptureFallback(
+				"RenderDoc queued EndFrameCapture after offscreen frame -> failed, fell back to TriggerCapture().");
+		}
+#else
+		(void)frameWillPresent;
+		(void)outputMayBePresentedLater;
 #endif
 	}
 
@@ -824,6 +946,10 @@ namespace
 				}
 				m_impl->manualCaptureActive = false;
 				m_impl->queuedCaptureActive = false;
+				m_impl->waitingForTriggeredCapture = false;
+				m_impl->triggeredCaptureMayResolveBaselinePath = false;
+				m_impl->triggeredCaptureBaselinePath.clear();
+				m_impl->triggeredCaptureBaselineCount = 0;
 				m_impl->captureQueued = false;
 				// Note: We keep the DLL loaded and API pointer intact
 				// so that disabling and re-enabling works without reloading

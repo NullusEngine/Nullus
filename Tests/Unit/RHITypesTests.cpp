@@ -55,3 +55,27 @@ TEST(RHITypesTests, DefaultSamplerDescPreservesExistingBehavior)
     EXPECT_FLOAT_EQ(desc.borderColor[2], 0.0f);
     EXPECT_FLOAT_EQ(desc.borderColor[3], 0.0f);
 }
+
+TEST(RHITypesTests, OcclusionFeatureFlagsRoundTripThroughLegacyFields)
+{
+    using namespace NLS::Render::RHI;
+
+    RHIDeviceCapabilities legacyCapabilities;
+    legacyCapabilities.supportsHierarchicalZBuffer = true;
+    legacyCapabilities.supportsConservativeOcclusion = true;
+    legacyCapabilities.supportsAsyncReadback = true;
+    legacyCapabilities.SynchronizeLegacyFields();
+
+    EXPECT_TRUE(legacyCapabilities.GetFeature(RHIDeviceFeature::HierarchicalZBuffer).supported);
+    EXPECT_TRUE(legacyCapabilities.GetFeature(RHIDeviceFeature::ConservativeOcclusion).supported);
+    EXPECT_TRUE(legacyCapabilities.GetFeature(RHIDeviceFeature::AsyncReadback).supported);
+
+    RHIDeviceCapabilities featureCapabilities;
+    featureCapabilities.SetFeature(RHIDeviceFeature::HierarchicalZBuffer, true);
+    featureCapabilities.SetFeature(RHIDeviceFeature::ConservativeOcclusion, true);
+    featureCapabilities.SetFeature(RHIDeviceFeature::AsyncReadback, true);
+
+    EXPECT_TRUE(featureCapabilities.supportsHierarchicalZBuffer);
+    EXPECT_TRUE(featureCapabilities.supportsConservativeOcclusion);
+    EXPECT_TRUE(featureCapabilities.supportsAsyncReadback);
+}

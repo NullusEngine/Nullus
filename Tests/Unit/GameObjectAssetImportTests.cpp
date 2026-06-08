@@ -33,9 +33,12 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "SceneSystem/Scene.h"
+#include "Tests/Unit/TestServiceLocatorOverrides.h"
 
 namespace
 {
+using NLS::Tests::ScopedServiceOverride;
+
 std::filesystem::path MakeGameObjectAssetImportRoot()
 {
     const auto root = std::filesystem::temp_directory_path() /
@@ -1913,10 +1916,10 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragKeepsColdRendererResourcesDef
     NLS::Core::ResourceManagement::MaterialManager materialManager;
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MeshManager>(meshManager);
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::MeshManager> meshManagerScope(meshManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::MaterialManager> materialManagerScope(materialManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::ShaderManager> shaderManagerScope(shaderManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::TextureManager> textureManagerScope(textureManager);
 
     WriteTextFile(
         root / "Assets" / "Models" / "ColdHero.gltf",
@@ -2035,10 +2038,10 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragDoesNotSynchronouslyPrewarmLa
     NLS::Core::ResourceManagement::MaterialManager materialManager;
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MeshManager>(meshManager);
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::MeshManager> meshManagerScope(meshManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::MaterialManager> materialManagerScope(materialManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::ShaderManager> shaderManagerScope(shaderManager);
+    ScopedServiceOverride<NLS::Core::ResourceManagement::TextureManager> textureManagerScope(textureManager);
 
     std::ostringstream meshes;
     std::ostringstream nodes;

@@ -155,6 +155,13 @@ The following formal RHI objects are implemented natively in Tier A backends:
 - `DescriptorAllocator`, `PipelineCache`, `ResourceStateTracker`, `UploadContext` are created by Driver and stored in per-frame `RHIFrameContext`
 - These utilities work with formal RHI resources created by native devices
 
+### Large-Scene HZB/Occlusion Capability Gates (2026-06-05)
+
+- HZB occlusion and async/readback-assisted history must be selected from `RHIDevice::GetCapabilities()` and texture-format capabilities, not from backend-name guesses.
+- Unsupported capability combinations must keep occlusion conservative: primitives stay visible and telemetry records the fallback reason.
+- Prepared compute dispatches that build or consume HZB resources must declare texture resource accesses, visibility transitions, dependency edges, and per-subresource ranges.
+- DX12 runtime evidence is recorded in `specs/large-scene-optimization/validation/hzb-occlusion-dx12.md`; non-DX12 backends still require separate RenderDoc or equivalent RHI-event evidence before enabling HZB occlusion.
+
 ### UE5 DX12 Alignment Status (2026-04-23)
 
 - The active DX12-aligned mainline now requires central descriptor allocation for explicit binding-set creation.

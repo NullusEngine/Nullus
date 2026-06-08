@@ -6,7 +6,8 @@ namespace NLS::Editor::Assets
 {
 bool IsBuiltInResourcePath(const std::string& resourcePath)
 {
-    return !resourcePath.empty() && resourcePath.front() == ':';
+    return (!resourcePath.empty() && resourcePath.front() == ':') ||
+        resourcePath.rfind("builtin:", 0) == 0;
 }
 
 std::string GetBuiltInResourceDisplayName(const std::string& resourcePath)

@@ -758,3 +758,265 @@ TEST(RendererStatsTests, DrawCallOptimizationStatsDoesNotOverwriteThreadedTeleme
     EXPECT_EQ(frameInfo.parallelRecordingWorkerCount, 2u);
     EXPECT_EQ(frameInfo.parallelFallbackReason, "unsafe ordered slice fallback");
 }
+
+TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerFrame)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    NLS::Render::Data::LargeSceneTelemetry first;
+    first.registeredPrimitiveCount = 1000u;
+    first.staticPrimitiveCount = 800u;
+    first.dynamicPrimitiveCount = 200u;
+    first.unclassifiedPrimitiveCount = 0u;
+    first.spatialCandidateCount = 120u;
+    first.fullScanCandidateCount = 1000u;
+    first.visiblePrimitiveCount = 80u;
+    first.visibleMeshCount = 76u;
+    first.culledByReason[2] = 5u;
+    first.lodSelectionCount[3] = 6u;
+    first.activeHLODClusterCount = 7u;
+    first.occlusionTestCount = 8u;
+    first.occlusionCulledCount = 9u;
+    first.streamingRequestCount = 10u;
+    first.streamingCommitCount = 11u;
+    first.streamingEvictCount = 12u;
+    first.syncTouchedPrimitiveCount = 12u;
+    first.syncFullSweepCount = 1u;
+    first.boundsDirtyPrimitiveCount = 4u;
+    first.primitiveSlotReuseCount = 2u;
+    first.primitiveRecordsTouched = 125u;
+    first.allocatedPrimitiveSlotCount = 1005u;
+    first.tombstonedPrimitiveSlotCount = 5u;
+    first.syncSweepTouchedSlotCount = 1005u;
+    first.visibilityTestedPrimitiveCount = 130u;
+    first.visibilityBitsetWordCount = 24u;
+    first.finalizationTouchedPrimitiveCount = 80u;
+    first.finalizationTouchedCommandCount = 90u;
+    first.commandOffsetRebuildCount = 2u;
+    first.rawVisibleDrawCount = 88u;
+    first.submittedDrawCount = 44u;
+    first.dynamicInstanceGroupCount = 12u;
+    first.streamingDependencyCount = 14u;
+    first.residencyTicketCount = 9u;
+    first.residentCpuBytes = 1024u;
+    first.residentGpuBytes = 2048u;
+    first.requestedCpuBytes = 4096u;
+    first.requestedGpuBytes = 8192u;
+    first.dynamicCandidateCount = 15u;
+    first.dynamicRecordsTouched = 16u;
+    first.staticIndexRefitCount = 17u;
+    first.staticIndexRebuildCount = 18u;
+    first.staticIndexLastGoodQueryCount = 19u;
+    first.staticIndexDirtyOverlayCount = 20u;
+    first.spatialRebuildFallbackCount = 21u;
+    first.dynamicIndexUpdateCount = 22u;
+    first.syncTimeNs = 300u;
+    first.serialVisibilityTimeNs = 400u;
+    first.queueFinalizationTimeNs = 500u;
+    first.hzbBuildTimeNs = 600u;
+    first.hzbHistoryPruneTouchedHandleCount = 7u;
+    first.hzbHistoryPruneRemovedHandleCount = 3u;
+    first.hzbHistoryPruneRemovedKeyCount = 5u;
+    first.hzbHistoryPruneTimeNs = 40u;
+    first.streamingCommitTimeNs = 700u;
+
+    NLS::Render::Data::LargeSceneTelemetry second;
+    second.registeredPrimitiveCount = 1000u;
+    second.unclassifiedPrimitiveCount = 1000u;
+    second.spatialCandidateCount = 30u;
+    second.fullScanCandidateCount = 500u;
+    second.visiblePrimitiveCount = 10u;
+    second.visibleMeshCount = 9u;
+    second.culledByReason[2] = 1u;
+    second.culledByReason[4] = 2u;
+    second.lodSelectionCount[3] = 3u;
+    second.lodSelectionCount[5] = 4u;
+    second.activeHLODClusterCount = 5u;
+    second.occlusionTestCount = 6u;
+    second.occlusionCulledCount = 7u;
+    second.streamingRequestCount = 8u;
+    second.streamingCommitCount = 9u;
+    second.streamingEvictCount = 10u;
+    second.syncTouchedPrimitiveCount = 2u;
+    second.boundsDirtyPrimitiveCount = 1u;
+    second.primitiveSlotReuseCount = 3u;
+    second.primitiveRecordsTouched = 35u;
+    second.allocatedPrimitiveSlotCount = 1002u;
+    second.tombstonedPrimitiveSlotCount = 2u;
+    second.syncSweepTouchedSlotCount = 1002u;
+    second.visibilityTestedPrimitiveCount = 40u;
+    second.visibilityBitsetWordCount = 4u;
+    second.finalizationTouchedPrimitiveCount = 10u;
+    second.finalizationTouchedCommandCount = 11u;
+    second.rawVisibleDrawCount = 12u;
+    second.submittedDrawCount = 6u;
+    second.dynamicInstanceGroupCount = 1u;
+    second.streamingDependencyCount = 3u;
+    second.residencyTicketCount = 1u;
+    second.residentCpuBytes = 512u;
+    second.residentGpuBytes = 256u;
+    second.requestedCpuBytes = 2048u;
+    second.requestedGpuBytes = 1024u;
+    second.dynamicCandidateCount = 1u;
+    second.dynamicRecordsTouched = 2u;
+    second.staticIndexRefitCount = 3u;
+    second.staticIndexRebuildCount = 4u;
+    second.staticIndexLastGoodQueryCount = 5u;
+    second.staticIndexDirtyOverlayCount = 6u;
+    second.spatialRebuildFallbackCount = 7u;
+    second.dynamicIndexUpdateCount = 8u;
+    second.syncTimeNs = 50u;
+    second.parallelVisibilityTimeNs = 60u;
+    second.queueFinalizationTimeNs = 70u;
+    second.hzbBuildTimeNs = 80u;
+    second.hzbHistoryPruneTouchedHandleCount = 2u;
+    second.hzbHistoryPruneRemovedHandleCount = 1u;
+    second.hzbHistoryPruneRemovedKeyCount = 4u;
+    second.hzbHistoryPruneTimeNs = 6u;
+    second.streamingCommitTimeNs = 90u;
+
+    stats.BeginFrame();
+    stats.RecordLargeSceneTelemetry(first);
+    stats.RecordLargeSceneTelemetry(second);
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.largeScene.registeredPrimitiveCount, 2000u);
+    EXPECT_EQ(frameInfo.largeScene.staticPrimitiveCount, 800u);
+    EXPECT_EQ(frameInfo.largeScene.dynamicPrimitiveCount, 200u);
+    EXPECT_EQ(frameInfo.largeScene.unclassifiedPrimitiveCount, 1000u);
+    EXPECT_EQ(frameInfo.largeScene.spatialCandidateCount, 150u);
+    EXPECT_EQ(frameInfo.largeScene.fullScanCandidateCount, 1500u);
+    EXPECT_EQ(frameInfo.largeScene.visiblePrimitiveCount, 90u);
+    EXPECT_EQ(frameInfo.largeScene.visibleMeshCount, 85u);
+    EXPECT_EQ(frameInfo.largeScene.culledByReason[2], 6u);
+    EXPECT_EQ(frameInfo.largeScene.culledByReason[4], 2u);
+    EXPECT_EQ(frameInfo.largeScene.lodSelectionCount[3], 9u);
+    EXPECT_EQ(frameInfo.largeScene.lodSelectionCount[5], 4u);
+    EXPECT_EQ(frameInfo.largeScene.activeHLODClusterCount, 12u);
+    EXPECT_EQ(frameInfo.largeScene.occlusionTestCount, 14u);
+    EXPECT_EQ(frameInfo.largeScene.occlusionCulledCount, 16u);
+    EXPECT_EQ(frameInfo.largeScene.streamingRequestCount, 18u);
+    EXPECT_EQ(frameInfo.largeScene.streamingCommitCount, 20u);
+    EXPECT_EQ(frameInfo.largeScene.streamingEvictCount, 22u);
+    EXPECT_EQ(frameInfo.largeScene.syncTouchedPrimitiveCount, 14u);
+    EXPECT_EQ(frameInfo.largeScene.syncFullSweepCount, 1u);
+    EXPECT_EQ(frameInfo.largeScene.boundsDirtyPrimitiveCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.primitiveSlotReuseCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.primitiveRecordsTouched, 160u);
+    EXPECT_EQ(frameInfo.largeScene.allocatedPrimitiveSlotCount, 2007u);
+    EXPECT_EQ(frameInfo.largeScene.tombstonedPrimitiveSlotCount, 7u);
+    EXPECT_EQ(frameInfo.largeScene.syncSweepTouchedSlotCount, 2007u);
+    EXPECT_EQ(frameInfo.largeScene.visibilityTestedPrimitiveCount, 170u);
+    EXPECT_EQ(frameInfo.largeScene.visibilityBitsetWordCount, 28u);
+    EXPECT_EQ(frameInfo.largeScene.finalizationTouchedPrimitiveCount, 90u);
+    EXPECT_EQ(frameInfo.largeScene.finalizationTouchedCommandCount, 101u);
+    EXPECT_EQ(frameInfo.largeScene.commandOffsetRebuildCount, 2u);
+    EXPECT_EQ(frameInfo.largeScene.rawVisibleDrawCount, 100u);
+    EXPECT_EQ(frameInfo.largeScene.submittedDrawCount, 50u);
+    EXPECT_EQ(frameInfo.largeScene.dynamicInstanceGroupCount, 13u);
+    EXPECT_EQ(frameInfo.largeScene.streamingDependencyCount, 17u);
+    EXPECT_EQ(frameInfo.largeScene.residencyTicketCount, second.residencyTicketCount);
+    EXPECT_EQ(frameInfo.largeScene.residentCpuBytes, second.residentCpuBytes);
+    EXPECT_EQ(frameInfo.largeScene.residentGpuBytes, second.residentGpuBytes);
+    EXPECT_EQ(frameInfo.largeScene.requestedCpuBytes, second.requestedCpuBytes);
+    EXPECT_EQ(frameInfo.largeScene.requestedGpuBytes, second.requestedGpuBytes);
+    EXPECT_EQ(frameInfo.largeScene.dynamicCandidateCount, 16u);
+    EXPECT_EQ(frameInfo.largeScene.dynamicRecordsTouched, 18u);
+    EXPECT_EQ(frameInfo.largeScene.staticIndexRefitCount, 20u);
+    EXPECT_EQ(frameInfo.largeScene.staticIndexRebuildCount, 22u);
+    EXPECT_EQ(frameInfo.largeScene.staticIndexLastGoodQueryCount, 24u);
+    EXPECT_EQ(frameInfo.largeScene.staticIndexDirtyOverlayCount, 26u);
+    EXPECT_EQ(frameInfo.largeScene.spatialRebuildFallbackCount, 28u);
+    EXPECT_EQ(frameInfo.largeScene.dynamicIndexUpdateCount, 30u);
+    EXPECT_EQ(frameInfo.largeScene.syncTimeNs, 350u);
+    EXPECT_EQ(frameInfo.largeScene.serialVisibilityTimeNs, 400u);
+    EXPECT_EQ(frameInfo.largeScene.parallelVisibilityTimeNs, 60u);
+    EXPECT_EQ(frameInfo.largeScene.queueFinalizationTimeNs, 570u);
+    EXPECT_EQ(frameInfo.largeScene.hzbBuildTimeNs, 680u);
+    EXPECT_EQ(frameInfo.largeScene.hzbHistoryPruneTouchedHandleCount, 9u);
+    EXPECT_EQ(frameInfo.largeScene.hzbHistoryPruneRemovedHandleCount, 4u);
+    EXPECT_EQ(frameInfo.largeScene.hzbHistoryPruneRemovedKeyCount, 9u);
+    EXPECT_EQ(frameInfo.largeScene.hzbHistoryPruneTimeNs, 46u);
+    EXPECT_EQ(frameInfo.largeScene.streamingCommitTimeNs, 790u);
+
+    stats.BeginFrame();
+    stats.EndFrame();
+
+    const auto& resetFrameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(resetFrameInfo.largeScene.registeredPrimitiveCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.spatialCandidateCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.fullScanCandidateCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.visiblePrimitiveCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.primitiveRecordsTouched, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.allocatedPrimitiveSlotCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.syncSweepTouchedSlotCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.boundsDirtyPrimitiveCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.rawVisibleDrawCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.residentCpuBytes, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.requestedGpuBytes, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.culledByReason[2], 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.lodSelectionCount[3], 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.streamingRequestCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.dynamicCandidateCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.syncTimeNs, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.hzbBuildTimeNs, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.hzbHistoryPruneTouchedHandleCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.hzbHistoryPruneRemovedKeyCount, 0u);
+}
+
+TEST(RendererStatsTests, RendererStatsSumsLargeScenePrimitiveCountsAcrossRenderScenes)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    NLS::Render::Data::LargeSceneTelemetry mainScene;
+    mainScene.registeredPrimitiveCount = 3u;
+    mainScene.staticPrimitiveCount = 2u;
+    mainScene.dynamicPrimitiveCount = 1u;
+    mainScene.unclassifiedPrimitiveCount = 0u;
+
+    NLS::Render::Data::LargeSceneTelemetry additiveScene;
+    additiveScene.registeredPrimitiveCount = 5u;
+    additiveScene.staticPrimitiveCount = 4u;
+    additiveScene.dynamicPrimitiveCount = 1u;
+    additiveScene.unclassifiedPrimitiveCount = 0u;
+
+    stats.BeginFrame();
+    stats.RecordLargeSceneTelemetry(mainScene);
+    stats.RecordLargeSceneTelemetry(additiveScene);
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.largeScene.registeredPrimitiveCount, 8u);
+    EXPECT_EQ(frameInfo.largeScene.staticPrimitiveCount, 6u);
+    EXPECT_EQ(frameInfo.largeScene.dynamicPrimitiveCount, 2u);
+    EXPECT_EQ(frameInfo.largeScene.unclassifiedPrimitiveCount, 0u);
+}
+
+TEST(RendererStatsTests, RendererStatsUsesLatestLargeSceneResidencyByteGauge)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    NLS::Render::Data::LargeSceneTelemetry lower;
+    lower.residentCpuBytes = 1024u;
+    lower.residentGpuBytes = 2048u;
+    lower.requestedCpuBytes = 4096u;
+    lower.requestedGpuBytes = 8192u;
+
+    NLS::Render::Data::LargeSceneTelemetry higher;
+    higher.residentCpuBytes = 2048u;
+    higher.residentGpuBytes = 4096u;
+    higher.requestedCpuBytes = 8192u;
+    higher.requestedGpuBytes = 16384u;
+
+    stats.BeginFrame();
+    stats.RecordLargeSceneTelemetry(lower);
+    stats.RecordLargeSceneTelemetry(higher);
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.largeScene.residentCpuBytes, higher.residentCpuBytes);
+    EXPECT_EQ(frameInfo.largeScene.residentGpuBytes, higher.residentGpuBytes);
+    EXPECT_EQ(frameInfo.largeScene.requestedCpuBytes, higher.requestedCpuBytes);
+    EXPECT_EQ(frameInfo.largeScene.requestedGpuBytes, higher.requestedGpuBytes);
+}

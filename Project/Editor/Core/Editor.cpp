@@ -40,6 +40,7 @@
 #include "Panels/ProjectSettings.h"
 #include "Panels/AssetProperties.h"
 #include "Panels/ProfilerPanel.h"
+#include "Engine/PrimitiveType.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Shortcuts/EditorShortcutBinding.h"
@@ -116,6 +117,40 @@ std::optional<ValidationSceneCameraTransform> ParseValidationSceneCamera(std::st
         return std::nullopt;
 
     return transform;
+}
+
+void CreateValidationOcclusionStack(
+    Editor::Core::EditorActions& editorActions,
+    const uint32_t count)
+{
+    if (count == 0u)
+        return;
+
+    constexpr float kStartDistance = 6.0f;
+    constexpr float kSpacing = 1.25f;
+    constexpr float kScale = 2.5f;
+    uint32_t createdCount = 0u;
+    for (uint32_t index = 0u; index < count; ++index)
+    {
+        auto* cube = editorActions.CreatePrimitive(NLS::Engine::PrimitiveType::Cube, false);
+        if (cube == nullptr || cube->GetTransform() == nullptr)
+            continue;
+
+        cube->SetName("Validation Occlusion Cube " + std::to_string(index));
+        cube->GetTransform()->SetWorldPosition({
+            0.0f,
+            0.0f,
+            -(kStartDistance + static_cast<float>(index) * kSpacing)
+        });
+        cube->GetTransform()->SetWorldScale({ kScale, kScale, kScale });
+        ++createdCount;
+    }
+
+    NLS_LOG_INFO(
+        "Editor validation created occlusion stack: requested=" +
+        std::to_string(count) +
+        " created=" +
+        std::to_string(createdCount));
 }
 
 void RenameFileReplacingDestination(const std::filesystem::path& source, const std::filesystem::path& destination)
@@ -837,6 +872,12 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
         frameInfo.Open();
         NLS_LOG_INFO("Editor validation opened Frame Info.");
     }
+
+    if (diagnostics.editorValidationDisableHZBOcclusion)
+        NLS_LOG_INFO("Editor validation requested HZB occlusion disable override.");
+
+    if (diagnostics.editorValidationOcclusionStackCount != 0u)
+        CreateValidationOcclusionStack(m_editorActions, diagnostics.editorValidationOcclusionStackCount);
 
     if (!diagnostics.editorValidationCreateAsset.empty())
     {

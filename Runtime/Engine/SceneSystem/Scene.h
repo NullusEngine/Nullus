@@ -151,6 +151,7 @@ namespace NLS::Engine::SceneSystem
 		* Return the fast access components data structure
 		*/
 		const FastAccessComponents& GetFastAccessComponents() const;
+		uint64_t GetFastAccessComponentsRevision() const;
 
 		void RebuildRuntimeCachesAfterLoad()
 		{
@@ -169,5 +170,7 @@ namespace NLS::Engine::SceneSystem
 		std::vector<GameObject*> m_gameobject;
 
 		FastAccessComponents m_fastAccessComponents;
+		bool m_fastAccessComponentsValid = false;
+		uint64_t m_fastAccessComponentsRevision = 0u;
 	};
 }

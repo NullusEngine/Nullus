@@ -81,6 +81,21 @@ NLS::Engine::Serialize::PropertyValue MakeObjectReference(
             localIdentifierInFile,
             std::move(filePath)));
 }
+
+const NLS::Engine::Serialize::PropertyValue* FindObjectField(
+    const NLS::Engine::Serialize::PropertyValue& value,
+    const char* name)
+{
+    if (value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Object)
+        return nullptr;
+
+    for (const auto& [fieldName, fieldValue] : value.GetObject())
+    {
+        if (fieldName == name)
+            return &fieldValue;
+    }
+    return nullptr;
+}
 }
 
 TEST(AssetPrefabPipelineTests, PrefabArtifactTracksBaseChainResolvedAssetsAndInstanceMap)
@@ -707,6 +722,172 @@ TEST(AssetPrefabPipelineTests, BuildsGeneratedModelPrefabHierarchyWithRendererAs
     EXPECT_TRUE(ContainsResolvedAsset(result.artifact.resolvedAssets, "Material", "material:converted-material/body"));
     EXPECT_EQ(FindResolvedAsset(result.artifact.resolvedAssets, "Model", "model:HeroScene"), nullptr);
     EXPECT_EQ(result.artifact.sourceToRuntimeObject.size(), result.artifact.graph.objects.size());
+}
+
+TEST(AssetPrefabPipelineTests, GeneratedModelPrefabExtractsImportedHierarchyHLODMetadata)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("12121212-3434-4567-8567-121212121212"));
+    scene.sceneKey = "CampusBlock";
+    scene.nodes.push_back({"node/cluster", "FacadeCluster", "", "", ""});
+    scene.nodes.push_back({"node/window-a", "WindowA", "node/cluster", "mesh/window-a", ""});
+    scene.nodes.push_back({"node/window-b", "WindowB", "node/cluster", "mesh/window-b", ""});
+
+    NLS::Render::Assets::ImportedScenePrimitive primitive;
+    primitive.materialKey = "material/opaque";
+
+    NLS::Render::Assets::ImportedSceneNamedRecord meshA;
+    meshA.sourceKey = "mesh/window-a";
+    meshA.name = "WindowA";
+    meshA.primitives.push_back(primitive);
+    scene.meshes.push_back(std::move(meshA));
+
+    NLS::Render::Assets::ImportedSceneNamedRecord meshB;
+    meshB.sourceKey = "mesh/window-b";
+    meshB.name = "WindowB";
+    meshB.primitives.push_back(std::move(primitive));
+    scene.meshes.push_back(std::move(meshB));
+    scene.materials.push_back({"material/opaque", "OpaqueMaterial"});
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = scene.sourceAssetId;
+    manifest.subAssets.push_back({
+        scene.sourceAssetId,
+        "mesh:mesh/window-a",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/Campus/window-a.nmesh",
+        "mesh-a-hash"
+    });
+    manifest.subAssets.push_back({
+        scene.sourceAssetId,
+        "mesh:mesh/window-b",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/Campus/window-b.nmesh",
+        "mesh-b-hash"
+    });
+    manifest.subAssets.push_back({
+        scene.sourceAssetId,
+        "material:material/opaque",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        "editor-windows",
+        "Library/Artifacts/Campus/opaque.nmat",
+        "material-hash"
+    });
+    manifest.subAssets.push_back({
+        scene.sourceAssetId,
+        std::string(NLS::Engine::Assets::GeneratedModelPrefabHLODSchema::ProxySubAssetKeyPrefix) +
+            "node/cluster",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/Campus/cluster-hlod-proxy.nmesh",
+        "proxy-hash"
+    });
+
+    const auto result = NLS::Engine::Assets::BuildGeneratedModelPrefab(
+        scene,
+        NLS::Render::Assets::GenerateSceneSubAssets(scene),
+        manifest);
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+
+    const auto* cluster = FindRecord(
+        result.artifact.graph,
+        "FacadeCluster",
+        "NLS::Engine::GameObject");
+    ASSERT_NE(cluster, nullptr);
+    using HLODSchema = NLS::Engine::Assets::GeneratedModelPrefabHLODSchema;
+
+    const auto* metadata = FindProperty(*cluster, HLODSchema::PropertyName);
+    ASSERT_NE(metadata, nullptr);
+    ASSERT_EQ(metadata->value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::Object);
+
+    const auto* source = FindObjectField(metadata->value, HLODSchema::SourceField);
+    ASSERT_NE(source, nullptr);
+    ASSERT_EQ(source->GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::String);
+    EXPECT_EQ(source->GetString(), HLODSchema::ImportedHierarchySource);
+
+    const auto* clusterKey = FindObjectField(metadata->value, HLODSchema::ClusterKeyField);
+    ASSERT_NE(clusterKey, nullptr);
+    ASSERT_EQ(clusterKey->GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::String);
+    EXPECT_EQ(clusterKey->GetString(), "node/cluster");
+
+    const auto* children = FindObjectField(metadata->value, HLODSchema::ChildrenField);
+    ASSERT_NE(children, nullptr);
+    ASSERT_EQ(children->GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::Array);
+    ASSERT_EQ(children->GetArray().size(), 2u);
+    EXPECT_EQ(children->GetArray()[0].GetString(), "node/window-a");
+    EXPECT_EQ(children->GetArray()[1].GetString(), "node/window-b");
+
+    const auto* proxyKey = FindObjectField(metadata->value, HLODSchema::ProxySubAssetKeyField);
+    ASSERT_NE(proxyKey, nullptr);
+    ASSERT_EQ(proxyKey->GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::String);
+    EXPECT_EQ(
+        proxyKey->GetString(),
+        std::string(HLODSchema::ProxySubAssetKeyPrefix) + "node/cluster");
+}
+
+TEST(AssetPrefabPipelineTests, GeneratedModelPrefabDoesNotInferHLODWithoutProxyArtifact)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("34343434-3434-4567-8567-343434343434"));
+    scene.sceneKey = "OrdinaryGroup";
+    scene.nodes.push_back({"node/group", "OrdinaryGroup", "", "", ""});
+    scene.nodes.push_back({"node/mesh-a", "MeshA", "node/group", "mesh/a", ""});
+    scene.nodes.push_back({"node/mesh-b", "MeshB", "node/group", "mesh/b", ""});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord meshA;
+    meshA.sourceKey = "mesh/a";
+    meshA.name = "MeshA";
+    scene.meshes.push_back(std::move(meshA));
+
+    NLS::Render::Assets::ImportedSceneNamedRecord meshB;
+    meshB.sourceKey = "mesh/b";
+    meshB.name = "MeshB";
+    scene.meshes.push_back(std::move(meshB));
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = scene.sourceAssetId;
+    manifest.subAssets.push_back({
+        scene.sourceAssetId,
+        "mesh:mesh/a",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/Ordinary/a.nmesh",
+        "mesh-a-hash"
+    });
+    manifest.subAssets.push_back({
+        scene.sourceAssetId,
+        "mesh:mesh/b",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/Ordinary/b.nmesh",
+        "mesh-b-hash"
+    });
+
+    const auto result = NLS::Engine::Assets::BuildGeneratedModelPrefab(
+        scene,
+        NLS::Render::Assets::GenerateSceneSubAssets(scene),
+        manifest);
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    const auto* group = FindRecord(
+        result.artifact.graph,
+        "OrdinaryGroup",
+        "NLS::Engine::GameObject");
+    ASSERT_NE(group, nullptr);
+    EXPECT_EQ(
+        FindProperty(*group, NLS::Engine::Assets::GeneratedModelPrefabHLODSchema::PropertyName),
+        nullptr);
 }
 
 TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationResolvesSubAssetHintsToArtifacts)

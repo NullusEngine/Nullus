@@ -50,6 +50,64 @@ namespace
         NLS::Render::RHI::RHIBufferDesc m_desc;
     };
 
+    class ContractTexture final : public NLS::Render::RHI::RHITexture
+    {
+    public:
+        explicit ContractTexture(NLS::Render::RHI::RHITextureDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override
+        {
+            return m_desc.debugName.empty() ? std::string_view("ContractTexture") : std::string_view(m_desc.debugName);
+        }
+
+        const NLS::Render::RHI::RHITextureDesc& GetDesc() const override
+        {
+            return m_desc;
+        }
+
+        NLS::Render::RHI::ResourceState GetState() const override
+        {
+            return NLS::Render::RHI::ResourceState::Unknown;
+        }
+
+    private:
+        NLS::Render::RHI::RHITextureDesc m_desc;
+    };
+
+    class ContractTextureView final : public NLS::Render::RHI::RHITextureView
+    {
+    public:
+        ContractTextureView(
+            std::shared_ptr<NLS::Render::RHI::RHITexture> texture,
+            NLS::Render::RHI::RHITextureViewDesc desc)
+            : m_texture(std::move(texture))
+            , m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override
+        {
+            return m_desc.debugName.empty() ? std::string_view("ContractTextureView") : std::string_view(m_desc.debugName);
+        }
+
+        const NLS::Render::RHI::RHITextureViewDesc& GetDesc() const override
+        {
+            return m_desc;
+        }
+
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetTexture() const override
+        {
+            return m_texture;
+        }
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
+        NLS::Render::RHI::RHITextureViewDesc m_desc;
+    };
+
     ShaderReflection BuildGridLikeReflection()
     {
         ShaderReflection reflection;
@@ -465,6 +523,50 @@ TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructCarriesStorageBufferEle
     ASSERT_EQ(bindingSetDesc.entries.size(), 1u);
     EXPECT_EQ(bindingSetDesc.entries[0].type, NLS::Render::RHI::BindingType::StorageBuffer);
     EXPECT_EQ(bindingSetDesc.entries[0].elementStride, sizeof(float) * 4u);
+}
+
+TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructBuildsRWTextureBindingSetEntries)
+{
+    using namespace NLS::Render::Resources;
+
+    const auto parameters = ShaderParameterStructBuilder("HZBBuildParameters")
+        .SetGroup(ShaderParameterGroupKind::Pass)
+        .AddTexture("u_OpaqueDepth", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .AddRWTexture("u_HZBMip0", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .Build();
+
+    const auto layoutDesc = BuildBindingLayoutDescFromShaderParameters(parameters);
+
+    ASSERT_EQ(layoutDesc.entries.size(), 2u);
+    EXPECT_EQ(layoutDesc.entries[0].type, NLS::Render::RHI::BindingType::Texture);
+    EXPECT_EQ(layoutDesc.entries[1].name, "u_HZBMip0");
+    EXPECT_EQ(layoutDesc.entries[1].type, NLS::Render::RHI::BindingType::RWTexture);
+    EXPECT_EQ(layoutDesc.entries[1].binding, 1u);
+
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.debugName = "HZBMip0";
+    textureDesc.format = NLS::Render::RHI::TextureFormat::R32F;
+    textureDesc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled |
+        NLS::Render::RHI::TextureUsageFlags::Storage;
+    auto texture = std::make_shared<ContractTexture>(textureDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc viewDesc;
+    viewDesc.debugName = "HZBMip0UAV";
+    viewDesc.format = textureDesc.format;
+    auto textureView = std::make_shared<ContractTextureView>(texture, viewDesc);
+
+    const auto bindingSetDesc = BuildBindingSetDescFromShaderParameters(
+        parameters,
+        nullptr,
+        {
+            ShaderParameterBindingValue::RWTexture("u_HZBMip0", textureView)
+        },
+        "HZBBuildBindingSet");
+
+    ASSERT_EQ(bindingSetDesc.entries.size(), 1u);
+    EXPECT_EQ(bindingSetDesc.entries[0].binding, 1u);
+    EXPECT_EQ(bindingSetDesc.entries[0].type, NLS::Render::RHI::BindingType::RWTexture);
+    EXPECT_EQ(bindingSetDesc.entries[0].textureView, textureView);
 }
 
 TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructsBuildDenseGraphicsPipelineLayouts)

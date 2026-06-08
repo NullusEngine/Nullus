@@ -27,6 +27,9 @@
 #include "Rendering/EngineFrameObjectBindingProvider.h"
 #include "Rendering/Entities/Camera.h"
 #include "Rendering/ForwardSceneRenderer.h"
+#include "Rendering/Geometry/Vertex.h"
+#include "Rendering/LargeSceneSettings.h"
+#include "Rendering/RenderScene.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -35,10 +38,12 @@
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Resources/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Components/LightComponent.h"
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "SceneSystem/Scene.h"
 
@@ -2500,6 +2505,107 @@ TEST(RendererFrameObjectBindingTests, EngineProviderUsesReflectionObjectDataShad
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     provider.EndFrame();
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, SpatialVisibilityPipelineDrawsKeepRendererAssignedObjectIndices)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 49u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    auto* shader = CreateReflectionOnlyObjectDataShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+    NLS::Render::Resources::Mesh mesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+        {{0.0f, 0.0f, 0.0f}, 1.0f});
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& object = scene.CreateGameObject("SpatialObjectIndexVisible");
+    auto* meshFilter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(&mesh);
+    meshRenderer->FillWithMaterial(material);
+    meshRenderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+    object.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &material;
+    ASSERT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 1u);
+
+    NLS::Render::Data::Frustum frustum;
+    const auto view = NLS::Maths::Matrix4::CreateView(
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, -1.0f,
+        0.0f, 1.0f, 0.0f);
+    const auto projection = NLS::Maths::Matrix4::CreatePerspective(90.0f, 1.0f, 0.1f, 100.0f);
+    frustum.CalculateFrustum(projection * view);
+
+    auto largeSceneSettings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    largeSceneSettings.enableSpatialIndex = true;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
+
+    const auto visibleQueues = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    ASSERT_EQ(visibleQueues.opaques.size(), 1u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+    ASSERT_TRUE(visibleQueues.opaques.front().second.TryGetDescriptor(descriptor));
+    EXPECT_EQ(descriptor.objectIndex, 0u);
+    EXPECT_EQ(descriptor.objectCount, 1u);
+
+    ProviderAwareRenderer renderer(driver);
+    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    provider.BeginFrame(frameDescriptor);
+
+    NLS::Render::Data::PipelineState pso;
+    ASSERT_TRUE(provider.PrepareDraw(pso, visibleQueues.opaques.front().second));
+    NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindings;
+    ASSERT_TRUE(provider.CapturePreparedBindingSets(pso, visibleQueues.opaques.front().second, bindings));
+    EXPECT_TRUE(bindings.usesObjectIndex);
+    EXPECT_EQ(bindings.objectIndex, 0u);
+    ASSERT_NE(bindings.objectBindingSet, nullptr);
+    ASSERT_EQ(bindings.objectBindingSet->GetDesc().entries.size(), 1u);
+    EXPECT_EQ(
+        bindings.objectBindingSet->GetDesc().entries[0].type,
+        NLS::Render::RHI::BindingType::StructuredBuffer);
+    ASSERT_NE(bindings.objectBindingSet->GetDesc().entries[0].buffer, nullptr);
+    EXPECT_EQ(bindings.objectBindingSet->GetDesc().entries[0].buffer->GetDebugName(), "EngineObjectDataBuffer");
+
+    provider.EndFrame();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 

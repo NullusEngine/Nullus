@@ -112,6 +112,38 @@ namespace NLS::Render::Resources
                 nullptr
             };
         }
+
+        static ShaderParameterBindingValue Texture(
+            std::string name,
+            std::shared_ptr<RHI::RHITextureView> textureView)
+        {
+            return {
+                std::move(name),
+                RHI::BindingType::Texture,
+                nullptr,
+                0u,
+                0u,
+                0u,
+                std::move(textureView),
+                nullptr
+            };
+        }
+
+        static ShaderParameterBindingValue RWTexture(
+            std::string name,
+            std::shared_ptr<RHI::RHITextureView> textureView)
+        {
+            return {
+                std::move(name),
+                RHI::BindingType::RWTexture,
+                nullptr,
+                0u,
+                0u,
+                0u,
+                std::move(textureView),
+                nullptr
+            };
+        }
     };
 
     class ShaderParameterStructBuilder
@@ -179,6 +211,14 @@ namespace NLS::Render::Resources
             const RHI::ShaderStageMask stageMask)
         {
             return AddMember(std::move(name), RHI::BindingType::Texture, binding, 0u, stageMask);
+        }
+
+        ShaderParameterStructBuilder& AddRWTexture(
+            std::string name,
+            const uint32_t binding,
+            const RHI::ShaderStageMask stageMask)
+        {
+            return AddMember(std::move(name), RHI::BindingType::RWTexture, binding, 0u, stageMask);
         }
 
         ShaderParameterStructBuilder& AddSampler(

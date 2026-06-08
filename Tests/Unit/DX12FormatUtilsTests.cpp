@@ -96,6 +96,43 @@ TEST(DX12FormatUtilsTests, MapsSrgbCapableFormatsToExpectedDxgiVariants)
     EXPECT_EQ(ToDX12ResourceFormat(TextureFormat::BC1, TextureColorSpace::SRGB), DXGI_FORMAT_BC1_UNORM_SRGB);
 }
 
+TEST(DX12FormatUtilsTests, MapsDepth32FToTypelessResourceAndSampleableSrvFormat)
+{
+    EXPECT_EQ(ToDXGIFormat(TextureFormat::Depth32F), DXGI_FORMAT_D32_FLOAT);
+    EXPECT_EQ(ToDX12ResourceFormat(TextureFormat::Depth32F), DXGI_FORMAT_R32_TYPELESS);
+    EXPECT_EQ(ToDX12OptimizedClearFormat(TextureFormat::Depth32F), DXGI_FORMAT_D32_FLOAT);
+
+    RHITextureDesc textureDesc{};
+    textureDesc.dimension = TextureDimension::Texture2D;
+    textureDesc.format = TextureFormat::Depth32F;
+    textureDesc.usage = static_cast<TextureUsageFlags>(
+        static_cast<uint32_t>(TextureUsageFlags::Sampled) |
+        static_cast<uint32_t>(TextureUsageFlags::DepthStencilAttachment));
+
+    RHITextureViewDesc viewDesc{};
+    viewDesc.viewType = TextureViewType::Texture2D;
+    viewDesc.format = TextureFormat::Depth32F;
+
+    const auto descriptors = BuildDX12TextureViewDescriptorSet(textureDesc, viewDesc);
+    ASSERT_TRUE(descriptors.hasSrv);
+    EXPECT_EQ(descriptors.srvDesc.Format, DXGI_FORMAT_R32_FLOAT);
+    ASSERT_TRUE(descriptors.hasDsv);
+    EXPECT_EQ(descriptors.dsvDesc.Format, DXGI_FORMAT_D32_FLOAT);
+}
+
+TEST(DX12FormatUtilsTests, Depth32FCapabilityUsesTypelessResourceAndSrvSupportForSampling)
+{
+    const auto capability = BuildDX12TextureFormatCapability(
+        TextureFormat::Depth32F,
+        D3D12_FORMAT_SUPPORT1_TEXTURE2D |
+            D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL,
+        D3D12_FORMAT_SUPPORT2_NONE,
+        false);
+
+    EXPECT_TRUE(capability.sampled);
+    EXPECT_FALSE(capability.storage);
+}
+
 TEST(DX12FormatUtilsTests, BuildsTextureViewDescriptorsUsingTextureColorSpace)
 {
     RHITextureDesc textureDesc{};

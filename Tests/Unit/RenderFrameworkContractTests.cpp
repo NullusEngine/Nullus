@@ -2859,6 +2859,60 @@ TEST(RenderFrameworkContractTests, StandaloneUiRenderDocCaptureBeginsBeforeComma
     EXPECT_LT(renderDocPreFrame, commandRecordingBegin);
 }
 
+TEST(RenderFrameworkContractTests, ThreadedRenderDocCaptureCanFinishAfterNonPresentSubmission)
+{
+    const std::filesystem::path coordinatorPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RhiThreadCoordinator.cpp";
+
+    std::ifstream stream(coordinatorPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    const auto executeSubmitPlan =
+        source.find("void Detail::ExecuteThreadedSubmitPlan");
+    const auto finalizeThreadedFrameContext =
+        source.find("FinalizeThreadedRhiFrameContext(", executeSubmitPlan);
+    ASSERT_NE(executeSubmitPlan, std::string::npos);
+    ASSERT_NE(finalizeThreadedFrameContext, std::string::npos);
+
+    const auto renderDocPostFrame =
+        source.find("renderDocCaptureController->OnPostFrame(", executeSubmitPlan);
+
+    ASSERT_NE(renderDocPostFrame, std::string::npos);
+    EXPECT_LT(renderDocPostFrame, finalizeThreadedFrameContext);
+}
+
+TEST(RenderFrameworkContractTests, StandaloneRenderDocCaptureCanFinishAfterNonPresentSubmission)
+{
+    const std::filesystem::path coordinatorPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RhiThreadCoordinator.cpp";
+
+    std::ifstream stream(coordinatorPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    const auto endStandaloneFrame =
+        source.find("void RhiThreadCoordinator::EndStandaloneExplicitFrame");
+    const auto rememberReadback =
+        source.find("RememberCompletedReadbackTexture", endStandaloneFrame);
+    ASSERT_NE(endStandaloneFrame, std::string::npos);
+    ASSERT_NE(rememberReadback, std::string::npos);
+
+    const auto renderDocPostFrame =
+        source.find("renderDocCaptureController->OnPostFrame(", endStandaloneFrame);
+    ASSERT_NE(renderDocPostFrame, std::string::npos);
+    EXPECT_LT(renderDocPostFrame, rememberReadback);
+
+    const auto outputMayBePresentedLater =
+        source.find("const bool outputMayBePresentedLater", endStandaloneFrame);
+    ASSERT_NE(outputMayBePresentedLater, std::string::npos);
+    EXPECT_LT(outputMayBePresentedLater, renderDocPostFrame);
+}
+
 TEST(RenderFrameworkContractTests, FrameGraphResourceLifetimeContractKeepsTransientResourcesUntilRetiredFrame)
 {
     NLS::Render::Context::Driver driver(MakeContractDriverSettings());

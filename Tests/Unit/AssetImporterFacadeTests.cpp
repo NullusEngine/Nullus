@@ -4,9 +4,11 @@
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/AssetImporterFacade.h"
 #include "Guid.h"
+#include "Rendering/LargeSceneSettings.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -630,6 +632,225 @@ TEST(AssetImporterFacadeTests, WriteImportSettingsIfDirtyPersistsDirtyImportSett
     EXPECT_EQ(loadedMeta->settings.find("NULLUS_IMPORTER_DIRTY"), loadedMeta->settings.end());
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, EditorImportBudgetSharesLargeSceneStreamingLimitsAndTracksReservations)
+{
+    using namespace NLS::Editor::Assets;
+
+    NLS::Engine::Rendering::LargeSceneSettings settings;
+    settings.streamingCpuBudgetUs = 100u;
+    settings.streamingIoBudgetBytes = 1000u;
+    settings.streamingGpuUploadBudgetBytes = 2000u;
+    settings.streamingCpuMemoryBudgetBytes = 3000u;
+    settings.streamingGpuMemoryBudgetBytes = 4000u;
+
+    AssetImporterFacade facade(std::vector<std::filesystem::path>{});
+    facade.SetEditorImportBudget(AssetImporterFacade::MakeEditorImportBudget(settings));
+
+    const auto admitted = facade.TryReserveEditorImportBudget({
+        "Assets/Models/LargeCity.gltf",
+        25u,
+        250u,
+        500u,
+        750u,
+        1000u
+    });
+    ASSERT_TRUE(admitted.admitted);
+    EXPECT_EQ(admitted.snapshot.remainingCpuBudgetUs, 75u);
+    EXPECT_EQ(admitted.snapshot.remainingIoBudgetBytes, 750u);
+    EXPECT_EQ(admitted.snapshot.remainingGpuUploadBudgetBytes, 1500u);
+    EXPECT_EQ(admitted.snapshot.remainingCpuMemoryBudgetBytes, 2250u);
+    EXPECT_EQ(admitted.snapshot.remainingGpuMemoryBudgetBytes, 3000u);
+
+    const auto rejected = facade.TryReserveEditorImportBudget({
+        "Assets/Models/TooMuch.gltf",
+        76u,
+        1u,
+        1u,
+        1u,
+        1u
+    });
+    EXPECT_FALSE(rejected.admitted);
+    EXPECT_EQ(rejected.reason, "cpu-budget-exhausted");
+    EXPECT_EQ(rejected.snapshot.remainingCpuBudgetUs, 75u);
+}
+
+TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportRejectsBackgroundImportWithoutQueueingWhenBudgetIsExhausted)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "BudgetedHero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+    ASSERT_TRUE(facade.SetSerializedSetting("Assets/Models/BudgetedHero.gltf", "globalScale", "2.0"));
+
+    EditorImportBudgetSnapshot budget;
+    budget.cpuBudgetUs = 10u;
+    budget.ioBudgetBytes = 10u;
+    budget.gpuUploadBudgetBytes = 10u;
+    budget.cpuMemoryBudgetBytes = 10u;
+    budget.gpuMemoryBudgetBytes = 10u;
+    facade.SetEditorImportBudget(budget);
+
+    EXPECT_FALSE(facade.SaveAndReimport(
+        "Assets/Models/BudgetedHero.gltf",
+        EditorImportBudgetRequest {
+            "Assets/Models/BudgetedHero.gltf",
+            11u,
+            1u,
+            1u,
+            1u,
+            1u
+        }));
+    EXPECT_EQ(facade.GetQueuedReimportCount(), 0u);
+
+    const auto importer = facade.GetAtPath("Assets/Models/BudgetedHero.gltf");
+    ASSERT_TRUE(importer.has_value());
+    EXPECT_TRUE(importer->dirty);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportReleasesReservationWhenImportDoesNotStart)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    AssetImporterFacade facade({root});
+
+    EditorImportBudgetSnapshot budget;
+    budget.cpuBudgetUs = 10u;
+    budget.ioBudgetBytes = 10u;
+    budget.gpuUploadBudgetBytes = 10u;
+    budget.cpuMemoryBudgetBytes = 10u;
+    budget.gpuMemoryBudgetBytes = 10u;
+    facade.SetEditorImportBudget(budget);
+
+    EXPECT_FALSE(facade.SaveAndReimport(
+        "Assets/Models/Missing.gltf",
+        EditorImportBudgetRequest {
+            "Assets/Models/Missing.gltf",
+            7u,
+            7u,
+            7u,
+            7u,
+            7u
+        }));
+
+    const auto snapshot = facade.GetEditorImportBudgetSnapshot();
+    EXPECT_EQ(snapshot.remainingCpuBudgetUs, 10u);
+    EXPECT_EQ(snapshot.remainingIoBudgetBytes, 10u);
+    EXPECT_EQ(snapshot.remainingGpuUploadBudgetBytes, 10u);
+    EXPECT_EQ(snapshot.remainingCpuMemoryBudgetBytes, 10u);
+    EXPECT_EQ(snapshot.remainingGpuMemoryBudgetBytes, 10u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportRejectsMismatchedBudgetRequestPath)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "Hero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+    ASSERT_TRUE(facade.SetSerializedSetting("Assets/Models/Hero.gltf", "globalScale", "4.0"));
+
+    EditorImportBudgetSnapshot budget;
+    budget.cpuBudgetUs = 10u;
+    budget.ioBudgetBytes = 10u;
+    budget.gpuUploadBudgetBytes = 10u;
+    budget.cpuMemoryBudgetBytes = 10u;
+    budget.gpuMemoryBudgetBytes = 10u;
+    facade.SetEditorImportBudget(budget);
+
+    EXPECT_FALSE(facade.SaveAndReimport(
+        "Assets/Models/Hero.gltf",
+        EditorImportBudgetRequest {
+            "Assets/Models/Other.gltf",
+            7u,
+            7u,
+            7u,
+            7u,
+            7u
+        }));
+
+    EXPECT_EQ(facade.GetQueuedReimportCount(), 0u);
+    const auto snapshot = facade.GetEditorImportBudgetSnapshot();
+    EXPECT_EQ(snapshot.remainingCpuBudgetUs, 10u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, EditorImportBudgetAdmissionsAreThreadSafeAndDoNotOversubscribe)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetImporterFacade facade(std::vector<std::filesystem::path>{});
+    EditorImportBudgetSnapshot budget;
+    budget.cpuBudgetUs = 25u;
+    budget.ioBudgetBytes = 25u;
+    budget.gpuUploadBudgetBytes = 25u;
+    budget.cpuMemoryBudgetBytes = 25u;
+    budget.gpuMemoryBudgetBytes = 25u;
+    facade.SetEditorImportBudget(budget);
+
+    constexpr int threadCount = 8;
+    constexpr int attemptsPerThread = 10;
+    std::atomic<int> readyCount = 0;
+    std::atomic<bool> start = false;
+    std::atomic<int> admittedCount = 0;
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount);
+
+    for (int threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+    {
+        workers.emplace_back(
+            [&]()
+            {
+                ++readyCount;
+                while (!start.load())
+                {
+                    std::this_thread::yield();
+                }
+
+                for (int attempt = 0; attempt < attemptsPerThread; ++attempt)
+                {
+                    const auto admission = facade.TryReserveEditorImportBudget({
+                        "Assets/Models/Concurrent.gltf",
+                        1u,
+                        1u,
+                        1u,
+                        1u,
+                        1u
+                    });
+                    if (admission.admitted)
+                        ++admittedCount;
+                }
+            });
+    }
+
+    while (readyCount.load() != threadCount)
+    {
+        std::this_thread::yield();
+    }
+    start = true;
+
+    for (auto& worker : workers)
+        worker.join();
+
+    EXPECT_EQ(admittedCount.load(), 25);
+    const auto snapshot = facade.GetEditorImportBudgetSnapshot();
+    EXPECT_EQ(snapshot.remainingCpuBudgetUs, 0u);
+    EXPECT_EQ(snapshot.remainingIoBudgetBytes, 0u);
+    EXPECT_EQ(snapshot.remainingGpuUploadBudgetBytes, 0u);
+    EXPECT_EQ(snapshot.remainingCpuMemoryBudgetBytes, 0u);
+    EXPECT_EQ(snapshot.remainingGpuMemoryBudgetBytes, 0u);
 }
 
 TEST(AssetImporterFacadeTests, AssetPostprocessorsRunInOrderDeclareDependenciesAndVersion)

@@ -139,6 +139,10 @@ private:
             settings.editorValidationExclusiveView = m_diagnosticsOverride->editorValidationExclusiveView;
         if (m_diagnosticsOverride->editorValidationOpenFrameInfo)
             settings.editorValidationOpenFrameInfo = true;
+        if (m_diagnosticsOverride->editorValidationDisableHZBOcclusion)
+            settings.editorValidationDisableHZBOcclusion = true;
+        if (m_diagnosticsOverride->editorValidationOcclusionStackCount != 0u)
+            settings.editorValidationOcclusionStackCount = m_diagnosticsOverride->editorValidationOcclusionStackCount;
         if (!m_diagnosticsOverride->editorValidationSelectGameObject.empty())
             settings.editorValidationSelectGameObject = m_diagnosticsOverride->editorValidationSelectGameObject;
         if (!m_diagnosticsOverride->editorValidationCreateAsset.empty())

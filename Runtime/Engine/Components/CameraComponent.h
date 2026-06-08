@@ -3,6 +3,7 @@
 
 #include "Components/Component.h"
 #include "EngineDef.h"
+#include "Engine/LayerMask.h"
 #include "Math/Vector3.h"
 #include "Reflection/Macros.h"
 #include "Rendering/Settings/EProjectionMode.h"
@@ -90,6 +91,13 @@ namespace NLS::Engine::Components
         void SetProjectionMode(NLS::Render::Settings::EProjectionMode p_projectionMode);
 
 		/**
+		* Defines which object layers this camera should render.
+		* @param p_visibleLayers
+		*/
+		FUNCTION()
+		void SetVisibleLayers(NLS::Engine::LayerMask p_visibleLayers);
+
+		/**
 		* Returns the fov of the camera
 		*/
         FUNCTION()
@@ -138,6 +146,12 @@ namespace NLS::Engine::Components
         NLS::Render::Settings::EProjectionMode GetProjectionMode() const;
 
 		/**
+		* Returns which object layers this camera renders.
+		*/
+		FUNCTION()
+		NLS::Engine::LayerMask GetVisibleLayers() const;
+
+		/**
 		* Returns the Rendering camera instance attached to this component
 		*/
         FUNCTION()
@@ -145,6 +159,6 @@ namespace NLS::Engine::Components
 
 
 	private:
-		Render::Entities::Camera* m_camera;
+		Render::Entities::Camera* m_camera = nullptr;
 	};
 }

@@ -16,6 +16,7 @@
 #include "Rendering/Context/DriverInternal.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/FrameDescriptor.h"
+#include "Rendering/Data/SceneOcclusionPacketLayout.h"
 #include "Rendering/FrameGraph/FrameGraphBuffer.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
@@ -149,6 +150,21 @@ namespace
         NLS::Render::RHI::RHIBindingSetDesc m_desc {};
     };
 
+    class TestComputePipeline final : public NLS::Render::RHI::RHIComputePipeline
+    {
+    public:
+        explicit TestComputePipeline(std::string debugName)
+        {
+            m_desc.debugName = std::move(debugName);
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIComputePipelineDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIComputePipelineDesc m_desc {};
+    };
+
     class TestTextureView final : public NLS::Render::RHI::RHITextureView
     {
     public:
@@ -228,14 +244,24 @@ namespace
         void SetViewport(const NLS::Render::RHI::RHIViewport&) override {}
         void SetScissor(const NLS::Render::RHI::RHIRect2D&) override {}
         void BindGraphicsPipeline(const std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>&) override {}
-        void BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>&) override {}
+        void BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>& pipeline) override
+        {
+            ++bindComputePipelineCalls;
+            boundComputePipeline = pipeline;
+            commandEvents.push_back("bind-compute");
+        }
         void BindBindingSet(uint32_t, const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>&) override {}
         void PushConstants(NLS::Render::RHI::ShaderStageMask, uint32_t, uint32_t, const void*) override {}
         void BindVertexBuffer(uint32_t, const NLS::Render::RHI::RHIVertexBufferView&) override {}
         void BindIndexBuffer(const NLS::Render::RHI::RHIIndexBufferView&) override {}
         void Draw(uint32_t, uint32_t, uint32_t, uint32_t) override {}
         void DrawIndexed(uint32_t, uint32_t, uint32_t, int32_t, uint32_t) override {}
-        void Dispatch(uint32_t, uint32_t, uint32_t) override {}
+        void Dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) override
+        {
+            ++dispatchCalls;
+            lastDispatchGroupCounts = { groupCountX, groupCountY, groupCountZ };
+            commandEvents.push_back("dispatch");
+        }
         void CopyBuffer(
             const std::shared_ptr<NLS::Render::RHI::RHIBuffer>&,
             const std::shared_ptr<NLS::Render::RHI::RHIBuffer>&,
@@ -256,6 +282,7 @@ namespace
         {
             ++barrierCalls;
             barrierHistory.push_back(desc);
+            commandEvents.push_back("barrier");
         }
         NLS::Render::RHI::RHICommandRecordingResult BarrierChecked(
             const NLS::Render::RHI::RHIBarrierDesc& desc) override
@@ -277,10 +304,15 @@ namespace
         size_t barrierCheckedCalls = 0u;
         size_t beginRenderPassCalls = 0u;
         size_t endRenderPassCalls = 0u;
+        size_t bindComputePipelineCalls = 0u;
+        size_t dispatchCalls = 0u;
         bool dropLastTextureBarrier = false;
         bool failBarrierChecked = false;
         mutable NLS::Render::RHI::RHIBarrierDesc lastFilteredBarrierDesc;
         NLS::Render::RHI::RHIRenderPassDesc lastRenderPassDesc {};
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> boundComputePipeline;
+        std::array<uint32_t, 3u> lastDispatchGroupCounts {};
+        std::vector<std::string> commandEvents;
         std::vector<NLS::Render::RHI::RHIBarrierDesc> barrierHistory;
     };
 
@@ -1134,6 +1166,98 @@ TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphImportsGBufferResourcesAndCo
     EXPECT_STREQ(graphPasses[0].metadata.graphPassName, "DeferredGBuffer");
     EXPECT_STREQ(graphPasses[1].metadata.graphPassName, "DeferredLighting");
     EXPECT_TRUE(preparedGraph.execution.compiledExecution.threadedPlan.passes.empty());
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphInsertsHZBAfterGBufferBeforeLighting)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments(3u);
+    attachments[0].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[1].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[2].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    NLS::Render::Buffers::MultiFramebuffer gBuffer(320u, 180u, attachments, true);
+
+    auto albedoTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[0],
+        320u,
+        180u);
+    auto normalTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[1],
+        320u,
+        180u);
+    auto materialTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[2],
+        320u,
+        180u);
+    auto depthTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitDepthTextureHandle(),
+        320u,
+        180u);
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest preparedResources;
+    preparedResources.gBuffer = &gBuffer;
+    preparedResources.gbufferAlbedoTexture = albedoTexture.get();
+    preparedResources.gbufferNormalTexture = normalTexture.get();
+    preparedResources.gbufferMaterialTexture = materialTexture.get();
+    preparedResources.gbufferDepthTexture = depthTexture.get();
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputBuffer = &outputBuffer;
+
+    FrameGraph frameGraph;
+    FrameGraphBlackboard blackboard;
+    auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+        frameGraph,
+        blackboard,
+        frameDescriptor,
+        preparedResources);
+
+    auto hzbDesc = MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage);
+    hzbDesc.mipLevels = 2u;
+    auto hzbTexture = std::make_shared<TestTexture>(hzbDesc);
+
+    resourceRequest.hzbResources.opaqueDepthTexture = gBuffer.GetExplicitDepthTextureHandle();
+    resourceRequest.hzbResources.hzbTexture = hzbTexture;
+    resourceRequest.hzbResources.opaqueDepthEligible = true;
+    resourceRequest.hzbResources.hzbMipCount = 2u;
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+
+    const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+        resourceRequest,
+        lightGridContext);
+
+    const auto& graphPasses = preparedGraph.execution.compiledExecution.graphPasses;
+    ASSERT_EQ(graphPasses.size(), 4u);
+    EXPECT_EQ(graphPasses[0].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::GBuffer);
+    EXPECT_EQ(graphPasses[1].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Compute);
+    EXPECT_EQ(graphPasses[2].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Compute);
+    EXPECT_EQ(graphPasses[3].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Lighting);
+    EXPECT_STREQ(graphPasses[0].metadata.graphPassName, "DeferredGBuffer");
+    EXPECT_STREQ(graphPasses[1].metadata.graphPassName, "HZBBuild");
+    EXPECT_STREQ(graphPasses[2].metadata.graphPassName, "HZBOcclusion");
+    EXPECT_STREQ(graphPasses[3].metadata.graphPassName, "DeferredLighting");
+    EXPECT_EQ(
+        graphPasses[3].metadata.queueDependencyPolicy,
+        NLS::Render::Context::QueueDependencyPolicy::LastCompute);
 }
 
 TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphUsesGBufferSlotColorViewNames)
@@ -3164,6 +3288,501 @@ TEST(FrameGraphSceneTargetsTests, PreparedComputeLifecycleBufferAccessesDoNotTri
         NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::ConflictingBufferResourceAccess));
 }
 
+TEST(FrameGraphSceneTargetsTests, HZBPreparedComputeDeclaresOpaqueDepthReadAndMip0WriteUntilMipChainLands)
+{
+    auto opaqueDepthTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "QualifiedOpaqueDepth",
+        NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+            NLS::Render::RHI::TextureUsageFlags::Sampled));
+    auto hzbTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage));
+    const_cast<NLS::Render::RHI::RHITextureDesc&>(hzbTexture->GetDesc()).mipLevels = 4u;
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest request;
+    request.opaqueDepthTexture = opaqueDepthTexture;
+    request.hzbTexture = hzbTexture;
+    request.opaqueDepthEligible = true;
+    request.hzbMipCount = 4u;
+
+    const auto preparedSource = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request);
+
+    ASSERT_EQ(preparedSource.dispatchInputs.size(), 2u);
+    const auto& buildHZB = preparedSource.dispatchInputs[0];
+    EXPECT_EQ(buildHZB.debugName, "HZBBuild");
+    ASSERT_EQ(buildHZB.textureResourceAccesses.size(), 2u);
+    EXPECT_EQ(buildHZB.textureResourceAccesses[0].texture, opaqueDepthTexture);
+    EXPECT_EQ(buildHZB.textureResourceAccesses[0].mode, NLS::Render::Context::ResourceAccessMode::Read);
+    EXPECT_EQ(buildHZB.textureResourceAccesses[0].state, NLS::Render::RHI::ResourceState::ShaderRead);
+
+    const auto& hzbMip0Write = buildHZB.textureResourceAccesses[1u];
+    EXPECT_EQ(hzbMip0Write.texture, hzbTexture);
+    EXPECT_EQ(hzbMip0Write.mode, NLS::Render::Context::ResourceAccessMode::Write);
+    EXPECT_EQ(hzbMip0Write.state, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(hzbMip0Write.subresourceRange.baseMipLevel, 0u);
+    EXPECT_EQ(hzbMip0Write.subresourceRange.mipLevelCount, 1u);
+
+    const auto& occlusion = preparedSource.dispatchInputs[1];
+    EXPECT_EQ(occlusion.debugName, "HZBOcclusion");
+    ASSERT_EQ(occlusion.textureResourceAccesses.size(), 1u);
+    EXPECT_EQ(occlusion.textureResourceAccesses[0].texture, hzbTexture);
+    EXPECT_EQ(occlusion.textureResourceAccesses[0].mode, NLS::Render::Context::ResourceAccessMode::Read);
+    EXPECT_EQ(occlusion.textureResourceAccesses[0].subresourceRange.baseMipLevel, 0u);
+    EXPECT_EQ(occlusion.textureResourceAccesses[0].subresourceRange.mipLevelCount, 1u);
+}
+
+TEST(FrameGraphSceneTargetsTests, HZBPreparedComputeDeclaresPrimitiveOcclusionBuffers)
+{
+    auto opaqueDepthTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "QualifiedOpaqueDepth",
+        NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+            NLS::Render::RHI::TextureUsageFlags::Sampled));
+    auto hzbTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage));
+
+    NLS::Render::RHI::RHIBufferDesc inputDesc;
+    inputDesc.debugName = "OcclusionPrimitiveInputs";
+    inputDesc.size = 4u * sizeof(float) * 4u;
+    inputDesc.usage = NLS::Render::RHI::BufferUsageFlags::ShaderRead;
+    auto primitiveInputBuffer = std::make_shared<TestBuffer>(inputDesc);
+
+    NLS::Render::RHI::RHIBufferDesc resultDesc;
+    resultDesc.debugName = "OcclusionPrimitiveResults";
+    resultDesc.size = 4u * sizeof(uint32_t);
+    resultDesc.usage = NLS::Render::RHI::BufferUsageFlags::Storage |
+        NLS::Render::RHI::BufferUsageFlags::CopySrc;
+    auto primitiveResultBuffer = std::make_shared<TestBuffer>(resultDesc);
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest request;
+    request.opaqueDepthTexture = opaqueDepthTexture;
+    request.hzbTexture = hzbTexture;
+    request.occlusionPrimitiveInputBuffer = primitiveInputBuffer;
+    request.occlusionPrimitiveResultBuffer = primitiveResultBuffer;
+    request.opaqueDepthEligible = true;
+    request.hzbMipCount = 1u;
+
+    const auto preparedSource = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request);
+
+    ASSERT_EQ(preparedSource.dispatchInputs.size(), 2u);
+    const auto& occlusion = preparedSource.dispatchInputs[1];
+    ASSERT_EQ(occlusion.bufferResourceAccesses.size(), 2u);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[0].buffer, primitiveInputBuffer);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[0].mode, NLS::Render::Context::ResourceAccessMode::Read);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[0].state, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[1].buffer, primitiveResultBuffer);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[1].mode, NLS::Render::Context::ResourceAccessMode::Write);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[1].state, NLS::Render::RHI::ResourceState::ShaderWrite);
+    ASSERT_EQ(occlusion.shaderReadBuffersBefore.size(), 1u);
+    EXPECT_EQ(occlusion.shaderReadBuffersBefore[0], primitiveInputBuffer);
+    ASSERT_EQ(occlusion.shaderWriteBuffersBefore.size(), 1u);
+    EXPECT_EQ(occlusion.shaderWriteBuffersBefore[0], primitiveResultBuffer);
+    ASSERT_EQ(occlusion.uavBarrierBuffersAfter.size(), 1u);
+    EXPECT_EQ(occlusion.uavBarrierBuffersAfter[0], primitiveResultBuffer);
+}
+
+TEST(FrameGraphSceneTargetsTests, HZBPreparedComputeCarriesExecutableDispatchInputs)
+{
+    auto opaqueDepthTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "QualifiedOpaqueDepth",
+        NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+            NLS::Render::RHI::TextureUsageFlags::Sampled));
+    auto hzbTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage));
+    auto buildPipeline = std::make_shared<TestComputePipeline>("HZBBuildPipeline");
+    auto occlusionPipeline = std::make_shared<TestComputePipeline>("HZBOcclusionPipeline");
+    auto buildBindingSet = std::make_shared<TestBindingSet>("HZBBuildBindingSet");
+    auto occlusionBindingSet = std::make_shared<TestBindingSet>("HZBOcclusionBindingSet");
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest request;
+    request.opaqueDepthTexture = opaqueDepthTexture;
+    request.hzbTexture = hzbTexture;
+    request.opaqueDepthEligible = true;
+    request.hzbMipCount = 1u;
+    request.hzbBuildPipeline = buildPipeline;
+    request.hzbBuildBindingSet = buildBindingSet;
+    request.hzbBuildGroupCounts = { 40u, 23u, 1u };
+    request.occlusionPipeline = occlusionPipeline;
+    request.occlusionBindingSet = occlusionBindingSet;
+    request.occlusionGroupCounts = { 16u, 1u, 1u };
+
+    const auto preparedSource = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request);
+
+    ASSERT_EQ(preparedSource.dispatchInputs.size(), 2u);
+    const auto& buildHZB = preparedSource.dispatchInputs[0];
+    EXPECT_EQ(buildHZB.pipeline, buildPipeline);
+    ASSERT_EQ(buildHZB.bindingSets.size(), 1u);
+    EXPECT_EQ(buildHZB.bindingSets[0].bindingSet, buildBindingSet);
+    EXPECT_EQ(buildHZB.groupCountX, 40u);
+    EXPECT_EQ(buildHZB.groupCountY, 23u);
+    EXPECT_EQ(buildHZB.groupCountZ, 1u);
+
+    const auto& occlusion = preparedSource.dispatchInputs[1];
+    EXPECT_EQ(occlusion.pipeline, occlusionPipeline);
+    ASSERT_EQ(occlusion.bindingSets.size(), 1u);
+    EXPECT_EQ(occlusion.bindingSets[0].bindingSet, occlusionBindingSet);
+    EXPECT_EQ(occlusion.groupCountX, 16u);
+    EXPECT_EQ(occlusion.groupCountY, 1u);
+    EXPECT_EQ(occlusion.groupCountZ, 1u);
+}
+
+TEST(FrameGraphSceneTargetsTests, HZBPreparedComputeRequiresEligibleOpaqueDepthAndCompleteTextures)
+{
+    auto opaqueDepthTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "QualifiedOpaqueDepth",
+        NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+            NLS::Render::RHI::TextureUsageFlags::Sampled));
+    auto hzbTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage));
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest request;
+    request.opaqueDepthTexture = opaqueDepthTexture;
+    request.hzbTexture = hzbTexture;
+    request.hzbMipCount = 1u;
+
+    request.opaqueDepthEligible = false;
+    EXPECT_TRUE(NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request).dispatchInputs.empty());
+
+    request.opaqueDepthEligible = true;
+    request.opaqueDepthTexture.reset();
+    EXPECT_TRUE(NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request).dispatchInputs.empty());
+
+    request.opaqueDepthTexture = opaqueDepthTexture;
+    request.hzbTexture.reset();
+    EXPECT_TRUE(NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request).dispatchInputs.empty());
+}
+
+TEST(FrameGraphSceneTargetsTests, HZBOcclusionConsumesBuildExportedHZBStateWithoutDuplicatePreTransition)
+{
+    auto opaqueDepthTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "QualifiedOpaqueDepth",
+        NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+            NLS::Render::RHI::TextureUsageFlags::Sampled));
+    auto hzbDesc = MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage);
+    hzbDesc.mipLevels = 2u;
+    auto hzbTexture = std::make_shared<TestTexture>(hzbDesc);
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest request;
+    request.opaqueDepthTexture = opaqueDepthTexture;
+    request.hzbTexture = hzbTexture;
+    request.opaqueDepthEligible = true;
+    request.hzbMipCount = 2u;
+
+    const auto preparedSource = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request);
+    ASSERT_EQ(preparedSource.dispatchInputs.size(), 2u);
+
+    const auto& buildHZB = preparedSource.dispatchInputs[0];
+    ASSERT_EQ(buildHZB.exportedTextureVisibilityTransitions.size(), 1u);
+    for (const auto& transition : buildHZB.exportedTextureVisibilityTransitions)
+    {
+        EXPECT_EQ(transition.texture, hzbTexture);
+        EXPECT_EQ(transition.subresourceRange.baseMipLevel, 0u);
+        EXPECT_EQ(transition.subresourceRange.mipLevelCount, 1u);
+        EXPECT_EQ(transition.before, NLS::Render::RHI::ResourceState::ShaderWrite);
+        EXPECT_EQ(transition.after, NLS::Render::RHI::ResourceState::ShaderRead);
+    }
+
+    const auto& occlusion = preparedSource.dispatchInputs[1];
+    EXPECT_TRUE(occlusion.textureVisibilityTransitionsBefore.empty());
+
+    const auto duplicateHZBTransition = std::find_if(
+        occlusion.textureVisibilityTransitionsBefore.begin(),
+        occlusion.textureVisibilityTransitionsBefore.end(),
+        [&hzbTexture](const NLS::Render::Context::TextureVisibilityTransition& transition)
+        {
+            return transition.texture == hzbTexture &&
+                transition.before == NLS::Render::RHI::ResourceState::ShaderWrite &&
+                transition.after == NLS::Render::RHI::ResourceState::ShaderRead;
+        });
+    EXPECT_EQ(duplicateHZBTransition, occlusion.textureVisibilityTransitionsBefore.end());
+}
+
+TEST(FrameGraphSceneTargetsTests, PreparedComputeThreadedPassInputCarriesTextureAccessesAndTransitions)
+{
+    auto hzbTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage));
+    NLS::Render::RHI::RHISubresourceRange mipRange;
+    mipRange.baseMipLevel = 1u;
+    mipRange.mipLevelCount = 1u;
+    mipRange.baseArrayLayer = 0u;
+    mipRange.arrayLayerCount = 1u;
+
+    NLS::Render::Context::RecordedComputeDispatchInput dispatchInput;
+    dispatchInput.debugName = "HZBBuild";
+    dispatchInput.textureResourceAccesses.push_back({
+        hzbTexture,
+        mipRange,
+        NLS::Render::Context::ResourceAccessMode::Write,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+    dispatchInput.textureVisibilityTransitionsBefore.push_back({
+        hzbTexture,
+        mipRange,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::AllCommands,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+    dispatchInput.exportedTextureVisibilityTransitions.push_back({
+        hzbTexture,
+        mipRange,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+
+    const auto preparedSource = NLS::Render::FrameGraph::BuildPreparedComputeDispatchSource({ dispatchInput });
+    NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass compiledPass;
+    compiledPass.metadata = preparedSource.metadata.front();
+
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    ASSERT_TRUE(NLS::Render::FrameGraph::TryBuildPreparedComputeDispatchThreadedPassInput(
+        preparedSource,
+        compiledPass,
+        passInput));
+
+    ASSERT_EQ(passInput.textureResourceAccesses.size(), 1u);
+    EXPECT_EQ(passInput.textureResourceAccesses[0].texture, hzbTexture);
+    ASSERT_EQ(passInput.textureVisibilityTransitions.size(), 1u);
+    EXPECT_EQ(passInput.textureVisibilityTransitions[0].texture, hzbTexture);
+    ASSERT_EQ(passInput.exportedTextureVisibilityTransitions.size(), 1u);
+    EXPECT_EQ(passInput.exportedTextureVisibilityTransitions[0].texture, hzbTexture);
+}
+
+TEST(FrameGraphSceneTargetsTests, PreparedComputeThreadedPassInputCarriesPrimitiveOcclusionBufferAccesses)
+{
+    NLS::Render::RHI::RHIBufferDesc inputDesc;
+    inputDesc.debugName = "SceneHZBOcclusionPrimitiveInputs";
+    inputDesc.size = NLS::Render::Data::kSceneOcclusionPrimitivePacketStride;
+    inputDesc.usage = NLS::Render::RHI::BufferUsageFlags::ShaderRead;
+    auto primitiveInputBuffer = std::make_shared<TestBuffer>(inputDesc);
+
+    NLS::Render::RHI::RHIBufferDesc resultDesc;
+    resultDesc.debugName = "SceneHZBOcclusionPrimitiveResults";
+    resultDesc.size = sizeof(uint32_t);
+    resultDesc.usage = NLS::Render::RHI::BufferUsageFlags::Storage;
+    auto primitiveResultBuffer = std::make_shared<TestBuffer>(resultDesc);
+
+    NLS::Render::Context::RecordedComputeDispatchInput dispatchInput;
+    dispatchInput.debugName = "HZBOcclusion";
+    dispatchInput.bufferResourceAccesses.push_back({
+        primitiveInputBuffer,
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    dispatchInput.bufferResourceAccesses.push_back({
+        primitiveResultBuffer,
+        NLS::Render::Context::ResourceAccessMode::Write,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+
+    const auto preparedSource = NLS::Render::FrameGraph::BuildPreparedComputeDispatchSource({ dispatchInput });
+    NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass compiledPass;
+    compiledPass.metadata = preparedSource.metadata.front();
+
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    ASSERT_TRUE(NLS::Render::FrameGraph::TryBuildPreparedComputeDispatchThreadedPassInput(
+        preparedSource,
+        compiledPass,
+        passInput));
+
+    ASSERT_EQ(passInput.bufferResourceAccesses.size(), 2u);
+    EXPECT_EQ(passInput.bufferResourceAccesses[0].buffer, primitiveInputBuffer);
+    EXPECT_EQ(passInput.bufferResourceAccesses[0].mode, NLS::Render::Context::ResourceAccessMode::Read);
+    EXPECT_EQ(passInput.bufferResourceAccesses[0].state, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(passInput.bufferResourceAccesses[0].stages, NLS::Render::RHI::PipelineStageMask::ComputeShader);
+    EXPECT_EQ(passInput.bufferResourceAccesses[0].access, NLS::Render::RHI::AccessMask::ShaderRead);
+    EXPECT_EQ(passInput.bufferResourceAccesses[1].buffer, primitiveResultBuffer);
+    EXPECT_EQ(passInput.bufferResourceAccesses[1].mode, NLS::Render::Context::ResourceAccessMode::Write);
+    EXPECT_EQ(passInput.bufferResourceAccesses[1].state, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(passInput.bufferResourceAccesses[1].stages, NLS::Render::RHI::PipelineStageMask::ComputeShader);
+    EXPECT_EQ(passInput.bufferResourceAccesses[1].access, NLS::Render::RHI::AccessMask::ShaderWrite);
+}
+
+TEST(FrameGraphSceneTargetsTests, PreparedComputeDirectRecordingOrdersTextureBarriersAroundDispatch)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 17u;
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        explicitDevice.get(),
+        frameContext.commandBuffer.get(),
+        &frameContext
+    };
+
+    auto texture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "PreparedComputeTexture",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage));
+    auto pipeline = std::make_shared<TestComputePipeline>("PreparedComputePipeline");
+
+    NLS::Render::RHI::RHISubresourceRange range;
+    range.baseMipLevel = 0u;
+    range.mipLevelCount = 1u;
+    range.baseArrayLayer = 0u;
+    range.arrayLayerCount = 1u;
+
+    NLS::Render::Context::RecordedComputeDispatchInput dispatchInput;
+    dispatchInput.pipeline = pipeline;
+    dispatchInput.groupCountX = 3u;
+    dispatchInput.groupCountY = 2u;
+    dispatchInput.groupCountZ = 1u;
+    dispatchInput.textureVisibilityTransitionsBefore.push_back({
+        texture,
+        range,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::AllCommands,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+    dispatchInput.exportedTextureVisibilityTransitions.push_back({
+        texture,
+        range,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+
+    NLS::Render::FrameGraph::RecordPreparedComputeDispatch(executionContext, dispatchInput);
+
+    EXPECT_EQ(commandBuffer->commandEvents, std::vector<std::string>({ "barrier", "bind-compute", "dispatch", "barrier" }));
+    ASSERT_EQ(commandBuffer->barrierHistory.size(), 2u);
+    ASSERT_EQ(commandBuffer->barrierHistory[0].textureBarriers.size(), 1u);
+    EXPECT_EQ(commandBuffer->barrierHistory[0].textureBarriers[0].before, NLS::Render::RHI::ResourceState::Unknown);
+    EXPECT_EQ(commandBuffer->barrierHistory[0].textureBarriers[0].after, NLS::Render::RHI::ResourceState::ShaderWrite);
+    ASSERT_EQ(commandBuffer->barrierHistory[1].textureBarriers.size(), 1u);
+    EXPECT_EQ(commandBuffer->barrierHistory[1].textureBarriers[0].before, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(commandBuffer->barrierHistory[1].textureBarriers[0].after, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(commandBuffer->boundComputePipeline, pipeline);
+    EXPECT_EQ(commandBuffer->lastDispatchGroupCounts, (std::array<uint32_t, 3u>{ 3u, 2u, 1u }));
+
+    commandBuffer->commandEvents.clear();
+    commandBuffer->barrierHistory.clear();
+    commandBuffer->barrierCalls = 0u;
+    dispatchInput.pipeline.reset();
+
+    NLS::Render::FrameGraph::RecordPreparedComputeDispatch(executionContext, dispatchInput);
+
+    EXPECT_TRUE(commandBuffer->commandEvents.empty());
+    EXPECT_TRUE(commandBuffer->barrierHistory.empty());
+    EXPECT_EQ(commandBuffer->barrierCalls, 0u);
+}
+
+TEST(FrameGraphSceneTargetsTests, HZBPreparedComputeEmitsMip0BuildToOcclusionDependencyEdge)
+{
+    auto opaqueDepthTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "QualifiedOpaqueDepth",
+        NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+            NLS::Render::RHI::TextureUsageFlags::Sampled));
+    auto hzbDesc = MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage);
+    hzbDesc.mipLevels = 4u;
+    auto hzbTexture = std::make_shared<TestTexture>(hzbDesc);
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest request;
+    request.opaqueDepthTexture = opaqueDepthTexture;
+    request.hzbTexture = hzbTexture;
+    request.opaqueDepthEligible = true;
+    request.hzbMipCount = 4u;
+
+    const auto preparedSource = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request);
+    ASSERT_EQ(preparedSource.metadata.size(), 2u);
+
+    std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
+    passInputs.reserve(preparedSource.metadata.size());
+    for (const auto& metadata : preparedSource.metadata)
+    {
+        NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass compiledPass;
+        compiledPass.metadata = metadata;
+
+        NLS::Render::Context::RenderPassCommandInput passInput;
+        ASSERT_TRUE(NLS::Render::FrameGraph::TryBuildPreparedComputeDispatchThreadedPassInput(
+            preparedSource,
+            compiledPass,
+            passInput));
+        passInputs.push_back(std::move(passInput));
+    }
+
+    const auto plan = NLS::Render::FrameGraph::BuildThreadedRenderSceneExecutionPlan(
+        passInputs,
+        preparedSource.metadata);
+
+    ASSERT_EQ(plan.dependencies.size(), 1u);
+    const auto& edge = plan.dependencies.front();
+    EXPECT_EQ(edge.sourcePassIndex, 0u);
+    EXPECT_EQ(edge.targetPassIndex, 1u);
+    EXPECT_EQ(edge.resourceKind, NLS::Render::FrameGraph::ThreadedRenderSceneDependencyResourceKind::Texture);
+    ASSERT_TRUE(edge.sourceTextureAccess.has_value());
+    ASSERT_TRUE(edge.targetTextureAccess.has_value());
+    EXPECT_EQ(edge.sourceTextureAccess->texture, hzbTexture);
+    EXPECT_EQ(edge.targetTextureAccess->texture, hzbTexture);
+    EXPECT_EQ(edge.sourceTextureAccess->mode, NLS::Render::Context::ResourceAccessMode::Write);
+    EXPECT_EQ(edge.sourceTextureAccess->state, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(edge.targetTextureAccess->mode, NLS::Render::Context::ResourceAccessMode::Read);
+    EXPECT_EQ(edge.targetTextureAccess->state, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(edge.sourceTextureAccess->subresourceRange.baseMipLevel, 0u);
+    EXPECT_EQ(edge.targetTextureAccess->subresourceRange.baseMipLevel, 0u);
+    EXPECT_EQ(edge.sourceTextureAccess->subresourceRange.mipLevelCount, 1u);
+    EXPECT_EQ(edge.targetTextureAccess->subresourceRange.mipLevelCount, 1u);
+}
+
 TEST(FrameGraphSceneTargetsTests, ThreadedResourceDependencyUsesLastWriteAccessState)
 {
     auto testBuffer = std::make_shared<TestBuffer>(NLS::Render::RHI::RHIBufferDesc{});
@@ -4362,6 +4981,68 @@ TEST(FrameGraphSceneTargetsTests, DeferredLightGridCompilationUsesResolvedPassBi
     EXPECT_EQ(package.recordedDrawCommands[1].passBindingSet, lightGridBindingSet);
     EXPECT_EQ(package.passCommandInputs[0].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
     EXPECT_EQ(package.passCommandInputs[1].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
+}
+
+TEST(FrameGraphSceneTargetsTests, ThreadedDeferredCompilationInsertsHZBAfterGBufferBeforeLighting)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+
+    NLS::Render::FrameGraph::PreparedComputeDispatchSource lightGridSource;
+    lightGridSource.dispatchInputs.resize(1u);
+    lightGridSource.dispatchInputs[0].debugName = "LightGridCompact";
+    lightGridSource = NLS::Render::FrameGraph::BuildPreparedComputeDispatchSource(lightGridSource.dispatchInputs);
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+    lightGridContext.preparedComputeSource = lightGridSource;
+
+    auto opaqueDepthTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "QualifiedOpaqueDepth",
+        NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+            NLS::Render::RHI::TextureUsageFlags::Sampled));
+    auto hzbTexture = std::make_shared<TestTexture>(MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled |
+            NLS::Render::RHI::TextureUsageFlags::Storage));
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest hzbRequest;
+    hzbRequest.opaqueDepthTexture = opaqueDepthTexture;
+    hzbRequest.hzbTexture = hzbTexture;
+    hzbRequest.opaqueDepthEligible = true;
+    hzbRequest.hzbMipCount = 1u;
+    hzbRequest.hzbBuildPipeline = std::make_shared<TestComputePipeline>("HZBBuildPipeline");
+    hzbRequest.hzbBuildBindingSet = std::make_shared<TestBindingSet>("HZBBuildBindingSet");
+    hzbRequest.occlusionPipeline = std::make_shared<TestComputePipeline>("HZBOcclusionPipeline");
+    hzbRequest.occlusionBindingSet = std::make_shared<TestBindingSet>("HZBOcclusionBindingSet");
+    const auto hzbSource = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(hzbRequest);
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        MakeCompleteDeferredPreparedSceneResources(),
+        {},
+        {},
+        std::nullopt,
+        hzbSource);
+
+    ASSERT_EQ(package.passCommandInputs.size(), 5u);
+    EXPECT_EQ(package.passCommandInputs[0].debugName, "LightGridCompact");
+    EXPECT_EQ(package.passCommandInputs[1].debugName, "DeferredGBuffer");
+    EXPECT_EQ(package.passCommandInputs[2].debugName, "HZBBuild");
+    EXPECT_EQ(package.passCommandInputs[3].debugName, "HZBOcclusion");
+    EXPECT_EQ(package.passCommandInputs[4].debugName, "DeferredLighting");
+    EXPECT_EQ(package.passCommandInputs[4].queueDependencyPolicy, NLS::Render::Context::QueueDependencyPolicy::LastCompute);
 }
 
 TEST(FrameGraphSceneTargetsTests, LightGridCompileContextCarriesUEForwardLightingResourceContract)

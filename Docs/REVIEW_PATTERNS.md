@@ -17,3 +17,21 @@ Useful grep:
 ```powershell
 rg -n "CallbackException|terminalCleanup|completeCallbackRunning|CompleteNoClear|NLS_JOB_BINDING_VERSION|Runtime/.*/Gen" Runtime Tests Docs specs
 ```
+
+## Large-Scene Rendering
+
+- Retained scene state must remain generation-safe: primitive handles are scene-scoped, generation-checked, tombstoned on removal, and snapshots must not retain live component pointers.
+- Large-scene sync/visibility/finalization must publish touched counts. Review any hidden O(N) scan that moved from visibility into sync, candidate generation, debug overlays, or queue finalization.
+- Spatial-index rebuild fallbacks must use explicit telemetry, last-good data, dirty overlays, staged rebuilds, or clear budgets; silent rebuild spikes are a review failure.
+- Serial, parallel, and full-scan comparison modes must preserve equivalent visibility and sparse handle output. Parallel paths must use immutable snapshots and must fall back safely when JobSystem scheduling is unavailable.
+- LOD/HLOD decisions must stay view-local. Editor-selected HLOD children must remain inspectable, and transparent/order-dependent/skinned/animated children require explicit proxy compatibility before suppression.
+- HZB/occlusion must be conservative: invalid, stale, moved, representation-changed, ineligible-depth, or capability-gated history keeps primitives visible. Ordinary occlusion frames must not introduce synchronous readback, blocking maps, or CPU/GPU fence waits.
+- RHI/FrameGraph HZB changes must declare texture access, exported transitions, dependency edges, and per-subresource ranges. Do not assume DX12 behavior proves Vulkan/Metal/OpenGL/DX11 correctness.
+- Streaming residency must separate interest from residency, deduplicate tickets, enforce CPU/GPU memory and upload budgets, preserve frame-retirement pins, and expose request/commit/evict telemetry.
+- Editor debug overlays and FrameInfo must consume renderer snapshots only; disabled overlays must not traverse live scenes, synchronize render scenes, or drain resource queues.
+
+Useful grep:
+
+```powershell
+rg -n "ScenePrimitiveHandle|largeScene|SceneSpatialIndex|SceneVisibilityPipeline|SceneLOD|SceneHLOD|SceneOcclusion|SceneStreamingResidency|BuildCullingOverlayItems|largeSceneCullReasonSnapshot|ReadPixelsChecked|BeginReadPixels|WaitForFence|Map" Runtime Project Tests Docs specs
+```

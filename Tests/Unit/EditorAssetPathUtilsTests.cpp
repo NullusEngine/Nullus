@@ -6,6 +6,7 @@ TEST(EditorAssetPathUtilsTests, RecognizesBuiltInModelResourcePaths)
 {
     EXPECT_TRUE(NLS::Editor::Assets::IsBuiltInResourcePath(":Models\\Cone.fbx"));
     EXPECT_TRUE(NLS::Editor::Assets::IsBuiltInResourcePath(":Models/Cube.fbx"));
+    EXPECT_TRUE(NLS::Editor::Assets::IsBuiltInResourcePath("builtin:Primitive/Cube"));
     EXPECT_FALSE(NLS::Editor::Assets::IsBuiltInResourcePath("Models/Cone.fbx"));
     EXPECT_FALSE(NLS::Editor::Assets::IsBuiltInResourcePath(""));
 }
@@ -14,5 +15,6 @@ TEST(EditorAssetPathUtilsTests, FormatsBuiltInResourceDisplayName)
 {
     EXPECT_EQ(NLS::Editor::Assets::GetBuiltInResourceDisplayName(":Models\\Cone.fbx"), "Cone");
     EXPECT_EQ(NLS::Editor::Assets::GetBuiltInResourceDisplayName(":Models/Cube.fbx"), "Cube");
+    EXPECT_EQ(NLS::Editor::Assets::GetBuiltInResourceDisplayName("builtin:Primitive/Cube"), "Cube");
     EXPECT_EQ(NLS::Editor::Assets::GetBuiltInResourceDisplayName(":Models"), "Models");
 }

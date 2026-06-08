@@ -276,6 +276,8 @@ namespace NLS::Render::Backend
 			    NLS::Render::Settings::EPixelDataFormat format,
 			    NLS::Render::Settings::EPixelDataType type,
 			    void* data) override;
+			NLS::Render::RHI::RHIReadbackResult BeginReadBuffer(
+				const NLS::Render::RHI::RHIBufferReadbackDesc& desc) override;
 
 		private:
 			void InitializeTimelineGpuProfilerIfNeeded()
@@ -497,6 +499,37 @@ namespace NLS::Render::Backend
 			return {
 				NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat,
 				"DX12 ReadPixels is only available on Windows"
+			};
+#endif
+		}
+
+		NLS::Render::RHI::RHIReadbackResult NativeDX12ExplicitDevice::BeginReadBuffer(
+			const NLS::Render::RHI::RHIBufferReadbackDesc& desc)
+		{
+#if defined(_WIN32)
+			const auto result = m_readbackContext.BeginBuffer(
+				m_device.Get(),
+				m_graphicsQueue.Get(),
+				desc);
+			switch (result.code)
+			{
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::Success:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::Success, result.message, result.completion };
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::UnsupportedFormat:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat, result.message, result.completion };
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::DeviceLost:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::DeviceLost, result.message, result.completion };
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::BackendFailure:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure, result.message, result.completion };
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::InvalidArgument:
+			default:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::InvalidArgument, result.message, result.completion };
+			}
+#else
+			(void)desc;
+			return {
+				NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure,
+				"DX12 BeginReadBuffer is only available on Windows"
 			};
 #endif
 		}

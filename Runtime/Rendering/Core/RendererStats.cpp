@@ -2,10 +2,21 @@
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/DrawCallOptimizationStats.h"
 
+#include <algorithm>
+
 namespace NLS::Render::Core
 {
 namespace
 {
+    template <size_t Count>
+    void AccumulateArray(
+        std::array<uint64_t, Count>& target,
+        const std::array<uint64_t, Count>& source)
+    {
+        for (size_t index = 0u; index < Count; ++index)
+            target[index] += source[index];
+    }
+
     template<typename TTelemetry>
     uint64_t ResolveBlockedFrameCount(const TTelemetry& telemetry)
     {
@@ -118,6 +129,7 @@ void RendererStats::BeginFrame()
     m_frameInfo.deviceLostReason.clear();
     m_frameInfo.unsafeGpuWorkQuarantined = false;
     m_frameInfo.unsafeGpuWorkQuarantineReason.clear();
+    m_frameInfo.largeScene = {};
     m_isFrameInfoValid = false;
 }
 
@@ -193,6 +205,68 @@ void RendererStats::RecordDrawCallOptimizationStats(
     m_frameInfo.largestInstanceGroupSize = stats.largestInstanceGroupSize;
     m_frameInfo.cachedCommandRebuildCount = stats.cachedCommandRebuildCount;
     m_frameInfo.objectDataOverflowDroppedObjectCount = stats.objectDataOverflowDroppedObjectCount;
+}
+
+void RendererStats::RecordLargeSceneTelemetry(
+    const NLS::Render::Data::LargeSceneTelemetry& telemetry)
+{
+    auto& target = m_frameInfo.largeScene;
+    target.registeredPrimitiveCount += telemetry.registeredPrimitiveCount;
+    target.staticPrimitiveCount += telemetry.staticPrimitiveCount;
+    target.dynamicPrimitiveCount += telemetry.dynamicPrimitiveCount;
+    target.unclassifiedPrimitiveCount += telemetry.unclassifiedPrimitiveCount;
+    target.spatialCandidateCount += telemetry.spatialCandidateCount;
+    target.fullScanCandidateCount += telemetry.fullScanCandidateCount;
+    target.visiblePrimitiveCount += telemetry.visiblePrimitiveCount;
+    target.visibleMeshCount += telemetry.visibleMeshCount;
+    AccumulateArray(target.culledByReason, telemetry.culledByReason);
+    AccumulateArray(target.lodSelectionCount, telemetry.lodSelectionCount);
+    target.activeHLODClusterCount += telemetry.activeHLODClusterCount;
+    target.occlusionTestCount += telemetry.occlusionTestCount;
+    target.occlusionCulledCount += telemetry.occlusionCulledCount;
+    target.streamingRequestCount += telemetry.streamingRequestCount;
+    target.streamingCommitCount += telemetry.streamingCommitCount;
+    target.streamingEvictCount += telemetry.streamingEvictCount;
+    target.streamingDependencyCount += telemetry.streamingDependencyCount;
+    target.residencyTicketCount = telemetry.residencyTicketCount;
+    target.residentCpuBytes = telemetry.residentCpuBytes;
+    target.residentGpuBytes = telemetry.residentGpuBytes;
+    target.requestedCpuBytes = telemetry.requestedCpuBytes;
+    target.requestedGpuBytes = telemetry.requestedGpuBytes;
+    target.primitiveRecordsTouched += telemetry.primitiveRecordsTouched;
+    target.allocatedPrimitiveSlotCount += telemetry.allocatedPrimitiveSlotCount;
+    target.tombstonedPrimitiveSlotCount += telemetry.tombstonedPrimitiveSlotCount;
+    target.syncSweepTouchedSlotCount += telemetry.syncSweepTouchedSlotCount;
+    target.syncTouchedPrimitiveCount += telemetry.syncTouchedPrimitiveCount;
+    target.syncFullSweepCount += telemetry.syncFullSweepCount;
+    target.boundsDirtyPrimitiveCount += telemetry.boundsDirtyPrimitiveCount;
+    target.primitiveSlotReuseCount += telemetry.primitiveSlotReuseCount;
+    target.visibilityTestedPrimitiveCount += telemetry.visibilityTestedPrimitiveCount;
+    target.visibilityBitsetWordCount += telemetry.visibilityBitsetWordCount;
+    target.finalizationTouchedPrimitiveCount += telemetry.finalizationTouchedPrimitiveCount;
+    target.finalizationTouchedCommandCount += telemetry.finalizationTouchedCommandCount;
+    target.commandOffsetRebuildCount += telemetry.commandOffsetRebuildCount;
+    target.rawVisibleDrawCount += telemetry.rawVisibleDrawCount;
+    target.submittedDrawCount += telemetry.submittedDrawCount;
+    target.dynamicInstanceGroupCount += telemetry.dynamicInstanceGroupCount;
+    target.dynamicCandidateCount += telemetry.dynamicCandidateCount;
+    target.dynamicRecordsTouched += telemetry.dynamicRecordsTouched;
+    target.staticIndexRefitCount += telemetry.staticIndexRefitCount;
+    target.staticIndexRebuildCount += telemetry.staticIndexRebuildCount;
+    target.staticIndexLastGoodQueryCount += telemetry.staticIndexLastGoodQueryCount;
+    target.staticIndexDirtyOverlayCount += telemetry.staticIndexDirtyOverlayCount;
+    target.spatialRebuildFallbackCount += telemetry.spatialRebuildFallbackCount;
+    target.dynamicIndexUpdateCount += telemetry.dynamicIndexUpdateCount;
+    target.syncTimeNs += telemetry.syncTimeNs;
+    target.serialVisibilityTimeNs += telemetry.serialVisibilityTimeNs;
+    target.parallelVisibilityTimeNs += telemetry.parallelVisibilityTimeNs;
+    target.queueFinalizationTimeNs += telemetry.queueFinalizationTimeNs;
+    target.hzbBuildTimeNs += telemetry.hzbBuildTimeNs;
+    target.hzbHistoryPruneTouchedHandleCount += telemetry.hzbHistoryPruneTouchedHandleCount;
+    target.hzbHistoryPruneRemovedHandleCount += telemetry.hzbHistoryPruneRemovedHandleCount;
+    target.hzbHistoryPruneRemovedKeyCount += telemetry.hzbHistoryPruneRemovedKeyCount;
+    target.hzbHistoryPruneTimeNs += telemetry.hzbHistoryPruneTimeNs;
+    target.streamingCommitTimeNs += telemetry.streamingCommitTimeNs;
 }
 
 void RendererStats::SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry)

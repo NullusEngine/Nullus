@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <type_traits>
 
 #include "Core/ServiceLocator.h"
@@ -154,8 +157,18 @@ TEST(UIAndToolingBackendAwarenessTests, NativeRenderDeviceInfoExposesTaggedHandl
 
 TEST(UIAndToolingBackendAwarenessTests, QueuedRenderDocStartupCaptureUsesExplicitFrameBoundary)
 {
+    using NLS::Render::Tooling::CanQueueRenderDocCapture;
     using NLS::Render::Tooling::RenderDocQueuedCaptureAction;
+    using NLS::Render::Tooling::ResolveRenderDocQueuedCaptureInitialCountdown;
     using NLS::Render::Tooling::ResolveRenderDocQueuedCapturePreFrameAction;
+
+    EXPECT_EQ(ResolveRenderDocQueuedCaptureInitialCountdown(), 2u);
+    EXPECT_TRUE(CanQueueRenderDocCapture(true, false, false, false, false));
+    EXPECT_FALSE(CanQueueRenderDocCapture(false, false, false, false, false));
+    EXPECT_FALSE(CanQueueRenderDocCapture(true, true, false, false, false));
+    EXPECT_FALSE(CanQueueRenderDocCapture(true, false, true, false, false));
+    EXPECT_FALSE(CanQueueRenderDocCapture(true, false, false, true, false));
+    EXPECT_FALSE(CanQueueRenderDocCapture(true, false, false, false, true));
 
     EXPECT_EQ(
         ResolveRenderDocQueuedCapturePreFrameAction(false, true, true, 1u),
@@ -164,14 +177,64 @@ TEST(UIAndToolingBackendAwarenessTests, QueuedRenderDocStartupCaptureUsesExplici
         ResolveRenderDocQueuedCapturePreFrameAction(true, false, true, 1u),
         RenderDocQueuedCaptureAction::None);
     EXPECT_EQ(
-        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, 1u),
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, 2u),
         RenderDocQueuedCaptureAction::None);
     EXPECT_EQ(
         ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, 2u),
         RenderDocQueuedCaptureAction::WaitForFutureFrame);
     EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, 1u),
+        RenderDocQueuedCaptureAction::StartExplicitFrameCapture);
+    EXPECT_EQ(
         ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, 1u),
         RenderDocQueuedCaptureAction::StartExplicitFrameCapture);
+}
+
+TEST(UIAndToolingBackendAwarenessTests, OffscreenRenderDocCaptureEndUsesTriggeredFallbackOnFailure)
+{
+    const std::filesystem::path controllerPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Tooling/RenderDocCaptureController.cpp";
+
+    std::ifstream stream(controllerPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    const auto onPostFrame = source.find("void RenderDocCaptureController::OnPostFrame");
+    ASSERT_NE(onPostFrame, std::string::npos);
+    const auto getLatestCapturePath = source.find("std::string RenderDocCaptureController::GetLatestCapturePath", onPostFrame);
+    ASSERT_NE(getLatestCapturePath, std::string::npos);
+    const auto body = source.substr(onPostFrame, getLatestCapturePath - onPostFrame);
+
+    EXPECT_NE(body.find("EndFrameCapture(m_impl->captureDevice, m_impl->captureWindow)"), std::string::npos);
+    EXPECT_NE(body.find("TriggerCaptureFallback("), std::string::npos);
+    EXPECT_NE(body.find("m_impl->queuedCaptureActive = false;"), std::string::npos);
+}
+
+TEST(UIAndToolingBackendAwarenessTests, OffscreenRenderDocTriggeredFallbackCanResolveWithoutPresent)
+{
+    const std::filesystem::path controllerPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Tooling/RenderDocCaptureController.cpp";
+
+    std::ifstream stream(controllerPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    const auto helper = source.find("ResolveTriggeredCaptureIfAvailable");
+    ASSERT_NE(helper, std::string::npos);
+    const auto onPostFrame = source.find("void RenderDocCaptureController::OnPostFrame");
+    ASSERT_NE(onPostFrame, std::string::npos);
+    const auto getLatestCapturePath = source.find("std::string RenderDocCaptureController::GetLatestCapturePath", onPostFrame);
+    ASSERT_NE(getLatestCapturePath, std::string::npos);
+    const auto body = source.substr(onPostFrame, getLatestCapturePath - onPostFrame);
+
+    const auto fallbackPoll = body.find("ResolveTriggeredCaptureIfAvailable(\"after post-frame\")");
+    const auto queuedCaptureCheck = body.find("!m_impl->queuedCaptureActive");
+    ASSERT_NE(fallbackPoll, std::string::npos);
+    ASSERT_NE(queuedCaptureCheck, std::string::npos);
+    EXPECT_LT(fallbackPoll, queuedCaptureCheck);
 }
 
 TEST(UIAndToolingBackendAwarenessTests, RhiDeviceBaseDoesNotExposeDefaultUiBridgeHooks)

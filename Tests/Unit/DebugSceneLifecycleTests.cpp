@@ -6,6 +6,7 @@
 #include "Components/MeshFilter.h"
 #include "SceneSystem/Scene.h"
 #include "Rendering/BaseSceneRenderer.h"
+#include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/GridRenderPass.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
@@ -47,6 +48,7 @@ namespace
     {
         using NLS::Engine::Rendering::BaseSceneRenderer::RefreshFrameSnapshotVisibility;
     };
+
 }
 
 TEST(DebugSceneLifecycleTests, CountsActiveEditorHelpersForThreadedSnapshotPlanning)
@@ -103,6 +105,55 @@ TEST(DebugSceneLifecycleTests, SceneVisibilityRefreshPreservesEditorHelperDrawCo
 
     EXPECT_EQ(snapshot.visibleOpaqueDrawCount, 1u);
     EXPECT_EQ(snapshot.visibleHelperDrawCount, 3u);
+}
+
+TEST(DebugSceneLifecycleTests, CullingOverlayItemsAreBuiltFromFrameSnapshotOnlyWhenEnabled)
+{
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.largeSceneCullReasonSnapshot.entries.push_back({
+        0x90u,
+        7u,
+        3u,
+        5u,
+        0u,
+        10u,
+        11u,
+        false
+    });
+    snapshot.largeSceneCullReasonSnapshot.entries.push_back({
+        0x90u,
+        8u,
+        3u,
+        0u,
+        0u,
+        11u,
+        12u,
+        true
+    });
+
+    NLS::Editor::Rendering::DebugSceneRenderer::CullingOverlayOptions options;
+    EXPECT_TRUE(NLS::Editor::Rendering::BuildDebugSceneCullingOverlayItems(snapshot, options).empty());
+    EXPECT_FALSE(NLS::Editor::Rendering::ShouldPublishDebugSceneCullReasonSnapshots(options));
+
+    options.enabled = true;
+    options.maxItems = 0u;
+    EXPECT_FALSE(NLS::Editor::Rendering::ShouldPublishDebugSceneCullReasonSnapshots(options));
+
+    options.includeVisiblePrimitives = false;
+    options.maxItems = 4u;
+
+    const auto hiddenOnlyItems =
+        NLS::Editor::Rendering::BuildDebugSceneCullingOverlayItems(snapshot, options);
+    ASSERT_EQ(hiddenOnlyItems.size(), 1u);
+    EXPECT_EQ(hiddenOnlyItems[0].sceneId, 0x90u);
+    EXPECT_EQ(hiddenOnlyItems[0].primitiveIndex, 7u);
+    EXPECT_EQ(hiddenOnlyItems[0].primitiveGeneration, 3u);
+    EXPECT_EQ(hiddenOnlyItems[0].reason, 5u);
+    EXPECT_FALSE(hiddenOnlyItems[0].visible);
+    EXPECT_TRUE(NLS::Editor::Rendering::ShouldPublishDebugSceneCullReasonSnapshots(options));
+
+    options.includeVisiblePrimitives = true;
+    EXPECT_EQ(NLS::Editor::Rendering::BuildDebugSceneCullingOverlayItems(snapshot, options).size(), 2u);
 }
 
 TEST(DebugSceneLifecycleTests, GridHelperRequiresPassDescriptorAndDebugDrawSettings)

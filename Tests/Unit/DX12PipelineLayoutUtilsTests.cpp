@@ -44,6 +44,25 @@ namespace
         return stream.str();
     }
 
+    std::string ExtractSetFeatureCall(
+        const std::string& source,
+        const std::string& featureName)
+    {
+        const auto feature = source.find(featureName);
+        if (feature == std::string::npos)
+            return {};
+
+        const auto callBegin = source.rfind("capabilities.SetFeature(", feature);
+        if (callBegin == std::string::npos)
+            return {};
+
+        const auto callEnd = source.find(");", feature);
+        if (callEnd == std::string::npos)
+            return source.substr(callBegin);
+
+        return source.substr(callBegin, callEnd - callBegin + 2u);
+    }
+
     void ExpectJobHandleCompletionStatusThenClear(const std::string& source, const size_t expectedCount)
     {
         size_t cursor = 0u;
@@ -93,6 +112,32 @@ TEST(DX12PipelineLayoutUtilsTests, DX12RuntimeDoesNotAdvertiseInRenderPassChildB
     EXPECT_NE(childBundleCapabilityBody.find("false"), std::string::npos)
         << "DX12 in-render-pass child bundles must stay opt-in until real model-load DRED/RenderDoc coverage proves they are stable.";
     EXPECT_NE(childBundleCapabilityBody.find("device-hung"), std::string::npos);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12HZBOcclusionCapabilitiesAdvertiseValidatedRuntimeSupport)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Device.cpp");
+
+    const auto hzbBody = ExtractSetFeatureCall(source, "RHIDeviceFeature::HierarchicalZBuffer");
+    ASSERT_FALSE(hzbBody.empty());
+    EXPECT_NE(hzbBody.find("true"), std::string::npos);
+    EXPECT_EQ(hzbBody.find("false"), std::string::npos);
+    EXPECT_NE(hzbBody.find("RenderDoc-validated"), std::string::npos);
+    EXPECT_NE(hzbBody.find("after GBuffer"), std::string::npos);
+
+    const auto occlusionBody = ExtractSetFeatureCall(source, "RHIDeviceFeature::ConservativeOcclusion");
+    ASSERT_FALSE(occlusionBody.empty());
+    EXPECT_NE(occlusionBody.find("true"), std::string::npos);
+    EXPECT_EQ(occlusionBody.find("false"), std::string::npos);
+    EXPECT_NE(occlusionBody.find("conservative"), std::string::npos);
+    EXPECT_NE(occlusionBody.find("async readback"), std::string::npos);
+
+    const auto asyncReadbackBody = ExtractSetFeatureCall(source, "RHIDeviceFeature::AsyncReadback");
+    ASSERT_FALSE(asyncReadbackBody.empty());
+    EXPECT_NE(asyncReadbackBody.find("true"), std::string::npos);
+    EXPECT_EQ(asyncReadbackBody.find("false"), std::string::npos);
 }
 
 TEST(DX12PipelineLayoutUtilsTests, DX12DredDiagnosticsAreEnabledOutsideDebugLayerGate)

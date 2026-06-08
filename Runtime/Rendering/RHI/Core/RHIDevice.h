@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
@@ -26,6 +28,18 @@ namespace NLS::Render::RHI
         std::shared_ptr<RHICompletionToken> completion;
 
         bool Succeeded() const { return code == RHIReadbackStatusCode::Success; }
+    };
+
+    struct NLS_RENDER_API RHIBufferReadbackDesc
+    {
+        // Caller declares the expected source state, queue waits, and keeps data alive until the completion token finishes.
+        std::shared_ptr<class RHIBuffer> source;
+        ResourceState sourceState = ResourceState::Unknown;
+        std::vector<std::shared_ptr<class RHISemaphore>> waitSemaphores;
+        uint64_t sourceOffset = 0u;
+        uint64_t size = 0u;
+        void* data = nullptr;
+        std::string debugName;
     };
 
     class NLS_RENDER_API RHIAdapter : public RHIObject
@@ -129,6 +143,15 @@ namespace NLS::Render::RHI
             void* data)
         {
             return ReadPixelsChecked(texture, x, y, width, height, format, type, data);
+        }
+        // Starts an asynchronous buffer readback. Ordinary frame paths should poll the token instead of waiting.
+        virtual RHIReadbackResult BeginReadBuffer(const RHIBufferReadbackDesc& desc)
+        {
+            (void)desc;
+            return {
+                RHIReadbackStatusCode::BackendFailure,
+                "RHI device does not implement async buffer readback"
+            };
         }
 
         virtual RHIUIDeviceBridge* GetUIBridgeDevice() { return nullptr; }

@@ -1485,6 +1485,37 @@ namespace
             commandBuffer.Barrier(barriers);
     }
 
+    void RecordTextureVisibilityTransitions(
+        Render::RHI::RHICommandBuffer& commandBuffer,
+        const std::vector<TextureVisibilityTransition>& transitions)
+    {
+        if (transitions.empty())
+            return;
+
+        Render::RHI::RHIBarrierDesc barriers;
+        barriers.textureBarriers.reserve(transitions.size());
+
+        for (const auto& transition : transitions)
+        {
+            if (transition.texture == nullptr)
+                continue;
+
+            barriers.textureBarriers.push_back({
+                transition.texture,
+                transition.before,
+                transition.after,
+                transition.subresourceRange,
+                transition.sourceStages,
+                transition.destinationStages,
+                transition.sourceAccess,
+                transition.destinationAccess
+            });
+        }
+
+        if (!barriers.textureBarriers.empty())
+            commandBuffer.Barrier(barriers);
+    }
+
     uint64_t RecordComputeDispatches(
         Render::RHI::RHICommandBuffer& commandBuffer,
         const std::vector<RecordedComputeDispatchInput>& dispatchInputs,
@@ -1502,6 +1533,7 @@ namespace
                 RecordShaderReadBarriersForBuffers(commandBuffer, dispatchInput.shaderReadBuffersBefore);
             RecordShaderWriteBarriersForBuffers(commandBuffer, dispatchInput.shaderWriteBuffersBefore);
             RecordUavBarriersForBuffers(commandBuffer, dispatchInput.uavBarrierBuffersBefore);
+            RecordTextureVisibilityTransitions(commandBuffer, dispatchInput.textureVisibilityTransitionsBefore);
             commandBuffer.BindComputePipeline(dispatchInput.pipeline);
             for (const auto& bindingSet : dispatchInput.bindingSets)
             {
@@ -1512,6 +1544,7 @@ namespace
             commandBuffer.Dispatch(dispatchInput.groupCountX, dispatchInput.groupCountY, dispatchInput.groupCountZ);
             RecordUavBarriersForBuffers(commandBuffer, dispatchInput.uavBarrierBuffersAfter);
             RecordShaderReadAfterWriteBarriersForBuffers(commandBuffer, dispatchInput.shaderReadBuffersAfter);
+            RecordTextureVisibilityTransitions(commandBuffer, dispatchInput.exportedTextureVisibilityTransitions);
             ++recordedDispatchCount;
         }
 
@@ -2055,6 +2088,21 @@ bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
         publishedFrameId);
 }
 
+bool DriverRendererAccess::QueueStandalonePostSubmitBufferReadback(
+    Driver& driver,
+    PostSubmitBufferReadbackRequest request)
+{
+    if (driver.m_impl == nullptr ||
+        !driver.m_impl->explicitFrameActive ||
+        request.state == nullptr)
+    {
+        return false;
+    }
+
+    driver.m_impl->standalonePostSubmitBufferReadbacks.push_back(std::move(request));
+    return true;
+}
+
 bool DriverRendererAccess::TryDrainThreadedRendering(Driver& driver)
 {
     if (driver.m_impl == nullptr)
@@ -2087,6 +2135,14 @@ std::optional<ThreadedFrameTelemetry> DriverRendererAccess::TryGetThreadedFrameT
     if (!AppendDriverTelemetry(driver.m_impl.get(), telemetry.value(), false))
         return std::nullopt;
     return telemetry;
+}
+
+std::vector<uint64_t> DriverRendererAccess::CollectStreamingDependencyPins(const Driver& driver)
+{
+    if (driver.m_impl == nullptr || driver.m_impl->threadedLifecycle == nullptr)
+        return {};
+
+    return driver.m_impl->threadedLifecycle->CollectStreamingDependencyPins();
 }
 
 void DriverRendererAccess::SetViewport(

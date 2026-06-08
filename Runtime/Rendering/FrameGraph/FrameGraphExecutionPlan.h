@@ -247,6 +247,44 @@ namespace NLS::Render::FrameGraph
 		return it != dispatchInputs.end() ? &(*it) : nullptr;
 	}
 
+	inline void RecordTextureVisibilityTransitions(
+		FrameGraphExecutionContext& executionContext,
+		const std::vector<Context::TextureVisibilityTransition>& transitions)
+	{
+		if (transitions.empty())
+			return;
+
+		RHI::RHIBarrierDesc barriers;
+		barriers.textureBarriers.reserve(transitions.size());
+		for (const auto& transition : transitions)
+		{
+			if (transition.texture == nullptr)
+				continue;
+
+			barriers.textureBarriers.push_back({
+				transition.texture,
+				transition.before,
+				transition.after,
+				transition.subresourceRange,
+				transition.sourceStages,
+				transition.destinationStages,
+				transition.sourceAccess,
+				transition.destinationAccess
+			});
+		}
+
+		if (barriers.textureBarriers.empty())
+			return;
+
+		if (executionContext.CanTrackExplicitResourceState())
+		{
+			executionContext.RecordResourceBarriers(barriers);
+			return;
+		}
+
+		executionContext.commandBuffer->Barrier(barriers);
+	}
+
 	inline void RecordPreparedComputeDispatch(
 		FrameGraphExecutionContext& executionContext,
 		const Context::RecordedComputeDispatchInput& dispatchInput)
@@ -315,6 +353,8 @@ namespace NLS::Render::FrameGraph
 			RHI::AccessMask::ShaderWrite,
 			RHI::AccessMask::ShaderRead | RHI::AccessMask::ShaderWrite);
 
+		RecordTextureVisibilityTransitions(executionContext, dispatchInput.textureVisibilityTransitionsBefore);
+
 		commandBuffer.BindComputePipeline(dispatchInput.pipeline);
 		for (const auto& bindingSet : dispatchInput.bindingSets)
 		{
@@ -344,6 +384,103 @@ namespace NLS::Render::FrameGraph
 			RHI::PipelineStageMask::FragmentShader,
 			RHI::AccessMask::ShaderWrite,
 			RHI::AccessMask::ShaderRead);
+
+		RecordTextureVisibilityTransitions(executionContext, dispatchInput.exportedTextureVisibilityTransitions);
+	}
+
+	inline void PopulatePreparedComputeDispatchThreadedPassInput(
+		const CompiledThreadedRenderSceneGraphPass& compiledPass,
+		const Context::RecordedComputeDispatchInput& dispatchInput,
+		Context::RenderPassCommandInput& passInput)
+	{
+		passInput.kind = compiledPass.metadata.commandKind;
+		passInput.queueType = compiledPass.metadata.queueType;
+		passInput.queueDependencyPolicy = compiledPass.metadata.queueDependencyPolicy;
+		passInput.debugName = compiledPass.metadata.graphPassName;
+		passInput.renderWidth = compiledPass.outputExecution.renderWidth;
+		passInput.renderHeight = compiledPass.outputExecution.renderHeight;
+		passInput.clearColor = compiledPass.outputExecution.clearColor;
+		passInput.clearDepth = compiledPass.outputExecution.clearDepth;
+		passInput.clearStencil = compiledPass.outputExecution.clearStencil;
+		passInput.clearColorValue = compiledPass.outputExecution.clearValue;
+		passInput.computeDispatchInputs.push_back(dispatchInput);
+		passInput.bufferResourceAccesses.insert(
+			passInput.bufferResourceAccesses.end(),
+			dispatchInput.bufferResourceAccesses.begin(),
+			dispatchInput.bufferResourceAccesses.end());
+		passInput.textureResourceAccesses.insert(
+			passInput.textureResourceAccesses.end(),
+			dispatchInput.textureResourceAccesses.begin(),
+			dispatchInput.textureResourceAccesses.end());
+		passInput.textureVisibilityTransitions.insert(
+			passInput.textureVisibilityTransitions.end(),
+			dispatchInput.textureVisibilityTransitionsBefore.begin(),
+			dispatchInput.textureVisibilityTransitionsBefore.end());
+		passInput.exportedTextureVisibilityTransitions.insert(
+			passInput.exportedTextureVisibilityTransitions.end(),
+			dispatchInput.exportedTextureVisibilityTransitions.begin(),
+			dispatchInput.exportedTextureVisibilityTransitions.end());
+
+		for (const auto& buffer : dispatchInput.shaderReadBuffersBefore)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferVisibilityTransitions.push_back({
+				buffer,
+				RHI::ResourceState::Unknown,
+				RHI::ResourceState::ShaderRead,
+				RHI::PipelineStageMask::AllCommands,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
+				RHI::AccessMask::ShaderRead
+			});
+		}
+		for (const auto& buffer : dispatchInput.shaderWriteBuffersBefore)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferVisibilityTransitions.push_back({
+				buffer,
+				RHI::ResourceState::Unknown,
+				RHI::ResourceState::ShaderWrite,
+				RHI::PipelineStageMask::AllCommands,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
+				RHI::AccessMask::ShaderWrite
+			});
+		}
+		for (const auto& buffer : dispatchInput.uavBarrierBuffersAfter)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferVisibilityTransitions.push_back({
+				buffer,
+				RHI::ResourceState::ShaderWrite,
+				RHI::ResourceState::ShaderWrite,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::ShaderWrite,
+				RHI::AccessMask::ShaderRead | RHI::AccessMask::ShaderWrite
+			});
+		}
+		for (const auto& buffer : dispatchInput.shaderReadBuffersAfter)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.exportedBufferVisibilityTransitions.push_back({
+				buffer,
+				RHI::ResourceState::ShaderWrite,
+				RHI::ResourceState::ShaderRead,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::PipelineStageMask::FragmentShader,
+				RHI::AccessMask::ShaderWrite,
+				RHI::AccessMask::ShaderRead
+			});
+		}
 	}
 
 	inline bool TryAddPreparedComputeDispatchCompiledGraphPass(
@@ -422,75 +559,7 @@ namespace NLS::Render::FrameGraph
 		if (dispatchInput == nullptr)
 			return false;
 
-		passInput.kind = compiledPass.metadata.commandKind;
-		passInput.debugName = compiledPass.metadata.graphPassName;
-		passInput.renderWidth = compiledPass.outputExecution.renderWidth;
-		passInput.renderHeight = compiledPass.outputExecution.renderHeight;
-		passInput.clearColor = compiledPass.outputExecution.clearColor;
-		passInput.clearDepth = compiledPass.outputExecution.clearDepth;
-		passInput.clearStencil = compiledPass.outputExecution.clearStencil;
-		passInput.clearColorValue = compiledPass.outputExecution.clearValue;
-		passInput.computeDispatchInputs.push_back(*dispatchInput);
-		for (const auto& buffer : dispatchInput->shaderReadBuffersBefore)
-		{
-			if (buffer == nullptr)
-				continue;
-
-			passInput.bufferVisibilityTransitions.push_back({
-				buffer,
-				RHI::ResourceState::Unknown,
-				RHI::ResourceState::ShaderRead,
-				RHI::PipelineStageMask::AllCommands,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
-				RHI::AccessMask::ShaderRead
-			});
-		}
-		for (const auto& buffer : dispatchInput->shaderWriteBuffersBefore)
-		{
-			if (buffer == nullptr)
-				continue;
-
-			passInput.bufferVisibilityTransitions.push_back({
-				buffer,
-				RHI::ResourceState::Unknown,
-				RHI::ResourceState::ShaderWrite,
-				RHI::PipelineStageMask::AllCommands,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
-				RHI::AccessMask::ShaderWrite
-			});
-		}
-		for (const auto& buffer : dispatchInput->uavBarrierBuffersAfter)
-		{
-			if (buffer == nullptr)
-				continue;
-
-			passInput.bufferVisibilityTransitions.push_back({
-				buffer,
-				RHI::ResourceState::ShaderWrite,
-				RHI::ResourceState::ShaderWrite,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::AccessMask::ShaderWrite,
-				RHI::AccessMask::ShaderRead | RHI::AccessMask::ShaderWrite
-			});
-		}
-		for (const auto& buffer : dispatchInput->shaderReadBuffersAfter)
-		{
-			if (buffer == nullptr)
-				continue;
-
-			passInput.exportedBufferVisibilityTransitions.push_back({
-				buffer,
-				RHI::ResourceState::ShaderWrite,
-				RHI::ResourceState::ShaderRead,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::PipelineStageMask::FragmentShader,
-				RHI::AccessMask::ShaderWrite,
-				RHI::AccessMask::ShaderRead
-			});
-		}
+		PopulatePreparedComputeDispatchThreadedPassInput(compiledPass, *dispatchInput, passInput);
 		return true;
 	}
 
@@ -508,75 +577,7 @@ namespace NLS::Render::FrameGraph
 		if (dispatchInput == nullptr)
 			return false;
 
-		passInput.kind = compiledPass.metadata.commandKind;
-		passInput.debugName = compiledPass.metadata.graphPassName;
-		passInput.renderWidth = compiledPass.outputExecution.renderWidth;
-		passInput.renderHeight = compiledPass.outputExecution.renderHeight;
-		passInput.clearColor = compiledPass.outputExecution.clearColor;
-		passInput.clearDepth = compiledPass.outputExecution.clearDepth;
-		passInput.clearStencil = compiledPass.outputExecution.clearStencil;
-		passInput.clearColorValue = compiledPass.outputExecution.clearValue;
-		passInput.computeDispatchInputs.push_back(*dispatchInput);
-		for (const auto& buffer : dispatchInput->shaderReadBuffersBefore)
-		{
-			if (buffer == nullptr)
-				continue;
-
-			passInput.bufferVisibilityTransitions.push_back({
-				buffer,
-				RHI::ResourceState::Unknown,
-				RHI::ResourceState::ShaderRead,
-				RHI::PipelineStageMask::AllCommands,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
-				RHI::AccessMask::ShaderRead
-			});
-		}
-		for (const auto& buffer : dispatchInput->shaderWriteBuffersBefore)
-		{
-			if (buffer == nullptr)
-				continue;
-
-			passInput.bufferVisibilityTransitions.push_back({
-				buffer,
-				RHI::ResourceState::Unknown,
-				RHI::ResourceState::ShaderWrite,
-				RHI::PipelineStageMask::AllCommands,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
-				RHI::AccessMask::ShaderWrite
-			});
-		}
-		for (const auto& buffer : dispatchInput->uavBarrierBuffersAfter)
-		{
-			if (buffer == nullptr)
-				continue;
-
-			passInput.bufferVisibilityTransitions.push_back({
-				buffer,
-				RHI::ResourceState::ShaderWrite,
-				RHI::ResourceState::ShaderWrite,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::AccessMask::ShaderWrite,
-				RHI::AccessMask::ShaderRead | RHI::AccessMask::ShaderWrite
-			});
-		}
-		for (const auto& buffer : dispatchInput->shaderReadBuffersAfter)
-		{
-			if (buffer == nullptr)
-				continue;
-
-			passInput.exportedBufferVisibilityTransitions.push_back({
-				buffer,
-				RHI::ResourceState::ShaderWrite,
-				RHI::ResourceState::ShaderRead,
-				RHI::PipelineStageMask::ComputeShader,
-				RHI::PipelineStageMask::FragmentShader,
-				RHI::AccessMask::ShaderWrite,
-				RHI::AccessMask::ShaderRead
-			});
-		}
+		PopulatePreparedComputeDispatchThreadedPassInput(compiledPass, *dispatchInput, passInput);
 		return true;
 	}
 
@@ -1209,6 +1210,9 @@ namespace NLS::Render::FrameGraph
 		const std::vector<ThreadedRenderScenePassPlan>& passes,
 		const size_t passIndex)
 	{
+		// Pass-level source indices only cover single write accesses that cover the read.
+		// Per-subresource edges below are the authoritative sync path for partial texture
+		// writes consumed by broader reads. The current HZB shader path writes mip0 only.
 		if (passIndex >= passes.size())
 			return std::nullopt;
 

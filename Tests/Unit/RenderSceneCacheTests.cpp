@@ -5,7 +5,11 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <sstream>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -16,20 +20,29 @@
 #include "Core/ResourceManagement/TextureManager.h"
 #include "Jobs/JobSystem.h"
 #include "Math/Matrix4.h"
+#include "Object/Object.h"
+#include "LargeSceneOptimizationTestHelpers.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Data/Frustum.h"
 #include "Rendering/Data/DrawableInstanceCount.h"
 #include "Rendering/Data/ObjectDataLimits.h"
+#include "Rendering/LargeSceneSettings.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RenderScene.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Resources/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
+#include "Rendering/SceneHLOD.h"
+#include "Rendering/SceneLOD.h"
+#include "Rendering/SceneOcclusion.h"
+#include "Rendering/SceneVisibilityPipeline.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PPtr.h"
@@ -84,6 +97,123 @@ namespace
         NLS::Core::ServiceLocator::Provide(*driver);
         return *driver;
     }
+
+    class HZBPacketTestAdapter final : public NLS::Render::RHI::RHIAdapter
+    {
+    public:
+        std::string_view GetDebugName() const override { return "HZBPacketTestAdapter"; }
+        NLS::Render::RHI::NativeBackendType GetBackendType() const override
+        {
+            return NLS::Render::RHI::NativeBackendType::DX12;
+        }
+        std::string_view GetVendor() const override { return "NullusTests"; }
+        std::string_view GetHardware() const override { return "HZBPacketTestDevice"; }
+    };
+
+    class HZBPacketTestDevice final : public NLS::Render::RHI::RHIDevice
+    {
+    public:
+        HZBPacketTestDevice()
+            : m_adapter(std::make_shared<HZBPacketTestAdapter>())
+        {
+            m_nativeDeviceInfo.backend = NLS::Render::RHI::NativeBackendType::DX12;
+            m_capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady, true);
+            m_capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::Compute, true);
+            m_capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::ExplicitBarriers, true);
+            m_capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::HierarchicalZBuffer, true);
+            m_capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::ConservativeOcclusion, true);
+            m_capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::AsyncReadback, true);
+
+            NLS::Render::RHI::TextureFormatCapability depthCapability;
+            depthCapability.sampled = true;
+            m_capabilities.SetTextureFormatCapability(
+                NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+                depthCapability);
+            NLS::Render::RHI::TextureFormatCapability hzbCapability;
+            hzbCapability.sampled = true;
+            hzbCapability.storage = true;
+            m_capabilities.SetTextureFormatCapability(
+                NLS::Render::RHI::TextureFormat::R32F,
+                hzbCapability);
+        }
+
+        std::string_view GetDebugName() const override { return "HZBPacketTestDevice"; }
+        const std::shared_ptr<NLS::Render::RHI::RHIAdapter>& GetAdapter() const override { return m_adapter; }
+        const NLS::Render::RHI::RHIDeviceCapabilities& GetCapabilities() const override { return m_capabilities; }
+        NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const override { return m_nativeDeviceInfo; }
+        bool IsBackendReady() const override { return true; }
+        std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(
+            const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+            const NLS::Render::RHI::RHIBufferDesc&,
+            const NLS::Render::RHI::RHIBufferUploadDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+            const NLS::Render::RHI::RHITextureDesc&,
+            const NLS::Render::RHI::RHITextureUploadDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            const NLS::Render::RHI::RHITextureViewDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(
+            const NLS::Render::RHI::SamplerDesc&,
+            std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(
+            const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(
+            const NLS::Render::RHI::RHIBindingSetDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(
+            const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(
+            const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(
+            const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(
+            const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(
+            NLS::Render::RHI::QueueType,
+            std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+        void ReadPixels(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            NLS::Render::Settings::EPixelDataFormat,
+            NLS::Render::Settings::EPixelDataType,
+            void*) override {}
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
+        NLS::Render::RHI::NativeRenderDeviceInfo m_nativeDeviceInfo {};
+        NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
+    };
+
+    class ScopedHZBPacketTestDevice final
+    {
+    public:
+        explicit ScopedHZBPacketTestDevice(NLS::Render::Context::Driver& driver)
+            : m_driver(driver)
+            , m_previousDevice(NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver))
+        {
+            NLS::Render::Context::DriverTestAccess::SetExplicitDevice(
+                m_driver,
+                std::make_shared<HZBPacketTestDevice>());
+        }
+
+        ~ScopedHZBPacketTestDevice()
+        {
+            NLS::Render::Context::DriverTestAccess::SetExplicitDevice(m_driver, m_previousDevice);
+        }
+
+        ScopedHZBPacketTestDevice(const ScopedHZBPacketTestDevice&) = delete;
+        ScopedHZBPacketTestDevice& operator=(const ScopedHZBPacketTestDevice&) = delete;
+
+    private:
+        NLS::Render::Context::Driver& m_driver;
+        std::shared_ptr<NLS::Render::RHI::RHIDevice> m_previousDevice;
+    };
 
     NLS::Render::Geometry::Vertex VertexAt(const float x, const float y, const float z)
     {
@@ -163,6 +293,18 @@ namespace
         return frustum;
     }
 
+    NLS::Render::Data::Frustum CreateWideForwardFrustum()
+    {
+        NLS::Render::Data::Frustum frustum;
+        const auto view = NLS::Maths::Matrix4::CreateView(
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, -1.0f,
+            0.0f, 1.0f, 0.0f);
+        const auto projection = NLS::Maths::Matrix4::CreatePerspective(150.0f, 1.0f, 0.1f, 100.0f);
+        frustum.CalculateFrustum(projection * view);
+        return frustum;
+    }
+
     struct ManyPrimitiveFixture
     {
         NLS::Engine::SceneSystem::Scene scene;
@@ -223,6 +365,22 @@ namespace
         return result;
     }
 
+    NLS::Engine::Rendering::ScenePrimitiveHandle FindPrimitiveHandleByMesh(
+        const NLS::Engine::Rendering::ScenePrimitiveSnapshot& snapshot,
+        const NLS::Render::Resources::Mesh& mesh)
+    {
+        const auto found = std::find_if(
+            snapshot.primitiveRecords.begin(),
+            snapshot.primitiveRecords.end(),
+            [&mesh](const auto& record)
+            {
+                return record.mesh == &mesh;
+            });
+        return found != snapshot.primitiveRecords.end()
+            ? found->handle
+            : NLS::Engine::Rendering::ScenePrimitiveHandle {};
+    }
+
     struct QueueSortFixture
     {
         NLS::Engine::SceneSystem::Scene scene;
@@ -265,6 +423,21 @@ namespace
             meshFilter->SetMesh(&mesh);
             meshRenderer->FillWithMaterial(material);
             object.GetTransform()->SetWorldPosition({ distance, 0.0f, 0.0f });
+        }
+
+        void AddObjectAt(
+            const char* name,
+            NLS::Render::Resources::Mesh& mesh,
+            NLS::Render::Resources::Material& material,
+            const NLS::Maths::Vector3& position)
+        {
+            auto& object = scene.CreateGameObject(name);
+            auto* meshFilter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
+            auto* meshRenderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
+            meshFilter->SetMesh(&mesh);
+            meshRenderer->FillWithMaterial(material);
+            meshRenderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+            object.GetTransform()->SetWorldPosition(position);
         }
     };
 
@@ -404,6 +577,42 @@ namespace
             m_frameDescriptor = frameDescriptor;
             return ParseScene();
         }
+
+        void SetSceneDescriptorForTesting(
+            NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor descriptor)
+        {
+            if (HasDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>())
+                RemoveDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
+            AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>(std::move(descriptor));
+        }
+
+        const NLS::Engine::Rendering::SceneOcclusionPrimitivePacketBuildResult& GetHZBPacketBuildResult() const
+        {
+            return GetLastHZBOcclusionPrimitivePacketBuildResult();
+        }
+
+        const NLS::Engine::Rendering::SceneOcclusionFrameInput& GetLastHZBFrameInputForTesting() const
+        {
+            return GetLastHZBOcclusionFrameInput();
+        }
+
+        void SeedHZBHistoryForTesting(
+            const NLS::Engine::Rendering::SceneOcclusionFrameInput& frame,
+            std::span<const NLS::Engine::Rendering::SceneOcclusionPrimitiveInput> primitiveInputs)
+        {
+            BeginHZBOcclusionObservationFrame(frame, primitiveInputs);
+            std::vector<uint32_t> visibleFlags(primitiveInputs.size(), 0u);
+            (void)CompleteHZBOcclusionObservationFrame(visibleFlags);
+        }
+
+        void SeedHZBHistoryForTesting(
+            const NLS::Engine::Rendering::SceneOcclusionFrameInput& frame,
+            std::span<const NLS::Engine::Rendering::SceneOcclusionPrimitiveInput> primitiveInputs,
+            std::span<const uint32_t> primitiveResultFlags)
+        {
+            BeginHZBOcclusionObservationFrame(frame, primitiveInputs);
+            (void)CompleteHZBOcclusionObservationFrame(primitiveResultFlags);
+        }
     };
 
     void WriteCubeMeshArtifact(const std::filesystem::path& artifactPath)
@@ -439,6 +648,18 @@ namespace
         CopyTextFile(sourceRoot / "CommonTypes.hlsli", destinationRoot / "CommonTypes.hlsli");
         CopyTextFile(sourceRoot / "LightGridCommon.hlsli", destinationRoot / "LightGridCommon.hlsli");
     }
+
+    std::string ReadRepoTextFile(const std::filesystem::path& relativePath)
+    {
+        const auto path = std::filesystem::path(NLS_ROOT_DIR) / relativePath;
+        std::ifstream stream(path, std::ios::binary);
+        if (!stream)
+            return {};
+
+        std::ostringstream buffer;
+        buffer << stream.rdbuf();
+        return buffer.str();
+    }
 }
 
 TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedCommandsAcrossFrames)
@@ -472,6 +693,39 @@ TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedComman
     EXPECT_EQ(secondOptimizationStats.rawVisibleObjectCount, 1u);
     EXPECT_EQ(secondOptimizationStats.submittedSceneDrawCount, 1u);
     EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
+}
+
+TEST(RenderSceneCacheTests, RenderSceneIdentityIsNotCopyable)
+{
+    static_assert(!std::is_copy_constructible_v<NLS::Engine::Rendering::RenderScene>);
+    static_assert(!std::is_copy_assignable_v<NLS::Engine::Rendering::RenderScene>);
+    static_assert(std::is_move_constructible_v<NLS::Engine::Rendering::RenderScene>);
+    static_assert(std::is_move_assignable_v<NLS::Engine::Rendering::RenderScene>);
+}
+
+TEST(RenderSceneCacheTests, MovedFromRenderSceneReceivesFreshSceneIdentityBeforeReuse)
+{
+    ManyPrimitiveFixture fixture(1u);
+    NLS::Engine::Rendering::RenderScene source;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    ASSERT_EQ(source.Synchronize(fixture.scene, options).addedPrimitiveCount, 1u);
+    const auto sourceSnapshot = source.CreatePrimitiveSnapshot();
+    ASSERT_EQ(sourceSnapshot.primitiveRecords.size(), 1u);
+    const auto sourceHandle = sourceSnapshot.primitiveRecords[0].handle;
+
+    NLS::Engine::Rendering::RenderScene moved(std::move(source));
+    EXPECT_TRUE(moved.IsPrimitiveHandleLive(sourceHandle));
+    EXPECT_FALSE(source.IsPrimitiveHandleLive(sourceHandle));
+
+    const auto movedFromSync = source.Synchronize(fixture.scene, options);
+    ASSERT_EQ(movedFromSync.addedPrimitiveCount, 1u);
+    const auto movedFromSnapshot = source.CreatePrimitiveSnapshot();
+    ASSERT_EQ(movedFromSnapshot.primitiveRecords.size(), 1u);
+    EXPECT_NE(movedFromSnapshot.sceneId, moved.CreatePrimitiveSnapshot().sceneId);
+    EXPECT_NE(movedFromSnapshot.primitiveRecords[0].handle.sceneId, sourceHandle.sceneId);
+    EXPECT_FALSE(moved.IsPrimitiveHandleLive(movedFromSnapshot.primitiveRecords[0].handle));
 }
 
 TEST(RenderSceneCacheTests, MaterialStateChangeInvalidatesOnlyAffectedCachedCommand)
@@ -585,6 +839,8 @@ TEST(RenderSceneCacheTests, RemovedMeshRendererRemovesPersistentPrimitive)
     const auto removed = renderScene.Synchronize(fixture.scene, options);
 
     EXPECT_EQ(removed.removedPrimitiveCount, 1u);
+    EXPECT_EQ(removed.syncFullSweepCount, 1u);
+    EXPECT_EQ(removed.syncSweepTouchedSlotCount, 1u);
     EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
 }
@@ -605,6 +861,1221 @@ TEST(RenderSceneCacheTests, MarkedDestroyedMeshRendererRemovesPersistentPrimitiv
     EXPECT_EQ(removed.removedPrimitiveCount, 1u);
     EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
+}
+
+TEST(RenderSceneCacheTests, PrimitiveHandlesRejectRemovedLowerIndexAliasAfterSlotReuse)
+{
+    ManyPrimitiveFixture fixture(3u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).addedPrimitiveCount, 3u);
+
+    const auto initialSnapshot = renderScene.CreatePrimitiveSnapshot();
+    ASSERT_EQ(initialSnapshot.primitiveRecords.size(), 3u);
+    const auto removedLowerIndexHandle = initialSnapshot.primitiveRecords[0].handle;
+    const auto survivingHigherIndexHandle = initialSnapshot.primitiveRecords[1].handle;
+    EXPECT_TRUE(initialSnapshot.primitiveRecords[0].ownerAlive);
+    EXPECT_TRUE(initialSnapshot.primitiveRecords[0].ownerActive);
+    EXPECT_TRUE(renderScene.IsPrimitiveHandleLive(removedLowerIndexHandle));
+    EXPECT_TRUE(renderScene.IsPrimitiveHandleLive(survivingHigherIndexHandle));
+
+    auto* removedObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    ASSERT_NE(removedObject, nullptr);
+    EXPECT_TRUE(fixture.scene.DestroyGameObject(*removedObject));
+    const auto removed = renderScene.Synchronize(fixture.scene, options);
+
+    EXPECT_EQ(removed.removedPrimitiveCount, 1u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), 2u);
+    EXPECT_FALSE(renderScene.IsPrimitiveHandleLive(removedLowerIndexHandle));
+    EXPECT_TRUE(renderScene.IsPrimitiveHandleLive(survivingHigherIndexHandle));
+
+    auto& newObject = fixture.scene.CreateGameObject("SlotReusePrimitive");
+    auto* mesh = CreateSingleMesh();
+    fixture.meshes.push_back(mesh);
+    auto* meshFilter = newObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = newObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    meshFilter->SetMesh(mesh);
+    meshRenderer->FillWithMaterial(fixture.material);
+
+    const auto reused = renderScene.Synchronize(fixture.scene, options);
+    const auto reuseSnapshot = renderScene.CreatePrimitiveSnapshot();
+
+    ASSERT_EQ(reused.addedPrimitiveCount, 1u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), 3u);
+    EXPECT_FALSE(renderScene.IsPrimitiveHandleLive(removedLowerIndexHandle));
+    ASSERT_EQ(reuseSnapshot.primitiveRecords.size(), 3u);
+
+    const auto reusedRecord = std::find_if(
+        reuseSnapshot.primitiveRecords.begin(),
+        reuseSnapshot.primitiveRecords.end(),
+        [removedLowerIndexHandle](const auto& record)
+        {
+            return record.handle.index == removedLowerIndexHandle.index;
+        });
+    ASSERT_NE(reusedRecord, reuseSnapshot.primitiveRecords.end());
+    EXPECT_TRUE(reusedRecord->ownerAlive);
+    EXPECT_TRUE(reusedRecord->ownerActive);
+    EXPECT_EQ(reusedRecord->handle.index, removedLowerIndexHandle.index);
+    EXPECT_NE(reusedRecord->handle.generation, removedLowerIndexHandle.generation);
+}
+
+TEST(RenderSceneCacheTests, PrimitiveHandlesRejectMeshRendererAddressReuseWithDifferentInstanceIdentity)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).addedPrimitiveCount, 1u);
+
+    const auto initialSnapshot = renderScene.CreatePrimitiveSnapshot();
+    ASSERT_EQ(initialSnapshot.primitiveRecords.size(), 1u);
+    const auto staleHandle = initialSnapshot.primitiveRecords[0].handle;
+    ASSERT_TRUE(renderScene.IsPrimitiveHandleLive(staleHandle));
+
+    const auto replacementIdentity = NLS::Object::ReserveInstanceID();
+    NLS::Object::AssignInstanceID(fixture.meshRenderer, replacementIdentity);
+
+    const auto identityRefresh = renderScene.Synchronize(fixture.scene, options);
+    const auto refreshedSnapshot = renderScene.CreatePrimitiveSnapshot();
+
+    EXPECT_EQ(identityRefresh.addedPrimitiveCount, 1u);
+    EXPECT_EQ(identityRefresh.removedPrimitiveCount, 1u);
+    EXPECT_EQ(identityRefresh.reusedPrimitiveCount, 0u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), 1u);
+    EXPECT_FALSE(renderScene.IsPrimitiveHandleLive(staleHandle));
+    ASSERT_EQ(refreshedSnapshot.primitiveRecords.size(), 1u);
+    EXPECT_NE(refreshedSnapshot.primitiveRecords[0].handle, staleHandle);
+    EXPECT_TRUE(renderScene.IsPrimitiveHandleLive(refreshedSnapshot.primitiveRecords[0].handle));
+}
+
+TEST(RenderSceneCacheTests, LargeSceneTelemetryReportsSyncTouchedBoundsDirtyAndSlotReuseCounts)
+{
+    ManyPrimitiveFixture fixture(3u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    const auto firstSync = renderScene.Synchronize(fixture.scene, options);
+    ASSERT_EQ(firstSync.addedPrimitiveCount, 3u);
+
+    NLS::Tests::LargeScene::ExpectTouchedTelemetry(
+        renderScene.GetLastLargeSceneTelemetryForTesting(),
+        {
+            .registeredPrimitiveCount = 3u,
+            .syncTouchedPrimitiveCount = 3u,
+            .syncFullSweepCount = 1u,
+            .boundsDirtyPrimitiveCount = 3u,
+            .primitiveSlotReuseCount = 0u,
+            .allocatedPrimitiveSlotCount = 3u,
+            .tombstonedPrimitiveSlotCount = 0u,
+            .syncSweepTouchedSlotCount = 3u
+        });
+    EXPECT_GT(renderScene.GetLastLargeSceneTelemetryForTesting().syncTimeNs, 0u);
+
+    const auto stableSync = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_EQ(stableSync.rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(stableSync.reusedPrimitiveCount, 3u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().syncTouchedPrimitiveCount, 3u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().syncFullSweepCount, 0u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().syncSweepTouchedSlotCount, 0u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().boundsDirtyPrimitiveCount, 0u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().commandOffsetRebuildCount, 0u);
+
+    auto* removedObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    ASSERT_NE(removedObject, nullptr);
+    ASSERT_TRUE(fixture.scene.DestroyGameObject(*removedObject));
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).removedPrimitiveCount, 1u);
+
+    auto& newObject = fixture.scene.CreateGameObject("TelemetrySlotReusePrimitive");
+    auto* mesh = CreateSingleMesh();
+    fixture.meshes.push_back(mesh);
+    auto* meshFilter = newObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = newObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    meshFilter->SetMesh(mesh);
+    meshRenderer->FillWithMaterial(fixture.material);
+
+    const auto reusedSlot = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_EQ(reusedSlot.addedPrimitiveCount, 1u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().primitiveSlotReuseCount, 1u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().registeredPrimitiveCount, 3u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().allocatedPrimitiveSlotCount, 3u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().tombstonedPrimitiveSlotCount, 0u);
+}
+
+TEST(RenderSceneCacheTests, LargeSceneTelemetryReportsVisibilityAndQueueFinalizationTouchedCounts)
+{
+    ManyPrimitiveFixture fixture(9u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 9u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = false;
+    settings.parallelVisibilityPrimitivesPerTask = 32u;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    NLS::Tests::LargeScene::ExpectTouchedTelemetry(
+        telemetry,
+        {
+            .registeredPrimitiveCount = 9u,
+            .syncTouchedPrimitiveCount = 9u,
+            .syncFullSweepCount = 1u,
+            .boundsDirtyPrimitiveCount = 9u,
+            .primitiveSlotReuseCount = 0u,
+            .fullScanCandidateCount = 9u,
+            .primitiveRecordsTouched = 18u,
+            .allocatedPrimitiveSlotCount = 9u,
+            .tombstonedPrimitiveSlotCount = 0u,
+            .syncSweepTouchedSlotCount = 9u,
+            .visibilityTestedPrimitiveCount = 9u,
+            .finalizationTouchedPrimitiveCount = 9u,
+            .finalizationTouchedCommandCount = 6u
+        });
+    NLS::Tests::LargeScene::ExpectDrawResidencyTelemetry(
+        telemetry,
+        {
+            .visiblePrimitiveCount = 6u,
+            .visibleMeshCount = 6u,
+            .rawVisibleDrawCount = 6u,
+            .submittedDrawCount = static_cast<uint64_t>(visible.opaques.size())
+        });
+    EXPECT_EQ(telemetry.commandOffsetRebuildCount, 1u);
+    EXPECT_GT(telemetry.syncTimeNs, 0u);
+    EXPECT_GT(telemetry.serialVisibilityTimeNs, 0u);
+    EXPECT_GT(telemetry.queueFinalizationTimeNs, 0u);
+}
+
+TEST(RenderSceneCacheTests, SpatialIndexVisibilityMatchesFullScanAndReportsSpatialCandidates)
+{
+    ManyPrimitiveFixture fixture(192u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions fullScanOptions;
+    fullScanOptions.frustum = &frustum;
+    fullScanOptions.cameraPosition = {};
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions spatialOptions = fullScanOptions;
+    spatialOptions.largeSceneSettings = &settings;
+
+    const auto fullScan = renderScene.EvaluateVisibilityForTesting(
+        fullScanOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto spatial = renderScene.EvaluateVisibilityForTesting(
+        spatialOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto visible = renderScene.GatherVisibleCommands(
+        spatialOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    EXPECT_EQ(spatial.primitiveBits, fullScan.primitiveBits);
+    EXPECT_EQ(spatial.meshBits, fullScan.meshBits);
+    EXPECT_EQ(spatial.visiblePrimitiveCount, fullScan.visiblePrimitiveCount);
+    EXPECT_EQ(spatial.visibleMeshCount, fullScan.visibleMeshCount);
+    EXPECT_GT(telemetry.spatialCandidateCount, 0u);
+    EXPECT_LT(telemetry.spatialCandidateCount, telemetry.registeredPrimitiveCount);
+    EXPECT_EQ(telemetry.fullScanCandidateCount, 0u);
+    EXPECT_LT(telemetry.visibilityTestedPrimitiveCount, telemetry.registeredPrimitiveCount);
+    EXPECT_LT(telemetry.finalizationTouchedPrimitiveCount, telemetry.registeredPrimitiveCount);
+    EXPECT_EQ(telemetry.finalizationTouchedPrimitiveCount, telemetry.visiblePrimitiveCount);
+    EXPECT_EQ(telemetry.staticPrimitiveCount, telemetry.registeredPrimitiveCount);
+    EXPECT_EQ(telemetry.dynamicPrimitiveCount, 0u);
+    EXPECT_EQ(telemetry.unclassifiedPrimitiveCount, 0u);
+    EXPECT_EQ(telemetry.staticIndexRebuildCount, 1u);
+    EXPECT_EQ(telemetry.dynamicIndexUpdateCount, 1u);
+    EXPECT_EQ(visible.opaques.size(), spatial.visibleMeshCount);
+}
+
+TEST(RenderSceneCacheTests, GatherVisibleCommandsUsesSparseSpatialSnapshotWithoutFullSceneBitsets)
+{
+    ManyPrimitiveFixture fixture(192u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions spatialOptions;
+    spatialOptions.frustum = &frustum;
+    spatialOptions.cameraPosition = {};
+    spatialOptions.largeSceneSettings = &settings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        spatialOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    EXPECT_EQ(telemetry.visibilityBitsetWordCount, 0u);
+    EXPECT_EQ(telemetry.finalizationTouchedPrimitiveCount, telemetry.visiblePrimitiveCount);
+    EXPECT_EQ(visible.opaques.size(), telemetry.visibleMeshCount);
+
+    const auto comparableSnapshot = renderScene.EvaluateVisibilityForTesting(
+        spatialOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    EXPECT_FALSE(comparableSnapshot.primitiveBits.empty());
+    EXPECT_FALSE(comparableSnapshot.meshBits.empty());
+}
+
+TEST(RenderSceneCacheTests, SpatialIndexSyncUsesDirtyHandlesAfterInitialRebuild)
+{
+    ManyPrimitiveFixture fixture(3u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().staticIndexRebuildCount, 1u);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().dynamicIndexUpdateCount, 1u);
+
+    const auto stableSync = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto& stableTelemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    EXPECT_EQ(stableSync.rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(stableTelemetry.staticIndexRebuildCount, 0u);
+    EXPECT_EQ(stableTelemetry.staticIndexRefitCount, 0u);
+    EXPECT_EQ(stableTelemetry.dynamicIndexUpdateCount, 0u);
+    EXPECT_EQ(stableTelemetry.syncFullSweepCount, 0u);
+    EXPECT_EQ(stableTelemetry.syncSweepTouchedSlotCount, 0u);
+
+    auto* removedObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    ASSERT_NE(removedObject, nullptr);
+    ASSERT_TRUE(fixture.scene.DestroyGameObject(*removedObject));
+
+    const auto removedSync = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto& removedTelemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    EXPECT_EQ(removedSync.removedPrimitiveCount, 1u);
+    EXPECT_EQ(removedTelemetry.staticIndexRebuildCount, 0u);
+    EXPECT_EQ(removedTelemetry.staticIndexRefitCount, 1u);
+    EXPECT_EQ(removedTelemetry.dynamicIndexUpdateCount, 0u);
+    EXPECT_EQ(removedTelemetry.syncFullSweepCount, 1u);
+    EXPECT_EQ(removedTelemetry.syncSweepTouchedSlotCount, 3u);
+}
+
+TEST(RenderSceneCacheTests, SpatialIndexDirtyTransformUpdatePreservesVisibilityEquivalence)
+{
+    ManyPrimitiveFixture fixture(3u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    auto* movedObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    ASSERT_NE(movedObject, nullptr);
+    movedObject->GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -6.0f });
+
+    const auto movedSync = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto& syncTelemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    EXPECT_EQ(movedSync.rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(syncTelemetry.boundsDirtyPrimitiveCount, 1u);
+    EXPECT_EQ(syncTelemetry.staticIndexRebuildCount, 0u);
+    EXPECT_EQ(syncTelemetry.staticIndexRefitCount, 1u);
+    EXPECT_EQ(syncTelemetry.dynamicIndexUpdateCount, 0u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions fullScanOptions;
+    fullScanOptions.frustum = &frustum;
+    fullScanOptions.cameraPosition = {};
+
+    auto spatialOptions = fullScanOptions;
+    spatialOptions.largeSceneSettings = &settings;
+
+    const auto fullScan = renderScene.EvaluateVisibilityForTesting(
+        fullScanOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto spatial = renderScene.EvaluateVisibilityForTesting(
+        spatialOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(fullScan.visiblePrimitiveCount, 3u);
+    EXPECT_EQ(spatial.primitiveBits, fullScan.primitiveBits);
+    EXPECT_EQ(spatial.meshBits, fullScan.meshBits);
+    EXPECT_EQ(spatial.visiblePrimitiveCount, fullScan.visiblePrimitiveCount);
+    EXPECT_EQ(spatial.visibleMeshCount, fullScan.visibleMeshCount);
+}
+
+TEST(RenderSceneCacheTests, SpatialIndexDirtyActiveStateUpdatePreservesVisibilityEquivalence)
+{
+    ManyPrimitiveFixture fixture(2u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    auto* toggledObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    ASSERT_NE(toggledObject, nullptr);
+    toggledObject->GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -6.0f });
+    toggledObject->SetActive(false);
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    toggledObject->SetActive(true);
+    const auto activeSync = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto& syncTelemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    EXPECT_EQ(activeSync.rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(syncTelemetry.staticIndexRebuildCount, 0u);
+    EXPECT_EQ(syncTelemetry.staticIndexRefitCount, 1u);
+    EXPECT_EQ(syncTelemetry.dynamicIndexUpdateCount, 0u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions fullScanOptions;
+    fullScanOptions.frustum = &frustum;
+    fullScanOptions.cameraPosition = {};
+
+    auto spatialOptions = fullScanOptions;
+    spatialOptions.largeSceneSettings = &settings;
+
+    const auto fullScan = renderScene.EvaluateVisibilityForTesting(
+        fullScanOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto spatial = renderScene.EvaluateVisibilityForTesting(
+        spatialOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(fullScan.visiblePrimitiveCount, 2u);
+    EXPECT_EQ(spatial.primitiveBits, fullScan.primitiveBits);
+    EXPECT_EQ(spatial.meshBits, fullScan.meshBits);
+    EXPECT_EQ(spatial.visiblePrimitiveCount, fullScan.visiblePrimitiveCount);
+    EXPECT_EQ(spatial.visibleMeshCount, fullScan.visibleMeshCount);
+}
+
+TEST(RenderSceneCacheTests, SpatialIndexUsesConservativeWideFrustumQueryRadius)
+{
+    ManyPrimitiveFixture fixture(2u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    auto* edgeObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    auto* centerObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive1");
+    ASSERT_NE(edgeObject, nullptr);
+    ASSERT_NE(centerObject, nullptr);
+    edgeObject->GetTransform()->SetWorldPosition({ 300.0f, 0.0f, -90.0f });
+    centerObject->GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -6.0f });
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    auto frustum = CreateWideForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions fullScanOptions;
+    fullScanOptions.frustum = &frustum;
+    fullScanOptions.cameraPosition = {};
+
+    auto spatialOptions = fullScanOptions;
+    spatialOptions.largeSceneSettings = &settings;
+
+    const auto fullScan = renderScene.EvaluateVisibilityForTesting(
+        fullScanOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto spatial = renderScene.EvaluateVisibilityForTesting(
+        spatialOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(fullScan.visiblePrimitiveCount, 2u);
+    EXPECT_EQ(spatial.primitiveBits, fullScan.primitiveBits);
+    EXPECT_EQ(spatial.meshBits, fullScan.meshBits);
+    EXPECT_EQ(spatial.visiblePrimitiveCount, fullScan.visiblePrimitiveCount);
+    EXPECT_EQ(spatial.visibleMeshCount, fullScan.visibleMeshCount);
+}
+
+TEST(RenderSceneCacheTests, SpatialIndexPreservesFrustumDisabledPrimitiveVisibility)
+{
+    ManyPrimitiveFixture fixture(2u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    auto* disabledObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    auto* culledObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive1");
+    ASSERT_NE(disabledObject, nullptr);
+    ASSERT_NE(culledObject, nullptr);
+    auto* disabledRenderer = disabledObject->GetComponent<NLS::Engine::Components::MeshRenderer>();
+    auto* culledRenderer = culledObject->GetComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(disabledRenderer, nullptr);
+    ASSERT_NE(culledRenderer, nullptr);
+
+    disabledRenderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED);
+    culledRenderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+    disabledObject->GetTransform()->SetWorldPosition({ 1000.0f, 0.0f, -6.0f });
+    culledObject->GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -6.0f });
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions fullScanOptions;
+    fullScanOptions.frustum = &frustum;
+    fullScanOptions.cameraPosition = {};
+
+    auto spatialOptions = fullScanOptions;
+    spatialOptions.largeSceneSettings = &settings;
+
+    const auto fullScan = renderScene.EvaluateVisibilityForTesting(
+        fullScanOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto spatial = renderScene.EvaluateVisibilityForTesting(
+        spatialOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(fullScan.visiblePrimitiveCount, 2u);
+    EXPECT_EQ(spatial.primitiveBits, fullScan.primitiveBits);
+    EXPECT_EQ(spatial.meshBits, fullScan.meshBits);
+    EXPECT_EQ(spatial.visiblePrimitiveCount, fullScan.visiblePrimitiveCount);
+    EXPECT_EQ(spatial.visibleMeshCount, fullScan.visibleMeshCount);
+}
+
+TEST(RenderSceneCacheTests, LargeSceneTelemetrySeparatesTombstonedSlotsFromLiveVisibilityWork)
+{
+    ManyPrimitiveFixture fixture(3u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    auto* removedObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    ASSERT_NE(removedObject, nullptr);
+    ASSERT_TRUE(fixture.scene.DestroyGameObject(*removedObject));
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).removedPrimitiveCount, 1u);
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        {},
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 2u);
+    EXPECT_EQ(telemetry.registeredPrimitiveCount, 2u);
+    EXPECT_EQ(telemetry.allocatedPrimitiveSlotCount, 3u);
+    EXPECT_EQ(telemetry.tombstonedPrimitiveSlotCount, 1u);
+    EXPECT_EQ(telemetry.syncSweepTouchedSlotCount, 3u);
+    EXPECT_EQ(telemetry.spatialCandidateCount, 0u);
+    EXPECT_EQ(telemetry.fullScanCandidateCount, 2u);
+    EXPECT_EQ(telemetry.primitiveRecordsTouched, 4u);
+    EXPECT_EQ(telemetry.visibilityTestedPrimitiveCount, 2u);
+    EXPECT_EQ(telemetry.finalizationTouchedPrimitiveCount, 2u);
+    EXPECT_EQ(telemetry.finalizationTouchedCommandCount, 2u);
+}
+
+TEST(RenderSceneCacheTests, LargeSceneTestHelpersBuildScenesAndFormatTelemetryRows)
+{
+    const auto partitioned = NLS::Tests::LargeScene::BuildPartitionedPrimitiveScene(
+        4u,
+        2u,
+        10.0f,
+        3u);
+
+    ASSERT_EQ(partitioned.primitives.size(), 8u);
+    EXPECT_EQ(partitioned.staticPrimitiveCount, 5u);
+    EXPECT_EQ(partitioned.dynamicPrimitiveCount, 3u);
+    EXPECT_EQ(partitioned.primitives[5].centerX, 10.0f);
+    EXPECT_EQ(partitioned.primitives[5].centerZ, 10.0f);
+    EXPECT_EQ(partitioned.primitives[5].layer, 2u);
+
+    const auto linear = NLS::Tests::LargeScene::BuildLinearPrimitiveScene(4u, 2.0f);
+    ASSERT_EQ(linear.primitives.size(), 4u);
+    EXPECT_EQ(linear.staticPrimitiveCount, 4u);
+    EXPECT_EQ(linear.dynamicPrimitiveCount, 0u);
+
+    NLS::Tests::LargeScene::TouchedCountSample touched;
+    touched.registeredPrimitiveCount = 100u;
+    touched.fullScanCandidateCount = 24u;
+    touched.visibilityTestedPrimitiveCount = 34u;
+    EXPECT_TRUE(NLS::Tests::LargeScene::IsCandidateRatioWithinBudget(24u, 100u, 0.25));
+    EXPECT_FALSE(NLS::Tests::LargeScene::IsCandidateRatioWithinBudget(26u, 100u, 0.25));
+    EXPECT_TRUE(NLS::Tests::LargeScene::AreTouchedCountsBounded(touched, 0.25, 0.35));
+    touched.visibilityTestedPrimitiveCount = 36u;
+    EXPECT_FALSE(NLS::Tests::LargeScene::AreTouchedCountsBounded(touched, 0.25, 0.35));
+
+    touched.syncTouchedPrimitiveCount = 7u;
+    touched.syncFullSweepCount = 1u;
+    touched.boundsDirtyPrimitiveCount = 2u;
+    touched.primitiveSlotReuseCount = 3u;
+    touched.primitiveRecordsTouched = 50u;
+    touched.allocatedPrimitiveSlotCount = 110u;
+    touched.tombstonedPrimitiveSlotCount = 10u;
+    touched.syncSweepTouchedSlotCount = 111u;
+    touched.finalizationTouchedPrimitiveCount = 24u;
+    touched.finalizationTouchedCommandCount = 25u;
+    EXPECT_EQ(
+        NLS::Tests::LargeScene::FormatTouchedCountTableRow(9u, touched),
+        "| 9 | 100 | 7 | 1 | 2 | 3 | 0 | 24 | 50 | 110 | 10 | 111 | 36 | 24 | 25 |");
+
+    NLS::Tests::LargeScene::TimingSample timing;
+    timing.syncTimeNs = 10u;
+    timing.serialVisibilityTimeNs = 20u;
+    timing.parallelVisibilityTimeNs = 30u;
+    timing.queueFinalizationTimeNs = 40u;
+    timing.hzbBuildTimeNs = 50u;
+    timing.streamingCommitTimeNs = 60u;
+    EXPECT_EQ(
+        NLS::Tests::LargeScene::FormatTimingTableRow(2u, timing),
+        "| 2 | 10 | 20 | 30 | 40 | 50 | 60 |");
+
+    NLS::Tests::LargeScene::DrawResidencySample drawResidency;
+    drawResidency.visiblePrimitiveCount = 11u;
+    drawResidency.visibleMeshCount = 12u;
+    drawResidency.rawVisibleDrawCount = 13u;
+    drawResidency.submittedDrawCount = 14u;
+    drawResidency.dynamicInstanceGroupCount = 15u;
+    drawResidency.streamingDependencyCount = 16u;
+    drawResidency.residencyTicketCount = 17u;
+    drawResidency.residentCpuBytes = 18u;
+    drawResidency.residentGpuBytes = 19u;
+    drawResidency.requestedCpuBytes = 20u;
+    drawResidency.requestedGpuBytes = 21u;
+    EXPECT_EQ(
+        NLS::Tests::LargeScene::FormatDrawResidencyTableRow(3u, drawResidency),
+        "| 3 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 |");
+
+    NLS::Render::Data::LargeSceneTelemetry telemetry;
+    telemetry.visiblePrimitiveCount = drawResidency.visiblePrimitiveCount;
+    telemetry.visibleMeshCount = drawResidency.visibleMeshCount;
+    telemetry.rawVisibleDrawCount = drawResidency.rawVisibleDrawCount;
+    telemetry.submittedDrawCount = drawResidency.submittedDrawCount;
+    telemetry.dynamicInstanceGroupCount = drawResidency.dynamicInstanceGroupCount;
+    telemetry.streamingDependencyCount = drawResidency.streamingDependencyCount;
+    telemetry.residencyTicketCount = drawResidency.residencyTicketCount;
+    telemetry.residentCpuBytes = drawResidency.residentCpuBytes;
+    telemetry.residentGpuBytes = drawResidency.residentGpuBytes;
+    telemetry.requestedCpuBytes = drawResidency.requestedCpuBytes;
+    telemetry.requestedGpuBytes = drawResidency.requestedGpuBytes;
+    NLS::Tests::LargeScene::ExpectDrawResidencyTelemetry(telemetry, drawResidency);
+}
+
+TEST(RenderSceneCacheTests, GatherVisibleCommandsAppliesCameraVisibleLayerMask)
+{
+    ManyPrimitiveFixture fixture(3u);
+    ASSERT_GE(fixture.scene.GetGameObjects().size(), 3u);
+    fixture.scene.GetGameObjects()[0]->SetLayer(0);
+    fixture.scene.GetGameObjects()[1]->SetLayer(1);
+    fixture.scene.GetGameObjects()[2]->SetLayer(0);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = false;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+    visibilityOptions.visibleLayerMask = 1u << 1u;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.mesh, fixture.meshes[1]);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().visiblePrimitiveCount, 1u);
+}
+
+TEST(RenderSceneCacheTests, CullReasonDebugSnapshotFeedsLargeSceneTelemetryReasonCounts)
+{
+    ManyPrimitiveFixture fixture(3u);
+    ASSERT_GE(fixture.scene.GetGameObjects().size(), 3u);
+    fixture.scene.GetGameObjects()[0]->SetLayer(0);
+    fixture.scene.GetGameObjects()[1]->SetLayer(1);
+    fixture.scene.GetGameObjects()[2]->SetLayer(0);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = false;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.visibleLayerMask = 1u << 1u;
+    visibilityOptions.largeSceneSettings = &settings;
+    visibilityOptions.enableCullReasonDebugSnapshot = true;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    EXPECT_EQ(telemetry.culledByReason[0], 1u);
+    EXPECT_EQ(telemetry.culledByReason[2], 2u);
+    EXPECT_EQ(telemetry.visiblePrimitiveCount, 1u);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererParseScenePublishesLargeSceneTelemetryToFrameInfo)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    ManyPrimitiveFixture fixture(3u);
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    renderer.ResetFrameStatistics();
+    renderer.ResetFrameStatistics();
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    renderer.FinalizeFrameStatistics();
+    renderer.FinalizeFrameStatistics();
+
+    ASSERT_EQ(drawables.opaques.size(), 3u);
+    const auto& frameInfo = renderer.GetFrameInfo();
+    EXPECT_EQ(frameInfo.largeScene.registeredPrimitiveCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.staticPrimitiveCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.dynamicPrimitiveCount, 0u);
+    EXPECT_EQ(frameInfo.largeScene.unclassifiedPrimitiveCount, 0u);
+    EXPECT_EQ(frameInfo.largeScene.syncTouchedPrimitiveCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.allocatedPrimitiveSlotCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.syncSweepTouchedSlotCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.spatialCandidateCount, 0u);
+    EXPECT_EQ(frameInfo.largeScene.fullScanCandidateCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.primitiveRecordsTouched, 6u);
+    EXPECT_EQ(frameInfo.largeScene.visibilityTestedPrimitiveCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.visiblePrimitiveCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.finalizationTouchedPrimitiveCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.finalizationTouchedCommandCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.rawVisibleDrawCount, 3u);
+    EXPECT_EQ(frameInfo.largeScene.submittedDrawCount, 3u);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererParseScenePlansStreamingResidencyFromVisiblePrimitives)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    ManyPrimitiveFixture fixture(3u);
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    renderer.ResetFrameStatistics();
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    renderer.FinalizeFrameStatistics();
+
+    ASSERT_EQ(drawables.opaques.size(), 3u);
+    const auto& largeScene = renderer.GetFrameInfo().largeScene;
+    EXPECT_EQ(largeScene.streamingDependencyCount, 3u);
+    EXPECT_EQ(largeScene.streamingRequestCount, 3u);
+    EXPECT_EQ(largeScene.residencyTicketCount, 3u);
+    EXPECT_GT(largeScene.requestedCpuBytes, 0u);
+    EXPECT_GT(largeScene.requestedGpuBytes, 0u);
+    EXPECT_GT(largeScene.streamingCommitTimeNs, 0u);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererParseSceneBuildsHZBOcclusionPacketsFromVisibleOpaquePrimitives)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    ScopedHZBPacketTestDevice hzbDevice(driver);
+    QueueSortFixture fixture;
+    fixture.AddObjectAt("HZBOpaqueSource", *fixture.sharedMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -5.0f });
+    fixture.AddObjectAt("HZBTransparentRejected", *fixture.otherMesh, fixture.transparentMaterial, { 2.0f, 0.0f, -5.0f });
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    camera.CacheMatrices(128u, 128u);
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    ASSERT_EQ(drawables.opaques.size(), 1u);
+    ASSERT_EQ(drawables.transparents.size(), 1u);
+
+    const auto& packets = renderer.GetHZBPacketBuildResult();
+    ASSERT_EQ(packets.primitivePackets.size(), 1u);
+    ASSERT_EQ(packets.primitiveInputs.size(), 1u);
+    EXPECT_TRUE(packets.primitiveInputs.front().depthWriteEligible);
+    EXPECT_EQ(packets.rejectedPrimitiveCount, 1u);
+    EXPECT_EQ(packets.primitivePackets.front().flags, 1u);
+
+    renderer.FinalizeFrameStatistics();
+    EXPECT_GT(renderer.GetFrameInfo().largeScene.hzbBuildTimeNs, 0u);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererPrunesHZBHistoryOnlyForRemovedPrimitiveHandles)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    ScopedHZBPacketTestDevice hzbDevice(driver);
+    QueueSortFixture fixture;
+    fixture.AddObjectAt("StableHZBSourceA", *fixture.sharedMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -5.0f });
+    fixture.AddObjectAt("StableHZBSourceB", *fixture.otherMesh, fixture.opaqueMaterialA, { 0.25f, 0.0f, -5.0f });
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    camera.CacheMatrices(128u, 128u);
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    ASSERT_EQ(renderer.CaptureSceneDrawables(frameDescriptor).opaques.size(), 2u);
+    renderer.FinalizeFrameStatistics();
+    const auto firstFrameInput = renderer.GetLastHZBFrameInputForTesting();
+    const auto firstPackets = renderer.GetHZBPacketBuildResult();
+    ASSERT_EQ(firstPackets.primitiveInputs.size(), 2u);
+    renderer.SeedHZBHistoryForTesting(firstFrameInput, firstPackets.primitiveInputs);
+
+    renderer.ResetFrameStatistics();
+    ASSERT_EQ(renderer.CaptureSceneDrawables(frameDescriptor).opaques.size(), 2u);
+    renderer.FinalizeFrameStatistics();
+    const auto& stableTelemetry = renderer.GetFrameInfo().largeScene;
+    EXPECT_EQ(stableTelemetry.hzbHistoryPruneTouchedHandleCount, 0u);
+    EXPECT_EQ(stableTelemetry.hzbHistoryPruneRemovedHandleCount, 0u);
+    EXPECT_EQ(stableTelemetry.hzbHistoryPruneRemovedKeyCount, 0u);
+    EXPECT_EQ(stableTelemetry.occlusionTestCount, 2u);
+
+    auto* removedObject = fixture.scene.FindGameObjectByName("StableHZBSourceA");
+    ASSERT_NE(removedObject, nullptr);
+    ASSERT_TRUE(fixture.scene.DestroyGameObject(*removedObject));
+
+    renderer.ResetFrameStatistics();
+    ASSERT_EQ(renderer.CaptureSceneDrawables(frameDescriptor).opaques.size(), 1u);
+    renderer.FinalizeFrameStatistics();
+    const auto& removedTelemetry = renderer.GetFrameInfo().largeScene;
+    EXPECT_EQ(removedTelemetry.hzbHistoryPruneTouchedHandleCount, 1u);
+    EXPECT_EQ(removedTelemetry.hzbHistoryPruneRemovedHandleCount, 1u);
+    EXPECT_EQ(removedTelemetry.hzbHistoryPruneRemovedKeyCount, 1u);
+    EXPECT_GT(removedTelemetry.hzbHistoryPruneTimeNs, 0u);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererPrunesDroppedAdditiveHZBHistoryWithoutRemovingMainHistory)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    ScopedHZBPacketTestDevice hzbDevice(driver);
+    QueueSortFixture mainFixture;
+    QueueSortFixture additiveFixture;
+    mainFixture.AddObjectAt("MainHZBSource", *mainFixture.sharedMesh, mainFixture.opaqueMaterialA, { 0.0f, 0.0f, -5.0f });
+    additiveFixture.AddObjectAt("AdditiveHZBSource", *additiveFixture.sharedMesh, additiveFixture.opaqueMaterialA, { 0.25f, 0.0f, -5.0f });
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.SetSceneDescriptorForTesting({
+        mainFixture.scene,
+        std::nullopt,
+        nullptr,
+        { &additiveFixture.scene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    camera.CacheMatrices(128u, 128u);
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    ASSERT_EQ(renderer.CaptureSceneDrawables(frameDescriptor).opaques.size(), 2u);
+    renderer.FinalizeFrameStatistics();
+    const auto firstFrameInput = renderer.GetLastHZBFrameInputForTesting();
+    const auto firstPackets = renderer.GetHZBPacketBuildResult();
+    ASSERT_EQ(firstPackets.primitiveInputs.size(), 2u);
+    const auto mainInput = firstPackets.primitiveInputs.front();
+    const std::array<uint32_t, 2u> firstFrameFlags = { 1u, 0u };
+    renderer.SeedHZBHistoryForTesting(firstFrameInput, firstPackets.primitiveInputs, firstFrameFlags);
+
+    renderer.SetSceneDescriptorForTesting({
+        mainFixture.scene,
+        std::nullopt,
+        nullptr,
+        {}
+    });
+
+    renderer.ResetFrameStatistics();
+    ASSERT_EQ(renderer.CaptureSceneDrawables(frameDescriptor).opaques.size(), 0u);
+    renderer.FinalizeFrameStatistics();
+
+    const auto& telemetry = renderer.GetFrameInfo().largeScene;
+    EXPECT_EQ(telemetry.hzbHistoryPruneTouchedHandleCount, 1u);
+    EXPECT_EQ(telemetry.hzbHistoryPruneRemovedHandleCount, 1u);
+    EXPECT_EQ(telemetry.hzbHistoryPruneRemovedKeyCount, 1u);
+    EXPECT_GT(telemetry.hzbHistoryPruneTimeNs, 0u);
+
+    const auto mainHistoryKey =
+        NLS::Engine::Rendering::SceneOcclusionSystem::BuildHistoryKey(firstFrameInput, mainInput);
+    EXPECT_TRUE(renderer.GetHZBOcclusionHistoryForTesting().FindOccludedFrame(mainHistoryKey).has_value());
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererBuildsHZBPacketsFromSparseVisibleHandlesAfterVisibility)
+{
+    const auto source = ReadRepoTextFile("Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const auto appendStart = source.find("auto appendSceneDrawables = [&]");
+    const auto streamingStart = source.find("const auto streamingCommitStart", appendStart);
+    ASSERT_NE(appendStart, std::string::npos);
+    ASSERT_NE(streamingStart, std::string::npos);
+    const auto appendBody = source.substr(appendStart, streamingStart - appendStart);
+
+    const auto gatherVisible = appendBody.find("renderScene.GatherVisibleCommands");
+    const auto packetSources = appendBody.find("SceneOcclusionSystem::BuildHZBPrimitivePacketSources");
+    ASSERT_NE(gatherVisible, std::string::npos);
+    ASSERT_NE(packetSources, std::string::npos);
+    EXPECT_LT(gatherVisible, packetSources);
+
+    EXPECT_NE(appendBody.find("renderScene.CreatePrimitiveSnapshotForHandles("), std::string::npos);
+    EXPECT_NE(appendBody.find("renderScene.GetLastVisiblePrimitiveHandles()"), std::string::npos);
+    EXPECT_EQ(appendBody.find("renderScene.CreatePrimitiveSnapshot()"), std::string::npos);
+    EXPECT_EQ(appendBody.find("hzbPrimitiveSnapshot->denseIndexToHandle"), std::string::npos);
+    EXPECT_EQ(appendBody.find("occlusionState.primitiveInputs = &occlusionPrimitiveInputs"), std::string::npos);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererCommitsStreamingResidencyWithRetiredFramePins)
+{
+    const auto source = ReadRepoTextFile("Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const auto mergeStart = source.find("void MergeStreamingTelemetry(");
+    const auto rendererStart = source.find("BaseSceneRenderer::BaseSceneRenderer", mergeStart);
+    ASSERT_NE(mergeStart, std::string::npos);
+    ASSERT_NE(rendererStart, std::string::npos);
+    const auto mergeBody = source.substr(mergeStart, rendererStart - mergeStart);
+    EXPECT_NE(mergeBody.find("commit.telemetry.residentCpuBytes"), std::string::npos);
+    EXPECT_NE(mergeBody.find("commit.telemetry.residentGpuBytes"), std::string::npos);
+
+    const auto parseScene = source.find("BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()");
+    ASSERT_NE(parseScene, std::string::npos);
+    const auto streamingStart = source.find("const auto streamingCommitStart", parseScene);
+    const auto telemetryMerge = source.find("MergeStreamingTelemetry(streamingTelemetry, allSceneStreamingPlan, allSceneStreamingCommit)", streamingStart);
+    ASSERT_NE(streamingStart, std::string::npos);
+    ASSERT_NE(telemetryMerge, std::string::npos);
+    const auto streamingBody = source.substr(streamingStart, telemetryMerge - streamingStart);
+    EXPECT_NE(streamingBody.find("const auto allSceneStreamingPlan = m_streamingResidency.Plan(allSceneStreamingInput, occlusionSettings)"), std::string::npos);
+    EXPECT_NE(streamingBody.find("m_streamingResidency.Commit(\n\t\tallSceneStreamingPlan"), std::string::npos);
+    EXPECT_NE(streamingBody.find("DriverRendererAccess::CollectStreamingDependencyPins(m_driver)"), std::string::npos);
+    EXPECT_NE(streamingBody.find("framePins"), std::string::npos);
+    EXPECT_EQ(streamingBody.find("StreamingResidencyFramePins{}"), std::string::npos);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererPublishesStreamingPinsThroughFrameSnapshots)
+{
+    const auto rendererSource = ReadRepoTextFile("Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+    const auto packageBuilderSource = ReadRepoTextFile("Runtime/Rendering/Context/RenderScenePackageBuilder.cpp");
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(packageBuilderSource.empty());
+
+    const auto buildSnapshot = rendererSource.find("BaseSceneRenderer::BuildFrameSnapshot(");
+    ASSERT_NE(buildSnapshot, std::string::npos);
+    const auto buildSnapshotBody = rendererSource.substr(buildSnapshot, 1200u);
+    EXPECT_NE(buildSnapshotBody.find("snapshot->streamingDependencyPins = m_lastStreamingDependencyPins"), std::string::npos);
+
+    const auto parseScene = rendererSource.find("BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()");
+    ASSERT_NE(parseScene, std::string::npos);
+    const auto parseSceneBody = rendererSource.substr(parseScene);
+    EXPECT_NE(parseSceneBody.find("m_lastStreamingDependencyPins ="), std::string::npos);
+    EXPECT_NE(parseSceneBody.find("BuildRuntimeStreamingDependencyPins("), std::string::npos);
+
+    EXPECT_NE(packageBuilderSource.find("package.streamingDependencyPins = snapshot.streamingDependencyPins"), std::string::npos);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererFeedsModeledStreamingResidencyBackIntoVisibility)
+{
+    const auto rendererSource = ReadRepoTextFile("Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+    const auto rendererHeader = ReadRepoTextFile("Runtime/Engine/Rendering/BaseSceneRenderer.h");
+    const auto renderSceneHeader = ReadRepoTextFile("Runtime/Engine/Rendering/RenderScene.h");
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(renderSceneHeader.empty());
+
+    EXPECT_NE(renderSceneHeader.find("const RepresentationResidencySnapshot* representationResidency"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("RepresentationResidencySnapshot m_lastRepresentationResidency"), std::string::npos);
+    EXPECT_NE(rendererSource.find("BuildRepresentationResidencySnapshotFromStreamingCommit"), std::string::npos);
+    EXPECT_NE(rendererSource.find("currentFrameRepresentationResidency"), std::string::npos);
+
+    const auto parseScene = rendererSource.find("BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()");
+    ASSERT_NE(parseScene, std::string::npos);
+    const auto gatherVisible = rendererSource.find("renderScene.GatherVisibleCommands", parseScene);
+    const auto streamingCommit = rendererSource.find("const auto allSceneStreamingCommit = m_streamingResidency.Commit", gatherVisible);
+    const auto publishResidency = rendererSource.find("m_lastRepresentationResidency = std::move(currentFrameRepresentationResidency)", streamingCommit);
+    ASSERT_NE(gatherVisible, std::string::npos);
+    ASSERT_NE(streamingCommit, std::string::npos);
+    ASSERT_NE(publishResidency, std::string::npos);
+
+    const auto gatherBody = rendererSource.substr(gatherVisible, streamingCommit - gatherVisible);
+    EXPECT_NE(gatherBody.find("&m_lastRepresentationResidency"), std::string::npos);
+
+    const auto streamingBody = rendererSource.substr(streamingCommit, publishResidency - streamingCommit);
+    EXPECT_NE(streamingBody.find("BuildRepresentationResidencySnapshotFromStreamingCommit("), std::string::npos);
+    EXPECT_NE(streamingBody.find("allSceneStreamingPlan"), std::string::npos);
+    EXPECT_NE(streamingBody.find("allSceneStreamingCommit"), std::string::npos);
+    EXPECT_NE(streamingBody.find("MergeRepresentationResidencySnapshot("), std::string::npos);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererCommitsStreamingResidencyOnceForAllScenesPerFrame)
+{
+    const auto rendererSource = ReadRepoTextFile("Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto parseScene = rendererSource.find("BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()");
+    ASSERT_NE(parseScene, std::string::npos);
+    const auto appendScene = rendererSource.find("auto appendSceneDrawables = [&]", parseScene);
+    const auto appendMainCall = rendererSource.find("appendSceneDrawables(sceneDescriptor.scene", appendScene);
+    ASSERT_NE(appendScene, std::string::npos);
+    ASSERT_NE(appendMainCall, std::string::npos);
+    const auto appendBody = rendererSource.substr(appendScene, appendMainCall - appendScene);
+
+    EXPECT_EQ(appendBody.find("m_streamingResidency.Commit("), std::string::npos);
+    EXPECT_NE(rendererSource.find("allSceneStreamingInput"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_streamingResidency.Commit(\n\t\tallSceneStreamingPlan"), std::string::npos);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererParseSceneAggregatesLargeSceneTelemetryAcrossAdditiveScenes)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    ManyPrimitiveFixture mainFixture(2u);
+    ManyPrimitiveFixture additiveFixture(3u);
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        mainFixture.scene,
+        std::nullopt,
+        nullptr,
+        { &additiveFixture.scene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    renderer.ResetFrameStatistics();
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    renderer.FinalizeFrameStatistics();
+
+    ASSERT_EQ(drawables.opaques.size(), 5u);
+    const auto& frameInfo = renderer.GetFrameInfo();
+    EXPECT_EQ(frameInfo.largeScene.registeredPrimitiveCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.staticPrimitiveCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.dynamicPrimitiveCount, 0u);
+    EXPECT_EQ(frameInfo.largeScene.unclassifiedPrimitiveCount, 0u);
+    EXPECT_EQ(frameInfo.largeScene.syncTouchedPrimitiveCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.allocatedPrimitiveSlotCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.syncSweepTouchedSlotCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.spatialCandidateCount, 0u);
+    EXPECT_EQ(frameInfo.largeScene.fullScanCandidateCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.primitiveRecordsTouched, 10u);
+    EXPECT_EQ(frameInfo.largeScene.visibilityTestedPrimitiveCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.visiblePrimitiveCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.finalizationTouchedPrimitiveCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.finalizationTouchedCommandCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.rawVisibleDrawCount, 5u);
+    EXPECT_EQ(frameInfo.largeScene.submittedDrawCount, 5u);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererAggregatesLegacyDrawOptimizationStatsAcrossAdditiveScenes)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    QueueSortFixture mainFixture;
+    QueueSortFixture additiveFixture;
+    for (size_t index = 0u; index < 3u; ++index)
+    {
+        mainFixture.AddObject(
+            ("MainGrouped" + std::to_string(index)).c_str(),
+            *mainFixture.sharedMesh,
+            mainFixture.opaqueMaterialA,
+            static_cast<float>(index));
+        additiveFixture.AddObject(
+            ("AdditiveGrouped" + std::to_string(index)).c_str(),
+            *additiveFixture.sharedMesh,
+            additiveFixture.opaqueMaterialA,
+            static_cast<float>(index));
+    }
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        mainFixture.scene,
+        std::nullopt,
+        nullptr,
+        { &additiveFixture.scene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    renderer.ResetFrameStatistics();
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    renderer.FinalizeFrameStatistics();
+
+    ASSERT_EQ(drawables.opaques.size(), 2u);
+    const auto& frameInfo = renderer.GetFrameInfo();
+    EXPECT_EQ(frameInfo.rawVisibleObjectCount, 6u);
+    EXPECT_EQ(frameInfo.submittedSceneDrawCount, 2u);
+    EXPECT_EQ(frameInfo.dynamicInstanceGroupCount, 2u);
+    EXPECT_EQ(frameInfo.largestInstanceGroupSize, 3u);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererParseSceneAppliesCameraVisibleLayerMask)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    ManyPrimitiveFixture fixture(3u);
+    ASSERT_GE(fixture.scene.GetGameObjects().size(), 3u);
+    fixture.scene.GetGameObjects()[0]->SetLayer(0);
+    fixture.scene.GetGameObjects()[1]->SetLayer(1);
+    fixture.scene.GetGameObjects()[2]->SetLayer(0);
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    camera.SetVisibleLayerMask(1u << 1u);
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    renderer.ResetFrameStatistics();
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    renderer.FinalizeFrameStatistics();
+
+    ASSERT_EQ(drawables.opaques.size(), 1u);
+    EXPECT_EQ(drawables.opaques.front().second.mesh, fixture.meshes[1]);
+    EXPECT_EQ(renderer.GetFrameInfo().largeScene.visiblePrimitiveCount, 1u);
+}
+
+TEST(RenderSceneCacheTests, PrimitiveSnapshotKeepsImmutableHandleAndCommandOffsetState)
+{
+    ManyPrimitiveFixture fixture(2u);
+    ASSERT_GE(fixture.scene.GetGameObjects().size(), 2u);
+    fixture.scene.GetGameObjects()[0]->SetLayer(7);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).addedPrimitiveCount, 2u);
+
+    const auto beforeRemoval = renderScene.CreatePrimitiveSnapshot();
+    ASSERT_EQ(beforeRemoval.primitiveRecords.size(), 2u);
+    ASSERT_EQ(beforeRemoval.denseIndexToHandle.size(), 2u);
+    ASSERT_EQ(beforeRemoval.commandOffsetTable.size(), 2u);
+    EXPECT_EQ(beforeRemoval.primitiveRecords[0].visibilitySettings.layer, 7u);
+    EXPECT_FALSE(beforeRemoval.primitiveRecords[0].visibilitySettings.distanceCullingEnabled);
+    EXPECT_EQ(beforeRemoval.primitiveRecords[0].commandOffsetBegin, 0u);
+    EXPECT_EQ(beforeRemoval.primitiveRecords[0].commandOffsetEnd, 1u);
+    EXPECT_EQ(beforeRemoval.primitiveRecords[1].commandOffsetBegin, 1u);
+    EXPECT_EQ(beforeRemoval.primitiveRecords[1].commandOffsetEnd, 2u);
+    EXPECT_EQ(beforeRemoval.denseIndexToHandle[0], beforeRemoval.primitiveRecords[0].handle);
+    EXPECT_EQ(beforeRemoval.denseIndexToHandle[1], beforeRemoval.primitiveRecords[1].handle);
+    EXPECT_EQ(beforeRemoval.dirtySyncHandles.size(), 2u);
+    EXPECT_TRUE(beforeRemoval.removedHandles.empty());
+    ASSERT_EQ(beforeRemoval.liveHandleBits.size(), 1u);
+    EXPECT_EQ(beforeRemoval.liveHandleBits[0] & 0x3ull, 0x3ull);
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).reusedPrimitiveCount, 2u);
+    const auto stableFrame = renderScene.CreatePrimitiveSnapshot();
+    EXPECT_TRUE(stableFrame.dirtySyncHandles.empty());
+    EXPECT_TRUE(stableFrame.removedHandles.empty());
+
+    auto* removedObject = fixture.scene.FindGameObjectByName("VisibilityPrimitive0");
+    ASSERT_NE(removedObject, nullptr);
+    EXPECT_TRUE(fixture.scene.DestroyGameObject(*removedObject));
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).removedPrimitiveCount, 1u);
+
+    const auto afterRemoval = renderScene.CreatePrimitiveSnapshot();
+    ASSERT_EQ(afterRemoval.primitiveRecords.size(), 1u);
+    ASSERT_EQ(afterRemoval.removedHandles.size(), 1u);
+    EXPECT_EQ(afterRemoval.removedHandles[0], beforeRemoval.primitiveRecords[0].handle);
+    EXPECT_EQ(beforeRemoval.primitiveRecords.size(), 2u);
+    EXPECT_EQ(beforeRemoval.primitiveRecords[0].handle, beforeRemoval.denseIndexToHandle[0]);
+    EXPECT_EQ(beforeRemoval.commandOffsetTable.size(), 2u);
+}
+
+TEST(RenderSceneCacheTests, HandleScopedPrimitiveSnapshotPreservesGlobalCommandOffsetRanges)
+{
+    ManyPrimitiveFixture fixture(2u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).addedPrimitiveCount, 2u);
+
+    const auto fullSnapshot = renderScene.CreatePrimitiveSnapshot();
+    ASSERT_EQ(fullSnapshot.primitiveRecords.size(), 2u);
+    const auto secondHandle = fullSnapshot.primitiveRecords[1].handle;
+
+    const auto sparseSnapshot = renderScene.CreatePrimitiveSnapshotForHandles({ secondHandle }, {});
+    ASSERT_EQ(sparseSnapshot.primitiveRecords.size(), 1u);
+    ASSERT_EQ(sparseSnapshot.commandOffsetTable.size(), 1u);
+    EXPECT_EQ(sparseSnapshot.primitiveRecords[0].handle, secondHandle);
+    EXPECT_EQ(sparseSnapshot.primitiveRecords[0].commandOffsetBegin, 1u);
+    EXPECT_EQ(sparseSnapshot.primitiveRecords[0].commandOffsetEnd, 2u);
+    EXPECT_EQ(sparseSnapshot.commandOffsetTable[0].handle, secondHandle);
+    EXPECT_EQ(sparseSnapshot.commandOffsetTable[0].commandOffsetBegin, 1u);
+    EXPECT_EQ(sparseSnapshot.commandOffsetTable[0].commandOffsetEnd, 2u);
 }
 
 TEST(RenderSceneCacheTests, SynchronizeRetriesDeferredMeshAndMaterialReferencesAfterResourceRegistration)
@@ -1393,9 +2864,13 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
     ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
 
     auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = false;
+    settings.parallelVisibilityPrimitivesPerTask = 32u;
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.frustum = &frustum;
     visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
 
     const auto serialSnapshot = renderScene.EvaluateVisibilityForTesting(
         visibilityOptions,
@@ -1420,19 +2895,187 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
     EXPECT_EQ(ExtractMeshes(serialQueues), ExtractMeshes(parallelQueues));
 }
 
-TEST(RenderSceneCacheTests, AutoVisibilityStaysSerialUntilPersistentJobSystemExists)
+TEST(RenderSceneCacheTests, VisibleLayerMaskAppliesConsistentlyAcrossVisibilityModes)
 {
-    ManyPrimitiveFixture fixture(1152u);
+    ScopedRenderSceneCacheJobSystem jobSystem(2u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    ManyPrimitiveFixture fixture(192u);
+    ASSERT_GE(fixture.scene.GetGameObjects().size(), 3u);
+    for (size_t index = 0u; index < fixture.scene.GetGameObjects().size(); ++index)
+        fixture.scene.GetGameObjects()[index]->SetLayer(index % 3u == 1u ? 1 : 0);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = false;
+    settings.parallelVisibilityPrimitiveThreshold = 128u;
+    settings.parallelVisibilityPrimitivesPerTask = 32u;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.visibleLayerMask = 1u << 1u;
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto serialSnapshot = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto parallelSnapshot = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Parallel);
+    const auto autoSnapshot = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Auto);
+
+    EXPECT_FALSE(serialSnapshot.usedParallelEvaluation);
+    EXPECT_TRUE(parallelSnapshot.usedParallelEvaluation);
+    EXPECT_TRUE(autoSnapshot.usedParallelEvaluation);
+    EXPECT_EQ(serialSnapshot.primitiveBits, parallelSnapshot.primitiveBits);
+    EXPECT_EQ(serialSnapshot.meshBits, parallelSnapshot.meshBits);
+    EXPECT_EQ(serialSnapshot.primitiveBits, autoSnapshot.primitiveBits);
+    EXPECT_EQ(serialSnapshot.meshBits, autoSnapshot.meshBits);
+    EXPECT_EQ(serialSnapshot.visiblePrimitiveCount, 64u);
+    EXPECT_EQ(serialSnapshot.visiblePrimitiveCount, parallelSnapshot.visiblePrimitiveCount);
+    EXPECT_EQ(serialSnapshot.visibleMeshCount, parallelSnapshot.visibleMeshCount);
+    EXPECT_EQ(serialSnapshot.visiblePrimitiveCount, autoSnapshot.visiblePrimitiveCount);
+    EXPECT_EQ(serialSnapshot.visibleMeshCount, autoSnapshot.visibleMeshCount);
+
+    auto serialQueues = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    auto parallelQueues = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Parallel);
+    auto autoQueues = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Auto);
+
+    EXPECT_EQ(ExtractMeshes(serialQueues), ExtractMeshes(parallelQueues));
+    EXPECT_EQ(ExtractMeshes(serialQueues), ExtractMeshes(autoQueues));
+}
+
+TEST(RenderSceneCacheTests, LargeSceneSettingsExposeNamedDefaultsForVisibilityThresholds)
+{
+    const auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+
+    EXPECT_TRUE(settings.enableSpatialIndex);
+    EXPECT_TRUE(settings.enableParallelVisibility);
+    EXPECT_TRUE(settings.enableLOD);
+    EXPECT_TRUE(settings.enableHLOD);
+    EXPECT_FALSE(settings.enableHZBOcclusion);
+    EXPECT_EQ(settings.parallelVisibilityPrimitiveThreshold, 1024u);
+    EXPECT_EQ(settings.parallelVisibilityPrimitivesPerTask, 128u);
+    EXPECT_EQ(settings.staticRebuildBudgetUs, 0u);
+    EXPECT_STREQ(
+        NLS::Engine::Rendering::LargeSceneSettings::DebugLabel(
+            NLS::Engine::Rendering::LargeSceneSettingId::ParallelVisibilityPrimitiveThreshold),
+        "parallelVisibilityPrimitiveThreshold");
+    EXPECT_STREQ(
+        NLS::Engine::Rendering::LargeSceneSettings::DebugLabel(
+            NLS::Engine::Rendering::LargeSceneSettingId::ParallelVisibilityPrimitivesPerTask),
+        "parallelVisibilityPrimitivesPerTask");
+    EXPECT_STREQ(
+        NLS::Engine::Rendering::LargeSceneSettings::DebugLabel(
+            NLS::Engine::Rendering::LargeSceneSettingId::StaticRebuildBudgetUs),
+        "staticRebuildBudgetUs");
+}
+
+TEST(RenderSceneCacheTests, AutoVisibilityUsesLargeSceneSettingsThresholds)
+{
+    ScopedRenderSceneCacheJobSystem jobSystem(2u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    ManyPrimitiveFixture fixture(192u);
     NLS::Engine::Rendering::RenderScene renderScene;
 
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.material;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1152u);
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = false;
+    settings.parallelVisibilityPrimitiveThreshold = 128u;
+    settings.parallelVisibilityPrimitivesPerTask = 32u;
 
     auto frustum = CreateForwardFrustum();
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.frustum = &frustum;
     visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto autoSnapshot = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Auto);
+    const auto serialSnapshot = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    EXPECT_TRUE(autoSnapshot.usedParallelEvaluation);
+    EXPECT_EQ(autoSnapshot.primitiveBits, serialSnapshot.primitiveBits);
+    EXPECT_EQ(autoSnapshot.meshBits, serialSnapshot.meshBits);
+    EXPECT_EQ(autoSnapshot.visiblePrimitiveCount, serialSnapshot.visiblePrimitiveCount);
+    EXPECT_EQ(autoSnapshot.visibleMeshCount, serialSnapshot.visibleMeshCount);
+}
+
+TEST(RenderSceneCacheTests, AutoVisibilitySettingsCanDisableParallelEvaluation)
+{
+    ScopedRenderSceneCacheJobSystem jobSystem(2u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    ManyPrimitiveFixture fixture(192u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = false;
+    settings.enableParallelVisibility = false;
+    settings.parallelVisibilityPrimitiveThreshold = 128u;
+    settings.parallelVisibilityPrimitivesPerTask = 32u;
+
+    auto frustum = CreateForwardFrustum();
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto autoSnapshot = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Auto);
+    const auto serialSnapshot = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    EXPECT_FALSE(autoSnapshot.usedParallelEvaluation);
+    EXPECT_EQ(autoSnapshot.primitiveBits, serialSnapshot.primitiveBits);
+    EXPECT_EQ(autoSnapshot.meshBits, serialSnapshot.meshBits);
+    EXPECT_EQ(autoSnapshot.visiblePrimitiveCount, serialSnapshot.visiblePrimitiveCount);
+    EXPECT_EQ(autoSnapshot.visibleMeshCount, serialSnapshot.visibleMeshCount);
+}
+
+TEST(RenderSceneCacheTests, AutoVisibilityStaysSerialUntilPersistentJobSystemExists)
+{
+    ManyPrimitiveFixture fixture(192u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = false;
+    settings.parallelVisibilityPrimitiveThreshold = 128u;
+    settings.parallelVisibilityPrimitivesPerTask = 32u;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
 
     const auto autoSnapshot = renderScene.EvaluateVisibilityForTesting(
         visibilityOptions,
@@ -1523,6 +3166,634 @@ TEST(RenderSceneCacheTests, OpaqueQueueGroupsCompatibleStateAndTransparentKeepsB
 
     ASSERT_EQ(visible.transparents.size(), 2u);
     EXPECT_GT(visible.transparents[0].first, visible.transparents[1].first);
+}
+
+TEST(RenderSceneCacheTests, SpatialVisibilityPipelineKeepsQueueFinalizationOwnedByRenderScene)
+{
+    QueueSortFixture fixture;
+    fixture.AddObjectAt("OpaqueNearA", *fixture.sharedMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -5.0f });
+    fixture.AddObjectAt("OpaqueMiddleB", *fixture.otherMesh, fixture.opaqueMaterialB, { 0.0f, 0.0f, -10.0f });
+    fixture.AddObjectAt("OpaqueFarA", *fixture.sharedMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -20.0f });
+    fixture.AddObjectAt("TransparentNear", *fixture.sharedMesh, fixture.transparentMaterial, { 0.0f, 0.0f, -3.0f });
+    fixture.AddObjectAt("TransparentFar", *fixture.sharedMesh, fixture.transparentMaterial, { 0.0f, 0.0f, -30.0f });
+    fixture.AddObjectAt("OutsideOpaque", *fixture.sharedMesh, fixture.opaqueMaterialA, { 250.0f, 0.0f, -6.0f });
+    fixture.AddObjectAt("OutsideTransparent", *fixture.sharedMesh, fixture.transparentMaterial, { 250.0f, 0.0f, -6.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 2u);
+    const auto firstInstances = ResolveVisibleInstanceCount(visible.opaques[0].second);
+    const auto secondInstances = ResolveVisibleInstanceCount(visible.opaques[1].second);
+    EXPECT_TRUE(
+        (visible.opaques[0].second.mesh == fixture.sharedMesh && firstInstances == 2u) ||
+        (visible.opaques[1].second.mesh == fixture.sharedMesh && secondInstances == 2u));
+
+    ASSERT_EQ(visible.transparents.size(), 2u);
+    EXPECT_GT(visible.transparents[0].first, visible.transparents[1].first);
+    EXPECT_EQ(telemetry.commandOffsetRebuildCount, 1u);
+    EXPECT_EQ(telemetry.finalizationTouchedPrimitiveCount, telemetry.visiblePrimitiveCount);
+    EXPECT_EQ(telemetry.finalizationTouchedCommandCount, 5u);
+    EXPECT_EQ(telemetry.rawVisibleDrawCount, 5u);
+    EXPECT_EQ(telemetry.submittedDrawCount, 4u);
+    EXPECT_EQ(telemetry.dynamicInstanceGroupCount, 1u);
+    EXPECT_LT(telemetry.finalizationTouchedPrimitiveCount, telemetry.registeredPrimitiveCount);
+
+    const auto secondVisible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto& secondTelemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    EXPECT_EQ(ExtractMeshes(secondVisible), ExtractMeshes(visible));
+    EXPECT_EQ(secondTelemetry.commandOffsetRebuildCount, 0u);
+    EXPECT_GE(secondTelemetry.primitiveRecordsTouched, secondTelemetry.spatialCandidateCount);
+    EXPECT_GE(secondTelemetry.primitiveRecordsTouched, secondTelemetry.visibilityTestedPrimitiveCount);
+    EXPECT_EQ(secondTelemetry.finalizationTouchedPrimitiveCount, secondTelemetry.visiblePrimitiveCount);
+    EXPECT_LT(secondTelemetry.finalizationTouchedPrimitiveCount, secondTelemetry.registeredPrimitiveCount);
+}
+
+TEST(RenderSceneCacheTests, SpatialVisibilityTelemetryDoesNotUnderReportPipelineTouches)
+{
+    const auto source = ReadRepoTextFile("Runtime/Engine/Rendering/RenderScene.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const auto spatialPath = source.find("RenderScene::EvaluateVisibilitySpatial(");
+    ASSERT_NE(spatialPath, std::string::npos);
+    const auto nextFunction = source.find("RenderScene::EvaluateVisibilityParallel(", spatialPath);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const auto spatialBody = source.substr(spatialPath, nextFunction - spatialPath);
+
+    EXPECT_NE(
+        spatialBody.find("candidates.primitiveRecordsTouched + pipelineResult.primitiveRecordsTouched"),
+        std::string::npos);
+    EXPECT_EQ(
+        spatialBody.find("std::max(candidates.primitiveRecordsTouched, pipelineResult.primitiveRecordsTouched)"),
+        std::string::npos);
+    EXPECT_EQ(
+        spatialBody.find("snapshot.primitiveRecordsTouched = candidates.primitiveRecordsTouched;"),
+        std::string::npos);
+}
+
+TEST(RenderSceneCacheTests, GatherVisibleCommandsAppliesRegisteredLODGroups)
+{
+    QueueSortFixture fixture;
+    auto* highMesh = CreateSingleMesh(0u);
+    auto* lowMesh = CreateSingleMesh(0u);
+    ASSERT_NE(highMesh, nullptr);
+    ASSERT_NE(lowMesh, nullptr);
+    fixture.AddObjectAt("LODHigh", *highMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -100.0f });
+    fixture.AddObjectAt("LODLow", *lowMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -100.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting();
+    const auto highHandle = FindPrimitiveHandleByMesh(snapshot, *highMesh);
+    const auto lowHandle = FindPrimitiveHandleByMesh(snapshot, *lowMesh);
+    ASSERT_TRUE(highHandle.IsValid());
+    ASSERT_TRUE(lowHandle.IsValid());
+
+    NLS::Engine::Rendering::LODGroupRecord lodGroup;
+    lodGroup.groupHandle = { 0u };
+    lodGroup.worldReferencePoint = { 0.0f, 0.0f, -100.0f };
+    lodGroup.worldSize = 20.0f;
+    lodGroup.levels = {
+        NLS::Engine::Rendering::LODLevelRecord { 0.50f, { highHandle } },
+        NLS::Engine::Rendering::LODLevelRecord { 0.00f, { lowHandle } }
+    };
+    renderScene.RegisterLODGroup(lodGroup);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableLOD = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    const auto meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 1u);
+    EXPECT_EQ(meshes.front(), lowMesh);
+
+    delete highMesh;
+    delete lowMesh;
+}
+
+TEST(RenderSceneCacheTests, SpatialVisibilityWithoutFrustumStillAppliesRegisteredLODGroups)
+{
+    QueueSortFixture fixture;
+    auto* highMesh = CreateSingleMesh(0u);
+    auto* lowMesh = CreateSingleMesh(0u);
+    ASSERT_NE(highMesh, nullptr);
+    ASSERT_NE(lowMesh, nullptr);
+    fixture.AddObjectAt("SpatialLODHigh", *highMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -100.0f });
+    fixture.AddObjectAt("SpatialLODLow", *lowMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -100.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting();
+    const auto highHandle = FindPrimitiveHandleByMesh(snapshot, *highMesh);
+    const auto lowHandle = FindPrimitiveHandleByMesh(snapshot, *lowMesh);
+    ASSERT_TRUE(highHandle.IsValid());
+    ASSERT_TRUE(lowHandle.IsValid());
+
+    NLS::Engine::Rendering::LODGroupRecord lodGroup;
+    lodGroup.groupHandle = { 0u };
+    lodGroup.worldReferencePoint = { 0.0f, 0.0f, -100.0f };
+    lodGroup.worldSize = 20.0f;
+    lodGroup.levels = {
+        NLS::Engine::Rendering::LODLevelRecord { 0.50f, { highHandle } },
+        NLS::Engine::Rendering::LODLevelRecord { 0.00f, { lowHandle } }
+    };
+    renderScene.RegisterLODGroup(lodGroup);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+    settings.enableLOD = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    const auto meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 1u);
+    EXPECT_EQ(meshes.front(), lowMesh);
+
+    delete highMesh;
+    delete lowMesh;
+}
+
+TEST(RenderSceneCacheTests, RegisteredLODHistoryIsIsolatedPerViewKey)
+{
+    QueueSortFixture fixture;
+    auto* highMesh = CreateSingleMesh(0u);
+    auto* lowMesh = CreateSingleMesh(0u);
+    ASSERT_NE(highMesh, nullptr);
+    ASSERT_NE(lowMesh, nullptr);
+    fixture.AddObjectAt("ViewLocalLODHigh", *highMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -100.0f });
+    fixture.AddObjectAt("ViewLocalLODLow", *lowMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -100.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting();
+    const auto highHandle = FindPrimitiveHandleByMesh(snapshot, *highMesh);
+    const auto lowHandle = FindPrimitiveHandleByMesh(snapshot, *lowMesh);
+    ASSERT_TRUE(highHandle.IsValid());
+    ASSERT_TRUE(lowHandle.IsValid());
+
+    NLS::Engine::Rendering::LODGroupRecord lodGroup;
+    lodGroup.groupHandle = { 0u };
+    lodGroup.worldReferencePoint = { 0.0f, 0.0f, -100.0f };
+    lodGroup.worldSize = 51.0f;
+    lodGroup.hysteresis = 0.05f;
+    lodGroup.levels = {
+        NLS::Engine::Rendering::LODLevelRecord { 0.50f, { highHandle } },
+        NLS::Engine::Rendering::LODLevelRecord { 0.00f, { lowHandle } }
+    };
+    renderScene.RegisterLODGroup(lodGroup);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableLOD = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions viewA;
+    viewA.cameraPosition = {};
+    viewA.largeSceneSettings = &settings;
+    viewA.lodHistoryViewKey = 101u;
+    auto visible = renderScene.GatherVisibleCommands(
+        viewA,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    auto meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 1u);
+    EXPECT_EQ(meshes.front(), highMesh);
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions viewB = viewA;
+    viewB.lodHistoryViewKey = 202u;
+    viewB.lodBias = 0.96f;
+    visible = renderScene.GatherVisibleCommands(
+        viewB,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 1u);
+    EXPECT_EQ(meshes.front(), lowMesh);
+
+    viewA.lodBias = 0.96f;
+    visible = renderScene.GatherVisibleCommands(
+        viewA,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 1u);
+    EXPECT_EQ(meshes.front(), highMesh);
+
+    delete highMesh;
+    delete lowMesh;
+}
+
+TEST(RenderSceneCacheTests, GatherVisibleCommandsAppliesRegisteredHLODClusters)
+{
+    QueueSortFixture fixture;
+    auto* childMeshA = CreateSingleMesh(0u);
+    auto* childMeshB = CreateSingleMesh(0u);
+    auto* proxyMesh = CreateSingleMesh(0u);
+    ASSERT_NE(childMeshA, nullptr);
+    ASSERT_NE(childMeshB, nullptr);
+    ASSERT_NE(proxyMesh, nullptr);
+    fixture.AddObjectAt("HLODChildA", *childMeshA, fixture.opaqueMaterialA, { -1.0f, 0.0f, -200.0f });
+    fixture.AddObjectAt("HLODChildB", *childMeshB, fixture.opaqueMaterialA, { 1.0f, 0.0f, -200.0f });
+    fixture.AddObjectAt("HLODProxy", *proxyMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -200.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting();
+    const auto childHandleA = FindPrimitiveHandleByMesh(snapshot, *childMeshA);
+    const auto childHandleB = FindPrimitiveHandleByMesh(snapshot, *childMeshB);
+    const auto proxyHandle = FindPrimitiveHandleByMesh(snapshot, *proxyMesh);
+    ASSERT_TRUE(childHandleA.IsValid());
+    ASSERT_TRUE(childHandleB.IsValid());
+    ASSERT_TRUE(proxyHandle.IsValid());
+
+    NLS::Engine::Rendering::HLODClusterRecord cluster;
+    cluster.clusterHandle = { 0u };
+    cluster.childPrimitives = { childHandleA, childHandleB };
+    cluster.proxyPrimitive = proxyHandle;
+    cluster.worldReferencePoint = { 0.0f, 0.0f, -200.0f };
+    cluster.worldSize = 40.0f;
+    cluster.activationScreenRelativeSize = 0.50f;
+    cluster.compatibilityFlags =
+        NLS::Engine::Rendering::HLODCompatibilityFlags::OpaqueOnly |
+        NLS::Engine::Rendering::HLODCompatibilityFlags::ProxySafe;
+    renderScene.RegisterHLODCluster(cluster);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableHLOD = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    const auto meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 1u);
+    EXPECT_EQ(meshes.front(), proxyMesh);
+
+    delete childMeshA;
+    delete childMeshB;
+    delete proxyMesh;
+}
+
+TEST(RenderSceneCacheTests, GatherVisibleCommandsKeepsSelectedHLODChildInspectable)
+{
+    QueueSortFixture fixture;
+    auto* childMeshA = CreateSingleMesh(0u);
+    auto* childMeshB = CreateSingleMesh(0u);
+    auto* proxyMesh = CreateSingleMesh(0u);
+    ASSERT_NE(childMeshA, nullptr);
+    ASSERT_NE(childMeshB, nullptr);
+    ASSERT_NE(proxyMesh, nullptr);
+    fixture.AddObjectAt("SelectedHLODChildA", *childMeshA, fixture.opaqueMaterialA, { -1.0f, 0.0f, -200.0f });
+    fixture.AddObjectAt("SelectedHLODChildB", *childMeshB, fixture.opaqueMaterialA, { 1.0f, 0.0f, -200.0f });
+    fixture.AddObjectAt("SelectedHLODProxy", *proxyMesh, fixture.opaqueMaterialA, { 0.0f, 0.0f, -200.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting();
+    const auto childHandleA = FindPrimitiveHandleByMesh(snapshot, *childMeshA);
+    const auto childHandleB = FindPrimitiveHandleByMesh(snapshot, *childMeshB);
+    const auto proxyHandle = FindPrimitiveHandleByMesh(snapshot, *proxyMesh);
+    ASSERT_TRUE(childHandleA.IsValid());
+    ASSERT_TRUE(childHandleB.IsValid());
+    ASSERT_TRUE(proxyHandle.IsValid());
+
+    NLS::Engine::Rendering::HLODClusterRecord cluster;
+    cluster.clusterHandle = { 0u };
+    cluster.childPrimitives = { childHandleA, childHandleB };
+    cluster.proxyPrimitive = proxyHandle;
+    cluster.worldReferencePoint = { 0.0f, 0.0f, -200.0f };
+    cluster.worldSize = 40.0f;
+    cluster.activationScreenRelativeSize = 0.50f;
+    cluster.compatibilityFlags =
+        NLS::Engine::Rendering::HLODCompatibilityFlags::OpaqueOnly |
+        NLS::Engine::Rendering::HLODCompatibilityFlags::ProxySafe;
+    renderScene.RegisterHLODCluster(cluster);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableHLOD = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+    visibilityOptions.editorInspectionView = true;
+    visibilityOptions.selectedPrimitiveHandles = { childHandleA };
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    const auto meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 2u);
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), childMeshA), meshes.end());
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), proxyMesh), meshes.end());
+    EXPECT_EQ(std::find(meshes.begin(), meshes.end(), childMeshB), meshes.end());
+
+    delete childMeshA;
+    delete childMeshB;
+    delete proxyMesh;
+}
+
+TEST(RenderSceneCacheTests, HLODMissingProxyInterestPropagatesFromRenderSceneVisibility)
+{
+    QueueSortFixture fixture;
+    auto* childMeshA = CreateSingleMesh(0u);
+    auto* childMeshB = CreateSingleMesh(0u);
+    ASSERT_NE(childMeshA, nullptr);
+    ASSERT_NE(childMeshB, nullptr);
+    fixture.AddObjectAt("MissingProxyChildA", *childMeshA, fixture.opaqueMaterialA, { -1.0f, 0.0f, -200.0f });
+    fixture.AddObjectAt("MissingProxyChildB", *childMeshB, fixture.opaqueMaterialA, { 1.0f, 0.0f, -200.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting();
+    const auto childHandleA = FindPrimitiveHandleByMesh(snapshot, *childMeshA);
+    const auto childHandleB = FindPrimitiveHandleByMesh(snapshot, *childMeshB);
+    ASSERT_TRUE(childHandleA.IsValid());
+    ASSERT_TRUE(childHandleB.IsValid());
+
+    const NLS::Engine::Rendering::ScenePrimitiveHandle missingProxyHandle {
+        childHandleA.sceneId,
+        childHandleB.index + 100u,
+        1u
+    };
+
+    NLS::Engine::Rendering::HLODClusterRecord cluster;
+    cluster.clusterHandle = { 0u };
+    cluster.childPrimitives = { childHandleA, childHandleB };
+    cluster.proxyPrimitive = missingProxyHandle;
+    cluster.worldReferencePoint = { 0.0f, 0.0f, -200.0f };
+    cluster.worldSize = 80.0f;
+    cluster.activationScreenRelativeSize = 0.50f;
+    cluster.compatibilityFlags =
+        NLS::Engine::Rendering::HLODCompatibilityFlags::OpaqueOnly |
+        NLS::Engine::Rendering::HLODCompatibilityFlags::ProxySafe;
+    renderScene.RegisterHLODCluster(cluster);
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableHLOD = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto visibility = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    EXPECT_EQ(visibility.visiblePrimitiveCount, 2u);
+    ASSERT_EQ(visibility.representationStreamingInterest.size(), 1u);
+    EXPECT_EQ(visibility.representationStreamingInterest.front(), missingProxyHandle);
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 2u);
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), childMeshA), meshes.end());
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), childMeshB), meshes.end());
+
+    delete childMeshA;
+    delete childMeshB;
+}
+
+TEST(RenderSceneCacheTests, GatherVisibleCommandsConsumesOcclusionHistoryBeforeSubmission)
+{
+    QueueSortFixture fixture;
+    auto* visibleMesh = CreateSingleMesh(0u);
+    auto* hiddenMesh = CreateSingleMesh(0u);
+    ASSERT_NE(visibleMesh, nullptr);
+    ASSERT_NE(hiddenMesh, nullptr);
+    fixture.AddObjectAt("VisibleOcclusionPrimitive", *visibleMesh, fixture.opaqueMaterialA, { -1.0f, 0.0f, -20.0f });
+    fixture.AddObjectAt("HiddenOcclusionPrimitive", *hiddenMesh, fixture.opaqueMaterialA, { 1.0f, 0.0f, -20.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting(42u);
+    const auto visibleHandle = FindPrimitiveHandleByMesh(snapshot, *visibleMesh);
+    const auto hiddenHandle = FindPrimitiveHandleByMesh(snapshot, *hiddenMesh);
+    ASSERT_TRUE(visibleHandle.IsValid());
+    ASSERT_TRUE(hiddenHandle.IsValid());
+
+    NLS::Engine::Rendering::SceneOcclusionFrameInput frameInput;
+    frameInput.enabled = true;
+    frameInput.backendSupported = true;
+    frameInput.historyTextureValid = true;
+    frameInput.frameSerial = snapshot.frameSerial;
+    frameInput.maxHistoryAge = 2u;
+    frameInput.viewKey = 77u;
+    frameInput.viewCompatibilityHash = 88u;
+    frameInput.projectionHash = 99u;
+    frameInput.jitterHash = 0u;
+    frameInput.depthFormatKey = 1u;
+    frameInput.viewportWidth = 1280u;
+    frameInput.viewportHeight = 720u;
+
+    std::vector<NLS::Engine::Rendering::SceneOcclusionPrimitiveInput> primitiveInputs;
+    primitiveInputs.reserve(snapshot.primitiveRecords.size());
+    for (const auto& record : snapshot.primitiveRecords)
+    {
+        primitiveInputs.push_back({
+            record.handle,
+            record.handle.generation,
+            record.handle.generation,
+            0u,
+            record.hasValidMaterial ? 1u : 0u,
+            record.hasValidMaterial
+        });
+    }
+
+    const auto hiddenInput = std::find_if(
+        primitiveInputs.begin(),
+        primitiveInputs.end(),
+        [hiddenHandle](const auto& input)
+        {
+            return input.handle == hiddenHandle;
+        });
+    ASSERT_NE(hiddenInput, primitiveInputs.end());
+
+    NLS::Engine::Rendering::SceneOcclusionHistory history;
+    history.RecordOccluded(
+        NLS::Engine::Rendering::SceneOcclusionSystem::BuildHistoryKey(frameInput, *hiddenInput),
+        frameInput.frameSerial - 1u);
+
+    NLS::Engine::Rendering::SceneOcclusionState occlusion;
+    occlusion.frameInput = frameInput;
+    occlusion.history = &history;
+    occlusion.primitiveInputs = &primitiveInputs;
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableHZBOcclusion = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+    visibilityOptions.occlusion = &occlusion;
+
+    const auto visibility = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    EXPECT_EQ(visibility.visiblePrimitiveCount, 1u);
+    const auto occludedIndex = static_cast<size_t>(NLS::Engine::Rendering::CullReason::Occluded);
+    ASSERT_LT(occludedIndex, visibility.culledByReason.size());
+    EXPECT_EQ(visibility.culledByReason[occludedIndex], 1u);
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto meshes = ExtractMeshes(visible);
+    ASSERT_EQ(meshes.size(), 1u);
+    EXPECT_EQ(meshes.front(), visibleMesh);
+    EXPECT_EQ(renderScene.GetLastLargeSceneTelemetryForTesting().occlusionCulledCount, 1u);
+
+    delete visibleMesh;
+    delete hiddenMesh;
+}
+
+TEST(RenderSceneCacheTests, VisibilitySnapshotCarriesVisiblePrimitiveHandlesForHZBPacketSources)
+{
+    QueueSortFixture fixture;
+    auto* visibleMesh = CreateSingleMesh(0u);
+    auto* hiddenMesh = CreateSingleMesh(0u);
+    ASSERT_NE(visibleMesh, nullptr);
+    ASSERT_NE(hiddenMesh, nullptr);
+    fixture.AddObjectAt("VisibleHZBSourcePrimitive", *visibleMesh, fixture.opaqueMaterialA, { -1.0f, 0.0f, -20.0f });
+    fixture.AddObjectAt("HiddenHZBSourcePrimitive", *hiddenMesh, fixture.opaqueMaterialA, { 1.0f, 0.0f, -20.0f });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting(42u);
+    const auto visibleHandle = FindPrimitiveHandleByMesh(snapshot, *visibleMesh);
+    const auto hiddenHandle = FindPrimitiveHandleByMesh(snapshot, *hiddenMesh);
+    ASSERT_TRUE(visibleHandle.IsValid());
+    ASSERT_TRUE(hiddenHandle.IsValid());
+
+    NLS::Engine::Rendering::SceneOcclusionFrameInput frameInput;
+    frameInput.enabled = true;
+    frameInput.backendSupported = true;
+    frameInput.historyTextureValid = true;
+    frameInput.frameSerial = snapshot.frameSerial;
+    frameInput.maxHistoryAge = 2u;
+    frameInput.viewKey = 77u;
+    frameInput.viewCompatibilityHash = 88u;
+    frameInput.projectionHash = 99u;
+    frameInput.depthFormatKey = 1u;
+    frameInput.viewportWidth = 1280u;
+    frameInput.viewportHeight = 720u;
+
+    std::vector<NLS::Engine::Rendering::SceneOcclusionPrimitiveInput> primitiveInputs;
+    for (const auto& record : snapshot.primitiveRecords)
+    {
+        primitiveInputs.push_back({
+            record.handle,
+            record.handle.generation,
+            record.handle.generation,
+            0u,
+            record.hasValidMaterial ? 1u : 0u,
+            record.hasValidMaterial
+        });
+    }
+
+    const auto hiddenInput = std::find_if(
+        primitiveInputs.begin(),
+        primitiveInputs.end(),
+        [hiddenHandle](const auto& input)
+        {
+            return input.handle == hiddenHandle;
+        });
+    ASSERT_NE(hiddenInput, primitiveInputs.end());
+
+    NLS::Engine::Rendering::SceneOcclusionHistory history;
+    history.RecordOccluded(
+        NLS::Engine::Rendering::SceneOcclusionSystem::BuildHistoryKey(frameInput, *hiddenInput),
+        frameInput.frameSerial - 1u);
+
+    NLS::Engine::Rendering::SceneOcclusionState occlusion;
+    occlusion.frameInput = frameInput;
+    occlusion.history = &history;
+    occlusion.primitiveInputs = &primitiveInputs;
+
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableHZBOcclusion = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+    visibilityOptions.occlusion = &occlusion;
+
+    const auto visibility = renderScene.EvaluateVisibilityForTesting(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(visibility.visiblePrimitiveHandles.size(), 1u);
+    EXPECT_EQ(visibility.visiblePrimitiveHandles.front(), visibleHandle);
+    EXPECT_EQ(
+        std::find(visibility.visiblePrimitiveHandles.begin(), visibility.visiblePrimitiveHandles.end(), hiddenHandle),
+        visibility.visiblePrimitiveHandles.end());
+
+    const auto visibleQueues = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    EXPECT_EQ(ExtractMeshes(visibleQueues).size(), 1u);
+    ASSERT_EQ(renderScene.GetLastVisiblePrimitiveHandles().size(), 1u);
+    EXPECT_EQ(renderScene.GetLastVisiblePrimitiveHandles().front(), visibleHandle);
+
+    delete visibleMesh;
+    delete hiddenMesh;
 }
 
 TEST(RenderSceneCacheTests, SceneRendererKeepsTransparentBackToFrontAcrossAdditiveScenes)
@@ -1725,6 +3996,7 @@ TEST(RenderSceneCacheTests, SceneRendererRespectsGlobalObjectDataCapacityAcrossA
             lastObjectIndex));
     }
     EXPECT_TRUE(sawInvalidOverflowDrawable);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataOverflowDroppedObjectCount, 1u);
 }
 
 TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoObjectIndexRange)
@@ -1834,6 +4106,55 @@ TEST(RenderSceneCacheTests, DynamicInstancingReducesOneThousandCompatibleOpaqueO
     EXPECT_EQ(secondOptimizationStats.dynamicInstanceGroupCount, 1u);
     EXPECT_EQ(secondOptimizationStats.largestInstanceGroupSize, kInstanceCount);
     EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
+}
+
+TEST(RenderSceneCacheTests, SpatialVisibilityPipelinePreservesOneThousandCompatibleOpaqueReduction)
+{
+    QueueSortFixture fixture;
+    constexpr size_t kInstanceCount = 1000u;
+    for (size_t index = 0u; index < kInstanceCount; ++index)
+    {
+        fixture.AddObjectAt(
+            ("SpatialStressInstance" + std::to_string(index)).c_str(),
+            *fixture.sharedMesh,
+            fixture.opaqueMaterialA,
+            {
+                static_cast<float>(index % 20u) * 0.1f - 1.0f,
+                0.0f,
+                -5.0f - static_cast<float>(index / 20u) * 0.1f
+            });
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, kInstanceCount);
+
+    auto frustum = CreateForwardFrustum();
+    auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+    settings.enableSpatialIndex = true;
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &settings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques.front().second), kInstanceCount);
+    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, kInstanceCount);
+    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, kInstanceCount);
+    EXPECT_EQ(telemetry.rawVisibleDrawCount, kInstanceCount);
+    EXPECT_EQ(telemetry.submittedDrawCount, 1u);
+    EXPECT_EQ(telemetry.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(telemetry.finalizationTouchedPrimitiveCount, telemetry.visiblePrimitiveCount);
 }
 
 TEST(RenderSceneCacheTests, DynamicInstancingReducesTraceScaleCompatibleObjectsToOneSubmittedDraw)

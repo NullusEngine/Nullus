@@ -27,6 +27,7 @@
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/Core/RHICommand.h"
+#include "Rendering/SceneVisibilityPipeline.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -678,6 +679,73 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     ExpectNoTextWidgetContent(panel, "Target Panel Draw: 0 us");
     ExpectTextWidgetContent(panel, "Frame Stage: Direct");
     ExpectTextWidgetContent(panel, "Retirement State: Direct");
+}
+
+TEST(PanelWindowHookTests, FrameInfoPanelFormatsLargeSceneTelemetrySnapshot)
+{
+    NLS::Render::Data::FrameInfo frameInfo;
+    frameInfo.largeScene.registeredPrimitiveCount = 100000u;
+    frameInfo.largeScene.staticPrimitiveCount = 95000u;
+    frameInfo.largeScene.dynamicPrimitiveCount = 5000u;
+    frameInfo.largeScene.unclassifiedPrimitiveCount = 0u;
+    frameInfo.largeScene.allocatedPrimitiveSlotCount = 101000u;
+    frameInfo.largeScene.tombstonedPrimitiveSlotCount = 1000u;
+    frameInfo.largeScene.spatialCandidateCount = 24000u;
+    frameInfo.largeScene.fullScanCandidateCount = 0u;
+    frameInfo.largeScene.visiblePrimitiveCount = 18000u;
+    frameInfo.largeScene.visibleMeshCount = 17000u;
+    frameInfo.largeScene.culledByReason[static_cast<size_t>(NLS::Engine::Rendering::CullReason::Visible)] = 18000u;
+    frameInfo.largeScene.culledByReason[static_cast<size_t>(NLS::Engine::Rendering::CullReason::LODInactive)] = 120u;
+    frameInfo.largeScene.culledByReason[static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODChildSuppressed)] = 30u;
+    frameInfo.largeScene.culledByReason[static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODProxyInactive)] = 12u;
+    frameInfo.largeScene.culledByReason[static_cast<size_t>(NLS::Engine::Rendering::CullReason::Occluded)] = 8u;
+    frameInfo.largeScene.primitiveRecordsTouched = 25000u;
+    frameInfo.largeScene.syncTouchedPrimitiveCount = 37u;
+    frameInfo.largeScene.syncFullSweepCount = 0u;
+    frameInfo.largeScene.syncSweepTouchedSlotCount = 101000u;
+    frameInfo.largeScene.boundsDirtyPrimitiveCount = 4u;
+    frameInfo.largeScene.primitiveSlotReuseCount = 3u;
+    frameInfo.largeScene.visibilityTestedPrimitiveCount = 26000u;
+    frameInfo.largeScene.finalizationTouchedPrimitiveCount = 18000u;
+    frameInfo.largeScene.finalizationTouchedCommandCount = 18120u;
+    frameInfo.largeScene.commandOffsetRebuildCount = 2u;
+    frameInfo.largeScene.rawVisibleDrawCount = 18000u;
+    frameInfo.largeScene.submittedDrawCount = 1000u;
+    frameInfo.largeScene.dynamicInstanceGroupCount = 960u;
+    frameInfo.largeScene.streamingDependencyCount = 512u;
+    frameInfo.largeScene.residencyTicketCount = 64u;
+    frameInfo.largeScene.residentCpuBytes = 1048576u;
+    frameInfo.largeScene.residentGpuBytes = 2097152u;
+    frameInfo.largeScene.requestedCpuBytes = 3145728u;
+    frameInfo.largeScene.requestedGpuBytes = 4194304u;
+    frameInfo.largeScene.streamingRequestCount = 11u;
+    frameInfo.largeScene.streamingCommitCount = 7u;
+    frameInfo.largeScene.streamingEvictCount = 3u;
+    frameInfo.largeScene.occlusionTestCount = 144u;
+    frameInfo.largeScene.occlusionCulledCount = 55u;
+    frameInfo.largeScene.hzbBuildTimeNs = 66000u;
+    frameInfo.largeScene.hzbHistoryPruneTouchedHandleCount = 9u;
+    frameInfo.largeScene.hzbHistoryPruneRemovedHandleCount = 4u;
+    frameInfo.largeScene.hzbHistoryPruneRemovedKeyCount = 6u;
+    frameInfo.largeScene.hzbHistoryPruneTimeNs = 8000u;
+    frameInfo.largeScene.streamingCommitTimeNs = 77000u;
+    frameInfo.largeScene.syncTimeNs = 300000u;
+    frameInfo.largeScene.serialVisibilityTimeNs = 0u;
+    frameInfo.largeScene.parallelVisibilityTimeNs = 120000u;
+    frameInfo.largeScene.queueFinalizationTimeNs = 90000u;
+
+    NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
+    panel.UpdateForFrameInfo("Large Scene View", frameInfo);
+
+    ExpectTextWidgetContent(panel, "Large Scene Primitives Reg/Static/Dynamic/Unclassified/Slots/Tombstones: 100,000/95,000/5,000/0/101,000/1,000");
+    ExpectTextWidgetContent(panel, "Large Scene Visibility SpatialCandidates/FullScanCandidates/Records/Tested/Visible/Meshes: 24,000/0/25,000/26,000/18,000/17,000");
+    ExpectTextWidgetContent(panel, "Large Scene Cull Visible/Inactive/Layer/Distance/Spatial/Frustum/LOD/HLOD/Occluded/NotResident/MissingMesh/InvalidMaterial/Backend: 18,000/0/0/0/0/0/120/42/8/0/0/0/0");
+    ExpectTextWidgetContent(panel, "Large Scene Sync Touched/FullSweeps/SweepSlots/DirtyBounds/SlotReuse: 37/0/101,000/4/3");
+    ExpectTextWidgetContent(panel, "Large Scene Finalization Prims/Commands/Rebuilds/Raw/Submitted/Groups: 18,000/18,120/2/18,000/1,000/960");
+    ExpectTextWidgetContent(panel, "Large Scene Residency Dependencies/Tickets/ModeledResidentCPU/ModeledResidentGPU/ModeledRequestedCPU/ModeledRequestedGPU: 512/64/1,048,576/2,097,152/3,145,728/4,194,304");
+    ExpectTextWidgetContent(panel, "Large Scene Streaming Requests/Commits/Evicts/OcclusionTests/OcclusionCulled/HZBns/Commitns: 11/7/3/144/55/66,000/77,000");
+    ExpectTextWidgetContent(panel, "Large Scene HZB History Prune Touched/RemovedHandles/RemovedKeys/ns: 9/4/6/8,000");
+    ExpectTextWidgetContent(panel, "Large Scene Timings Sync/SerialVis/ParallelVis/Finalize ns: 300,000/0/120,000/90,000");
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelExcludesEditorUiPanelDrawMetrics)

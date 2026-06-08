@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <chrono>
@@ -19,6 +20,7 @@
 #include "Rendering/Core/RenderClearValues.h"
 #include "Rendering/Data/FrameInfo.h"
 #include "Rendering/RHI/Core/RHICommand.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "RenderDef.h"
 
@@ -71,29 +73,6 @@ namespace NLS::Render::Context
         std::shared_ptr<RHI::RHIBindingSet> bindingSet;
     };
 
-    struct NLS_RENDER_API RecordedComputeDispatchInput
-    {
-        std::string debugName;
-        std::shared_ptr<RHI::RHIComputePipeline> pipeline;
-        std::vector<RecordedComputeBindingSetInput> bindingSets;
-        uint32_t groupCountX = 1u;
-        uint32_t groupCountY = 1u;
-        uint32_t groupCountZ = 1u;
-        std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderReadBuffersBefore;
-        std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderWriteBuffersBefore;
-        std::vector<std::shared_ptr<RHI::RHIBuffer>> uavBarrierBuffersBefore;
-        std::vector<std::shared_ptr<RHI::RHIBuffer>> uavBarrierBuffersAfter;
-        std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderReadBuffersAfter;
-    };
-
-    enum class QueueDependencyPolicy : uint8_t
-    {
-        None = 0,
-        Previous,
-        LastGraphics,
-        LastCompute
-    };
-
     struct NLS_RENDER_API BufferVisibilityTransition
     {
         std::shared_ptr<RHI::RHIBuffer> buffer;
@@ -140,6 +119,33 @@ namespace NLS::Render::Context
         RHI::ResourceState state = RHI::ResourceState::Unknown;
         RHI::PipelineStageMask stages = RHI::PipelineStageMask::None;
         RHI::AccessMask access = RHI::AccessMask::None;
+    };
+
+    struct NLS_RENDER_API RecordedComputeDispatchInput
+    {
+        std::string debugName;
+        std::shared_ptr<RHI::RHIComputePipeline> pipeline;
+        std::vector<RecordedComputeBindingSetInput> bindingSets;
+        uint32_t groupCountX = 1u;
+        uint32_t groupCountY = 1u;
+        uint32_t groupCountZ = 1u;
+        std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderReadBuffersBefore;
+        std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderWriteBuffersBefore;
+        std::vector<std::shared_ptr<RHI::RHIBuffer>> uavBarrierBuffersBefore;
+        std::vector<std::shared_ptr<RHI::RHIBuffer>> uavBarrierBuffersAfter;
+        std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderReadBuffersAfter;
+        std::vector<BufferResourceAccess> bufferResourceAccesses;
+        std::vector<TextureResourceAccess> textureResourceAccesses;
+        std::vector<TextureVisibilityTransition> textureVisibilityTransitionsBefore;
+        std::vector<TextureVisibilityTransition> exportedTextureVisibilityTransitions;
+    };
+
+    enum class QueueDependencyPolicy : uint8_t
+    {
+        None = 0,
+        Previous,
+        LastGraphics,
+        LastCompute
     };
 
     enum class ThreadedDependencyKind : uint8_t
@@ -273,6 +279,28 @@ namespace NLS::Render::Context
         Submitted
     };
 
+    struct NLS_RENDER_API LargeSceneCullReasonDebugEntry
+    {
+        uint64_t sceneId = 0u;
+        uint32_t primitiveIndex = ~0u;
+        uint32_t primitiveGeneration = 0u;
+        uint8_t reason = 0u;
+        uint32_t selectedLOD = 0u;
+        uint64_t commandOffsetBegin = 0u;
+        uint64_t commandOffsetEnd = 0u;
+        bool visible = false;
+    };
+
+    struct NLS_RENDER_API LargeSceneCullReasonDebugSnapshot
+    {
+        uint64_t frameSerial = 0u;
+        uint64_t sceneId = 0u;
+        uint64_t primitiveCount = 0u;
+        uint64_t visiblePrimitiveCount = 0u;
+        std::array<uint64_t, Data::kLargeSceneCullReasonCount> reasonCounts {};
+        std::vector<LargeSceneCullReasonDebugEntry> entries;
+    };
+
     struct NLS_RENDER_API FrameSnapshot
     {
         uint64_t frameId = 0u;
@@ -299,7 +327,29 @@ namespace NLS::Render::Context
         uint64_t externalOutputIdentity = 0u;
         std::vector<uint64_t> externalOutputIdentities;
         uint32_t externalOutputTextureCount = 0u;
+        LargeSceneCullReasonDebugSnapshot largeSceneCullReasonSnapshot;
+        std::vector<uint64_t> streamingDependencyPins;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
+    };
+
+    struct NLS_RENDER_API PostSubmitBufferReadbackState
+    {
+        mutable std::mutex mutex;
+        std::shared_ptr<RHI::RHICompletionToken> completion;
+        RHI::RHIReadbackStatusCode resultCode = RHI::RHIReadbackStatusCode::InvalidArgument;
+        std::string resultMessage;
+        bool beginAttempted = false;
+        bool beginInProgress = false;
+        bool beginSucceeded = false;
+    };
+
+    struct NLS_RENDER_API PostSubmitBufferReadbackRequest
+    {
+        // Caller owns source-state correctness and must keep destination storage alive until Poll() completes.
+        RHI::RHIBufferReadbackDesc desc;
+        std::shared_ptr<PostSubmitBufferReadbackState> state;
+        std::shared_ptr<void> destinationKeepAlive;
+        bool waitForLastComputeQueueCompletion = false;
     };
 
     struct NLS_RENDER_API RenderScenePackage
@@ -345,6 +395,8 @@ namespace NLS::Render::Context
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
         std::vector<std::shared_ptr<RHI::RHITexture>> extractedTextures;
         std::shared_ptr<RHI::RHITexture> preferredReadbackTexture;
+        std::vector<PostSubmitBufferReadbackRequest> postSubmitBufferReadbacks;
+        std::vector<uint64_t> streamingDependencyPins;
         uint64_t externalSceneOutputIdentity = 0u;
         std::vector<uint64_t> externalSceneOutputIdentities;
         uint32_t externalSceneOutputTextureCount = 0u;
@@ -459,6 +511,7 @@ namespace NLS::Render::Context
         std::optional<PreparedRenderSceneBuilder> preparedRenderSceneBuilder;
         std::optional<RenderScenePackage> renderScenePackage;
         std::optional<RhiSubmissionFrame> submissionFrame;
+        std::vector<uint64_t> streamingDependencyPins;
     };
 
     struct NLS_RENDER_API ThreadedFrameTelemetry
@@ -576,6 +629,7 @@ namespace NLS::Render::Context
         const InFlightFrameSlot* PeekSlot(size_t slotIndex) const;
         std::optional<InFlightFrameSlot> CopySlot(size_t slotIndex) const;
         std::vector<InFlightFrameSlot> CopySlots() const;
+        std::vector<uint64_t> CollectStreamingDependencyPins() const;
         ThreadedFrameTelemetry GetTelemetry() const;
         std::optional<ThreadedFrameTelemetry> TryGetTelemetry() const;
         void ReleaseRetainedFrameResources();

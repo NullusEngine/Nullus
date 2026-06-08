@@ -30,6 +30,26 @@ const NLS::Engine::Serialize::ObjectRecord* FindRecord(
     return nullptr;
 }
 
+const NLS::Engine::Serialize::ObjectRecord* FindRecordById(
+    const NLS::Engine::Serialize::ObjectGraphDocument& document,
+    const NLS::Engine::Serialize::ObjectId& id)
+{
+    for (const auto& record : document.objects)
+    {
+        if (record.id == id)
+            return &record;
+    }
+    return nullptr;
+}
+
+NLS::Engine::Serialize::ObjectId MakeGeneratedModelPrefabObjectId(
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::string& suffix)
+{
+    return NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic(
+        "GeneratedModelPrefab:" + scene.sourceAssetId.ToString() + ":" + scene.sceneKey + ":" + suffix));
+}
+
 const NLS::Engine::Serialize::PropertyRecord* FindProperty(
     const NLS::Engine::Serialize::ObjectRecord& record,
     const char* name)
@@ -707,6 +727,118 @@ TEST(AssetPrefabPipelineTests, BuildsGeneratedModelPrefabHierarchyWithRendererAs
     EXPECT_TRUE(ContainsResolvedAsset(result.artifact.resolvedAssets, "Material", "material:converted-material/body"));
     EXPECT_EQ(FindResolvedAsset(result.artifact.resolvedAssets, "Model", "model:HeroScene"), nullptr);
     EXPECT_EQ(result.artifact.sourceToRuntimeObject.size(), result.artifact.graph.objects.size());
+}
+
+TEST(AssetPrefabPipelineTests, GeneratedModelPrefabUsesSceneKeyForSingleParserRootNodeName)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("45454545-4545-4545-8545-454545454545"));
+    scene.sceneKey = "NewSponza_Main_Yup_003";
+    scene.nodes.push_back({"parser/node/0", "RootNode", "", "", ""});
+    scene.nodes.push_back({"parser/node/1", "SponzaMesh", "parser/node/0", "parser/mesh/0", ""});
+
+    NLS::Render::Assets::ImportedScenePrimitive primitive;
+    primitive.materialKey = "parser/material/21";
+    NLS::Render::Assets::ImportedSceneNamedRecord mesh;
+    mesh.sourceKey = "parser/mesh/0";
+    mesh.name = "SponzaMesh";
+    mesh.primitives.push_back(std::move(primitive));
+    scene.meshes.push_back(std::move(mesh));
+    scene.materials.push_back({"parser/material/21", "dirt_decal"});
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = scene.sourceAssetId;
+    manifest.primarySubAssetKey = "prefab:NewSponza_Main_Yup_003";
+    manifest.subAssets.push_back({
+        scene.sourceAssetId,
+        "mesh:parser/mesh/0",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/Sponza/mesh.nmesh",
+        "mesh-hash"
+    });
+    manifest.subAssets.push_back({
+        scene.sourceAssetId,
+        "material:parser/material/21",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        "editor-windows",
+        "Library/Artifacts/Sponza/dirt_decal.nmat",
+        "material-hash"
+    });
+
+    const auto result = NLS::Engine::Assets::BuildGeneratedModelPrefab(
+        scene,
+        NLS::Render::Assets::GenerateSceneSubAssets(scene),
+        manifest);
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    ASSERT_FALSE(result.artifact.graph.Validate().HasErrors());
+
+    const auto expectedRootId = MakeGeneratedModelPrefabObjectId(scene, "node:parser/node/0");
+    const auto expectedRootTransformId = MakeGeneratedModelPrefabObjectId(scene, "component:parser/node/0:transform");
+    EXPECT_EQ(result.artifact.graph.root, expectedRootId);
+    EXPECT_NE(result.artifact.sourceToRuntimeObject.find(expectedRootId), result.artifact.sourceToRuntimeObject.end());
+    EXPECT_NE(
+        result.artifact.sourceToRuntimeObject.find(expectedRootTransformId),
+        result.artifact.sourceToRuntimeObject.end());
+
+    const auto* root = FindRecordById(result.artifact.graph, result.artifact.graph.root);
+    ASSERT_NE(root, nullptr);
+    EXPECT_EQ(root->id, expectedRootId);
+    EXPECT_EQ(root->typeName, "NLS::Engine::GameObject");
+    EXPECT_EQ(root->debugName, scene.sceneKey);
+
+    const auto* rootTransform = FindRecordById(result.artifact.graph, expectedRootTransformId);
+    ASSERT_NE(rootTransform, nullptr);
+    EXPECT_EQ(rootTransform->debugName, scene.sceneKey + " Transform");
+
+    const auto* rootName = FindProperty(*root, "name");
+    ASSERT_NE(rootName, nullptr);
+    ASSERT_EQ(rootName->value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::String);
+    EXPECT_EQ(rootName->value.GetString(), scene.sceneKey);
+    EXPECT_EQ(FindRecord(result.artifact.graph, "RootNode", "NLS::Engine::GameObject"), nullptr);
+
+    const auto* child = FindRecord(result.artifact.graph, "SponzaMesh", "NLS::Engine::GameObject");
+    ASSERT_NE(child, nullptr);
+    const auto* childParent = FindProperty(*child, "parent");
+    ASSERT_NE(childParent, nullptr);
+    ASSERT_EQ(childParent->value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::ObjectReference);
+    const auto resolvedChildParent = result.artifact.graph.ResolveObjectReference(
+        childParent->value.GetObjectReference());
+    ASSERT_TRUE(resolvedChildParent.has_value());
+    EXPECT_EQ(*resolvedChildParent, root->id);
+}
+
+TEST(AssetPrefabPipelineTests, GeneratedModelPrefabKeepsChildParserRootNodeName)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("56565656-5656-4656-8656-565656565656"));
+    scene.sceneKey = "AuthoredChildRootNode";
+    scene.nodes.push_back({"parser/node/0", "AuthoredRoot", "", "", ""});
+    scene.nodes.push_back({"parser/node/1", "RootNode", "parser/node/0", "", ""});
+
+    const auto result = NLS::Engine::Assets::BuildGeneratedModelPrefab(
+        scene,
+        NLS::Render::Assets::GenerateSceneSubAssets(scene),
+        {});
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    ASSERT_FALSE(result.artifact.graph.Validate().HasErrors());
+
+    const auto* root = FindRecordById(result.artifact.graph, result.artifact.graph.root);
+    ASSERT_NE(root, nullptr);
+    EXPECT_EQ(root->debugName, "AuthoredRoot");
+
+    const auto* child = FindRecord(result.artifact.graph, "RootNode", "NLS::Engine::GameObject");
+    ASSERT_NE(child, nullptr);
+    const auto* childName = FindProperty(*child, "name");
+    ASSERT_NE(childName, nullptr);
+    ASSERT_EQ(childName->value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::String);
+    EXPECT_EQ(childName->value.GetString(), "RootNode");
 }
 
 TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationResolvesSubAssetHintsToArtifacts)

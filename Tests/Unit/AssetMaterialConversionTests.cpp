@@ -3932,6 +3932,82 @@ TEST(AssetMaterialConversionTests, FbxOpacityTextureWithDecalNameSerializesAsDec
     EXPECT_EQ(convertedTransparent.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
 }
 
+TEST(AssetMaterialConversionTests, FbxDecalNamedBaseColorAlphaTextureSerializesAsDecalSurface)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010707-0707-4707-8707-070707070708"));
+    scene.textures.push_back({"parser/texture/72", "dirt_decal_01", "textures/dirt_decal_01.png", "image/png"});
+    scene.textures.push_back({"parser/texture/73", "stone_wall", "textures/stone_wall.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord decal;
+    decal.sourceKey = "parser/material/21";
+    decal.name = "dirt_decal";
+    decal.materialChannels.push_back({"diffuse", "parser/texture/72", {1.0, 1.0, 1.0}, false, 0.0});
+
+    NLS::Render::Assets::MaterialConversionContext context;
+    context.sourceTextureAlphaEvidence["parser/texture/72"] = true;
+
+    const auto convertedDecal = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        decal,
+        MaterialSourceModel::FbxParserMaterial,
+        context);
+
+    ASSERT_NE(FindSlot(convertedDecal, "BaseColor"), nullptr);
+    EXPECT_EQ(FindSlot(convertedDecal, "Opacity"), nullptr)
+        << "Sponza FBX exposes dirt_decal alpha through the base-color texture, not a separate opacity slot.";
+    EXPECT_EQ(convertedDecal.alphaMode, MaterialAlphaMode::Blend);
+    EXPECT_NE(convertedDecal.serializedPayload.find("<alphaMode>Blend</alphaMode>"), std::string::npos);
+    EXPECT_NE(convertedDecal.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_NE(convertedDecal.serializedPayload.find("<depthWriting>false</depthWriting>"), std::string::npos);
+    EXPECT_TRUE(HasDiagnosticCode(convertedDecal, "material-inferred-fbx-decal-basecolor-alpha"));
+
+    NLS::Render::Assets::ImportedSceneNamedRecord opaque;
+    opaque.sourceKey = "parser/material/22";
+    opaque.name = "stone_wall";
+    opaque.materialChannels.push_back({"diffuse", "parser/texture/73", {1.0, 1.0, 1.0}, false, 0.0});
+
+    const auto convertedOpaque = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        opaque,
+        MaterialSourceModel::FbxParserMaterial);
+
+    EXPECT_EQ(convertedOpaque.alphaMode, MaterialAlphaMode::Opaque);
+    EXPECT_NE(convertedOpaque.serializedPayload.find("<surfaceMode>Opaque</surfaceMode>"), std::string::npos);
+    EXPECT_EQ(convertedOpaque.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, FbxDecalNamedBaseColorTextureWithoutAlphaEvidenceRemainsOpaque)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010707-0707-4707-8707-070707070709"));
+    scene.textures.push_back({"parser/texture/74", "painted_label", "textures/painted_label.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord decalNamedOpaque;
+    decalNamedOpaque.sourceKey = "parser/material/23";
+    decalNamedOpaque.name = "painted_decal_label";
+    decalNamedOpaque.materialChannels.push_back({"diffuse", "parser/texture/74", {1.0, 1.0, 1.0}, false, 0.0});
+
+    NLS::Render::Assets::MaterialConversionContext context;
+    context.sourceTextureAlphaEvidence["parser/texture/74"] = false;
+
+    const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        decalNamedOpaque,
+        MaterialSourceModel::FbxParserMaterial,
+        context);
+
+    ASSERT_NE(FindSlot(converted, "BaseColor"), nullptr);
+    EXPECT_EQ(FindSlot(converted, "Opacity"), nullptr);
+    EXPECT_EQ(converted.alphaMode, MaterialAlphaMode::Opaque)
+        << "Decal identity alone is not enough; RGB or fully opaque base-color textures must keep opaque depth semantics.";
+    EXPECT_NE(converted.serializedPayload.find("<surfaceMode>Opaque</surfaceMode>"), std::string::npos);
+    EXPECT_EQ(converted.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_FALSE(HasDiagnosticCode(converted, "material-inferred-fbx-decal-basecolor-alpha"));
+}
+
 TEST(AssetMaterialConversionTests, FbxBumpOnlyChannelDoesNotEnableNormalMapping)
 {
     NLS::Render::Assets::ImportedScene scene;

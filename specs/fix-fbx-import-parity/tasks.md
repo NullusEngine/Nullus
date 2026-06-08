@@ -133,6 +133,27 @@
 - [x] T051 Re-run focused material, Assimp parser, decal/frame-graph, drag/drop, GameObject cache, importer-version, and diff checks after final P1 fixes.
 - [x] T052 Re-run required plan-review gate and deeper audit before final completion.
 
+## Phase 14: FBX Decal Queue And Root Naming Follow-Up
+
+**Goal**: Ensure current FBX Sponza-style decals enter the decal pass and generated FBX prefab roots use the source file name instead of Assimp's synthetic `RootNode`.
+
+- [x] T053 Add failing FBX base-color-alpha decal material regression tests in `Tests/Unit/AssetMaterialConversionTests.cpp` covering alpha-evidence positive and missing-alpha-evidence negative cases.
+- [x] T054 Add failing generated prefab single `RootNode` display-name regression test in `Tests/Unit/AssetPrefabPipelineTests.cpp`.
+- [x] T055 Add importer-version regression proving version 7 FBX decal/root-name artifacts are stale.
+- [x] T056 Update material conversion and external FBX import alpha-evidence flow so decal-named FBX parser materials with only an alpha-bearing diffuse/base-color texture serialize as blend `Decal` surfaces while non-alpha-evidence textured materials remain opaque.
+- [x] T057 Update generated model prefab naming so single parser `RootNode` roots display the scene key/file stem while preserving hierarchy and deterministic IDs.
+- [x] T058 Bump the model-scene importer version for the new FBX decal/root-name artifact semantics.
+- [x] T059 Re-run focused material conversion, generated prefab, importer-version, diff-boundary, and required plan-review checks.
+
+## Phase 15: Assimp FBX 3ds Max Opacity Compatibility
+
+**Goal**: Surface 3ds Max FBX `Parameters` transparency/cutout texture connections as Nullus parser opacity channels without modifying Assimp source.
+
+- [x] T060 Add failing Assimp FBX parser regression tests for `3dsMax|Parameters|transparency_map` and `3dsMax|Parameters|cutout_map` opacity textures.
+- [x] T061 Implement the Nullus AssimpParser compatibility mapping from Assimp raw UNKNOWN FBX properties into the `opacity` parser channel and dependency list.
+- [x] T062 Add importer-version regression proving version 8 artifacts are stale for the new opacity-map compatibility semantics.
+- [x] T063 Re-run focused Assimp parser/importer-version tests, diff checks, and required plan-review gate.
+
 ## Dependencies
 
 - T002 must fail before T003.
@@ -148,3 +169,5 @@
 - T025 must fail before T026.
 - T028 must fail before T029.
 - T031 must fail before T032.
+- T053, T054, and T055 must fail before T056, T057, and T058.
+- T060 and T062 must fail before T061 and the importer-version bump.

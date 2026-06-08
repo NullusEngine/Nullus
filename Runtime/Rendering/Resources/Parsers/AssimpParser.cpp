@@ -34,6 +34,12 @@ struct AssimpTextureSlot
 	const char* channelName = "";
 };
 
+struct AssimpRawTextureSlot
+{
+	const char* propertyName = "";
+	const char* channelName = "";
+};
+
 struct AssimpDirectionTransforms
 {
 	aiMatrix4x4 linear;
@@ -275,6 +281,29 @@ void AddTextureDependencies(
 	}
 }
 
+bool TryGetRawTexturePath(
+	const aiMaterial& material,
+	const char* propertyName,
+	aiString& texturePath)
+{
+	if (material.Get((std::string("$raw.") + propertyName + "|file").c_str(), aiTextureType_UNKNOWN, 0, texturePath) == AI_SUCCESS)
+		return true;
+	return material.Get((std::string(propertyName) + "|file").c_str(), aiTextureType_UNKNOWN, 0, texturePath) == AI_SUCCESS;
+}
+
+void AddRawTextureDependency(
+	const aiMaterial& material,
+	const AssimpRawTextureSlot slot,
+	std::vector<std::string>* externalDependencies)
+{
+	if (!externalDependencies)
+		return;
+
+	aiString texturePath;
+	if (TryGetRawTexturePath(material, slot.propertyName, texturePath))
+		AddUniqueDependency(externalDependencies, AiStringToStdString(texturePath));
+}
+
 ImportedSceneMaterialChannel* FindChannel(
 	ImportedSceneNamedRecord& material,
 	const std::string& name)
@@ -354,6 +383,44 @@ void AddTextureChannel(
 			material.materialChannels.push_back(std::move(extraChannel));
 		}
 	}
+}
+
+void AddRawTextureChannel(
+	const aiMaterial& source,
+	ImportedScene& scene,
+	ImportedSceneNamedRecord& material,
+	std::unordered_map<std::string, std::string>& textureKeysByUri,
+	std::vector<std::string>* externalDependencies,
+	const AssimpRawTextureSlot slot)
+{
+	aiString texturePath;
+	if (!TryGetRawTexturePath(source, slot.propertyName, texturePath))
+		return;
+
+	const auto uri = AiStringToStdString(texturePath);
+	AddUniqueDependency(externalDependencies, uri);
+
+	auto& channel = EnsureChannel(material, slot.channelName);
+	if (channel.textureKey.empty())
+	{
+		channel.textureKey = RegisterTexture(scene, textureKeysByUri, texturePath);
+		return;
+	}
+
+	const auto existingTexture = std::find_if(
+		scene.textures.begin(),
+		scene.textures.end(),
+		[&channel](const ImportedSceneNamedRecord& texture)
+		{
+			return texture.sourceKey == channel.textureKey;
+		});
+	if (existingTexture != scene.textures.end() && existingTexture->uri == uri)
+		return;
+
+	ImportedSceneMaterialChannel extraChannel;
+	extraChannel.name = slot.channelName;
+	extraChannel.textureKey = RegisterTexture(scene, textureKeysByUri, texturePath);
+	material.materialChannels.push_back(std::move(extraChannel));
 }
 
 bool AddColorChannel(
@@ -486,8 +553,18 @@ const std::vector<AssimpTextureSlot>& MaterialTextureSlots()
 	return slots;
 }
 
+const std::vector<AssimpRawTextureSlot>& RawFbxCompatibilityTextureSlots()
+{
+	static const std::vector<AssimpRawTextureSlot> slots = {
+		{"3dsMax|Parameters|transparency_map", "opacity"},
+		{"3dsMax|Parameters|cutout_map", "opacity"}
+	};
+	return slots;
+}
+
 void BuildMaterials(
 	const aiScene* source,
+	const SceneModelSourceFormat sourceFormat,
 	ImportedScene& scene,
 	std::vector<std::string>& materialNames,
 	std::vector<std::string>* externalDependencies)
@@ -516,6 +593,11 @@ void BuildMaterials(
 
 		for (const auto slot : MaterialTextureSlots())
 			AddTextureChannel(*material, scene, record, textureKeysByUri, externalDependencies, slot);
+		if (sourceFormat == SceneModelSourceFormat::Fbx)
+		{
+			for (const auto slot : RawFbxCompatibilityTextureSlots())
+				AddRawTextureChannel(*material, scene, record, textureKeysByUri, externalDependencies, slot);
+		}
 
 		scene.materials.push_back(std::move(record));
 	}
@@ -627,7 +709,7 @@ bool AssimpParser::LoadModel(const std::string & p_fileName, std::vector<Mesh*>&
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 		return false;
 
-	ProcessMaterials(scene, p_materials, nullptr);
+	ProcessMaterials(scene, SourceFormatForPath(p_fileName), p_materials, nullptr);
 
 	std::vector<ParsedMeshData> parsedMeshes;
 	aiMatrix4x4 identity;
@@ -668,7 +750,8 @@ bool AssimpParser::LoadModelData(
 	LogAssimpImportTiming(p_fileName, "ReadFile", readElapsed, scene->mNumMeshes, scene->mNumMaterials);
 
 	const auto materialsStart = std::chrono::steady_clock::now();
-	ProcessMaterials(scene, p_materials, p_externalDependencies);
+	const auto sourceFormat = SourceFormatForPath(p_fileName);
+	ProcessMaterials(scene, sourceFormat, p_materials, p_externalDependencies);
 	LogAssimpImportTiming(
 		p_fileName,
 		"ProcessMaterials",
@@ -694,7 +777,7 @@ bool AssimpParser::LoadModelData(
 		scene->mNumMaterials);
 
 	const auto sceneDataStart = std::chrono::steady_clock::now();
-	BuildImportedSceneData(scene, SourceFormatForPath(p_fileName), m_lastImportedScene);
+	BuildImportedSceneData(scene, sourceFormat, m_lastImportedScene);
 	m_hasImportedSceneData = true;
 	LogAssimpImportTiming(
 		p_fileName,
@@ -714,6 +797,7 @@ bool AssimpParser::LoadModelData(
 
 void AssimpParser::ProcessMaterials(
 	const aiScene * p_scene,
+	const SceneModelSourceFormat p_sourceFormat,
 	std::vector<std::string>& p_materials,
 	std::vector<std::string>* p_externalDependencies)
 {
@@ -730,6 +814,11 @@ void AssimpParser::ProcessMaterials(
 			{
 				for (const auto slot : MaterialTextureSlots())
 					AddTextureDependencies(*material, slot, p_externalDependencies);
+				if (p_sourceFormat == SceneModelSourceFormat::Fbx)
+				{
+					for (const auto slot : RawFbxCompatibilityTextureSlots())
+						AddRawTextureDependency(*material, slot, p_externalDependencies);
+				}
 			}
 		}
 	}
@@ -765,7 +854,7 @@ void AssimpParser::BuildImportedSceneData(
 	NLS::Render::Assets::ImportedScene& p_outScene)
 {
 	std::vector<std::string> unusedMaterialNames;
-	BuildMaterials(p_scene, p_outScene, unusedMaterialNames, nullptr);
+	BuildMaterials(p_scene, p_sourceFormat, p_outScene, unusedMaterialNames, nullptr);
 
 	uint32_t nextNodeIndex = 0u;
 	BuildNodeRecords(p_scene->mRootNode, p_scene, {}, p_outScene, nextNodeIndex, p_sourceFormat);

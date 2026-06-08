@@ -50,6 +50,7 @@ namespace NLS::Render::Resources::Parsers
 	private:
 		void ProcessMaterials(
 			const struct aiScene* p_scene,
+			NLS::Render::Assets::SceneModelSourceFormat p_sourceFormat,
 			std::vector<std::string>& p_materials,
 			std::vector<std::string>* p_externalDependencies = nullptr);
 		void ProcessNode(void* p_transform, struct aiNode* p_node, const struct aiScene* p_scene, std::vector<ParsedMeshData>& p_meshes);

@@ -90,6 +90,10 @@ const ImportedSceneMaterialChannel* FindChannel(
     return found != material.materialChannels.end() ? &*found : nullptr;
 }
 
+const ConvertedMaterialTextureSlot* FindTextureSlot(
+    const ConvertedMaterialArtifact& material,
+    const std::string& slot);
+
 double FbxShininessToPbrRoughness(const double shininess)
 {
     if (!std::isfinite(shininess))
@@ -139,6 +143,27 @@ bool ShouldIgnoreFbxTexturedNeutralDiffuseTint(
     const MaterialConversionContext& context)
 {
     return context.ignoreFbxTexturedNeutralDiffuseTint && IsNeutralRgbFactor(diffuse.values);
+}
+
+bool ShouldInferFbxBaseColorDecalAlpha(
+    const ConvertedMaterialArtifact& material,
+    const MaterialSourceModel sourceModel,
+    const MaterialConversionContext& context)
+{
+    const auto* baseColor = FindTextureSlot(material, "BaseColor");
+    const bool baseColorHasAlphaEvidence =
+        baseColor != nullptr &&
+        [&context, baseColor]()
+        {
+            const auto found = context.sourceTextureAlphaEvidence.find(baseColor->textureKey);
+            return found != context.sourceTextureAlphaEvidence.end() && found->second;
+        }();
+
+    return sourceModel == MaterialSourceModel::FbxParserMaterial &&
+        material.alphaMode == MaterialAlphaMode::Opaque &&
+        baseColorHasAlphaEvidence &&
+        FindTextureSlot(material, "Opacity") == nullptr &&
+        NLS::Render::Resources::MaterialIdentitySuggestsDecal(material.displayName, material.subAssetKey);
 }
 
 void AddDiagnostic(
@@ -716,6 +741,14 @@ void ConvertParserChannels(
             material,
             "material-illumination-model-unsupported",
             "OBJ MTL illumination models are recorded as diagnostics when they cannot map directly to the runtime material model.");
+    }
+    if (ShouldInferFbxBaseColorDecalAlpha(material, sourceModel, context))
+    {
+        material.alphaMode = MaterialAlphaMode::Blend;
+        AddDiagnostic(
+            material,
+            "material-inferred-fbx-decal-basecolor-alpha",
+            "FBX decal material uses the base-color texture as its alpha-bearing decal texture.");
     }
 }
 }

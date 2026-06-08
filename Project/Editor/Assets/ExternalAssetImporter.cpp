@@ -14,6 +14,7 @@
 #include "Rendering/Assets/TextureEncoder.h"
 #include "Rendering/Assets/TextureFormatResolver.h"
 #include "Rendering/Assets/TextureMipGenerator.h"
+#include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/FbxSdkParser.h"
 #include "Serialize/ObjectGraphWriter.h"
@@ -1767,6 +1768,79 @@ bool TextureArtifactHasAlpha(const NLS::Render::Assets::TextureArtifactData& art
     return false;
 }
 
+bool DecodedSourceTexturePayloadHasAlpha(
+    const std::vector<uint8_t>& bytes,
+    const bool flipVertically)
+{
+    NLS::Render::Assets::TextureMipGeneratorSettings settings;
+    settings.intent = NLS::Render::Assets::TextureMipIntent::Color;
+    settings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    settings.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    settings.mipmapEnabled = false;
+
+    const auto artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        bytes.data(),
+        bytes.size(),
+        settings,
+        flipVertically);
+    return artifact.has_value() && TextureArtifactHasAlpha(*artifact);
+}
+
+const NLS::Render::Assets::ImportedSceneMaterialChannel* FindMaterialChannel(
+    const NLS::Render::Assets::ImportedSceneNamedRecord& material,
+    const std::string& name)
+{
+    const auto loweredName = ToLower(name);
+    const auto found = std::find_if(
+        material.materialChannels.begin(),
+        material.materialChannels.end(),
+        [&loweredName](const NLS::Render::Assets::ImportedSceneMaterialChannel& channel)
+        {
+            return ToLower(channel.name) == loweredName;
+        });
+    return found != material.materialChannels.end() ? &*found : nullptr;
+}
+
+std::unordered_map<std::string, bool> BuildFbxDecalBaseColorAlphaEvidence(
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::unordered_map<std::string, std::vector<uint8_t>>& texturePayloads,
+    const std::filesystem::path& sourcePath)
+{
+    std::unordered_map<std::string, bool> evidence;
+    if (texturePayloads.empty())
+        return evidence;
+
+    const bool flipVertically = ShouldFlipExternalModelTextureVertically(sourcePath);
+    for (const auto& material : scene.materials)
+    {
+        if (!NLS::Render::Resources::MaterialIdentitySuggestsDecal(
+                material.name,
+                "material:" + (material.sourceKey.empty() ? material.name : material.sourceKey)))
+        {
+            continue;
+        }
+
+        const auto* opacity = FindMaterialChannel(material, "opacity");
+        if (opacity != nullptr && !opacity->textureKey.empty())
+            continue;
+
+        const auto* diffuse = FindMaterialChannel(material, "diffuse");
+        if (diffuse == nullptr || diffuse->textureKey.empty())
+            continue;
+
+        if (evidence.find(diffuse->textureKey) != evidence.end())
+            continue;
+
+        const auto payload = texturePayloads.find(diffuse->textureKey);
+        evidence.emplace(
+            diffuse->textureKey,
+            payload != texturePayloads.end() &&
+                !payload->second.empty() &&
+                DecodedSourceTexturePayloadHasAlpha(payload->second, flipVertically));
+    }
+    return evidence;
+}
+
 NLS::Render::Assets::TextureSourceDescriptor BuildTextureSourceDescriptor(
     const NLS::Render::Assets::ImportedScene& scene,
     const std::string& textureKey,
@@ -2604,6 +2678,7 @@ void AppendConvertedMaterialPayloads(
     const std::filesystem::path& textureResourcePathPrefix,
     std::string materialShaderResourcePath,
     std::unordered_map<std::string, std::filesystem::path> importedTextureArtifactPaths,
+    std::unordered_map<std::string, bool> sourceTextureAlphaEvidence,
     std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
     std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace>& textureColorSpaces)
 {
@@ -2614,7 +2689,8 @@ void AppendConvertedMaterialPayloads(
         textureResourcePathPrefix,
         std::move(importedTextureArtifactPaths),
         std::move(materialShaderResourcePath),
-        scene.importSettings.ignoreFbxTexturedNeutralDiffuseTint
+        scene.importSettings.ignoreFbxTexturedNeutralDiffuseTint,
+        std::move(sourceTextureAlphaEvidence)
     };
     for (const auto& material : scene.materials)
     {
@@ -2703,6 +2779,17 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     payloads.reserve(subAssets.size());
 
     const auto extension = ToLower(request.sourcePath.extension().string());
+    std::unordered_map<std::string, std::vector<uint8_t>> texturePayloads;
+    const bool needsEarlyTexturePayloads = extension == ".fbx";
+    if (needsEarlyTexturePayloads)
+    {
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.30, "Loading texture payloads");
+        {
+            NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::LoadTextures");
+            texturePayloads = LoadTexturePayloads(request, scene, extension);
+        }
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.34, "Loaded texture payloads");
+    }
     std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace> textureColorSpaces;
     {
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::ConvertMaterials");
@@ -2712,6 +2799,9 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             request.textureResourcePathPrefix,
             request.materialShaderResourcePath,
             BuildTextureArtifactPathMap(subAssets, request.committedRoot, request.projectRoot),
+            needsEarlyTexturePayloads
+                ? BuildFbxDecalBaseColorAlphaEvidence(scene, texturePayloads, request.sourcePath)
+                : std::unordered_map<std::string, bool> {},
             payloads,
             textureColorSpaces);
     }
@@ -2729,13 +2819,15 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         timingStats.sourceMeshCount = sourceMeshes.size();
         timingStats.diagnosticCount = result.diagnostics.size();
     }
-    std::unordered_map<std::string, std::vector<uint8_t>> texturePayloads;
-    ReportProgress(request, ImportPhase::IntermediateConversion, 0.42, "Loading texture payloads");
+    if (!needsEarlyTexturePayloads)
     {
-        NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::LoadTextures");
-        texturePayloads = LoadTexturePayloads(request, scene, extension);
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.42, "Loading texture payloads");
+        {
+            NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::LoadTextures");
+            texturePayloads = LoadTexturePayloads(request, scene, extension);
+        }
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.44, "Loaded texture payloads");
     }
-    ReportProgress(request, ImportPhase::IntermediateConversion, 0.44, "Loaded texture payloads");
     NLS::Render::Assets::TextureEncoderRegistry textureEncoders;
 #if NLS_HAS_DIRECTXTEX
     textureEncoders.Register(CreateDirectXTexTextureEncoder());

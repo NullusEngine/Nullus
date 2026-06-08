@@ -223,6 +223,23 @@ std::string ReadableName(const ImportedSceneNode& node)
     return "Imported Node";
 }
 
+bool IsParserRootNode(const ImportedSceneNode& node)
+{
+    return node.name == "RootNode" &&
+        node.sourceKey.rfind("parser/node/", 0u) == 0u;
+}
+
+ImportedSceneNode DisplayNodeForGeneratedRecord(
+    const ImportedScene& scene,
+    const ImportedSceneNode& node,
+    const ImportedSceneNode* singleRoot)
+{
+    ImportedSceneNode displayNode = node;
+    if (singleRoot == &node && IsParserRootNode(node) && !scene.sceneKey.empty())
+        displayNode.name = scene.sceneKey;
+    return displayNode;
+}
+
 std::vector<const ImportedSceneNode*> CollectRootNodes(const ImportedScene& scene)
 {
     std::unordered_set<std::string> nodeKeys;
@@ -544,6 +561,7 @@ PrefabImportResult BuildGeneratedModelPrefab(
     std::unordered_set<std::string> syntheticRootChildren;
     for (const auto* root : roots)
         syntheticRootChildren.insert(root->sourceKey);
+    const ImportedSceneNode* singleRoot = roots.size() == 1u ? roots.front() : nullptr;
 
     for (const auto& node : nodes)
     {
@@ -559,10 +577,11 @@ PrefabImportResult BuildGeneratedModelPrefab(
             parentId = result.artifact.graph.root;
         }
 
+        const auto displayNode = DisplayNodeForGeneratedRecord(scene, node, singleRoot);
         AddGeneratedRecords(
             scene,
             manifest,
-            node,
+            displayNode,
             gameObjectId,
             parentId,
             childObjectIds[node.sourceKey],

@@ -132,6 +132,39 @@ Artists importing FBX through the Assimp fallback should not get normals, tangen
 2. **Given** a transformed direction stream, **When** it is serialized to a mesh artifact, **Then** it remains finite and normalized.
 3. **Given** non-baked parser loading, **When** source meshes are emitted for generated prefab reuse, **Then** existing source-space mesh sharing is preserved.
 
+---
+
+### User Story 9 - FBX Decal Queue And Root Naming Parity (Priority: P1)
+
+Artists importing FBX models whose authored material is named as a decal should see those generated materials enter the deferred decal pass when the FBX parser exposes alpha through an alpha-bearing base-color texture rather than a separate opacity texture. The generated prefab root should also use the source file stem instead of the parser's synthetic `RootNode` label.
+
+**Why this priority**: RenderDoc evidence from `Editor_DX12_frame3909.rdc` shows no `Nullus/DeferredDecal` pass at all, and current Sponza FBX artifacts show `dirt_decal` serialized as `Opaque` while the generated prefab root is still a parser name.
+
+**Independent Test**: Convert an FBX parser material named `dirt_decal` with only an alpha-bearing diffuse/base-color texture and verify it serializes as `Decal`. Build a generated prefab from a single imported root named `RootNode` and verify the root GameObject name is the scene key/file stem.
+
+**Acceptance Scenarios**:
+
+1. **Given** an FBX parser material named `dirt_decal` with an alpha-bearing diffuse/base-color texture and no separate opacity channel, **When** it is converted, **Then** it serializes with `alphaMode=Blend`, `surfaceMode=Decal`, and disabled depth writing.
+2. **Given** an FBX material with a diffuse/base-color texture but no source texture alpha evidence, **When** it is converted, **Then** it remains `Opaque` even if its name contains a decal token.
+3. **Given** a normal FBX material with a diffuse/base-color texture and no decal token, **When** it is converted, **Then** it remains `Opaque`.
+3. **Given** an imported FBX scene with one parser root node named `RootNode`, **When** the generated prefab is built, **Then** the root GameObject name is the file stem/scene key and child parent links are preserved.
+
+---
+
+### User Story 10 - Assimp FBX Raw Opacity Map Compatibility (Priority: P1)
+
+Artists importing 3ds Max FBX assets through the Assimp fallback should get the same decal/opacity behavior when Assimp exposes `Parameters` transparency or cutout maps as raw UNKNOWN material properties instead of standard opacity textures.
+
+**Why this priority**: The current Sponza FBX source connects its decal mask through `3dsMax|Parameters|transparency_map` and `3dsMax|Parameters|cutout_map`; Assimp keeps those connections in raw properties, so Nullus previously serialized the decal material without an opacity channel and skipped the deferred decal pass.
+
+**Independent Test**: Parse an FBX fixture whose opacity texture connection is rewritten to `3dsMax|Parameters|transparency_map` and `3dsMax|Parameters|cutout_map`, then verify the imported scene material has an `opacity` texture channel and the texture is tracked as an external dependency.
+
+**Acceptance Scenarios**:
+
+1. **Given** an Assimp FBX material with `$raw.3dsMax|Parameters|transparency_map|file`, **When** Nullus builds parser scene data, **Then** the material exposes that texture as an `opacity` channel.
+2. **Given** an Assimp FBX material with `$raw.3dsMax|Parameters|cutout_map|file`, **When** Nullus builds parser scene data, **Then** the material exposes that texture as an `opacity` channel.
+3. **Given** a raw FBX opacity texture path, **When** dependency tracking runs, **Then** the texture URI is included in the external dependency list.
+
 ### Edge Cases
 
 - FBX files with explicit roughness scalar or texture data must not have author-provided PBR roughness overwritten or multiplied by shininess fallback.
@@ -141,7 +174,10 @@ Artists importing FBX through the Assimp fallback should not get normals, tangen
 - Runtime normal mapping shaders must tolerate zero-length or non-finite normal/tangent/bitangent values from old generated assets or parser edge cases.
 - FBX diffuse colors that are parser/default neutral tints for textured materials must not darken base-color textures, but texture-less legacy diffuse colors must still be preserved.
 - FBX opacity textures must make generated parser materials participate in transparent/decal surface classification even when no opacity scalar is present.
+- FBX decal-named parser materials may expose usable alpha through the base-color texture only; these must enter decal surface classification only when source texture alpha evidence is available.
+- Assimp FBX raw UNKNOWN properties named `3dsMax|Parameters|transparency_map|file` or `3dsMax|Parameters|cutout_map|file` must be interpreted by Nullus as parser opacity textures without modifying Assimp source.
 - Direction streams must be transformed as directions, not positions, when Assimp baked transforms are requested.
+- Single-root parser scenes named `RootNode` must keep object identity and child hierarchy stable while presenting the source file stem as the root name.
 - Invalid or unavailable FBX parser builds may skip integration tests behind existing build capability macros.
 - Repeated drops may still scan manifest metadata, but must not repeat prefab graph import on cache hit.
 
@@ -166,6 +202,13 @@ Artists importing FBX through the Assimp fallback should not get normals, tangen
 - **FR-015**: FBX parser materials with opacity textures MUST set blend alpha mode so decal-name surface inference can produce `surfaceMode=Decal`.
 - **FR-016**: Assimp baked transform processing MUST transform normals, tangents, and bitangents as normalized direction vectors without translation.
 - **FR-017**: The model-scene importer version MUST advance when generated FBX material/mesh artifact semantics change so stale artifacts containing bad roughness, albedo, or decal metadata are treated as out of date.
+- **FR-018**: FBX parser materials whose material identity suggests a decal MUST become blend/decal surfaces when their diffuse/base-color texture is the only available alpha-bearing texture path and the source texture has alpha evidence.
+- **FR-019**: Non-decal FBX parser materials with ordinary diffuse/base-color textures MUST remain opaque unless opacity data or alpha mode data indicates transparency.
+- **FR-020**: Generated model prefabs MUST present a single parser root named `RootNode` as the source scene key/file stem while preserving deterministic object IDs and hierarchy links.
+- **FR-021**: The model-scene importer version MUST advance again when version 7 artifacts can contain opaque FBX decals or parser root names.
+- **FR-022**: The Nullus AssimpParser compatibility layer MUST map raw FBX `3dsMax|Parameters|transparency_map` and `3dsMax|Parameters|cutout_map` texture properties into the parser `opacity` channel without changing ThirdParty Assimp code.
+- **FR-023**: Raw FBX opacity-map compatibility paths MUST participate in external dependency tracking so imported artifacts are invalidated when the mask texture changes.
+- **FR-024**: The model-scene importer version MUST advance again when version 8 artifacts can miss raw FBX opacity/cutout maps.
 
 ### Key Entities
 
@@ -189,6 +232,11 @@ Artists importing FBX through the Assimp fallback should not get normals, tangen
 - **SC-010**: A material conversion test proves FBX opacity-texture decal materials serialize `surfaceMode=Decal`.
 - **SC-011**: An Assimp parser test proves baked node translation affects positions but not normal/tangent/bitangent directions.
 - **SC-012**: An importer version test proves current model-scene artifacts will invalidate importer version 6 outputs.
+- **SC-013**: Material conversion and external FBX import tests prove FBX decal-named base-color alpha materials serialize as `Decal` without requiring a separate opacity texture, while decal-named materials without alpha evidence remain opaque.
+- **SC-014**: A prefab generation test proves single-root parser `RootNode` hierarchies use the source scene key as the root GameObject name.
+- **SC-015**: An importer version test proves current model-scene artifacts will invalidate importer version 7 outputs.
+- **SC-016**: An Assimp parser test proves raw 3ds Max `Parameters` transparency and cutout maps surface as parser `opacity` texture channels and external dependencies.
+- **SC-017**: An importer version test proves current model-scene artifacts will invalidate importer version 8 outputs.
 
 ## Assumptions
 

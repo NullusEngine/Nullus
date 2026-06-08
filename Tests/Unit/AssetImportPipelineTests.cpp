@@ -338,6 +338,29 @@ const NLS::Core::Assets::ImportedArtifact* FindFirstArtifactOfType(
     return found != manifest.subAssets.end() ? &*found : nullptr;
 }
 
+void EraseFbxConnectionBlock(std::string& fbx, const std::string& connectionComment)
+{
+    const auto commentBegin = fbx.find(connectionComment);
+    ASSERT_NE(commentBegin, std::string::npos);
+    const auto eraseBegin = fbx.rfind('\n', commentBegin);
+    const auto connectionEnd = fbx.find('\n', fbx.find("C: ", commentBegin));
+    ASSERT_NE(connectionEnd, std::string::npos);
+    fbx.erase(
+        eraseBegin == std::string::npos ? commentBegin : eraseBegin,
+        connectionEnd + 1u - (eraseBegin == std::string::npos ? commentBegin : eraseBegin));
+}
+
+void ReplaceAllText(std::string& text, const std::string& oldValue, const std::string& newValue)
+{
+    ASSERT_FALSE(oldValue.empty());
+    size_t offset = 0u;
+    while ((offset = text.find(oldValue, offset)) != std::string::npos)
+    {
+        text.replace(offset, oldValue.size(), newValue);
+        offset += newValue.size();
+    }
+}
+
 std::vector<uint8_t> ReadArtifactPayloadBytes(
     const std::filesystem::path& path,
     const NLS::Core::Assets::ArtifactType artifactType,
@@ -370,6 +393,36 @@ std::vector<uint8_t> TinyPng()
         0x02, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41,
         0x54, 0x78, 0xDA, 0x63, 0xFC, 0xFF, 0x1F, 0x00,
         0x03, 0x03, 0x02, 0x00, 0xEF, 0xBF, 0x4A, 0x3B,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+        0xAE, 0x42, 0x60, 0x82
+    };
+}
+
+std::vector<uint8_t> TinyTransparentRgbaPng()
+{
+    return {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+        0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0xDA, 0x63, 0xF8, 0xFF, 0xFF, 0x7F,
+        0x03, 0x00, 0x09, 0x7C, 0x03, 0x7E, 0x91, 0xE5,
+        0x09, 0x4D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+    };
+}
+
+std::vector<uint8_t> TinyOpaqueRgbaPng()
+{
+    return {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+        0x89, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0xDA, 0x63, 0xF8, 0x0F, 0x04, 0x00,
+        0x09, 0xFB, 0x03, 0xFD, 0x68, 0xFA, 0x1C, 0xCC,
         0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
         0xAE, 0x42, 0x60, 0x82
     };
@@ -1964,6 +2017,94 @@ TEST(AssetImportPipelineTests, AssimpFbxParserKeepsColoredTexturedDiffuseTintAut
 #endif
 }
 
+TEST(AssetImportPipelineTests, AssimpFbxParserSurfaces3dsMaxParametersOpacityMaps)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "maxPbrMaterial_metalRough.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+
+    const auto sourceFbx = ReadTextFile(sourceFixture);
+    const auto runCase = [&sourceFbx](const char* sceneKey, const char* fbxOpacityProperty)
+    {
+        const auto root = MakeImportTestRoot();
+        auto fbx = sourceFbx;
+        const std::string opacityDeclaration =
+            "P: \"3dsMax|main|opacity_map\", \"Reference\", \"\", \"A\"";
+        const auto opacityDeclarationBegin = fbx.find(opacityDeclaration);
+        ASSERT_NE(opacityDeclarationBegin, std::string::npos);
+        fbx.replace(
+            opacityDeclarationBegin,
+            opacityDeclaration.size(),
+            "P: \"" + std::string(fbxOpacityProperty) + "\", \"Reference\", \"\", \"A\"");
+        ReplaceAllText(
+            fbx,
+            "3dsMax|main|opacity_map",
+            fbxOpacityProperty);
+
+        const auto sourcePath = root / "Assets" / "Models" / (std::string(sceneKey) + ".fbx");
+        WriteTextFile(sourcePath, fbx);
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / "albedo.png", TinyPng());
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / "metalness.png", TinyPng());
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / "roughness.png", TinyPng());
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / "occlusion.png", TinyPng());
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / "normal.png", TinyPng());
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / "emission.png", TinyPng());
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / "opacity.png", TinyPng());
+
+        NLS::Render::Resources::Parsers::AssimpParser parser;
+        std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+        std::vector<std::string> materials;
+        std::vector<std::string> externalDependencies;
+        ASSERT_TRUE(parser.LoadModelData(
+            sourcePath.string(),
+            meshes,
+            materials,
+            NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+            &externalDependencies));
+
+        NLS::Render::Assets::ImportedScene scene;
+        scene.sourceAssetId = NLS::Core::Assets::AssetId(
+            NLS::Guid::Parse("92929292-9292-4292-8292-929292929296"));
+        scene.sceneKey = sceneKey;
+        ASSERT_TRUE(parser.PopulateImportedSceneData(
+            sourcePath,
+            NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+            scene));
+
+        ASSERT_EQ(scene.materials.size(), 1u);
+        const auto* opacity = FindMaterialChannel(scene.materials.front(), "opacity");
+        ASSERT_NE(opacity, nullptr)
+            << fbxOpacityProperty << " should be surfaced as the parser opacity channel.";
+        ASSERT_FALSE(opacity->textureKey.empty());
+        const auto texture = std::find_if(
+            scene.textures.begin(),
+            scene.textures.end(),
+            [opacity](const NLS::Render::Assets::ImportedSceneNamedRecord& record)
+            {
+                return record.sourceKey == opacity->textureKey;
+            });
+        ASSERT_NE(texture, scene.textures.end());
+        EXPECT_EQ(texture->uri, "Textures\\opacity.png");
+        EXPECT_TRUE(Contains(externalDependencies, "Textures\\opacity.png"))
+            << "Raw FBX opacity maps must still participate in import dependency tracking.";
+
+        std::filesystem::remove_all(root);
+    };
+
+    runCase("FbxTransparencyMap", "3dsMax|Parameters|transparency_map");
+    runCase("FbxCutoutMap", "3dsMax|Parameters|cutout_map");
+#endif
+}
+
 TEST(AssetImportPipelineTests, AssimpParserKeepsSharedMeshPayloadInSourceSpaceAndStoresNodeTransforms)
 {
     const auto root = MakeImportTestRoot();
@@ -2193,6 +2334,30 @@ TEST(AssetImportPipelineTests, AssimpBakedNormalMatrixIsPrecomputedPerMesh)
     EXPECT_NE(source.find("TransformNormalDirection(directionTransforms"), std::string::npos);
     EXPECT_EQ(source.find("TransformNormalDirection(meshTransformation"), std::string::npos)
         << "Normal matrix inverse/transpose must not run once per vertex in ProcessMesh.";
+}
+
+TEST(AssetImportPipelineTests, AssimpRawFbxOpacityCompatibilityIsFbxScoped)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime" /
+        "Rendering" /
+        "Resources" /
+        "Parsers" /
+        "AssimpParser.cpp");
+
+    ASSERT_FALSE(source.empty());
+    const auto buildMaterials = SliceBetween(source, "void BuildMaterials(", "void BuildMeshRecord");
+    ASSERT_FALSE(buildMaterials.empty());
+    EXPECT_NE(buildMaterials.find("sourceFormat == SceneModelSourceFormat::Fbx"), std::string::npos)
+        << "Raw 3ds Max opacity compatibility is an FBX-only parser shim.";
+    EXPECT_NE(buildMaterials.find("AddRawTextureChannel"), std::string::npos);
+
+    const auto processMaterials = SliceBetween(source, "void AssimpParser::ProcessMaterials(", "bool AssimpParser::PopulateImportedSceneData");
+    ASSERT_FALSE(processMaterials.empty());
+    EXPECT_NE(processMaterials.find("p_sourceFormat == SceneModelSourceFormat::Fbx"), std::string::npos)
+        << "Raw FBX opacity texture dependencies must not be collected for non-FBX parser inputs.";
+    EXPECT_NE(processMaterials.find("AddRawTextureDependency"), std::string::npos);
 }
 
 TEST(AssetImportPipelineTests, AssimpBakedDirectionStreamsStayFiniteForScaledNodes)
@@ -4795,6 +4960,22 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxParityVers
         << "Importer version 6 artifacts can still contain dark FBX albedo, invalid roughness, and opaque decal metadata.";
 }
 
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxDecalRootNameVersion7Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        7u)
+        << "Importer version 7 artifacts can still contain FBX dirt_decal as Opaque and generated prefab roots named RootNode.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxRawOpacityVersion8Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        8u)
+        << "Importer version 8 artifacts can still miss FBX 3dsMax Parameters transparency/cutout maps.";
+}
+
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
 TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderDoesNotFallbackToAssimp)
 {
@@ -5122,6 +5303,113 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxNeutralDiffusePolicyAffectsMater
         std::string::npos);
     EXPECT_NE(defaultMaterial->contentHash, preservedMaterial->contentHash)
         << "Changing FBX neutral-diffuse compatibility policy must change generated material identity.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalAssimpFbxBaseColorAlphaDecalImportsAsDecalMaterial)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "maxPbrMaterial_metalRough.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+
+    auto fbx = ReadTextFile(sourceFixture);
+    const std::string materialName = "Material::PBR Material";
+    const auto materialNameBegin = fbx.find(materialName);
+    ASSERT_NE(materialNameBegin, std::string::npos);
+    fbx.replace(materialNameBegin, materialName.size(), "Material::dirt_decal");
+    EraseFbxConnectionBlock(fbx, ";Texture::Opacity, Material::PBR Material");
+    EraseFbxConnectionBlock(fbx, ";Video::Opacity, Texture::Opacity");
+
+    const auto importDecal = [&](
+        const char* assetGuid,
+        const char* sceneKey,
+        const std::vector<uint8_t>& albedoPng)
+    {
+        const auto sourcePath = root / "Assets" / "Models" / (std::string(sceneKey) + ".fbx");
+        WriteTextFile(sourcePath, fbx);
+        for (const auto* textureName : {
+            "metalness.png",
+            "roughness.png",
+            "occlusion.png",
+            "normal.png",
+            "emission.png",
+            "opacity.png"
+        })
+        {
+            WriteBinaryFile(sourcePath.parent_path() / "Textures" / textureName, TinyPng());
+        }
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / "albedo.png", albedoPng);
+
+        NLS::Core::Assets::AssetMeta meta;
+        meta.id = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetGuid));
+        meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+        meta.importerId = "scene-model";
+        meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+        meta.settings["MODEL_FBX_READER"] = "assimp";
+
+        auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+            sourcePath,
+            root / "Staging" / meta.id.ToString(),
+            root / "Library" / "Artifacts" / meta.id.ToString(),
+            meta,
+            sceneKey,
+            "editor",
+            nullptr,
+            nullptr,
+            {},
+            std::filesystem::path("Models"),
+            root,
+            {}
+        });
+        EXPECT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+        return result;
+    };
+
+    const auto transparentResult = importDecal(
+        "d6d6d6d6-d6d6-4d6d-8d6d-d6d6d6d6d6d6",
+        "BaseColorAlphaDecal",
+        TinyTransparentRgbaPng());
+    ASSERT_TRUE(transparentResult.imported);
+    const auto* transparentMaterial = FindFirstArtifactOfType(
+        transparentResult.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(transparentMaterial, nullptr);
+    const auto transparentPayload = ReadArtifactPayloadText(
+        transparentMaterial->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(transparentPayload.find("<name>dirt_decal</name>"), std::string::npos);
+    EXPECT_NE(transparentPayload.find("<alphaMode>Blend</alphaMode>"), std::string::npos);
+    EXPECT_NE(transparentPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_NE(transparentPayload.find("<depthWriting>false</depthWriting>"), std::string::npos);
+    EXPECT_EQ(transparentPayload.find("u_OpacityMap"), std::string::npos)
+        << "This regression must be covered by base-color alpha evidence, not the explicit opacity slot path.";
+
+    const auto opaqueResult = importDecal(
+        "e6e6e6e6-e6e6-4e6e-8e6e-e6e6e6e6e6e6",
+        "BaseColorOpaqueDecal",
+        TinyOpaqueRgbaPng());
+    ASSERT_TRUE(opaqueResult.imported);
+    const auto* opaqueMaterial = FindFirstArtifactOfType(
+        opaqueResult.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(opaqueMaterial, nullptr);
+    const auto opaquePayload = ReadArtifactPayloadText(
+        opaqueMaterial->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(opaquePayload.find("<name>dirt_decal</name>"), std::string::npos);
+    EXPECT_NE(opaquePayload.find("<alphaMode>Opaque</alphaMode>"), std::string::npos);
+    EXPECT_NE(opaquePayload.find("<surfaceMode>Opaque</surfaceMode>"), std::string::npos);
+    EXPECT_EQ(opaquePayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
 
     std::filesystem::remove_all(root);
 }

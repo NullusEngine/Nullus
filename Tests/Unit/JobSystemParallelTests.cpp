@@ -129,6 +129,7 @@ namespace
     {
         std::atomic<int>* started = nullptr;
         std::atomic<int>* afterThrowerReturned = nullptr;
+        std::atomic<bool>* allowThrow = nullptr;
         std::atomic<bool>* release = nullptr;
     };
 
@@ -138,7 +139,7 @@ namespace
         data->started->fetch_add(1, std::memory_order_acq_rel);
         if (index == 0u)
         {
-            while (data->started->load(std::memory_order_acquire) < 2)
+            while (!data->allowThrow->load(std::memory_order_acquire))
                 std::this_thread::yield();
             throw std::runtime_error("expected parallel-for shard failure");
         }
@@ -1252,29 +1253,80 @@ TEST_F(JobSystemParallelTests, DrainShutdownDoesNotClearFailedGroupWhileHelperJo
 
 TEST_F(JobSystemParallelTests, ThrowingParallelForShardKeepsPayloadAliveUntilRunningShardsReturn)
 {
+    constexpr auto kDebugCiShardStartTimeout = std::chrono::seconds(5);
+    constexpr auto kFailureDiagnosticTimeout = std::chrono::seconds(5);
+    auto waitUntil = [](auto&& predicate, const std::chrono::steady_clock::duration timeout)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!predicate())
+        {
+            if (std::chrono::steady_clock::now() >= deadline)
+                return false;
+            std::this_thread::yield();
+        }
+
+        return true;
+    };
+
     NLS::Base::Jobs::JobSystemConfig config;
     config.workerCount = 2u;
+    config.enableDiagnostics = true;
     ASSERT_TRUE(NLS::Base::Jobs::InitializeJobSystem(config));
 
     std::atomic<int> started = 0;
     std::atomic<int> afterThrowerReturned = 0;
+    std::atomic<bool> allowThrow = false;
     std::atomic<bool> release = false;
-    ThrowingForEachData data{&started, &afterThrowerReturned, &release};
+    ThrowingForEachData data{&started, &afterThrowerReturned, &allowThrow, &release};
 
     NLS::Base::Jobs::JobForEachDesc desc;
     desc.function = ThrowingOrBlockingVisitIndex;
     desc.userData = &data;
     desc.iterationCount = 32u;
+    desc.debugName = "ThrowingParallelForShardLifetime";
 
     auto handle = NLS::Base::Jobs::ScheduleJobForEach(desc);
     ASSERT_NE(handle.id, 0u);
 
-    for (int attempt = 0; attempt < 200 && started.load(std::memory_order_acquire) < 2; ++attempt)
+    auto hasTwoStartedShards = [&started]
     {
-        NLS::Base::Jobs::ExecuteOneJobQueueJob();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return started.load(std::memory_order_acquire) >= 2;
+    };
+    if (!waitUntil(hasTwoStartedShards, kDebugCiShardStartTimeout))
+    {
+        allowThrow.store(true, std::memory_order_release);
+        release.store(true, std::memory_order_release);
+        NLS::Base::Jobs::CompleteNoClear(handle);
+        FAIL() << "Expected the throwing shard and at least one blocking shard to start; started="
+            << started.load(std::memory_order_acquire);
     }
-    ASSERT_GE(started.load(std::memory_order_acquire), 2);
+
+    allowThrow.store(true, std::memory_order_release);
+
+    auto hasFailureDiagnostic = [handle]
+    {
+        const auto snapshot = NLS::Base::Jobs::CopyJobDiagnosticSnapshot();
+        return std::any_of(
+            snapshot.recentJobs.begin(),
+            snapshot.recentJobs.end(),
+            [handle](const NLS::Base::Jobs::JobDiagnosticRecord& record)
+            {
+                return record.id == handle.id &&
+                    record.generation == handle.generation &&
+                    record.state == NLS::Base::Jobs::JobLifecycleState::Failed;
+            });
+    };
+
+    if (!waitUntil(hasFailureDiagnostic, kFailureDiagnosticTimeout))
+    {
+        release.store(true, std::memory_order_release);
+        NLS::Base::Jobs::CompleteNoClear(handle);
+        FAIL() << "Expected the throwing shard to record a failed group before releasing blockers; started="
+            << started.load(std::memory_order_acquire) << " failedDiagnostic=0";
+    }
+
+    EXPECT_FALSE(NLS::Base::Jobs::IsCompleted(handle));
+    EXPECT_EQ(afterThrowerReturned.load(std::memory_order_acquire), 0);
 
     std::thread waiter(
         [handle]

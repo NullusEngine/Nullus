@@ -55,3 +55,11 @@ TEST(CameraControllerInputTests, InputBlockResetOnlyRunsOnBlockedEntry)
     EXPECT_FALSE(CameraController::ShouldResetMouseInteractionForInputBlockChange(true, false));
     EXPECT_FALSE(CameraController::ShouldResetMouseInteractionForInputBlockChange(false, false));
 }
+
+TEST(CameraControllerInputTests, WheelZoomRequiresFreshViewportInputBoundsAndMouseOverView)
+{
+    EXPECT_TRUE(CameraController::ShouldHandleWheelZoom(true, true));
+    EXPECT_FALSE(CameraController::ShouldHandleWheelZoom(true, false));
+    EXPECT_FALSE(CameraController::ShouldHandleWheelZoom(false, true));
+    EXPECT_FALSE(CameraController::ShouldHandleWheelZoom(false, false));
+}

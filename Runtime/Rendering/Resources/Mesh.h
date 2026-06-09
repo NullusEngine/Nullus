@@ -11,6 +11,7 @@
 #include "Rendering/Buffers/IndexBuffer.h"
 #include "Rendering/Resources/IMesh.h"
 #include "Rendering/Geometry/Vertex.h"
+#include "Rendering/Geometry/Bounds.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Resources/Mesh.generated.h"
 #include "RenderDef.h"
@@ -100,6 +101,7 @@ namespace NLS::Render::Resources
 		* Returns the bounding sphere of the mesh
 		*/
 		const Render::Geometry::BoundingSphere& GetBoundingSphere() const;
+		const Render::Geometry::Bounds& GetBounds() const;
 		uint64_t GetInstanceId() const;
 		uint64_t GetContentRevision() const;
 		void Reload(
@@ -120,6 +122,8 @@ namespace NLS::Render::Resources
 			const std::vector<uint32_t>& p_indices,
 			MeshBufferUploadMode uploadMode);
 		void ComputeBoundingSphere(const std::vector<Geometry::Vertex>& p_vertices);
+		void ComputeBounds(const std::vector<Geometry::Vertex>& p_vertices);
+		void ExpandBoundsForUpdatedVertices(const std::vector<Geometry::Vertex>& p_vertices);
 
 	private:
 		uint32_t m_vertexCount;
@@ -133,6 +137,7 @@ namespace NLS::Render::Resources
 		std::unique_ptr<Buffers::IndexBuffer>			m_indexBuffer;
 
 		Geometry::BoundingSphere m_boundingSphere;
+		Geometry::Bounds m_bounds;
 		uint64_t m_instanceId = 0u;
 		uint64_t m_contentRevision = 1u;
 	};

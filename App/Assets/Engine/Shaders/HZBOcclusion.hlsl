@@ -12,24 +12,52 @@ struct OcclusionPrimitiveInput
 StructuredBuffer<OcclusionPrimitiveInput> u_OcclusionPrimitiveInputs : register(t2, space1);
 RWStructuredBuffer<uint> u_OcclusionPrimitiveResults : register(u3, space1);
 
-static const float kHZBOcclusionDepthBias = 0.0005f;
-static const uint kHZBOcclusionMaxMip0ScanPixels = 64u;
+static const float kHZBOcclusionDepthBias = 0.00001f;
+static const uint kHZBOcclusionCoverageGridDimension = 8u;
 
-float LoadHZB(uint2 pixel)
+uint SelectHZBMipLevel(uint footprintWidth, uint footprintHeight, uint mipCount)
 {
-    return u_HZB.Load(int3(pixel, 0));
+    const uint largestFootprint = max(footprintWidth, footprintHeight);
+    uint mipLevel = 0u;
+    uint coveredPixels = kHZBOcclusionCoverageGridDimension;
+    while (mipLevel + 1u < mipCount && largestFootprint > coveredPixels)
+    {
+        ++mipLevel;
+        coveredPixels <<= 1u;
+    }
+    return mipLevel;
 }
 
-bool HZBSampleOccludes(uint2 pixel, float nearestOccluderDepth)
+float LoadHZB(uint2 pixel, uint mipLevel)
 {
-    return LoadHZB(pixel) < nearestOccluderDepth;
+    return u_HZB.Load(int3(pixel, mipLevel));
 }
 
-bool IsConservativelyOccludedByHZBMip0Coverage(
+bool HZBSampleOccludes(uint2 pixel, uint mipLevel, float nearestOccluderDepth)
+{
+    return LoadHZB(pixel, mipLevel) < nearestOccluderDepth;
+}
+
+bool HZBCoverageSampleOccludes(
+    uint width,
+    uint height,
+    uint pixelX,
+    uint pixelY,
+    uint mipLevel,
+    float nearestOccluderDepth)
+{
+    return HZBSampleOccludes(
+        uint2(min(pixelX, width - 1u), min(pixelY, height - 1u)),
+        mipLevel,
+        nearestOccluderDepth);
+}
+
+bool IsConservativelyOccludedByHZBCoverage(
     uint width,
     uint height,
     float2 minPixel,
     float2 maxPixel,
+    uint mipCount,
     float nearestOccluderDepth)
 {
     const float2 clampedMin = clamp(minPixel, float2(0.0f, 0.0f), float2((float)width - 1.0f, (float)height - 1.0f));
@@ -38,18 +66,44 @@ bool IsConservativelyOccludedByHZBMip0Coverage(
     const uint minPixelY = (uint)floor(min(clampedMin.y, clampedMax.y));
     const uint maxPixelX = (uint)ceil(max(clampedMin.x, clampedMax.x));
     const uint maxPixelY = (uint)ceil(max(clampedMin.y, clampedMax.y));
-    const uint coveredPixelCount = (maxPixelX - minPixelX + 1u) * (maxPixelY - minPixelY + 1u);
-    if (coveredPixelCount == 0u || coveredPixelCount > kHZBOcclusionMaxMip0ScanPixels)
+    if (maxPixelX < minPixelX || maxPixelY < minPixelY)
         return false;
 
-    for (uint pixelY = minPixelY; pixelY <= maxPixelY; ++pixelY)
+    const uint footprintWidth = maxPixelX - minPixelX + 1u;
+    const uint footprintHeight = maxPixelY - minPixelY + 1u;
+    const uint mipLevel = SelectHZBMipLevel(footprintWidth, footprintHeight, mipCount);
+    const uint mipScale = 1u << mipLevel;
+    const uint mipWidth = max(1u, (width + mipScale - 1u) / mipScale);
+    const uint mipHeight = max(1u, (height + mipScale - 1u) / mipScale);
+    const uint mipMinPixelX = minPixelX >> mipLevel;
+    const uint mipMinPixelY = minPixelY >> mipLevel;
+    const uint mipMaxPixelX = min(maxPixelX >> mipLevel, mipWidth - 1u);
+    const uint mipMaxPixelY = min(maxPixelY >> mipLevel, mipHeight - 1u);
+    const uint mipFootprintWidth = mipMaxPixelX - mipMinPixelX + 1u;
+    const uint mipFootprintHeight = mipMaxPixelY - mipMinPixelY + 1u;
+    const uint stepX = max(1u, mipFootprintWidth / kHZBOcclusionCoverageGridDimension);
+    const uint stepY = max(1u, mipFootprintHeight / kHZBOcclusionCoverageGridDimension);
+
+    for (uint pixelY = mipMinPixelY; pixelY <= mipMaxPixelY; pixelY += stepY)
     {
-        for (uint pixelX = minPixelX; pixelX <= maxPixelX; ++pixelX)
+        for (uint pixelX = mipMinPixelX; pixelX <= mipMaxPixelX; pixelX += stepX)
         {
-            if (!HZBSampleOccludes(uint2(pixelX, pixelY), nearestOccluderDepth))
+            if (!HZBCoverageSampleOccludes(mipWidth, mipHeight, pixelX, pixelY, mipLevel, nearestOccluderDepth))
                 return false;
         }
     }
+    for (uint pixelX = mipMinPixelX; pixelX <= mipMaxPixelX; pixelX += stepX)
+    {
+        if (!HZBCoverageSampleOccludes(mipWidth, mipHeight, pixelX, mipMaxPixelY, mipLevel, nearestOccluderDepth))
+            return false;
+    }
+    for (uint pixelY = mipMinPixelY; pixelY <= mipMaxPixelY; pixelY += stepY)
+    {
+        if (!HZBCoverageSampleOccludes(mipWidth, mipHeight, mipMaxPixelX, pixelY, mipLevel, nearestOccluderDepth))
+            return false;
+    }
+    if (!HZBCoverageSampleOccludes(mipWidth, mipHeight, mipMaxPixelX, mipMaxPixelY, mipLevel, nearestOccluderDepth))
+        return false;
 
     return true;
 }
@@ -59,7 +113,8 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
 	uint width = 0u;
 	uint height = 0u;
-	u_HZB.GetDimensions(width, height);
+    uint mipCount = 0u;
+	u_HZB.GetDimensions(0u, width, height, mipCount);
 
 	uint primitiveCount = 0u;
 	uint primitiveStride = 0u;
@@ -73,11 +128,12 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float2 minPixel = min(primitive.screenMin, primitive.screenMax);
     const float2 maxPixel = max(primitive.screenMin, primitive.screenMax);
     const float nearestOccluderDepth = primitive.nearestDepth - kHZBOcclusionDepthBias;
-    const bool occluded = IsConservativelyOccludedByHZBMip0Coverage(
+    const bool occluded = IsConservativelyOccludedByHZBCoverage(
         width,
         height,
         minPixel,
         maxPixel,
+        mipCount,
         nearestOccluderDepth);
     u_OcclusionPrimitiveResults[primitiveIndex] = occluded ? 1u : 0u;
 }

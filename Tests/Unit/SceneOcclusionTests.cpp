@@ -68,6 +68,13 @@ namespace
 		return primitive;
 	}
 
+	void ExpectHandleEq(const ScenePrimitiveHandle& actual, const ScenePrimitiveHandle& expected)
+	{
+		EXPECT_EQ(actual.sceneId, expected.sceneId);
+		EXPECT_EQ(actual.index, expected.index);
+		EXPECT_EQ(actual.generation, expected.generation);
+	}
+
 	std::string ReadTextFile(const std::filesystem::path& path)
 	{
 		std::ifstream stream(path, std::ios::binary);
@@ -270,8 +277,8 @@ TEST(SceneOcclusionTests, HZBPrimitivePacketsProjectWorldBoundsIntoScreenRectAnd
 
 	SceneOcclusionPrimitivePacketSource source;
 	source.primitive = MakePrimitive(MakeHandle(18u));
-	source.modelBoundingSphere.position = { 0.0f, 0.0f, 0.5f };
-	source.modelBoundingSphere.radius = 0.25f;
+	source.modelBounds.center = { 0.0f, 0.0f, 0.5f };
+	source.modelBounds.size = { 0.5f, 0.5f, 0.5f };
 	source.worldMatrix = NLS::Maths::Matrix4::Identity;
 
 	auto ineligible = source;
@@ -296,6 +303,30 @@ TEST(SceneOcclusionTests, HZBPrimitivePacketsProjectWorldBoundsIntoScreenRectAnd
 	EXPECT_EQ(packet.flags, 1u);
 }
 
+TEST(SceneOcclusionTests, HZBPrimitivePacketsUseModelAABBInsteadOfBoundingSphere)
+{
+	SceneOcclusionPrimitivePacketBuildInput buildInput;
+	buildInput.viewProjection = NLS::Maths::Matrix4::Identity;
+	buildInput.viewportWidth = 100u;
+	buildInput.viewportHeight = 100u;
+
+	SceneOcclusionPrimitivePacketSource source;
+	source.primitive = MakePrimitive(MakeHandle(118u));
+	source.modelBounds.center = { 0.0f, 0.0f, 0.5f };
+	source.modelBounds.size = { 0.2f, 0.4f, 0.2f };
+	source.worldMatrix = NLS::Maths::Matrix4::Identity;
+
+	const auto packets = SceneOcclusionSystem::BuildHZBPrimitivePackets(buildInput, { source });
+
+	ASSERT_EQ(packets.primitivePackets.size(), 1u);
+	const auto& packet = packets.primitivePackets.front();
+	EXPECT_FLOAT_EQ(packet.screenMinX, 45.0f);
+	EXPECT_FLOAT_EQ(packet.screenMaxX, 55.0f);
+	EXPECT_FLOAT_EQ(packet.screenMinY, 40.0f);
+	EXPECT_FLOAT_EQ(packet.screenMaxY, 60.0f);
+	EXPECT_FLOAT_EQ(packet.nearestDepth, 0.4f);
+}
+
 TEST(SceneOcclusionTests, HZBPrimitivePacketsProjectPerspectiveBoundsWithoutFullscreenFallback)
 {
 	SceneOcclusionPrimitivePacketBuildInput buildInput;
@@ -305,8 +336,8 @@ TEST(SceneOcclusionTests, HZBPrimitivePacketsProjectPerspectiveBoundsWithoutFull
 
 	SceneOcclusionPrimitivePacketSource source;
 	source.primitive = MakePrimitive(MakeHandle(119u));
-	source.modelBoundingSphere.position = { 0.0f, 0.0f, -10.0f };
-	source.modelBoundingSphere.radius = 0.25f;
+	source.modelBounds.center = { 0.0f, 0.0f, -10.0f };
+	source.modelBounds.size = { 0.5f, 0.5f, 0.5f };
 	source.worldMatrix = NLS::Maths::Matrix4::Identity;
 
 	const auto packets = SceneOcclusionSystem::BuildHZBPrimitivePackets(buildInput, { source });
@@ -335,8 +366,28 @@ TEST(SceneOcclusionTests, HZBPrimitivePacketsRejectNearPlaneCrossingBoundsConser
 
 	SceneOcclusionPrimitivePacketSource source;
 	source.primitive = MakePrimitive(MakeHandle(118u));
-	source.modelBoundingSphere.position = { 0.0f, 0.0f, 0.5f };
-	source.modelBoundingSphere.radius = 0.75f;
+	source.modelBounds.center = { 0.0f, 0.0f, 0.5f };
+	source.modelBounds.size = { 1.5f, 1.5f, 1.5f };
+	source.worldMatrix = NLS::Maths::Matrix4::Identity;
+
+	const auto packets = SceneOcclusionSystem::BuildHZBPrimitivePackets(buildInput, { source });
+
+	EXPECT_TRUE(packets.primitiveInputs.empty());
+	EXPECT_TRUE(packets.primitivePackets.empty());
+	EXPECT_EQ(packets.rejectedPrimitiveCount, 1u);
+}
+
+TEST(SceneOcclusionTests, HZBPrimitivePacketsRejectFullyOffscreenBoundsConservatively)
+{
+	SceneOcclusionPrimitivePacketBuildInput buildInput;
+	buildInput.viewProjection = NLS::Maths::Matrix4::Identity;
+	buildInput.viewportWidth = 100u;
+	buildInput.viewportHeight = 50u;
+
+	SceneOcclusionPrimitivePacketSource source;
+	source.primitive = MakePrimitive(MakeHandle(120u));
+	source.modelBounds.center = { 3.0f, 0.0f, 0.5f };
+	source.modelBounds.size = { 0.5f, 0.5f, 0.5f };
 	source.worldMatrix = NLS::Maths::Matrix4::Identity;
 
 	const auto packets = SceneOcclusionSystem::BuildHZBPrimitivePackets(buildInput, { source });
@@ -359,6 +410,8 @@ TEST(SceneOcclusionTests, HZBPrimitivePacketSourcesFollowVisibleSnapshotAndStabl
 		record.handle = handle;
 		record.modelBoundingSphere.position = { 0.0f, 0.0f, 0.5f };
 		record.modelBoundingSphere.radius = 0.25f;
+		record.modelBounds.center = { 0.0f, 0.0f, 0.5f };
+		record.modelBounds.size = { 0.5f, 0.5f, 0.5f };
 		record.worldMatrix = NLS::Maths::Matrix4::Translation({ x, 0.0f, 0.0f });
 		record.occupied = true;
 		record.tombstoned = false;
@@ -412,6 +465,140 @@ TEST(SceneOcclusionTests, HZBPrimitivePacketSourcesFollowVisibleSnapshotAndStabl
 	EXPECT_NE(
 		movedSources.sources.front().primitive.transformGeneration,
 		sources.sources.front().primitive.transformGeneration);
+
+	auto resizedSnapshot = snapshot;
+	resizedSnapshot.primitiveRecords.front().modelBounds.size = { 0.25f, 0.5f, 0.5f };
+	const auto resizedSources = SceneOcclusionSystem::BuildHZBPrimitivePacketSources(
+		resizedSnapshot,
+		{ visibleHandle });
+	ASSERT_EQ(resizedSources.sources.size(), 1u);
+	EXPECT_NE(
+		resizedSources.sources.front().primitive.boundsGeneration,
+		sources.sources.front().primitive.boundsGeneration);
+	EXPECT_EQ(
+		resizedSources.sources.front().primitive.transformGeneration,
+		sources.sources.front().primitive.transformGeneration);
+}
+
+TEST(SceneOcclusionTests, HZBObservationCandidatesRetainPreviouslyObservedPrimitives)
+{
+	const auto visibleHandle = MakeHandle(24u);
+	const auto previouslyObservedHandle = MakeHandle(25u);
+	const auto duplicateHandle = MakeHandle(26u);
+	const auto otherSceneHandle = ScenePrimitiveHandle{ kSceneId + 1u, 27u, 1u };
+
+	std::vector<SceneOcclusionPrimitiveInput> previousInputs;
+	previousInputs.push_back(MakePrimitive(previouslyObservedHandle));
+	previousInputs.push_back(MakePrimitive(duplicateHandle));
+	previousInputs.push_back(MakePrimitive(otherSceneHandle));
+
+	const auto candidates = SceneOcclusionSystem::BuildHZBObservationCandidateHandles(
+		{ visibleHandle, duplicateHandle },
+		previousInputs,
+		kSceneId);
+
+	ASSERT_EQ(candidates.size(), 3u);
+	ExpectHandleEq(candidates[0], visibleHandle);
+	ExpectHandleEq(candidates[1], duplicateHandle);
+	ExpectHandleEq(candidates[2], previouslyObservedHandle);
+}
+
+TEST(SceneOcclusionTests, HZBObservationCandidatesRebuildPacketsForPreviouslyObservedLivePrimitive)
+{
+	ScenePrimitiveSnapshot snapshot;
+	snapshot.sceneId = kSceneId;
+	snapshot.snapshotSerial = 9u;
+	snapshot.frameSerial = 13u;
+
+	const auto retainedHandle = MakeHandle(28u);
+	ScenePrimitiveSnapshotRecord record;
+	record.handle = retainedHandle;
+	record.modelBoundingSphere.position = { 0.0f, 0.0f, 0.5f };
+	record.modelBoundingSphere.radius = 0.25f;
+	record.modelBounds.center = { 0.0f, 0.0f, 0.5f };
+	record.modelBounds.size = { 0.5f, 0.5f, 0.5f };
+	record.worldMatrix = NLS::Maths::Matrix4::Identity;
+	record.occupied = true;
+	record.tombstoned = false;
+	record.ownerAlive = true;
+	record.ownerActive = true;
+	record.hasMeshBinding = true;
+	record.hasValidMaterial = true;
+	record.depthWriteEligibleForOcclusion = true;
+	snapshot.primitiveRecords.push_back(record);
+
+	std::vector<SceneOcclusionPrimitiveInput> previousInputs;
+	previousInputs.push_back(MakePrimitive(retainedHandle));
+
+	const auto candidates = SceneOcclusionSystem::BuildHZBObservationCandidateHandles(
+		{},
+		previousInputs,
+		kSceneId);
+	const auto sources = SceneOcclusionSystem::BuildHZBPrimitivePacketSources(snapshot, candidates);
+
+	SceneOcclusionPrimitivePacketBuildInput buildInput;
+	buildInput.viewProjection = NLS::Maths::Matrix4::Identity;
+	buildInput.viewportWidth = 100u;
+	buildInput.viewportHeight = 50u;
+	const auto packets = SceneOcclusionSystem::BuildHZBPrimitivePackets(buildInput, sources.sources);
+
+	ASSERT_EQ(candidates.size(), 1u);
+	ExpectHandleEq(candidates.front(), retainedHandle);
+	ASSERT_EQ(sources.sources.size(), 1u);
+	ASSERT_EQ(packets.primitiveInputs.size(), 1u);
+	ASSERT_EQ(packets.primitivePackets.size(), 1u);
+	ExpectHandleEq(packets.primitiveInputs.front().handle, retainedHandle);
+}
+
+TEST(SceneOcclusionTests, BaseSceneRendererBuildsHZBPacketsFromRetainedObservationCandidates)
+{
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+
+	const auto hzbBlock = source.find("if (occlusionSettings.enableHZBOcclusion)");
+	ASSERT_NE(hzbBlock, std::string::npos);
+	const auto streamingBlock = source.find("RegisterRuntimeStreamingDependencies", hzbBlock);
+	ASSERT_NE(streamingBlock, std::string::npos);
+	const auto body = source.substr(hzbBlock, streamingBlock - hzbBlock);
+
+	EXPECT_NE(body.find("candidateStart"), std::string::npos);
+	EXPECT_NE(body.find("BuildHZBObservationCandidateHandles"), std::string::npos);
+	EXPECT_NE(body.find("previousSceneHZBOcclusionPrimitiveInputs"), std::string::npos);
+	EXPECT_NE(body.find("renderScene.GetSceneId()"), std::string::npos);
+	EXPECT_NE(body.find("hzbBuildTimeNs += ElapsedNanoseconds(candidateStart)"), std::string::npos);
+	EXPECT_NE(body.find("CreatePrimitiveSnapshotForHandles(\n\t\t\t\thzbObservationCandidateHandles"), std::string::npos);
+	EXPECT_NE(body.find("BuildHZBPrimitivePacketSources(\n\t\t\t\thzbPrimitiveSnapshot,\n\t\t\t\thzbObservationCandidateHandles"), std::string::npos);
+	EXPECT_EQ(body.find("BuildHZBPrimitivePacketSources(\n\t\t\t\thzbPrimitiveSnapshot,\n\t\t\t\trenderScene.GetLastVisiblePrimitiveHandles()"), std::string::npos);
+}
+
+TEST(SceneOcclusionTests, BaseSceneRendererUsesStableHZBViewKeyInsteadOfCameraObjectAddress)
+{
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+
+	EXPECT_NE(source.find("BuildHZBViewKey(m_frameDescriptor)"), std::string::npos);
+	EXPECT_EQ(source.find("reinterpret_cast<uintptr_t>(&camera)"), std::string::npos);
+}
+
+TEST(SceneOcclusionTests, BaseSceneRendererLogsHZBObservationReadbackFlagDistribution)
+{
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+
+	const auto functionStart = source.find("BaseSceneRenderer::CompleteHZBOcclusionObservationFrame");
+	ASSERT_NE(functionStart, std::string::npos);
+	const auto functionEnd = source.find("void BaseSceneRenderer::RefreshSceneLightingDescriptor", functionStart);
+	ASSERT_NE(functionEnd, std::string::npos);
+	const auto body = source.substr(functionStart, functionEnd - functionStart);
+
+	EXPECT_NE(body.find("[BaseSceneRenderer][HZBObservation]"), std::string::npos);
+	EXPECT_NE(body.find("gpuOccludedFlags"), std::string::npos);
+	EXPECT_NE(body.find("appliedOccluded"), std::string::npos);
+	EXPECT_NE(body.find("incompatibleView"), std::string::npos);
+	EXPECT_NE(body.find("std::count_if"), std::string::npos);
 }
 
 TEST(SceneOcclusionTests, ObservationBatchRejectsStaleFrameAndIncompatibleViewResults)
@@ -451,6 +638,25 @@ TEST(SceneOcclusionTests, ObservationBatchRejectsStaleFrameAndIncompatibleViewRe
 	EXPECT_TRUE(result.primitiveResults[0].culledByOcclusion);
 	EXPECT_FALSE(result.primitiveResults[1].culledByOcclusion);
 	EXPECT_FALSE(result.primitiveResults[2].culledByOcclusion);
+}
+
+TEST(SceneOcclusionTests, HZBViewCompatibilityHashDoesNotUseCameraPose)
+{
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+
+	const auto functionStart = source.find("uint64_t HashCameraViewCompatibility");
+	ASSERT_NE(functionStart, std::string::npos);
+	const auto functionEnd = source.find("uint64_t ResolveDepthFormatKey", functionStart);
+	ASSERT_NE(functionEnd, std::string::npos);
+	const auto body = source.substr(functionStart, functionEnd - functionStart);
+
+	EXPECT_EQ(body.find("GetPosition()"), std::string::npos);
+	EXPECT_EQ(body.find("GetRotation()"), std::string::npos);
+	EXPECT_NE(body.find("GetNear()"), std::string::npos);
+	EXPECT_NE(body.find("GetFar()"), std::string::npos);
+	EXPECT_NE(body.find("GetProjectionMode()"), std::string::npos);
 }
 
 TEST(SceneOcclusionTests, GpuPrimitiveResultFlagsBuildObservationBatchForValidatedFrameMerge)

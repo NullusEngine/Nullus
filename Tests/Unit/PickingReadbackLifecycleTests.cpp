@@ -58,4 +58,16 @@ namespace
 
         EXPECT_EQ(lifecycle.GetReadableFrame(), nullptr);
     }
+
+    TEST(PickingReadbackLifecycleTests, PixelReadbackInFlightSuppressesRepeatedAttemptsUntilCompleted)
+    {
+        NLS::Editor::Rendering::PickingReadbackLifecycle<TestScene> lifecycle;
+
+        EXPECT_TRUE(lifecycle.TryBeginPixelReadback());
+        EXPECT_FALSE(lifecycle.TryBeginPixelReadback());
+
+        lifecycle.EndPixelReadback();
+
+        EXPECT_TRUE(lifecycle.TryBeginPixelReadback());
+    }
 }

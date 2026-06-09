@@ -52,6 +52,13 @@ public:
         return !p_wasInputBlocked && p_isInputBlocked;
     }
 
+    static constexpr bool ShouldHandleWheelZoom(
+        const bool p_viewportInputAvailable,
+        const bool p_mouseOverView)
+    {
+        return p_viewportInputAvailable && p_mouseOverView;
+    }
+
     /**
      * Constructor
      * @param p_view

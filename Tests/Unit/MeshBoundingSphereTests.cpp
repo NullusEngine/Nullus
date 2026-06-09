@@ -3,7 +3,6 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <sstream>
 #include <atomic>
 #include <type_traits>
 #include <vector>
@@ -14,6 +13,7 @@
 #include "Assets/NativeArtifactContainer.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -136,6 +136,28 @@ TEST(MeshBoundingSphereTests, ComputesCenterFromAllNegativeVertexPositions)
     EXPECT_FLOAT_EQ(sphere.position.z, -8.0f);
 }
 
+TEST(MeshBoundsTests, ComputesLocalAABBFromVertexPositions)
+{
+    EnsureMeshTestDriver();
+
+    const std::vector<NLS::Render::Geometry::Vertex> vertices{
+        VertexAt(-8.0f, -6.0f, -4.0f),
+        VertexAt(-2.0f, -10.0f, -12.0f),
+        VertexAt(-5.0f, -3.0f, -7.0f)
+    };
+    const std::vector<uint32_t> indices{ 0u, 1u, 2u };
+
+    const NLS::Render::Resources::Mesh mesh(vertices, indices, 0u);
+    const auto& bounds = mesh.GetBounds();
+
+    EXPECT_FLOAT_EQ(bounds.center.x, -5.0f);
+    EXPECT_FLOAT_EQ(bounds.center.y, -6.5f);
+    EXPECT_FLOAT_EQ(bounds.center.z, -8.0f);
+    EXPECT_FLOAT_EQ(bounds.size.x, 6.0f);
+    EXPECT_FLOAT_EQ(bounds.size.y, 7.0f);
+    EXPECT_FLOAT_EQ(bounds.size.z, 8.0f);
+}
+
 TEST(MeshBoundingSphereTests, LoadMeshArtifactHonorsCancellationBeforeReading)
 {
     const auto root = std::filesystem::temp_directory_path() / ("nullus_mesh_cancel_" + NLS::Guid::New().ToString());
@@ -229,6 +251,33 @@ TEST(MeshResourceTests, MeshCanReusePrecomputedArtifactBoundingSphere)
     EXPECT_FLOAT_EQ(sphere.position.y, 2.0f);
     EXPECT_FLOAT_EQ(sphere.position.z, 3.0f);
     EXPECT_FLOAT_EQ(sphere.radius, 4.0f);
+
+    const auto& bounds = mesh.GetBounds();
+    EXPECT_FLOAT_EQ(bounds.center.x, 0.0f);
+    EXPECT_FLOAT_EQ(bounds.center.y, 0.0f);
+    EXPECT_FLOAT_EQ(bounds.center.z, 0.0f);
+    EXPECT_FLOAT_EQ(bounds.size.x, 2000.0f);
+    EXPECT_FLOAT_EQ(bounds.size.y, 2000.0f);
+    EXPECT_FLOAT_EQ(bounds.size.z, 2000.0f);
+}
+
+TEST(MeshBoundsTests, PartialVertexUpdateBoundsUseAABBUnionInsteadOfBoundingSphereCube)
+{
+    const std::vector<NLS::Render::Geometry::Vertex> vertices{
+        VertexAt(0.0f, 0.0f, 0.0f),
+        VertexAt(1.0f, 1.0f, 1.0f),
+        VertexAt(2.0f, 2.0f, 2.0f)
+    };
+    const auto bounds = NLS::Render::Geometry::UnionBounds(
+        NLS::Render::Geometry::ComputeBounds(vertices),
+        NLS::Render::Geometry::ComputeBounds({ VertexAt(3.0f, 4.0f, 5.0f) }));
+
+    EXPECT_FLOAT_EQ(bounds.center.x, 1.5f);
+    EXPECT_FLOAT_EQ(bounds.center.y, 2.0f);
+    EXPECT_FLOAT_EQ(bounds.center.z, 2.5f);
+    EXPECT_FLOAT_EQ(bounds.size.x, 3.0f);
+    EXPECT_FLOAT_EQ(bounds.size.y, 4.0f);
+    EXPECT_FLOAT_EQ(bounds.size.z, 5.0f);
 }
 
 TEST(MeshArtifactTests, SerializationPersistsPrecomputedBoundingSphere)

@@ -215,6 +215,13 @@ public:
         ApplyResolvedViewSize(width, height);
     }
 
+    void DrawViewportImageForTest()
+    {
+        ApplyResolvedViewSize(64u, 64u);
+        m_image->Draw();
+        MarkViewportImageInputBoundsForLastDraw();
+    }
+
     void SetRequiresRetiredFrameConsumptionForTest(const bool requiresRetiredFrameConsumption)
     {
         SetRequiresRetiredFrameConsumption(requiresRetiredFrameConsumption);
@@ -423,6 +430,95 @@ void ExpectNoTextWidgetContent(NLS::UI::PanelWindow& panel, const std::string& u
         });
 
     EXPECT_FALSE(found) << "Unexpected FrameInfo text: " << unexpectedContent;
+}
+
+std::optional<size_t> FindTextWidgetIndex(NLS::UI::PanelWindow& panel, const std::string& expectedContent)
+{
+    const auto& widgets = panel.GetWidgets();
+    for (size_t index = 0u; index < widgets.size(); ++index)
+    {
+        const auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widgets[index].first);
+        if (text != nullptr && text->content == expectedContent)
+            return index;
+    }
+
+    return std::nullopt;
+}
+
+void ExpectTextWidgetBefore(
+    NLS::UI::PanelWindow& panel,
+    const std::string& earlierContent,
+    const std::string& laterContent)
+{
+    const auto earlierIndex = FindTextWidgetIndex(panel, earlierContent);
+    const auto laterIndex = FindTextWidgetIndex(panel, laterContent);
+
+    ASSERT_TRUE(earlierIndex.has_value()) << "Missing FrameInfo text: " << earlierContent;
+    ASSERT_TRUE(laterIndex.has_value()) << "Missing FrameInfo text: " << laterContent;
+    EXPECT_LT(earlierIndex.value(), laterIndex.value())
+        << "Expected \"" << earlierContent << "\" before \"" << laterContent << "\".";
+}
+
+std::optional<size_t> FindFrameInfoRowIndex(
+    const std::vector<NLS::Editor::Panels::FrameInfoTableRow>& rows,
+    const std::string& section,
+    const std::string& metric)
+{
+    for (size_t index = 0u; index < rows.size(); ++index)
+    {
+        if (rows[index].section == section && rows[index].metric == metric)
+            return index;
+    }
+
+    return std::nullopt;
+}
+
+const NLS::Editor::Panels::FrameInfoTableRow& ExpectFrameInfoRow(
+    const NLS::Editor::Panels::FrameInfo& panel,
+    const std::string& section,
+    const std::string& metric,
+    const std::string& value,
+    const std::string& note = "")
+{
+    static const NLS::Editor::Panels::FrameInfoTableRow missingRow {};
+    const auto& rows = panel.GetDebugRowsForTesting();
+    const auto index = FindFrameInfoRowIndex(rows, section, metric);
+    if (!index.has_value())
+    {
+        ADD_FAILURE() << "Missing FrameInfo table row: " << section << " / " << metric;
+        return missingRow;
+    }
+
+    const auto& row = rows[index.value()];
+    EXPECT_EQ(row.value, value) << section << " / " << metric;
+    EXPECT_EQ(row.note, note) << section << " / " << metric;
+    return row;
+}
+
+void ExpectNoFrameInfoRow(
+    const NLS::Editor::Panels::FrameInfo& panel,
+    const std::string& section,
+    const std::string& metric)
+{
+    const auto& rows = panel.GetDebugRowsForTesting();
+    EXPECT_FALSE(FindFrameInfoRowIndex(rows, section, metric).has_value())
+        << "Unexpected FrameInfo table row: " << section << " / " << metric;
+}
+
+void ExpectFrameInfoRowBefore(
+    const NLS::Editor::Panels::FrameInfo& panel,
+    const std::string& earlierSection,
+    const std::string& earlierMetric,
+    const std::string& laterSection,
+    const std::string& laterMetric)
+{
+    const auto& rows = panel.GetDebugRowsForTesting();
+    const auto earlierIndex = FindFrameInfoRowIndex(rows, earlierSection, earlierMetric);
+    const auto laterIndex = FindFrameInfoRowIndex(rows, laterSection, laterMetric);
+
+    ASSERT_TRUE(earlierIndex.has_value()) << "Missing FrameInfo table row: " << earlierSection << " / " << earlierMetric;
+    ASSERT_TRUE(laterIndex.has_value()) << "Missing FrameInfo table row: " << laterSection << " / " << laterMetric;
+    EXPECT_LT(earlierIndex.value(), laterIndex.value());
 }
 
 std::string ReadSourceFile(const std::filesystem::path& path)
@@ -661,24 +757,141 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForFrameInfo("Stats View", frameInfo);
 
-    EXPECT_EQ(TextWidgetAt(panel, 0u).content, "Target View: Stats View");
-    EXPECT_EQ(TextWidgetAt(panel, 2u).content, "Batches: 1");
-    EXPECT_EQ(TextWidgetAt(panel, 3u).content, "Instances: 2");
-    EXPECT_EQ(TextWidgetAt(panel, 4u).content, "Polygons: 2");
-    EXPECT_EQ(TextWidgetAt(panel, 5u).content, "Vertices: 6");
-    ExpectTextWidgetContent(panel, "ParseScene Calls: 0");
-    ExpectTextWidgetContent(panel, "Drawables O/T/S: 0/0/0");
-    ExpectTextWidgetContent(panel, "GBuffer Material Resolve H/M: 7/2");
-    ExpectTextWidgetContent(panel, "Prepared Draw Static Base H/M: 9/1");
-    ExpectTextWidgetContent(panel, "Draw Opt Raw/Submitted/Groups/Largest/Rebuilds/Dropped: 10/3/1/8/2/1");
-    ExpectTextWidgetContent(panel, "Parallel Work Units/Workers/Fallback: 4/0/attachment-backed pass kept unsliced");
-    ExpectTextWidgetContent(panel, "RHI Safety DeviceLost/UnsafeQuarantine: No/Yes");
-    ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 0");
-    ExpectTextWidgetContent(panel, "Binding Sets Created: 0");
-    ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 0");
-    ExpectNoTextWidgetContent(panel, "Target Panel Draw: 0 us");
-    ExpectTextWidgetContent(panel, "Frame Stage: Direct");
-    ExpectTextWidgetContent(panel, "Retirement State: Direct");
+    ExpectFrameInfoRow(panel, "Status", "Target View", "Stats View");
+    ExpectFrameInfoRow(panel, "Status", "Frame State", "Direct -> Direct -> Direct", "InFlight 0, Blocked 0");
+    ExpectFrameInfoRow(panel, "Status", "Safety", "Device OK", "Unsafe GPU work quarantined");
+    ExpectFrameInfoRow(panel, "Verdict", "Bottleneck", "Draw Submission", "Submitted 3 of 10 raw draws");
+    ExpectFrameInfoRow(panel, "Verdict", "Occlusion", "No Data", "Large-scene occlusion telemetry unavailable");
+    ExpectFrameInfoRow(panel, "Render Load", "Submitted Draws", "3", "Raw 10, Groups 1, Largest 8, Dropped 1");
+    ExpectFrameInfoRow(panel, "Render Load", "Raw Visible Draws", "10");
+    ExpectFrameInfoRow(panel, "Render Load", "Instance Groups", "1");
+    ExpectFrameInfoRow(panel, "Render Load", "Largest Instance Group", "8");
+    ExpectFrameInfoRow(panel, "Render Load", "Dropped Objects", "1");
+    ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "0");
+    ExpectFrameInfoRow(panel, "Inputs", "Transparent Drawables", "0");
+    ExpectFrameInfoRow(panel, "Inputs", "Skybox Drawables", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Batches", "1");
+    ExpectFrameInfoRow(panel, "Debug", "Instances", "2");
+    ExpectFrameInfoRow(panel, "Debug", "Polygons", "2");
+    ExpectFrameInfoRow(panel, "Debug", "Vertices", "6");
+    ExpectFrameInfoRow(panel, "Debug", "Command Rebuilds", "2");
+    ExpectFrameInfoRow(panel, "Debug", "Parallel Work Units", "4");
+    ExpectFrameInfoRow(panel, "Debug", "Parallel Workers", "0", "attachment-backed pass kept unsliced");
+    ExpectFrameInfoRow(panel, "Debug", "GBuffer Resolve Hits", "7");
+    ExpectFrameInfoRow(panel, "Debug", "GBuffer Resolve Misses", "2");
+    ExpectFrameInfoRow(panel, "Debug", "Prepared Cache Hits", "9", "Static base");
+    ExpectFrameInfoRow(panel, "Debug", "Prepared Cache Misses", "1", "Static base");
+    ExpectNoFrameInfoRow(panel, "Large Scene", "Registered Primitives");
+    ExpectNoFrameInfoRow(panel, "Culling", "Tested Primitives");
+    ExpectFrameInfoRowBefore(panel, "Verdict", "Bottleneck", "Debug", "Command Rebuilds");
+}
+
+TEST(PanelWindowHookTests, FrameInfoPanelAggregatesDisplayedRenderViewSnapshots)
+{
+    NLS::Render::Data::FrameInfo sceneFrameInfo;
+    sceneFrameInfo.rawVisibleObjectCount = 10u;
+    sceneFrameInfo.submittedSceneDrawCount = 3u;
+    sceneFrameInfo.dynamicInstanceGroupCount = 1u;
+    sceneFrameInfo.largestInstanceGroupSize = 8u;
+    sceneFrameInfo.objectDataOverflowDroppedObjectCount = 1u;
+    sceneFrameInfo.parsedOpaqueDrawableCount = 4u;
+    sceneFrameInfo.gBufferMaterialSyncCount = 2u;
+    sceneFrameInfo.renderBindingSetCreationCount = 5u;
+    sceneFrameInfo.largeScene.registeredPrimitiveCount = 100u;
+    sceneFrameInfo.largeScene.visiblePrimitiveCount = 40u;
+    sceneFrameInfo.largeScene.rawVisibleDrawCount = 12u;
+    sceneFrameInfo.largeScene.submittedDrawCount = 7u;
+    sceneFrameInfo.largeScene.occlusionTestCount = 10u;
+    sceneFrameInfo.largeScene.occlusionCulledCount = 2u;
+
+    NLS::Render::Data::FrameInfo gameFrameInfo;
+    gameFrameInfo.rawVisibleObjectCount = 20u;
+    gameFrameInfo.submittedSceneDrawCount = 6u;
+    gameFrameInfo.dynamicInstanceGroupCount = 3u;
+    gameFrameInfo.largestInstanceGroupSize = 16u;
+    gameFrameInfo.objectDataOverflowDroppedObjectCount = 2u;
+    gameFrameInfo.parsedOpaqueDrawableCount = 5u;
+    gameFrameInfo.gBufferMaterialSyncCount = 4u;
+    gameFrameInfo.renderBindingSetCreationCount = 7u;
+    gameFrameInfo.largeScene.registeredPrimitiveCount = 200u;
+    gameFrameInfo.largeScene.visiblePrimitiveCount = 80u;
+    gameFrameInfo.largeScene.rawVisibleDrawCount = 18u;
+    gameFrameInfo.largeScene.submittedDrawCount = 9u;
+    gameFrameInfo.largeScene.occlusionTestCount = 20u;
+    gameFrameInfo.largeScene.occlusionCulledCount = 5u;
+
+    NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
+    panel.UpdateForFrameInfoViews({
+        {"Scene View", sceneFrameInfo},
+        {"Game View", gameFrameInfo}
+    });
+
+    ExpectFrameInfoRow(panel, "Status", "Target View", "Scene View + Game View");
+    ExpectFrameInfoRow(panel, "Render Load", "Submitted Draws", "16", "Raw 30, Groups 4, Largest 16, Dropped 3");
+    ExpectFrameInfoRow(panel, "Render Load", "Raw Visible Draws", "30");
+    ExpectFrameInfoRow(panel, "Render Load", "Instance Groups", "4");
+    ExpectFrameInfoRow(panel, "Render Load", "Largest Instance Group", "16");
+    ExpectFrameInfoRow(panel, "Render Load", "Dropped Objects", "3");
+    ExpectFrameInfoRow(panel, "Large Scene", "Registered Primitives", "300");
+    ExpectFrameInfoRow(panel, "Large Scene", "Visible Primitives", "120");
+    ExpectFrameInfoRow(panel, "Occlusion", "Tests", "30");
+    ExpectFrameInfoRow(panel, "Occlusion", "Culled", "7");
+    ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "9");
+    ExpectFrameInfoRow(panel, "Debug", "GBuffer Syncs", "6");
+    ExpectFrameInfoRow(panel, "Debug", "Binding Sets", "12");
+}
+
+TEST(PanelWindowHookTests, EditorFrameInfoSelectionIgnoresFocusedView)
+{
+    const auto editorSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
+
+    const auto updateStart = editorSource.find("void Editor::Core::Editor::UpdateEditorPanels");
+    const auto updateEnd = editorSource.find("void Editor::Core::Editor::UpdateViews", updateStart);
+    ASSERT_NE(updateStart, std::string::npos);
+    ASSERT_NE(updateEnd, std::string::npos);
+    const auto updateBody = editorSource.substr(updateStart, updateEnd - updateStart);
+
+    EXPECT_EQ(updateBody.find("IsFocused()"), std::string::npos);
+    EXPECT_NE(updateBody.find("SetCandidateViews"), std::string::npos);
+}
+
+TEST(PanelWindowHookTests, FrameInfoPanelIgnoresViewsNotDrawnInCurrentUiFrame)
+{
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(320.0f, 240.0f);
+    io.Fonts->AddFontDefault();
+    unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
+    panel.SetCandidateViews({ &view });
+
+    ImGui::NewFrame();
+    ImGui::Begin("Probe View");
+    view.DrawViewportImageForTest();
+    ImGui::End();
+    ImGui::EndFrame();
+    ASSERT_TRUE(view.HasViewportImageInputBounds());
+
+    ImGui::NewFrame();
+    panel.Draw();
+    ImGui::EndFrame();
+
+    ExpectFrameInfoRow(panel, "Status", "Target View", "None");
+    ImGui::DestroyContext();
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelFormatsLargeSceneTelemetrySnapshot)
@@ -737,15 +950,46 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsLargeSceneTelemetrySnapshot)
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForFrameInfo("Large Scene View", frameInfo);
 
-    ExpectTextWidgetContent(panel, "Large Scene Primitives Reg/Static/Dynamic/Unclassified/Slots/Tombstones: 100,000/95,000/5,000/0/101,000/1,000");
-    ExpectTextWidgetContent(panel, "Large Scene Visibility SpatialCandidates/FullScanCandidates/Records/Tested/Visible/Meshes: 24,000/0/25,000/26,000/18,000/17,000");
-    ExpectTextWidgetContent(panel, "Large Scene Cull Visible/Inactive/Layer/Distance/Spatial/Frustum/LOD/HLOD/Occluded/NotResident/MissingMesh/InvalidMaterial/Backend: 18,000/0/0/0/0/0/120/42/8/0/0/0/0");
-    ExpectTextWidgetContent(panel, "Large Scene Sync Touched/FullSweeps/SweepSlots/DirtyBounds/SlotReuse: 37/0/101,000/4/3");
-    ExpectTextWidgetContent(panel, "Large Scene Finalization Prims/Commands/Rebuilds/Raw/Submitted/Groups: 18,000/18,120/2/18,000/1,000/960");
-    ExpectTextWidgetContent(panel, "Large Scene Residency Dependencies/Tickets/ModeledResidentCPU/ModeledResidentGPU/ModeledRequestedCPU/ModeledRequestedGPU: 512/64/1,048,576/2,097,152/3,145,728/4,194,304");
-    ExpectTextWidgetContent(panel, "Large Scene Streaming Requests/Commits/Evicts/OcclusionTests/OcclusionCulled/HZBns/Commitns: 11/7/3/144/55/66,000/77,000");
-    ExpectTextWidgetContent(panel, "Large Scene HZB History Prune Touched/RemovedHandles/RemovedKeys/ns: 9/4/6/8,000");
-    ExpectTextWidgetContent(panel, "Large Scene Timings Sync/SerialVis/ParallelVis/Finalize ns: 300,000/0/120,000/90,000");
+    ExpectFrameInfoRow(panel, "Status", "Target View", "Large Scene View");
+    ExpectFrameInfoRow(panel, "Verdict", "Bottleneck", "Visibility and Draw Submission", "Submitted 1,000 of 18,000 raw draws");
+    ExpectFrameInfoRow(panel, "Verdict", "Occlusion", "Active, Useful", "55 of 144 tests culled (38.2%)");
+    ExpectFrameInfoRow(panel, "Render Load", "Submitted Draws", "1,000", "Raw 18,000, Groups 960, Largest 0, Dropped 0");
+    ExpectFrameInfoRow(panel, "Render Load", "Raw Visible Draws", "18,000");
+    ExpectFrameInfoRow(panel, "Render Load", "Instance Groups", "960");
+    ExpectFrameInfoRow(panel, "Large Scene", "Registered Primitives", "100,000");
+    ExpectFrameInfoRow(panel, "Large Scene", "Visible Primitives", "18,000");
+    ExpectFrameInfoRow(panel, "Large Scene", "Visible Meshes", "17,000");
+    ExpectFrameInfoRow(panel, "Large Scene", "Finalized Commands", "18,120");
+    ExpectFrameInfoRow(panel, "Culling", "Tested Primitives", "26,000");
+    ExpectFrameInfoRow(panel, "Culling", "Visible", "18,000");
+    ExpectFrameInfoRow(panel, "Culling", "Frustum Culled", "0");
+    ExpectFrameInfoRow(panel, "Culling", "Occluded", "8");
+    ExpectFrameInfoRow(panel, "Culling", "LOD Inactive", "120");
+    ExpectFrameInfoRow(panel, "Culling", "HLOD Suppressed", "42");
+    ExpectFrameInfoRow(panel, "Culling", "Other Reasons", "0");
+    ExpectFrameInfoRow(panel, "Culling", "Spatial Candidates", "24,000");
+    ExpectFrameInfoRow(panel, "Culling", "Full Scan Candidates", "0");
+    ExpectFrameInfoRow(panel, "Culling", "Records Touched", "25,000");
+    ExpectFrameInfoRow(panel, "Occlusion", "Efficiency", "38.2%", "55 culled from 144 tests");
+    ExpectFrameInfoRow(panel, "Occlusion", "HZB Build", "0.066 ms", "History pruned 4 handles");
+    ExpectFrameInfoRow(panel, "Streaming", "Requests", "11", "Dependencies 512, Tickets 64");
+    ExpectFrameInfoRow(panel, "Streaming", "Commits", "7");
+    ExpectFrameInfoRow(panel, "Streaming", "Evicts", "3");
+    ExpectFrameInfoRow(panel, "Streaming", "CPU Resident Bytes", "1,048,576");
+    ExpectFrameInfoRow(panel, "Streaming", "CPU Requested Bytes", "3,145,728");
+    ExpectFrameInfoRow(panel, "Streaming", "GPU Resident Bytes", "2,097,152");
+    ExpectFrameInfoRow(panel, "Streaming", "GPU Requested Bytes", "4,194,304");
+    ExpectFrameInfoRow(panel, "Timing", "Sync", "0.300 ms");
+    ExpectFrameInfoRow(panel, "Timing", "Visibility", "0.120 ms");
+    ExpectFrameInfoRow(panel, "Timing", "Finalize", "0.090 ms");
+    ExpectFrameInfoRow(panel, "Timing", "Streaming Commit", "0.077 ms");
+    ExpectFrameInfoRow(panel, "Debug", "Static Primitives", "95,000");
+    ExpectFrameInfoRow(panel, "Debug", "Dynamic Primitives", "5,000");
+    ExpectFrameInfoRow(panel, "Debug", "Allocated Primitive Slots", "101,000");
+    ExpectFrameInfoRow(panel, "Debug", "Tombstoned Primitive Slots", "1,000");
+    ExpectNoFrameInfoRow(panel, "Debug", "Batches");
+    ExpectFrameInfoRowBefore(panel, "Verdict", "Bottleneck", "Debug", "Static Primitives");
+    ExpectFrameInfoRowBefore(panel, "Culling", "Tested Primitives", "Timing", "Sync");
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelExcludesEditorUiPanelDrawMetrics)
@@ -765,12 +1009,12 @@ TEST(PanelWindowHookTests, FrameInfoPanelExcludesEditorUiPanelDrawMetrics)
     const auto frameInfo = renderer.GetFrameInfo();
     panel.UpdateForFrameInfo("Stats View", frameInfo);
 
-    const auto& widgets = panel.GetWidgets();
-    for (const auto& widget : widgets)
+    for (const auto& row : panel.GetDebugRowsForTesting())
     {
-        const auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widget.first);
-        if (text != nullptr)
-            EXPECT_EQ(text->content.find("Panel Draw"), std::string::npos) << text->content;
+        EXPECT_EQ(row.section.find("Panel Draw"), std::string::npos) << row.section;
+        EXPECT_EQ(row.metric.find("Panel Draw"), std::string::npos) << row.metric;
+        EXPECT_EQ(row.value.find("Panel Draw"), std::string::npos) << row.value;
+        EXPECT_EQ(row.note.find("Panel Draw"), std::string::npos) << row.note;
     }
 }
 
@@ -842,23 +1086,29 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesFromViewOwnedSnapshotAndRetain
     view.RenderForTest();
     panel.RefreshForView(&view);
 
-    ExpectTextWidgetContent(panel, "Target View: Probe View");
-    ExpectTextWidgetContent(panel, "ParseScene Calls: 1");
-    ExpectTextWidgetContent(panel, "Drawables O/T/S: 3/2/1");
-    ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 1");
-    ExpectTextWidgetContent(panel, "Binding Sets Created: 4");
-    ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 5");
+    ExpectFrameInfoRow(panel, "Status", "Target View", "Probe View");
+    ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "3");
+    ExpectFrameInfoRow(panel, "Inputs", "Transparent Drawables", "2");
+    ExpectFrameInfoRow(panel, "Inputs", "Skybox Drawables", "1");
+    ExpectFrameInfoRow(panel, "Debug", "GBuffer Syncs", "1");
+    ExpectFrameInfoRow(panel, "Debug", "Command Rebuilds", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Binding Sets", "4");
+    ExpectFrameInfoRow(panel, "Debug", "Snapshot Buffers", "5");
+    ExpectFrameInfoRow(panel, "Debug", "ParseScene Calls", "1");
 
     view.SetRendererRecordsStats(false);
     view.SetCameraAvailable(false);
     view.RenderForTest();
     panel.RefreshForView(&view);
 
-    ExpectTextWidgetContent(panel, "ParseScene Calls: 1");
-    ExpectTextWidgetContent(panel, "Drawables O/T/S: 3/2/1");
-    ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 1");
-    ExpectTextWidgetContent(panel, "Binding Sets Created: 4");
-    ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 5");
+    ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "3");
+    ExpectFrameInfoRow(panel, "Inputs", "Transparent Drawables", "2");
+    ExpectFrameInfoRow(panel, "Inputs", "Skybox Drawables", "1");
+    ExpectFrameInfoRow(panel, "Debug", "GBuffer Syncs", "1");
+    ExpectFrameInfoRow(panel, "Debug", "Command Rebuilds", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Binding Sets", "4");
+    ExpectFrameInfoRow(panel, "Debug", "Snapshot Buffers", "5");
+    ExpectFrameInfoRow(panel, "Debug", "ParseScene Calls", "1");
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelDisplaysEmptySnapshotWithoutRendererAccess)
@@ -875,21 +1125,20 @@ TEST(PanelWindowHookTests, FrameInfoPanelDisplaysEmptySnapshotWithoutRendererAcc
 
     panel.RefreshForView(&view);
 
-    ExpectTextWidgetContent(panel, "Target View: Probe View");
-    ExpectTextWidgetContent(panel, "Batches: 0");
-    ExpectTextWidgetContent(panel, "Instances: 0");
-    ExpectTextWidgetContent(panel, "Polygons: 0");
-    ExpectTextWidgetContent(panel, "Vertices: 0");
-    ExpectTextWidgetContent(panel, "ParseScene Calls: 0");
-    ExpectTextWidgetContent(panel, "Drawables O/T/S: 0/0/0");
-    ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 0");
-    ExpectTextWidgetContent(panel, "Binding Sets Created: 0");
-    ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 0");
-    ExpectTextWidgetContent(panel, "Frames In Flight: 0");
-    ExpectTextWidgetContent(panel, "Blocked Frames: 0");
-    ExpectTextWidgetContent(panel, "Publish State: Direct");
-    ExpectTextWidgetContent(panel, "Frame Stage: Direct");
-    ExpectTextWidgetContent(panel, "Retirement State: Direct");
+    ExpectFrameInfoRow(panel, "Status", "Target View", "Probe View");
+    ExpectFrameInfoRow(panel, "Status", "Frame State", "Direct -> Direct -> Direct", "InFlight 0, Blocked 0");
+    ExpectFrameInfoRow(panel, "Render Load", "Submitted Draws", "0", "Raw 0, Groups 0, Largest 0, Dropped 0");
+    ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "0");
+    ExpectFrameInfoRow(panel, "Inputs", "Transparent Drawables", "0");
+    ExpectFrameInfoRow(panel, "Inputs", "Skybox Drawables", "0");
+    ExpectFrameInfoRow(panel, "Debug", "GBuffer Syncs", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Command Rebuilds", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Binding Sets", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Snapshot Buffers", "0");
+    ExpectFrameInfoRow(panel, "Debug", "ParseScene Calls", "0");
+    ExpectNoFrameInfoRow(panel, "Debug", "Batches");
+    ExpectNoFrameInfoRow(panel, "Large Scene", "Registered Primitives");
+    ExpectNoFrameInfoRow(panel, "Culling", "Tested Primitives");
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelRefreshDoesNotCreateTargetViewRenderer)
@@ -907,8 +1156,14 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshDoesNotCreateTargetViewRenderer)
     panel.RefreshForView(&view);
 
     EXPECT_FALSE(view.HasRendererForTest());
-    ExpectTextWidgetContent(panel, "Target View: Probe View");
-    ExpectTextWidgetContent(panel, "ParseScene Calls: 0");
+    ExpectFrameInfoRow(panel, "Status", "Target View", "Probe View");
+    ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "0");
+    ExpectFrameInfoRow(panel, "Inputs", "Transparent Drawables", "0");
+    ExpectFrameInfoRow(panel, "Inputs", "Skybox Drawables", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Command Rebuilds", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Binding Sets", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Snapshot Buffers", "0");
+    ExpectFrameInfoRow(panel, "Debug", "ParseScene Calls", "0");
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelRefreshReturnsWhenLifecycleTelemetryIsBusy)
@@ -945,8 +1200,14 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshReturnsWhenLifecycleTelemetryIsB
 
     ASSERT_EQ(status, std::future_status::ready);
     updateFuture.get();
-    ExpectTextWidgetContent(panel, "Target View: Probe View");
-    ExpectTextWidgetContent(panel, "ParseScene Calls: 1");
+    ExpectFrameInfoRow(panel, "Status", "Target View", "Probe View");
+    ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "3");
+    ExpectFrameInfoRow(panel, "Inputs", "Transparent Drawables", "2");
+    ExpectFrameInfoRow(panel, "Inputs", "Skybox Drawables", "1");
+    ExpectFrameInfoRow(panel, "Debug", "Command Rebuilds", "0");
+    ExpectFrameInfoRow(panel, "Debug", "Binding Sets", "4");
+    ExpectFrameInfoRow(panel, "Debug", "Snapshot Buffers", "5");
+    ExpectFrameInfoRow(panel, "Debug", "ParseScene Calls", "1");
 #else
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
 #endif
@@ -1437,11 +1698,7 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsThreadedPublishDiagnostics)
     const auto frameInfo = renderer.GetFrameInfo();
     panel.UpdateForFrameInfo("Threaded View", frameInfo);
 
-    ExpectTextWidgetContent(panel, "Frames In Flight: 1");
-    ExpectTextWidgetContent(panel, "Blocked Frames: 0");
-    ExpectTextWidgetContent(panel, "Publish State: Open");
-    ExpectTextWidgetContent(panel, "Frame Stage: Logic");
-    ExpectTextWidgetContent(panel, "Retirement State: Pending");
+    ExpectFrameInfoRow(panel, "Status", "Frame State", "Logic -> Open -> Pending", "InFlight 1, Blocked 0");
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameRetirement)
@@ -1489,10 +1746,7 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameR
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForFrameInfo("Threaded View", stats.GetFrameInfo());
 
-    ExpectTextWidgetContent(panel, "Frames In Flight: 0");
-    ExpectTextWidgetContent(panel, "Blocked Frames: 0");
-    ExpectTextWidgetContent(panel, "Frame Stage: Retired");
-    ExpectTextWidgetContent(panel, "Retirement State: Ready");
+    ExpectFrameInfoRow(panel, "Status", "Frame State", "Retired -> Open -> Ready", "InFlight 0, Blocked 0");
 }
 
 TEST(PanelWindowHookTests, RetirementAwareResizePolicyDefersViewResizeWhileFramesRemainInFlight)

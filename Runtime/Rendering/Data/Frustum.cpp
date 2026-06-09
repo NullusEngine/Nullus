@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "Rendering/Data/Frustum.h"
+#include "Rendering/Geometry/BoundingSphereUtils.h"
 
 // We create an enum of the sides so we don't have to call each side 0 or 1.
 // This way it makes it more understandable and readable when dealing with frustum sides.
@@ -28,6 +29,7 @@ namespace
 {
 using Mesh = NLS::Render::Resources::Mesh;
 using BoundingSphere = NLS::Render::Geometry::BoundingSphere;
+constexpr float kFrustumPlaneEpsilon = 0.00001f;
 
 void NormalizePlane(float frustum[6][4], int side)
 {
@@ -147,9 +149,31 @@ bool Frustum::BoundingSphereInFrustum(const BoundingSphere& boundingSphere, cons
 	return SphereInFrustum(worldCenter.x, worldCenter.y, worldCenter.z, scaledRadius);
 }
 
+bool Frustum::BoundsInFrustum(const Bounds& bounds, const Maths::Matrix4& transform) const
+{
+	const auto corners = Render::Geometry::BuildBoundsCorners(bounds);
+	for (int i = 0; i < 6; i++)
+	{
+		bool hasCornerInsidePlane = false;
+		for (const auto& corner : corners)
+		{
+			const auto point = Render::Geometry::TransformPoint(transform, corner);
+			if (m_frustum[i][A] * point.x + m_frustum[i][B] * point.y + m_frustum[i][C] * point.z + m_frustum[i][D] >= -kFrustumPlaneEpsilon)
+			{
+				hasCornerInsidePlane = true;
+				break;
+			}
+		}
+		if (!hasCornerInsidePlane)
+			return false;
+	}
+
+	return true;
+}
+
 bool Frustum::IsMeshInFrustum(const Mesh& mesh, const Maths::Transform& transform) const
 {
-	return BoundingSphereInFrustum(mesh.GetBoundingSphere(), transform);
+	return BoundsInFrustum(mesh.GetBounds(), transform.GetWorldMatrix());
 }
 
 std::array<float, 4> Frustum::GetNearPlane() const

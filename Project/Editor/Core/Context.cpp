@@ -805,7 +805,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 
 	Render::Tooling::ApplyRenderDocEnvironmentOverrides(
 		driverSettings.renderDoc,
-		(std::filesystem::current_path() / "Build" / "RenderDocCaptures" / "Editor").string(),
+		Render::Tooling::ResolveRenderDocDefaultCaptureDirectory(p_projectPath, "Editor"),
 		"Editor");
     Render::Tooling::PreloadRenderDocIfAvailable(driverSettings.renderDoc);
 

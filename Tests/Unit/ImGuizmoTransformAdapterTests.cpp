@@ -2,18 +2,71 @@
 
 #include "Core/GizmoOperation.h"
 #include "Core/SceneViewImGuizmo.h"
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
+#include "Core/ServiceLocator.h"
 #include "GameObject.h"
 #include "Math/Matrix4.h"
 #include "Math/Quaternion.h"
 #include "Panels/EditorTopBar.h"
+#include "Rendering/Context/Driver.h"
+#include "Rendering/Geometry/Vertex.h"
+#include "Rendering/Resources/Mesh.h"
+#include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/Settings/EGraphicsBackend.h"
 #include "Settings/EditorSettings.h"
+
+#include <memory>
+#include <vector>
 
 using namespace NLS;
 
 namespace
 {
 constexpr float kTolerance = 0.0001f;
+
+NLS::Render::Context::Driver& EnsureImGuizmoMeshTestDriver()
+{
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>([]()
+    {
+        NLS::Render::Settings::DriverSettings settings;
+        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+        settings.enableExplicitRHI = false;
+        return settings;
+    }());
+    NLS::Core::ServiceLocator::Provide(*driver);
+    return *driver;
+}
+
+NLS::Render::Geometry::Vertex BoundsVertexAt(const float x, const float y, const float z)
+{
+    NLS::Render::Geometry::Vertex vertex {};
+    vertex.position[0] = x;
+    vertex.position[1] = y;
+    vertex.position[2] = z;
+    return vertex;
+}
+
+std::unique_ptr<NLS::Render::Resources::Mesh> CreateCenteredUnitBoundsMesh()
+{
+    EnsureImGuizmoMeshTestDriver();
+    return std::make_unique<NLS::Render::Resources::Mesh>(
+        std::vector<NLS::Render::Geometry::Vertex> {
+            BoundsVertexAt(-1.0f, -1.0f, -1.0f),
+            BoundsVertexAt(1.0f, 1.0f, 1.0f)
+        },
+        std::vector<uint32_t> {0u, 1u},
+        0u);
+}
+
+void AttachCenteredRenderableBounds(Engine::GameObject& actor, NLS::Render::Resources::Mesh& mesh)
+{
+    auto* meshFilter = actor.AddComponent<Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(&mesh);
+}
 }
 
 TEST(ImGuizmoTransformAdapterTests, MapsEditorOperationsToImGuizmoOperations)
@@ -476,9 +529,9 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotUsesChildRenderableBounds)
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);
 
-    auto* meshRenderer = child.AddComponent<Engine::Components::MeshRenderer>();
-    meshRenderer->SetFrustumBehaviour(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM);
-    meshRenderer->SetCustomBoundingSphere({{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto mesh = CreateCenteredUnitBoundsMesh();
+    ASSERT_NE(mesh, nullptr);
+    AttachCenteredRenderableBounds(child, *mesh);
 
     const auto centerPosition = Editor::Core::GetGameObjectGizmoPivotPosition(
         parent,
@@ -528,9 +581,9 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotRotationKeepsRenderableCenterAtGi
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);
 
-    auto* meshRenderer = child.AddComponent<Engine::Components::MeshRenderer>();
-    meshRenderer->SetFrustumBehaviour(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM);
-    meshRenderer->SetCustomBoundingSphere({{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto mesh = CreateCenteredUnitBoundsMesh();
+    ASSERT_NE(mesh, nullptr);
+    AttachCenteredRenderableBounds(child, *mesh);
 
     auto gizmoMatrix = Editor::Core::GetGameObjectWorldGizmoMatrix(
         parent,
@@ -572,9 +625,9 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotScaleKeepsRenderableCenterAtGizmo
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);
 
-    auto* meshRenderer = child.AddComponent<Engine::Components::MeshRenderer>();
-    meshRenderer->SetFrustumBehaviour(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM);
-    meshRenderer->SetCustomBoundingSphere({{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto mesh = CreateCenteredUnitBoundsMesh();
+    ASSERT_NE(mesh, nullptr);
+    AttachCenteredRenderableBounds(child, *mesh);
 
     const auto centerBefore = Editor::Core::GetGameObjectGizmoPivotPosition(
         parent,

@@ -53,6 +53,7 @@ void Editor::Panels::AView::Update(float p_deltaTime)
 
 void Editor::Panels::AView::_Draw_Impl()
 {
+    m_viewportImageAvailableForInput = false;
     NLS_SERVICE(UI::UIManager).PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 	UI::PanelWindow::_Draw_Impl();
     NLS_SERVICE(UI::UIManager).PopStyleVar();
@@ -82,6 +83,7 @@ void Editor::Panels::AView::OnAfterDrawWidgets()
     NLS_PROFILE_NAMED_SCOPE("AView::DrawViewportOverlay");
     DrawViewportOverlay();
     EndViewportOverlayDrawListChannels();
+    MarkViewportImageInputBoundsForLastDraw();
 }
 
 void Editor::Panels::AView::InitFrame()
@@ -434,6 +436,14 @@ void Editor::Panels::AView::EndViewportOverlayDrawListChannels()
     m_viewportOverlayDrawListChannelsActive = false;
 }
 
+void Editor::Panels::AView::MarkViewportImageInputBoundsForLastDraw()
+{
+    m_viewportImageAvailableForInput =
+        m_image != nullptr &&
+        m_image->WasDrawnThisFrame() &&
+        HasViewportImageBounds();
+}
+
 void Editor::Panels::AView::UpdateSubmittedOverlayCameraMatrices(
     const ViewOverlayCameraMatrices& submittedMatrices,
     const bool threadedRendering,
@@ -538,6 +548,20 @@ bool Editor::Panels::AView::IsMouseWithinView(const Maths::Vector2& mousePositio
     const auto& max = m_image->GetLastDrawMax();
     return mousePosition.x >= min.x && mousePosition.x < max.x &&
         mousePosition.y >= min.y && mousePosition.y < max.y;
+}
+
+bool Editor::Panels::AView::HasViewportImageInputBounds() const
+{
+    return enabled && IsOpened() && m_viewportImageAvailableForInput && HasViewportImageBounds();
+}
+
+bool Editor::Panels::AView::WasViewportImageDrawnThisFrame() const
+{
+    return enabled &&
+        IsOpened() &&
+        m_image != nullptr &&
+        m_image->WasDrawnThisFrame() &&
+        HasViewportImageBounds();
 }
 
 std::optional<Maths::Vector2> Editor::Panels::AView::GetLocalViewPosition(const Maths::Vector2& mousePosition) const

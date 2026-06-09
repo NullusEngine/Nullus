@@ -7,6 +7,7 @@
 #include "Math/Matrix3.h"
 #include "Math/Vector3.h"
 #include "Math/Vector4.h"
+#include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Settings/EditorSettings.h"
 
 namespace NLS::Editor::Core
@@ -406,38 +407,18 @@ bool AccumulateGameObjectWorldBounds(const Engine::GameObject& actor, WorldBound
     const auto* transform = actor.GetTransform();
     if (transform != nullptr)
     {
-        if (const auto* meshRenderer = actor.GetComponent<Engine::Components::MeshRenderer>())
+        if (actor.GetComponent<Engine::Components::MeshRenderer>() != nullptr)
         {
-            bool hasRenderableBounds = false;
-            Maths::Vector3 localCenter = Maths::Vector3::Zero;
-            float radius = 0.0f;
-
-            if (meshRenderer->GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM)
-            {
-                const auto& customBounds = meshRenderer->GetCustomBoundingSphere();
-                localCenter = customBounds.position;
-                radius = customBounds.radius;
-                hasRenderableBounds = true;
-            }
-            else if (auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+            if (auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
                 meshFilter != nullptr)
             {
                 if (auto* mesh = meshFilter->ResolveMesh())
                 {
-                    const auto& modelBounds = mesh->GetBoundingSphere();
-                    localCenter = modelBounds.position;
-                    radius = modelBounds.radius;
-                    hasRenderableBounds = true;
+                    const auto worldBounds = Render::Geometry::TransformBounds(
+                        mesh->GetBounds(),
+                        transform->GetWorldMatrix());
+                    ExpandWorldBounds(bounds, hasBounds, worldBounds.center, worldBounds.size * 0.5f);
                 }
-            }
-
-            if (hasRenderableBounds)
-            {
-                const Maths::Vector3 worldCenter =
-                    transform->GetWorldMatrix() * Maths::Vector4(localCenter, 1.0f);
-                const auto& scale = transform->GetWorldScale();
-                const float maxScale = std::max({std::abs(scale.x), std::abs(scale.y), std::abs(scale.z)});
-                ExpandWorldBounds(bounds, hasBounds, worldCenter, Maths::Vector3::One * (radius * maxScale));
             }
         }
     }

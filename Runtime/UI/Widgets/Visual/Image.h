@@ -39,10 +39,15 @@ namespace NLS::UI::Widgets
 		const Maths::Vector2& GetLastDrawMax() const { return m_lastDrawMax; }
 		bool HasLastDrawBounds() const { return m_hasLastDrawBounds; }
 		bool WasHoveredLastDraw() const { return m_hoveredLastDraw; }
+		/**
+		* Returns true only during the ImGui frame that drew this image.
+		*/
+		bool WasDrawnThisFrame() const;
 
 	private:
 		Maths::Vector2 m_lastDrawMin { 0.0f, 0.0f };
 		Maths::Vector2 m_lastDrawMax { 0.0f, 0.0f };
+		int m_lastDrawFrame = -1;
 		bool m_hasLastDrawBounds = false;
 		bool m_hoveredLastDraw = false;
 	};

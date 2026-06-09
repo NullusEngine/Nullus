@@ -87,6 +87,8 @@ namespace
 			record.mesh = reinterpret_cast<NLS::Render::Resources::Mesh*>(static_cast<uintptr_t>(index + 1u));
 			record.modelBoundingSphere.position = { 0.0f, 0.0f, 0.0f };
 			record.modelBoundingSphere.radius = 1.0f;
+			record.modelBounds.center = { 0.0f, 0.0f, 0.0f };
+			record.modelBounds.size = { 2.0f, 2.0f, 2.0f };
 			record.worldMatrix = NLS::Maths::Matrix4::Translation({ gridX, 0.0f, gridZ });
 			record.frustumBehaviour =
 				NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL;
@@ -227,6 +229,105 @@ TEST(SceneVisibilityPipelineTests, SpatialCandidatesMatchFullScanAndKeepVisibili
 		if (IsBitSet(spatial.primitiveBits, index))
 			EXPECT_EQ(spatial.cullReasons[index], CullReason::Visible);
 	}
+}
+
+TEST(SceneVisibilityPipelineTests, FrustumCullingUsesModelAABBInsteadOfBoundingSphere)
+{
+	ScenePrimitiveSnapshot snapshot;
+	snapshot.sceneId = kSceneId;
+	snapshot.snapshotSerial = 1u;
+
+	ScenePrimitiveSnapshotRecord record;
+	record.handle = MakeHandle(0u);
+	record.mesh = reinterpret_cast<NLS::Render::Resources::Mesh*>(static_cast<uintptr_t>(1u));
+	record.modelBoundingSphere.position = { -12.0f, 0.0f, 0.0f };
+	record.modelBoundingSphere.radius = 16.0f;
+	record.modelBounds.center = { -12.0f, 0.0f, -10.0f };
+	record.modelBounds.size = { 0.5f, 0.5f, 0.5f };
+	record.worldMatrix = NLS::Maths::Matrix4::Identity;
+	record.frustumBehaviour =
+		NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL;
+	record.visibilitySettings.layer = 0u;
+	record.commandOffsetBegin = 0u;
+	record.commandOffsetEnd = 1u;
+	record.ownerAlive = true;
+	record.ownerActive = true;
+	record.occupied = true;
+	record.tombstoned = false;
+	record.hasMeshBinding = true;
+	record.hasValidMaterial = true;
+	snapshot.primitiveRecords.push_back(record);
+	snapshot.handleToDenseIndex.push_back({ record.handle, 0u });
+	snapshot.denseIndexToHandle.push_back(record.handle);
+	snapshot.commandOffsetTable.push_back({ record.handle, 0u, 1u });
+
+	auto frustum = CreateForwardFrustum();
+	SceneSpatialIndex spatialIndex;
+	SceneVisibilityPipelineOptions options;
+	options.frustum = &frustum;
+	options.cameraPosition = {};
+	options.visibleLayerMask = 0xFFFF'FFFFu;
+	options.enableSpatialIndex = false;
+
+	const auto result = SceneVisibilityPipeline::Evaluate(
+		options,
+		snapshot,
+		spatialIndex,
+		SceneVisibilityPipelineMode::Serial);
+
+	EXPECT_TRUE(result.visiblePrimitiveHandles.empty());
+	ASSERT_EQ(result.cullReasons.size(), 1u);
+	EXPECT_EQ(result.cullReasons.front(), CullReason::FrustumCulled);
+}
+
+TEST(SceneVisibilityPipelineTests, FrustumCullingKeepsAABBTouchingPlaneVisible)
+{
+	ScenePrimitiveSnapshot snapshot;
+	snapshot.sceneId = kSceneId;
+	snapshot.snapshotSerial = 1u;
+
+	ScenePrimitiveSnapshotRecord record;
+	record.handle = MakeHandle(0u);
+	record.mesh = reinterpret_cast<NLS::Render::Resources::Mesh*>(static_cast<uintptr_t>(1u));
+	record.modelBoundingSphere.position = { -10.0f, 0.0f, 0.0f };
+	record.modelBoundingSphere.radius = 1.0f;
+	record.modelBounds.center = { -10.5f, 0.0f, -10.0f };
+	record.modelBounds.size = { 1.0f, 1.0f, 1.0f };
+	record.worldMatrix = NLS::Maths::Matrix4::Identity;
+	record.frustumBehaviour =
+		NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL;
+	record.visibilitySettings.layer = 0u;
+	record.commandOffsetBegin = 0u;
+	record.commandOffsetEnd = 1u;
+	record.ownerAlive = true;
+	record.ownerActive = true;
+	record.occupied = true;
+	record.tombstoned = false;
+	record.hasMeshBinding = true;
+	record.hasValidMaterial = true;
+	snapshot.primitiveRecords.push_back(record);
+	snapshot.handleToDenseIndex.push_back({ record.handle, 0u });
+	snapshot.denseIndexToHandle.push_back(record.handle);
+	snapshot.commandOffsetTable.push_back({ record.handle, 0u, 1u });
+
+	auto frustum = CreateForwardFrustum();
+	SceneSpatialIndex spatialIndex;
+	SceneVisibilityPipelineOptions options;
+	options.frustum = &frustum;
+	options.cameraPosition = {};
+	options.visibleLayerMask = 0xFFFF'FFFFu;
+	options.enableSpatialIndex = false;
+
+	const auto result = SceneVisibilityPipeline::Evaluate(
+		options,
+		snapshot,
+		spatialIndex,
+		SceneVisibilityPipelineMode::Serial);
+
+	ASSERT_EQ(result.visiblePrimitiveHandles.size(), 1u);
+	EXPECT_EQ(result.visiblePrimitiveHandles.front(), record.handle);
+	ASSERT_EQ(result.cullReasons.size(), 1u);
+	EXPECT_EQ(result.cullReasons.front(), CullReason::Visible);
 }
 
 TEST(SceneVisibilityPipelineTests, CullReasonDebugSnapshotUsesPrimitiveSnapshotAndContainsNoLivePointers)

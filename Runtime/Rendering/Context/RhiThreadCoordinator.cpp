@@ -514,18 +514,29 @@ namespace NLS::Render::Context
                         continue;
                     }
 
-                    if (impl.explicitDevice == nullptr)
-                    {
-                        request.state->beginAttempted = true;
-                        request.state->beginSucceeded = false;
-                        request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
-                        request.state->resultMessage = "explicit device is unavailable";
-                        continue;
-                    }
+					if (impl.explicitDevice == nullptr)
+					{
+						request.state->beginAttempted = true;
+						request.state->beginSucceeded = false;
+						request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+						request.state->resultMessage = "explicit device is unavailable";
+						continue;
+					}
 
-                    if (dedicatedComputeSubmissionUsed &&
-                        request.waitForLastComputeQueueCompletion &&
-                        lastComputeQueueCompletionSemaphore == nullptr)
+					if (impl.deviceLostDetected.load(std::memory_order_acquire) ||
+						impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+					{
+						request.state->beginAttempted = true;
+						request.state->beginSucceeded = false;
+						request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+						request.state->resultMessage =
+							"post-submit buffer readback rejected because RHI device is lost or GPU work is quarantined";
+						continue;
+					}
+
+					if (dedicatedComputeSubmissionUsed &&
+						request.waitForLastComputeQueueCompletion &&
+						lastComputeQueueCompletionSemaphore == nullptr)
                     {
                         request.state->beginAttempted = true;
                         request.state->beginSucceeded = false;

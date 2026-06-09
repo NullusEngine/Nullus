@@ -69,6 +69,30 @@ namespace NLS::Render::Tooling
 		}
 	}
 
+	inline std::filesystem::path ResolveRenderDocProjectRoot(std::filesystem::path projectPath)
+	{
+		if (projectPath.empty())
+			return std::filesystem::current_path();
+
+		std::error_code error;
+		const auto normalized = std::filesystem::weakly_canonical(projectPath, error);
+		if (!error)
+			projectPath = normalized;
+
+		if (projectPath.extension() == ".nullus")
+			return projectPath.parent_path();
+
+		return projectPath;
+	}
+
+	inline std::string ResolveRenderDocDefaultCaptureDirectory(
+		const std::filesystem::path& projectPath,
+		std::string_view targetName)
+	{
+		const auto projectRoot = ResolveRenderDocProjectRoot(projectPath);
+		return (projectRoot / "Logs" / "RenderDoc" / std::string(targetName)).string();
+	}
+
 	inline void ApplyRenderDocEnvironmentOverrides(
 		Settings::RenderDocSettings& settings,
 		std::string_view defaultCaptureDirectory,

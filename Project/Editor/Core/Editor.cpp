@@ -121,14 +121,21 @@ std::optional<ValidationSceneCameraTransform> ParseValidationSceneCamera(std::st
 
 void CreateValidationOcclusionStack(
     Editor::Core::EditorActions& editorActions,
+    const NLS::Render::Entities::Camera& camera,
     const uint32_t count)
 {
     if (count == 0u)
         return;
 
-    constexpr float kStartDistance = 6.0f;
-    constexpr float kSpacing = 1.25f;
-    constexpr float kScale = 2.5f;
+    constexpr float kNearOccluderDistance = 6.0f;
+    constexpr float kTargetStartDistance = 10.0f;
+    constexpr float kTargetSpacing = 1.25f;
+    constexpr float kOccluderScale = 4.0f;
+    constexpr float kTargetScale = 0.75f;
+    const auto cameraPosition = camera.GetPosition();
+    const auto cameraForward = Maths::Vector3::Normalize(camera.transform->GetWorldForward());
+    const auto cameraRight = Maths::Vector3::Normalize(camera.GetRotation() * Maths::Vector3::Right);
+    const auto cameraUp = Maths::Vector3::Normalize(camera.GetRotation() * Maths::Vector3::Up);
     uint32_t createdCount = 0u;
     for (uint32_t index = 0u; index < count; ++index)
     {
@@ -137,12 +144,19 @@ void CreateValidationOcclusionStack(
             continue;
 
         cube->SetName("Validation Occlusion Cube " + std::to_string(index));
-        cube->GetTransform()->SetWorldPosition({
-            0.0f,
-            0.0f,
-            -(kStartDistance + static_cast<float>(index) * kSpacing)
-        });
-        cube->GetTransform()->SetWorldScale({ kScale, kScale, kScale });
+        const bool isOccluder = index == 0u;
+        const float distance = isOccluder
+            ? kNearOccluderDistance
+            : kTargetStartDistance + static_cast<float>(index - 1u) * kTargetSpacing;
+        const float lane = isOccluder ? 0.0f : (static_cast<float>((index - 1u) % 3u) - 1.0f) * 0.1f;
+        const float row = isOccluder ? 0.0f : static_cast<float>((index - 1u) / 3u) * 0.1f;
+        cube->GetTransform()->SetWorldPosition(
+            cameraPosition +
+            cameraForward * distance +
+            cameraRight * lane +
+            cameraUp * row);
+        const float scale = isOccluder ? kOccluderScale : kTargetScale;
+        cube->GetTransform()->SetWorldScale({ scale, scale, scale });
         ++createdCount;
     }
 
@@ -877,7 +891,10 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
         NLS_LOG_INFO("Editor validation requested HZB occlusion disable override.");
 
     if (diagnostics.editorValidationOcclusionStackCount != 0u)
-        CreateValidationOcclusionStack(m_editorActions, diagnostics.editorValidationOcclusionStackCount);
+    {
+        if (auto* camera = sceneView.GetCamera(); camera != nullptr)
+            CreateValidationOcclusionStack(m_editorActions, *camera, diagnostics.editorValidationOcclusionStackCount);
+    }
 
     if (!diagnostics.editorValidationCreateAsset.empty())
     {
@@ -1032,37 +1049,11 @@ void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
 
     if (frameInfo.IsOpened())
     {
-        if (sceneView.IsOpened() && sceneView.IsFocused())
-        {
-            frameInfo.SetTargetView(&sceneView);
-        }
-        else if (gameView.IsOpened() && gameView.IsFocused())
-        {
-            frameInfo.SetTargetView(&gameView);
-        }
-        else if (assetView.IsOpened() && assetView.IsFocused())
-        {
-            frameInfo.SetTargetView(&assetView);
-        }
-        else if (frameInfo.GetTargetView() == nullptr || !frameInfo.GetTargetView()->IsOpened())
-        {
-            if (sceneView.IsOpened())
-            {
-                frameInfo.SetTargetView(&sceneView);
-            }
-            else if (gameView.IsOpened())
-            {
-                frameInfo.SetTargetView(&gameView);
-            }
-            else if (assetView.IsOpened())
-            {
-                frameInfo.SetTargetView(&assetView);
-            }
-            else
-            {
-                frameInfo.SetTargetView(nullptr);
-            }
-        }
+        frameInfo.SetCandidateViews({
+            &sceneView,
+            &gameView,
+            &assetView
+        });
     }
 }
 

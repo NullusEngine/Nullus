@@ -85,8 +85,14 @@ Startup capture can also be requested through environment variables:
 
 Capture files are saved to:
 
-- Editor: `Build/RenderDocCaptures/Editor/`
-- Game: `Build/RenderDocCaptures/Game/`
+- Editor: `<project>/Logs/RenderDoc/Editor/`
+- Game: `<project>/Logs/RenderDoc/Game/`
+
+The repo runner adds the selected backend below that target directory, for example
+`TestProject/Logs/RenderDoc/Editor/dx12/`.
+
+The runner output directory priority is: `--capture-dir`, then
+`NLS_RENDERDOC_CAPTURE_DIR`, then the project default above.
 
 ## Runner Script
 
@@ -109,7 +115,9 @@ Runner behavior:
 - legacy Vulkan/OpenGL launch modes may still exist in tooling, but are not current Nullus rendering acceptance paths
 - locates `Editor.exe` or `Game.exe` under `App`
 - defaults Editor project to `TestProject/TestProject.nullus`
-- writes captures under `Build/RenderDocCaptures/<target>/<backend>`
+- leaves Game project selection to the runtime unless `--project` is provided
+- writes captures under `<project>/Logs/RenderDoc/<target>/<backend>`
+- accepts `--capture-dir` or `NLS_RENDERDOC_CAPTURE_DIR` for an explicit output directory
 - can open `qrenderdoc.exe` automatically after capture
 - uses a capture discovery step that detects newly written `.rdc` files and reports the exact `latest_capture` path
 
@@ -118,7 +126,7 @@ Runner behavior:
 Use the repo analysis helper to turn an existing `.rdc` into a first-pass structured summary:
 
 ```powershell
-py -3 Tools/RenderDoc/rdc_analyze.py Build/RenderDocCaptures/editor/dx12/editor_dx12_DX12_frame2.rdc
+py -3 Tools/RenderDoc/rdc_analyze.py TestProject/Logs/RenderDoc/Editor/dx12/editor_dx12_DX12_frame2.rdc
 ```
 
 What it does:

@@ -11,6 +11,7 @@
 
 #include <Math/Vector4.h>
 
+#include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Jobs/JobSystem.h"
 #include "Rendering/SceneSpatialIndex.h"
 
@@ -128,44 +129,27 @@ namespace
 		}
 	}
 
-	Maths::Vector3 TransformPoint(const Maths::Matrix4& matrix, const Maths::Vector3& point)
+	NLS::Render::Geometry::Bounds ExtractWorldBounds(const ScenePrimitiveSnapshotRecord& record)
 	{
-		const auto transformed = matrix * Maths::Vector4(point, 1.0f);
-		if (transformed.w != 0.0f && transformed.w != 1.0f)
-		{
-			return {
-				transformed.x / transformed.w,
-				transformed.y / transformed.w,
-				transformed.z / transformed.w
-			};
-		}
-
-		return { transformed.x, transformed.y, transformed.z };
+		return NLS::Render::Geometry::TransformBounds(record.modelBounds, record.worldMatrix);
 	}
 
-	float ExtractMaxScale(const Maths::Matrix4& matrix)
+	float DistanceToBounds(const Maths::Vector3& point, const NLS::Render::Geometry::Bounds& bounds)
 	{
-		const Maths::Vector3 columns[] = {
-			{ matrix.data[0], matrix.data[4], matrix.data[8] },
-			{ matrix.data[1], matrix.data[5], matrix.data[9] },
-			{ matrix.data[2], matrix.data[6], matrix.data[10] }
-		};
-		return std::max({
-			columns[0].Length(),
-			columns[1].Length(),
-			columns[2].Length(),
-			1.0f
-		});
+		const auto halfSize = bounds.size * 0.5f;
+		const auto dx = std::max(std::abs(point.x - bounds.center.x) - halfSize.x, 0.0f);
+		const auto dy = std::max(std::abs(point.y - bounds.center.y) - halfSize.y, 0.0f);
+		const auto dz = std::max(std::abs(point.z - bounds.center.z) - halfSize.z, 0.0f);
+		return Maths::Vector3(dx, dy, dz).Length();
 	}
 
-	Maths::Vector3 ExtractWorldCenter(const ScenePrimitiveSnapshotRecord& record)
+	float FarthestDistanceToBounds(const Maths::Vector3& point, const NLS::Render::Geometry::Bounds& bounds)
 	{
-		return TransformPoint(record.worldMatrix, record.modelBoundingSphere.position);
-	}
-
-	float ExtractWorldRadius(const ScenePrimitiveSnapshotRecord& record)
-	{
-		return std::max(0.0f, record.modelBoundingSphere.radius) * ExtractMaxScale(record.worldMatrix);
+		const auto corners = NLS::Render::Geometry::BuildBoundsCorners(bounds);
+		float distance = 0.0f;
+		for (const auto& corner : corners)
+			distance = std::max(distance, Maths::Vector3::Distance(point, corner));
+		return distance;
 	}
 
 	bool LayerPasses(const ScenePrimitiveSnapshotRecord& record, const uint32_t visibleLayerMask)
@@ -182,13 +166,13 @@ namespace
 		if (!record.visibilitySettings.distanceCullingEnabled)
 			return true;
 
-		const auto center = ExtractWorldCenter(record);
-		const auto radius = ExtractWorldRadius(record);
-		const auto distance = Maths::Vector3::Distance(options.cameraPosition, center);
-		if (distance + radius < record.visibilitySettings.minDrawDistance)
+		const auto bounds = ExtractWorldBounds(record);
+		const auto nearestDistance = DistanceToBounds(options.cameraPosition, bounds);
+		const auto farthestDistance = FarthestDistanceToBounds(options.cameraPosition, bounds);
+		if (farthestDistance < record.visibilitySettings.minDrawDistance)
 			return false;
 		if (record.visibilitySettings.maxDrawDistance > 0.0f &&
-			distance - radius > record.visibilitySettings.maxDrawDistance)
+			nearestDistance > record.visibilitySettings.maxDrawDistance)
 		{
 			return false;
 		}
@@ -204,9 +188,7 @@ namespace
 		if (record.frustumBehaviour == Components::MeshRenderer::EFrustumBehaviour::DISABLED)
 			return true;
 
-		const auto center = ExtractWorldCenter(record);
-		const auto radius = ExtractWorldRadius(record);
-		return options.frustum->SphereInFrustum(center.x, center.y, center.z, radius);
+		return options.frustum->BoundsInFrustum(record.modelBounds, record.worldMatrix);
 	}
 
 	CullReason RevalidateCandidate(

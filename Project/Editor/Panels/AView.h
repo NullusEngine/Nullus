@@ -111,6 +111,16 @@ namespace NLS::Editor::Panels
 		bool IsMouseWithinView(const Maths::Vector2& mousePosition) const;
 
 		/**
+		* Returns true when the previous UI frame drew viewport image bounds that can be used for input.
+		*/
+		bool HasViewportImageInputBounds() const;
+
+		/**
+		* Returns true when the current UI frame has drawn this view's viewport image.
+		*/
+		bool WasViewportImageDrawnThisFrame() const;
+
+		/**
 		* Convert a window-space mouse position to view-local render coordinates.
 		*/
 		std::optional<Maths::Vector2> GetLocalViewPosition(const Maths::Vector2& mousePosition) const;
@@ -133,6 +143,7 @@ namespace NLS::Editor::Panels
         void BeginViewportOverlayDrawListChannels();
         void FinishPreRenderViewportOverlayDrawList();
         void EndViewportOverlayDrawListChannels();
+        void MarkViewportImageInputBoundsForLastDraw();
         void UpdateSubmittedOverlayCameraMatrices(
             const ViewOverlayCameraMatrices& submittedMatrices,
             bool threadedRendering,
@@ -164,5 +175,6 @@ namespace NLS::Editor::Panels
 		bool m_requiresRetiredFrameConsumption = false;
         bool m_requiresImmediateRetiredFrameReadback = false;
         bool m_resizedViewThisFrame = false;
+        bool m_viewportImageAvailableForInput = false;
 	};
 }

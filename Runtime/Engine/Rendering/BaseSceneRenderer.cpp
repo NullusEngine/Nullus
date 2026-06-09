@@ -250,15 +250,6 @@ namespace
 	uint64_t HashCameraViewCompatibility(const NLS::Render::Entities::Camera& camera)
 	{
 		size_t seed = 0u;
-		const auto& position = camera.GetPosition();
-		HashFloat(seed, position.x);
-		HashFloat(seed, position.y);
-		HashFloat(seed, position.z);
-		const auto& rotation = camera.GetRotation();
-		HashFloat(seed, rotation.x);
-		HashFloat(seed, rotation.y);
-		HashFloat(seed, rotation.z);
-		HashFloat(seed, rotation.w);
 		HashFloat(seed, camera.GetNear());
 		HashFloat(seed, camera.GetFar());
 		HashCombine(seed, static_cast<size_t>(camera.GetProjectionMode()));
@@ -272,6 +263,17 @@ namespace
 			return static_cast<uint64_t>(frameDescriptor.outputDepthStencilTexture->GetDesc().format);
 		return static_cast<uint64_t>(NLS::Render::FrameGraph::kDeferredGBufferDepthFormat);
 	}
+
+	uint64_t BuildHZBViewKey(const NLS::Render::Data::FrameDescriptor& frameDescriptor)
+	{
+		size_t seed = 0u;
+		HashCombine(seed, static_cast<size_t>(frameDescriptor.renderWidth));
+		HashCombine(seed, static_cast<size_t>(frameDescriptor.renderHeight));
+		HashCombine(seed, static_cast<size_t>(ResolveDepthFormatKey(frameDescriptor)));
+		const auto hash = static_cast<uint64_t>(seed);
+		return hash != 0u ? hash : 1u;
+	}
+
 
 	uint64_t BuildRuntimeStreamingDependencyId(const ScenePrimitiveHandle handle)
 	{
@@ -865,6 +867,16 @@ const SceneOcclusionFrameInput& BaseSceneRenderer::GetLastHZBOcclusionFrameInput
 	return m_lastHZBOcclusionFrameInput;
 }
 
+bool BaseSceneRenderer::HasPendingHZBOcclusionObservationFrame() const
+{
+	return !m_hzbPendingOcclusionObservationBatch.primitiveInputs.empty();
+}
+
+void BaseSceneRenderer::DiscardPendingHZBOcclusionObservationFrame()
+{
+	m_hzbPendingOcclusionObservationBatch = {};
+}
+
 void BaseSceneRenderer::BeginHZBOcclusionObservationFrame(
 	const SceneOcclusionFrameInput& frame,
 	std::span<const SceneOcclusionPrimitiveInput> primitiveInputs)
@@ -879,6 +891,9 @@ void BaseSceneRenderer::BeginHZBOcclusionObservationFrame(
 SceneOcclusionObservationStats BaseSceneRenderer::CompleteHZBOcclusionObservationFrame(
 	std::span<const uint32_t> primitiveResultFlags)
 {
+	if (m_hzbPendingOcclusionObservationBatch.primitiveInputs.empty())
+		return {};
+
 	std::vector<uint32_t> flags(primitiveResultFlags.begin(), primitiveResultFlags.end());
 	auto readyBatch = SceneOcclusionSystem::CompleteObservationBatchWithPrimitiveResultFlags(
 		m_hzbPendingOcclusionObservationBatch,
@@ -887,6 +902,33 @@ SceneOcclusionObservationStats BaseSceneRenderer::CompleteHZBOcclusionObservatio
 		m_hzbOcclusionHistory,
 		readyBatch.frame,
 		readyBatch);
+	if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
+	{
+		const auto flaggedOccludedCount = static_cast<uint64_t>(std::count_if(
+			flags.begin(),
+			flags.end(),
+			[](const uint32_t flag)
+			{
+				return flag != 0u;
+			}));
+		NLS_LOG_INFO(
+			"[BaseSceneRenderer][HZBObservation] readbackFlags=" +
+			std::to_string(flags.size()) +
+			" gpuOccludedFlags=" +
+			std::to_string(flaggedOccludedCount) +
+			" observed=" +
+			std::to_string(stats.observedPrimitiveCount) +
+			" appliedOccluded=" +
+			std::to_string(stats.occludedPrimitiveCount) +
+			" appliedVisible=" +
+			std::to_string(stats.visiblePrimitiveCount) +
+			" discarded=" +
+			std::to_string(stats.discardedPrimitiveCount) +
+			" stale=" +
+			std::to_string(stats.staleFrameCount) +
+			" incompatibleView=" +
+			std::to_string(stats.incompatibleViewCount));
+	}
 	m_hzbPendingOcclusionObservationBatch = {};
 	return stats;
 }
@@ -975,7 +1017,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 	occlusionFrameInput.historyTextureValid = occlusionSettings.enableHZBOcclusion;
 	occlusionFrameInput.frameSerial = ++m_hzbOcclusionFrameSerial;
 	occlusionFrameInput.maxHistoryAge = occlusionSettings.maxOcclusionHistoryAge;
-	occlusionFrameInput.viewKey = reinterpret_cast<uintptr_t>(&camera);
+	occlusionFrameInput.viewKey = BuildHZBViewKey(m_frameDescriptor);
 	occlusionFrameInput.viewCompatibilityHash = HashCameraViewCompatibility(camera);
 	occlusionFrameInput.projectionHash = HashMatrix(camera.GetProjectionMatrix());
 	occlusionFrameInput.jitterHash = 0u;
@@ -983,6 +1025,15 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 	occlusionFrameInput.viewportWidth = static_cast<uint32_t>(m_frameDescriptor.renderWidth);
 	occlusionFrameInput.viewportHeight = static_cast<uint32_t>(m_frameDescriptor.renderHeight);
 	m_lastHZBOcclusionFrameInput = occlusionFrameInput;
+
+	std::unordered_map<uint64_t, std::vector<SceneOcclusionPrimitiveInput>> previousHZBOcclusionPrimitiveInputsByScene;
+	if (occlusionSettings.enableHZBOcclusion && !previousHZBOcclusionPrimitiveInputs.empty())
+	{
+		previousHZBOcclusionPrimitiveInputsByScene.reserve(previousHZBOcclusionPrimitiveInputs.size());
+		for (const auto& input : previousHZBOcclusionPrimitiveInputs)
+			previousHZBOcclusionPrimitiveInputsByScene[input.handle.sceneId].push_back(input);
+	}
+	const std::vector<SceneOcclusionPrimitiveInput> emptyPreviousHZBOcclusionPrimitiveInputs;
 
 	uint64_t rebuiltCachedCommandCount = 0u;
 	uint64_t rawVisibleObjectCount = 0u;
@@ -1028,11 +1079,16 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 				m_hzbOcclusionHistory.PruneHandles(renderScene.GetLastRemovedPrimitiveHandles());
 			recordOcclusionPrune(pruneStats, ElapsedNanoseconds(pruneStart));
 		}
+		const auto previousInputsIt = previousHZBOcclusionPrimitiveInputsByScene.find(renderScene.GetSceneId());
+		const auto& previousSceneHZBOcclusionPrimitiveInputs =
+			previousInputsIt != previousHZBOcclusionPrimitiveInputsByScene.end()
+				? previousInputsIt->second
+				: emptyPreviousHZBOcclusionPrimitiveInputs;
 		SceneOcclusionState occlusionState;
 		occlusionState.frameInput = occlusionFrameInput;
 		occlusionState.history = &m_hzbOcclusionHistory;
-		if (occlusionSettings.enableHZBOcclusion && !previousHZBOcclusionPrimitiveInputs.empty())
-			occlusionState.primitiveInputs = &previousHZBOcclusionPrimitiveInputs;
+		if (occlusionSettings.enableHZBOcclusion && !previousSceneHZBOcclusionPrimitiveInputs.empty())
+			occlusionState.primitiveInputs = &previousSceneHZBOcclusionPrimitiveInputs;
 		uint64_t hzbBuildTimeNs = 0u;
 		auto retainedDrawables = renderScene.GatherVisibleCommands({
 			frustum ? &frustum.value() : nullptr,
@@ -1057,16 +1113,22 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		SetLastCullReasonDebugSnapshot(renderScene.GetLastCullReasonDebugSnapshot());
 		if (occlusionSettings.enableHZBOcclusion)
 		{
+			const auto candidateStart = std::chrono::steady_clock::now();
+			const auto hzbObservationCandidateHandles = SceneOcclusionSystem::BuildHZBObservationCandidateHandles(
+				renderScene.GetLastVisiblePrimitiveHandles(),
+				previousSceneHZBOcclusionPrimitiveInputs,
+				renderScene.GetSceneId());
+			hzbBuildTimeNs += ElapsedNanoseconds(candidateStart);
 			const auto snapshotStart = std::chrono::steady_clock::now();
 			const auto hzbPrimitiveSnapshot = renderScene.CreatePrimitiveSnapshotForHandles(
-				renderScene.GetLastVisiblePrimitiveHandles(),
+				hzbObservationCandidateHandles,
 				{});
 			hzbBuildTimeNs += ElapsedNanoseconds(snapshotStart);
 
 			const auto packetSourceStart = std::chrono::steady_clock::now();
 			const auto packetSources = SceneOcclusionSystem::BuildHZBPrimitivePacketSources(
 				hzbPrimitiveSnapshot,
-				renderScene.GetLastVisiblePrimitiveHandles());
+				hzbObservationCandidateHandles);
 			hzbBuildTimeNs += ElapsedNanoseconds(packetSourceStart);
 			SceneOcclusionPrimitivePacketBuildInput packetInput;
 			packetInput.viewProjection = camera.GetProjectionMatrix() * camera.GetViewMatrix();

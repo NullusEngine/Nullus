@@ -272,7 +272,7 @@ Game::Context::Context(
 
 	Render::Tooling::ApplyRenderDocEnvironmentOverrides(
 		driverSettings.renderDoc,
-		(std::filesystem::current_path() / "Build" / "RenderDocCaptures" / "Game").string(),
+		Render::Tooling::ResolveRenderDocDefaultCaptureDirectory(resolvedProjectPaths.settingsPath, "Game"),
 		"Game");
 	Render::Tooling::PreloadRenderDocIfAvailable(driverSettings.renderDoc);
 

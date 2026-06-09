@@ -309,7 +309,8 @@ namespace NLS::Render::Backend
 			std::array<std::shared_ptr<NLS::Render::RHI::RHIQueue>, 3> m_queues{};
 			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
 			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
-			NLS::Render::RHI::DX12::DX12ReadbackContext m_readbackContext;
+			NLS::Render::RHI::DX12::DX12ReadbackContext m_pixelReadbackContext;
+			NLS::Render::RHI::DX12::DX12ReadbackContext m_bufferReadbackContext;
 			bool m_gpuProfilerInitialized = false;
 		};
 
@@ -462,7 +463,7 @@ namespace NLS::Render::Backend
 		    void* data)
 		{
 #if defined(_WIN32)
-			const auto result = m_readbackContext.Begin(
+			const auto result = m_pixelReadbackContext.Begin(
 				m_device.Get(),
 				m_graphicsQueue.Get(),
 				texture,
@@ -507,7 +508,7 @@ namespace NLS::Render::Backend
 			const NLS::Render::RHI::RHIBufferReadbackDesc& desc)
 		{
 #if defined(_WIN32)
-			const auto result = m_readbackContext.BeginBuffer(
+			const auto result = m_bufferReadbackContext.BeginBuffer(
 				m_device.Get(),
 				m_graphicsQueue.Get(),
 				desc);

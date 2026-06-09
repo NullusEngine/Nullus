@@ -48,6 +48,9 @@ namespace
 			record.handle = MakeHandle(static_cast<uint32_t>(primitive.id));
 			record.modelBoundingSphere.position = { 0.0f, 0.0f, 0.0f };
 			record.modelBoundingSphere.radius = primitive.radius;
+			record.modelBounds.center = { 0.0f, 0.0f, 0.0f };
+			const auto diameter = primitive.radius * 2.0f;
+			record.modelBounds.size = { diameter, diameter, diameter };
 			record.worldMatrix = NLS::Maths::Matrix4::Translation({
 				primitive.centerX,
 				primitive.centerY,
@@ -263,6 +266,41 @@ TEST(SceneSpatialIndexTests, LargeRadiusPrimitiveIsInsertedIntoOverlappedCells)
 	EXPECT_LT(indexed.primitiveRecordsTouched, fullScan.primitiveRecordsTouched);
 }
 
+TEST(SceneSpatialIndexTests, QueryUsesTransformedAABBInsteadOfBoundingSphereRadius)
+{
+	ScenePrimitiveSnapshot snapshot;
+	snapshot.sceneId = kSceneId;
+
+	ScenePrimitiveSnapshotRecord record;
+	record.handle = MakeHandle(7u);
+	record.modelBoundingSphere.position = { 0.0f, 0.0f, 0.0f };
+	record.modelBoundingSphere.radius = 600.0f;
+	record.modelBounds.center = { 500.0f, 0.0f, 0.0f };
+	record.modelBounds.size = { 1.0f, 1.0f, 1.0f };
+	record.worldMatrix = NLS::Maths::Matrix4::Identity;
+	record.frustumBehaviour =
+		NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL;
+	record.visibilitySettings.layer = 0u;
+	record.ownerAlive = true;
+	record.ownerActive = true;
+	record.occupied = true;
+	snapshot.primitiveRecords.push_back(record);
+
+	SceneSpatialIndex index;
+	index.Update(snapshot);
+
+	SceneSpatialIndexQuery query;
+	query.center = { 0.0f, 0.0f, 0.0f };
+	query.radius = 1.0f;
+
+	const auto result = index.Query(query);
+	const auto fullScan = index.FullScanForComparison(query);
+
+	EXPECT_TRUE(result.candidatePrimitiveHandles.empty());
+	EXPECT_EQ(result.candidateCount, 0u);
+	EXPECT_EQ(result.candidatePrimitiveHandles, fullScan.candidatePrimitiveHandles);
+}
+
 TEST(SceneSpatialIndexTests, LayerActiveAndDistanceMetadataFilterWithoutFullScan)
 {
 	auto scene = NLS::Tests::LargeScene::BuildLinearPrimitiveScene(256u, 5.0f);
@@ -308,6 +346,8 @@ TEST(SceneSpatialIndexTests, QueryUsesTransformedBoundsCenterAndScaledRadius)
 	record.handle = MakeHandle(7u);
 	record.modelBoundingSphere.position = { 5.0f, 0.0f, 0.0f };
 	record.modelBoundingSphere.radius = 2.0f;
+	record.modelBounds.center = { 5.0f, 0.0f, 0.0f };
+	record.modelBounds.size = { 4.0f, 4.0f, 4.0f };
 	record.worldMatrix =
 		NLS::Maths::Matrix4::Translation({ 10.0f, 0.0f, 0.0f }) *
 		NLS::Maths::Matrix4::Scaling({ 3.0f, 2.0f, 1.0f });

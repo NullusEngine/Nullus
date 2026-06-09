@@ -63,6 +63,7 @@ namespace NLS::Editor::Rendering
         {
             m_pendingFrame.reset();
             m_readableFrame.reset();
+            m_pixelReadbackInFlight = false;
         }
 
         const Frame* GetReadableFrame() const
@@ -75,8 +76,23 @@ namespace NLS::Editor::Rendering
             return m_pendingFrame.has_value() ? &m_pendingFrame.value() : nullptr;
         }
 
+        bool TryBeginPixelReadback()
+        {
+            if (m_pixelReadbackInFlight)
+                return false;
+
+            m_pixelReadbackInFlight = true;
+            return true;
+        }
+
+        void EndPixelReadback()
+        {
+            m_pixelReadbackInFlight = false;
+        }
+
     private:
         std::optional<Frame> m_pendingFrame;
         std::optional<Frame> m_readableFrame;
+        bool m_pixelReadbackInFlight = false;
     };
 }

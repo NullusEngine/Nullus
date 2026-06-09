@@ -130,6 +130,8 @@ namespace NLS::Engine::Rendering
 			Render::Settings::EComparaisonAlgorithm depthCompareOverride,
 			PreparedRecordedDraw& outDraw);
 		const SceneOcclusionFrameInput& GetLastHZBOcclusionFrameInput() const;
+		bool HasPendingHZBOcclusionObservationFrame() const;
+		void DiscardPendingHZBOcclusionObservationFrame();
 		void BeginHZBOcclusionObservationFrame(
 			const SceneOcclusionFrameInput& frame,
 			std::span<const SceneOcclusionPrimitiveInput> primitiveInputs);

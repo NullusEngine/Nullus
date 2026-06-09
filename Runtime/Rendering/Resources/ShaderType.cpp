@@ -229,8 +229,8 @@ namespace
         return MakeRootMetadata("HZBBuildCSRootParameters", {
             ShaderParameterStructBuilder("HZBBuildParameters")
                 .SetGroup(ShaderParameterGroupKind::Pass)
-                .AddTexture("u_OpaqueDepth", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddRWTexture("u_HZBOutput", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddTexture("u_HZBPreviousMip", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddRWTexture("u_HZBOutputMip", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
                 .Build()
         });
     }

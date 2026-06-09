@@ -5,6 +5,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -14777,3 +14779,27 @@ TEST(ThreadedRenderingLifecycleTests, DriverBeginReadPixelsRejectsUnsafeGpuQuara
     EXPECT_EQ(explicitDevice->lastReadPixelsTexture, nullptr);
 }
 #endif
+
+TEST(ThreadedRenderingLifecycleTests, PostSubmitBufferReadbackRejectsUnsafeGpuQuarantineBeforeTouchingExplicitDevice)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RhiThreadCoordinator.cpp";
+    std::ifstream input(sourcePath);
+    const std::string source{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(source.empty());
+    const auto beginPostSubmit = source.find("void BeginPostSubmitBufferReadbacks");
+    const auto beginReadBuffer = source.find("BeginReadBuffer(readbackDesc)", beginPostSubmit);
+    ASSERT_NE(beginPostSubmit, std::string::npos);
+    ASSERT_NE(beginReadBuffer, std::string::npos);
+
+    const auto preReadbackBody = source.substr(beginPostSubmit, beginReadBuffer - beginPostSubmit);
+    EXPECT_NE(preReadbackBody.find("deviceLostDetected.load(std::memory_order_acquire)"), std::string::npos);
+    EXPECT_NE(preReadbackBody.find("unsafeGpuWorkQuarantined.load(std::memory_order_acquire)"), std::string::npos);
+    EXPECT_NE(preReadbackBody.find("post-submit buffer readback rejected because RHI device is lost or GPU work is quarantined"), std::string::npos);
+    EXPECT_NE(preReadbackBody.find("request.state->beginAttempted = true"), std::string::npos);
+    EXPECT_NE(preReadbackBody.find("request.state->beginSucceeded = false"), std::string::npos);
+}

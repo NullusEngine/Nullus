@@ -10,6 +10,7 @@
 
 #include <Math/Vector4.h>
 
+#include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 
 namespace NLS::Engine::Rendering
@@ -51,10 +52,12 @@ namespace NLS::Engine::Rendering
 		uint64_t HashBoundsGeneration(const ScenePrimitiveSnapshotRecord& record)
 		{
 			size_t seed = 0u;
-			HashFloat(seed, record.modelBoundingSphere.position.x);
-			HashFloat(seed, record.modelBoundingSphere.position.y);
-			HashFloat(seed, record.modelBoundingSphere.position.z);
-			HashFloat(seed, record.modelBoundingSphere.radius);
+			HashFloat(seed, record.modelBounds.center.x);
+			HashFloat(seed, record.modelBounds.center.y);
+			HashFloat(seed, record.modelBounds.center.z);
+			HashFloat(seed, record.modelBounds.size.x);
+			HashFloat(seed, record.modelBounds.size.y);
+			HashFloat(seed, record.modelBounds.size.z);
 			return ToNonZeroGeneration(seed);
 		}
 
@@ -101,36 +104,6 @@ namespace NLS::Engine::Rendering
 				key.depthWriteEligibilityGeneration == candidate.depthWriteEligibilityGeneration;
 		}
 
-		Maths::Vector3 TransformPoint(const Maths::Matrix4& matrix, const Maths::Vector3& point)
-		{
-			const auto transformed = matrix * Maths::Vector4(point, 1.0f);
-			if (transformed.w != 0.0f && transformed.w != 1.0f)
-			{
-				return {
-					transformed.x / transformed.w,
-					transformed.y / transformed.w,
-					transformed.z / transformed.w
-				};
-			}
-
-			return { transformed.x, transformed.y, transformed.z };
-		}
-
-		float ExtractMaxScale(const Maths::Matrix4& matrix)
-		{
-			const Maths::Vector3 columns[] = {
-				{ matrix.data[0], matrix.data[4], matrix.data[8] },
-				{ matrix.data[1], matrix.data[5], matrix.data[9] },
-				{ matrix.data[2], matrix.data[6], matrix.data[10] }
-			};
-			return std::max({
-				columns[0].Length(),
-				columns[1].Length(),
-				columns[2].Length(),
-				1.0f
-			});
-		}
-
 		bool ProjectToPacketSample(
 			const SceneOcclusionPrimitivePacketBuildInput& input,
 			const Maths::Vector3& worldPoint,
@@ -161,18 +134,7 @@ namespace NLS::Engine::Rendering
 			if (!source.primitive.depthWriteEligible || input.viewportWidth == 0u || input.viewportHeight == 0u)
 				return std::nullopt;
 
-			const auto center = TransformPoint(source.worldMatrix, source.modelBoundingSphere.position);
-			const auto radius = std::max(0.0f, source.modelBoundingSphere.radius) * ExtractMaxScale(source.worldMatrix);
-			const std::array<Maths::Vector3, 8u> samples = {
-				center + Maths::Vector3{ -radius, -radius, -radius },
-				center + Maths::Vector3{ -radius, -radius, radius },
-				center + Maths::Vector3{ -radius, radius, -radius },
-				center + Maths::Vector3{ -radius, radius, radius },
-				center + Maths::Vector3{ radius, -radius, -radius },
-				center + Maths::Vector3{ radius, -radius, radius },
-				center + Maths::Vector3{ radius, radius, -radius },
-				center + Maths::Vector3{ radius, radius, radius }
-			};
+			const auto modelCorners = NLS::Render::Geometry::BuildBoundsCorners(source.modelBounds);
 
 			SceneOcclusionPrimitivePacket packet;
 			packet.screenMinX = std::numeric_limits<float>::max();
@@ -182,8 +144,9 @@ namespace NLS::Engine::Rendering
 			packet.nearestDepth = 1.0f;
 			packet.flags = 1u;
 
-			for (const auto& sample : samples)
+			for (const auto& modelCorner : modelCorners)
 			{
+				const auto sample = NLS::Render::Geometry::TransformPoint(source.worldMatrix, modelCorner);
 				float screenX = 0.0f;
 				float screenY = 0.0f;
 				float depth = 1.0f;
@@ -199,6 +162,13 @@ namespace NLS::Engine::Rendering
 
 			const float maxX = static_cast<float>(input.viewportWidth - 1u);
 			const float maxY = static_cast<float>(input.viewportHeight - 1u);
+			if (packet.screenMaxX < 0.0f ||
+				packet.screenMaxY < 0.0f ||
+				packet.screenMinX > maxX ||
+				packet.screenMinY > maxY)
+			{
+				return std::nullopt;
+			}
 			packet.screenMinX = std::clamp(packet.screenMinX, 0.0f, maxX);
 			packet.screenMinY = std::clamp(packet.screenMinY, 0.0f, maxY);
 			packet.screenMaxX = std::clamp(packet.screenMaxX, 0.0f, maxX);
@@ -708,12 +678,50 @@ namespace NLS::Engine::Rendering
 			source.primitive.representationId = HashRepresentationId(record);
 			source.primitive.depthWriteEligibilityGeneration = HashDepthWriteEligibilityGeneration(record);
 			source.primitive.depthWriteEligible = true;
-			source.modelBoundingSphere = record.modelBoundingSphere;
+			source.modelBounds = record.modelBounds;
 			source.worldMatrix = record.worldMatrix;
 			result.sources.push_back(source);
 		}
 
 		return result;
+	}
+
+	std::vector<ScenePrimitiveHandle> SceneOcclusionSystem::BuildHZBObservationCandidateHandles(
+		const std::vector<ScenePrimitiveHandle>& postOcclusionVisibleHandles,
+		const std::vector<SceneOcclusionPrimitiveInput>& previousPrimitiveInputs,
+		const uint64_t targetSceneId)
+	{
+		struct HandleHash
+		{
+			size_t operator()(const ScenePrimitiveHandle& handle) const noexcept
+			{
+				size_t seed = 0u;
+				HashHandle(seed, handle);
+				return seed;
+			}
+		};
+
+		std::vector<ScenePrimitiveHandle> candidates;
+		candidates.reserve(postOcclusionVisibleHandles.size() + previousPrimitiveInputs.size());
+		std::unordered_set<ScenePrimitiveHandle, HandleHash> includedHandles;
+		includedHandles.reserve(postOcclusionVisibleHandles.size() + previousPrimitiveInputs.size());
+
+		const auto addUniqueHandle = [&candidates, &includedHandles](const ScenePrimitiveHandle handle)
+		{
+			if (includedHandles.insert(handle).second)
+				candidates.push_back(handle);
+		};
+
+		for (const auto handle : postOcclusionVisibleHandles)
+			addUniqueHandle(handle);
+		for (const auto& input : previousPrimitiveInputs)
+		{
+			if (input.handle.sceneId != targetSceneId)
+				continue;
+			addUniqueHandle(input.handle);
+		}
+
+		return candidates;
 	}
 
 	SceneOcclusionObservationBatch SceneOcclusionSystem::CreatePendingObservationBatch(

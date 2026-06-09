@@ -167,6 +167,21 @@ namespace
         NLS::Render::RHI::RHIGraphicsPipelineDesc m_desc {};
     };
 
+    class TestComputePipeline final : public NLS::Render::RHI::RHIComputePipeline
+    {
+    public:
+        explicit TestComputePipeline(std::string debugName)
+        {
+            m_desc.debugName = std::move(debugName);
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIComputePipelineDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIComputePipelineDesc m_desc {};
+    };
+
     class TestTextureView final : public NLS::Render::RHI::RHITextureView
     {
     public:
@@ -5319,6 +5334,62 @@ TEST(FrameGraphSceneTargetsTests, BuildPreparedComputeDispatchSourceCarriesDispa
     EXPECT_STREQ(combinedMetadata[0].graphPassName, "LightGridInjection");
     EXPECT_STREQ(combinedMetadata[1].graphPassName, "LightGridCompact");
     EXPECT_STREQ(combinedMetadata[2].graphPassName, "DeferredLighting");
+}
+
+TEST(FrameGraphSceneTargetsTests, BuildHZBPreparedComputeDispatchSourceEmitsOneBuildDispatchPerMip)
+{
+    auto depthDesc = MakeTestTextureDesc(
+        "DeferredDepth",
+        NLS::Render::FrameGraph::kDeferredGBufferDepthFormat,
+        NLS::Render::FrameGraph::kDeferredGBufferDepthUsage);
+    auto hzbDesc = MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled | NLS::Render::RHI::TextureUsageFlags::Storage);
+    hzbDesc.mipLevels = 3u;
+
+    NLS::Render::RHI::RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64u;
+    bufferDesc.usage = NLS::Render::RHI::BufferUsageFlags::ShaderRead |
+        NLS::Render::RHI::BufferUsageFlags::Storage;
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest request;
+    request.opaqueDepthEligible = true;
+    request.opaqueDepthTexture = std::make_shared<TestTexture>(depthDesc);
+    request.hzbTexture = std::make_shared<TestTexture>(hzbDesc);
+    request.occlusionPrimitiveInputBuffer = std::make_shared<TestBuffer>(bufferDesc);
+    request.occlusionPrimitiveResultBuffer = std::make_shared<TestBuffer>(bufferDesc);
+    request.hzbBuildPipeline = std::make_shared<TestComputePipeline>("HZBBuildPipeline");
+    request.occlusionPipeline = std::make_shared<TestComputePipeline>("HZBOcclusionPipeline");
+    request.hzbBuildBindingSets = {
+        std::make_shared<TestBindingSet>("HZBBuildMip0BindingSet"),
+        std::make_shared<TestBindingSet>("HZBBuildMip1BindingSet"),
+        std::make_shared<TestBindingSet>("HZBBuildMip2BindingSet")
+    };
+    request.hzbBuildGroupCountsByMip = {{
+        { 40u, 23u, 1u },
+        { 20u, 12u, 1u },
+        { 10u, 6u, 1u }
+    }};
+    request.occlusionBindingSet = std::make_shared<TestBindingSet>("HZBOcclusionBindingSet");
+    request.occlusionGroupCounts = { 7u, 1u, 1u };
+    request.hzbMipCount = 3u;
+
+    const auto source = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request);
+
+    ASSERT_EQ(source.dispatchInputs.size(), 4u);
+    EXPECT_EQ(source.dispatchInputs[0].debugName, "HZBBuildMip0");
+    EXPECT_EQ(source.dispatchInputs[1].debugName, "HZBBuildMip1");
+    EXPECT_EQ(source.dispatchInputs[2].debugName, "HZBBuildMip2");
+    EXPECT_EQ(source.dispatchInputs[3].debugName, "HZBOcclusion");
+    EXPECT_EQ(source.dispatchInputs[0].groupCountX, 40u);
+    EXPECT_EQ(source.dispatchInputs[1].groupCountX, 20u);
+    EXPECT_EQ(source.dispatchInputs[2].groupCountX, 10u);
+
+    ASSERT_FALSE(source.dispatchInputs[3].textureResourceAccesses.empty());
+    const auto& hzbReadAccess = source.dispatchInputs[3].textureResourceAccesses.front();
+    EXPECT_EQ(hzbReadAccess.subresourceRange.baseMipLevel, 0u);
+    EXPECT_EQ(hzbReadAccess.subresourceRange.mipLevelCount, 3u);
 }
 
 TEST(FrameGraphSceneTargetsTests, CompileThreadedExecutionBuildsPreparedComputeSourceFromFactoryOnce)

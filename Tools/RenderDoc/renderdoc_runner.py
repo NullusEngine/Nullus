@@ -28,6 +28,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exe", help="Explicit executable path. Bypasses auto-discovery.")
     parser.add_argument("--capture", action="store_true", help="Queue a startup capture.")
     parser.add_argument("--capture-label", help="Capture label override used by Nullus/RenderDoc.")
+    parser.add_argument(
+        "--capture-dir",
+        help="Explicit capture directory. Defaults to the selected project's Logs/RenderDoc directory.",
+    )
     parser.add_argument("--capture-after-frames", type=int, default=120)
     parser.add_argument("--threaded-rendering", action="store_true", help="Pass --threaded-rendering to the launched app.")
     parser.add_argument(
@@ -92,6 +96,73 @@ def resolve_project(project_argument: str | None) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"Project file not found: {path}")
     return path
+
+
+def resolve_launch_project(target: str, project_argument: str | None) -> Path | None:
+    if project_argument:
+        return resolve_project(project_argument)
+    if target == "editor":
+        return resolve_project(None)
+    return None
+
+
+def resolve_capture_project(
+    target: str,
+    project_argument: str | None,
+    environ: dict[str, str] | None = None,
+) -> Path | None:
+    if project_argument:
+        return resolve_project(project_argument)
+    if target == "editor":
+        return resolve_project(None)
+
+    effective_environ = os.environ if environ is None else environ
+    environment_project = effective_environ.get("NLS_PROJECT_FILE")
+    if environment_project:
+        return resolve_project(environment_project)
+
+    return None
+
+
+def resolve_project_root(project_path: Path | None) -> Path:
+    if project_path is None:
+        return Path.cwd().resolve()
+    if project_path.suffix.lower() == ".nullus":
+        return project_path.parent.resolve()
+    return project_path.resolve()
+
+
+def resolve_default_capture_dir(project_path: Path | None, target: str, backend: str) -> Path:
+    return resolve_project_root(project_path) / "Logs" / "RenderDoc" / target / backend
+
+
+def resolve_capture_dir(
+    project_path: Path | None,
+    target: str,
+    backend: str,
+    explicit_capture_dir: str | None,
+    environ: dict[str, str] | None = None,
+) -> Path:
+    if explicit_capture_dir:
+        return Path(os.path.expandvars(explicit_capture_dir)).expanduser().resolve()
+
+    effective_environ = os.environ if environ is None else environ
+    environment_capture_dir = effective_environ.get("NLS_RENDERDOC_CAPTURE_DIR")
+    if environment_capture_dir:
+        return Path(os.path.expandvars(environment_capture_dir)).expanduser().resolve()
+
+    return resolve_default_capture_dir(project_path, target, backend).resolve()
+
+
+def resolve_capture_target_name(target: str) -> str:
+    target_names = {
+        "editor": "Editor",
+        "game": "Game",
+    }
+    try:
+        return target_names[target]
+    except KeyError as error:
+        raise ValueError(f"Unsupported RenderDoc target: {target}") from error
 
 
 def resolve_renderdoc_ui() -> Path | None:
@@ -256,9 +327,11 @@ def main() -> int:
     executable_path = resolve_executable(args.target, args.config, args.exe)
     qrenderdoc_path = resolve_renderdoc_ui()
     renderdoccmd_path = resolve_renderdoc_cmd()
-    project_path = resolve_project(args.project) if args.project else None
+    launch_project_path = resolve_launch_project(args.target, args.project)
+    capture_project_path = resolve_capture_project(args.target, args.project)
 
-    capture_dir = (REPO_ROOT / "Build" / "RenderDocCaptures" / args.target / args.backend).resolve()
+    capture_target_name = resolve_capture_target_name(args.target)
+    capture_dir = resolve_capture_dir(capture_project_path, capture_target_name, args.backend, args.capture_dir)
     capture_dir.mkdir(parents=True, exist_ok=True)
     temp_renderdoc_dir = Path(os.environ.get("TEMP", "")) / "RenderDoc" if os.environ.get("TEMP") else None
     search_roots = [capture_dir]
@@ -275,8 +348,8 @@ def main() -> int:
     if args.threaded_rendering:
         command.append("--threaded-rendering")
     command.extend(args.app_arg)
-    if project_path is not None:
-        command.append(str(project_path))
+    if launch_project_path is not None:
+        command.append(str(launch_project_path))
 
     if args.capture:
         launch_env["NLS_RENDERDOC_CAPTURE"] = "1"

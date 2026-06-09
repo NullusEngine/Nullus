@@ -120,6 +120,7 @@ namespace NLS::Editor::Panels
         bool m_requestPickingFrame = true;
         bool m_cameraMovedForPresentation = true;
         bool m_validationReadbackWritten = false;
+        uint32_t m_validationReadbackWarmupFrames = 0u;
         uint32_t m_validationReadbackReadyFrames = 0u;
 	};
 }

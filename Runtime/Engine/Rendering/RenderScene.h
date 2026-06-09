@@ -14,6 +14,7 @@
 #include <Rendering/Data/Frustum.h>
 #include <Rendering/Data/FrameInfo.h>
 #include <Rendering/Entities/Drawable.h>
+#include <Rendering/Geometry/Bounds.h>
 #include <Rendering/Geometry/BoundingSphere.h>
 
 #include "Components/MeshRenderer.h"
@@ -102,6 +103,7 @@ namespace NLS::Engine::Rendering
 		ScenePrimitiveHandle handle;
 		NLS::Render::Resources::Mesh* mesh = nullptr;
 		NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
+		NLS::Render::Geometry::Bounds modelBounds;
 		Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 		Maths::Matrix4 userMatrix = Maths::Matrix4::Identity;
 		Components::MeshRenderer::EFrustumBehaviour frustumBehaviour =
@@ -258,6 +260,7 @@ namespace NLS::Engine::Rendering
 			RenderSceneVisibilityMode mode = RenderSceneVisibilityMode::Auto) const;
 
 		[[nodiscard]] size_t GetPrimitiveCount() const;
+		[[nodiscard]] uint64_t GetSceneId() const;
 		[[nodiscard]] uint64_t GetCachedCommandBuildCountForTesting() const;
 		[[nodiscard]] const DrawCallOptimizationStats& GetLastDrawCallOptimizationStats() const;
 		[[nodiscard]] const DrawCallOptimizationStats& GetLastDrawCallOptimizationStatsForTesting() const;
@@ -333,6 +336,7 @@ namespace NLS::Engine::Rendering
 			NLS::Render::Resources::Mesh* mesh = nullptr;
 			std::vector<CachedCommandSlot> cachedCommands;
 			NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
+			NLS::Render::Geometry::Bounds modelBounds;
 			Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 			Components::MeshRenderer::EFrustumBehaviour frustumBehaviour =
 				Components::MeshRenderer::EFrustumBehaviour::DISABLED;

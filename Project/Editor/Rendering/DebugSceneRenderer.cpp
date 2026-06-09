@@ -7,11 +7,13 @@
 #include <Rendering/EngineDrawableDescriptor.h>
 #include <Rendering/FrameGraph/ExternalResourceBridge.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
+#include <Rendering/Geometry/BoundingSphereUtils.h>
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
 #include <Profiling/Profiler.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <utility>
@@ -672,11 +674,11 @@ protected:
         const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems,
         const Editor::Settings::EditorDebugDrawSettingsObject& debugSettings)
 	{
-        /* Render static mesh outline and bounding spheres */
+        /* Render selected mesh bounds */
         if (debugSettings.debugDrawBounds)
         {
             for (const auto& item : debugDrawItems.selectionMeshItems)
-                DrawBoundingSpheres(item);
+                DrawMeshBounds(item);
         }
 
         /* Render camera component outline */
@@ -892,24 +894,23 @@ protected:
 		Render::Debug::SubmitLightVolume(GetDebugDrawService(), *p_light.GetData(), options);
 	}
 
-	void DrawBoundingSpheres(const Editor::Rendering::DebugGameObjectDebugDrawItems::SelectionMeshItem& item)
+	void DrawMeshBounds(const Editor::Rendering::DebugGameObjectDebugDrawItems::SelectionMeshItem& item)
 	{
         if (item.meshRenderer == nullptr || item.mesh == nullptr)
             return;
 
-		const auto& modelBoundingsphere =
-			item.meshRenderer->GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM ?
-			item.meshRenderer->GetCustomBoundingSphere() :
-			item.mesh->GetBoundingSphere();
+        const auto& bounds = item.mesh->GetBounds();
+        const auto center = Render::Geometry::TransformPoint(item.worldMatrix, bounds.center);
+        const auto halfExtents = Maths::Vector3{
+            std::abs(bounds.size.x * item.worldScale.x),
+            std::abs(bounds.size.y * item.worldScale.y),
+            std::abs(bounds.size.z * item.worldScale.z)
+        } * 0.5f;
 
-		float radiusScale = std::max(std::max(std::max(item.worldScale.x, item.worldScale.y), item.worldScale.z), 0.0f);
-		float scaledRadius = modelBoundingsphere.radius * radiusScale;
-		auto sphereOffset = Maths::Quaternion::RotatePoint(modelBoundingsphere.position, item.worldRotation) * radiusScale;
-
-		SubmitSphere(
-			item.worldPosition + sphereOffset,
+		SubmitBox(
+			center,
 			item.worldRotation,
-			scaledRadius,
+			halfExtents,
 			kDebugBoundsColor,
 			1.0f,
 			Render::Debug::DebugDrawCategory::Bounds
@@ -1378,5 +1379,6 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
         std::move(appendedPassInputs),
         std::move(metadata),
         std::move(preferredReadbackTexture),
-        additionalRenderTargetUseCount);
+        additionalRenderTargetUseCount,
+        GetThreadedHZBPostSubmitReadbackForPreparedBuilder());
 }

@@ -30,7 +30,15 @@ void Image::_Draw_Impl()
         ImGui::Dummy(imageSize);
     m_lastDrawMin = Internal::Converter::ToFVector2(ImGui::GetItemRectMin());
     m_lastDrawMax = Internal::Converter::ToFVector2(ImGui::GetItemRectMax());
+    m_lastDrawFrame = ImGui::GetFrameCount();
     m_hasLastDrawBounds = true;
     m_hoveredLastDraw = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+}
+
+bool Image::WasDrawnThisFrame() const
+{
+    return m_hasLastDrawBounds &&
+        ImGui::GetCurrentContext() != nullptr &&
+        m_lastDrawFrame == ImGui::GetFrameCount();
 }
 } // namespace NLS

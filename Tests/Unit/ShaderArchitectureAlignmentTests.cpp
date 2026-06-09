@@ -152,8 +152,9 @@ TEST(ShaderArchitectureAlignmentTests, HZBOcclusionShaderConsumesPrimitiveInputs
 	EXPECT_EQ(shaderSourceText.find("u_OcclusionOutput"), std::string::npos);
 	EXPECT_NE(shaderSourceText.find("u_OcclusionPrimitiveResults[primitiveIndex]"), std::string::npos);
 	EXPECT_NE(shaderSourceText.find("kHZBOcclusionDepthBias"), std::string::npos);
-	EXPECT_NE(shaderSourceText.find("IsConservativelyOccludedByHZBMip0Coverage"), std::string::npos);
-	EXPECT_NE(shaderSourceText.find("kHZBOcclusionMaxMip0ScanPixels"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("static const float kHZBOcclusionDepthBias = 0.00001f"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("IsConservativelyOccludedByHZBCoverage"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("kHZBOcclusionCoverageGridDimension"), std::string::npos);
 	EXPECT_EQ(shaderSourceText.find("kHZBOcclusionGridDimension"), std::string::npos);
 	EXPECT_EQ(shaderSourceText.find("float2(0.5f, 0.5f)"), std::string::npos);
 	EXPECT_EQ(shaderSourceText.find("allCornersOcclude"), std::string::npos);
@@ -197,7 +198,7 @@ TEST(ShaderArchitectureAlignmentTests, HZBOcclusionPrimitiveInputMemberOrderMatc
 	}
 }
 
-TEST(ShaderArchitectureAlignmentTests, HZBMip0OnlyOcclusionShaderUsesBoundedExhaustiveMip0Coverage)
+TEST(ShaderArchitectureAlignmentTests, HZBOcclusionShaderSamplesLargeFootprintsInsteadOfForcingVisibleFallback)
 {
 	const std::filesystem::path hzbBuildPath =
 		std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/HZBBuild.hlsl";
@@ -207,9 +208,15 @@ TEST(ShaderArchitectureAlignmentTests, HZBMip0OnlyOcclusionShaderUsesBoundedExha
 	std::ostringstream hzbBuildBuffer;
 	hzbBuildBuffer << hzbBuildStream.rdbuf();
 	const std::string hzbBuildSource = hzbBuildBuffer.str();
-	ASSERT_NE(hzbBuildSource.find("RWTexture2D<float> u_HZBOutput"), std::string::npos);
+	ASSERT_NE(hzbBuildSource.find("Texture2D<float> u_HZBPreviousMip"), std::string::npos);
+	ASSERT_NE(hzbBuildSource.find("RWTexture2D<float> u_HZBOutputMip"), std::string::npos);
+	ASSERT_NE(hzbBuildSource.find("u_HZBPreviousMip.GetDimensions"), std::string::npos);
+	ASSERT_NE(hzbBuildSource.find("copyPreviousMip = previousWidth == outputWidth && previousHeight == outputHeight"), std::string::npos);
+	ASSERT_NE(hzbBuildSource.find("copyPreviousMip ? dispatchThreadId.xy : dispatchThreadId.xy * 2u"), std::string::npos);
+	ASSERT_NE(hzbBuildSource.find("max(max(depth00, depth10), max(depth01, depth11))"), std::string::npos);
+	ASSERT_EQ(hzbBuildSource.find("min(min(depth00, depth10), min(depth01, depth11))"), std::string::npos);
+	ASSERT_EQ(hzbBuildSource.find("RWTexture2D<float> u_HZBOutput :"), std::string::npos);
 	ASSERT_EQ(hzbBuildSource.find("RWTexture2DArray"), std::string::npos);
-	ASSERT_EQ(hzbBuildSource.find("RWTexture2D<float> u_HZBOutputMip"), std::string::npos);
 
 	const std::filesystem::path occlusionPath =
 		std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/HZBOcclusion.hlsl";
@@ -220,11 +227,18 @@ TEST(ShaderArchitectureAlignmentTests, HZBMip0OnlyOcclusionShaderUsesBoundedExha
 	occlusionBuffer << occlusionStream.rdbuf();
 	const std::string occlusionSource = occlusionBuffer.str();
 
-	EXPECT_NE(occlusionSource.find("kHZBOcclusionMaxMip0ScanPixels"), std::string::npos);
-	EXPECT_NE(occlusionSource.find("IsConservativelyOccludedByHZBMip0Coverage"), std::string::npos);
-	EXPECT_NE(occlusionSource.find("coveredPixelCount > kHZBOcclusionMaxMip0ScanPixels"), std::string::npos);
-	EXPECT_NE(occlusionSource.find("for (uint pixelY = minPixelY; pixelY <= maxPixelY; ++pixelY)"), std::string::npos);
-	EXPECT_NE(occlusionSource.find("for (uint pixelX = minPixelX; pixelX <= maxPixelX; ++pixelX)"), std::string::npos);
+	EXPECT_EQ(occlusionSource.find("kHZBOcclusionMaxMip0ScanPixels"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("kHZBOcclusionCoverageGridDimension"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("IsConservativelyOccludedByHZBCoverage"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("SelectHZBMipLevel"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("u_HZB.GetDimensions(0u, width, height, mipCount)"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("u_HZB.Load(int3(pixel, mipLevel))"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("const uint stepX = max(1u, mipFootprintWidth / kHZBOcclusionCoverageGridDimension)"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("const uint stepY = max(1u, mipFootprintHeight / kHZBOcclusionCoverageGridDimension)"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("for (uint pixelY = mipMinPixelY; pixelY <= mipMaxPixelY; pixelY += stepY)"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("for (uint pixelX = mipMinPixelX; pixelX <= mipMaxPixelX; pixelX += stepX)"), std::string::npos);
+	EXPECT_EQ(occlusionSource.find("IsConservativelyOccludedByCoarseHZBCoverage"), std::string::npos);
+	EXPECT_EQ(occlusionSource.find(": false"), std::string::npos);
 	EXPECT_NE(occlusionSource.find("u_OcclusionPrimitiveResults[primitiveIndex] = occluded ? 1u : 0u"), std::string::npos);
 	EXPECT_EQ(occlusionSource.find("kHZBOcclusionGridDimension"), std::string::npos);
 	EXPECT_NE(occlusionSource.find("[numthreads(8, 1, 1)]"), std::string::npos);

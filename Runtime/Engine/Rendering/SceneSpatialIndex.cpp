@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include <Math/Vector4.h>
+#include "Rendering/Geometry/BoundingSphereUtils.h"
 
 namespace NLS::Engine::Rendering
 {
@@ -48,8 +48,7 @@ namespace NLS::Engine::Rendering
 		struct IndexedPrimitive
 		{
 			ScenePrimitiveHandle handle;
-			Maths::Vector3 center;
-			float radius = 0.0f;
+			NLS::Render::Geometry::Bounds worldBounds;
 			uint32_t layer = 0u;
 			bool active = true;
 			Components::MeshRenderer::EFrustumBehaviour frustumBehaviour =
@@ -70,51 +69,50 @@ namespace NLS::Engine::Rendering
 			};
 		}
 
-		Maths::Vector3 TransformPoint(const Maths::Matrix4& matrix, const Maths::Vector3& point)
+		NLS::Render::Geometry::Bounds ExtractWorldBounds(const ScenePrimitiveSnapshotRecord& record)
 		{
-			const auto transformed = matrix * Maths::Vector4(point, 1.0f);
-			if (transformed.w != 0.0f && transformed.w != 1.0f)
-			{
-				return {
-					transformed.x / transformed.w,
-					transformed.y / transformed.w,
-					transformed.z / transformed.w
-				};
-			}
-
-			return { transformed.x, transformed.y, transformed.z };
+			return NLS::Render::Geometry::TransformBounds(record.modelBounds, record.worldMatrix);
 		}
 
-		float ExtractMaxScale(const Maths::Matrix4& matrix)
+		float DistanceToBounds(const Maths::Vector3& point, const NLS::Render::Geometry::Bounds& bounds)
 		{
-			const Maths::Vector3 columns[] = {
-				{ matrix.data[0], matrix.data[4], matrix.data[8] },
-				{ matrix.data[1], matrix.data[5], matrix.data[9] },
-				{ matrix.data[2], matrix.data[6], matrix.data[10] }
-			};
-			return std::max({
-				columns[0].Length(),
-				columns[1].Length(),
-				columns[2].Length(),
-				1.0f
-			});
+			const auto halfSize = bounds.size * 0.5f;
+			const auto dx = std::max(std::abs(point.x - bounds.center.x) - halfSize.x, 0.0f);
+			const auto dy = std::max(std::abs(point.y - bounds.center.y) - halfSize.y, 0.0f);
+			const auto dz = std::max(std::abs(point.z - bounds.center.z) - halfSize.z, 0.0f);
+			return Maths::Vector3(dx, dy, dz).Length();
 		}
 
-		Maths::Vector3 ExtractWorldCenter(const ScenePrimitiveSnapshotRecord& record)
+		float FarthestDistanceToBounds(const Maths::Vector3& point, const NLS::Render::Geometry::Bounds& bounds)
 		{
-			return TransformPoint(record.worldMatrix, record.modelBoundingSphere.position);
+			const auto corners = NLS::Render::Geometry::BuildBoundsCorners(bounds);
+			float distance = 0.0f;
+			for (const auto& corner : corners)
+				distance = std::max(distance, Maths::Vector3::Distance(point, corner));
+			return distance;
 		}
 
-		float ExtractWorldRadius(const ScenePrimitiveSnapshotRecord& record)
+		NLS::Render::Geometry::Bounds QueryBounds(const SceneSpatialIndexQuery& query)
 		{
-			return std::max(0.0f, record.modelBoundingSphere.radius) * ExtractMaxScale(record.worldMatrix);
+			const auto radius = std::max(0.0f, query.radius);
+			return { query.center, { radius * 2.0f, radius * 2.0f, radius * 2.0f } };
+		}
+
+		Maths::Vector3 BoundsMin(const NLS::Render::Geometry::Bounds& bounds)
+		{
+			return bounds.center - bounds.size * 0.5f;
+		}
+
+		Maths::Vector3 BoundsMax(const NLS::Render::Geometry::Bounds& bounds)
+		{
+			return bounds.center + bounds.size * 0.5f;
 		}
 
 		bool SameSpatialRecord(const IndexedPrimitive& lhs, const IndexedPrimitive& rhs)
 		{
 			return lhs.handle == rhs.handle &&
-				lhs.center == rhs.center &&
-				lhs.radius == rhs.radius &&
+				lhs.worldBounds.center == rhs.worldBounds.center &&
+				lhs.worldBounds.size == rhs.worldBounds.size &&
 				lhs.layer == rhs.layer &&
 				lhs.active == rhs.active &&
 				lhs.frustumBehaviour == rhs.frustumBehaviour &&
@@ -148,17 +146,18 @@ namespace NLS::Engine::Rendering
 			if (!primitive.active || !LayerPasses(primitive, query.visibleLayerMask))
 				return false;
 
-			const auto distance = Maths::Vector3::Distance(query.center, primitive.center);
 			const bool frustumUnbounded =
 				primitive.frustumBehaviour == Components::MeshRenderer::EFrustumBehaviour::DISABLED;
-			if (!frustumUnbounded && distance > query.radius + primitive.radius)
+			if (!frustumUnbounded && !NLS::Render::Geometry::BoundsOverlap(QueryBounds(query), primitive.worldBounds))
 				return false;
 
 			if (query.distanceCullingEnabled)
 			{
-				if (distance + primitive.radius < query.minDistance)
+				const auto nearestDistance = DistanceToBounds(query.center, primitive.worldBounds);
+				const auto farthestDistance = FarthestDistanceToBounds(query.center, primitive.worldBounds);
+				if (farthestDistance < query.minDistance)
 					return false;
-				if (query.maxDistance > 0.0f && distance - primitive.radius > query.maxDistance)
+				if (query.maxDistance > 0.0f && nearestDistance > query.maxDistance)
 					return false;
 			}
 
@@ -168,9 +167,8 @@ namespace NLS::Engine::Rendering
 		std::vector<CellKey> ResolveOverlappedCells(const IndexedPrimitive& primitive)
 		{
 			std::vector<CellKey> cells;
-			const auto radius = std::max(0.0f, primitive.radius);
-			const auto minCell = ToCell(primitive.center - Maths::Vector3(radius, radius, radius));
-			const auto maxCell = ToCell(primitive.center + Maths::Vector3(radius, radius, radius));
+			const auto minCell = ToCell(BoundsMin(primitive.worldBounds));
+			const auto maxCell = ToCell(BoundsMax(primitive.worldBounds));
 			for (int32_t z = minCell.z; z <= maxCell.z; ++z)
 			{
 				for (int32_t y = minCell.y; y <= maxCell.y; ++y)
@@ -295,8 +293,7 @@ namespace NLS::Engine::Rendering
 		{
 			IndexedPrimitive indexed;
 			indexed.handle = record.handle;
-			indexed.center = ExtractWorldCenter(record);
-			indexed.radius = ExtractWorldRadius(record);
+			indexed.worldBounds = ExtractWorldBounds(record);
 			indexed.layer = record.visibilitySettings.layer;
 			indexed.active = record.ownerAlive && record.ownerActive;
 			indexed.frustumBehaviour = record.frustumBehaviour;
@@ -656,9 +653,9 @@ namespace NLS::Engine::Rendering
 
 		auto visitBuckets = [&](const CellBuckets& buckets, const bool dynamicBuckets)
 		{
-			const auto radius = std::max(0.0f, query.radius);
-			const auto minCell = ToCell(query.center - Maths::Vector3(radius, radius, radius));
-			const auto maxCell = ToCell(query.center + Maths::Vector3(radius, radius, radius));
+			const auto bounds = QueryBounds(query);
+			const auto minCell = ToCell(BoundsMin(bounds));
+			const auto maxCell = ToCell(BoundsMax(bounds));
 			VisitQueryCells(buckets, minCell, maxCell, dynamicBuckets, visitHandle);
 		};
 

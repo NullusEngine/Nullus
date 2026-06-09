@@ -5,6 +5,7 @@
 #include <Math/Matrix4.h>
 #include <Math/Transform.h>
 #include "RenderDef.h"
+#include "Rendering/Geometry/Bounds.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/ECullingOptions.h"
@@ -17,6 +18,7 @@ namespace NLS::Render::Data
 	{
 	public:
         using Mesh = Resources::Mesh;
+        using Bounds = Render::Geometry::Bounds;
         using BoundingSphere = Render::Geometry::BoundingSphere;
 
 		/**
@@ -57,6 +59,8 @@ namespace NLS::Render::Data
 		* @param p_transform
 		*/
 		bool BoundingSphereInFrustum(const BoundingSphere& p_boundingSphere, const Maths::Transform& p_transform) const;
+
+		bool BoundsInFrustum(const Bounds& p_bounds, const Maths::Matrix4& p_transform) const;
 
 		/**
 		* Returns true if the 

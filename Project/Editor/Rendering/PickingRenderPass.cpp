@@ -14,6 +14,32 @@
 #include <algorithm>
 #include <iterator>
 using namespace NLS;
+
+namespace
+{
+    template<typename Lifecycle>
+    class ScopedPickingPixelReadback
+    {
+    public:
+        explicit ScopedPickingPixelReadback(Lifecycle& lifecycle)
+            : m_lifecycle(&lifecycle)
+        {
+        }
+
+        ~ScopedPickingPixelReadback()
+        {
+            if (m_lifecycle != nullptr)
+                m_lifecycle->EndPixelReadback();
+        }
+
+        ScopedPickingPixelReadback(const ScopedPickingPixelReadback&) = delete;
+        ScopedPickingPixelReadback& operator=(const ScopedPickingPixelReadback&) = delete;
+
+    private:
+        Lifecycle* m_lifecycle = nullptr;
+    };
+}
+
 Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) :
 	NLS::Render::Core::ARenderPass(p_renderer),
 	m_debugModelRenderer(p_renderer)
@@ -73,6 +99,10 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 		return std::nullopt;
 	}
 
+    if (!m_readbackLifecycle.TryBeginPixelReadback())
+        return std::nullopt;
+    ScopedPickingPixelReadback pixelReadback(m_readbackLifecycle);
+
 	uint8_t pixel[3]{};
 	const auto readbackResult = NLS::Render::Context::DriverRendererAccess::ReadPixelsChecked(
         m_renderer.GetDriver(),
@@ -86,7 +116,10 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 		pixel);
 	if (!readbackResult.Succeeded())
 	{
-		NLS_LOG_WARNING("PickingRenderPass::PickAtRenderCoordinate readback failed: " + readbackResult.message);
+        if (readbackResult.message.find("previous async readback has not been completed") == std::string::npos)
+        {
+		    NLS_LOG_WARNING("PickingRenderPass::PickAtRenderCoordinate readback failed: " + readbackResult.message);
+        }
 		return std::nullopt;
 	}
 

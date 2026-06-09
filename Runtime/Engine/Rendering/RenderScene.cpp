@@ -456,6 +456,13 @@ namespace
 		return lhs.position == rhs.position && lhs.radius == rhs.radius;
 	}
 
+	bool AreSameBounds(
+		const NLS::Render::Geometry::Bounds& lhs,
+		const NLS::Render::Geometry::Bounds& rhs)
+	{
+		return lhs.center == rhs.center && lhs.size == rhs.size;
+	}
+
 	bool AreSameMatrix(const Maths::Matrix4& lhs, const Maths::Matrix4& rhs)
 	{
 		for (size_t index = 0u; index < 16u; ++index)
@@ -898,6 +905,11 @@ size_t RenderScene::GetPrimitiveCount() const
 	return m_livePrimitiveCount;
 }
 
+uint64_t RenderScene::GetSceneId() const
+{
+	return m_sceneId;
+}
+
 uint64_t RenderScene::GetCachedCommandBuildCountForTesting() const
 {
 	return m_cachedCommandBuildCount;
@@ -1081,6 +1093,7 @@ ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshot(const uint64_t frame
 		record.handle = primitive.handle;
 		record.mesh = primitive.mesh;
 		record.modelBoundingSphere = primitive.modelBoundingSphere;
+		record.modelBounds = primitive.modelBounds;
 		record.worldMatrix = primitive.worldMatrix;
 		record.ownerAlive = primitive.ownerAlive;
 		record.ownerActive = primitive.ownerActive;
@@ -1170,6 +1183,7 @@ ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshotForHandles(
 		record.handle = primitive.handle;
 		record.mesh = primitive.mesh;
 		record.modelBoundingSphere = primitive.modelBoundingSphere;
+		record.modelBounds = primitive.modelBounds;
 		record.worldMatrix = primitive.worldMatrix;
 		record.ownerAlive = primitive.ownerAlive;
 		record.ownerActive = primitive.ownerActive;
@@ -1376,6 +1390,7 @@ void RenderScene::SynchronizePrimitive(
 	const auto* previousOwner = primitive.owner;
 	const auto* previousMesh = primitive.mesh;
 	const auto previousBounds = primitive.modelBoundingSphere;
+	const auto previousModelBounds = primitive.modelBounds;
 	const auto previousWorldMatrix = primitive.worldMatrix;
 	const auto previousFrustumBehaviour = primitive.frustumBehaviour;
 	const auto previousVisibilitySettings = primitive.visibilitySettings;
@@ -1423,7 +1438,9 @@ void RenderScene::SynchronizePrimitive(
 		primitive.frustumBehaviour == Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM
 			? meshRenderer->GetCustomBoundingSphere()
 			: primitive.mesh->GetBoundingSphere();
+	primitive.modelBounds = primitive.mesh->GetBounds();
 	if (!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
+		!AreSameBounds(previousModelBounds, primitive.modelBounds) ||
 		previousFrustumBehaviour != primitive.frustumBehaviour ||
 		previousOwnerAlive != primitive.ownerAlive ||
 		previousOwnerActive != primitive.ownerActive ||
@@ -1448,6 +1465,7 @@ void RenderScene::SynchronizePrimitive(
 			previousOwnerActive != primitive.ownerActive ||
 			previousVisibilitySettings.layer != primitive.visibilitySettings.layer ||
 			!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
+			!AreSameBounds(previousModelBounds, primitive.modelBounds) ||
 			!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix))
 		{
 			MarkPrimitiveDirtyForSnapshot(primitive);
@@ -1470,6 +1488,7 @@ void RenderScene::SynchronizePrimitive(
 		previousVisibilitySettings.minDrawDistance != primitive.visibilitySettings.minDrawDistance ||
 		previousVisibilitySettings.maxDrawDistance != primitive.visibilitySettings.maxDrawDistance ||
 		!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
+		!AreSameBounds(previousModelBounds, primitive.modelBounds) ||
 		!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix) ||
 		commandInputChanged)
 	{
@@ -1593,9 +1612,9 @@ bool RenderScene::IsPrimitiveVisible(
 	if (transform == nullptr)
 		return false;
 
-	return options.frustum->BoundingSphereInFrustum(
-		primitive.modelBoundingSphere,
-		transform->GetTransform());
+	return options.frustum->BoundsInFrustum(
+		primitive.modelBounds,
+		primitive.worldMatrix);
 }
 
 bool RenderScene::IsMeshVisible(

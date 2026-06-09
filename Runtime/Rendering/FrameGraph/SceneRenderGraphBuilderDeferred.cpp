@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "Profiling/Profiler.h"
@@ -1467,9 +1468,11 @@ namespace NLS::Render::FrameGraph
         }
 
         const auto hzbMipCount = (std::min<uint32_t>)(
-            1u,
+            request.hzbMipCount,
             request.hzbTexture->GetDesc().mipLevels);
-        if (hzbMipCount == 0u)
+        if (hzbMipCount == 0u ||
+            request.hzbBuildBindingSets.size() < hzbMipCount ||
+            request.hzbBuildGroupCountsByMip.size() < hzbMipCount)
             return {};
 
         auto makeRange = [](const uint32_t baseMipLevel, const uint32_t mipLevelCount)
@@ -1482,42 +1485,68 @@ namespace NLS::Render::FrameGraph
             return range;
         };
 
-        NLS::Render::Context::RecordedComputeDispatchInput buildHZB;
-        buildHZB.debugName = "HZBBuild";
-        buildHZB.pipeline = request.hzbBuildPipeline;
-        if (request.hzbBuildBindingSet != nullptr)
-        {
-            buildHZB.bindingSets.push_back({
-                NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,
-                request.hzbBuildBindingSet
-            });
-        }
-        buildHZB.groupCountX = request.hzbBuildGroupCounts[0];
-        buildHZB.groupCountY = request.hzbBuildGroupCounts[1];
-        buildHZB.groupCountZ = request.hzbBuildGroupCounts[2];
         const auto opaqueDepthRange = NLS::Render::RHI::GetFullTextureSubresourceRange(
             request.opaqueDepthTexture->GetDesc());
-        buildHZB.textureResourceAccesses.push_back({
-            request.opaqueDepthTexture,
-            opaqueDepthRange,
-            NLS::Render::Context::ResourceAccessMode::Read,
-            NLS::Render::RHI::ResourceState::ShaderRead,
-            NLS::Render::RHI::PipelineStageMask::ComputeShader,
-            NLS::Render::RHI::AccessMask::ShaderRead
-        });
-        buildHZB.textureVisibilityTransitionsBefore.push_back({
-            request.opaqueDepthTexture,
-            opaqueDepthRange,
-            NLS::Render::RHI::ResourceState::Unknown,
-            NLS::Render::RHI::ResourceState::ShaderRead,
-            NLS::Render::RHI::PipelineStageMask::AllCommands,
-            NLS::Render::RHI::PipelineStageMask::ComputeShader,
-            NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
-            NLS::Render::RHI::AccessMask::ShaderRead
-        });
-
+        std::vector<NLS::Render::Context::RecordedComputeDispatchInput> dispatches;
+        dispatches.reserve(static_cast<size_t>(hzbMipCount) + 1u);
         for (uint32_t mip = 0u; mip < hzbMipCount; ++mip)
         {
+            NLS::Render::Context::RecordedComputeDispatchInput buildHZB;
+            buildHZB.debugName = "HZBBuildMip" + std::to_string(mip);
+            buildHZB.pipeline = request.hzbBuildPipeline;
+            if (request.hzbBuildBindingSets[mip] != nullptr)
+            {
+                buildHZB.bindingSets.push_back({
+                    NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,
+                    request.hzbBuildBindingSets[mip]
+                });
+            }
+            buildHZB.groupCountX = request.hzbBuildGroupCountsByMip[mip][0];
+            buildHZB.groupCountY = request.hzbBuildGroupCountsByMip[mip][1];
+            buildHZB.groupCountZ = request.hzbBuildGroupCountsByMip[mip][2];
+            if (mip == 0u)
+            {
+                buildHZB.textureResourceAccesses.push_back({
+                    request.opaqueDepthTexture,
+                    opaqueDepthRange,
+                    NLS::Render::Context::ResourceAccessMode::Read,
+                    NLS::Render::RHI::ResourceState::ShaderRead,
+                    NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                    NLS::Render::RHI::AccessMask::ShaderRead
+                });
+                buildHZB.textureVisibilityTransitionsBefore.push_back({
+                    request.opaqueDepthTexture,
+                    opaqueDepthRange,
+                    NLS::Render::RHI::ResourceState::Unknown,
+                    NLS::Render::RHI::ResourceState::ShaderRead,
+                    NLS::Render::RHI::PipelineStageMask::AllCommands,
+                    NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                    NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+                    NLS::Render::RHI::AccessMask::ShaderRead
+                });
+            }
+            else
+            {
+                const auto previousMipRange = makeRange(mip - 1u, 1u);
+                buildHZB.textureResourceAccesses.push_back({
+                    request.hzbTexture,
+                    previousMipRange,
+                    NLS::Render::Context::ResourceAccessMode::Read,
+                    NLS::Render::RHI::ResourceState::ShaderRead,
+                    NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                    NLS::Render::RHI::AccessMask::ShaderRead
+                });
+                buildHZB.textureVisibilityTransitionsBefore.push_back({
+                    request.hzbTexture,
+                    previousMipRange,
+                    NLS::Render::RHI::ResourceState::ShaderWrite,
+                    NLS::Render::RHI::ResourceState::ShaderRead,
+                    NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                    NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                    NLS::Render::RHI::AccessMask::ShaderWrite,
+                    NLS::Render::RHI::AccessMask::ShaderRead
+                });
+            }
             const auto mipRange = makeRange(mip, 1u);
             buildHZB.textureResourceAccesses.push_back({
                 request.hzbTexture,
@@ -1547,6 +1576,7 @@ namespace NLS::Render::FrameGraph
                 NLS::Render::RHI::AccessMask::ShaderWrite,
                 NLS::Render::RHI::AccessMask::ShaderRead
             });
+            dispatches.push_back(std::move(buildHZB));
         }
 
         NLS::Render::Context::RecordedComputeDispatchInput occlusion;
@@ -1594,7 +1624,8 @@ namespace NLS::Render::FrameGraph
                 NLS::Render::RHI::AccessMask::ShaderWrite
             });
         }
-        return BuildPreparedComputeDispatchSource({ std::move(buildHZB), std::move(occlusion) });
+        dispatches.push_back(std::move(occlusion));
+        return BuildPreparedComputeDispatchSource(std::move(dispatches));
     }
 
     DeferredPreparedSceneResources CaptureDeferredPreparedSceneResources(

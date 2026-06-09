@@ -1408,8 +1408,10 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     const auto previousCameraRotation = m_camera.GetRotation();
     const Maths::Vector2 mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
     const bool shortcutsWindowOpen = Editor::Core::DoesShortcutSettingsWindowBlockSceneInput();
-    const bool mouseOverSceneView = IsMouseWithinView(mousePosition) ||
-        (m_image != nullptr && m_image->WasHoveredLastDraw());
+    const bool viewportInputAvailable = HasViewportImageInputBounds();
+    const bool mouseOverSceneView = viewportInputAvailable &&
+        (IsMouseWithinView(mousePosition) ||
+            (m_image != nullptr && m_image->WasHoveredLastDraw()));
     const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || mouseOverSceneView);
     const bool isAnyItemActive = NLS_SERVICE(UI::UIManager).IsAnyItemActive();
     const bool blockCameraInput = ShouldSceneViewBlockCameraInput(
@@ -1557,6 +1559,7 @@ void Editor::Panels::SceneView::OnAfterDrawWidgets()
     if (ShouldResolveViewportPicking(ViewportOverlayLifecyclePhase::AfterWidgetDraw))
         HandleGameObjectPicking();
     EndViewportOverlayDrawListChannels();
+    MarkViewportImageInputBoundsForLastDraw();
 }
 
 void Editor::Panels::SceneView::AfterRenderFrame()
@@ -1574,6 +1577,13 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
     if (diagnostics.editorValidationSceneReadbackOutput.empty() &&
         diagnostics.editorValidationSceneReadbackSummary.empty())
     {
+        return;
+    }
+
+    constexpr uint32_t kValidationReadbackWarmupFrames = 4u;
+    if (m_validationReadbackWarmupFrames < kValidationReadbackWarmupFrames)
+    {
+        ++m_validationReadbackWarmupFrames;
         return;
     }
 
@@ -1609,13 +1619,20 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
     if (driver == nullptr)
         return;
 
+    auto texture = m_fbo.GetExplicitTextureHandle();
+    if (texture == nullptr ||
+        !Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(*driver, texture))
+    {
+        m_validationReadbackReadyFrames = 0u;
+        return;
+    }
+
     if (Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver) &&
         !Render::Context::DriverRendererAccess::TryDrainThreadedRendering(*driver))
     {
         return;
     }
 
-    auto texture = m_fbo.GetExplicitTextureHandle();
     std::vector<uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0u);
     const auto readback = Render::Context::DriverRendererAccess::ReadPixelsChecked(
         *driver,

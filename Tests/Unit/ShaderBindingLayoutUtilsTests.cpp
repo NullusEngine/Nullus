@@ -531,15 +531,15 @@ TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructBuildsRWTextureBindingS
 
     const auto parameters = ShaderParameterStructBuilder("HZBBuildParameters")
         .SetGroup(ShaderParameterGroupKind::Pass)
-        .AddTexture("u_OpaqueDepth", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
-        .AddRWTexture("u_HZBMip0", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .AddTexture("u_HZBPreviousMip", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .AddRWTexture("u_HZBOutputMip", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
         .Build();
 
     const auto layoutDesc = BuildBindingLayoutDescFromShaderParameters(parameters);
 
     ASSERT_EQ(layoutDesc.entries.size(), 2u);
     EXPECT_EQ(layoutDesc.entries[0].type, NLS::Render::RHI::BindingType::Texture);
-    EXPECT_EQ(layoutDesc.entries[1].name, "u_HZBMip0");
+    EXPECT_EQ(layoutDesc.entries[1].name, "u_HZBOutputMip");
     EXPECT_EQ(layoutDesc.entries[1].type, NLS::Render::RHI::BindingType::RWTexture);
     EXPECT_EQ(layoutDesc.entries[1].binding, 1u);
 
@@ -559,7 +559,7 @@ TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructBuildsRWTextureBindingS
         parameters,
         nullptr,
         {
-            ShaderParameterBindingValue::RWTexture("u_HZBMip0", textureView)
+            ShaderParameterBindingValue::RWTexture("u_HZBOutputMip", textureView)
         },
         "HZBBuildBindingSet");
 

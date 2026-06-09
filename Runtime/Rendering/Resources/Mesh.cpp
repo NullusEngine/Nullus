@@ -53,6 +53,7 @@ Mesh::Mesh(
 {
 	CreateBuffers(vertices, indices, uploadMode);
 	ComputeBoundingSphere(vertices);
+	ComputeBounds(vertices);
 	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
 }
 
@@ -66,6 +67,7 @@ Mesh::Mesh(
 	, m_indicesCount(static_cast<uint32_t>(indices.size()))
 	, m_materialIndex(materialIndex)
 	, m_boundingSphere(boundingSphere)
+	, m_bounds(Geometry::ComputeBounds(vertices))
 	, m_instanceId(NextMeshInstanceId())
 {
 	CreateBuffers(vertices, indices, uploadMode);
@@ -113,6 +115,11 @@ const Render::Geometry::BoundingSphere& Mesh::GetBoundingSphere() const
 	return m_boundingSphere;
 }
 
+const Render::Geometry::Bounds& Mesh::GetBounds() const
+{
+	return m_bounds;
+}
+
 uint64_t Mesh::GetInstanceId() const
 {
 	return m_instanceId;
@@ -134,6 +141,7 @@ void Mesh::Reload(
 	m_indicesCount = static_cast<uint32_t>(indices.size());
 	m_materialIndex = materialIndex;
 	m_boundingSphere = boundingSphere;
+	m_bounds = Geometry::ComputeBounds(vertices);
 	CreateBuffers(vertices, indices, uploadMode);
 	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
 	TouchContentRevision();
@@ -152,6 +160,10 @@ bool Mesh::UpdateVertices(
 		return false;
 
 	m_boundingSphere = boundingSphere;
+	if (destinationVertexOffset == 0u && vertices.size() == m_vertexCount)
+		m_bounds = Geometry::ComputeBounds(vertices);
+	else
+		ExpandBoundsForUpdatedVertices(vertices);
 	TouchContentRevision();
 	return true;
 }
@@ -191,6 +203,16 @@ void Mesh::CreateBuffers(
 void Mesh::ComputeBoundingSphere(const std::vector<Geometry::Vertex>& vertices)
 {
 	m_boundingSphere = Geometry::ComputeBoundingSphere(vertices);
+}
+
+void Mesh::ComputeBounds(const std::vector<Geometry::Vertex>& vertices)
+{
+	m_bounds = Geometry::ComputeBounds(vertices);
+}
+
+void Mesh::ExpandBoundsForUpdatedVertices(const std::vector<Geometry::Vertex>& vertices)
+{
+	m_bounds = Geometry::UnionBounds(m_bounds, Geometry::ComputeBounds(vertices));
 }
 
 std::shared_ptr<NLS::Render::RHI::RHIMesh> Mesh::GetRHIMesh() const

@@ -634,6 +634,80 @@ TEST(RenderSceneCacheTests, MaterialStateChangeInvalidatesOnlyAffectedCachedComm
     EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), 2u);
 }
 
+TEST(RenderSceneCacheTests, OpaqueVisiblePrimitiveBuildsHZBOcclusionCandidateSource)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    fixture.material.SetBlendable(false);
+    fixture.material.SetDepthTest(true);
+    fixture.material.SetDepthWriting(true);
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+
+    const auto visible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    ASSERT_EQ(renderScene.GetLastVisiblePrimitiveHandles().size(), 1u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForHandles(
+        renderScene.GetLastVisiblePrimitiveHandles(),
+        {});
+    ASSERT_EQ(snapshot.primitiveRecords.size(), 1u);
+    EXPECT_TRUE(snapshot.primitiveRecords.front().depthWriteEligibleForOcclusion);
+
+    const auto sources = NLS::Engine::Rendering::SceneOcclusionSystem::BuildHZBPrimitivePacketSources(
+        snapshot,
+        renderScene.GetLastVisiblePrimitiveHandles());
+    ASSERT_EQ(sources.sources.size(), 1u);
+    EXPECT_EQ(sources.sources.front().primitive.handle, renderScene.GetLastVisiblePrimitiveHandles().front());
+    EXPECT_EQ(sources.rejectedPrimitiveCount, 0u);
+}
+
+TEST(RenderSceneCacheTests, HZBOcclusionCandidateSourceUsesMeshAABBWhenFrustumUsesCustomSphere)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    fixture.material.SetBlendable(false);
+    fixture.material.SetDepthTest(true);
+    fixture.material.SetDepthWriting(true);
+    fixture.meshRenderer->SetFrustumBehaviour(
+        NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM);
+    fixture.meshRenderer->SetCustomBoundingSphere({ { 0.0f, 0.0f, 0.0f }, 100.0f });
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+
+    const auto visible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    ASSERT_EQ(renderScene.GetLastVisiblePrimitiveHandles().size(), 1u);
+
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForHandles(
+        renderScene.GetLastVisiblePrimitiveHandles(),
+        {});
+    const auto sources = NLS::Engine::Rendering::SceneOcclusionSystem::BuildHZBPrimitivePacketSources(
+        snapshot,
+        renderScene.GetLastVisiblePrimitiveHandles());
+
+    NLS::Engine::Rendering::SceneOcclusionPrimitivePacketBuildInput buildInput;
+    buildInput.viewProjection = NLS::Maths::Matrix4::Identity;
+    buildInput.viewportWidth = 100u;
+    buildInput.viewportHeight = 100u;
+    const auto packets = NLS::Engine::Rendering::SceneOcclusionSystem::BuildHZBPrimitivePackets(
+        buildInput,
+        sources.sources);
+
+    ASSERT_EQ(packets.primitivePackets.size(), 1u);
+    const auto& packet = packets.primitivePackets.front();
+    EXPECT_FLOAT_EQ(packet.screenMinX, 25.0f);
+    EXPECT_FLOAT_EQ(packet.screenMaxX, 75.0f);
+    EXPECT_FLOAT_EQ(packet.screenMinY, 25.0f);
+    EXPECT_FLOAT_EQ(packet.screenMaxY, 75.0f);
+}
+
 TEST(RenderSceneCacheTests, GeneratedMaterialStateMaskClearsUnusedBits)
 {
     constexpr uint8_t kUsedRenderStateBitsMask = 0x3Fu;

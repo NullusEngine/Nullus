@@ -14,6 +14,7 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocCaptureController.h"
+#include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "UI/UIManager.h"
 #include "UI/Widgets/Buttons/ButtonImage.h"
 #include "UI/Widgets/Visual/Image.h"
@@ -188,6 +189,19 @@ TEST(UIAndToolingBackendAwarenessTests, QueuedRenderDocStartupCaptureUsesExplici
     EXPECT_EQ(
         ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, 1u),
         RenderDocQueuedCaptureAction::StartExplicitFrameCapture);
+}
+
+TEST(UIAndToolingBackendAwarenessTests, RenderDocDefaultCaptureDirectoryUsesProjectLogs)
+{
+    const std::filesystem::path projectRoot = std::filesystem::path(NLS_ROOT_DIR) / "TestProject";
+    const std::filesystem::path projectFile = projectRoot / "TestProject.nullus";
+
+    EXPECT_EQ(
+        std::filesystem::path(NLS::Render::Tooling::ResolveRenderDocDefaultCaptureDirectory(projectRoot, "Editor")),
+        projectRoot / "Logs" / "RenderDoc" / "Editor");
+    EXPECT_EQ(
+        std::filesystem::path(NLS::Render::Tooling::ResolveRenderDocDefaultCaptureDirectory(projectFile, "Game")),
+        projectRoot / "Logs" / "RenderDoc" / "Game");
 }
 
 TEST(UIAndToolingBackendAwarenessTests, OffscreenRenderDocCaptureEndWaitsForPathAndUsesFallbackOnlyOnFailure)

@@ -313,6 +313,33 @@ TEST(DX12ReadbackUtilsTests, BufferReadbackWaitsOnProducerSemaphoresBeforeCopySu
     EXPECT_NE(beginBodyBeforeExecute.find("GetWaitValue()"), std::string::npos);
 }
 
+TEST(DX12ReadbackUtilsTests, NativeExplicitDeviceSeparatesPixelAndBufferReadbackContexts)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.cpp";
+    std::ifstream input(sourcePath);
+    const std::string source{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("DX12ReadbackContext m_pixelReadbackContext"), std::string::npos);
+    EXPECT_NE(source.find("DX12ReadbackContext m_bufferReadbackContext"), std::string::npos);
+
+    const auto beginReadPixels = source.find("NativeDX12ExplicitDevice::BeginReadPixels");
+    const auto beginReadBuffer = source.find("NativeDX12ExplicitDevice::BeginReadBuffer");
+    ASSERT_NE(beginReadPixels, std::string::npos);
+    ASSERT_NE(beginReadBuffer, std::string::npos);
+
+    const auto readPixelsBody = source.substr(beginReadPixels, beginReadBuffer - beginReadPixels);
+    EXPECT_NE(readPixelsBody.find("m_pixelReadbackContext.Begin("), std::string::npos);
+    EXPECT_EQ(readPixelsBody.find("m_bufferReadbackContext"), std::string::npos);
+
+    const auto readBufferBody = source.substr(beginReadBuffer);
+    EXPECT_NE(readBufferBody.find("m_bufferReadbackContext.BeginBuffer("), std::string::npos);
+}
+
 TEST(DX12ReadbackUtilsTests, BufferReadbackGuardsRangeOverflowAndLateDeviceLoss)
 {
     const auto sourcePath =

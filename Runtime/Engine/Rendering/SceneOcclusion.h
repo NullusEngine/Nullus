@@ -9,6 +9,7 @@
 
 #include "EngineDef.h"
 #include "Rendering/Data/SceneOcclusionPacketLayout.h"
+#include "Rendering/Geometry/Bounds.h"
 #include "Rendering/RenderScene.h"
 #include "Rendering/RHI/RHITypes.h"
 
@@ -74,7 +75,7 @@ namespace NLS::Engine::Rendering
 	struct SceneOcclusionPrimitivePacketSource
 	{
 		SceneOcclusionPrimitiveInput primitive;
-		NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
+		NLS::Render::Geometry::Bounds modelBounds;
 		Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
 	};
 
@@ -261,6 +262,10 @@ namespace NLS::Engine::Rendering
 		[[nodiscard]] static SceneOcclusionPrimitivePacketSourceBuildResult BuildHZBPrimitivePacketSources(
 			const ScenePrimitiveSnapshot& snapshot,
 			const std::vector<ScenePrimitiveHandle>& visibleHandles);
+		[[nodiscard]] static std::vector<ScenePrimitiveHandle> BuildHZBObservationCandidateHandles(
+			const std::vector<ScenePrimitiveHandle>& postOcclusionVisibleHandles,
+			const std::vector<SceneOcclusionPrimitiveInput>& previousPrimitiveInputs,
+			uint64_t targetSceneId);
 		[[nodiscard]] static SceneOcclusionObservationBatch CreatePendingObservationBatch(
 			const SceneOcclusionFrameInput& frame,
 			const std::vector<SceneOcclusionPrimitiveInput>& primitives);

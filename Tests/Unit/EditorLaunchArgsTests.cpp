@@ -118,6 +118,53 @@ TEST(EditorLaunchArgsTests, ParsesHZBOcclusionComparisonValidationDirectives)
     EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
 }
 
+TEST(EditorLaunchArgsTests, HZBOcclusionValidationStackUsesLargeOccluderAndSmallerTargets)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
+
+    const auto functionStart = source.find("void CreateValidationOcclusionStack");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto functionEnd = source.find("void RenameFileReplacingDestination", functionStart);
+    ASSERT_NE(functionEnd, std::string::npos);
+    const auto body = source.substr(functionStart, functionEnd - functionStart);
+
+    EXPECT_NE(body.find("kOccluderScale = 4.0f"), std::string::npos);
+    EXPECT_NE(body.find("kTargetScale = 0.75f"), std::string::npos);
+    EXPECT_NE(body.find("kTargetStartDistance = 10.0f"), std::string::npos);
+    EXPECT_NE(body.find("camera.GetPosition()"), std::string::npos);
+    EXPECT_NE(body.find("camera.transform->GetWorldForward()"), std::string::npos);
+    EXPECT_NE(body.find("camera.GetRotation() * Maths::Vector3::Right"), std::string::npos);
+    EXPECT_NE(body.find("camera.GetRotation() * Maths::Vector3::Up"), std::string::npos);
+    EXPECT_NE(body.find("const bool isOccluder = index == 0u"), std::string::npos);
+    EXPECT_NE(body.find("const float distance = isOccluder"), std::string::npos);
+    EXPECT_NE(body.find("cameraForward * distance"), std::string::npos);
+    EXPECT_NE(body.find("cameraRight * lane"), std::string::npos);
+    EXPECT_NE(body.find("cameraUp * row"), std::string::npos);
+    EXPECT_NE(body.find("const float scale = isOccluder ? kOccluderScale : kTargetScale"), std::string::npos);
+    EXPECT_EQ(body.find("{\n            0.0f,\n            0.0f,\n            -distance"), std::string::npos);
+}
+
+TEST(EditorLaunchArgsTests, SceneViewValidationReadbackWaitsForHZBHistoryWarmup)
+{
+    const auto header = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/SceneView.h");
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/SceneView.cpp");
+
+    EXPECT_NE(header.find("m_validationReadbackWarmupFrames"), std::string::npos);
+
+    const auto functionStart = source.find("void Editor::Panels::SceneView::TryWriteValidationReadback");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto functionEnd = source.find("void Editor::Panels::SceneView::DrawViewportOverlay", functionStart);
+    ASSERT_NE(functionEnd, std::string::npos);
+    const auto body = source.substr(functionStart, functionEnd - functionStart);
+
+    EXPECT_NE(body.find("kValidationReadbackWarmupFrames = 4u"), std::string::npos);
+    EXPECT_NE(body.find("m_validationReadbackWarmupFrames < kValidationReadbackWarmupFrames"), std::string::npos);
+    EXPECT_NE(body.find("++m_validationReadbackWarmupFrames"), std::string::npos);
+}
+
 TEST(EditorLaunchArgsTests, ParsesSceneViewReadbackValidationOutputs)
 {
     std::vector<std::string> storage;

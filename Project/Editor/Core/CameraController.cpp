@@ -12,6 +12,7 @@
 #include <Components/LightComponent.h>
 #include <Components/MeshFilter.h>
 #include <Components/TransformComponent.h>
+#include <Rendering/Geometry/BoundingSphereUtils.h>
 #include "UI/UIManager.h"
 #include "ServiceLocator.h"
 using namespace NLS;
@@ -82,17 +83,26 @@ float GetActorFocusDist(Engine::GameObject& p_gameObject)
 
 	if (p_gameObject.IsActive())
 	{
-		if (auto modelRenderer = p_gameObject.GetComponent<Engine::Components::MeshRenderer>())
+		if (p_gameObject.GetComponent<Engine::Components::MeshRenderer>() != nullptr)
 		{
-            const bool hasCustomBoundingSphere = modelRenderer->GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM;
 			auto* meshFilter = p_gameObject.GetComponent<Engine::Components::MeshFilter>();
 			const auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
-			const auto boundingSphere = hasCustomBoundingSphere ? &modelRenderer->GetCustomBoundingSphere() : mesh != nullptr ? &mesh->GetBoundingSphere() : nullptr;
 			const auto& actorPosition = p_gameObject.GetTransform()->GetWorldPosition();
-            const auto& actorScale = p_gameObject.GetTransform()->GetWorldScale();
-			const auto scaleFactor = std::max(std::max(actorScale.x, actorScale.y), actorScale.z);
 
-			distance = std::max(distance, boundingSphere ? (boundingSphere->radius + Maths::Vector3::Length(boundingSphere->position)) * scaleFactor * 2.0f : 10.0f);
+            if (mesh != nullptr)
+            {
+                const auto worldBounds = Render::Geometry::TransformBounds(
+                    mesh->GetBounds(),
+                    p_gameObject.GetTransform()->GetWorldMatrix());
+                const auto halfExtents = worldBounds.size * 0.5f;
+                const float boundsRadius = Maths::Vector3::Length(halfExtents);
+                const float pivotOffset = Maths::Vector3::Distance(worldBounds.center, actorPosition);
+                distance = std::max(distance, (boundsRadius + pivotOffset) * 2.0f);
+            }
+            else
+            {
+                distance = std::max(distance, 10.0f);
+            }
 		}
 
 		for (auto child : p_gameObject.GetChildren())
@@ -116,7 +126,8 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
     }
 
     const Maths::Vector2 mousePosition = m_inputManager.GetMousePosition();
-    const bool mouseOverView = m_view.IsMouseWithinView(mousePosition);
+    const bool viewportInputAvailable = m_view.HasViewportImageInputBounds();
+    const bool mouseOverView = viewportInputAvailable && m_view.IsMouseWithinView(mousePosition);
     const bool inputActive = mouseOverView || m_inputActive;
     const bool capturingMouse = m_leftMousePressed || IsCameraControlActive();
     const bool shouldProcessMouseState = inputActive || capturingMouse;
@@ -234,7 +245,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
             }
 		}
 
-		if (inputActive)
+		if (ShouldHandleWheelZoom(viewportInputAvailable, mouseOverView))
 		{
 			HandleCameraZoom();
 		}

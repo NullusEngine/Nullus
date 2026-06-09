@@ -86,16 +86,7 @@ namespace NLS::Editor::Rendering
         if (item.meshRenderer->GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED)
             return true;
 
-        auto* actor = item.meshRenderer->gameobject();
-        auto* transform = actor != nullptr ? actor->GetTransform() : nullptr;
-        if (transform == nullptr)
-            return false;
-
-        const auto& bounds =
-            item.meshRenderer->GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM
-                ? item.meshRenderer->GetCustomBoundingSphere()
-                : item.mesh->GetBoundingSphere();
-        return filter.frustum->BoundingSphereInFrustum(bounds, transform->GetTransform());
+        return filter.frustum->BoundsInFrustum(item.mesh->GetBounds(), item.worldMatrix);
     }
 
     inline void CollectSelectedDebugGameObjectDebugDrawItems(

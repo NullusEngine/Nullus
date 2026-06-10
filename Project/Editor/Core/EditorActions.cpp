@@ -172,8 +172,9 @@ using MeshArtifactLoadState = NLS::Editor::Core::PrefabInstanceMeshArtifactLoadS
 std::chrono::steady_clock::time_point ComputeNextMeshArtifactRetryTime(const size_t retryCount)
 {
     const auto multiplier = static_cast<int64_t>(std::min<size_t>(retryCount, 5u));
+    const auto scale = static_cast<std::chrono::milliseconds::rep>(1ll << multiplier);
     const auto delay = std::min(
-        kRendererResourceResolutionMeshRetryBaseDelay * (1ll << multiplier),
+        kRendererResourceResolutionMeshRetryBaseDelay * scale,
         kRendererResourceResolutionMeshRetryMaxDelay);
     return std::chrono::steady_clock::now() + delay;
 }

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -81,6 +82,18 @@ namespace
 		return std::string(
 			std::istreambuf_iterator<char>(stream),
 			std::istreambuf_iterator<char>());
+	}
+
+	std::string RemoveWhitespace(const std::string& text)
+	{
+		std::string result;
+		result.reserve(text.size());
+		for (const unsigned char character : text)
+		{
+			if (!std::isspace(character))
+				result.push_back(static_cast<char>(character));
+		}
+		return result;
 	}
 
 	RHIDeviceCapabilities MakeOcclusionCapabilities()
@@ -581,15 +594,25 @@ TEST(SceneOcclusionTests, BaseSceneRendererBuildsHZBPacketsFromRetainedObservati
 	const auto streamingBlock = source.find("RegisterRuntimeStreamingDependencies", hzbBlock);
 	ASSERT_NE(streamingBlock, std::string::npos);
 	const auto body = source.substr(hzbBlock, streamingBlock - hzbBlock);
+	const auto normalizedBody = RemoveWhitespace(body);
 
 	EXPECT_NE(body.find("candidateStart"), std::string::npos);
 	EXPECT_NE(body.find("BuildHZBObservationCandidateHandles"), std::string::npos);
 	EXPECT_NE(body.find("previousSceneHZBOcclusionPrimitiveInputs"), std::string::npos);
 	EXPECT_NE(body.find("renderScene.GetSceneId()"), std::string::npos);
 	EXPECT_NE(body.find("hzbBuildTimeNs += ElapsedNanoseconds(candidateStart)"), std::string::npos);
-	EXPECT_NE(body.find("CreatePrimitiveSnapshotForHandles(\n\t\t\t\thzbObservationCandidateHandles"), std::string::npos);
-	EXPECT_NE(body.find("BuildHZBPrimitivePacketSources(\n\t\t\t\thzbPrimitiveSnapshot,\n\t\t\t\thzbObservationCandidateHandles"), std::string::npos);
-	EXPECT_EQ(body.find("BuildHZBPrimitivePacketSources(\n\t\t\t\thzbPrimitiveSnapshot,\n\t\t\t\trenderScene.GetLastVisiblePrimitiveHandles()"), std::string::npos);
+	EXPECT_NE(
+		normalizedBody.find(RemoveWhitespace(
+			"CreatePrimitiveSnapshotForHandles(hzbObservationCandidateHandles, {})")),
+		std::string::npos);
+	EXPECT_NE(
+		normalizedBody.find(RemoveWhitespace(
+			"BuildHZBPrimitivePacketSources(hzbPrimitiveSnapshot, hzbObservationCandidateHandles)")),
+		std::string::npos);
+	EXPECT_EQ(
+		normalizedBody.find(RemoveWhitespace(
+			"BuildHZBPrimitivePacketSources(hzbPrimitiveSnapshot, renderScene.GetLastVisiblePrimitiveHandles())")),
+		std::string::npos);
 }
 
 TEST(SceneOcclusionTests, BaseSceneRendererMovesPreviousHZBInputsInsteadOfCopyingLargeFrameVectors)

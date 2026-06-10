@@ -12,6 +12,8 @@
 
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/AssetDatabaseFacade.h"
+#include "Assets/AssetImporterSettings.h"
+#include "Assets/AssetMeta.h"
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/EditorAssetDragDropBridge.h"
@@ -2179,6 +2181,20 @@ TEST(EditorAssetDragDropTests, RepeatedImportedFbxDropFastBindsThroughUnifiedHot
 
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    const auto fbxMetaPath = NLS::Core::Assets::GetAssetMetaPath(
+        root / "Assets" / "Models" / "RepeatedDropCube.fbx");
+    auto fbxMeta = NLS::Core::Assets::AssetMeta::Load(fbxMetaPath);
+    ASSERT_TRUE(fbxMeta.has_value());
+    fbxMeta->settings["MODEL_FBX_READER"] =
+        NLS::Editor::Assets::FbxReaderSelectionToImporterSettingString(
+            NLS::Editor::Assets::FbxReaderSelection::Assimp);
+    ASSERT_TRUE(fbxMeta->Save(fbxMetaPath));
+    ASSERT_TRUE(database.Refresh());
+    const auto refreshedFbxMeta = NLS::Core::Assets::AssetMeta::Load(fbxMetaPath);
+    ASSERT_TRUE(refreshedFbxMeta.has_value());
+    EXPECT_EQ(
+        NLS::Editor::Assets::ModelImporterSettingsFromSerialized(refreshedFbxMeta->settings).fbxReaderSelection,
+        NLS::Editor::Assets::FbxReaderSelection::Assimp);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/RepeatedDropCube.fbx"));
     const auto payload = MakeImportedGeneratedModelPayload(
         database,

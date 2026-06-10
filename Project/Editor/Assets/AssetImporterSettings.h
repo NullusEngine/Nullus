@@ -26,7 +26,7 @@ struct ModelImporterSettings
     std::string axisConversion;
     std::string unitConversion;
     std::string hierarchyPolicy = "preserve";
-    FbxReaderSelection fbxReaderSelection = FbxReaderSelection::Autodesk;
+    FbxReaderSelection fbxReaderSelection = FbxReaderSelection::AutodeskWithAssimpFallback;
     bool importNormals = true;
     bool importTangents = true;
     bool importUvs = true;

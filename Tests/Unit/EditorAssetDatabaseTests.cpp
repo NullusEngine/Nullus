@@ -1407,6 +1407,49 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportWarmsColdModelBeforeRetur
     std::filesystem::remove_all(root);
 }
 
+#if NLS_HAS_ASSIMP_FBX_IMPORTER
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportFallsBackForDefaultFbxReaderWhenAutodeskSdkUnavailable)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "StartupDefaultFbx.fbx";
+    std::filesystem::create_directories(sourcePath.parent_path());
+    std::filesystem::copy_file(
+        std::filesystem::path(NLS_ROOT_DIR) / "App" / "Assets" / "Engine" / "Models" / "Cube.fbx",
+        sourcePath,
+        std::filesystem::copy_options::overwrite_existing);
+    WriteText(
+        sourcePath.string() + ".meta",
+        "GUID=1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e\n"
+        "IMPORTER_ID=scene-model\n"
+        "IMPORTER_VERSION=" +
+            std::to_string(NLS::Core::Assets::GetCurrentImporterVersion(
+                NLS::Core::Assets::AssetType::ModelScene)) +
+            "\n"
+        "ASSET_TYPE=model-scene\n");
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+
+    const auto result = RunBlockingStartupAssetPreimport(options);
+
+    EXPECT_TRUE(result.succeeded) << "Default FBX reader should not hard-fail startup when Autodesk SDK is unavailable.";
+    EXPECT_EQ(result.plannedAssetCount, 1u);
+    EXPECT_EQ(result.importedAssetCount, 1u);
+    EXPECT_FALSE(result.hadRunningJobsAfterCompletion);
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/StartupDefaultFbx.fbx"));
+    EXPECT_TRUE(database
+        .LoadSubAssetAtPath("Assets/Models/StartupDefaultFbx.fbx", "prefab:StartupDefaultFbx")
+        .has_value());
+
+    std::filesystem::remove_all(root);
+}
+#endif
+
 TEST(EditorAssetDatabaseTests, StartupPreimportUsesAlreadyRefreshedPlanWithoutSecondFullRefresh)
 {
     const auto projectRoot = std::filesystem::path(NLS_ROOT_DIR);

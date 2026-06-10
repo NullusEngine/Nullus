@@ -4923,16 +4923,18 @@ TEST(AssetImportPipelineTests, AssimpParserClearsOutputsWhenLoadFails)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAutodesk)
+TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAutodeskWithAssimpFallback)
 {
     const std::map<std::string, std::string> settings;
 
     const auto parsed = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(settings);
 
-    EXPECT_EQ(parsed.fbxReaderSelection, NLS::Editor::Assets::FbxReaderSelection::Autodesk);
+    EXPECT_EQ(
+        parsed.fbxReaderSelection,
+        NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
 }
 
-TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAutodesk)
+TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAutodeskWithAssimpFallback)
 {
     const std::map<std::string, std::string> settings {
         {"MODEL_FBX_READER", "mystery-reader"}
@@ -4940,7 +4942,9 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAuto
 
     const auto parsed = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(settings);
 
-    EXPECT_EQ(parsed.fbxReaderSelection, NLS::Editor::Assets::FbxReaderSelection::Autodesk);
+    EXPECT_EQ(
+        parsed.fbxReaderSelection,
+        NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
 }
 
 TEST(AssetImportPipelineTests, ModelImporterSettingsResolveFallbackFbxReaderSelection)
@@ -4980,11 +4984,11 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxRawOpacity
         << "Importer version 8 artifacts can still miss FBX 3dsMax Parameters transparency/cutout maps.";
 }
 
-#if !NLS_HAS_AUTODESK_FBX_SDK
-TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderReportsUnavailableAutodeskSdk)
+#if !NLS_HAS_AUTODESK_FBX_SDK && NLS_HAS_ASSIMP_FBX_IMPORTER
+TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderFallsBackToAssimpWhenAutodeskSdkUnavailable)
 {
     const auto root = MakeImportTestRoot();
-    const auto sourcePath = root / "Assets" / "Models" / "DefaultAutodeskUnavailable.fbx";
+    const auto sourcePath = root / "Assets" / "Models" / "DefaultAutodeskFallback.fbx";
     WriteTextFile(sourcePath, "not a valid fbx");
 
     NLS::Core::Assets::AssetMeta meta;
@@ -5012,11 +5016,19 @@ TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderReportsUnavail
     EXPECT_FALSE(result.imported);
     EXPECT_TRUE(ContainsDiagnosticCode(
         result.diagnostics,
+        "external-model-importer-fbx-reader-fallback"))
+        << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_FALSE(ContainsDiagnosticCode(
+        result.diagnostics,
         "external-model-importer-autodesk-fbx-unavailable"))
         << JoinDiagnosticSummaries(result.diagnostics);
     EXPECT_FALSE(ContainsDiagnosticCode(
         result.diagnostics,
         "external-model-importer-assimp-fbx-unavailable"))
+        << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_TRUE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-source-parse-failed"))
         << JoinDiagnosticSummaries(result.diagnostics);
 
     std::filesystem::remove_all(root);

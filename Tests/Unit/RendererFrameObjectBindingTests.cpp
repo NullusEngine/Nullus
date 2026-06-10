@@ -1096,6 +1096,31 @@ namespace
         return shader;
     }
 
+    NLS::Render::Resources::Shader* CreateMaterialTextureShader()
+    {
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        if (shader == nullptr)
+            return nullptr;
+
+        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.properties.push_back({
+            "u_MaterialTexture",
+            NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+            NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            0u,
+            -1,
+            1,
+            0u,
+            0u,
+            {}
+        });
+        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        return shader;
+    }
+
     NLS::Render::Resources::Shader* CreateMaterialStructuredBufferShader()
     {
         auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
@@ -2510,6 +2535,66 @@ TEST(RendererFrameObjectBindingTests, EngineProviderUsesReflectionObjectDataShad
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 
+TEST(RendererFrameObjectBindingTests, EngineProviderKeepsIndexedObjectDataShaderSupportCacheAcrossFrames)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 50u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    ProviderAwareRenderer renderer(driver);
+    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+
+    auto* shader = CreateReflectionOnlyObjectDataShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+
+    NLS::Render::Entities::Drawable drawable;
+    drawable.material = &material;
+    drawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
+        NLS::Maths::Matrix4::Identity,
+        NLS::Maths::Matrix4::Identity,
+        0u
+    });
+
+    NLS::Render::Data::PipelineState pso;
+    provider.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(provider.PrepareDraw(pso, drawable));
+    EXPECT_EQ(provider.GetIndexedObjectDataShaderSupportQueryCountForTesting(), 1u);
+    provider.EndFrame();
+
+    frameContext.frameIndex = 51u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    provider.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(provider.PrepareDraw(pso, drawable));
+    EXPECT_EQ(provider.GetIndexedObjectDataShaderSupportQueryCountForTesting(), 0u);
+    provider.EndFrame();
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
 TEST(RendererFrameObjectBindingTests, SpatialVisibilityPipelineDrawsKeepRendererAssignedObjectIndices)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -3666,6 +3751,69 @@ TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetUsesProvidedDevi
         });
     ASSERT_NE(samplerEntry, explicitDevice->lastBindingSetDesc.entries.end());
     EXPECT_NE(samplerEntry->sampler, nullptr);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetIsReusedUntilMaterialBindingChanges)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto* shader = CreateMaterialSamplerShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+
+    const auto firstBindingSet = material.GetExplicitBindingSet(explicitDevice);
+    const auto firstCreationCount = material.GetExplicitBindingSetCreationCount();
+    const auto secondBindingSet = material.GetExplicitBindingSet(explicitDevice);
+
+    ASSERT_NE(firstBindingSet, nullptr);
+    EXPECT_EQ(secondBindingSet, firstBindingSet);
+    EXPECT_EQ(material.GetExplicitBindingSetCreationCount(), firstCreationCount);
+    EXPECT_EQ(explicitDevice->bindingSetCreateCalls, 1u);
+
+    NLS::Render::RHI::SamplerDesc samplerOverride;
+    samplerOverride.minFilter = NLS::Render::RHI::TextureFilter::Nearest;
+    material.SetSamplerOverride("u_MaterialSampler", samplerOverride);
+    const auto changedBindingSet = material.GetExplicitBindingSet(explicitDevice);
+
+    ASSERT_NE(changedBindingSet, nullptr);
+    EXPECT_NE(changedBindingSet, firstBindingSet);
+    EXPECT_EQ(material.GetExplicitBindingSetCreationCount(), firstCreationCount + 1u);
+    EXPECT_EQ(explicitDevice->bindingSetCreateCalls, 2u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialSetSamePointerValueDoesNotInvalidateExplicitBindings)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto* shader = CreateMaterialTextureShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    int firstTexture = 1;
+    int secondTexture = 2;
+
+    material.Set<int*>("u_MaterialTexture", &firstTexture);
+    const auto firstBindingRevision = material.GetBindingRevision();
+
+    material.Set<int*>("u_MaterialTexture", &firstTexture);
+    EXPECT_EQ(material.GetBindingRevision(), firstBindingRevision);
+
+    material.Set<int*>("u_MaterialTexture", &secondTexture);
+    EXPECT_GT(material.GetBindingRevision(), firstBindingRevision);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }

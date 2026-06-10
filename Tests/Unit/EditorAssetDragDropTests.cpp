@@ -771,9 +771,17 @@ TEST(EditorAssetDragDropTests, SceneLoadGeneratedPrefabResolutionSuppressesRende
         << "Scene-open generated/model prefab restoration should show restored instances immediately and stream renderer resources.";
     EXPECT_FALSE(options.keepRootRenderingSuppressedOnFailure)
         << "Scene-open resource failures should mark the prefab state without keeping unrelated restored instances hidden.";
+    EXPECT_TRUE(options.shareSceneLoadFrameBudget)
+        << "Scene-open prefab resolution uses a shared per-frame budget so many prefab instances cannot multiply the frame cost.";
     EXPECT_EQ(
         options.progressTargetPlatform,
         std::string(NLS::Editor::Core::kSceneLoadRendererResourceResolutionTargetPlatform));
+    EXPECT_EQ(
+        options.streamingBudget.frameBudget,
+        NLS::Editor::Core::GetSceneLoadPrefabRendererResourceStreamingBudget().frameBudget);
+    EXPECT_EQ(
+        options.streamingBudget.maxInflightMeshLoads,
+        NLS::Editor::Core::GetSceneLoadPrefabRendererResourceStreamingBudget().maxInflightMeshLoads);
 }
 
 TEST(EditorAssetDragDropTests, SceneLoadPrefabStreamingBudgetMatchesDragPreviewBudget)
@@ -790,6 +798,37 @@ TEST(EditorAssetDragDropTests, SceneLoadPrefabStreamingBudgetMatchesDragPreviewB
     EXPECT_EQ(sceneLoadBudget.textureCompletionsPerFrame, dragPreviewBudget.textureCompletionsPerFrame);
     EXPECT_EQ(sceneLoadBudget.meshBindsPerFrame, dragPreviewBudget.meshBindsPerFrame);
     EXPECT_EQ(sceneLoadBudget.maxInflightMeshLoads, dragPreviewBudget.maxInflightMeshLoads);
+
+    const auto sceneLoadOptions =
+        NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions();
+    const auto previewCommitOptions =
+        NLS::Editor::Core::BuildImportedPrefabPreviewCommitResolutionOptions(false);
+    EXPECT_EQ(sceneLoadOptions.streamingBudget.frameBudget, dragPreviewBudget.frameBudget);
+    EXPECT_EQ(sceneLoadOptions.streamingBudget.meshPrewarmsPerFrame, dragPreviewBudget.meshPrewarmsPerFrame);
+    EXPECT_EQ(sceneLoadOptions.streamingBudget.materialPrewarmsPerFrame, dragPreviewBudget.materialPrewarmsPerFrame);
+    EXPECT_EQ(sceneLoadOptions.streamingBudget.textureCompletionsPerFrame, dragPreviewBudget.textureCompletionsPerFrame);
+    EXPECT_EQ(sceneLoadOptions.streamingBudget.maxInflightMeshLoads, dragPreviewBudget.maxInflightMeshLoads);
+    EXPECT_TRUE(sceneLoadOptions.shareSceneLoadFrameBudget);
+    EXPECT_TRUE(sceneLoadOptions.shareMeshArtifactLoads);
+    EXPECT_FALSE(previewCommitOptions.shareSceneLoadFrameBudget);
+    EXPECT_FALSE(previewCommitOptions.shareMeshArtifactLoads);
+    EXPECT_EQ(previewCommitOptions.streamingBudget.frameBudget, dragPreviewBudget.frameBudget);
+    EXPECT_EQ(previewCommitOptions.streamingBudget.maxInflightMeshLoads, dragPreviewBudget.maxInflightMeshLoads);
+}
+
+TEST(EditorAssetDragDropTests, SceneLoadSharedMeshArtifactLoadsUseGlobalInflightCapacity)
+{
+    EXPECT_FALSE(NLS::Editor::Core::CanStartSceneLoadSharedMeshArtifactLoad(0u, 0u))
+        << "A zero shared scene-load mesh budget must not create background work.";
+    EXPECT_TRUE(NLS::Editor::Core::CanStartSceneLoadSharedMeshArtifactLoad(63u, 64u))
+        << "Scene load can create a new unique shared mesh task while below the global cap.";
+    EXPECT_FALSE(NLS::Editor::Core::CanStartSceneLoadSharedMeshArtifactLoad(64u, 64u))
+        << "Scene load must not multiply per-instance mesh load windows once the global cap is full.";
+    EXPECT_FALSE(NLS::Editor::Core::CanStartSceneLoadSharedMeshArtifactLoad(65u, 64u));
+
+    EXPECT_FALSE(NLS::Editor::Core::CanEvictSceneLoadSharedMeshArtifactLoad(false))
+        << "Shared scene-load mesh bookkeeping must not evict unfinished loads, or the global cap loses visibility.";
+    EXPECT_TRUE(NLS::Editor::Core::CanEvictSceneLoadSharedMeshArtifactLoad(true));
 }
 
 TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewReleaseDoesNotRevealPartialRendererResources)
@@ -1121,6 +1160,605 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupKeepsSharedResourcesAliveFor
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialPath), 1u);
     EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty())
         << "Shared renderer resources must not become trim candidates while a sibling prefab instance still owns them.";
+}
+
+TEST(EditorAssetDragDropTests, InstantiatedImportedPrefabInstancesPreserveResolvedArtifactPathsForLifetime)
+{
+    using NLS::Engine::Serialize::ObjectIdentifier;
+
+    constexpr auto* meshSubAssetKey = "mesh:body";
+    constexpr auto* materialSubAssetKey = "material:body";
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/body.nmesh";
+    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/body.nmat";
+
+    NLS::Engine::GameObject root("ResolvedLifetimeHero", "Prefab");
+    auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    const auto meshGuid = NLS::Guid::Parse("c2240513-0513-4513-8513-051305130513");
+    const auto materialGuid = NLS::Guid::Parse("c2240523-0523-4523-8523-052305230523");
+    const auto meshReferenceId = NLS::Engine::Serialize::AssetId(meshGuid);
+    const auto materialReferenceId = NLS::Engine::Serialize::AssetId(materialGuid);
+    const auto meshAssetId = NLS::Core::Assets::AssetId(meshGuid);
+    const auto materialAssetId = NLS::Core::Assets::AssetId(materialGuid);
+    meshFilter->SetMeshReference(MakePPtr<NLS::Render::Resources::Mesh>(
+        ObjectIdentifier::Asset(
+            meshReferenceId,
+            NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshReferenceId.GetGuid(), meshSubAssetKey),
+            meshSubAssetKey)));
+    meshRenderer->SetMaterialReferences({
+        MakePPtr<NLS::Render::Resources::Material>(
+            ObjectIdentifier::Asset(
+                materialReferenceId,
+                NLS::Engine::Serialize::MakeLocalIdentifierInFile(materialReferenceId.GetGuid(), materialSubAssetKey),
+                materialSubAssetKey))
+    });
+
+    auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &root,
+        {},
+        Id("c2250513-0513-4513-8513-051305130513"),
+        "Assets/Prefabs/ResolvedLifetimeHero.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(created.artifact.has_value());
+    auto prefab = *created.artifact;
+    prefab.generatedModelPrefab = true;
+    prefab.resolvedAssets = {
+        {meshAssetId, "Mesh", meshSubAssetKey, meshArtifactPath},
+        {materialAssetId, "Material", materialSubAssetKey, materialArtifactPath}
+    };
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto instantiate = NLS::Editor::Assets::PrefabEditorWorkflow().InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:ResolvedLifetimeHero",
+        {},
+        true
+    }, scene);
+
+    ASSERT_EQ(instantiate.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_EQ(instantiate.instance->preservedResolvedAssets.size(), 2u);
+    EXPECT_EQ(instantiate.instance->preservedResolvedAssets[0].artifactPath, meshArtifactPath);
+    EXPECT_EQ(instantiate.instance->preservedResolvedAssets[1].artifactPath, materialArtifactPath);
+
+    NLS::Core::ResourceManagement::ResourceLifetimeRegistry lifetimeRegistry;
+    ASSERT_TRUE(NLS::Editor::Core::AcquirePrefabResolvedAssetResourceOwners(
+        lifetimeRegistry,
+        "scene-prefab:test-resolved-lifetime",
+        instantiate.instance->preservedResolvedAssets));
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(
+        NLS::Core::ResourceManagement::ResourceLifetimeResourceType::Mesh,
+        meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(
+        NLS::Core::ResourceManagement::ResourceLifetimeResourceType::Material,
+        materialArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(
+        NLS::Core::ResourceManagement::ResourceLifetimeResourceType::Mesh,
+        meshSubAssetKey), 0u)
+        << "Prefab instance lifetime must protect the real artifact path, not the source sub-asset key.";
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(
+        NLS::Core::ResourceManagement::ResourceLifetimeResourceType::Material,
+        materialSubAssetKey), 0u);
+}
+
+TEST(EditorAssetDragDropTests, PrefabResolvedAssetOwnerAcquireDeduplicatesPreservedArtifactPaths)
+{
+    using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
+    using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
+
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/duplicate-preserved-body.nmesh";
+    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/duplicate-preserved-body.nmat";
+    const auto meshAssetId = Id("c2240b13-0b13-4b13-8b13-0b130b130b13");
+    const auto materialAssetId = Id("c2240b23-0b23-4b23-8b23-0b230b230b23");
+
+    const std::vector<NLS::Engine::Assets::PrefabResolvedAsset> resolvedAssets = {
+        {meshAssetId, "Mesh", "mesh:duplicate-preserved-body", meshArtifactPath},
+        {meshAssetId, "Mesh", "mesh:duplicate-preserved-body", meshArtifactPath},
+        {materialAssetId, "Material", "material:duplicate-preserved-body", materialArtifactPath},
+        {materialAssetId, "Material", "material:duplicate-preserved-body", materialArtifactPath}
+    };
+
+    ResourceLifetimeRegistry lifetimeRegistry;
+    ASSERT_TRUE(NLS::Editor::Core::AcquirePrefabResolvedAssetResourceOwners(
+        lifetimeRegistry,
+        "scene-prefab:duplicate-preserved",
+        resolvedAssets));
+
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u);
+}
+
+TEST(EditorAssetDragDropTests, TrimRefreshKeepsSiblingImportedPrefabArtifactOwnersAfterDeletingTwin)
+{
+    using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
+    using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
+    using NLS::Engine::Serialize::ObjectIdentifier;
+
+    constexpr auto* meshSubAssetKey = "mesh:shared-body";
+    constexpr auto* materialSubAssetKey = "material:shared-body";
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/shared-body.nmesh";
+    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/shared-body.nmat";
+
+    NLS::Engine::GameObject root("SharedResolvedLifetimeHero", "Prefab");
+    auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    const auto meshGuid = NLS::Guid::Parse("c2240613-0613-4613-8613-061306130613");
+    const auto materialGuid = NLS::Guid::Parse("c2240623-0623-4623-8623-062306230623");
+    const auto meshReferenceId = NLS::Engine::Serialize::AssetId(meshGuid);
+    const auto materialReferenceId = NLS::Engine::Serialize::AssetId(materialGuid);
+    meshFilter->SetMeshReference(MakePPtr<NLS::Render::Resources::Mesh>(
+        ObjectIdentifier::Asset(
+            meshReferenceId,
+            NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshReferenceId.GetGuid(), meshSubAssetKey),
+            meshSubAssetKey)));
+    meshRenderer->SetMaterialReferences({
+        MakePPtr<NLS::Render::Resources::Material>(
+            ObjectIdentifier::Asset(
+                materialReferenceId,
+                NLS::Engine::Serialize::MakeLocalIdentifierInFile(materialReferenceId.GetGuid(), materialSubAssetKey),
+                materialSubAssetKey))
+    });
+
+    auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &root,
+        {},
+        Id("c2250613-0613-4613-8613-061306130613"),
+        "Assets/Prefabs/SharedResolvedLifetimeHero.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(created.artifact.has_value());
+    auto prefab = *created.artifact;
+    prefab.generatedModelPrefab = true;
+    prefab.resolvedAssets = {
+        {NLS::Core::Assets::AssetId(meshGuid), "Mesh", meshSubAssetKey, meshArtifactPath},
+        {NLS::Core::Assets::AssetId(materialGuid), "Material", materialSubAssetKey, materialArtifactPath}
+    };
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabInstanceRegistry prefabRegistry;
+    auto first = NLS::Editor::Assets::PrefabEditorWorkflow().InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:SharedResolvedLifetimeHero",
+        {},
+        true
+    }, scene);
+    auto second = NLS::Editor::Assets::PrefabEditorWorkflow().InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:SharedResolvedLifetimeHero",
+        {},
+        true
+    }, scene);
+    ASSERT_TRUE(first.instance.has_value());
+    ASSERT_TRUE(second.instance.has_value());
+    auto& firstRegistered = prefabRegistry.Register(std::move(*first.instance));
+    auto& secondRegistered = prefabRegistry.Register(std::move(*second.instance));
+    const auto firstOwnerToken = NLS::Editor::Core::BuildPrefabInstanceResourceOwnerToken(firstRegistered);
+    const auto secondOwnerToken = NLS::Editor::Core::BuildPrefabInstanceResourceOwnerToken(secondRegistered);
+    ASSERT_NE(firstOwnerToken, secondOwnerToken);
+    auto* deletedRoot = firstRegistered.instanceRoot;
+    auto* siblingRoot = secondRegistered.instanceRoot;
+    ASSERT_NE(deletedRoot, nullptr);
+    ASSERT_NE(siblingRoot, nullptr);
+
+    ResourceLifetimeRegistry lifetimeRegistry;
+    ASSERT_TRUE(NLS::Editor::Core::AcquirePrefabResolvedAssetResourceOwners(
+        lifetimeRegistry,
+        firstOwnerToken,
+        firstRegistered.preservedResolvedAssets));
+    ASSERT_TRUE(NLS::Editor::Core::AcquirePrefabResolvedAssetResourceOwners(
+        lifetimeRegistry,
+        secondOwnerToken,
+        secondRegistered.preservedResolvedAssets));
+
+    const auto cleanup = NLS::Editor::Core::CleanupPrefabInstanceMarkedDestroy(
+        prefabRegistry,
+        lifetimeRegistry,
+        *deletedRoot);
+    ASSERT_TRUE(cleanup.removedRootInstance);
+
+    lifetimeRegistry.ReleaseOwner(secondOwnerToken);
+    auto* liveSibling = prefabRegistry.FindRootInstance(*siblingRoot);
+    ASSERT_NE(liveSibling, nullptr);
+    ASSERT_TRUE(NLS::Editor::Core::AcquirePrefabResolvedAssetResourceOwners(
+        lifetimeRegistry,
+        secondOwnerToken,
+        liveSibling->preservedResolvedAssets));
+
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshSubAssetKey), 0u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialSubAssetKey), 0u);
+    EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty())
+        << "Trim refresh after deleting one prefab twin must keep the sibling's real artifact resources owned.";
+}
+
+TEST(EditorAssetDragDropTests, TrimRefreshDoesNotReleaseLegacyPrefabOwnerWithoutResolvedArtifactPaths)
+{
+    using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
+    using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
+    using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
+
+    constexpr auto* meshSubAssetKey = "mesh:legacy-body";
+    constexpr auto* materialSubAssetKey = "material:legacy-body";
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/legacy-body.nmesh";
+    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/legacy-body.nmat";
+
+    NLS::Engine::GameObject root("LegacyResolvedLifetimeHero", "Prefab");
+    auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetModelPathHint(meshSubAssetKey);
+    meshRenderer->SetMaterialPathHints({materialSubAssetKey});
+
+    NLS::Editor::Assets::PrefabInstanceRecord legacyInstance;
+    legacyInstance.instanceRoot = &root;
+    legacyInstance.preservedResolvedAssets.clear();
+
+    ResourceLifetimeRegistry lifetimeRegistry;
+    constexpr auto* ownerToken = "scene-prefab:legacy";
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Mesh,
+        meshArtifactPath,
+        4096u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Material,
+        materialArtifactPath,
+        1024u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+
+    EXPECT_FALSE(NLS::Editor::Core::RebuildPrefabInstancePreservedResourceOwnersForTrim(
+        lifetimeRegistry,
+        ownerToken,
+        legacyInstance));
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshSubAssetKey), 0u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialSubAssetKey), 0u);
+    EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty())
+        << "Legacy instances without authoritative prefab resolved assets must not lose their existing real artifact owners during trim refresh.";
+}
+
+TEST(EditorAssetDragDropTests, TrimRefreshRejectsSubAssetKeysAsAuthoritativeResolvedArtifactOwners)
+{
+    using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
+    using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
+    using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
+
+    constexpr auto* meshSubAssetKey = "mesh:stale-body";
+    constexpr auto* materialSubAssetKey = "material:stale-body";
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/stale-body.nmesh";
+    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/stale-body.nmat";
+
+    NLS::Editor::Assets::PrefabInstanceRecord staleInstance;
+    staleInstance.preservedResolvedAssets = {
+        {
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("c2240713-0713-4713-8713-071307130713")),
+            "Mesh",
+            meshSubAssetKey,
+            meshSubAssetKey
+        },
+        {
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("c2240723-0723-4723-8723-072307230723")),
+            "Material",
+            materialSubAssetKey,
+            materialSubAssetKey
+        }
+    };
+
+    ResourceLifetimeRegistry lifetimeRegistry;
+    constexpr auto* ownerToken = "scene-prefab:stale";
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Mesh,
+        meshArtifactPath,
+        4096u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Material,
+        materialArtifactPath,
+        1024u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+
+    EXPECT_FALSE(NLS::Editor::Core::RebuildPrefabInstancePreservedResourceOwnersForTrim(
+        lifetimeRegistry,
+        ownerToken,
+        staleInstance));
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshSubAssetKey), 0u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialSubAssetKey), 0u);
+    EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty());
+}
+
+TEST(EditorAssetDragDropTests, ImportedResourceTrimDefersWhenGeneratedPrefabLacksAuthoritativeResolvedOwners)
+{
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+
+    NLS::Engine::GameObject generatedRoot("GeneratedMissingResolvedOwners", "Prefab");
+    NLS::Editor::Assets::PrefabInstanceRecord generatedInstance;
+    generatedInstance.generatedReadOnly = true;
+    generatedInstance.instanceRoot = &generatedRoot;
+    generatedInstance.preservedResolvedAssets = {
+        {
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("c2240813-0813-4813-8813-081308130813")),
+            "Mesh",
+            "mesh:defer-body",
+            "mesh:defer-body"
+        }
+    };
+    registry.Register(std::move(generatedInstance));
+
+    EXPECT_TRUE(NLS::Editor::Core::ShouldDeferImportedResourceTrimForPrefabInstances(registry))
+        << "Generated/imported prefab instances without authoritative artifact paths must block trim to avoid unloading visible siblings.";
+
+    registry.Clear();
+    NLS::Engine::GameObject normalRoot("NormalPrefab", "Prefab");
+    NLS::Editor::Assets::PrefabInstanceRecord normalInstance;
+    normalInstance.generatedReadOnly = false;
+    normalInstance.instanceRoot = &normalRoot;
+    registry.Register(std::move(normalInstance));
+
+    EXPECT_FALSE(NLS::Editor::Core::ShouldDeferImportedResourceTrimForPrefabInstances(registry))
+        << "Non-generated prefab instances should not globally block imported renderer resource trimming.";
+}
+
+TEST(EditorAssetDragDropTests, TrimRefreshRecoversGeneratedPrefabOwnersFromLiveArtifactPathsBeforeDefer)
+{
+    using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
+    using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
+    using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
+
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/live-recovered-body.nmesh";
+    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/live-recovered-body.nmat";
+
+    NLS::Engine::GameObject root("LiveRecoveredPrefab", "Prefab");
+    auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetModelPathHint(meshArtifactPath);
+    meshRenderer->SetMaterialPathHints({materialArtifactPath});
+
+    NLS::Editor::Assets::PrefabInstanceRecord generatedInstance;
+    generatedInstance.generatedReadOnly = true;
+    generatedInstance.instanceRoot = &root;
+    generatedInstance.preservedResolvedAssets = {
+        {
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("c2240913-0913-4913-8913-091309130913")),
+            "Mesh",
+            "mesh:live-recovered-body",
+            "mesh:live-recovered-body"
+        }
+    };
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    auto& registered = registry.Register(std::move(generatedInstance));
+    const auto ownerToken = NLS::Editor::Core::BuildPrefabInstanceResourceOwnerToken(registered);
+    ASSERT_FALSE(ownerToken.empty());
+
+    ResourceLifetimeRegistry lifetimeRegistry;
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Mesh,
+        meshArtifactPath,
+        4096u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+
+    const auto refresh = NLS::Editor::Core::RefreshPrefabInstanceResourceOwnersForTrim(
+        lifetimeRegistry,
+        registry);
+
+    EXPECT_EQ(refresh.rebuiltOwnerCount, 1u);
+    EXPECT_FALSE(refresh.hasDeferredGeneratedInstances)
+        << "A generated prefab with stale preserved metadata but live .nmesh/.nmat renderer paths is safe to trim after owner recovery.";
+    EXPECT_FALSE(NLS::Editor::Core::ShouldDeferImportedResourceTrimForPrefabInstances(registry));
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u);
+    EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty())
+        << "Deleting a twin must not leave the live sibling's recovered artifact paths trim-eligible.";
+}
+
+TEST(EditorAssetDragDropTests, TrimRefreshMergesPreservedAndLiveArtifactOwnersForPartiallyResolvedPrefab)
+{
+    using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
+    using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
+    using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
+
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/partial-preserved-body.nmesh";
+    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/partial-preserved-body.nmat";
+
+    NLS::Engine::GameObject root("PartialPreservedPrefab", "Prefab");
+    auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetModelPathHint(meshArtifactPath);
+    meshRenderer->SetMaterialPathHints({materialArtifactPath});
+
+    NLS::Editor::Assets::PrefabInstanceRecord generatedInstance;
+    generatedInstance.generatedReadOnly = true;
+    generatedInstance.instanceRoot = &root;
+    generatedInstance.preservedResolvedAssets = {
+        {
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("c2240a13-0a13-4a13-8a13-0a130a130a13")),
+            "Mesh",
+            "mesh:partial-preserved-body",
+            meshArtifactPath
+        }
+    };
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    auto& registered = registry.Register(std::move(generatedInstance));
+    const auto ownerToken = NLS::Editor::Core::BuildPrefabInstanceResourceOwnerToken(registered);
+    ASSERT_FALSE(ownerToken.empty());
+
+    ResourceLifetimeRegistry lifetimeRegistry;
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Mesh,
+        meshArtifactPath,
+        4096u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Material,
+        materialArtifactPath,
+        1024u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+
+    const auto refresh = NLS::Editor::Core::RefreshPrefabInstanceResourceOwnersForTrim(
+        lifetimeRegistry,
+        registry);
+
+    EXPECT_EQ(refresh.rebuiltOwnerCount, 1u);
+    EXPECT_FALSE(refresh.hasDeferredGeneratedInstances);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u)
+        << "Partial preserved metadata must merge live renderer artifact paths instead of dropping material owners.";
+    EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty());
+}
+
+TEST(EditorAssetDragDropTests, TrimRefreshDefersAndPreservesOldOwnersWhenGeneratedPrefabIsPartiallyLoaded)
+{
+    using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
+    using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
+    using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
+
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/partial-live-body.nmesh";
+    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/partial-live-body.nmat";
+
+    NLS::Engine::GameObject root("PartialLivePrefab", "Prefab");
+    auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetModelPathHint(meshArtifactPath);
+    meshRenderer->SetMaterialPathHints({"material:partial-live-body"});
+
+    NLS::Editor::Assets::PrefabInstanceRecord generatedInstance;
+    generatedInstance.generatedReadOnly = true;
+    generatedInstance.instanceRoot = &root;
+    generatedInstance.preservedResolvedAssets.clear();
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    auto& registered = registry.Register(std::move(generatedInstance));
+    const auto ownerToken = NLS::Editor::Core::BuildPrefabInstanceResourceOwnerToken(registered);
+    ASSERT_FALSE(ownerToken.empty());
+
+    ResourceLifetimeRegistry lifetimeRegistry;
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Mesh,
+        meshArtifactPath,
+        4096u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Material,
+        materialArtifactPath,
+        1024u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+
+    const auto refresh = NLS::Editor::Core::RefreshPrefabInstanceResourceOwnersForTrim(
+        lifetimeRegistry,
+        registry);
+
+    EXPECT_EQ(refresh.rebuiltOwnerCount, 0u);
+    EXPECT_TRUE(refresh.hasDeferredGeneratedInstances)
+        << "A half-loaded generated prefab must keep old owners and block trim until all renderer dependency paths are authoritative artifacts.";
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u);
+    EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty());
+}
+
+TEST(EditorAssetDragDropTests, TrimRefreshDefersWhenGeneratedPrefabHasUnresolvedSameTypeDependency)
+{
+    using NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind;
+    using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
+    using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
+
+    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/same-type-partial-body.nmesh";
+    constexpr auto* firstMaterialArtifactPath = "Library/Artifacts/imported-prefab/same-type-partial-a.nmat";
+    constexpr auto* secondMaterialArtifactPath = "Library/Artifacts/imported-prefab/same-type-partial-b.nmat";
+    constexpr auto* secondMaterialSubAssetKey = "material:same-type-partial-b";
+
+    NLS::Engine::GameObject root("SameTypePartialPrefab", "Prefab");
+    auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetModelPathHint(meshArtifactPath);
+    meshRenderer->SetMaterialPathHints({firstMaterialArtifactPath, secondMaterialSubAssetKey});
+
+    NLS::Editor::Assets::PrefabInstanceRecord generatedInstance;
+    generatedInstance.generatedReadOnly = true;
+    generatedInstance.instanceRoot = &root;
+    generatedInstance.preservedResolvedAssets = {
+        {
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("c2240c13-0c13-4c13-8c13-0c130c130c13")),
+            "Mesh",
+            "mesh:same-type-partial-body",
+            meshArtifactPath
+        },
+        {
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("c2240c23-0c23-4c23-8c23-0c230c230c23")),
+            "Material",
+            "material:same-type-partial-a",
+            firstMaterialArtifactPath
+        }
+    };
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    auto& registered = registry.Register(std::move(generatedInstance));
+    const auto ownerToken = NLS::Editor::Core::BuildPrefabInstanceResourceOwnerToken(registered);
+    ASSERT_FALSE(ownerToken.empty());
+
+    ResourceLifetimeRegistry lifetimeRegistry;
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Mesh,
+        meshArtifactPath,
+        4096u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Material,
+        firstMaterialArtifactPath,
+        1024u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+    lifetimeRegistry.Acquire({
+        ownerToken,
+        ResourceLifetimeResourceType::Material,
+        secondMaterialArtifactPath,
+        1024u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+
+    const auto refresh = NLS::Editor::Core::RefreshPrefabInstanceResourceOwnersForTrim(
+        lifetimeRegistry,
+        registry);
+
+    EXPECT_EQ(refresh.rebuiltOwnerCount, 0u);
+    EXPECT_TRUE(refresh.hasDeferredGeneratedInstances)
+        << "One resolved material slot does not make another same-type unresolved material dependency safe to trim.";
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, firstMaterialArtifactPath), 1u);
+    EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, secondMaterialArtifactPath), 1u);
+    EXPECT_TRUE(lifetimeRegistry.CollectTrimCandidates({}).empty());
 }
 
 TEST(EditorAssetDragDropTests, DeletingOneOfTwoSamePrefabInstancesLeavesSiblingVisibleAndRegistered)

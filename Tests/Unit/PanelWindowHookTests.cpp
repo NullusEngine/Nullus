@@ -117,6 +117,7 @@ public:
 
     void BeginFrame(const NLS::Render::Data::FrameDescriptor& frameDescriptor) override
     {
+        ++beginFrameCount;
         if (m_publishThreadedFrames &&
             NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
         {
@@ -130,6 +131,7 @@ public:
 
     void DrawFrame() override
     {
+        ++drawFrameCount;
         if (!m_recordFrameStats)
             return;
 
@@ -151,6 +153,7 @@ public:
 
     void EndFrame() override
     {
+        ++endFrameCount;
         if (m_publishThreadedFrames &&
             NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
         {
@@ -159,7 +162,13 @@ public:
         }
 
         m_rendererStats.EndFrame();
+        if (HasDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>())
+            RemoveDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
     }
+
+    uint32_t beginFrameCount = 0u;
+    uint32_t drawFrameCount = 0u;
+    uint32_t endFrameCount = 0u;
 
 private:
     bool m_recordFrameStats = true;
@@ -203,6 +212,21 @@ public:
     void RenderForTest()
     {
         Render(64u, 64u);
+    }
+
+    void RenderForTest(const uint16_t width, const uint16_t height)
+    {
+        Render(width, height);
+    }
+
+    void MoveCameraForTest(const NLS::Maths::Vector3& position)
+    {
+        m_camera.SetPosition(position);
+    }
+
+    void MarkSceneRenderContentChangedForTest()
+    {
+        m_scene.MarkRenderContentChanged();
     }
 
     void SyncContentRegionForTest()
@@ -264,6 +288,31 @@ public:
     bool HasRendererForTest() const
     {
         return m_probeRenderer != nullptr;
+    }
+
+    uint32_t GetBeginFrameCountForTest() const
+    {
+        return m_probeRenderer != nullptr ? m_probeRenderer->beginFrameCount : 0u;
+    }
+
+    uint32_t GetDrawFrameCountForTest() const
+    {
+        return m_probeRenderer != nullptr ? m_probeRenderer->drawFrameCount : 0u;
+    }
+
+    uint32_t GetEndFrameCountForTest() const
+    {
+        return m_probeRenderer != nullptr ? m_probeRenderer->endFrameCount : 0u;
+    }
+
+    void EnableStaticFrameCacheForTest()
+    {
+        SetStaticFrameCacheEnabled(true);
+    }
+
+    NLS::Editor::Panels::StaticFrameCacheDecisionReason GetStaticFrameCacheDecisionReasonForTest() const
+    {
+        return GetLastStaticFrameCacheDecisionReason();
     }
 
 private:
@@ -592,6 +641,100 @@ TEST(PanelWindowHookTests, PanelDrawProfilerScopeUsesVisiblePanelName)
 #else
     SUCCEED() << "Profiling macros compile to no-ops when NLS_ENABLE_PROFILING is disabled.";
 #endif
+}
+
+TEST(PanelWindowHookTests, TimelineProfilerFrameBeginsBeforeApplicationFrameScopes)
+{
+    const auto applicationSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Application.cpp");
+    const auto editorSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
+
+    const auto tickFrameFunction = applicationSource.find("void Editor::Core::Application::TickFrame");
+    ASSERT_NE(tickFrameFunction, std::string::npos);
+    const auto profilerFrameCall = applicationSource.find("BeginProfilerFrame()", tickFrameFunction);
+    const auto applicationTickScope = applicationSource.find(
+        "NLS_PROFILE_NAMED_SCOPE(\"Application::TickFrame\")",
+        tickFrameFunction);
+    const auto editorPreUpdateScope = applicationSource.find(
+        "NLS_PROFILE_NAMED_SCOPE(\"Application::EditorPreUpdate\")",
+        tickFrameFunction);
+
+    ASSERT_NE(profilerFrameCall, std::string::npos);
+    ASSERT_NE(applicationTickScope, std::string::npos);
+    ASSERT_NE(editorPreUpdateScope, std::string::npos);
+    EXPECT_LT(profilerFrameCall, applicationTickScope)
+        << "TimelineProfiler TickFrame must run before any current-frame CPU scope is opened, "
+           "otherwise it can pop the wrong event and leak the CPU frame stack.";
+    EXPECT_LT(profilerFrameCall, editorPreUpdateScope);
+
+    const auto resizeFrameFunction = applicationSource.find("void Editor::Core::Application::TickResizeFrame");
+    ASSERT_NE(resizeFrameFunction, std::string::npos);
+    const auto resizeProfilerFrameCall = applicationSource.find("BeginProfilerFrame()", resizeFrameFunction);
+    const auto resizeFrameScope = applicationSource.find(
+        "NLS_PROFILE_NAMED_SCOPE(\"Application::ResizeFrame\")",
+        resizeFrameFunction);
+    ASSERT_NE(resizeProfilerFrameCall, std::string::npos);
+    ASSERT_NE(resizeFrameScope, std::string::npos);
+    EXPECT_LT(resizeProfilerFrameCall, resizeFrameScope)
+        << "Native resize frames need the same TimelineProfiler frame boundary as normal editor frames.";
+
+    const auto runFunction = applicationSource.find("void Editor::Core::Application::Run()");
+    const auto tickFrameCallInRun = applicationSource.find("TickFrame(clock.GetDeltaTime(), true)", runFunction);
+    const auto flushDeferredResizeCall = applicationSource.find("FlushDeferredResizeTick()", tickFrameCallInRun);
+    const auto paceIdleCall = applicationSource.find("PaceIdleFrameIfNeeded()", flushDeferredResizeCall);
+    ASSERT_NE(runFunction, std::string::npos);
+    ASSERT_NE(tickFrameCallInRun, std::string::npos);
+    ASSERT_NE(flushDeferredResizeCall, std::string::npos);
+    ASSERT_NE(paceIdleCall, std::string::npos);
+    const auto deferredResizeRunSegment =
+        applicationSource.substr(flushDeferredResizeCall, paceIdleCall - flushDeferredResizeCall);
+    EXPECT_EQ(deferredResizeRunSegment.find("NLS_PROFILE_NAMED_SCOPE"), std::string::npos)
+        << "Deferred resize flushing may call TickResizeFrame(), which starts a TimelineProfiler frame; "
+           "it must not be wrapped by an already-open current-frame profiling scope.";
+
+    const auto preUpdateFunction = editorSource.find("void Editor::Core::Editor::PreUpdate");
+    ASSERT_NE(preUpdateFunction, std::string::npos);
+    const auto nextEditorFunction = editorSource.find("void Editor::Core::Editor::BeginProfilerFrame", preUpdateFunction);
+    ASSERT_NE(nextEditorFunction, std::string::npos);
+    const auto preUpdateBody = editorSource.substr(preUpdateFunction, nextEditorFunction - preUpdateFunction);
+    const auto refreshCall = preUpdateBody.find("RefreshProfilerRecordingState()");
+    ASSERT_NE(refreshCall, std::string::npos);
+    EXPECT_EQ(preUpdateBody.find("BeginProfilerFrame()"), std::string::npos)
+        << "Editor::PreUpdate is called inside Application profiling scopes; beginning the TimelineProfiler "
+           "frame there can leave unterminated outer scopes in the fixed event stack.";
+}
+
+TEST(PanelWindowHookTests, TimelineProfilerFixedArrayUsesFullDeclaredCapacity)
+{
+    const auto profilerHeader = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h");
+
+    const auto pushFunction = profilerHeader.find("T& Push()");
+    ASSERT_NE(pushFunction, std::string::npos);
+    const auto capacityCheck = profilerHeader.find("gAssert(Length < N)", pushFunction);
+    const auto increment = profilerHeader.find("Data[Length++]", pushFunction);
+
+    ASSERT_NE(capacityCheck, std::string::npos);
+    ASSERT_NE(increment, std::string::npos);
+    EXPECT_LT(capacityCheck, increment)
+        << "FixedArray must check capacity before incrementing so it can use the full declared capacity "
+           "without allowing overflow after Length reaches N.";
+}
+
+TEST(PanelWindowHookTests, ApplicationTickStateFlagsUseScopeGuards)
+{
+    const auto applicationSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Application.cpp");
+
+    EXPECT_NE(applicationSource.find("class ScopedBoolFlag final"), std::string::npos);
+    EXPECT_NE(applicationSource.find("const ScopedBoolFlag tickingScope(m_isTicking)"), std::string::npos);
+    EXPECT_NE(applicationSource.find("const ScopedBoolFlag pollingScope(m_isPollingEvents)"), std::string::npos);
+    EXPECT_NE(applicationSource.find("const ScopedBoolFlag resizeTickingScope(m_isResizeTicking)"), std::string::npos);
+
+    EXPECT_EQ(applicationSource.find("m_isTicking = false"), std::string::npos);
+    EXPECT_EQ(applicationSource.find("m_isPollingEvents = false"), std::string::npos);
+    EXPECT_EQ(applicationSource.find("m_isResizeTicking = false"), std::string::npos);
 }
 
 TEST(PanelWindowHookTests, PanelDrawRecordsLastDrawDurationForFrameInfo)
@@ -1749,6 +1892,83 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameR
     ExpectFrameInfoRow(panel, "Status", "Frame State", "Retired -> Open -> Ready", "InFlight 0, Blocked 0");
 }
 
+TEST(PanelWindowHookTests, AViewStaticFrameCacheSkipsRendererSubmissionWhenViewIsUnchanged)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    view.EnableStaticFrameCacheForTest();
+
+    view.RenderForTest();
+    ASSERT_EQ(view.GetBeginFrameCountForTest(), 1u);
+    ASSERT_EQ(view.GetDrawFrameCountForTest(), 1u);
+    ASSERT_EQ(view.GetEndFrameCountForTest(), 1u);
+
+    view.RenderForTest();
+
+    EXPECT_EQ(view.GetBeginFrameCountForTest(), 1u);
+    EXPECT_EQ(view.GetDrawFrameCountForTest(), 1u);
+    EXPECT_EQ(view.GetEndFrameCountForTest(), 1u);
+    EXPECT_EQ(
+        view.GetStaticFrameCacheDecisionReasonForTest(),
+        NLS::Editor::Panels::StaticFrameCacheDecisionReason::Hit);
+}
+
+TEST(PanelWindowHookTests, AViewStaticFrameCacheReportsMissReasonForForcedRender)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    view.EnableStaticFrameCacheForTest();
+
+    view.RenderForTest();
+    view.SetRequiresImmediateRetiredFrameReadbackForTest(true);
+    view.RenderForTest();
+
+    EXPECT_EQ(
+        view.GetStaticFrameCacheDecisionReasonForTest(),
+        NLS::Editor::Panels::StaticFrameCacheDecisionReason::ImmediateReadback);
+}
+
+TEST(PanelWindowHookTests, AViewStaticFrameCacheInvalidatesWhenCameraSceneOrSizeChanges)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    view.EnableStaticFrameCacheForTest();
+
+    view.RenderForTest();
+    view.RenderForTest();
+    ASSERT_EQ(view.GetDrawFrameCountForTest(), 1u);
+
+    view.MoveCameraForTest({ 2.0f, 3.0f, 4.0f });
+    view.RenderForTest();
+    EXPECT_EQ(view.GetDrawFrameCountForTest(), 2u);
+
+    view.MarkSceneRenderContentChangedForTest();
+    view.RenderForTest();
+    EXPECT_EQ(view.GetDrawFrameCountForTest(), 3u);
+
+    view.ApplyResolvedViewSizeForTest(128u, 64u);
+    view.RenderForTest(128u, 64u);
+    EXPECT_EQ(view.GetDrawFrameCountForTest(), 4u);
+}
+
 TEST(PanelWindowHookTests, RetirementAwareResizePolicyDefersViewResizeWhileFramesRemainInFlight)
 {
     const std::pair<uint16_t, uint16_t> activeSize { 480u, 360u };
@@ -1975,6 +2195,7 @@ TEST(PanelWindowHookTests, SceneViewPickingRendersOnlyWhenSampleIsNeeded)
         false,
         false,
         false,
+        false,
         true,
         true));
 
@@ -1985,6 +2206,7 @@ TEST(PanelWindowHookTests, SceneViewPickingRendersOnlyWhenSampleIsNeeded)
         false,
         false,
         false,
+        false,
         true,
         true,
         true));
@@ -1995,7 +2217,8 @@ TEST(PanelWindowHookTests, SceneViewPickingRendersOnlyWhenSampleIsNeeded)
         false,
         false,
         true,
-        true,
+        false,
+        false,
         false,
         false,
         true));
@@ -2006,6 +2229,7 @@ TEST(PanelWindowHookTests, SceneViewPickingRendersOnlyWhenSampleIsNeeded)
         true,
         true,
         true,
+        false,
         false,
         true,
         true,
@@ -2020,7 +2244,138 @@ TEST(PanelWindowHookTests, SceneViewPickingRendersOnlyWhenSampleIsNeeded)
         false,
         false,
         false,
+        false,
         true));
+}
+
+TEST(PanelWindowHookTests, SceneViewPickingDoesNotRenderWhileCameraControlIsActive)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false,
+        false,
+        false,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        true,
+        false));
+}
+
+TEST(PanelWindowHookTests, SceneViewPickingSkipsHoverRefreshWhileCameraMovedThisFrame)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true,
+        true,
+        true));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false,
+        false,
+        true));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        true));
+}
+
+TEST(PanelWindowHookTests, SceneViewPickingCancelsPendingClickWhileCameraControlIsActive)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldCancelScenePickingWhileCameraControlIsActive(
+        true,
+        true));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldCancelScenePickingWhileCameraControlIsActive(
+        true,
+        false));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldCancelScenePickingWhileCameraControlIsActive(
+        false,
+        true));
+}
+
+TEST(PanelWindowHookTests, SceneViewStaticCacheAllowsHoverPickingFromExistingSample)
+{
+    const bool hoverPickingWantsSampleRefresh = NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true,
+        true);
+    ASSERT_TRUE(hoverPickingWantsSampleRefresh);
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldForceSceneViewStaticFrameRenderForPicking(
+        hoverPickingWantsSampleRefresh,
+        true));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldForceSceneViewStaticFrameRenderForPicking(
+        hoverPickingWantsSampleRefresh,
+        false));
+}
+
+TEST(PanelWindowHookTests, SceneViewHoverPickingCanBeBudgetedWithoutAffectingClickPicking)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSkipSceneHoverPickingForVisibleDrawBudget(
+        true,
+        5000u,
+        1024u));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSkipSceneHoverPickingForVisibleDrawBudget(
+        false,
+        1024u,
+        1024u));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldSkipSceneHoverPickingForVisibleDrawBudget(
+        false,
+        1025u,
+        1024u));
 }
 
 TEST(PanelWindowHookTests, RetirementAwareViewsUseCurrentOverlayMatrices)

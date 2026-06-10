@@ -15,6 +15,7 @@
 #include "Panels/SceneViewPickingPolicy.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Settings/EditorSettings.h"
+#include "Profiling/Profiler.h"
 #include "Core/EditorInteractionBlocker.h"
 #include "Core/RendererResourceStreamingBudget.h"
 #include "Core/SceneCameraFocus.h"
@@ -42,6 +43,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -60,15 +62,65 @@ constexpr float kSceneViewDefaultFocusDistance = 15.0f;
 constexpr float kSceneViewDragPreviewFallbackDistance = 12.0f;
 constexpr auto kSceneViewDragPreviewRetryDelay = std::chrono::milliseconds(100);
 constexpr size_t kSceneViewDragPreviewResourcePrewarmsPerFrame =
-    NLS::Editor::Core::kPrefabRendererResourcePrewarmsPerFrame;
+    NLS::Editor::Core::GetDragPreviewPrefabRendererResourceStreamingBudget().resourcePrewarmsPerFrame;
 constexpr size_t kSceneViewDragPreviewMeshPrewarmsPerFrame =
-    NLS::Editor::Core::kPrefabRendererResourceMeshPrewarmsPerFrame;
+    NLS::Editor::Core::GetDragPreviewPrefabRendererResourceStreamingBudget().meshPrewarmsPerFrame;
 constexpr size_t kSceneViewDragPreviewMaterialPrewarmsPerFrame =
-    NLS::Editor::Core::kPrefabRendererResourceMaterialPrewarmsPerFrame;
+    NLS::Editor::Core::GetDragPreviewPrefabRendererResourceStreamingBudget().materialPrewarmsPerFrame;
 constexpr size_t kSceneViewDragPreviewTextureCompletionsPerFrame =
-    NLS::Editor::Core::kPrefabRendererResourceTextureCompletionsPerFrame;
+    NLS::Editor::Core::GetDragPreviewPrefabRendererResourceStreamingBudget().textureCompletionsPerFrame;
 constexpr size_t kSceneViewDragPreviewMeshBindsPerFrame =
-    NLS::Editor::Core::kPrefabRendererResourceMeshBindsPerFrame;
+    NLS::Editor::Core::GetDragPreviewPrefabRendererResourceStreamingBudget().meshBindsPerFrame;
+constexpr uint64_t kSceneViewHoverPickingVisibleDrawBudget = 1024u;
+
+void HashSceneViewCacheValue(uint64_t& seed, const uint64_t value)
+{
+    seed ^= value + 0x9E3779B97F4A7C15ull + (seed << 6u) + (seed >> 2u);
+}
+
+void HashSceneViewCachePointer(uint64_t& seed, const void* value)
+{
+    HashSceneViewCacheValue(seed, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(value)));
+}
+
+void HashSceneViewCacheFloat(uint64_t& seed, const float value)
+{
+    uint32_t bits = 0u;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(value));
+    HashSceneViewCacheValue(seed, static_cast<uint64_t>(bits));
+}
+
+void HashSceneViewCacheVector2(uint64_t& seed, const NLS::Maths::Vector2& value)
+{
+    HashSceneViewCacheFloat(seed, value.x);
+    HashSceneViewCacheFloat(seed, value.y);
+}
+
+void HashSceneViewCacheVector3(uint64_t& seed, const NLS::Maths::Vector3& value)
+{
+    HashSceneViewCacheFloat(seed, value.x);
+    HashSceneViewCacheFloat(seed, value.y);
+    HashSceneViewCacheFloat(seed, value.z);
+}
+
+uint64_t BeginSceneViewCacheSegment(const uint64_t salt)
+{
+    uint64_t seed = 0x51CE71E55EED0001ull;
+    HashSceneViewCacheValue(seed, salt);
+    return seed;
+}
+
+void TraceSceneViewCacheSegmentChange(
+    const char* scopeName,
+    const uint64_t previousValue,
+    const uint64_t currentValue)
+{
+    if (previousValue == currentValue)
+        return;
+
+    NLS_PROFILE_NAMED_SCOPE(scopeName);
+}
 
 bool IsImportedAssetPreviewRendererResource(const NLS::Engine::Assets::PrefabResolvedAsset& resolved)
 {
@@ -1521,12 +1573,19 @@ void Editor::Panels::SceneView::InitFrame()
         selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
     }
 
+    m_requestPickingFrameForClick =
+        EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT) ||
+        m_pendingClickPickRenderPos.has_value();
     m_requestPickingFrame = ShouldRequestPickingFrame();
+    if (!m_requestPickingFrame)
+        m_requestPickingFrameForClick = false;
     debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({
         m_highlightedGameObject,
         selectedGameObject,
         m_requestPickingFrame,
-        nullptr});
+        nullptr,
+        m_requestPickingFrameForClick,
+        kSceneViewHoverPickingVisibleDrawBudget});
 }
 
 Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
@@ -1540,6 +1599,150 @@ Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
 Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView::CreateSceneDescriptor()
 {
     return AViewControllable::CreateSceneDescriptor();
+}
+
+bool Editor::Panels::SceneView::ShouldUseStaticFrameCache() const
+{
+    return true;
+}
+
+uint64_t Editor::Panels::SceneView::BuildStaticFrameCacheKey(
+    const Render::Entities::Camera& camera,
+    const Engine::SceneSystem::Scene& scene,
+    const uint16_t width,
+    const uint16_t height) const
+{
+    const uint64_t baseKey = AViewControllable::BuildStaticFrameCacheKey(camera, scene, width, height);
+
+    uint64_t highlightKey = BeginSceneViewCacheSegment(1u);
+    HashSceneViewCachePointer(highlightKey, m_highlightedGameObject);
+
+    uint64_t gizmoKey = BeginSceneViewCacheSegment(2u);
+    HashSceneViewCacheValue(gizmoKey, static_cast<uint64_t>(m_currentOperation));
+    HashSceneViewCacheValue(gizmoKey, static_cast<uint64_t>(m_currentPivot));
+    HashSceneViewCacheValue(gizmoKey, static_cast<uint64_t>(m_currentSpace));
+    HashSceneViewCacheValue(gizmoKey, m_gizmoInteraction.isHovered ? 1u : 0u);
+    HashSceneViewCacheValue(gizmoKey, m_gizmoInteraction.isUsing ? 1u : 0u);
+    HashSceneViewCacheValue(gizmoKey, m_gizmoInteraction.isViewHovered ? 1u : 0u);
+    HashSceneViewCacheValue(gizmoKey, m_gizmoInteraction.isViewUsing ? 1u : 0u);
+
+    uint64_t focusKey = BeginSceneViewCacheSegment(3u);
+    HashSceneViewCacheValue(focusKey, m_cameraFocus.hasFocus ? 1u : 0u);
+    HashSceneViewCacheFloat(focusKey, m_cameraFocus.focusDistance);
+    HashSceneViewCacheVector3(focusKey, m_cameraFocus.focusPoint);
+
+    uint64_t selectionKey = BeginSceneViewCacheSegment(4u);
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
+    {
+        HashSceneViewCacheValue(selectionKey, EDITOR_EXEC(IsAnyGameObjectSelected()) ? 1u : 0u);
+        HashSceneViewCachePointer(selectionKey, EDITOR_EXEC(GetSelectedGameObject()));
+        HashSceneViewCacheValue(
+            selectionKey,
+            EDITOR_EXEC(GetContext()).activePrefabStage.has_value() ? 1u : 0u);
+    }
+
+    uint64_t dragPreviewKey = BeginSceneViewCacheSegment(5u);
+    HashSceneViewCacheValue(dragPreviewKey, m_importedAssetDragPreviewPayload.has_value() ? 1u : 0u);
+    HashSceneViewCachePointer(dragPreviewKey, m_importedAssetDragPreviewSession.GetRoot());
+    HashSceneViewCacheValue(dragPreviewKey, m_importedAssetDragPreviewRenderableReady ? 1u : 0u);
+    HashSceneViewCacheValue(dragPreviewKey, m_importedAssetDragPreviewMeshGhostUnavailable ? 1u : 0u);
+    HashSceneViewCacheVector2(dragPreviewKey, m_importedAssetDragPreviewMousePos);
+    if (m_importedAssetDragPreviewPlacement.has_value())
+    {
+        HashSceneViewCacheValue(dragPreviewKey, 1u);
+        HashSceneViewCacheVector3(dragPreviewKey, m_importedAssetDragPreviewPlacement.value());
+    }
+    else
+    {
+        HashSceneViewCacheValue(dragPreviewKey, 0u);
+    }
+
+    m_lastComputedStaticCacheBaseKey = baseKey;
+    m_lastComputedStaticCacheHighlightKey = highlightKey;
+    m_lastComputedStaticCacheGizmoKey = gizmoKey;
+    m_lastComputedStaticCacheFocusKey = focusKey;
+    m_lastComputedStaticCacheSelectionKey = selectionKey;
+    m_lastComputedStaticCacheDragPreviewKey = dragPreviewKey;
+
+    uint64_t seed = 0x51CE71E55EEDCACEull;
+    HashSceneViewCacheValue(seed, baseKey);
+    HashSceneViewCacheValue(seed, highlightKey);
+    HashSceneViewCacheValue(seed, gizmoKey);
+    HashSceneViewCacheValue(seed, focusKey);
+    HashSceneViewCacheValue(seed, selectionKey);
+    HashSceneViewCacheValue(seed, dragPreviewKey);
+    return seed;
+}
+
+void Editor::Panels::SceneView::TraceStaticFrameCacheKeyChanged(
+    const uint64_t previousKey,
+    const uint64_t currentKey) const
+{
+    (void)previousKey;
+    (void)currentKey;
+
+    TraceSceneViewCacheSegmentChange(
+        "SceneView::StaticCacheKeyChanged::BaseCameraSceneViewport",
+        m_committedStaticCacheBaseKey,
+        m_lastComputedStaticCacheBaseKey);
+    TraceSceneViewCacheSegmentChange(
+        "SceneView::StaticCacheKeyChanged::Highlight",
+        m_committedStaticCacheHighlightKey,
+        m_lastComputedStaticCacheHighlightKey);
+    TraceSceneViewCacheSegmentChange(
+        "SceneView::StaticCacheKeyChanged::Gizmo",
+        m_committedStaticCacheGizmoKey,
+        m_lastComputedStaticCacheGizmoKey);
+    TraceSceneViewCacheSegmentChange(
+        "SceneView::StaticCacheKeyChanged::Focus",
+        m_committedStaticCacheFocusKey,
+        m_lastComputedStaticCacheFocusKey);
+    TraceSceneViewCacheSegmentChange(
+        "SceneView::StaticCacheKeyChanged::Selection",
+        m_committedStaticCacheSelectionKey,
+        m_lastComputedStaticCacheSelectionKey);
+    TraceSceneViewCacheSegmentChange(
+        "SceneView::StaticCacheKeyChanged::DragPreview",
+        m_committedStaticCacheDragPreviewKey,
+        m_lastComputedStaticCacheDragPreviewKey);
+}
+
+void Editor::Panels::SceneView::CommitStaticFrameCacheKey(const uint64_t staticFrameCacheKey)
+{
+    AViewControllable::CommitStaticFrameCacheKey(staticFrameCacheKey);
+    m_committedStaticCacheBaseKey = m_lastComputedStaticCacheBaseKey;
+    m_committedStaticCacheHighlightKey = m_lastComputedStaticCacheHighlightKey;
+    m_committedStaticCacheGizmoKey = m_lastComputedStaticCacheGizmoKey;
+    m_committedStaticCacheFocusKey = m_lastComputedStaticCacheFocusKey;
+    m_committedStaticCacheSelectionKey = m_lastComputedStaticCacheSelectionKey;
+    m_committedStaticCacheDragPreviewKey = m_lastComputedStaticCacheDragPreviewKey;
+}
+
+bool Editor::Panels::SceneView::ShouldForceStaticFrameRender() const
+{
+    if (m_cameraMovedForPresentation || m_cameraController.IsCameraControlActive())
+        return true;
+    if (m_importedAssetDragPreviewPayload.has_value())
+        return true;
+    if (m_pendingClickPickRenderPos.has_value())
+        return true;
+    if (ShouldForceSceneViewStaticFrameRenderForPicking(
+        ShouldRequestPickingFrame(),
+        m_hasPickingSample))
+    {
+        return true;
+    }
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
+    {
+        const auto& diagnostics = EDITOR_EXEC(GetContext()).GetDiagnosticsSettings();
+        if (!m_validationReadbackWritten &&
+            (!diagnostics.editorValidationSceneReadbackOutput.empty() ||
+                !diagnostics.editorValidationSceneReadbackSummary.empty()))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Editor::Panels::SceneView::RequiresSynchronizedRetiredFramePresentation() const
@@ -1922,6 +2125,13 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
         elapsedMs >= kHoverPickingIntervalMs;
     const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
     const bool cameraControlActive = m_cameraController.IsCameraControlActive();
+    if (ShouldCancelScenePickingWhileCameraControlIsActive(
+        cameraControlActive,
+        m_pendingClickPickRenderPos.has_value()))
+    {
+        LogScenePickingDiagnostics("request cancelled pending click while camera control is active");
+        return false;
+    }
 
     const bool request = ShouldRenderScenePickingFrame(
         mouseOverView,
@@ -1930,9 +2140,25 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
         m_pendingClickPickRenderPos.has_value(),
         leftClicked,
         cameraControlActive,
+        m_cameraMovedForPresentation,
         sampleExpired,
         mouseMoved,
         m_hasPickingSample);
+    const bool clickPickingFrame = leftClicked || m_pendingClickPickRenderPos.has_value();
+    if (request && !clickPickingFrame)
+    {
+        const auto* sceneRenderer = dynamic_cast<const Engine::Rendering::BaseSceneRenderer*>(m_renderer.get());
+        if (sceneRenderer != nullptr &&
+            sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources() &&
+            ShouldSkipSceneHoverPickingForVisibleDrawBudget(
+                false,
+                static_cast<uint64_t>(sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources().size()),
+                kSceneViewHoverPickingVisibleDrawBudget))
+        {
+            NLS_PROFILE_NAMED_SCOPE("SceneView::PickingSkipped::HoverVisibleDrawBudget");
+            return false;
+        }
+    }
     if (leftClicked || m_pendingClickPickRenderPos.has_value())
     {
         std::ostringstream stream;
@@ -2037,6 +2263,14 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
             elapsedMs >= kHoverPickingIntervalMs;
         const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
         const bool cameraControlActive = m_cameraController.IsCameraControlActive();
+        if (ShouldCancelScenePickingWhileCameraControlIsActive(
+            cameraControlActive,
+            m_pendingClickPickRenderPos.has_value()))
+        {
+            LogScenePickingDiagnostics("handle cancelled pending click while camera control is active");
+            m_pendingClickPickRenderPos.reset();
+            m_pendingClickMinReadablePickingFrameSerial = 0u;
+        }
         const bool queuedClickPickThisFrame = leftClicked && !cameraControlActive;
         if (queuedClickPickThisFrame)
         {
@@ -2059,6 +2293,7 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
             m_pendingClickPickRenderPos.has_value(),
             leftClicked,
             cameraControlActive,
+            m_cameraMovedForPresentation,
             sampleExpired,
             mouseMoved,
             m_hasPickingSample);

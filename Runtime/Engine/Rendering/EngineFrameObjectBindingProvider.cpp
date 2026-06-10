@@ -23,6 +23,7 @@ namespace
 {
     constexpr size_t kInitialObjectDataBufferCapacity = 256u;
     constexpr uint32_t kObjectDataSlotShrinkIdleFrameCount = 3u;
+    constexpr size_t kIndexedObjectDataShaderSupportCacheMaxEntries = 1024u;
 
     bool ShouldLogFrameConstantDiagnostics(const Render::Context::Driver& driver)
     {
@@ -84,7 +85,6 @@ void EngineFrameObjectBindingProvider::PrepareRenderScenePackage(
 
 void EngineFrameObjectBindingProvider::OnBeginFrame(const NLS::Render::Data::FrameDescriptor& frameDescriptor)
 {
-    m_indexedObjectDataShaderSupportCache.clear();
     m_indexedObjectDataShaderSupportQueryCount = 0u;
     ReleaseStalePreparedObjectDataSlotReservation();
     InvalidateObjectDataDeviceCachesIfNeeded();
@@ -696,6 +696,8 @@ bool EngineFrameObjectBindingProvider::ShaderRequiresIndexedObjectData(
     }
 
     const bool supportsIndexedObjectData = ShaderSupportsIndexedObjectData(shader);
+    if (m_indexedObjectDataShaderSupportCache.size() >= kIndexedObjectDataShaderSupportCacheMaxEntries)
+        m_indexedObjectDataShaderSupportCache.clear();
     m_indexedObjectDataShaderSupportCache[shaderInstanceId] = { generation, supportsIndexedObjectData };
     ++m_indexedObjectDataShaderSupportQueryCount;
     return supportsIndexedObjectData;

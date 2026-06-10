@@ -258,9 +258,8 @@ public:
 
 	T& Push()
 	{
-		Length++;
 		gAssert(Length < N);
-		return Data[Length - 1];
+		return Data[Length++];
 	}
 
 	T& Top()

@@ -991,6 +991,113 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
     EXPECT_EQ(runtimeMaterialPaths[1], "Library/Artifacts/Sparse/materials/visible.nmat");
 }
 
+TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("41414141-4141-4141-8141-414141414141"));
+    scene.sceneKey = "HLODCityBlock";
+    scene.nodes.push_back({"node/root", "Root", "", "", ""});
+    scene.nodes.push_back({"node/cluster", "Cluster", "node/root", "", ""});
+    scene.nodes.push_back({"node/childA", "ChildA", "node/cluster", "mesh/childA", ""});
+    scene.nodes.push_back({"node/childB", "ChildB", "node/cluster", "mesh/childB", ""});
+
+    NLS::Render::Assets::ImportedScenePrimitive primitiveA;
+    primitiveA.materialKey = "material/body";
+    NLS::Render::Assets::ImportedScenePrimitive primitiveB;
+    primitiveB.materialKey = "material/body";
+    NLS::Render::Assets::ImportedSceneNamedRecord childAMesh;
+    childAMesh.sourceKey = "mesh/childA";
+    childAMesh.name = "ChildAMesh";
+    childAMesh.primitiveCount = 1u;
+    childAMesh.primitives.push_back(std::move(primitiveA));
+    scene.meshes.push_back(std::move(childAMesh));
+    NLS::Render::Assets::ImportedSceneNamedRecord childBMesh;
+    childBMesh.sourceKey = "mesh/childB";
+    childBMesh.name = "ChildBMesh";
+    childBMesh.primitiveCount = 1u;
+    childBMesh.primitives.push_back(std::move(primitiveB));
+    scene.meshes.push_back(std::move(childBMesh));
+    scene.materials.push_back({"material/body", "BodyMaterial"});
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = scene.sourceAssetId;
+    manifest.subAssets.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("42424242-4242-4242-8242-424242424242")),
+        "mesh:mesh/childA",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/HLOD/childA.nmesh",
+        "mesh-a-hash"
+    });
+    manifest.subAssets.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("43434343-4343-4343-8343-434343434343")),
+        "mesh:mesh/childB",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/HLOD/childB.nmesh",
+        "mesh-b-hash"
+    });
+    manifest.subAssets.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("44444444-4444-4444-8444-444444444444")),
+        "material:material/body",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        "editor-windows",
+        "Library/Artifacts/HLOD/body.nmat",
+        "material-hash"
+    });
+    manifest.subAssets.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("45454545-4545-4545-8545-454545454545")),
+        "hlod-proxy:node/cluster",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/HLOD/cluster_proxy.nmesh",
+        "proxy-hash"
+    });
+
+    const auto result = NLS::Engine::Assets::BuildGeneratedModelPrefab(
+        scene,
+        NLS::Render::Assets::GenerateSceneSubAssets(scene),
+        manifest);
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    const auto* clusterRecord = FindRecord(
+        result.artifact.graph,
+        "Cluster",
+        "NLS::Engine::GameObject");
+    ASSERT_NE(clusterRecord, nullptr);
+    const auto* hlod = FindProperty(*clusterRecord, NLS::Engine::Assets::GeneratedModelPrefabHLODSchema::PropertyName);
+    ASSERT_NE(hlod, nullptr);
+    const auto* proxyRecord = FindRecord(
+        result.artifact.graph,
+        "__HLODProxy_Cluster",
+        "NLS::Engine::GameObject");
+    ASSERT_NE(proxyRecord, nullptr);
+    const auto* active = FindProperty(*proxyRecord, "active");
+    ASSERT_NE(active, nullptr);
+    ASSERT_EQ(active->value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::Bool);
+    EXPECT_FALSE(active->value.GetBool());
+
+    NLS::Engine::SceneSystem::Scene runtimeScene;
+    NLS::Engine::Serialize::LoadPolicy policy;
+    policy.deferAssetReferenceResolution = true;
+    const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(result.artifact, runtimeScene, policy);
+
+    ASSERT_FALSE(instance.diagnostics.HasErrors());
+    auto* proxyObject = runtimeScene.FindGameObjectByName("__HLODProxy_Cluster");
+    ASSERT_NE(proxyObject, nullptr);
+    EXPECT_FALSE(proxyObject->IsSelfActive());
+    EXPECT_EQ(proxyObject->GetSourceObjectKey(), "hlod-proxy:node/cluster");
+    ASSERT_NE(proxyObject->GetComponent<NLS::Engine::Components::MeshRenderer>(), nullptr);
+    auto* proxyFilter = proxyObject->GetComponent<NLS::Engine::Components::MeshFilter>();
+    ASSERT_NE(proxyFilter, nullptr);
+    EXPECT_EQ(proxyFilter->GetModelPath(), "Library/Artifacts/HLOD/cluster_proxy.nmesh");
+}
+
 TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoPrimitiveRenderers)
 {
     NLS::Render::Assets::ImportedScene scene;

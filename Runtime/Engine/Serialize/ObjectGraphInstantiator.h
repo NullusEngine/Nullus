@@ -25,6 +25,7 @@
 #include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphDocument.h"
 #include "Serialize/ObjectGraphPPtr.h"
+#include "Serialize/ObjectGraphWriter.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PrefabDocument.h"
 
@@ -439,7 +440,11 @@ namespace NLS::Engine::Serialize
 
         static bool IsGameObjectGraphProperty(const std::string& name)
         {
-            return name == "parent" || name == "components" || name == "children";
+            return name == "parent" ||
+                name == "components" ||
+                name == "children" ||
+                name == "sourceObjectKey" ||
+                name == "largeSceneHLOD";
         }
 
         static bool IsNoGraphProperty(const std::string&)
@@ -487,6 +492,15 @@ namespace NLS::Engine::Serialize
         static void ApplyGameObjectState(GameObject& gameObject, const ObjectRecord& record)
         {
             ApplyReflectedFields(gameObject, record, IsGameObjectGraphProperty);
+            if (const auto sourceObjectKey = ReadString(record, "sourceObjectKey"); sourceObjectKey.has_value())
+                gameObject.SetSourceObjectKey(*sourceObjectKey);
+            else
+                gameObject.SetSourceObjectKey({});
+
+            if (const auto* hlodMetadata = FindProperty(record, "largeSceneHLOD"))
+                gameObject.SetLargeSceneHLODMetadata(ObjectGraphWriter::WriteValueForRuntimeMetadata(hlodMetadata->value).dump());
+            else
+                gameObject.SetLargeSceneHLODMetadata({});
         }
 
         static void InstantiateComponents(

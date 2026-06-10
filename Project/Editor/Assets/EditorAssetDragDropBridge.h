@@ -3,6 +3,7 @@
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/EditorAssetDragPayload.h"
+#include "Assets/ImportedPrefabRendererDependencyTemplates.h"
 #include "Assets/PrefabUtilityFacade.h"
 
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace NLS::Editor::Assets
 {
@@ -113,6 +115,11 @@ struct UnifiedPrefabSharedLoadResult
     std::string diagnosticMessage;
 };
 
+std::optional<std::vector<ImportedPrefabRendererDependencyTemplate>>
+TryGetImportedPrefabRendererDependencyTemplates(const UnifiedPrefabLoadKey& key);
+std::optional<UnifiedPrefabLoadKey> TryGetImportedPrefabLoadKeyForArtifact(
+    const NLS::Engine::Assets::PrefabArtifact& prefab);
+
 class EditorAssetDragDropBridge
 {
 public:
@@ -173,6 +180,8 @@ public:
         const UnifiedPrefabLoadRequest& request) const;
     std::optional<UnifiedPrefabLoadKey> BuildUnifiedPrefabLoadKey(
         const UnifiedPrefabLoadRequest& request) const;
+    bool PreloadPreparedPrefabHotCache(
+        const UnifiedPrefabLoadRequest& request) const;
 
 private:
     std::filesystem::path ProjectRoot() const;
@@ -214,4 +223,8 @@ private:
 
     std::filesystem::path m_projectAssetsPath;
 };
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void ClearImportedPrefabHotCacheForTesting();
+#endif
 }

@@ -6,10 +6,13 @@
 #include "Assets/EditorAssetManifestJson.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/ExternalAssetImporter.h"
+#include "Assets/ImportedPrefabRendererDependencyTemplates.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Core/ServiceLocator.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Serialize/ObjectGraphReader.h"
+#include "Serialize/ObjectGraphWriter.h"
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +23,7 @@
 #include <Json/json.hpp>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <system_error>
 #include <unordered_map>
 #include <vector>
@@ -32,6 +36,7 @@ struct FastImportedPrefabLoadResult
 {
     std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab;
     std::optional<UnifiedPrefabLoadKey> key;
+    std::vector<ImportedPrefabRendererDependencyTemplate> rendererDependencyTemplates;
     size_t prefabArtifactBytes = 0u;
     bool rendererDependencyMissing = false;
     std::string diagnosticCode;
@@ -75,6 +80,10 @@ struct ImportedPrefabHotCache
 
 constexpr size_t kMaxImportedPrefabHotCacheEntries = 16u;
 constexpr size_t kMaxImportedPrefabHotCacheBytes = 64u * 1024u * 1024u;
+constexpr uint32_t kPersistentPreparedPrefabCacheSchemaVersion = 1u;
+constexpr size_t kMaxPersistentPreparedPrefabCacheEntries = 512u;
+constexpr uintmax_t kMaxPersistentPreparedPrefabCacheBytes = 256u * 1024u * 1024u;
+constexpr size_t kPersistentPreparedPrefabCachePruneWriteInterval = 16u;
 
 std::string DefaultGeneratedPrefabSubAssetKeyForAssetPath(const std::string& assetPath)
 {
@@ -122,6 +131,88 @@ std::string FileStamp(const std::filesystem::path& path)
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
+uint64_t StableFnv1a64(const std::string& text)
+{
+    uint64_t hash = 14695981039346656037ull;
+    for (const unsigned char character : text)
+    {
+        hash ^= character;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+std::string Hex64(const uint64_t value)
+{
+    std::ostringstream stream;
+    stream << std::hex << value;
+    return stream.str();
+}
+
+std::filesystem::path PersistentPreparedPrefabCachePath(
+    const std::filesystem::path& projectRoot,
+    const UnifiedPrefabLoadKey& key)
+{
+    return projectRoot /
+        "Library" /
+        "PreparedPrefabCache" /
+        (Hex64(StableFnv1a64(key.runtimeCacheIdentity)) + ".json");
+}
+
+void PrunePersistentPreparedPrefabCacheDirectory(const std::filesystem::path& cacheDirectory)
+{
+    struct CacheFile
+    {
+        std::filesystem::path path;
+        std::filesystem::file_time_type lastWriteTime {};
+        uintmax_t size = 0u;
+    };
+
+    std::error_code error;
+    if (!std::filesystem::is_directory(cacheDirectory, error))
+        return;
+
+    std::vector<CacheFile> files;
+    uintmax_t retainedBytes = 0u;
+    for (const auto& entry : std::filesystem::directory_iterator(cacheDirectory, error))
+    {
+        if (error)
+            return;
+        if (!entry.is_regular_file(error) || entry.path().extension() != ".json")
+            continue;
+
+        CacheFile file;
+        file.path = entry.path();
+        file.lastWriteTime = entry.last_write_time(error);
+        if (error)
+            continue;
+        file.size = entry.file_size(error);
+        if (error)
+            continue;
+
+        retainedBytes += file.size;
+        files.push_back(std::move(file));
+    }
+
+    std::sort(
+        files.begin(),
+        files.end(),
+        [](const CacheFile& lhs, const CacheFile& rhs)
+        {
+            return lhs.lastWriteTime < rhs.lastWriteTime;
+        });
+
+    size_t firstRetained = 0u;
+    while (firstRetained < files.size() &&
+        (files.size() - firstRetained > kMaxPersistentPreparedPrefabCacheEntries ||
+            retainedBytes > kMaxPersistentPreparedPrefabCacheBytes))
+    {
+        std::filesystem::remove(files[firstRetained].path, error);
+        retainedBytes -= std::min(retainedBytes, files[firstRetained].size);
+        ++firstRetained;
+    }
+}
+
 size_t EstimatePrefabHotCacheBytes(const NLS::Engine::Assets::PrefabArtifact& prefab)
 {
     size_t bytes = sizeof(prefab);
@@ -147,6 +238,44 @@ size_t EstimatePrefabHotCacheBytes(const NLS::Engine::Assets::PrefabArtifact& pr
         bytes += resolved.expectedType.size();
         bytes += resolved.subAssetKey.size();
         bytes += resolved.artifactPath.size();
+    }
+    return bytes;
+}
+
+void MaybePrunePersistentPreparedPrefabCacheDirectory(const std::filesystem::path& cacheDirectory)
+{
+    static std::mutex pruneMutex;
+    static size_t cacheWritesSincePrune = 0u;
+    static std::chrono::steady_clock::time_point lastPrune = std::chrono::steady_clock::now();
+
+    bool shouldPrune = false;
+    {
+        std::lock_guard<std::mutex> lock(pruneMutex);
+        ++cacheWritesSincePrune;
+        const auto now = std::chrono::steady_clock::now();
+        if (cacheWritesSincePrune >= kPersistentPreparedPrefabCachePruneWriteInterval ||
+            now - lastPrune >= std::chrono::seconds(30))
+        {
+            cacheWritesSincePrune = 0u;
+            lastPrune = now;
+            shouldPrune = true;
+        }
+    }
+
+    if (shouldPrune)
+        PrunePersistentPreparedPrefabCacheDirectory(cacheDirectory);
+}
+
+size_t EstimateRendererDependencyTemplateBytes(
+    const std::vector<ImportedPrefabRendererDependencyTemplate>& templates)
+{
+    size_t bytes = templates.size() * sizeof(ImportedPrefabRendererDependencyTemplate);
+    for (const auto& item : templates)
+    {
+        bytes += item.meshPath.size();
+        bytes += item.materialPaths.size() * sizeof(std::string);
+        for (const auto& materialPath : item.materialPaths)
+            bytes += materialPath.size();
     }
     return bytes;
 }
@@ -227,31 +356,40 @@ std::optional<FastImportedPrefabLoadResult> TryGetImportedPrefabHotCache(
     const UnifiedPrefabLoadKey& key)
 {
     const auto begin = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
-    auto& cache = ImportedPrefabHotCacheState();
-    ++cache.useCounter;
-
-    for (auto& entry : cache.entries)
+    std::optional<FastImportedPrefabLoadResult> cachedResult;
+    std::optional<UnifiedPrefabLoadKey> cachedKey;
     {
-        if (!(entry.key == key))
-            continue;
+        std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
+        auto& cache = ImportedPrefabHotCacheState();
+        ++cache.useCounter;
 
-        entry.lastUsed = cache.useCounter;
-        NLS::Core::Assets::RecordArtifactLoadTelemetry({
-            NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheHit,
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - begin),
-            entry.estimatedBytes,
-            key.source.sourceAssetPath});
-        NLS::Core::Assets::CheckArtifactLoadBudget(
-            NLS::Core::Assets::ArtifactLoadBudgetKind::HotCacheLookup,
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - begin),
-            key.source.sourceAssetPath);
-        auto result = entry.result;
-        result.key = entry.key;
-        RememberImportedPrefabLoadedKey(result.prefab, entry.key);
-        return result;
+        for (auto& entry : cache.entries)
+        {
+            if (!(entry.key == key))
+                continue;
+
+            entry.lastUsed = cache.useCounter;
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheHit,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - begin),
+                entry.estimatedBytes,
+                key.source.sourceAssetPath});
+            NLS::Core::Assets::CheckArtifactLoadBudget(
+                NLS::Core::Assets::ArtifactLoadBudgetKind::HotCacheLookup,
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - begin),
+                key.source.sourceAssetPath);
+            cachedResult = entry.result;
+            cachedResult->key = entry.key;
+            cachedKey = entry.key;
+            break;
+        }
+    }
+    if (cachedResult.has_value() && cachedKey.has_value())
+    {
+        RememberImportedPrefabLoadedKey(cachedResult->prefab, *cachedKey);
+        return cachedResult;
     }
 
     NLS::Core::Assets::RecordArtifactLoadTelemetry({
@@ -300,31 +438,249 @@ void PutImportedPrefabHotCache(
     if (!result.prefab || result.rendererDependencyMissing)
         return;
 
-    const size_t estimatedBytes = EstimatePrefabHotCacheBytes(*result.prefab) + result.prefabArtifactBytes;
+    auto rendererDependencyTemplates = result.rendererDependencyTemplates;
+    if (rendererDependencyTemplates.empty())
+        rendererDependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(*result.prefab);
+    const size_t estimatedBytes =
+        EstimatePrefabHotCacheBytes(*result.prefab) +
+        EstimateRendererDependencyTemplateBytes(rendererDependencyTemplates) +
+        result.prefabArtifactBytes;
     if (estimatedBytes > kMaxImportedPrefabHotCacheBytes)
         return;
 
-    std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
-    auto& cache = ImportedPrefabHotCacheState();
-    ++cache.useCounter;
-
-    const auto existing = std::find_if(
-        cache.entries.begin(),
-        cache.entries.end(),
-        [&key](const ImportedPrefabHotCacheEntry& entry)
-        {
-            return entry.key == key;
-        });
-    if (existing != cache.entries.end())
+    auto storedResult = result;
+    storedResult.rendererDependencyTemplates = std::move(rendererDependencyTemplates);
     {
-        cache.retainedBytes -= std::min(cache.retainedBytes, existing->estimatedBytes);
-        cache.entries.erase(existing);
+        std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
+        auto& cache = ImportedPrefabHotCacheState();
+        ++cache.useCounter;
+
+        const auto existing = std::find_if(
+            cache.entries.begin(),
+            cache.entries.end(),
+            [&key](const ImportedPrefabHotCacheEntry& entry)
+            {
+                return entry.key == key;
+            });
+        if (existing != cache.entries.end())
+        {
+            cache.retainedBytes -= std::min(cache.retainedBytes, existing->estimatedBytes);
+            cache.entries.erase(existing);
+        }
+
+        cache.entries.push_back({key, std::move(storedResult), estimatedBytes, cache.useCounter});
+        cache.retainedBytes += estimatedBytes;
+        EvictImportedPrefabHotCacheToBudget(cache);
+    }
+    RememberImportedPrefabLoadedKey(result.prefab, key);
+}
+
+std::optional<FastImportedPrefabLoadResult> TryLoadPersistentPreparedPrefabCache(
+    const std::filesystem::path& projectRoot,
+    const UnifiedPrefabLoadKey& key,
+    const bool allowSynthesizedRendererDependencyTemplates = true)
+{
+    const auto begin = std::chrono::steady_clock::now();
+    const auto cachePath = PersistentPreparedPrefabCachePath(projectRoot, key);
+    std::ifstream input(cachePath, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    const std::string cacheText((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const auto root = nlohmann::json::parse(cacheText, nullptr, false);
+    if (root.is_discarded() || !root.is_object())
+        return std::nullopt;
+
+    if (root.value("schema", 0u) != kPersistentPreparedPrefabCacheSchemaVersion ||
+        root.value("runtimeCacheIdentity", std::string {}) != key.runtimeCacheIdentity ||
+        root.value("manifestStamp", std::string {}) != key.manifestStamp ||
+        root.value("prefabArtifactStamp", std::string {}) != key.prefabArtifactStamp ||
+        root.value("rendererArtifactStamp", std::string {}) != key.rendererArtifactStamp)
+    {
+        return std::nullopt;
     }
 
-    cache.entries.push_back({key, result, estimatedBytes, cache.useCounter});
-    cache.retainedBytes += estimatedBytes;
+    const auto graphText = root.value("graph", std::string {});
+    auto document = NLS::Engine::Serialize::ObjectGraphReader::Read(graphText);
+    if (!document.has_value())
+        return std::nullopt;
+
+    auto prefab = std::make_shared<NLS::Engine::Assets::PrefabArtifact>();
+    prefab->assetId = key.source.sourceAssetId;
+    prefab->graph = std::move(*document);
+    prefab->generatedModelPrefab = key.source.assetType == NLS::Core::Assets::AssetType::ModelScene;
+
+    if (const auto resolvedAssets = root.find("resolvedAssets");
+        resolvedAssets != root.end() && resolvedAssets->is_array())
+    {
+        for (const auto& resolved : *resolvedAssets)
+        {
+            if (!resolved.is_object())
+                return std::nullopt;
+
+            const auto assetIdText = resolved.value("assetId", std::string {});
+            if (assetIdText.empty())
+                return std::nullopt;
+            const auto assetGuid = NLS::Guid::TryParse(assetIdText);
+            if (!assetGuid.has_value())
+                return std::nullopt;
+
+            NLS::Engine::Assets::PrefabResolvedAsset asset;
+            asset.assetId = NLS::Core::Assets::AssetId(*assetGuid);
+            asset.expectedType = resolved.value("expectedType", std::string {});
+            asset.subAssetKey = resolved.value("subAssetKey", std::string {});
+            asset.artifactPath = resolved.value("artifactPath", std::string {});
+            prefab->resolvedAssets.push_back(std::move(asset));
+        }
+    }
+
+    if (const auto baseChain = root.find("baseChain");
+        baseChain != root.end() && baseChain->is_array())
+    {
+        for (const auto& base : *baseChain)
+        {
+            const auto baseText = base.is_string() ? base.get<std::string>() : std::string {};
+            const auto baseGuid = NLS::Guid::TryParse(baseText);
+            if (baseGuid.has_value())
+                prefab->baseChain.push_back(NLS::Core::Assets::AssetId(*baseGuid));
+        }
+    }
+
+    std::vector<ImportedPrefabRendererDependencyTemplate> rendererDependencyTemplates;
+    const bool hasRendererDependencyTemplatesField =
+        root.contains("rendererDependencyTemplates");
+    if (const auto templates = root.find("rendererDependencyTemplates");
+        templates != root.end() && templates->is_array())
+    {
+        for (const auto& item : *templates)
+        {
+            if (!item.is_object())
+                return std::nullopt;
+
+            const auto sourceObjectText = item.value("sourceObject", std::string {});
+            const auto sourceObjectGuid = NLS::Guid::TryParse(sourceObjectText);
+            if (!sourceObjectGuid.has_value())
+                return std::nullopt;
+
+            ImportedPrefabRendererDependencyTemplate dependency;
+            dependency.sourceObject = NLS::Engine::Serialize::ObjectId(*sourceObjectGuid);
+            dependency.meshPath = item.value("meshPath", std::string {});
+            if (const auto materialPaths = item.find("materialPaths");
+                materialPaths != item.end() && materialPaths->is_array())
+            {
+                for (const auto& materialPath : *materialPaths)
+                {
+                    if (!materialPath.is_string())
+                        return std::nullopt;
+                    dependency.materialPaths.push_back(materialPath.get<std::string>());
+                }
+            }
+            rendererDependencyTemplates.push_back(std::move(dependency));
+        }
+    }
+
+    auto diagnostics = prefab->Validate();
+    if (diagnostics.HasErrors())
+        return std::nullopt;
+
+    FastImportedPrefabLoadResult result;
+    result.prefab = std::move(prefab);
+    result.key = key;
+    result.prefabArtifactBytes = graphText.size();
+    if (!hasRendererDependencyTemplatesField)
+    {
+        if (!allowSynthesizedRendererDependencyTemplates)
+            return std::nullopt;
+        rendererDependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(*result.prefab);
+    }
+    result.rendererDependencyTemplates = std::move(rendererDependencyTemplates);
     RememberImportedPrefabLoadedKey(result.prefab, key);
-    EvictImportedPrefabHotCacheToBudget(cache);
+    std::error_code error;
+    std::filesystem::last_write_time(cachePath, std::filesystem::file_time_type::clock::now(), error);
+    NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
+    telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheHit;
+    telemetry.elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - begin);
+    telemetry.byteCount = graphText.size();
+    telemetry.path = cachePath.generic_string();
+    NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
+    return result;
+}
+
+void StorePersistentPreparedPrefabCache(
+    const std::filesystem::path& projectRoot,
+    const UnifiedPrefabLoadKey& key,
+    const FastImportedPrefabLoadResult& result)
+{
+    if (!result.prefab || result.rendererDependencyMissing)
+        return;
+
+    nlohmann::json root = nlohmann::json::object();
+    root["schema"] = kPersistentPreparedPrefabCacheSchemaVersion;
+    root["runtimeCacheIdentity"] = key.runtimeCacheIdentity;
+    root["manifestStamp"] = key.manifestStamp;
+    root["prefabArtifactStamp"] = key.prefabArtifactStamp;
+    root["rendererArtifactStamp"] = key.rendererArtifactStamp;
+    root["sourceAssetPath"] = key.source.sourceAssetPath;
+    root["prefabSubAssetKey"] = key.source.prefabSubAssetKey;
+    root["assetId"] = key.source.sourceAssetId.ToString();
+    root["graph"] = NLS::Engine::Serialize::ObjectGraphWriter::Write(result.prefab->graph);
+    root["resolvedAssets"] = nlohmann::json::array();
+    root["baseChain"] = nlohmann::json::array();
+    root["rendererDependencyTemplates"] = nlohmann::json::array();
+
+    for (const auto& resolved : result.prefab->resolvedAssets)
+    {
+        nlohmann::json item = nlohmann::json::object();
+        item["assetId"] = resolved.assetId.ToString();
+        item["expectedType"] = resolved.expectedType;
+        item["subAssetKey"] = resolved.subAssetKey;
+        item["artifactPath"] = resolved.artifactPath;
+        root["resolvedAssets"].push_back(std::move(item));
+    }
+    for (const auto& base : result.prefab->baseChain)
+        root["baseChain"].push_back(base.ToString());
+
+    auto rendererDependencyTemplates = result.rendererDependencyTemplates;
+    if (rendererDependencyTemplates.empty())
+        rendererDependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(*result.prefab);
+
+    for (const auto& dependency : rendererDependencyTemplates)
+    {
+        nlohmann::json item = nlohmann::json::object();
+        item["sourceObject"] = dependency.sourceObject.GetGuid().ToString();
+        item["meshPath"] = dependency.meshPath;
+        item["materialPaths"] = nlohmann::json::array();
+        for (const auto& materialPath : dependency.materialPaths)
+            item["materialPaths"].push_back(materialPath);
+        root["rendererDependencyTemplates"].push_back(std::move(item));
+    }
+
+    const auto cachePath = PersistentPreparedPrefabCachePath(projectRoot, key);
+    std::error_code error;
+    std::filesystem::create_directories(cachePath.parent_path(), error);
+    if (error)
+        return;
+
+    const auto tempPath = cachePath.string() + ".tmp";
+    {
+        std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+        if (!output)
+            return;
+
+        output << root.dump();
+    }
+
+    error.clear();
+    std::filesystem::rename(tempPath, cachePath, error);
+    if (error)
+    {
+        std::filesystem::remove(cachePath, error);
+        error.clear();
+        std::filesystem::rename(tempPath, cachePath, error);
+    }
+    if (!error)
+        MaybePrunePersistentPreparedPrefabCacheDirectory(cachePath.parent_path());
 }
 
 std::string ToEditorAssetPathFromProjectRoot(
@@ -568,6 +924,75 @@ std::string BuildRendererArtifactStamp(
     return combined;
 }
 
+std::string BuildManifestContentStamp(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const std::filesystem::path& manifestPath)
+{
+    std::vector<std::string> stamps;
+    stamps.push_back("source=" + manifest.sourceAssetId.ToString());
+    stamps.push_back("importer=" + manifest.importerId);
+    stamps.push_back("importerVersion=" + std::to_string(manifest.importerVersion));
+    stamps.push_back("target=" + manifest.targetPlatform);
+    stamps.push_back("primary=" + manifest.primarySubAssetKey);
+    for (const auto& dependency : manifest.dependencies)
+    {
+        stamps.push_back(
+            "dependency=" +
+            std::to_string(static_cast<int>(dependency.kind)) +
+            "|" +
+            NormalizeEditorAssetPath(dependency.value) +
+            "@" +
+            dependency.hashOrVersion);
+    }
+    for (const auto& artifact : manifest.subAssets)
+    {
+        stamps.push_back(
+            "artifact=" +
+            artifact.sourceAssetId.ToString() +
+            "|" +
+            artifact.subAssetKey +
+            "|" +
+            std::to_string(static_cast<int>(artifact.artifactType)) +
+            "|" +
+            artifact.loaderId +
+            "|" +
+            artifact.targetPlatform +
+            "|" +
+            std::filesystem::path(artifact.artifactPath).lexically_normal().generic_string() +
+            "@" +
+            artifact.contentHash);
+    }
+    std::sort(stamps.begin(), stamps.end());
+
+    std::string combined = "manifestFile@" + FileStamp(manifestPath);
+    for (const auto& stamp : stamps)
+    {
+        combined.push_back(';');
+        combined += stamp;
+    }
+    return combined;
+}
+
+std::string BuildPrefabArtifactContentStamp(
+    const NLS::Core::Assets::ImportedArtifact& prefabArtifact,
+    const std::filesystem::path& prefabPath)
+{
+    return "prefab=" +
+        prefabArtifact.sourceAssetId.ToString() +
+        "|" +
+        prefabArtifact.subAssetKey +
+        "|" +
+        prefabArtifact.loaderId +
+        "|" +
+        prefabArtifact.targetPlatform +
+        "|" +
+        std::filesystem::path(prefabArtifact.artifactPath).lexically_normal().generic_string() +
+        "@" +
+        prefabArtifact.contentHash +
+        "|file@" +
+        FileStamp(prefabPath);
+}
+
 std::string BuildUnifiedPrefabArtifactIdentity(const PrefabSourceIdentity& source)
 {
     return source.projectRootId +
@@ -581,14 +1006,16 @@ std::string BuildUnifiedPrefabArtifactIdentity(const PrefabSourceIdentity& sourc
 
 UnifiedPrefabLoadKey BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
     PrefabSourceIdentity source,
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::ImportedArtifact& prefabArtifact,
     const std::filesystem::path& manifestPath,
     const std::filesystem::path& prefabPath,
     std::string rendererArtifactStamp)
 {
     UnifiedPrefabLoadKey key;
     key.source = std::move(source);
-    key.stamps.manifestStamp = FileStamp(manifestPath);
-    key.stamps.prefabArtifactStamp = FileStamp(prefabPath);
+    key.stamps.manifestStamp = BuildManifestContentStamp(manifest, manifestPath);
+    key.stamps.prefabArtifactStamp = BuildPrefabArtifactContentStamp(prefabArtifact, prefabPath);
     key.stamps.rendererArtifactStamp = std::move(rendererArtifactStamp);
     key.manifestStamp = key.stamps.manifestStamp;
     key.prefabArtifactStamp = key.stamps.prefabArtifactStamp;
@@ -870,6 +1297,8 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
             prefabSubAssetKey,
             currentMeta.id,
             assetType),
+        *manifest,
+        *prefabArtifact,
         manifestPath,
         prefabPath,
         IncludeRendererArtifactStamp(loadMode)
@@ -878,6 +1307,11 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     result.key = cacheKey;
     if (auto cached = TryGetImportedPrefabHotCache(cacheKey); cached.has_value())
         return *cached;
+    if (auto prepared = TryLoadPersistentPreparedPrefabCache(projectRoot, cacheKey); prepared.has_value())
+    {
+        PutImportedPrefabHotCache(cacheKey, *prepared);
+        return *prepared;
+    }
 
     const auto bytes = ReadAllBytes(prefabPath);
     if (bytes.empty())
@@ -935,8 +1369,10 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         std::move(importResult.artifact));
     prefab->generatedModelPrefab = assetType == NLS::Core::Assets::AssetType::ModelScene;
     result.prefab = std::move(prefab);
+    result.rendererDependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(*result.prefab);
     RememberImportedPrefabLoadedKey(result.prefab, cacheKey);
     PutImportedPrefabHotCache(cacheKey, result);
+    StorePersistentPreparedPrefabCache(projectRoot, cacheKey, result);
     return result;
 }
 
@@ -1121,6 +1557,45 @@ EditorAssetDragDropBridge::EditorAssetDragDropBridge(std::filesystem::path proje
 {
 }
 
+std::optional<std::vector<ImportedPrefabRendererDependencyTemplate>>
+TryGetImportedPrefabRendererDependencyTemplates(const UnifiedPrefabLoadKey& key)
+{
+    std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
+    auto& cache = ImportedPrefabHotCacheState();
+    ++cache.useCounter;
+    for (auto& entry : cache.entries)
+    {
+        if (!(entry.key == key))
+            continue;
+        entry.lastUsed = cache.useCounter;
+        return entry.result.rendererDependencyTemplates;
+    }
+    return std::nullopt;
+}
+
+std::optional<UnifiedPrefabLoadKey> TryGetImportedPrefabLoadKeyForArtifact(
+    const NLS::Engine::Assets::PrefabArtifact& prefab)
+{
+    return FindRememberedImportedPrefabLoadedKey(prefab);
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void ClearImportedPrefabHotCacheForTesting()
+{
+    {
+        std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
+        auto& cache = ImportedPrefabHotCacheState();
+        cache.entries.clear();
+        cache.retainedBytes = 0u;
+        cache.useCounter = 0u;
+    }
+    {
+        std::lock_guard<std::mutex> lock(ImportedPrefabLoadedKeyMutex());
+        ImportedPrefabLoadedKeys().clear();
+    }
+}
+#endif
+
 std::filesystem::path EditorAssetDragDropBridge::ProjectRoot() const
 {
     auto assetsPath = m_projectAssetsPath.lexically_normal();
@@ -1188,11 +1663,34 @@ std::optional<UnifiedPrefabLoadKey> EditorAssetDragDropBridge::BuildUnifiedPrefa
 
     return BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
         std::move(source),
+        *manifest,
+        *prefabArtifact,
         manifestPath,
         prefabPath,
         IncludeRendererArtifactStamp(loadMode)
             ? BuildRendererArtifactStamp(*manifest, projectRoot, artifactRoot)
             : std::string {});
+}
+
+bool EditorAssetDragDropBridge::PreloadPreparedPrefabHotCache(
+    const UnifiedPrefabLoadRequest& request) const
+{
+    const auto key = BuildUnifiedPrefabLoadKey(request);
+    if (!key.has_value())
+        return false;
+
+    if (TryGetImportedPrefabHotCache(*key).has_value())
+        return true;
+
+    auto prepared = TryLoadPersistentPreparedPrefabCache(
+        ProjectRoot(),
+        *key,
+        false);
+    if (!prepared.has_value() || !prepared->prefab)
+        return false;
+
+    PutImportedPrefabHotCache(*key, *prepared);
+    return true;
 }
 
 UnifiedPrefabLoadResult EditorAssetDragDropBridge::LoadUnifiedPrefab(
@@ -1534,25 +2032,6 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHie
             "The dragged asset is not imported yet; background preimport must complete before it can be instantiated.");
     }
 
-    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(ProjectRoot()));
-    if (!database.Refresh())
-        return result;
-
-    if (database.LoadSubAssetAtPath(assetPath, prefabSubAssetKey).has_value())
-    {
-        return InstantiateImportedAsset(
-            database,
-            assetPath,
-            prefabSubAssetKey,
-            assetType,
-            scene,
-            request.sceneAssetId,
-            request.prefabInstanceRegistry,
-            request.parent,
-            request.progressTracker,
-            assetPath);
-    }
-
     result = MakePendingImportedPrefabResult(
         fastLoad,
         "dragdrop-asset-import-pending",
@@ -1576,6 +2055,13 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHie
                 {
                     AssetImporterFacade importer(roots);
                     const bool imported = importer.SaveAndReimport(assetPath);
+                    for (const auto& diagnostic : importer.GetDiagnostics())
+                    {
+                        completionResult.dragDrop.diagnostics.push_back({
+                            diagnostic.code,
+                            diagnostic.message
+                        });
+                    }
 
                     completionResult.importSucceeded = imported;
                     completionResult.dragDrop.status = imported

@@ -7,8 +7,11 @@
 #include "UI/Icons/FontAwesomeIconFont.h"
 #include "UI/Profiling/TimelineProfilerLimits.h"
 #include "ProfilerTraceCursor.h"
-#include <fstream>
+#include "Debug/Logger.h"
+#include "Profiling/Profiler.h"
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <imgui_internal.h>
 
 #define NOMINMAX
@@ -134,6 +137,8 @@ static HUDContext& Context()
 	return gHUDContext;
 }
 
+constexpr uint32 kTraceExportFramesPerDraw = 2u;
+
 static void EditStyle(StyleOptions& style)
 {
 	ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.7f);
@@ -174,12 +179,40 @@ struct TraceContext
 	bool		  IncludeEditorUiEvents = true;
 };
 
-void BeginTrace(const char* pPath, TraceContext& context)
+std::string FormatTracePathForLog(const std::filesystem::path& path)
+{
+	try
+	{
+		return path.string();
+	}
+	catch (...)
+	{
+		return "<unprintable path>";
+	}
+}
+
+void BeginTrace(const std::filesystem::path& path, TraceContext& context)
 {
 	if (context.TraceStream.is_open())
 		return;
 
-	context.TraceStream.open(pPath);
+	std::error_code error;
+	const auto parentPath = path.parent_path();
+	if (!parentPath.empty())
+		std::filesystem::create_directories(parentPath, error);
+	if (error)
+	{
+		NLS_LOG_WARNING("Timeline trace export failed to create directory: " + FormatTracePathForLog(parentPath) +
+			" error=" + error.message());
+		return;
+	}
+
+	context.TraceStream.open(path);
+	if (!context.TraceStream.is_open())
+	{
+		NLS_LOG_WARNING("Timeline trace export failed to open file: " + FormatTracePathForLog(path));
+		return;
+	}
 	context.TraceStream << "{\n\"traceEvents\": [\n";
 	URange cpuRange = gProfiler.GetFrameRange();
 	context.LastExportedFrame = cpuRange.End > 0 ? cpuRange.End - 1 : 0;
@@ -201,6 +234,8 @@ void BeginTrace(const char* pPath, TraceContext& context)
 
 void UpdateTrace(TraceContext& context)
 {
+	NLS_PROFILE_NAMED_SCOPE("ProfilerPanel::UpdateTraceExport");
+
 	if (!context.TraceStream.is_open())
 		return;
 
@@ -209,9 +244,10 @@ void UpdateTrace(TraceContext& context)
 	const float TicksToMs = 1000.0f / frequency;
 
 	URange cpuRange = gProfiler.GetFrameRange();
-	const auto exportRange = NLS::UI::TimelineProfilerDetail::ResolveTraceFrameExportRange(
+	const auto exportRange = NLS::UI::TimelineProfilerDetail::ResolveBudgetedTraceFrameExportRange(
 		{ cpuRange.Begin, cpuRange.End },
-		context.LastExportedFrame);
+		context.LastExportedFrame,
+		kTraceExportFramesPerDraw);
 	if (exportRange.Begin == exportRange.End)
 		return;
 
@@ -624,13 +660,14 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 
 		ImGui::BeginGroup();
 
-		const char* pTracePath = "trace.json";
+		const auto tracePath = NLS::UI::TimelineProfilerDetail::ResolveDefaultTraceFilePath(
+			NLS::Debug::FileHandler::GetLogFilePath());
 		ImGui::Checkbox("Export Editor UI", &traceContext.IncludeEditorUiEvents);
 		if (!traceContext.TraceStream.is_open())
 		{
 			if (ImGui::Button("Begin Trace", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
 			{
-				BeginTrace(pTracePath, traceContext);
+				BeginTrace(tracePath, traceContext);
 			}
 		}
 		else

@@ -34,6 +34,8 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/SceneHLOD.h"
+#include "Rendering/SceneVisibilityPipeline.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PPtr.h"
@@ -1720,6 +1722,7 @@ TEST(RenderSceneCacheTests, MeshBitsetCanCullIndividualImportedPrefabNodes)
     farMeshRenderer->SetFrustumBehaviour(
         NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MESHES);
     fixture.meshRenderer->FillWithMaterial(fixture.material);
+    fixture.meshRenderer->gameobject()->GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
 
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
@@ -1750,6 +1753,190 @@ TEST(RenderSceneCacheTests, MeshBitsetCanCullIndividualImportedPrefabNodes)
     EXPECT_EQ(visible.opaques.front().second.mesh, fixture.mesh);
 
     delete farMesh;
+}
+
+TEST(RenderSceneCacheTests, PickablePrimitiveDrawSourcesUseLastVisibleHandles)
+{
+    RenderableFixture fixture;
+    auto* farMesh = CreateFarMesh();
+
+    auto& farObject = fixture.scene.CreateGameObject("FarPickableNode");
+    auto* farMeshFilter = farObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* farMeshRenderer = farObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(farMeshFilter, nullptr);
+    ASSERT_NE(farMeshRenderer, nullptr);
+    farMeshFilter->SetMesh(farMesh);
+    farMeshRenderer->FillWithMaterial(fixture.material);
+
+    fixture.meshRenderer->SetFrustumBehaviour(
+        NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+    farMeshRenderer->SetFrustumBehaviour(
+        NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+    fixture.meshRenderer->gameobject()->GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    auto frustum = CreateForwardFrustum();
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    ASSERT_EQ(renderScene.GetLastVisiblePrimitiveHandles().size(), 1u);
+
+    const auto sources = renderScene.CreatePickablePrimitiveDrawSourcesForHandles(
+        renderScene.GetLastVisiblePrimitiveHandles());
+
+    ASSERT_EQ(sources.size(), 1u);
+    EXPECT_EQ(sources.front().owner, fixture.meshRenderer->gameobject());
+    EXPECT_EQ(sources.front().mesh, fixture.mesh);
+    EXPECT_EQ(sources.front().stateMask.mask, fixture.material.GenerateStateMask().mask);
+
+    delete farMesh;
+}
+
+TEST(RenderSceneCacheTests, GatherVisibleCommandsAppliesImportedHierarchyHLODMetadata)
+{
+    RenderableFixture fixture;
+    auto* childMeshB = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* proxyMesh = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 3.0f});
+
+    auto& cluster = fixture.scene.CreateGameObject("ImportedCluster");
+    cluster.SetSourceObjectKey("node/cluster");
+    cluster.SetLargeSceneHLODMetadata(std::string(
+        "{\"children\":[\"node/childA\",\"node/childB\"],"
+        "\"clusterKey\":\"node/cluster\","
+        "\"proxySubAssetKey\":\"hlod-proxy:node/cluster\","
+        "\"source\":\"imported-hierarchy\"}"));
+
+    auto* childA = fixture.meshRenderer->gameobject();
+    ASSERT_NE(childA, nullptr);
+    childA->SetName("ChildA");
+    childA->SetParent(cluster);
+    childA->SetSourceObjectKey("node/childA");
+
+    auto& childB = fixture.scene.CreateGameObject("ChildB");
+    childB.SetParent(cluster);
+    childB.SetSourceObjectKey("node/childB");
+    auto* childBFilter = childB.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* childBRenderer = childB.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(childBFilter, nullptr);
+    ASSERT_NE(childBRenderer, nullptr);
+    childBFilter->SetMesh(childMeshB);
+    childBRenderer->FillWithMaterial(fixture.material);
+
+    auto& proxy = fixture.scene.CreateGameObject("__HLODProxy_Cluster");
+    proxy.SetParent(cluster);
+    proxy.SetActive(false);
+    proxy.SetSourceObjectKey("hlod-proxy:node/cluster");
+    auto* proxyFilter = proxy.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* proxyRenderer = proxy.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(proxyFilter, nullptr);
+    ASSERT_NE(proxyRenderer, nullptr);
+    proxyFilter->SetMesh(proxyMesh);
+    proxyRenderer->FillWithMaterial(fixture.material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
+    largeSceneSettings.enableSpatialIndex = false;
+    largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.mesh, proxyMesh);
+    EXPECT_EQ(telemetry.culledByReason[
+        static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODChildSuppressed)], 2u);
+    EXPECT_EQ(telemetry.activeHLODClusterCount, 1u);
+
+    delete childMeshB;
+    delete proxyMesh;
+}
+
+TEST(RenderSceneCacheTests, SynchronizeKeepsManuallyRegisteredHLODClusters)
+{
+    RenderableFixture fixture;
+    auto* childMeshB = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* proxyMesh = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 3.0f});
+
+    auto& childB = fixture.scene.CreateGameObject("ManualChildB");
+    auto* childBFilter = childB.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* childBRenderer = childB.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(childBFilter, nullptr);
+    ASSERT_NE(childBRenderer, nullptr);
+    childBFilter->SetMesh(childMeshB);
+    childBRenderer->FillWithMaterial(fixture.material);
+
+    auto& proxy = fixture.scene.CreateGameObject("ManualProxy");
+    auto* proxyFilter = proxy.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* proxyRenderer = proxy.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(proxyFilter, nullptr);
+    ASSERT_NE(proxyRenderer, nullptr);
+    proxyFilter->SetMesh(proxyMesh);
+    proxyRenderer->FillWithMaterial(fixture.material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForTesting();
+    std::vector<NLS::Engine::Rendering::ScenePrimitiveHandle> childHandles;
+    std::optional<NLS::Engine::Rendering::ScenePrimitiveHandle> proxyHandle;
+    for (const auto& record : snapshot.primitiveRecords)
+    {
+        if (record.mesh == proxyMesh)
+            proxyHandle = record.handle;
+        else
+            childHandles.push_back(record.handle);
+    }
+    ASSERT_EQ(childHandles.size(), 2u);
+    ASSERT_TRUE(proxyHandle.has_value());
+
+    NLS::Engine::Rendering::HLODClusterRecord cluster;
+    cluster.childPrimitives = childHandles;
+    cluster.proxyPrimitive = *proxyHandle;
+    cluster.worldReferencePoint = {};
+    cluster.worldSize = 2.0f;
+    cluster.activationScreenRelativeSize = 0.03f;
+    cluster.compatibilityFlags =
+        NLS::Engine::Rendering::HLODCompatibilityFlags::OpaqueOnly |
+        NLS::Engine::Rendering::HLODCompatibilityFlags::ProxySafe;
+    renderScene.RegisterHLODClusterForTesting(cluster);
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+
+    NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
+    largeSceneSettings.enableSpatialIndex = false;
+    largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.mesh, proxyMesh);
+
+    delete childMeshB;
+    delete proxyMesh;
 }
 
 TEST(RenderSceneCacheTests, OpaqueQueueGroupsCompatibleStateAndTransparentKeepsBackToFront)

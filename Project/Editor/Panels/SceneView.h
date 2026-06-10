@@ -70,6 +70,17 @@ namespace NLS::Editor::Panels
 
 	protected:
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
+        bool ShouldUseStaticFrameCache() const override;
+        uint64_t BuildStaticFrameCacheKey(
+            const Render::Entities::Camera& camera,
+            const Engine::SceneSystem::Scene& scene,
+            uint16_t width,
+            uint16_t height) const override;
+        void TraceStaticFrameCacheKeyChanged(
+            uint64_t previousKey,
+            uint64_t currentKey) const override;
+        void CommitStaticFrameCacheKey(uint64_t staticFrameCacheKey) override;
+        bool ShouldForceStaticFrameRender() const override;
         bool RequiresSynchronizedRetiredFramePresentation() const override;
         void AfterRenderFrame() override;
         void DrawPreRenderViewportOverlay() override;
@@ -116,11 +127,24 @@ namespace NLS::Editor::Panels
         NLS::Editor::Core::RendererResourcePrewarmRequest m_importedAssetDragPreviewPrewarmRequest;
         Maths::Vector2 m_importedAssetDragPreviewMousePos { 0.0f, 0.0f };
         std::optional<Maths::Vector3> m_importedAssetDragPreviewPlacement;
-		bool m_hasPickingSample = false;
+        bool m_hasPickingSample = false;
         bool m_requestPickingFrame = true;
+        bool m_requestPickingFrameForClick = false;
         bool m_cameraMovedForPresentation = true;
         bool m_validationReadbackWritten = false;
         uint32_t m_validationReadbackWarmupFrames = 0u;
         uint32_t m_validationReadbackReadyFrames = 0u;
+        mutable uint64_t m_lastComputedStaticCacheBaseKey = 0u;
+        mutable uint64_t m_lastComputedStaticCacheHighlightKey = 0u;
+        mutable uint64_t m_lastComputedStaticCacheGizmoKey = 0u;
+        mutable uint64_t m_lastComputedStaticCacheFocusKey = 0u;
+        mutable uint64_t m_lastComputedStaticCacheSelectionKey = 0u;
+        mutable uint64_t m_lastComputedStaticCacheDragPreviewKey = 0u;
+        uint64_t m_committedStaticCacheBaseKey = 0u;
+        uint64_t m_committedStaticCacheHighlightKey = 0u;
+        uint64_t m_committedStaticCacheGizmoKey = 0u;
+        uint64_t m_committedStaticCacheFocusKey = 0u;
+        uint64_t m_committedStaticCacheSelectionKey = 0u;
+        uint64_t m_committedStaticCacheDragPreviewKey = 0u;
 	};
 }

@@ -10,12 +10,15 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <Json/json.hpp>
+
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Core/ResourceManagement/TextureManager.h"
 #include "Core/ServiceLocator.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
+#include "Engine/Assets/ModelPrefabBuilder.h"
 #include "Jobs/JobSystem.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/LargeSceneSettings.h"
@@ -427,15 +430,22 @@ namespace
 		const ScenePrimitiveSnapshot& snapshot,
 		const std::vector<HLODClusterRecord>& clusters)
 	{
-		for (const auto& cluster : clusters)
-		{
-			if (cluster.proxyPrimitive.has_value() &&
-				residency.IsReady(*cluster.proxyPrimitive))
+	for (const auto& cluster : clusters)
+	{
+		if (!cluster.proxyPrimitive.has_value())
+			continue;
+
+		const auto found = std::find_if(
+			snapshot.primitiveRecords.begin(),
+			snapshot.primitiveRecords.end(),
+			[&](const ScenePrimitiveSnapshotRecord& record)
 			{
-				residency.MarkHLODProxyReady(*cluster.proxyPrimitive);
-			}
-		}
+				return record.handle == *cluster.proxyPrimitive && record.mesh != nullptr;
+			});
+		if (found != snapshot.primitiveRecords.end())
+			residency.MarkHLODProxyReady(*cluster.proxyPrimitive);
 	}
+}
 
 	uint64_t AllocateRenderSceneId()
 	{
@@ -454,6 +464,57 @@ namespace
 		const NLS::Render::Geometry::BoundingSphere& rhs)
 	{
 		return lhs.position == rhs.position && lhs.radius == rhs.radius;
+	}
+
+	struct ImportedHierarchyHLODMetadata
+	{
+		std::string clusterKey;
+		std::vector<std::string> children;
+		std::string proxySubAssetKey;
+	};
+
+	std::optional<ImportedHierarchyHLODMetadata> ParseImportedHierarchyHLODMetadata(const std::string& metadataJson)
+	{
+		try
+		{
+			const auto metadata = nlohmann::json::parse(metadataJson);
+			if (!metadata.is_object())
+				return std::nullopt;
+
+			const auto source = metadata.find(NLS::Engine::Assets::GeneratedModelPrefabHLODSchema::SourceField);
+			if (source == metadata.end() ||
+				!source->is_string() ||
+				source->get<std::string>() != NLS::Engine::Assets::GeneratedModelPrefabHLODSchema::ImportedHierarchySource)
+			{
+				return std::nullopt;
+			}
+
+			ImportedHierarchyHLODMetadata parsed;
+			const auto clusterKey = metadata.find(NLS::Engine::Assets::GeneratedModelPrefabHLODSchema::ClusterKeyField);
+			const auto children = metadata.find(NLS::Engine::Assets::GeneratedModelPrefabHLODSchema::ChildrenField);
+			const auto proxy = metadata.find(NLS::Engine::Assets::GeneratedModelPrefabHLODSchema::ProxySubAssetKeyField);
+			if (clusterKey == metadata.end() || !clusterKey->is_string() ||
+				children == metadata.end() || !children->is_array() ||
+				proxy == metadata.end() || !proxy->is_string())
+			{
+				return std::nullopt;
+			}
+
+			parsed.clusterKey = clusterKey->get<std::string>();
+			parsed.proxySubAssetKey = proxy->get<std::string>();
+			for (const auto& child : *children)
+			{
+				if (child.is_string())
+					parsed.children.push_back(child.get<std::string>());
+			}
+			if (parsed.clusterKey.empty() || parsed.proxySubAssetKey.empty() || parsed.children.empty())
+				return std::nullopt;
+			return parsed;
+		}
+		catch (...)
+		{
+			return std::nullopt;
+		}
 	}
 
 	bool AreSameBounds(
@@ -608,7 +669,8 @@ struct RenderScene::RepresentationRegistry
 RenderScene::RenderScene()
 	: m_sceneId(AllocateRenderSceneId()),
 	  m_spatialIndex(std::make_unique<SceneSpatialIndex>()),
-	  m_representationRegistry(std::make_unique<RepresentationRegistry>())
+	  m_representationRegistry(std::make_unique<RepresentationRegistry>()),
+	  m_importedHierarchyHLODClusterHandles()
 {
 }
 
@@ -634,7 +696,8 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_lastVisiblePrimitiveHandles(std::move(other.m_lastVisiblePrimitiveHandles)),
 	  m_lastRepresentationStreamingInterest(std::move(other.m_lastRepresentationStreamingInterest)),
 	  m_spatialIndex(std::move(other.m_spatialIndex)),
-	  m_representationRegistry(std::move(other.m_representationRegistry))
+	  m_representationRegistry(std::move(other.m_representationRegistry)),
+	  m_importedHierarchyHLODClusterHandles(std::move(other.m_importedHierarchyHLODClusterHandles))
 {
 	other.ResetMovedFromState();
 }
@@ -664,6 +727,7 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_lastRepresentationStreamingInterest = std::move(other.m_lastRepresentationStreamingInterest);
 	m_spatialIndex = std::move(other.m_spatialIndex);
 	m_representationRegistry = std::move(other.m_representationRegistry);
+	m_importedHierarchyHLODClusterHandles = std::move(other.m_importedHierarchyHLODClusterHandles);
 
 	other.ResetMovedFromState();
 	return *this;
@@ -691,6 +755,7 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_lastRepresentationStreamingInterest.clear();
 	m_spatialIndex = std::make_unique<SceneSpatialIndex>();
 	m_representationRegistry = std::make_unique<RepresentationRegistry>();
+	m_importedHierarchyHLODClusterHandles.clear();
 }
 
 bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputStamp& other) const
@@ -744,6 +809,7 @@ RenderSceneSyncStats RenderScene::Synchronize(
 		RemoveMissingPrimitives(liveMeshRenderers, stats);
 	m_lastSceneFastAccessRevision = fastAccessRevision;
 	RefreshSpatialIndex(options);
+	RebuildImportedHierarchyHLODRecords(scene);
 	m_lastSyncStats = stats;
 	stats.syncTimeNs = ElapsedNanoseconds(syncStart);
 	m_lastSyncStats.syncTimeNs = stats.syncTimeNs;
@@ -798,6 +864,8 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 	m_lastLargeSceneTelemetry.visibleMeshCount = visibility.visibleMeshCount;
 	m_lastLargeSceneTelemetry.occlusionTestCount = visibility.occlusionTestCount;
 	m_lastLargeSceneTelemetry.occlusionCulledCount = visibility.occlusionCulledCount;
+	m_lastLargeSceneTelemetry.lodSelectionCount = visibility.lodSelectionCount;
+	m_lastLargeSceneTelemetry.activeHLODClusterCount = visibility.activeHLODClusterCount;
 	m_lastLargeSceneTelemetry.commandOffsetRebuildCount = commandOffsetTouchedPrimitiveCount > 0u ? 1u : 0u;
 	m_lastLargeSceneTelemetry.serialVisibilityTimeNs = 0u;
 	m_lastLargeSceneTelemetry.parallelVisibilityTimeNs = 0u;
@@ -962,6 +1030,52 @@ std::vector<ScenePrimitiveHandle> RenderScene::GetLivePrimitiveHandles() const
 	return handles;
 }
 
+std::vector<ScenePickablePrimitiveDrawSource> RenderScene::CreatePickablePrimitiveDrawSourcesForHandles(
+	const std::vector<ScenePrimitiveHandle>& handles) const
+{
+	std::vector<ScenePickablePrimitiveDrawSource> sources;
+	sources.reserve(handles.size());
+	AppendPickablePrimitiveDrawSourcesForHandles(handles, sources);
+	return sources;
+}
+
+void RenderScene::AppendPickablePrimitiveDrawSourcesForHandles(
+	const std::vector<ScenePrimitiveHandle>& handles,
+	std::vector<ScenePickablePrimitiveDrawSource>& outSources) const
+{
+	outSources.reserve(outSources.size() + handles.size());
+	for (const auto handle : handles)
+	{
+		if (handle.sceneId != m_sceneId || handle.index >= m_primitives.size())
+			continue;
+
+		const auto& primitive = m_primitives[handle.index];
+		if (primitive.handle != handle ||
+			!primitive.occupied ||
+			primitive.tombstoned ||
+			primitive.owner == nullptr ||
+			!primitive.owner->IsAlive() ||
+			!primitive.owner->IsActive() ||
+			primitive.mesh == nullptr)
+		{
+			continue;
+		}
+
+		for (const auto& slot : primitive.cachedCommands)
+		{
+			if (!slot.valid || slot.command.mesh == nullptr || slot.command.material == nullptr)
+				continue;
+
+			outSources.push_back({
+				primitive.owner,
+				slot.command.mesh,
+				primitive.worldMatrix,
+				slot.command.stateMask
+			});
+		}
+	}
+}
+
 const std::vector<ScenePrimitiveHandle>& RenderScene::GetLastRepresentationStreamingInterest() const
 {
 	return m_lastRepresentationStreamingInterest;
@@ -987,11 +1101,102 @@ bool RenderScene::IsPrimitiveHandleLiveForTesting(const ScenePrimitiveHandle han
 void RenderScene::ClearRepresentationRecords()
 {
 	m_representationRegistry = std::make_unique<RepresentationRegistry>();
+	m_importedHierarchyHLODClusterHandles.clear();
 	for (auto& primitive : m_primitives)
 	{
 		primitive.lodGroup.reset();
 		primitive.hlodCluster.reset();
 	}
+}
+
+void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene)
+{
+	if (m_representationRegistry == nullptr)
+		m_representationRegistry = std::make_unique<RepresentationRegistry>();
+
+	for (auto& primitive : m_primitives)
+	{
+		if (!primitive.hlodCluster.has_value())
+			continue;
+		const auto found = std::find(
+			m_importedHierarchyHLODClusterHandles.begin(),
+			m_importedHierarchyHLODClusterHandles.end(),
+			*primitive.hlodCluster);
+		if (found != m_importedHierarchyHLODClusterHandles.end())
+			primitive.hlodCluster.reset();
+	}
+	for (const auto handle : m_importedHierarchyHLODClusterHandles)
+	{
+		if (handle.index < m_representationRegistry->hlodClusters.size())
+			m_representationRegistry->hlodClusters[handle.index] = {};
+	}
+	m_importedHierarchyHLODClusterHandles.clear();
+
+	std::unordered_map<std::string, std::vector<ScenePrimitiveHandle>> primitivesBySourceKey;
+	primitivesBySourceKey.reserve(m_livePrimitiveCount);
+	for (const auto& primitive : m_primitives)
+	{
+		if (!primitive.occupied || primitive.tombstoned || primitive.owner == nullptr)
+			continue;
+
+		const auto& sourceKey = primitive.owner->GetSourceObjectKey();
+		if (!sourceKey.empty())
+			primitivesBySourceKey[sourceKey].push_back(primitive.handle);
+	}
+
+	for (const auto* gameObject : scene.GetGameObjects())
+	{
+		if (gameObject == nullptr || gameObject->GetLargeSceneHLODMetadata().empty())
+			continue;
+
+		const auto metadata = ParseImportedHierarchyHLODMetadata(
+			gameObject->GetLargeSceneHLODMetadata());
+		if (!metadata.has_value())
+			continue;
+
+		HLODClusterRecord cluster;
+		cluster.clusterHandle = {};
+		cluster.activationScreenRelativeSize = 0.03f;
+		cluster.compatibilityFlags = HLODCompatibilityFlags::OpaqueOnly | HLODCompatibilityFlags::ProxySafe;
+
+		for (const auto& childKey : metadata->children)
+		{
+			const auto foundChildren = primitivesBySourceKey.find(childKey);
+			if (foundChildren == primitivesBySourceKey.end())
+				continue;
+			for (const auto handle : foundChildren->second)
+				cluster.childPrimitives.push_back(handle);
+		}
+
+		const auto foundProxy = primitivesBySourceKey.find(metadata->proxySubAssetKey);
+		if (foundProxy != primitivesBySourceKey.end() && !foundProxy->second.empty())
+			cluster.proxyPrimitive = foundProxy->second.front();
+
+		if (cluster.childPrimitives.empty() || !cluster.proxyPrimitive.has_value())
+			continue;
+
+		Maths::Vector3 center {};
+		float radius = 0.0f;
+		uint32_t sampledChildCount = 0u;
+		for (const auto child : cluster.childPrimitives)
+		{
+			if (!IsPrimitiveHandleLive(child))
+				continue;
+			const auto& primitive = m_primitives[child.index];
+			center += primitive.modelBoundingSphere.position;
+			radius = std::max(radius, primitive.modelBoundingSphere.radius);
+			++sampledChildCount;
+		}
+		if (sampledChildCount > 0u)
+			center /= static_cast<float>(sampledChildCount);
+		cluster.worldReferencePoint = center;
+		cluster.worldSize = std::max(radius * 2.0f, 1.0f);
+
+		const auto handle = RegisterHLODCluster(cluster);
+		m_importedHierarchyHLODClusterHandles.push_back(handle);
+	}
+
+	m_representationRegistry->RebuildLookup();
 }
 
 SceneLODGroupHandle RenderScene::RegisterLODGroup(const LODGroupRecord& group)
@@ -1730,6 +1935,12 @@ namespace
 			if (reasonIndex < target.culledByReason.size())
 				++target.culledByReason[reasonIndex];
 		}
+		for (const auto selectedLOD : source.selectedLOD)
+		{
+			if (selectedLOD < target.lodSelectionCount.size())
+				++target.lodSelectionCount[selectedLOD];
+		}
+		target.activeHLODClusterCount = static_cast<uint64_t>(source.activeHLODClusters.size());
 	}
 }
 

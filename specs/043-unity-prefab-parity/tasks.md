@@ -174,17 +174,32 @@
 
 ---
 
-## Phase 9: Verification, Evidence, And Review
+## Phase 9: Prepared Prefab Cache Parity
+
+**Purpose**: Keep scene restore and repeated prefab instantiation on the same Unity-like prepared-artifact path instead of reparsing prefab graphs or rescanning renderer dependencies every editor session.
+
+- [x] T065 Add RED coverage proving generated/model prefab scene restore reuses a persistent prepared graph cache after editor-session hot-cache eviction in `Tests/Unit/GameObjectAssetImportTests.cpp`
+- [x] T066 Add RED coverage proving persisted renderer dependency templates are consumed from disk, not rebuilt from the prefab graph, in `Tests/Unit/GameObjectAssetImportTests.cpp`
+- [x] T067 Persist prepared prefab graph, resolved assets, base chain, and renderer dependency templates under `Library/PreparedPrefabCache/` in `Project/Editor/Assets/EditorAssetDragDropBridge.cpp`
+- [x] T068 Key prepared cache entries by unified prefab identity plus manifest content, prefab artifact content, and renderer dependency stamps so source/import edits invalidate scene restore and drag/drop consistently
+- [x] T069 Add bounded entry/byte budgets and throttled eviction pruning so persistent cache population cannot stall every cold prefab load or retain every imported model indefinitely
+- [x] T070 Reuse prepared renderer dependency templates from the L1 hot cache in `Project/Editor/Core/EditorActions.cpp` before falling back to graph scanning
+- [x] T071 Ensure missing mesh artifact retries have a finite budget and eventually settle into the existing failure/placeholder path instead of leaving prefab resolution pending forever
+
+---
+
+## Phase 10: Verification, Evidence, And Review
 
 **Purpose**: Prove behavior and prepare for implementation sign-off.
 
-- [x] T065 Build `NullusUnitTests`
-- [x] T066 Run focused prefab instance, unified load, drag preview, resource lifetime, trim, editor UX, and scene streaming tests
-- [x] T067 Run `git diff --check`
-- [ ] T068 Perform manual editor validation from `specs/043-unity-prefab-parity/quickstart.md`
-- [ ] T069 Capture RenderDoc or equivalent backend evidence proving preview and committed paths bind intended mesh/material/texture resources
-- [ ] T070 Update `specs/043-unity-prefab-parity/plan.md` with measured cold/warm timing, cache hit/miss, release stall, deletion release, and scene-load streaming evidence
-- [ ] T071 Run `/plan-review` and resolve all P0/P1 findings before merge or commit
+- [ ] T072 Build full `NullusUnitTests` after unrelated compile blockers are cleared
+- [x] T073 Run focused unified-load and prepared-cache tests in `Tests/Unit/GameObjectAssetImportTests.cpp`
+- [ ] T074 Run remaining focused prefab instance, drag preview, resource lifetime, trim, editor UX, and scene streaming tests
+- [x] T075 Run `git diff --check`
+- [ ] T076 Perform manual editor validation from `specs/043-unity-prefab-parity/quickstart.md`
+- [ ] T077 Capture RenderDoc or equivalent backend evidence proving preview and committed paths bind intended mesh/material/texture resources
+- [ ] T078 Update `specs/043-unity-prefab-parity/plan.md` with measured cold/warm timing, cache hit/miss, release stall, deletion release, and scene-load streaming evidence
+- [ ] T079 Run `/plan-review` and resolve all P0/P1 findings before merge or commit
 
 ---
 
@@ -200,7 +215,8 @@
 - **US4**: Depends on Phase 2 and can proceed in parallel with US2/US3 after owner contracts are defined.
 - **US5**: Depends on US1 and US4 state being available.
 - **Phase 8**: Depends on US2 and US4.
-- **Phase 9**: Depends on selected implementation phases.
+- **Phase 9**: Depends on US2 and Phase 8 because prepared cache keys and scene streaming must share the same unified prefab request.
+- **Phase 10**: Depends on selected implementation phases.
 
 ### Parallel Opportunities
 

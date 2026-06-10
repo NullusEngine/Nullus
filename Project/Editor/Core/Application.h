@@ -54,10 +54,14 @@ namespace NLS
 	private:
         void RunEditorFrame(float deltaTime);
         void SyncPlatformSwapchainToFramebufferSize();
+        void PaceIdleFrameIfNeeded();
         bool m_isPollingEvents = false;
         bool m_isResizeTicking = false;
 		bool m_isTicking = false;
 		bool m_pendingResizeTick = false;
+        bool m_lastFrameHadTransientInput = false;
+        bool m_hasLastIdlePacingMousePosition = false;
+        Maths::Vector2 m_lastIdlePacingMousePosition;
         bool m_hasLastNativeResizeTickSize = false;
         Maths::Vector2 m_lastNativeResizeTickSize;
 		Context m_context;

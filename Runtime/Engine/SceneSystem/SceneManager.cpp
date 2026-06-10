@@ -337,6 +337,9 @@ void SceneManager::ForgetCurrentSceneSourcePath()
 
 void SceneManager::MarkCurrentSceneDirty()
 {
+    if (m_currentScene)
+        m_currentScene->MarkRenderContentChanged();
+
     if (m_currentSceneDirty)
         return;
 

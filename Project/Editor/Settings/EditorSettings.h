@@ -60,6 +60,8 @@ namespace NLS::Editor::Settings
         PROPERTY(RequiresRestart)
         bool enableThreadedRendering = true;
         PROPERTY()
+        bool enablePowerSavingIdlePacing = false;
+        PROPERTY()
         bool renderDocEnabled = false;
         PROPERTY()
         bool renderDocAutoOpenReplayUI = false;

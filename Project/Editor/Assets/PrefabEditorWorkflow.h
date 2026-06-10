@@ -110,6 +110,7 @@ struct PrefabInstanceRecord
     std::vector<NLS::Engine::Serialize::ObjectRecord> preservedAddedObjects;
     std::vector<NLS::Engine::Serialize::PrefabInstanceObjectCorrespondence> preservedCorrespondence;
     std::vector<NLS::Engine::Serialize::ObjectIdentifier> preservedAssetReferences;
+    std::vector<NLS::Engine::Assets::PrefabResolvedAsset> preservedResolvedAssets;
     std::vector<PrefabInstanceRecord> nestedInstances;
 };
 

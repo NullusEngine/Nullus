@@ -241,6 +241,7 @@ namespace
 			ShaderParameterStructBuilder("HZBOcclusionParameters")
 				.SetGroup(ShaderParameterGroupKind::Pass)
 				.AddTexture("u_HZB", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
+				.AddUniformBuffer("HZBOcclusionConstants", 1u, 16u, NLS::Render::RHI::ShaderStageMask::Compute)
 				.AddStructuredBuffer(
 					"u_OcclusionPrimitiveInputs",
 					2u,

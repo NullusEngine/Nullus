@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <type_traits>
+
 #include <Debug/Logger.h>
 
 #include "Rendering/Resources/Material.h"
@@ -13,6 +15,17 @@ namespace NLS::Render::Resources
 		{
 			if (m_parameterBlock.Contains(p_key) || EnsureMaterialParameterExists(p_key))
 			{
+				if (const auto* currentValue = m_parameterBlock.TryGet(p_key);
+					currentValue != nullptr && currentValue->type() == typeid(T))
+				{
+					if constexpr (std::is_pointer_v<T> ||
+						std::is_arithmetic_v<T> ||
+						std::is_enum_v<T>)
+					{
+						if (std::any_cast<T>(*currentValue) == p_value)
+							return;
+					}
+				}
 				m_parameterBlock.Set(p_key, std::any(p_value));
 				InvalidateExplicitBindingSetCache();
 			}

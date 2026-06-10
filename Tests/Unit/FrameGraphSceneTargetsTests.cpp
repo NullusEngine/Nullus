@@ -5392,6 +5392,59 @@ TEST(FrameGraphSceneTargetsTests, BuildHZBPreparedComputeDispatchSourceEmitsOneB
     EXPECT_EQ(hzbReadAccess.subresourceRange.mipLevelCount, 3u);
 }
 
+TEST(FrameGraphSceneTargetsTests, HZBOcclusionCpuToGpuPrimitiveInputsDoNotRequestIllegalShaderReadTransition)
+{
+    auto depthDesc = MakeTestTextureDesc(
+        "DeferredDepth",
+        NLS::Render::FrameGraph::kDeferredGBufferDepthFormat,
+        NLS::Render::FrameGraph::kDeferredGBufferDepthUsage);
+    auto hzbDesc = MakeTestTextureDesc(
+        "SceneHZB",
+        NLS::Render::RHI::TextureFormat::R32F,
+        NLS::Render::RHI::TextureUsageFlags::Sampled | NLS::Render::RHI::TextureUsageFlags::Storage);
+
+    NLS::Render::RHI::RHIBufferDesc inputDesc;
+    inputDesc.size = 64u;
+    inputDesc.usage = NLS::Render::RHI::BufferUsageFlags::ShaderRead;
+    inputDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    NLS::Render::RHI::RHIBufferDesc resultDesc;
+    resultDesc.size = 64u;
+    resultDesc.usage = NLS::Render::RHI::BufferUsageFlags::Storage |
+        NLS::Render::RHI::BufferUsageFlags::CopySrc;
+    NLS::Render::RHI::RHIBufferDesc constantsDesc;
+    constantsDesc.size = 16u;
+    constantsDesc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
+    constantsDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+
+    NLS::Render::FrameGraph::HZBFrameResourceRequest request;
+    request.opaqueDepthEligible = true;
+    request.opaqueDepthTexture = std::make_shared<TestTexture>(depthDesc);
+    request.hzbTexture = std::make_shared<TestTexture>(hzbDesc);
+    request.occlusionPrimitiveInputBuffer = std::make_shared<TestBuffer>(inputDesc);
+    request.occlusionPrimitiveResultBuffer = std::make_shared<TestBuffer>(resultDesc);
+    request.occlusionConstantsBuffer = std::make_shared<TestBuffer>(constantsDesc);
+    request.hzbBuildPipeline = std::make_shared<TestComputePipeline>("HZBBuildPipeline");
+    request.occlusionPipeline = std::make_shared<TestComputePipeline>("HZBOcclusionPipeline");
+    request.hzbBuildBindingSets = { std::make_shared<TestBindingSet>("HZBBuildMip0BindingSet") };
+    request.hzbBuildGroupCountsByMip = {{ { 40u, 23u, 1u } }};
+    request.occlusionBindingSet = std::make_shared<TestBindingSet>("HZBOcclusionBindingSet");
+    request.occlusionGroupCounts = { 7u, 1u, 1u };
+    request.hzbMipCount = 1u;
+
+    const auto source = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(request);
+
+    ASSERT_EQ(source.dispatchInputs.size(), 2u);
+    const auto& occlusion = source.dispatchInputs[1u];
+    EXPECT_EQ(occlusion.debugName, "HZBOcclusion");
+    EXPECT_TRUE(occlusion.shaderReadBuffersBefore.empty());
+    ASSERT_EQ(occlusion.bufferResourceAccesses.size(), 3u);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[0u].buffer, request.occlusionPrimitiveInputBuffer);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[0u].state, NLS::Render::RHI::ResourceState::GenericRead);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[1u].buffer, request.occlusionConstantsBuffer);
+    EXPECT_EQ(occlusion.bufferResourceAccesses[1u].state, NLS::Render::RHI::ResourceState::GenericRead);
+    EXPECT_EQ(occlusion.shaderWriteBuffersBefore.size(), 1u);
+}
+
 TEST(FrameGraphSceneTargetsTests, CompileThreadedExecutionBuildsPreparedComputeSourceFromFactoryOnce)
 {
     NLS::Render::Data::FrameDescriptor frameDescriptor;

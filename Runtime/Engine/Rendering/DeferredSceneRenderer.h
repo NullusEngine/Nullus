@@ -162,10 +162,12 @@ namespace NLS::Engine::Rendering
 		std::shared_ptr<NLS::Render::RHI::RHITexture> m_hzbTexture;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionPrimitiveInputBuffer;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionPrimitiveResultBuffer;
+		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionConstantsBuffer;
 		std::shared_ptr<NLS::Render::RHI::RHITexture> m_hzbPreparedDepthTexture;
 		std::shared_ptr<NLS::Render::RHI::RHITexture> m_hzbPreparedHZBTexture;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbPreparedOcclusionPrimitiveInputBuffer;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbPreparedOcclusionPrimitiveResultBuffer;
+		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbPreparedOcclusionConstantsBuffer;
 		std::shared_ptr<NLS::Render::RHI::RHICompletionToken> m_hzbOcclusionResultReadbackCompletion;
 		std::shared_ptr<std::vector<uint32_t>> m_hzbOcclusionResultReadbackFlags;
 		std::shared_ptr<NLS::Render::Context::PostSubmitBufferReadbackState> m_hzbOcclusionResultReadbackState;
@@ -193,7 +195,6 @@ namespace NLS::Engine::Rendering
 		std::vector<std::array<uint32_t, 3u>> m_hzbBuildDispatchGroupsByMip;
 		std::array<uint32_t, 3u> m_hzbOcclusionDispatchGroups{ 1u, 1u, 1u };
 		uint32_t m_hzbOcclusionPrimitiveCount = 1u;
-		uint64_t m_hzbOcclusionPrimitivePacketHash = 0u;
 		uint32_t m_hzbOcclusionObservationPrimitiveCount = 0u;
 		uint64_t m_threadedQueuedGBufferDrawCount = 0u;
 		uint64_t m_threadedQueuedDecalDrawCount = 0u;

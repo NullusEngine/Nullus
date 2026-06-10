@@ -89,11 +89,14 @@ namespace NLS::Render::Backend
 					D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
 					kDx12ShaderVisibleSamplerDescriptorCapacity,
 					"DX12SamplerHeapAllocator"))
+				, m_samplerDescriptorTableCache(std::make_shared<DX12SamplerDescriptorTableCache>(
+					m_samplerHeapAllocator))
 			{
 			}
 
 			~NativeDX12ExplicitDevice()
 			{
+				m_samplerDescriptorTableCache.reset();
 				m_samplerHeapAllocator.reset();
 				m_resourceHeapAllocator.reset();
 			}
@@ -309,6 +312,7 @@ namespace NLS::Render::Backend
 			std::array<std::shared_ptr<NLS::Render::RHI::RHIQueue>, 3> m_queues{};
 			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
 			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
+			std::shared_ptr<DX12SamplerDescriptorTableCache> m_samplerDescriptorTableCache;
 			NLS::Render::RHI::DX12::DX12ReadbackContext m_pixelReadbackContext;
 			NLS::Render::RHI::DX12::DX12ReadbackContext m_bufferReadbackContext;
 			bool m_gpuProfilerInitialized = false;
@@ -368,7 +372,8 @@ namespace NLS::Render::Backend
 				m_device.Get(),
 				desc,
 				m_resourceHeapAllocator,
-				m_samplerHeapAllocator);
+				m_samplerHeapAllocator,
+				m_samplerDescriptorTableCache);
 			return bindingSet->IsValid() ? bindingSet : nullptr;
 #else
 			return nullptr;

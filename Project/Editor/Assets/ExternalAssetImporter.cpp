@@ -2228,15 +2228,7 @@ NLS::Render::Assets::SceneModelSourceFormat SourceFormatForExtension(const std::
 
 FbxReaderSelection ResolveFbxReaderSelection(const ExternalModelImportRequest& request)
 {
-    const auto selection = ModelImporterSettingsFromSerialized(request.meta.settings).fbxReaderSelection;
-#if !NLS_HAS_AUTODESK_FBX_SDK && NLS_HAS_ASSIMP_FBX_IMPORTER
-    if (selection == FbxReaderSelection::Autodesk ||
-        selection == FbxReaderSelection::AutodeskWithAssimpFallback)
-    {
-        return FbxReaderSelection::Assimp;
-    }
-#endif
-    return selection;
+    return ModelImporterSettingsFromSerialized(request.meta.settings).fbxReaderSelection;
 }
 
 bool IsAssimpFbxImporterAvailable()
@@ -2344,6 +2336,18 @@ void AddFbxReaderFallbackWarning(
         "Autodesk FBX reader failed; attempting Assimp FBX reader fallback. Reason: " + std::move(reason));
 }
 
+void AddAutodeskFbxUnavailableError(
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const ExternalModelImportRequest& request)
+{
+    AddError(
+        diagnostics,
+        request.meta.id,
+        request.sourcePath,
+        "external-model-importer-autodesk-fbx-unavailable",
+        "Autodesk FBX SDK is not available in this build. Enable the Autodesk FBX SDK integration or explicitly choose the Assimp FBX reader.");
+}
+
 NLS::Render::Assets::ImportedScene ImportSceneForRequest(
     const ExternalModelImportRequest& request,
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
@@ -2405,6 +2409,29 @@ NLS::Render::Assets::ImportedScene ImportSceneForRequest(
 
                 const bool allowAssimpFallback =
                     fbxReaderSelection == FbxReaderSelection::AutodeskWithAssimpFallback;
+
+                if (!IsAutodeskFbxSdkAvailable())
+                {
+                    if (!allowAssimpFallback)
+                    {
+                        AddAutodeskFbxUnavailableError(diagnostics, request);
+                        return false;
+                    }
+
+                    AddFbxReaderFallbackWarning(
+                        diagnostics,
+                        request,
+                        "Autodesk FBX SDK is not available in this build.");
+                    return LoadFbxWithAssimp(
+                        request,
+                        meshes,
+                        materialNames,
+                        parserFlags,
+                        parserExternalDependencies,
+                        detailedScene,
+                        hasDetailedScene,
+                        diagnostics);
+                }
 
                 const bool parsed = LoadFbxWithAutodesk(
                     request,
@@ -2549,6 +2576,28 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(
                 externalDependencies,
                 unusedScene,
                 hasDetailedScene);
+            if (!IsAutodeskFbxSdkAvailable())
+            {
+                if (fbxReaderSelection != FbxReaderSelection::AutodeskWithAssimpFallback)
+                {
+                    AddAutodeskFbxUnavailableError(diagnostics, request);
+                    return false;
+                }
+
+                AddFbxReaderFallbackWarning(
+                    diagnostics,
+                    request,
+                    "Autodesk FBX SDK is not available in this build.");
+                return LoadFbxWithAssimp(
+                    request,
+                    meshes,
+                    materials,
+                    fbxParserFlags,
+                    externalDependencies,
+                    unusedScene,
+                    hasDetailedScene,
+                    diagnostics);
+            }
             if (loadedWithAutodesk || fbxReaderSelection != FbxReaderSelection::AutodeskWithAssimpFallback)
                 return loadedWithAutodesk;
 

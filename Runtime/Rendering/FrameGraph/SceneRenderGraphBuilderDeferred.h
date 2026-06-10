@@ -161,6 +161,7 @@ namespace NLS::Render::FrameGraph
         std::shared_ptr<NLS::Render::RHI::RHITexture> hzbTexture;
         std::shared_ptr<NLS::Render::RHI::RHIBuffer> occlusionPrimitiveInputBuffer;
         std::shared_ptr<NLS::Render::RHI::RHIBuffer> occlusionPrimitiveResultBuffer;
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> occlusionConstantsBuffer;
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> hzbBuildPipeline;
         std::vector<std::shared_ptr<NLS::Render::RHI::RHIBindingSet>> hzbBuildBindingSets;
         std::vector<std::array<uint32_t, 3u>> hzbBuildGroupCountsByMip;

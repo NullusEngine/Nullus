@@ -65,6 +65,18 @@ namespace
 		return frustum;
 	}
 
+	NLS::Render::Data::Frustum CreateWideForwardFrustum()
+	{
+		NLS::Render::Data::Frustum frustum;
+		const auto view = NLS::Maths::Matrix4::CreateView(
+			0.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, -1.0f,
+			0.0f, 1.0f, 0.0f);
+		const auto projection = NLS::Maths::Matrix4::CreatePerspective(90.0f, 16.0f / 9.0f, 0.1f, 100.0f);
+		frustum.CalculateFrustum(projection * view);
+		return frustum;
+	}
+
 	ScenePrimitiveSnapshot BuildSnapshot(const size_t primitiveCount)
 	{
 		ScenePrimitiveSnapshot snapshot;
@@ -328,6 +340,63 @@ TEST(SceneVisibilityPipelineTests, FrustumCullingKeepsAABBTouchingPlaneVisible)
 	EXPECT_EQ(result.visiblePrimitiveHandles.front(), record.handle);
 	ASSERT_EQ(result.cullReasons.size(), 1u);
 	EXPECT_EQ(result.cullReasons.front(), CullReason::Visible);
+}
+
+TEST(SceneVisibilityPipelineTests, SpatialFrustumQueryKeepsWideScreenEdgeAABBVisible)
+{
+	ScenePrimitiveSnapshot snapshot;
+	snapshot.sceneId = kSceneId;
+	snapshot.snapshotSerial = 1u;
+
+	ScenePrimitiveSnapshotRecord record;
+	record.handle = MakeHandle(0u);
+	record.mesh = reinterpret_cast<NLS::Render::Resources::Mesh*>(static_cast<uintptr_t>(1u));
+	record.modelBoundingSphere.position = { 160.0f, 0.0f, 0.0f };
+	record.modelBoundingSphere.radius = 2.0f;
+	record.modelBounds.center = { 160.0f, 0.0f, -90.0f };
+	record.modelBounds.size = { 4.0f, 4.0f, 4.0f };
+	record.worldMatrix = NLS::Maths::Matrix4::Identity;
+	record.frustumBehaviour =
+		NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL;
+	record.visibilitySettings.layer = 0u;
+	record.commandOffsetBegin = 0u;
+	record.commandOffsetEnd = 1u;
+	record.ownerAlive = true;
+	record.ownerActive = true;
+	record.occupied = true;
+	record.tombstoned = false;
+	record.hasMeshBinding = true;
+	record.hasValidMaterial = true;
+	snapshot.primitiveRecords.push_back(record);
+	snapshot.handleToDenseIndex.push_back({ record.handle, 0u });
+	snapshot.denseIndexToHandle.push_back(record.handle);
+	snapshot.commandOffsetTable.push_back({ record.handle, 0u, 1u });
+
+	auto frustum = CreateWideForwardFrustum();
+	SceneSpatialIndex spatialIndex;
+	spatialIndex.Update(snapshot);
+
+	SceneVisibilityPipelineOptions options;
+	options.frustum = &frustum;
+	options.cameraPosition = {};
+	options.visibleLayerMask = 0xFFFF'FFFFu;
+	options.enableSpatialIndex = true;
+
+	const auto spatial = SceneVisibilityPipeline::Evaluate(
+		options,
+		snapshot,
+		spatialIndex,
+		SceneVisibilityPipelineMode::Serial);
+	const auto fullScan = SceneVisibilityPipeline::Evaluate(
+		options,
+		snapshot,
+		spatialIndex,
+		SceneVisibilityPipelineMode::FullScanComparison);
+
+	ASSERT_EQ(fullScan.visiblePrimitiveHandles.size(), 1u);
+	EXPECT_EQ(fullScan.visiblePrimitiveHandles.front(), record.handle);
+	EXPECT_EQ(spatial.visiblePrimitiveHandles, fullScan.visiblePrimitiveHandles);
+	EXPECT_EQ(spatial.cullReasons, fullScan.cullReasons);
 }
 
 TEST(SceneVisibilityPipelineTests, CullReasonDebugSnapshotUsesPrimitiveSnapshotAndContainsNoLivePointers)

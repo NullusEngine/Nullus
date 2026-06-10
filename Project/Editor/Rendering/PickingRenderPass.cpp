@@ -1,17 +1,18 @@
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Core/EditorActions.h"
+#include "Panels/SceneViewPickingPolicy.h"
 #include "Settings/EditorSettings.h"
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIResource.h"
+#include "Profiling/Profiler.h"
 #include <Debug/Logger.h>
 #include <Components/MeshFilter.h>
 #include <Components/MeshRenderer.h>
 #include <Components/TransformComponent.h>
 #include <Rendering/EngineDrawableDescriptor.h>
-#include <algorithm>
 #include <iterator>
 using namespace NLS;
 
@@ -78,6 +79,7 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	uint32_t p_x,
 	uint32_t p_y)
 {
+    NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::PickAtRenderCoordinate");
     PromotePendingFrameIfReadbackAvailable();
     const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
 	if (!SupportsPickingReadback() || readableFrame == nullptr)
@@ -104,16 +106,20 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
     ScopedPickingPixelReadback pixelReadback(m_readbackLifecycle);
 
 	uint8_t pixel[3]{};
-	const auto readbackResult = NLS::Render::Context::DriverRendererAccess::ReadPixelsChecked(
-        m_renderer.GetDriver(),
-        readableFrame->readbackTexture,
-		p_x,
-		p_y,
-		1u,
-		1u,
-		NLS::Render::Settings::EPixelDataFormat::RGB,
-		NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
-		pixel);
+    NLS::Render::RHI::RHIReadbackResult readbackResult;
+    {
+        NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::PickAtRenderCoordinate::ReadPixelsChecked");
+	    readbackResult = NLS::Render::Context::DriverRendererAccess::ReadPixelsChecked(
+            m_renderer.GetDriver(),
+            readableFrame->readbackTexture,
+		    p_x,
+		    p_y,
+		    1u,
+		    1u,
+		    NLS::Render::Settings::EPixelDataFormat::RGB,
+		    NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+		    pixel);
+    }
 	if (!readbackResult.Succeeded())
 	{
         if (readbackResult.message.find("previous async readback has not been completed") == std::string::npos)
@@ -209,6 +215,7 @@ Editor::Rendering::PickingRenderPass::BuildSubmittedReadbackFrame(
 
 void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState p_pso)
 {
+    NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::Draw");
 	if (!SupportsPickingReadback())
 	{
         ResetPickingFrameState();
@@ -226,9 +233,21 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
     auto& debugSceneDescriptor = m_renderer.GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>();
     if (!debugSceneDescriptor.requestPickingFrame)
         return;
+    if (const auto* sceneRenderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
+        sceneRenderer != nullptr &&
+        sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources() &&
+        Editor::Panels::ShouldSkipSceneHoverPickingForVisibleDrawBudget(
+            debugSceneDescriptor.requestPickingFrameForClick,
+            static_cast<uint64_t>(sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources().size()),
+            debugSceneDescriptor.hoverPickingVisibleDrawBudget))
+    {
+        NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::SkipHoverVisibleDrawBudget");
+        return;
+    }
 
     const uint64_t submittedSerial = ++m_submittedPickingFrameSerial;
     m_submittedPickRegistry.clear();
+    m_submittedPickIds.clear();
 	m_gameObjectPickingFramebuffer.Resize(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
     if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
     {
@@ -254,6 +273,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
 
 bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data::PipelineState p_pso)
 {
+    NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::RenderPickingScene");
 	// TODO: Make sure we only render when the view is hovered and not being resized.
 	if (!SupportsPickingReadback())
 		return false;
@@ -278,7 +298,15 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
 	if (!startedPickingPass)
 		return false;
 
-	DrawPickableModels(p_pso, scene);
+    if (const auto* sceneRenderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
+        sceneRenderer != nullptr && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources())
+    {
+        DrawPickableModelSources(sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources());
+    }
+    else
+    {
+	    DrawPickableModels(p_pso, scene);
+    }
 	DrawPickableCameras(p_pso, scene);
 	DrawPickableLights(p_pso, scene);
 
@@ -289,6 +317,7 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
 std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::PickingRenderPass::BuildThreadedPassInput(
     NLS::Render::Data::PipelineState p_pso)
 {
+    NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::BuildThreadedPassInput");
     using namespace Engine::Rendering;
 
     NLS_ASSERT(m_renderer.HasDescriptor<BaseSceneRenderer::SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
@@ -320,7 +349,24 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     passInput.depthStencilAttachmentView =
         m_gameObjectPickingFramebuffer.GetOrCreateExplicitDepthStencilView("EditorPickingDepthView");
 
-    CapturePickableModels(p_pso, scene, passInput.recordedDrawCommands);
+    if (const auto* sceneRenderer = dynamic_cast<Engine::Rendering::BaseSceneRenderer*>(&m_renderer);
+        sceneRenderer != nullptr && sceneRenderer->HasLastVisiblePickablePrimitiveDrawSources())
+    {
+        const auto& sources = sceneRenderer->GetLastVisiblePickablePrimitiveDrawSources();
+        passInput.recordedDrawCommands.reserve(
+            sources.size() +
+            scene.GetFastAccessComponents().cameras.size() +
+            scene.GetFastAccessComponents().lights.size());
+        CapturePickableModelSources(sources, passInput.recordedDrawCommands);
+    }
+    else
+    {
+        passInput.recordedDrawCommands.reserve(
+            scene.GetFastAccessComponents().modelRenderers.size() +
+            scene.GetFastAccessComponents().cameras.size() +
+            scene.GetFastAccessComponents().lights.size());
+        CapturePickableModels(p_pso, scene, passInput.recordedDrawCommands);
+    }
     CapturePickableCameras(p_pso, scene, passInput.recordedDrawCommands);
     CapturePickableLights(p_pso, scene, passInput.recordedDrawCommands);
 
@@ -338,12 +384,14 @@ void PreparePickingMaterial(uint32_t pickID, NLS::Render::Resources::Material& p
 
 uint32_t Editor::Rendering::PickingRenderPass::RegisterPickableGameObject(Engine::GameObject& actor)
 {
-    auto found = std::find(m_submittedPickRegistry.begin(), m_submittedPickRegistry.end(), &actor);
-    if (found != m_submittedPickRegistry.end())
-        return static_cast<uint32_t>(std::distance(m_submittedPickRegistry.begin(), found) + 1);
+    const auto found = m_submittedPickIds.find(&actor);
+    if (found != m_submittedPickIds.end())
+        return found->second;
 
     m_submittedPickRegistry.push_back(&actor);
-    return static_cast<uint32_t>(m_submittedPickRegistry.size());
+    const auto pickId = static_cast<uint32_t>(m_submittedPickRegistry.size());
+    m_submittedPickIds.emplace(&actor, pickId);
+    return pickId;
 }
 
 void Editor::Rendering::PickingRenderPass::CapturePickableModels(
@@ -351,6 +399,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModels(
     Engine::SceneSystem::Scene& p_scene,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
+    NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::CapturePickableModels");
     auto modelPickingPso = Editor::Rendering::CreateEditorUnculledPipelineState(p_pso);
 
     for (auto modelRenderer : p_scene.GetFastAccessComponents().modelRenderers)
@@ -381,6 +430,42 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModels(
         drawable.stateMask = stateMask;
         drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
             modelMatrix
+        });
+
+        NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
+        unculledOverrides.culling = false;
+
+        NLS::Render::Context::RecordedDrawCommandInput drawCommand;
+        if (m_renderer.CaptureRecordedDrawCommand(
+            drawable,
+            unculledOverrides,
+            NLS::Render::Settings::EComparaisonAlgorithm::LESS,
+            drawCommand))
+        {
+            outDrawCommands.push_back(std::move(drawCommand));
+        }
+    }
+}
+
+void Editor::Rendering::PickingRenderPass::CapturePickableModelSources(
+    const std::vector<Engine::Rendering::ScenePickablePrimitiveDrawSource>& sources,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::CapturePickableModelSources");
+
+    for (const auto& source : sources)
+    {
+        if (source.owner == nullptr || source.mesh == nullptr || !source.owner->IsActive())
+            continue;
+
+        PreparePickingMaterial(RegisterPickableGameObject(*source.owner), m_gameObjectPickingMaterial);
+
+        NLS::Render::Entities::Drawable drawable;
+        drawable.mesh = source.mesh;
+        drawable.material = &m_gameObjectPickingMaterial;
+        drawable.stateMask = source.stateMask;
+        drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
+            source.worldMatrix
         });
 
         NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
@@ -445,6 +530,30 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModels(
 	}
 }
 
+void Editor::Rendering::PickingRenderPass::DrawPickableModelSources(
+    const std::vector<Engine::Rendering::ScenePickablePrimitiveDrawSource>& sources)
+{
+    for (const auto& source : sources)
+    {
+        if (source.owner == nullptr || source.mesh == nullptr || !source.owner->IsActive())
+            continue;
+
+        PreparePickingMaterial(RegisterPickableGameObject(*source.owner), m_gameObjectPickingMaterial);
+
+        NLS::Render::Entities::Drawable drawable;
+        drawable.mesh = source.mesh;
+        drawable.material = &m_gameObjectPickingMaterial;
+        drawable.stateMask = source.stateMask;
+        drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
+            source.worldMatrix
+        });
+
+        NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
+        unculledOverrides.culling = false;
+        m_renderer.DrawEntity(drawable, unculledOverrides);
+    }
+}
+
 void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
 	NLS::Render::Data::PipelineState p_pso,
 	Engine::SceneSystem::Scene& p_scene
@@ -474,6 +583,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableCameras(
     Engine::SceneSystem::Scene& p_scene,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
+    NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::CapturePickableCameras");
     auto cameraPickingPso = Editor::Rendering::CreateEditorUnculledPipelineState(p_pso);
     auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
     if (cameraMesh == nullptr)
@@ -531,6 +641,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
     Engine::SceneSystem::Scene& p_scene,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
+    NLS_PROFILE_NAMED_SCOPE("PickingRenderPass::CapturePickableLights");
     const auto lightBillboardScale = Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale;
     if (lightBillboardScale <= 0.001f)
         return;

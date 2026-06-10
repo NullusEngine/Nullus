@@ -1,14 +1,26 @@
 #include "Assets/EditorStartupAssetPreimport.h"
 
 #include "Assets/AssetDatabaseFacade.h"
+#include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/EditorAssetPath.h"
 #include "Debug/Logger.h"
+#include "Guid.h"
+
+#include <algorithm>
+#include <chrono>
+#include <unordered_map>
 
 namespace NLS::Editor::Assets
 {
 namespace
 {
+struct PreparedPrefabCachePreflightSummary
+{
+    size_t attemptedCount = 0u;
+    size_t preparedCount = 0u;
+};
+
 void LogStartupAssetPreimportProgress(const ImportProgressEvent& event)
 {
     NLS_LOG_INFO("[StartupAssetPreimport] " + FormatStartupAssetPreimportProgressLabel(event));
@@ -30,6 +42,106 @@ void PublishStartupAssetPreimportProgress(
     LogStartupAssetPreimportProgress(event);
     if (progressSink)
         progressSink(event);
+}
+
+PreparedPrefabCachePreflightSummary PreflightPreparedPrefabCache(
+    const std::filesystem::path& projectRoot,
+    const AssetDatabaseFacade& database,
+    const size_t maxPreflightCount,
+    const std::chrono::milliseconds maxPreflightDuration,
+    const std::vector<std::string>& priorityAssetPaths,
+    const StartupAssetPreimportProgressSink& progressSink)
+{
+    PreparedPrefabCachePreflightSummary summary;
+    if (maxPreflightCount == 0u)
+        return summary;
+
+    auto modelAssets = database.FindAssets("type:model-scene", {});
+    for (auto& assetPath : modelAssets)
+        assetPath = NormalizeEditorAssetPath(assetPath);
+    modelAssets.erase(
+        std::remove_if(
+            modelAssets.begin(),
+            modelAssets.end(),
+            [](const std::string& assetPath)
+            {
+                return assetPath.rfind("Assets/", 0u) != 0u;
+            }),
+        modelAssets.end());
+    std::unordered_map<std::string, size_t> priorityByAssetPath;
+    for (size_t index = 0u; index < priorityAssetPaths.size(); ++index)
+    {
+        const auto normalizedPath = NormalizeEditorAssetPath(priorityAssetPaths[index]);
+        if (!normalizedPath.empty() &&
+            normalizedPath.rfind("Assets/", 0u) == 0u)
+        {
+            priorityByAssetPath.emplace(normalizedPath, index);
+        }
+    }
+    std::sort(
+        modelAssets.begin(),
+        modelAssets.end(),
+        [&priorityByAssetPath](const std::string& lhs, const std::string& rhs)
+        {
+            const auto lhsPriority = priorityByAssetPath.find(lhs);
+            const auto rhsPriority = priorityByAssetPath.find(rhs);
+            const bool lhsHasPriority = lhsPriority != priorityByAssetPath.end();
+            const bool rhsHasPriority = rhsPriority != priorityByAssetPath.end();
+            if (lhsHasPriority != rhsHasPriority)
+                return lhsHasPriority;
+            if (lhsHasPriority && rhsHasPriority && lhsPriority->second != rhsPriority->second)
+                return lhsPriority->second < rhsPriority->second;
+            return lhs < rhs;
+        });
+    modelAssets.erase(std::unique(modelAssets.begin(), modelAssets.end()), modelAssets.end());
+    if (modelAssets.empty())
+        return summary;
+
+    PublishStartupAssetPreimportProgress(
+        progressSink,
+        ImportPhase::Queued,
+        0.96,
+        "Preparing imported prefab cache",
+        std::to_string(std::min(maxPreflightCount, modelAssets.size())) + " model assets");
+
+    EditorAssetDragDropBridge bridge(projectRoot / "Assets");
+    const auto preflightBegin = std::chrono::steady_clock::now();
+    for (const auto& assetPath : modelAssets)
+    {
+        if (summary.attemptedCount >= maxPreflightCount)
+            break;
+        if (summary.attemptedCount > 0u &&
+            maxPreflightDuration.count() >= 0 &&
+            std::chrono::steady_clock::now() - preflightBegin >= maxPreflightDuration)
+        {
+            break;
+        }
+        ++summary.attemptedCount;
+
+        const auto guid = database.AssetPathToGUID(assetPath);
+        auto assetId = guid.empty()
+            ? NLS::Core::Assets::AssetId {}
+            : NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+        if (!assetId.IsValid())
+            continue;
+
+        UnifiedPrefabLoadRequest request;
+        request.source = NormalizePrefabSourceIdentity(
+            projectRoot,
+            assetPath,
+            "prefab:" + std::filesystem::path(assetPath).stem().generic_string(),
+            assetId,
+            NLS::Core::Assets::AssetType::ModelScene);
+        request.loadMode = UnifiedPrefabLoadMode::Prewarm;
+        request.ownerKind = UnifiedPrefabOwnerKind::AsyncJob;
+        request.ownerScopeId = "startup-prepared-prefab-cache";
+        request.requiredReadiness = UnifiedPrefabReadiness::PrefabGraphOnly;
+        request.allowPending = true;
+
+        if (bridge.PreloadPreparedPrefabHotCache(request))
+            ++summary.preparedCount;
+    }
+    return summary;
 }
 }
 
@@ -104,6 +216,18 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         {AssetPreimportReason::EditorStartup, {}},
         plan);
     result.importedAssetCount = database.GetCompletedImportCount();
+    if (result.succeeded)
+    {
+        const auto preflight = PreflightPreparedPrefabCache(
+            options.projectRoot,
+            database,
+            options.maxPreparedPrefabCachePreflightCount,
+            options.maxPreparedPrefabCachePreflightDuration,
+            options.priorityPreparedPrefabAssetPaths,
+            progressSink);
+        result.preparedPrefabCachePreflightAttemptCount = preflight.attemptedCount;
+        result.preparedPrefabCachePreflightCount = preflight.preparedCount;
+    }
     result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
     result.diagnostics = database.GetDiagnostics();
     return result;

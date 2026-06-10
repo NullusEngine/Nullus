@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Core/ApplicationIdleFramePolicy.h"
 #include "Core/ResizeRefreshPolicy.h"
 
 TEST(ResizeRefreshPolicyTests, TicksImmediatelyWhenIdle)
@@ -64,4 +65,61 @@ TEST(ResizeRefreshPolicyTests, DoesNotRunFollowUpFrameWithoutResizeSignal)
         false,
         false,
         true));
+}
+
+TEST(ApplicationIdleFramePolicyTests, PacesOnlyTrulyIdleEditorFrames)
+{
+    EXPECT_FALSE(NLS::Editor::Core::ShouldPaceIdleEditorFrame(
+        false,
+        false,
+        false,
+        false,
+        false,
+        false));
+
+    EXPECT_TRUE(NLS::Editor::Core::ShouldPaceIdleEditorFrame(
+        true,
+        false,
+        false,
+        false,
+        false,
+        false));
+
+    EXPECT_FALSE(NLS::Editor::Core::ShouldPaceIdleEditorFrame(
+        true,
+        true,
+        false,
+        false,
+        false,
+        false));
+    EXPECT_FALSE(NLS::Editor::Core::ShouldPaceIdleEditorFrame(
+        true,
+        false,
+        true,
+        false,
+        false,
+        false));
+    EXPECT_FALSE(NLS::Editor::Core::ShouldPaceIdleEditorFrame(
+        true,
+        false,
+        false,
+        true,
+        false,
+        false));
+    EXPECT_FALSE(NLS::Editor::Core::ShouldPaceIdleEditorFrame(
+        true,
+        false,
+        false,
+        false,
+        true,
+        false));
+    EXPECT_FALSE(NLS::Editor::Core::ShouldPaceIdleEditorFrame(
+        true,
+        false,
+        false,
+        false,
+        false,
+        true));
+
+    EXPECT_GT(NLS::Editor::Core::GetIdleEditorFramePacingMilliseconds(), 0u);
 }

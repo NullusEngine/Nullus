@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -70,6 +71,9 @@ namespace NLS::Editor::Rendering
             NLS::Render::Data::PipelineState p_pso,
             Engine::SceneSystem::Scene& p_scene,
             std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
+        void CapturePickableModelSources(
+            const std::vector<Engine::Rendering::ScenePickablePrimitiveDrawSource>& sources,
+            std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
         void CapturePickableCameras(
             NLS::Render::Data::PipelineState p_pso,
             Engine::SceneSystem::Scene& p_scene,
@@ -79,6 +83,8 @@ namespace NLS::Editor::Rendering
             Engine::SceneSystem::Scene& p_scene,
             std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
         void DrawPickableModels(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
+        void DrawPickableModelSources(
+            const std::vector<Engine::Rendering::ScenePickablePrimitiveDrawSource>& sources);
         void DrawPickableCameras(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableLights(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         uint32_t RegisterPickableGameObject(Engine::GameObject& actor);
@@ -91,6 +97,7 @@ namespace NLS::Editor::Rendering
         mutable PickingReadbackLifecycle<Engine::SceneSystem::Scene> m_readbackLifecycle;
         std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
         mutable std::vector<Engine::GameObject*> m_submittedPickRegistry;
+        mutable std::unordered_map<Engine::GameObject*, uint32_t> m_submittedPickIds;
         uint64_t m_submittedPickingFrameSerial = 0u;
 	};
 }

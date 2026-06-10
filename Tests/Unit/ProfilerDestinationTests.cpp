@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Profiling/Profiler.h"
+#include "Debug/FileHandler.h"
 #include "UI/Profiling/TimelineProfilerSink.h"
 #include "UI/Profiling/TimelineProfilerLimits.h"
 #include "ImGuiExtensions/TimelineProfiler/Profiler.h"
@@ -25,6 +26,27 @@ struct RecordedEvent
     std::string phase;
     std::string name;
     std::string threadName;
+};
+
+class ScopedLogFilePathOverride final
+{
+public:
+    explicit ScopedLogFilePathOverride(const std::filesystem::path& logDirectory)
+        : m_originalLogFilePath(NLS::Debug::FileHandler::GetLogFilePath())
+    {
+        NLS::Debug::FileHandler::SetLogFilePath(logDirectory.string());
+    }
+
+    ~ScopedLogFilePathOverride()
+    {
+        NLS::Debug::FileHandler::GetLogFilePath() = m_originalLogFilePath;
+    }
+
+    ScopedLogFilePathOverride(const ScopedLogFilePathOverride&) = delete;
+    ScopedLogFilePathOverride& operator=(const ScopedLogFilePathOverride&) = delete;
+
+private:
+    std::string m_originalLogFilePath;
 };
 
 class RecordingProfilerDestination final : public NLS::Base::Profiling::IProfilerDestination
@@ -569,9 +591,55 @@ TEST_F(ProfilerDestinationTest, SelectionOutlineMaskAggregateScopesRemainExporta
 #endif
 }
 
+TEST_F(ProfilerDestinationTest, DeferredBeginFrameChildScopesRemainExportableAtSceneViewDepth)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    using namespace NLS::Base::Profiling;
+
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
+
+    std::vector<ProfilerScopeEvent> parentScopes;
+    constexpr size_t kSceneViewRenderParentDepth = 16u;
+    parentScopes.reserve(kSceneViewRenderParentDepth);
+    for (size_t index = 0u; index < kSceneViewRenderParentDepth; ++index)
+    {
+        ProfilerScopeEvent event;
+        event.name = "Scene View Render Parent Scope " + std::to_string(index);
+        event.sourceFunction = __FUNCTION__;
+        event.active = true;
+        parentScopes.push_back(std::move(event));
+        timeline.BeginScope(parentScopes.back());
+    }
+
+    ProfilerScopeEvent beginFrame;
+    beginFrame.name = "NLS::Engine::Rendering::DeferredSceneRenderer::BeginFrame";
+    beginFrame.sourceFunction = __FUNCTION__;
+    beginFrame.active = true;
+    timeline.BeginScope(beginFrame);
+
+    ProfilerScopeEvent parseScene;
+    parseScene.name = "DeferredSceneRenderer::BeginFrame::ParseScene";
+    parseScene.sourceFunction = __FUNCTION__;
+    parseScene.active = true;
+    timeline.BeginScope(parseScene);
+    EXPECT_NO_FATAL_FAILURE(timeline.EndScope(parseScene));
+
+    EXPECT_NO_FATAL_FAILURE(timeline.EndScope(beginFrame));
+    EXPECT_EQ(timeline.GetSkippedScopeCountForTesting(), 0u);
+
+    for (auto it = parentScopes.rbegin(); it != parentScopes.rend(); ++it)
+        EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER
+    using NLS::UI::TimelineProfilerDetail::ResolveBudgetedTraceFrameExportRange;
     using NLS::UI::TimelineProfilerDetail::ResolveTraceFrameExportRange;
 
     std::uint32_t lastExportedFrame = 0u;
@@ -595,9 +663,45 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
     EXPECT_EQ(exportRange.Begin, 10u);
     EXPECT_EQ(exportRange.End, 13u);
     EXPECT_EQ(lastExportedFrame, 9u);
+
+    lastExportedFrame = 0u;
+    exportRange = ResolveBudgetedTraceFrameExportRange({1u, 9u}, lastExportedFrame, 3u);
+    EXPECT_EQ(exportRange.Begin, 1u);
+    EXPECT_EQ(exportRange.End, 4u);
+    lastExportedFrame = exportRange.End - 1u;
+
+    exportRange = ResolveBudgetedTraceFrameExportRange({1u, 9u}, lastExportedFrame, 3u);
+    EXPECT_EQ(exportRange.Begin, 4u);
+    EXPECT_EQ(exportRange.End, 7u);
+    lastExportedFrame = exportRange.End - 1u;
+
+    exportRange = ResolveBudgetedTraceFrameExportRange({1u, 9u}, lastExportedFrame, 3u);
+    EXPECT_EQ(exportRange.Begin, 7u);
+    EXPECT_EQ(exportRange.End, 9u);
+
+    EXPECT_EQ(ResolveBudgetedTraceFrameExportRange({1u, 9u}, lastExportedFrame, 0u).Begin, 0u);
+    EXPECT_EQ(ResolveBudgetedTraceFrameExportRange({1u, 9u}, lastExportedFrame, 0u).End, 0u);
 #else
     GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
 #endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineTraceExporterDefaultsToLogDirectory)
+{
+    using NLS::UI::TimelineProfilerDetail::ResolveDefaultTraceFilePath;
+
+    const auto projectRoot = std::filesystem::path("D:/Projects/NullusProject");
+    EXPECT_EQ(
+        ResolveDefaultTraceFilePath(projectRoot / "Logs" / "2026-06-09_12-00-00.log"),
+        projectRoot / "Logs" / "trace.json");
+    EXPECT_EQ(
+        ResolveDefaultTraceFilePath("2026-06-09_12-00-00.log", projectRoot),
+        projectRoot / "Logs" / "trace.json");
+
+    const ScopedLogFilePathOverride logFilePathOverride(projectRoot / "Logs");
+    const auto tracePathFromConfiguredLog = ResolveDefaultTraceFilePath(NLS::Debug::FileHandler::GetLogFilePath());
+
+    EXPECT_EQ(tracePathFromConfiguredLog, projectRoot / "Logs" / "trace.json");
 }
 
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterSkipsIncompleteAndNonPositiveDurationEvents)

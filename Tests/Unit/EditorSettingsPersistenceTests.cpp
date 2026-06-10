@@ -73,6 +73,24 @@ TEST(EditorSettingsPersistenceTests, SavesAndLoadsLightGridRenderingSetting)
     rendering.enableLightGrid = true;
 }
 
+TEST(EditorSettingsPersistenceTests, SavesAndLoadsPowerSavingIdlePacingSetting)
+{
+    auto path = MakeTempSettingsPath("power-saving-idle-pacing.json");
+    auto registry = MakeRegistry();
+
+    auto& runtime = NLS::Editor::Settings::EditorSettings::GetRuntimeSettingsObject();
+    const auto oldRuntime = runtime;
+
+    runtime.enablePowerSavingIdlePacing = true;
+    ASSERT_TRUE(NLS::Editor::Settings::EditorSettingsPersistence::Save(path, registry));
+
+    runtime.enablePowerSavingIdlePacing = false;
+    ASSERT_TRUE(NLS::Editor::Settings::EditorSettingsPersistence::Load(path, registry));
+
+    EXPECT_TRUE(runtime.enablePowerSavingIdlePacing);
+    runtime = oldRuntime;
+}
+
 TEST(EditorSettingsPersistenceTests, IgnoresInvalidValueTypes)
 {
     auto path = MakeTempSettingsPath("invalid.json");

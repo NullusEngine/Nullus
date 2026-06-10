@@ -1,13 +1,19 @@
 #include <Time/Clock.h>
 
+#include <chrono>
 #include <filesystem>
 #include <stdexcept>
+#include <thread>
 
+#include <Profiling/Profiler.h>
+
+#include "Core/ApplicationIdleFramePolicy.h"
 #include "Core/Application.h"
 #include "Core/AssetFileWatcher.h"
 #include "Core/ResizeRefreshPolicy.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/EditorStartupAssetPreimport.h"
+#include "Settings/EditorSettings.h"
 #include "Windowing/Inputs/EMouseButton.h"
 #include "Windowing/Inputs/EMouseButtonState.h"
 #include "Assembly.h"
@@ -20,6 +26,27 @@ namespace NLS
 {
 namespace
 {
+class ScopedBoolFlag final
+{
+public:
+    explicit ScopedBoolFlag(bool& flag)
+        : m_flag(flag)
+    {
+        m_flag = true;
+    }
+
+    ~ScopedBoolFlag()
+    {
+        m_flag = false;
+    }
+
+    ScopedBoolFlag(const ScopedBoolFlag&) = delete;
+    ScopedBoolFlag& operator=(const ScopedBoolFlag&) = delete;
+
+private:
+    bool& m_flag;
+};
+
 bool IsResizeCursor(const ImGuiMouseCursor cursor)
 {
     return cursor == ImGuiMouseCursor_ResizeEW ||
@@ -209,8 +236,12 @@ void Editor::Core::Application::Run()
     {
         TickFrame(clock.GetDeltaTime(), true);
         FlushDeferredResizeTick();
+        PaceIdleFrameIfNeeded();
 
-        clock.Update();
+        {
+            NLS_PROFILE_NAMED_SCOPE("Application::ClockUpdate");
+            clock.Update();
+        }
     }
 }
 
@@ -219,16 +250,39 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
     if (m_isTicking)
         return;
 
-    m_isTicking = true;
+    const ScopedBoolFlag tickingScope(m_isTicking);
+    if (m_editor != nullptr)
+        m_editor->BeginProfilerFrame();
+
+    NLS_PROFILE_NAMED_SCOPE("Application::TickFrame");
 
     if (p_pollEvents)
     {
-        m_isPollingEvents = true;
-        m_editor->PreUpdate();
-        m_isPollingEvents = false;
+        const ScopedBoolFlag pollingScope(m_isPollingEvents);
+        {
+            NLS_PROFILE_NAMED_SCOPE("Application::EditorPreUpdate");
+            m_editor->PreUpdate();
+        }
+    }
+    m_lastFrameHadTransientInput = false;
+    if (m_context.inputManager != nullptr)
+    {
+        const auto mousePosition = m_context.inputManager->GetMousePosition();
+        const bool mouseMoved =
+            m_hasLastIdlePacingMousePosition &&
+            (mousePosition.x != m_lastIdlePacingMousePosition.x ||
+                mousePosition.y != m_lastIdlePacingMousePosition.y);
+        m_lastFrameHadTransientInput =
+            m_context.inputManager->HasTransientInputEvents() ||
+            mouseMoved;
+        m_lastIdlePacingMousePosition = mousePosition;
+        m_hasLastIdlePacingMousePosition = true;
     }
 
-    RunEditorFrame(p_deltaTime);
+    {
+        NLS_PROFILE_NAMED_SCOPE("Application::RunEditorFrame");
+        RunEditorFrame(p_deltaTime);
+    }
 
     const bool resizeCursorActive =
         m_context.uiManager != nullptr && IsResizeCursor(m_context.uiManager->GetMouseCursor());
@@ -239,12 +293,12 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
 
     if (ShouldRunResizeFollowUpFrame(false, resizeCursorActive, primaryMouseDown))
     {
-        m_isResizeTicking = true;
-        RunEditorFrame(0.0f);
-        m_isResizeTicking = false;
+        const ScopedBoolFlag resizeTickingScope(m_isResizeTicking);
+        {
+            NLS_PROFILE_NAMED_SCOPE("Application::ResizeFollowUpFrame");
+            RunEditorFrame(0.0f);
+        }
     }
-
-    m_isTicking = false;
 }
 
 void Editor::Core::Application::TickResizeFrame()
@@ -252,16 +306,27 @@ void Editor::Core::Application::TickResizeFrame()
     if (m_isResizeTicking)
         return;
 
-    m_isResizeTicking = true;
-    SyncPlatformSwapchainToFramebufferSize();
-    RunEditorFrame(0.0f);
+    const ScopedBoolFlag resizeTickingScope(m_isResizeTicking);
+    if (m_editor != nullptr)
+        m_editor->BeginProfilerFrame();
+
+    {
+        NLS_PROFILE_NAMED_SCOPE("Application::SyncPlatformSwapchainToFramebufferSize");
+        SyncPlatformSwapchainToFramebufferSize();
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("Application::ResizeFrame");
+        RunEditorFrame(0.0f);
+    }
     if (ShouldRunResizeFollowUpFrame(true, false, false))
     {
         // The first resize frame updates ImGui's layout state.
         // The follow-up frame re-renders views against the new panel sizes.
-        RunEditorFrame(0.0f);
+        {
+            NLS_PROFILE_NAMED_SCOPE("Application::ResizeFollowUpFrame");
+            RunEditorFrame(0.0f);
+        }
     }
-    m_isResizeTicking = false;
 }
 
 void Editor::Core::Application::QueueResizeTick()
@@ -278,6 +343,40 @@ void Editor::Core::Application::FlushDeferredResizeTick()
     }
 }
 
+void Editor::Core::Application::PaceIdleFrameIfNeeded()
+{
+    if (m_context.inputManager == nullptr)
+        return;
+
+    const bool primaryMouseDown =
+        m_context.inputManager->GetMouseButtonState(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT) ==
+        Windowing::Inputs::EMouseButtonState::MOUSE_DOWN;
+    const bool secondaryMouseDown =
+        m_context.inputManager->GetMouseButtonState(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_RIGHT) ==
+        Windowing::Inputs::EMouseButtonState::MOUSE_DOWN;
+    const bool middleMouseDown =
+        m_context.inputManager->GetMouseButtonState(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_MIDDLE) ==
+        Windowing::Inputs::EMouseButtonState::MOUSE_DOWN;
+    const bool hasMouseButtonDown = primaryMouseDown || secondaryMouseDown || middleMouseDown;
+    const bool profilerRecording =
+        NLS::Base::Profiling::Profiler::IsEnabled() ||
+        (m_editor != nullptr && m_editor->IsProfilerRecordingEnabled());
+
+    if (!ShouldPaceIdleEditorFrame(
+        NLS::Editor::Settings::EditorSettings::GetRuntimeSettingsObject().enablePowerSavingIdlePacing,
+        m_lastFrameHadTransientInput,
+        hasMouseButtonDown,
+        m_pendingResizeTick,
+        m_isResizeTicking,
+        profilerRecording))
+    {
+        return;
+    }
+
+    NLS_PROFILE_NAMED_SCOPE("Application::IdleFramePacing");
+    std::this_thread::sleep_for(std::chrono::milliseconds(GetIdleEditorFramePacingMilliseconds()));
+}
+
 bool Editor::Core::Application::IsRunning() const
 {
     return !m_context.window->ShouldClose();
@@ -288,8 +387,14 @@ void Editor::Core::Application::RunEditorFrame(const float deltaTime)
     if (m_editor == nullptr)
         return;
 
-    m_editor->Update(deltaTime);
-    m_editor->PostUpdate();
+    {
+        NLS_PROFILE_NAMED_SCOPE("Application::EditorUpdate");
+        m_editor->Update(deltaTime);
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("Application::EditorPostUpdate");
+        m_editor->PostUpdate();
+    }
 }
 
 void Editor::Core::Application::SyncPlatformSwapchainToFramebufferSize()

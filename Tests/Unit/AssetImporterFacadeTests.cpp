@@ -551,7 +551,7 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistAndDriveSceneConversi
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, ModelImporterSettingsDefaultToAssimpFbxReader)
+TEST(AssetImporterFacadeTests, ModelImporterSettingsDefaultToAutodeskFbxReader)
 {
     using namespace NLS::Editor::Assets;
 
@@ -563,7 +563,7 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsDefaultToAssimpFbxReader)
 
     const auto settings = facade.GetModelImporterSettings("Assets/Models/LegacyHero.fbx");
     ASSERT_TRUE(settings.has_value());
-    EXPECT_EQ(settings->fbxReaderSelection, FbxReaderSelection::Assimp);
+    EXPECT_EQ(settings->fbxReaderSelection, FbxReaderSelection::Autodesk);
 
     std::filesystem::remove_all(root);
 }

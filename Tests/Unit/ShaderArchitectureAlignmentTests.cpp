@@ -147,10 +147,14 @@ TEST(ShaderArchitectureAlignmentTests, HZBOcclusionShaderConsumesPrimitiveInputs
 	const std::string shaderSourceText = sourceBuffer.str();
 
 	EXPECT_NE(shaderSourceText.find("struct OcclusionPrimitiveInput"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("cbuffer HZBOcclusionConstants : register(b1, space1)"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("uint u_OcclusionPrimitiveCount;"), std::string::npos);
 	EXPECT_NE(shaderSourceText.find("StructuredBuffer<OcclusionPrimitiveInput> u_OcclusionPrimitiveInputs"), std::string::npos);
 	EXPECT_NE(shaderSourceText.find("RWStructuredBuffer<uint> u_OcclusionPrimitiveResults"), std::string::npos);
 	EXPECT_EQ(shaderSourceText.find("u_OcclusionOutput"), std::string::npos);
 	EXPECT_NE(shaderSourceText.find("u_OcclusionPrimitiveResults[primitiveIndex]"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("primitiveIndex >= u_OcclusionPrimitiveCount"), std::string::npos);
+	EXPECT_EQ(shaderSourceText.find("u_OcclusionPrimitiveInputs.GetDimensions(primitiveCount"), std::string::npos);
 	EXPECT_NE(shaderSourceText.find("kHZBOcclusionDepthBias"), std::string::npos);
 	EXPECT_NE(shaderSourceText.find("static const float kHZBOcclusionDepthBias = 0.00001f"), std::string::npos);
 	EXPECT_NE(shaderSourceText.find("IsConservativelyOccludedByHZBCoverage"), std::string::npos);
@@ -289,6 +293,13 @@ TEST(ShaderArchitectureAlignmentTests, HZBOcclusionMetadataMatchesPrimitiveBuffe
 
 	const auto staleTextureOutput = findMember("u_OcclusionOutput");
 	EXPECT_EQ(staleTextureOutput, parameters.members.end());
+
+	const auto constants = findMember("HZBOcclusionConstants");
+	ASSERT_NE(constants, parameters.members.end());
+	EXPECT_EQ(constants->type, NLS::Render::RHI::BindingType::UniformBuffer);
+	EXPECT_EQ(constants->binding, 1u);
+	EXPECT_EQ(constants->byteSize, 16u);
+	EXPECT_EQ(constants->stageMask, NLS::Render::RHI::ShaderStageMask::Compute);
 
 	const auto result = findMember("u_OcclusionPrimitiveResults");
 	ASSERT_NE(result, parameters.members.end());

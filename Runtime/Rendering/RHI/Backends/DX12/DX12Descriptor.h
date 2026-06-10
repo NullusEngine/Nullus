@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,6 +25,8 @@ struct ID3D12Device;
 
 namespace NLS::Render::Backend
 {
+	class DX12SamplerDescriptorTableCache;
+
 	class DX12ShaderVisibleDescriptorHeapAllocator
 	{
 	public:
@@ -58,6 +61,53 @@ namespace NLS::Render::Backend
 #endif
 	};
 
+#if defined(_WIN32)
+	class DX12SamplerDescriptorTableCache
+	{
+	public:
+		class Allocation
+		{
+		public:
+			~Allocation();
+			Allocation(const Allocation&) = delete;
+			Allocation& operator=(const Allocation&) = delete;
+			Allocation(Allocation&&) = delete;
+			Allocation& operator=(Allocation&&) = delete;
+
+			UINT GetOffset() const;
+			UINT GetCount() const;
+
+		private:
+			friend class DX12SamplerDescriptorTableCache;
+			struct Impl;
+
+			Allocation(std::shared_ptr<Impl> impl, std::string key, UINT offset, UINT count);
+
+			std::shared_ptr<Impl> m_impl;
+			std::string m_key;
+			UINT m_offset = UINT_MAX;
+			UINT m_count = 0u;
+		};
+
+		explicit DX12SamplerDescriptorTableCache(
+			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> allocator);
+		~DX12SamplerDescriptorTableCache();
+
+		std::shared_ptr<Allocation> Acquire(
+			const NLS::Render::RHI::RHIBindingSetDesc& desc,
+			const std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc>& tables,
+			UINT descriptorCount,
+			const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE, UINT)>& writeDescriptors);
+		UINT GetDescriptorSize() const;
+		ID3D12DescriptorHeap* GetHeap() const;
+		D3D12_GPU_DESCRIPTOR_HANDLE GetGpuHandle(UINT offset, UINT descriptorIndex) const;
+
+	private:
+		struct Impl;
+		std::shared_ptr<Impl> m_impl;
+	};
+#endif
+
 	class NativeDX12BindingSet final
 		: public NLS::Render::RHI::RHIBindingSet
 		, public IDX12BindingSetAccess
@@ -68,7 +118,8 @@ namespace NLS::Render::Backend
 			ID3D12Device* device,
 			NLS::Render::RHI::RHIBindingSetDesc desc,
 			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> resourceHeapAllocator,
-			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> samplerHeapAllocator);
+			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> samplerHeapAllocator,
+			std::shared_ptr<DX12SamplerDescriptorTableCache> samplerDescriptorTableCache);
 #endif
 		~NativeDX12BindingSet() override;
 
@@ -98,9 +149,6 @@ namespace NLS::Render::Backend
 			D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = {};
 		};
 
-		static NLS::Render::RHI::DX12::DX12DescriptorRangeCategory ToRangeCategory(
-			NLS::Render::RHI::BindingType type);
-
 		const NLS::Render::RHI::RHIBindingLayoutEntry* FindLayoutEntry(
 			const NLS::Render::RHI::DX12::DX12DescriptorTableRangeDesc& range) const;
 		const NLS::Render::RHI::RHIBindingSetEntry* FindBoundEntry(
@@ -112,6 +160,10 @@ namespace NLS::Render::Backend
 		void WriteSamplerDescriptor(
 			const NLS::Render::RHI::RHIBindingSetEntry* boundEntry,
 			D3D12_CPU_DESCRIPTOR_HANDLE destination) const;
+		void WriteSamplerDescriptorTables(
+			const std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc>& tables,
+			D3D12_CPU_DESCRIPTOR_HANDLE baseCpuHandle,
+			UINT descriptorSize) const;
 		void WriteNullStructuredBufferDescriptor(
 			D3D12_CPU_DESCRIPTOR_HANDLE destination,
 			uint32_t elementStride) const;
@@ -130,6 +182,7 @@ namespace NLS::Render::Backend
 		UINT m_samplerDescriptorOffset = UINT_MAX;
 		UINT m_samplerDescriptorCount = 0;
 		UINT m_samplerDescriptorSize = 0;
+		std::shared_ptr<DX12SamplerDescriptorTableCache::Allocation> m_samplerDescriptorTableAllocation;
 #endif
 
 		std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc> m_descriptorTableDescs;
@@ -137,6 +190,7 @@ namespace NLS::Render::Backend
 		NLS::Render::RHI::RHIBindingSetDesc m_desc;
 		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
 		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
+		std::shared_ptr<DX12SamplerDescriptorTableCache> m_samplerDescriptorTableCache;
 		bool m_valid = false;
 	};
 

@@ -54,11 +54,14 @@ TEST(ProjectSettingsPanelTests, RuntimeRestartFieldsAreMarkedByMetadata)
     const auto runtimeType = NLS_TYPEOF(NLS::Editor::Settings::EditorRuntimeSettingsObject);
 
     const auto& threadedRendering = runtimeType.GetField("enableThreadedRendering");
+    const auto& powerSavingIdlePacing = runtimeType.GetField("enablePowerSavingIdlePacing");
     const auto& renderDocEnabled = runtimeType.GetField("renderDocEnabled");
 
     ASSERT_TRUE(threadedRendering.IsValid());
+    ASSERT_TRUE(powerSavingIdlePacing.IsValid());
     ASSERT_TRUE(renderDocEnabled.IsValid());
     EXPECT_NE(threadedRendering.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
+    EXPECT_EQ(powerSavingIdlePacing.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
     EXPECT_EQ(renderDocEnabled.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
 }
 

@@ -118,6 +118,7 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 
 	auto* debugSettings = &Settings::EditorSettings::GetDebugDrawSettingsObject();
 	auto* sceneToolSettings = &Settings::EditorSettings::GetSceneToolSettingsObject();
+	auto* runtimeSettings = &Settings::EditorSettings::GetRuntimeSettingsObject();
 
 	auto& sceneViewBillboardScaleMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("3D Icons Scales");
 	auto& lightBillboardScaleSlider = sceneViewBillboardScaleMenu.CreateWidget<Widgets::SliderInt>(0, 100, static_cast<int>(debugSettings->lightBillboardScale * 100.0f), Widgets::ESliderOrientation::HORIZONTAL, "Lights");
@@ -128,6 +129,16 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->translationSnapUnit, 0.05f, "Translation Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->translationSnapUnit = p_value; };
 	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->rotationSnapUnit, 1.0f, "Rotation Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->rotationSnapUnit = p_value; };
 	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->scalingSnapUnit, 0.05f, "Scaling Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->scalingSnapUnit = p_value; };
+
+	auto& performanceMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Performance");
+	performanceMenu.CreateWidget<Widgets::MenuItem>(
+		"Power Saving Idle Pacing",
+		"",
+		true,
+		runtimeSettings->enablePowerSavingIdlePacing).ValueChangedEvent += [runtimeSettings](bool p_value)
+	{
+		runtimeSettings->enablePowerSavingIdlePacing = p_value;
+	};
 
 	auto& debuggingMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Debugging");
 	auto& debugDrawMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Debug Draw");

@@ -16,7 +16,7 @@ namespace NLS::Editor::Core
         size_t maxInflightMeshLoads = 0u;
     };
 
-    inline constexpr PrefabRendererResourceStreamingBudget kPrefabRendererResourceStreamingBudget {
+    inline constexpr PrefabRendererResourceStreamingBudget kDragPreviewPrefabRendererResourceStreamingBudget {
         std::chrono::milliseconds(12),
         64u,
         32u,
@@ -26,14 +26,20 @@ namespace NLS::Editor::Core
         64u
     };
 
+    inline constexpr PrefabRendererResourceStreamingBudget kSceneLoadPrefabRendererResourceStreamingBudget =
+        kDragPreviewPrefabRendererResourceStreamingBudget;
+
+    inline constexpr PrefabRendererResourceStreamingBudget kPrefabRendererResourceStreamingBudget =
+        kSceneLoadPrefabRendererResourceStreamingBudget;
+
     inline constexpr PrefabRendererResourceStreamingBudget GetSceneLoadPrefabRendererResourceStreamingBudget()
     {
-        return kPrefabRendererResourceStreamingBudget;
+        return kSceneLoadPrefabRendererResourceStreamingBudget;
     }
 
     inline constexpr PrefabRendererResourceStreamingBudget GetDragPreviewPrefabRendererResourceStreamingBudget()
     {
-        return kPrefabRendererResourceStreamingBudget;
+        return kDragPreviewPrefabRendererResourceStreamingBudget;
     }
 
     inline constexpr auto kPrefabRendererResourceStreamingFrameBudget =

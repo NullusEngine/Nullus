@@ -21,6 +21,21 @@ struct ImDrawListSplitter;
 
 namespace NLS::Editor::Panels
 {
+    enum class StaticFrameCacheDecisionReason
+    {
+        None,
+        Hit,
+        Disabled,
+        Invalid,
+        MissingImage,
+        MissingTextureView,
+        MissingKey,
+        KeyChanged,
+        Resized,
+        ImmediateReadback,
+        ForcedRender
+    };
+
     struct ViewOverlayCameraMatrices
     {
         uint64_t frameId = 0u;
@@ -128,9 +143,20 @@ namespace NLS::Editor::Panels
 	protected:
 		void OnBeforeDrawWidgets() override;
 		void OnAfterDrawWidgets() override;
-        virtual void DrawPreRenderViewportOverlay();
+		virtual void DrawPreRenderViewportOverlay();
         virtual void DrawViewportOverlay();
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor();
+        virtual bool ShouldUseStaticFrameCache() const;
+        virtual uint64_t BuildStaticFrameCacheKey(
+            const Render::Entities::Camera& camera,
+            const Engine::SceneSystem::Scene& scene,
+            uint16_t width,
+            uint16_t height) const;
+        virtual void TraceStaticFrameCacheKeyChanged(
+            uint64_t previousKey,
+            uint64_t currentKey) const;
+        virtual void CommitStaticFrameCacheKey(uint64_t staticFrameCacheKey);
+        virtual bool ShouldForceStaticFrameRender() const;
 		virtual bool RequiresRetiredFrameConsumption() const;
 		void SetRequiresRetiredFrameConsumption(bool requiresRetiredFrameConsumption);
         virtual bool RequiresImmediateRetiredFrameReadback() const;
@@ -138,7 +164,10 @@ namespace NLS::Editor::Panels
         virtual bool RequiresSynchronizedRetiredFramePresentation() const;
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);
-		bool ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
+        bool ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
+        void SetStaticFrameCacheEnabled(bool enabled);
+        void InvalidateStaticFrameCache();
+        StaticFrameCacheDecisionReason GetLastStaticFrameCacheDecisionReason() const;
         void UpdatePreRenderOverlayCameraMatrices();
         void BeginViewportOverlayDrawListChannels();
         void FinishPreRenderViewportOverlayDrawList();
@@ -169,11 +198,16 @@ namespace NLS::Editor::Panels
         std::optional<ViewOverlayCameraMatrices> m_overlayCameraMatricesForCurrentDraw;
         std::deque<ViewOverlayCameraMatrices> m_submittedOverlayCameraMatrices;
         std::unique_ptr<ImDrawListSplitter> m_viewportOverlayDrawSplitter;
-		std::optional<Render::Data::FrameInfo> m_lastRenderedFrameInfo;
+        std::optional<Render::Data::FrameInfo> m_lastRenderedFrameInfo;
+        std::optional<uint64_t> m_lastStaticFrameCacheKey;
         std::optional<uint64_t> m_lastAvailablePublishedFrameCount;
+        StaticFrameCacheDecisionReason m_lastStaticFrameCacheDecisionReason =
+            StaticFrameCacheDecisionReason::None;
         bool m_viewportOverlayDrawListChannelsActive = false;
 		bool m_requiresRetiredFrameConsumption = false;
         bool m_requiresImmediateRetiredFrameReadback = false;
+        bool m_staticFrameCacheEnabled = false;
+        bool m_staticFrameCacheValid = false;
         bool m_resizedViewThisFrame = false;
         bool m_viewportImageAvailableForInput = false;
 	};

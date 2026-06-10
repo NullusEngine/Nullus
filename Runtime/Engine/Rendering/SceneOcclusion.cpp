@@ -169,6 +169,13 @@ namespace NLS::Engine::Rendering
 			{
 				return std::nullopt;
 			}
+			if (packet.screenMinX < 0.0f ||
+				packet.screenMinY < 0.0f ||
+				packet.screenMaxX > maxX ||
+				packet.screenMaxY > maxY)
+			{
+				return std::nullopt;
+			}
 			packet.screenMinX = std::clamp(packet.screenMinX, 0.0f, maxX);
 			packet.screenMinY = std::clamp(packet.screenMinY, 0.0f, maxY);
 			packet.screenMaxX = std::clamp(packet.screenMaxX, 0.0f, maxX);

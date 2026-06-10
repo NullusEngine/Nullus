@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -20,12 +22,29 @@ namespace NLS::Render::Assets
 
 namespace NLS::Editor::Core
 {
+    inline bool CanStartSceneLoadSharedMeshArtifactLoad(
+        const size_t inflightLoads,
+        const size_t maxInflightLoads)
+    {
+        return maxInflightLoads > 0u && inflightLoads < maxInflightLoads;
+    }
+
+    inline bool CanEvictSceneLoadSharedMeshArtifactLoad(const bool completed)
+    {
+        return completed;
+    }
+
     struct PrefabInstanceMeshArtifactLoadState
     {
         std::mutex mutex;
         bool completed = false;
         bool accepted = true;
         bool failed = false;
+        bool artifactMissing = false;
+        bool sharedAcrossSceneLoad = false;
+        size_t retryCount = 0u;
+        std::chrono::steady_clock::time_point firstRetryTime {};
+        std::chrono::steady_clock::time_point nextRetryTime {};
         std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
         std::shared_ptr<const NLS::Render::Assets::MeshArtifactData> data;
         std::shared_ptr<NLS::Render::Resources::Mesh> transientMesh;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace NLS::Editor::Panels
 {
     inline bool ShouldSceneViewBlockCameraInput(
@@ -33,16 +35,44 @@ namespace NLS::Editor::Panels
         bool pickingSuppressedByGizmo,
         bool hasPendingClickPick,
         bool leftClicked,
-        bool rightMousePressed,
+        bool cameraControlActive,
+        bool cameraMovedThisFrame,
         bool sampleExpired,
         bool mouseMoved,
         bool hasPickingSample)
     {
-        if (!mouseOverView || isResizing || pickingSuppressedByGizmo)
+        if (!mouseOverView || isResizing || pickingSuppressedByGizmo || cameraControlActive)
+            return false;
+
+        if (cameraMovedThisFrame && !hasPendingClickPick && !leftClicked)
             return false;
 
         return hasPendingClickPick ||
             leftClicked ||
-            (!rightMousePressed && sampleExpired && (mouseMoved || !hasPickingSample));
+            (sampleExpired && (mouseMoved || !hasPickingSample));
+    }
+
+    inline bool ShouldCancelScenePickingWhileCameraControlIsActive(
+        bool cameraControlActive,
+        bool hasPendingClickPick)
+    {
+        return cameraControlActive && hasPendingClickPick;
+    }
+
+    inline bool ShouldForceSceneViewStaticFrameRenderForPicking(
+        bool shouldRequestPickingFrame,
+        bool hasPickingSample)
+    {
+        return shouldRequestPickingFrame && !hasPickingSample;
+    }
+
+    inline bool ShouldSkipSceneHoverPickingForVisibleDrawBudget(
+        bool isClickPickingFrame,
+        uint64_t visiblePickableDrawCount,
+        uint64_t hoverPickingVisibleDrawBudget)
+    {
+        return !isClickPickingFrame &&
+            hoverPickingVisibleDrawBudget > 0u &&
+            visiblePickableDrawCount > hoverPickingVisibleDrawBudget;
     }
 }

@@ -1,5 +1,11 @@
 Texture2D<float> u_HZB : register(t0, space1);
 
+cbuffer HZBOcclusionConstants : register(b1, space1)
+{
+    uint u_OcclusionPrimitiveCount;
+    uint3 u_OcclusionConstantsPadding;
+};
+
 struct OcclusionPrimitiveInput
 {
     // Must match NLS::Engine::Rendering::SceneOcclusionPrimitivePacket.
@@ -116,12 +122,8 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint mipCount = 0u;
 	u_HZB.GetDimensions(0u, width, height, mipCount);
 
-	uint primitiveCount = 0u;
-	uint primitiveStride = 0u;
-    u_OcclusionPrimitiveInputs.GetDimensions(primitiveCount, primitiveStride);
-
     const uint primitiveIndex = dispatchThreadId.x;
-    if (width == 0u || height == 0u || primitiveIndex >= primitiveCount)
+    if (width == 0u || height == 0u || primitiveIndex >= u_OcclusionPrimitiveCount)
         return;
 
     const OcclusionPrimitiveInput primitive = u_OcclusionPrimitiveInputs[primitiveIndex];

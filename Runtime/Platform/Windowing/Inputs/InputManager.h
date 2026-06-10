@@ -73,6 +73,7 @@ namespace NLS::Windowing::Inputs
         Maths::Vector2 PollInfiniteCursorWrap();
 
 		inline Maths::Vector2 GetWheelMovement() const { return lastWheel; }
+        bool HasTransientInputEvents() const;
 		/**
 		* Clear any event occured
 		* @note Should be called at the end of every game tick

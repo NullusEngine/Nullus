@@ -1,5 +1,7 @@
 #pragma once
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
@@ -197,6 +199,10 @@ public:
     void SetSleeping(bool p_sleeping) { m_sleeping = p_sleeping; }
     void SetEditorTransient(bool transient) { m_editorTransient = transient; }
     bool IsEditorTransient() const { return m_editorTransient; }
+    void SetSourceObjectKey(std::string sourceObjectKey) { m_sourceObjectKey = std::move(sourceObjectKey); }
+    const std::string& GetSourceObjectKey() const { return m_sourceObjectKey; }
+    void SetLargeSceneHLODMetadata(std::string metadataJson) { m_largeSceneHLODMetadataJson = std::move(metadataJson); }
+    const std::string& GetLargeSceneHLODMetadata() const { return m_largeSceneHLODMetadataJson; }
     /**
      * Called when the scene start or when the actor gets enabled for the first time during play mode
      * This method will always be called in an ordered triple:
@@ -297,6 +303,8 @@ protected:
     bool m_started = false;
     bool m_wasActive = false;
     bool m_editorTransient = false;
+    std::string m_sourceObjectKey;
+    std::string m_largeSceneHLODMetadataJson;
     /* Parenting system stuff */
     GameObject* m_parent = nullptr;
     std::vector<GameObject*> m_children;

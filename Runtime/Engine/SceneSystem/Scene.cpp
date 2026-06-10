@@ -183,6 +183,9 @@ void Scene::CollectGarbages()
             CollectGameObjectSubtree(*element, garbage, collected);
     }
 
+    if (garbage.empty())
+        return;
+
     RemoveGameObjectsFromSceneList(collected);
     DestroyCollectedGameObjects(garbage);
 }
@@ -300,6 +303,16 @@ uint64_t Scene::GetFastAccessComponentsRevision() const
 {
 	(void)GetFastAccessComponents();
 	return m_fastAccessComponentsRevision;
+}
+
+uint64_t Scene::GetRenderContentRevision() const
+{
+	return m_renderContentRevision;
+}
+
+void Scene::MarkRenderContentChanged()
+{
+	++m_renderContentRevision;
 }
 
 void Scene::NotifyGameObjectDestroyed(GameObject& p_actor)
@@ -422,5 +435,6 @@ void Scene::RebuildFastAccessComponents()
 	}
 	m_fastAccessComponentsValid = true;
 	++m_fastAccessComponentsRevision;
+	MarkRenderContentChanged();
 }
 

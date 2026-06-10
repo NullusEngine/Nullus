@@ -40,6 +40,10 @@
 #include "Serialize/ObjectGraphInstantiator.h"
 #include "Serialize/ObjectGraphSerializer.h"
 
+#ifndef NLS_HAS_AUTODESK_FBX_SDK
+#define NLS_HAS_AUTODESK_FBX_SDK 0
+#endif
+
 namespace
 {
 std::filesystem::path MakeGameObjectAssetImportRoot()
@@ -541,6 +545,64 @@ TEST(GameObjectAssetImportTests, ColdRawModelDropSchedulesBackgroundImportAndCom
     std::filesystem::remove_all(root);
 }
 
+TEST(GameObjectAssetImportTests, WarmRawModelAsyncDropInstantiatesWithoutSchedulingBackgroundImport)
+{
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "WarmAsyncHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "nodes": [
+                { "name": "WarmAsyncHeroRoot" }
+            ]
+        })");
+
+    {
+        NLS::Editor::Assets::AssetDatabaseFacade database({root});
+        ASSERT_TRUE(database.Refresh());
+        ASSERT_TRUE(database.ImportAsset("Assets/Models/WarmAsyncHero.gltf"));
+    }
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+
+    bool completionCalled = false;
+    bool scheduleCalled = false;
+    auto result = bridge.DropModelAssetIntoHierarchyAsync(
+        "Models/WarmAsyncHero.gltf",
+        scene,
+        {
+            {},
+            nullptr,
+            nullptr,
+            nullptr,
+            [&](NLS::Editor::Assets::EditorAssetDragDropBridgeResult)
+            {
+                completionCalled = true;
+            },
+            [&](std::function<void()>)
+            {
+                scheduleCalled = true;
+                return true;
+            }
+        });
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_FALSE(result.pendingImport);
+    EXPECT_EQ(result.dragDrop.status, NLS::Editor::Assets::DragDropOperationStatus::Committed)
+        << FormatDragDropDiagnostics(result);
+    ASSERT_EQ(scene.GetGameObjects().size(), 1u);
+    EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "WarmAsyncHeroRoot");
+    EXPECT_FALSE(completionCalled);
+    EXPECT_FALSE(scheduleCalled);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(GameObjectAssetImportTests, ColdRawModelDropCompletesWhenBackgroundSchedulingIsRejected)
 {
     const auto root = MakeGameObjectAssetImportRoot();
@@ -619,6 +681,94 @@ TEST(GameObjectAssetImportTests, ColdRawModelDropCompletesWhenBackgroundScheduli
     EXPECT_TRUE(scene.GetGameObjects().empty());
 
     std::filesystem::remove_all(root);
+}
+
+#if !NLS_HAS_AUTODESK_FBX_SDK
+TEST(GameObjectAssetImportTests, ColdFbxRawModelDropForwardsBackgroundImportDiagnostics)
+{
+    const auto root = MakeGameObjectAssetImportRoot();
+    const auto modelPath = root / "Assets" / "Models" / "DefaultReaderUnavailable.fbx";
+    WriteTextFile(modelPath, "not a valid fbx");
+    auto meta = NLS::Core::Assets::AssetMeta::CreateForAsset(modelPath);
+    ASSERT_TRUE(meta.Save(NLS::Core::Assets::GetAssetMetaPath(modelPath)));
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+
+    bool completionCalled = false;
+    std::function<void()> scheduledImport;
+    auto result = bridge.DropModelAssetIntoHierarchyAsync(
+        "Models/DefaultReaderUnavailable.fbx",
+        scene,
+        {
+            {},
+            nullptr,
+            nullptr,
+            nullptr,
+            [&](NLS::Editor::Assets::EditorAssetDragDropBridgeResult completion)
+            {
+                completionCalled = true;
+                EXPECT_TRUE(completion.handled);
+                EXPECT_FALSE(completion.pendingImport);
+                EXPECT_FALSE(completion.importSucceeded);
+                EXPECT_EQ(completion.dragDrop.status, NLS::Editor::Assets::DragDropOperationStatus::Rejected);
+                EXPECT_EQ(std::count_if(
+                    completion.dragDrop.diagnostics.begin(),
+                    completion.dragDrop.diagnostics.end(),
+                    [](const NLS::Editor::Assets::AssetDragDropDiagnostic& diagnostic)
+                    {
+                        return diagnostic.code == "external-model-importer-autodesk-fbx-unavailable";
+                    }),
+                    1u)
+                    << FormatDragDropDiagnostics(completion);
+            },
+            [&](std::function<void()> task)
+            {
+                scheduledImport = std::move(task);
+                return true;
+            }
+        });
+
+    EXPECT_TRUE(result.handled);
+    EXPECT_TRUE(result.pendingImport);
+    EXPECT_FALSE(completionCalled);
+    ASSERT_TRUE(static_cast<bool>(scheduledImport));
+
+    scheduledImport();
+
+    EXPECT_TRUE(completionCalled);
+    EXPECT_TRUE(scene.GetGameObjects().empty());
+
+    std::filesystem::remove_all(root);
+}
+#endif
+
+TEST(GameObjectAssetImportTests, AsyncRawModelDropDoesNotRefreshAssetDatabaseOnCallingThread)
+{
+    const auto bridgeSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Project" /
+        "Editor" /
+        "Assets" /
+        "EditorAssetDragDropBridge.cpp";
+    std::ifstream input(bridgeSourcePath, std::ios::binary);
+    ASSERT_TRUE(input.good());
+    const std::string source {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+
+    const auto functionStart = source.find(
+        "EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHierarchyAsync(");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto nextFunction = source.find(
+        "EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHandleIntoHierarchy(",
+        functionStart);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const auto functionBody = source.substr(functionStart, nextFunction - functionStart);
+
+    EXPECT_EQ(functionBody.find("AssetDatabaseFacade database"), std::string::npos);
+    EXPECT_EQ(functionBody.find(".Refresh()"), std::string::npos);
+    EXPECT_EQ(functionBody.find("LoadSubAssetAtPath"), std::string::npos);
 }
 
 TEST(GameObjectAssetImportTests, ColdEditorAssetHandleDropReportsPendingWithoutSynchronousImport)
@@ -2007,6 +2157,219 @@ TEST(GameObjectAssetImportTests, RepeatedGeneratedModelPreviewReusesManySubmeshR
     meshManager.UnloadResources();
     NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths({}, {});
     std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, GeneratedModelPrefabLoadPersistsPreparedGraphCacheAcrossEditorSession)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the in-memory prefab hot cache.";
+#else
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+
+    EnsureGameObjectAssetImportTestDriver();
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "PersistentPreparedCacheHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "PersistentPreparedCacheHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/PersistentPreparedCacheHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/PersistentPreparedCacheHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    NLS::Editor::Assets::UnifiedPrefabLoadRequest request;
+    request.source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+        root,
+        "Assets/Models/PersistentPreparedCacheHero.gltf",
+        "prefab:PersistentPreparedCacheHero",
+        assetId,
+        NLS::Core::Assets::AssetType::ModelScene);
+    request.loadMode = NLS::Editor::Assets::UnifiedPrefabLoadMode::SceneRestore;
+    request.ownerKind = NLS::Editor::Assets::UnifiedPrefabOwnerKind::SceneInstance;
+    request.ownerScopeId = "scene:persistent-prepared-cache";
+    request.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::PrefabGraphOnly;
+    request.allowPending = false;
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto coldLoad = bridge.LoadUnifiedPrefabShared(request);
+    ASSERT_NE(coldLoad.prefab, nullptr);
+    const auto coldRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(CountArtifactTelemetryStage(coldRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 1u);
+
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto preparedLoad = bridge.LoadUnifiedPrefabShared(request);
+    ASSERT_NE(preparedLoad.prefab, nullptr);
+    EXPECT_EQ(preparedLoad.prefab->graph.root, coldLoad.prefab->graph.root);
+    EXPECT_EQ(preparedLoad.prefab->resolvedAssets.size(), coldLoad.prefab->resolvedAssets.size());
+    const auto preparedRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(CountArtifactTelemetryStage(preparedRecords, ArtifactLoadTelemetryStage::CacheHit), 1u);
+    EXPECT_EQ(CountArtifactTelemetryStage(preparedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 0u)
+        << "After an editor-session memory cache miss, scene restore should reuse the persistent prepared "
+           "prefab graph cache instead of reparsing the .nprefab payload.";
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(GameObjectAssetImportTests, PreparedGraphCachePersistsRendererDependencyTemplatesAcrossEditorSession)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the in-memory prefab hot cache.";
+#else
+    EnsureGameObjectAssetImportTestDriver();
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "PersistentRendererTemplateHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "PersistentRendererTemplateHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/PersistentRendererTemplateHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/PersistentRendererTemplateHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    NLS::Editor::Assets::UnifiedPrefabLoadRequest request;
+    request.source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+        root,
+        "Assets/Models/PersistentRendererTemplateHero.gltf",
+        "prefab:PersistentRendererTemplateHero",
+        assetId,
+        NLS::Core::Assets::AssetType::ModelScene);
+    request.loadMode = NLS::Editor::Assets::UnifiedPrefabLoadMode::SceneRestore;
+    request.ownerKind = NLS::Editor::Assets::UnifiedPrefabOwnerKind::SceneInstance;
+    request.ownerScopeId = "scene:persistent-renderer-template";
+    request.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::MeshMaterialTextureReady;
+    request.allowPending = false;
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    auto coldLoad = bridge.LoadUnifiedPrefabShared(request);
+    ASSERT_NE(coldLoad.prefab, nullptr);
+    ASSERT_TRUE(coldLoad.key.has_value());
+
+    auto coldTemplate = NLS::Editor::Assets::TryGetImportedPrefabRendererDependencyTemplates(*coldLoad.key);
+    ASSERT_TRUE(coldTemplate.has_value());
+    EXPECT_EQ(coldTemplate->size(), 1u);
+    EXPECT_FALSE(coldTemplate->front().meshPath.empty());
+
+    const auto cacheRoot = root / "Library" / "PreparedPrefabCache";
+    std::filesystem::path cachePath;
+    size_t cacheFileCount = 0u;
+    for (const auto& entry : std::filesystem::directory_iterator(cacheRoot))
+    {
+        if (entry.is_regular_file() && entry.path().extension() == ".json")
+        {
+            ++cacheFileCount;
+            cachePath = entry.path();
+        }
+    }
+    ASSERT_EQ(cacheFileCount, 1u);
+    ASSERT_FALSE(cachePath.empty());
+    std::ifstream cacheInput(cachePath, std::ios::binary);
+    ASSERT_TRUE(cacheInput.is_open());
+    auto cacheJson = nlohmann::json::parse(cacheInput, nullptr, false);
+    cacheInput.close();
+    ASSERT_FALSE(cacheJson.is_discarded());
+    ASSERT_TRUE(cacheJson.contains("rendererDependencyTemplates"));
+    ASSERT_TRUE(cacheJson["rendererDependencyTemplates"].is_array());
+    ASSERT_FALSE(cacheJson["rendererDependencyTemplates"].empty());
+    cacheJson["rendererDependencyTemplates"][0]["meshPath"] = "Library/Artifacts/sentinel/template-from-disk.nmesh";
+    {
+        std::ofstream cacheOutput(cachePath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(cacheOutput.is_open());
+        cacheOutput << cacheJson.dump();
+    }
+
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto preparedLoad = bridge.LoadUnifiedPrefabShared(request);
+    ASSERT_NE(preparedLoad.prefab, nullptr);
+    ASSERT_TRUE(preparedLoad.key.has_value());
+
+    auto preparedTemplate = NLS::Editor::Assets::TryGetImportedPrefabRendererDependencyTemplates(*preparedLoad.key);
+    ASSERT_TRUE(preparedTemplate.has_value());
+    ASSERT_EQ(preparedTemplate->size(), coldTemplate->size());
+    EXPECT_EQ(preparedTemplate->front().sourceObject, coldTemplate->front().sourceObject);
+    EXPECT_EQ(preparedTemplate->front().meshPath, "Library/Artifacts/sentinel/template-from-disk.nmesh");
+    EXPECT_GE(
+        CountArtifactTelemetryStage(
+            NLS::Core::Assets::SnapshotArtifactLoadTelemetry(),
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheHit),
+        1u);
+
+    std::filesystem::remove_all(root);
+#endif
 }
 
 TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewDerivesDefaultPrefabKeyWhenPayloadSubAssetKeyIsEmpty)

@@ -397,6 +397,26 @@ TEST(SceneOcclusionTests, HZBPrimitivePacketsRejectFullyOffscreenBoundsConservat
 	EXPECT_EQ(packets.rejectedPrimitiveCount, 1u);
 }
 
+TEST(SceneOcclusionTests, HZBPrimitivePacketsRejectScreenEdgeCrossingBoundsConservatively)
+{
+	SceneOcclusionPrimitivePacketBuildInput buildInput;
+	buildInput.viewProjection = NLS::Maths::Matrix4::Identity;
+	buildInput.viewportWidth = 100u;
+	buildInput.viewportHeight = 50u;
+
+	SceneOcclusionPrimitivePacketSource source;
+	source.primitive = MakePrimitive(MakeHandle(121u));
+	source.modelBounds.center = { 0.90f, 0.0f, 0.5f };
+	source.modelBounds.size = { 0.40f, 0.40f, 0.40f };
+	source.worldMatrix = NLS::Maths::Matrix4::Identity;
+
+	const auto packets = SceneOcclusionSystem::BuildHZBPrimitivePackets(buildInput, { source });
+
+	EXPECT_TRUE(packets.primitiveInputs.empty());
+	EXPECT_TRUE(packets.primitivePackets.empty());
+	EXPECT_EQ(packets.rejectedPrimitiveCount, 1u);
+}
+
 TEST(SceneOcclusionTests, HZBPrimitivePacketSourcesFollowVisibleSnapshotAndStableInvalidationHashes)
 {
 	ScenePrimitiveSnapshot snapshot;
@@ -570,6 +590,26 @@ TEST(SceneOcclusionTests, BaseSceneRendererBuildsHZBPacketsFromRetainedObservati
 	EXPECT_NE(body.find("CreatePrimitiveSnapshotForHandles(\n\t\t\t\thzbObservationCandidateHandles"), std::string::npos);
 	EXPECT_NE(body.find("BuildHZBPrimitivePacketSources(\n\t\t\t\thzbPrimitiveSnapshot,\n\t\t\t\thzbObservationCandidateHandles"), std::string::npos);
 	EXPECT_EQ(body.find("BuildHZBPrimitivePacketSources(\n\t\t\t\thzbPrimitiveSnapshot,\n\t\t\t\trenderScene.GetLastVisiblePrimitiveHandles()"), std::string::npos);
+}
+
+TEST(SceneOcclusionTests, BaseSceneRendererMovesPreviousHZBInputsInsteadOfCopyingLargeFrameVectors)
+{
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+
+	EXPECT_NE(
+		source.find("std::move(m_lastHZBOcclusionPrimitivePacketBuildResult.primitiveInputs)"),
+		std::string::npos);
+	EXPECT_NE(
+		source.find("previousHZBOcclusionPrimitiveInputsByScene[sceneId].push_back(std::move(input))"),
+		std::string::npos);
+	EXPECT_EQ(
+		source.find("const auto previousHZBOcclusionPrimitiveInputs =\n\t\tm_lastHZBOcclusionPrimitivePacketBuildResult.primitiveInputs"),
+		std::string::npos);
+	EXPECT_EQ(
+		source.find("previousHZBOcclusionPrimitiveInputsByScene[input.handle.sceneId].push_back(input)"),
+		std::string::npos);
 }
 
 TEST(SceneOcclusionTests, BaseSceneRendererUsesStableHZBViewKeyInsteadOfCameraObjectAddress)

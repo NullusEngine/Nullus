@@ -9,12 +9,72 @@
 #include "UI/UIManager.h"
 #include "ImGui/imgui.h"
 #include <algorithm>
+#include <cstring>
 #include <limits>
 
 using namespace NLS;
 
 namespace
 {
+    void HashCombine(uint64_t& seed, const uint64_t value)
+    {
+        seed ^= value + 0x9E3779B97F4A7C15ull + (seed << 6u) + (seed >> 2u);
+    }
+
+    void HashCombineFloat(uint64_t& seed, const float value)
+    {
+        uint32_t bits = 0u;
+        static_assert(sizeof(bits) == sizeof(value));
+        std::memcpy(&bits, &value, sizeof(value));
+        HashCombine(seed, static_cast<uint64_t>(bits));
+    }
+
+    void HashCombineVector3(uint64_t& seed, const Maths::Vector3& value)
+    {
+        HashCombineFloat(seed, value.x);
+        HashCombineFloat(seed, value.y);
+        HashCombineFloat(seed, value.z);
+    }
+
+    void HashCombineQuaternion(uint64_t& seed, const Maths::Quaternion& value)
+    {
+        HashCombineFloat(seed, value.x);
+        HashCombineFloat(seed, value.y);
+        HashCombineFloat(seed, value.z);
+        HashCombineFloat(seed, value.w);
+    }
+
+    const char* ToStaticFrameCacheReasonScope(
+        const Editor::Panels::StaticFrameCacheDecisionReason reason)
+    {
+        switch (reason)
+        {
+        case Editor::Panels::StaticFrameCacheDecisionReason::Hit:
+            return "AView::StaticCacheHit";
+        case Editor::Panels::StaticFrameCacheDecisionReason::Disabled:
+            return "AView::StaticCacheMiss::Disabled";
+        case Editor::Panels::StaticFrameCacheDecisionReason::Invalid:
+            return "AView::StaticCacheMiss::Invalid";
+        case Editor::Panels::StaticFrameCacheDecisionReason::MissingImage:
+            return "AView::StaticCacheMiss::MissingImage";
+        case Editor::Panels::StaticFrameCacheDecisionReason::MissingTextureView:
+            return "AView::StaticCacheMiss::MissingTextureView";
+        case Editor::Panels::StaticFrameCacheDecisionReason::MissingKey:
+            return "AView::StaticCacheMiss::MissingKey";
+        case Editor::Panels::StaticFrameCacheDecisionReason::KeyChanged:
+            return "AView::StaticCacheMiss::KeyChanged";
+        case Editor::Panels::StaticFrameCacheDecisionReason::Resized:
+            return "AView::StaticCacheMiss::Resized";
+        case Editor::Panels::StaticFrameCacheDecisionReason::ImmediateReadback:
+            return "AView::StaticCacheMiss::ImmediateReadback";
+        case Editor::Panels::StaticFrameCacheDecisionReason::ForcedRender:
+            return "AView::StaticCacheMiss::ForcedRender";
+        case Editor::Panels::StaticFrameCacheDecisionReason::None:
+        default:
+            return "AView::StaticCacheMiss::None";
+        }
+    }
+
     std::optional<Render::Context::ThreadedFrameTelemetry> TryGetAvailableThreadedFrameTelemetry(
         Render::Context::Driver* driver)
     {
@@ -170,6 +230,51 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 
 	if (p_width > 0 && p_height > 0 && camera && scene)
 	{
+        const auto staticFrameCacheKey = BuildStaticFrameCacheKey(*camera, *scene, p_width, p_height);
+        auto* cacheDriver = Render::Context::TryGetLocatedDriver();
+        const bool staticFrameCacheRequiresTextureView =
+            cacheDriver != nullptr &&
+            Render::Context::DriverRendererAccess::HasExplicitRHI(*cacheDriver);
+        const bool forceStaticFrameRender = ShouldForceStaticFrameRender();
+
+        auto resolveStaticFrameCacheDecision = [&]() {
+            if (!ShouldUseStaticFrameCache())
+                return StaticFrameCacheDecisionReason::Disabled;
+            if (!m_staticFrameCacheValid)
+                return StaticFrameCacheDecisionReason::Invalid;
+            if (m_image == nullptr)
+                return StaticFrameCacheDecisionReason::MissingImage;
+            if (staticFrameCacheRequiresTextureView && m_image->textureView == nullptr)
+                return StaticFrameCacheDecisionReason::MissingTextureView;
+            if (!m_lastStaticFrameCacheKey.has_value())
+                return StaticFrameCacheDecisionReason::MissingKey;
+            if (m_lastStaticFrameCacheKey.value() != staticFrameCacheKey)
+            {
+                TraceStaticFrameCacheKeyChanged(
+                    m_lastStaticFrameCacheKey.value(),
+                    staticFrameCacheKey);
+                return StaticFrameCacheDecisionReason::KeyChanged;
+            }
+            if (m_resizedViewThisFrame)
+                return StaticFrameCacheDecisionReason::Resized;
+            if (RequiresImmediateRetiredFrameReadback())
+                return StaticFrameCacheDecisionReason::ImmediateReadback;
+            if (forceStaticFrameRender)
+                return StaticFrameCacheDecisionReason::ForcedRender;
+            return StaticFrameCacheDecisionReason::Hit;
+        };
+
+        m_lastStaticFrameCacheDecisionReason = resolveStaticFrameCacheDecision();
+        {
+            NLS_PROFILE_NAMED_SCOPE(
+                ToStaticFrameCacheReasonScope(m_lastStaticFrameCacheDecisionReason));
+        }
+        if (m_lastStaticFrameCacheDecisionReason == StaticFrameCacheDecisionReason::Hit)
+        {
+            NLS_PROFILE_NAMED_SCOPE("AView::RenderSkippedStaticCache");
+            return;
+        }
+
         {
             NLS_PROFILE_NAMED_SCOPE("AView::EnsureRenderer");
             EnsureRenderer();
@@ -286,6 +391,8 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             NLS_PROFILE_NAMED_SCOPE("AView::AfterRenderFrame");
 		    AfterRenderFrame();
         }
+        CommitStaticFrameCacheKey(staticFrameCacheKey);
+        m_staticFrameCacheValid = ShouldUseStaticFrameCache();
 	}
 }
 
@@ -332,6 +439,56 @@ bool Editor::Panels::AView::RequiresSynchronizedRetiredFramePresentation() const
     return false;
 }
 
+bool Editor::Panels::AView::ShouldUseStaticFrameCache() const
+{
+    return m_staticFrameCacheEnabled;
+}
+
+uint64_t Editor::Panels::AView::BuildStaticFrameCacheKey(
+    const Render::Entities::Camera& camera,
+    const Engine::SceneSystem::Scene& scene,
+    const uint16_t width,
+    const uint16_t height) const
+{
+    uint64_t seed = 0xCACE5EEDBADC0DEull;
+    HashCombine(seed, static_cast<uint64_t>(width));
+    HashCombine(seed, static_cast<uint64_t>(height));
+    HashCombine(seed, scene.GetRenderContentRevision());
+    HashCombine(seed, static_cast<uint64_t>(camera.GetProjectionMode()));
+    HashCombine(seed, static_cast<uint64_t>(camera.GetVisibleLayerMask()));
+    HashCombine(seed, camera.HasFrustumGeometryCulling() ? 1u : 0u);
+    HashCombine(seed, camera.HasFrustumLightCulling() ? 1u : 0u);
+    HashCombineFloat(seed, camera.GetFov());
+    HashCombineFloat(seed, camera.GetSize());
+    HashCombineFloat(seed, camera.GetNear());
+    HashCombineFloat(seed, camera.GetFar());
+    HashCombineVector3(seed, camera.GetPosition());
+    HashCombineQuaternion(seed, camera.GetRotation());
+    HashCombineVector3(seed, camera.GetClearColor());
+    HashCombine(seed, camera.GetClearColorBuffer() ? 1u : 0u);
+    HashCombine(seed, camera.GetClearDepthBuffer() ? 1u : 0u);
+    HashCombine(seed, camera.GetClearStencilBuffer() ? 1u : 0u);
+    return seed;
+}
+
+void Editor::Panels::AView::TraceStaticFrameCacheKeyChanged(
+    const uint64_t previousKey,
+    const uint64_t currentKey) const
+{
+    (void)previousKey;
+    (void)currentKey;
+}
+
+void Editor::Panels::AView::CommitStaticFrameCacheKey(const uint64_t staticFrameCacheKey)
+{
+    m_lastStaticFrameCacheKey = staticFrameCacheKey;
+}
+
+bool Editor::Panels::AView::ShouldForceStaticFrameRender() const
+{
+    return false;
+}
+
 bool Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const uint16_t p_height)
 {
     m_resizedViewThisFrame = m_lastResolvedViewSize.first != p_width ||
@@ -370,6 +527,7 @@ bool Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const 
 
         if (m_image != nullptr)
             m_image->textureView.reset();
+        InvalidateStaticFrameCache();
     }
 
     m_lastResolvedViewSize = { p_width, p_height };
@@ -377,6 +535,26 @@ bool Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const 
     m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
     m_pendingResolvedViewSize.reset();
     return true;
+}
+
+void Editor::Panels::AView::SetStaticFrameCacheEnabled(const bool enabled)
+{
+    m_staticFrameCacheEnabled = enabled;
+    if (!enabled)
+        InvalidateStaticFrameCache();
+}
+
+void Editor::Panels::AView::InvalidateStaticFrameCache()
+{
+    m_staticFrameCacheValid = false;
+    m_lastStaticFrameCacheKey.reset();
+    m_lastStaticFrameCacheDecisionReason = StaticFrameCacheDecisionReason::Invalid;
+}
+
+Editor::Panels::StaticFrameCacheDecisionReason
+Editor::Panels::AView::GetLastStaticFrameCacheDecisionReason() const
+{
+    return m_lastStaticFrameCacheDecisionReason;
 }
 
 void Editor::Panels::AView::UpdatePreRenderOverlayCameraMatrices()

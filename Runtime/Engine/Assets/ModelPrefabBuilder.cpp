@@ -412,6 +412,39 @@ ObjectRecord MakeMeshRendererRecord(
     return meshRenderer;
 }
 
+ObjectRecord MakeHLODProxyMeshFilterRecord(
+    const ImportedScene& scene,
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const ObjectId& id,
+    const std::string& ownerName,
+    const std::string& proxySubAssetKey,
+    PrefabArtifact& artifact)
+{
+    const auto assetId = ResolveSubAssetId(manifest, scene.sourceAssetId, proxySubAssetKey);
+    const auto artifactPath = ResolveArtifactPath(manifest, proxySubAssetKey);
+    AddResolvedAsset(artifact, assetId, "Mesh", proxySubAssetKey, artifactPath);
+
+    ObjectRecord meshFilter;
+    meshFilter.id = id;
+    meshFilter.localIdentifierInFile = NLS::Engine::Serialize::MakeLocalIdentifierInFile(id);
+    meshFilter.typeName = MeshFilterTypeName();
+    meshFilter.debugName = ownerName + " MeshFilter";
+    meshFilter.properties.push_back({"mesh", MakeAssetReference(assetId, proxySubAssetKey)});
+    return meshFilter;
+}
+
+ObjectRecord MakeHLODProxyMeshRendererRecord(const ObjectId& id, const std::string& ownerName)
+{
+    ObjectRecord meshRenderer;
+    meshRenderer.id = id;
+    meshRenderer.localIdentifierInFile = NLS::Engine::Serialize::MakeLocalIdentifierInFile(id);
+    meshRenderer.typeName = MeshRendererTypeName();
+    meshRenderer.debugName = ownerName + " MeshRenderer";
+    meshRenderer.properties.push_back({"frustumBehaviour", PropertyValue::String("CULL_MODEL")});
+    meshRenderer.properties.push_back({"materials", PropertyValue::Array({})});
+    return meshRenderer;
+}
+
 void AddRecordMapping(PrefabArtifact& artifact, const ObjectId& sourceObject)
 {
     artifact.sourceToRuntimeObject.emplace(
@@ -454,6 +487,18 @@ void AddGeneratedRecords(
                 "node:" + node.sourceKey + ":primitive:" + std::to_string(primitiveIndex)));
         }
     }
+    const auto hlodChildKeys = !hasMesh
+        ? CollectDirectMeshChildKeys(scene.nodes, node.sourceKey)
+        : std::vector<std::string> {};
+    const auto hlodProxySubAssetKey = hlodChildKeys.size() >= 2u
+        ? ResolveImportedHierarchyHLODProxySubAssetKey(manifest, node.sourceKey)
+        : std::string {};
+    const auto hasHLODProxy = !hlodProxySubAssetKey.empty();
+    const auto hlodProxyObjectId = hasHLODProxy
+        ? MakeObjectId(scene, "node:" + node.sourceKey + ":hlod-proxy")
+        : ObjectId {};
+    if (hasHLODProxy)
+        ownedChildIds.push_back(hlodProxyObjectId);
 
     ObjectRecord gameObject;
     gameObject.id = gameObjectId;
@@ -472,14 +517,8 @@ void AddGeneratedRecords(
                 NLS::Engine::Serialize::MakeLocalIdentifierInFile(parentId)))
             : PropertyValue::Null()
     });
+    gameObject.properties.push_back({"sourceObjectKey", PropertyValue::String(node.sourceKey)});
     gameObject.properties.push_back({"tag", PropertyValue::String({})});
-
-    const auto hlodChildKeys = !hasMesh
-        ? CollectDirectMeshChildKeys(scene.nodes, node.sourceKey)
-        : std::vector<std::string> {};
-    const auto hlodProxySubAssetKey = hlodChildKeys.size() >= 2u
-        ? ResolveImportedHierarchyHLODProxySubAssetKey(manifest, node.sourceKey)
-        : std::string {};
     if (!hlodProxySubAssetKey.empty())
     {
         gameObject.properties.push_back({
@@ -533,6 +572,55 @@ void AddGeneratedRecords(
                 graph,
                 artifact);
         }
+    }
+
+    if (hasHLODProxy)
+    {
+        const auto proxyName = "__HLODProxy_" + nodeName;
+        const auto proxyTransformId = MakeObjectId(scene, "component:" + node.sourceKey + ":hlod-proxy:transform");
+        const auto proxyMeshFilterId = MakeObjectId(scene, "component:" + node.sourceKey + ":hlod-proxy:mesh-filter");
+        const auto proxyMeshRendererId = MakeObjectId(scene, "component:" + node.sourceKey + ":hlod-proxy:mesh-renderer");
+
+        ObjectRecord proxyObject;
+        proxyObject.id = hlodProxyObjectId;
+        proxyObject.localIdentifierInFile = NLS::Engine::Serialize::MakeLocalIdentifierInFile(hlodProxyObjectId);
+        proxyObject.typeName = GameObjectTypeName();
+        proxyObject.debugName = proxyName;
+        proxyObject.debugPath = "/" + nodeName + "/" + proxyName;
+        proxyObject.properties.push_back({"active", PropertyValue::Bool(false)});
+        proxyObject.properties.push_back({"children", MakeOwnedArray({})});
+        proxyObject.properties.push_back({"components", MakeOwnedArray({
+            proxyTransformId,
+            proxyMeshFilterId,
+            proxyMeshRendererId
+        })});
+        proxyObject.properties.push_back({"name", PropertyValue::String(proxyName)});
+        proxyObject.properties.push_back({
+            "parent",
+            PropertyValue::ObjectReference(ObjectIdentifier::LocalObject(
+                NLS::Engine::Serialize::MakeLocalIdentifierInFile(gameObjectId)))
+        });
+        proxyObject.properties.push_back({"sourceObjectKey", PropertyValue::String(hlodProxySubAssetKey)});
+        proxyObject.properties.push_back({"tag", PropertyValue::String({})});
+
+        ImportedSceneNode proxyNode;
+        proxyNode.sourceKey = node.sourceKey + ":hlod-proxy";
+        proxyNode.name = proxyName;
+        proxyNode.scale = {1.0, 1.0, 1.0};
+        graph.objects.push_back(std::move(proxyObject));
+        graph.objects.push_back(MakeTransformRecord(proxyNode, proxyTransformId, proxyName));
+        graph.objects.push_back(MakeHLODProxyMeshFilterRecord(
+            scene,
+            manifest,
+            proxyMeshFilterId,
+            proxyName,
+            hlodProxySubAssetKey,
+            artifact));
+        graph.objects.push_back(MakeHLODProxyMeshRendererRecord(proxyMeshRendererId, proxyName));
+        AddRecordMapping(artifact, hlodProxyObjectId);
+        AddRecordMapping(artifact, proxyTransformId);
+        AddRecordMapping(artifact, proxyMeshFilterId);
+        AddRecordMapping(artifact, proxyMeshRendererId);
     }
 }
 }

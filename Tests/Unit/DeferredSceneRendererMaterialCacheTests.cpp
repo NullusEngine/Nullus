@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -82,6 +83,15 @@ namespace
         const NLS::Render::RHI::RHIBufferDesc& GetDesc() const override { return m_desc; }
         NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
         uint64_t GetGPUAddress() const override { return 0u; }
+        NLS::Render::RHI::RHIUpdateResult UpdateData(const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc) override
+        {
+            ++updateCalls;
+            lastUpdateSize = uploadDesc.dataSize;
+            return { NLS::Render::RHI::RHIUpdateStatusCode::Success, {} };
+        }
+
+        uint32_t updateCalls = 0u;
+        size_t lastUpdateSize = 0u;
 
     private:
         NLS::Render::RHI::RHIBufferDesc m_desc {};
@@ -221,7 +231,11 @@ namespace
             const NLS::Render::RHI::RHIBufferDesc& desc,
             const NLS::Render::RHI::RHIBufferUploadDesc&) override
         {
-            return std::make_shared<DeferredTestBuffer>(desc);
+            ++bufferCreateCalls;
+            bufferDescs.push_back(desc);
+            auto buffer = std::make_shared<DeferredTestBuffer>(desc);
+            buffers.push_back(buffer);
+            return buffer;
         }
         std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
             const NLS::Render::RHI::RHITextureDesc& desc,
@@ -274,6 +288,9 @@ namespace
 
         size_t textureCreateCalls = 0u;
         size_t failTextureCreateCall = 0u;
+        size_t bufferCreateCalls = 0u;
+        std::vector<NLS::Render::RHI::RHIBufferDesc> bufferDescs;
+        std::vector<std::shared_ptr<DeferredTestBuffer>> buffers;
         std::vector<NLS::Render::RHI::RHITextureViewDesc> textureViewDescs;
 
     private:
@@ -410,6 +427,44 @@ namespace
         input.depthWriteEligible = true;
         return input;
     }
+
+    NLS::Engine::Rendering::SceneOcclusionPrimitivePacket MakeDeferredHZBPrimitivePacket(
+        const float offset)
+    {
+        NLS::Engine::Rendering::SceneOcclusionPrimitivePacket packet;
+        packet.screenMinX = 10.0f + offset;
+        packet.screenMinY = 20.0f + offset;
+        packet.screenMaxX = 30.0f + offset;
+        packet.screenMaxY = 40.0f + offset;
+        packet.nearestDepth = 0.5f;
+        packet.flags = 1u;
+        return packet;
+    }
+
+    size_t CountDeferredHZBPrimitiveBuffersCreated(
+        const DeferredTestExplicitDevice& device)
+    {
+        return static_cast<size_t>(std::count_if(
+            device.bufferDescs.begin(),
+            device.bufferDescs.end(),
+            [](const NLS::Render::RHI::RHIBufferDesc& desc)
+            {
+                return desc.debugName == "SceneHZBOcclusionPrimitiveInputs" ||
+                    desc.debugName == "SceneHZBOcclusionPrimitiveResults";
+            }));
+    }
+
+    std::shared_ptr<DeferredTestBuffer> FindLastDeferredTestBufferByDebugName(
+        const DeferredTestExplicitDevice& device,
+        const std::string_view debugName)
+    {
+        for (auto it = device.buffers.rbegin(); it != device.buffers.rend(); ++it)
+        {
+            if ((*it)->GetDesc().debugName == debugName)
+                return *it;
+        }
+        return nullptr;
+    }
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionObservationCanBeDiscardedAndReusedAfterReadbackFailure)
@@ -462,6 +517,112 @@ TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionObservationCanBeDiscar
     ASSERT_EQ(result.primitiveResults.size(), 2u);
     EXPECT_FALSE(result.primitiveResults[0].culledByOcclusion);
     EXPECT_TRUE(result.primitiveResults[1].culledByOcclusion);
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionPrimitiveBuffersReuseSameSizeAcrossCameraMotion)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<DeferredTestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    const std::vector<NLS::Engine::Rendering::SceneOcclusionPrimitivePacket> firstPackets {
+        MakeDeferredHZBPrimitivePacket(0.0f),
+        MakeDeferredHZBPrimitivePacket(1.0f)
+    };
+    const std::vector<NLS::Engine::Rendering::SceneOcclusionPrimitivePacket> movedCameraPackets {
+        MakeDeferredHZBPrimitivePacket(100.0f),
+        MakeDeferredHZBPrimitivePacket(101.0f)
+    };
+
+    ASSERT_TRUE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::PrepareHZBOcclusionPrimitiveBuffers(
+        renderer,
+        firstPackets));
+    const auto hzbBufferCreateCallsAfterFirstPrepare =
+        CountDeferredHZBPrimitiveBuffersCreated(*explicitDevice);
+    ASSERT_EQ(hzbBufferCreateCallsAfterFirstPrepare, 2u);
+    auto firstInputBuffer = FindLastDeferredTestBufferByDebugName(
+        *explicitDevice,
+        "SceneHZBOcclusionPrimitiveInputs");
+    auto firstResultBuffer = FindLastDeferredTestBufferByDebugName(
+        *explicitDevice,
+        "SceneHZBOcclusionPrimitiveResults");
+    ASSERT_NE(firstInputBuffer, nullptr);
+    ASSERT_NE(firstResultBuffer, nullptr);
+
+    ASSERT_TRUE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::PrepareHZBOcclusionPrimitiveBuffers(
+        renderer,
+        movedCameraPackets));
+
+    EXPECT_EQ(
+        CountDeferredHZBPrimitiveBuffersCreated(*explicitDevice),
+        hzbBufferCreateCallsAfterFirstPrepare);
+    EXPECT_EQ(firstInputBuffer->GetDesc().memoryUsage, NLS::Render::RHI::MemoryUsage::CPUToGPU);
+    EXPECT_EQ(firstInputBuffer->updateCalls, 1u);
+    EXPECT_EQ(firstInputBuffer->lastUpdateSize, firstPackets.size() * sizeof(NLS::Engine::Rendering::SceneOcclusionPrimitivePacket));
+    EXPECT_EQ(firstResultBuffer->updateCalls, 0u);
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, HZBOcclusionPrimitiveBuffersReuseCapacityAcrossVisibleCountChanges)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<DeferredTestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    const std::vector<NLS::Engine::Rendering::SceneOcclusionPrimitivePacket> firstPackets {
+        MakeDeferredHZBPrimitivePacket(0.0f),
+        MakeDeferredHZBPrimitivePacket(1.0f)
+    };
+    const std::vector<NLS::Engine::Rendering::SceneOcclusionPrimitivePacket> fewerPackets {
+        MakeDeferredHZBPrimitivePacket(100.0f)
+    };
+
+    ASSERT_TRUE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::PrepareHZBOcclusionPrimitiveBuffers(
+        renderer,
+        firstPackets));
+    const auto hzbBufferCreateCallsAfterFirstPrepare =
+        CountDeferredHZBPrimitiveBuffersCreated(*explicitDevice);
+    ASSERT_EQ(hzbBufferCreateCallsAfterFirstPrepare, 2u);
+    auto firstInputBuffer = FindLastDeferredTestBufferByDebugName(
+        *explicitDevice,
+        "SceneHZBOcclusionPrimitiveInputs");
+    auto firstResultBuffer = FindLastDeferredTestBufferByDebugName(
+        *explicitDevice,
+        "SceneHZBOcclusionPrimitiveResults");
+    ASSERT_NE(firstInputBuffer, nullptr);
+    ASSERT_NE(firstResultBuffer, nullptr);
+
+    ASSERT_TRUE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::PrepareHZBOcclusionPrimitiveBuffers(
+        renderer,
+        fewerPackets));
+
+    EXPECT_EQ(
+        CountDeferredHZBPrimitiveBuffersCreated(*explicitDevice),
+        hzbBufferCreateCallsAfterFirstPrepare);
+    EXPECT_EQ(firstInputBuffer->updateCalls, 1u);
+    EXPECT_EQ(firstInputBuffer->lastUpdateSize, fewerPackets.size() * sizeof(NLS::Engine::Rendering::SceneOcclusionPrimitivePacket));
+    EXPECT_EQ(firstResultBuffer->updateCalls, 0u);
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, HZBPostSubmitReadbackRequestConstructionDoesNotAdoptPendingState)

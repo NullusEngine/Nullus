@@ -480,6 +480,7 @@ bool AssetImporterFacade::SaveAndReimport(
         : database.ReimportAsset(normalized);
     if (!imported)
     {
+        m_diagnostics = database.GetDiagnostics();
         removeQueuedReimport();
         SaveMetaForPath(assetPath, *meta);
         return false;

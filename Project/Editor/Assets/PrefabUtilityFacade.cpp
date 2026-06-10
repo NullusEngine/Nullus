@@ -1277,6 +1277,7 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     instantiate.instance->generatedReadOnly = prefabInstance.generatedReadOnly || sourcePrefab.generatedModelPrefab;
     instantiate.instance->localPatches = prefabInstance.modifications;
     instantiate.instance->preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(sourcePrefab.graph);
+    instantiate.instance->preservedResolvedAssets = sourcePrefab.resolvedAssets;
     RemoveSceneLocalAddedObjectMappings(*instantiate.instance, prefabInstance);
 
     if (auto* parent = ResolveStrippedPlaceholderParent(sceneDocument, prefabInstance, sceneObjectsById);
@@ -1437,6 +1438,7 @@ PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(
         connect.instance->generatedReadOnly = prefabInstance.generatedReadOnly || prefab->generatedModelPrefab;
         connect.instance->localPatches = prefabInstance.modifications;
         connect.instance->preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(prefab->graph);
+        connect.instance->preservedResolvedAssets = prefab->resolvedAssets;
         connect.instance->preservedInstanceRootObject = prefabInstance.instanceRoot;
         connect.instance->preservedAddedObjects = prefabInstance.addedObjects;
         connect.instance->preservedCorrespondence = prefabInstance.correspondence;

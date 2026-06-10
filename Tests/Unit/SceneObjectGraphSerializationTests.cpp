@@ -1836,6 +1836,39 @@ TEST(SceneObjectGraphSerializationTests, SceneManagerTracksDirtyStateAroundScene
     EXPECT_FALSE(sceneManager.HasUnsavedSceneChanges());
 }
 
+TEST(SceneObjectGraphSerializationTests, SceneManagerDirtyMarksAdvanceRenderContentRevisionEveryTime)
+{
+    NLS::Engine::SceneSystem::SceneManager sceneManager;
+    auto* scene = sceneManager.GetCurrentScene();
+    ASSERT_NE(scene, nullptr);
+
+    const auto initialRevision = scene->GetRenderContentRevision();
+    sceneManager.MarkCurrentSceneDirty();
+    const auto firstDirtyRevision = scene->GetRenderContentRevision();
+    sceneManager.MarkCurrentSceneDirty();
+    const auto secondDirtyRevision = scene->GetRenderContentRevision();
+
+    EXPECT_GT(firstDirtyRevision, initialRevision);
+    EXPECT_GT(secondDirtyRevision, firstDirtyRevision);
+
+    sceneManager.LoadEmptyScene();
+    auto* reloadedScene = sceneManager.GetCurrentScene();
+    ASSERT_NE(reloadedScene, nullptr);
+    EXPECT_LE(reloadedScene->GetRenderContentRevision(), firstDirtyRevision);
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneCollectGarbagesDoesNotAdvanceRenderRevisionWhenNothingWasCollected)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    scene.CreateGameObject("Stable Object");
+    scene.GetFastAccessComponents();
+
+    const auto revisionBeforeGarbageCollection = scene.GetRenderContentRevision();
+    scene.CollectGarbages();
+
+    EXPECT_EQ(scene.GetRenderContentRevision(), revisionBeforeGarbageCollection);
+}
+
 TEST(SceneObjectGraphSerializationTests, LoadEmptyLightedSceneDoesNotCreateValidationCube)
 {
     const ScopedSceneObjectGraphTestDriver driverContext;

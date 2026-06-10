@@ -18,6 +18,7 @@
 #include "Core/EditorBackgroundTaskTracker.h"
 #include "Core/EditorProgressTargets.h"
 #include "Core/RendererResourcePrewarmRequest.h"
+#include "Core/RendererResourceStreamingBudget.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 
 #define EDITOR_EXEC(action)                 NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().action
@@ -32,7 +33,11 @@ namespace NLS::Editor::Core
     {
         bool hideRootUntilRendererResourcesReady = false;
         bool keepRootRenderingSuppressedOnFailure = false;
+        bool shareSceneLoadFrameBudget = false;
+        bool shareMeshArtifactLoads = false;
         std::string progressTargetPlatform = kRendererResourceResolutionTargetPlatform;
+        PrefabRendererResourceStreamingBudget streamingBudget =
+            GetSceneLoadPrefabRendererResourceStreamingBudget();
     };
 
     PrefabInstanceAssetResolutionOptions BuildImportedPrefabPreviewCommitResolutionOptions(

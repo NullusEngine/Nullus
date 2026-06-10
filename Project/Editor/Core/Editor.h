@@ -36,6 +36,7 @@ public:
      * Prepare the frame (Inputs update, screen clearing)
      */
     void PreUpdate();
+    void BeginProfilerFrame();
 
     /**
      * Editor main loop.
@@ -63,6 +64,7 @@ public:
         const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
     void RememberLastOpenedScene(const std::string& p_scenePath);
     void RefreshProfilerRecordingState();
+    bool IsProfilerRecordingEnabled();
 
     /**
      * Update the current editor mode

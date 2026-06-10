@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <string>
@@ -21,6 +22,27 @@ struct TraceFrameExportRange
 	std::uint32_t End = 0;
 };
 
+inline std::filesystem::path ResolveDefaultTraceFilePath(
+	const std::filesystem::path& logFilePath)
+{
+	const auto logDirectory = logFilePath.parent_path();
+	if (!logDirectory.empty())
+		return logDirectory / "trace.json";
+
+	return std::filesystem::path("Logs") / "trace.json";
+}
+
+inline std::filesystem::path ResolveDefaultTraceFilePath(
+	const std::filesystem::path& logFilePath,
+	const std::filesystem::path& fallbackRoot)
+{
+	const auto logDirectory = logFilePath.parent_path();
+	if (!logDirectory.empty())
+		return logDirectory / "trace.json";
+
+	return fallbackRoot / "Logs" / "trace.json";
+}
+
 inline TraceFrameExportRange ResolveTraceFrameExportRange(
 	const TraceFrameHistoryRange frameRange,
 	std::uint32_t& lastExportedFrame)
@@ -35,6 +57,29 @@ inline TraceFrameExportRange ResolveTraceFrameExportRange(
 		return {};
 
 	return { lastExportedFrame + 1u, frameRange.End };
+}
+
+inline TraceFrameExportRange LimitTraceFrameExportRange(
+	const TraceFrameExportRange exportRange,
+	const std::uint32_t maxFrameCount)
+{
+	if (exportRange.Begin >= exportRange.End || maxFrameCount == 0u)
+		return {};
+
+	const auto cappedEnd = exportRange.End - exportRange.Begin > maxFrameCount
+		? exportRange.Begin + maxFrameCount
+		: exportRange.End;
+	return { exportRange.Begin, cappedEnd };
+}
+
+inline TraceFrameExportRange ResolveBudgetedTraceFrameExportRange(
+	const TraceFrameHistoryRange frameRange,
+	std::uint32_t& lastExportedFrame,
+	const std::uint32_t maxFrameCount)
+{
+	return LimitTraceFrameExportRange(
+		ResolveTraceFrameExportRange(frameRange, lastExportedFrame),
+		maxFrameCount);
 }
 
 inline bool ShouldExportTraceDurationEvent(

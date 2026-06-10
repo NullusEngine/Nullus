@@ -50,6 +50,11 @@ namespace NLS::Engine::Serialize
             return root.dump(4) + "\n";
         }
 
+        static nlohmann::json WriteValueForRuntimeMetadata(const PropertyValue& value)
+        {
+            return WriteValue(value);
+        }
+
     private:
         static nlohmann::json WriteObject(const ObjectRecord& object)
         {

@@ -212,6 +212,27 @@ namespace
 		return CullReason::Visible;
 	}
 
+	CullReason RevalidateRepresentationProxyCandidate(
+		const ScenePrimitiveSnapshotRecord& record,
+		const SceneVisibilityPipelineOptions& options)
+	{
+		if (!record.occupied || record.tombstoned || !record.ownerAlive)
+			return CullReason::Inactive;
+		if (!record.hasMeshBinding)
+			return CullReason::MissingMesh;
+		if (record.mesh == nullptr)
+			return CullReason::NotResident;
+		if (!record.hasValidMaterial)
+			return CullReason::InvalidMaterial;
+		if (!LayerPasses(record, options.visibleLayerMask))
+			return CullReason::LayerMasked;
+		if (!DistancePasses(record, options))
+			return CullReason::DistanceCulled;
+		if (!FrustumPasses(record, options))
+			return CullReason::FrustumCulled;
+		return CullReason::Visible;
+	}
+
 	SnapshotLookup BuildLookup(const ScenePrimitiveSnapshot& primitives)
 	{
 		SnapshotLookup lookup;
@@ -324,14 +345,18 @@ namespace
 		const SnapshotLookup& lookup,
 		const ScenePrimitiveSnapshot& primitives,
 		const SceneVisibilityPipelineOptions& options,
-		const ScenePrimitiveHandle handle)
+		const ScenePrimitiveHandle handle,
+		const bool forceRepresentationProxy = false)
 	{
 		const auto denseIndex = FindDenseIndex(lookup, primitives, handle);
 		if (!denseIndex.has_value() || IsHandleVisible(result, lookup, primitives, handle))
 			return;
 
 		const auto& record = primitives.primitiveRecords[*denseIndex];
-		if (RevalidateCandidate(record, options) != CullReason::Visible)
+		const auto reason = forceRepresentationProxy
+			? RevalidateRepresentationProxyCandidate(record, options)
+			: RevalidateCandidate(record, options);
+		if (reason != CullReason::Visible)
 			return;
 
 		MarkVisible(result, record, *denseIndex);
@@ -454,7 +479,7 @@ namespace
 
 			AddUniqueCluster(result.activeHLODClusters, cluster.clusterHandle);
 			if (selection.proxyPrimitive.has_value())
-				AddVisibleHandle(result, lookup, primitives, options, *selection.proxyPrimitive);
+				AddVisibleHandle(result, lookup, primitives, options, *selection.proxyPrimitive, true);
 
 			for (const auto& child : selection.suppressedChildPrimitives)
 			{

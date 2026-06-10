@@ -74,6 +74,15 @@ NLS::Maths::Vector2 NLS::Windowing::Inputs::InputManager::PollInfiniteCursorWrap
     return m_window.PollInfiniteCursorWrap();
 }
 
+bool NLS::Windowing::Inputs::InputManager::HasTransientInputEvents() const
+{
+    return !m_keyEvents.empty() ||
+        !m_mouseButtonsPressedThisFrame.empty() ||
+        !m_mouseButtonsReleasedThisFrame.empty() ||
+        lastWheel.x != 0.0f ||
+        lastWheel.y != 0.0f;
+}
+
 void NLS::Windowing::Inputs::InputManager::ClearEvents()
 {
 	m_keyEvents.clear();

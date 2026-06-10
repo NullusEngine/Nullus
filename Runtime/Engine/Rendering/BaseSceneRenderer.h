@@ -109,6 +109,9 @@ namespace NLS::Engine::Rendering
 		bool HasPendingLightGridFrameInputs() const { return false; }
 		const SceneOcclusionPrimitivePacketBuildResult& GetLastHZBOcclusionPrimitivePacketBuildResult() const;
 		const SceneOcclusionHistory& GetHZBOcclusionHistoryForTesting() const;
+		[[nodiscard]] bool HasLastVisiblePickablePrimitiveDrawSources() const;
+		[[nodiscard]] const std::vector<ScenePickablePrimitiveDrawSource>&
+			GetLastVisiblePickablePrimitiveDrawSources() const;
 
 	protected:
 		void RefreshSceneLightingDescriptor(SceneSystem::Scene& scene);
@@ -186,6 +189,8 @@ namespace NLS::Engine::Rendering
 		std::string m_sceneFallbackShaderResourcePath;
 		RenderScene m_renderScene;
 		std::unordered_map<SceneSystem::Scene*, RenderScene> m_additiveRenderScenes;
+		std::vector<ScenePickablePrimitiveDrawSource> m_lastVisiblePickablePrimitiveDrawSources;
+		bool m_hasLastVisiblePickablePrimitiveDrawSources = false;
 		mutable std::mutex m_lightGridCompileContextCacheMutex;
 		mutable LightGridCompileContextCache m_lightGridCompileContextCache;
 		mutable NLS::Render::Context::LargeSceneCullReasonDebugSnapshot m_lastCullReasonDebugSnapshot;

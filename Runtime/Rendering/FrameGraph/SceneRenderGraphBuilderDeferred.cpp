@@ -1603,11 +1603,28 @@ namespace NLS::Render::FrameGraph
         });
         if (request.occlusionPrimitiveInputBuffer != nullptr)
         {
-            occlusion.shaderReadBuffersBefore.push_back(request.occlusionPrimitiveInputBuffer);
+            const bool inputBufferIsCpuToGpu =
+                request.occlusionPrimitiveInputBuffer->GetDesc().memoryUsage ==
+                NLS::Render::RHI::MemoryUsage::CPUToGPU;
+            const auto inputBufferState = inputBufferIsCpuToGpu
+                ? NLS::Render::RHI::ResourceState::GenericRead
+                : NLS::Render::RHI::ResourceState::ShaderRead;
+            if (!inputBufferIsCpuToGpu)
+                occlusion.shaderReadBuffersBefore.push_back(request.occlusionPrimitiveInputBuffer);
             occlusion.bufferResourceAccesses.push_back({
                 request.occlusionPrimitiveInputBuffer,
                 NLS::Render::Context::ResourceAccessMode::Read,
-                NLS::Render::RHI::ResourceState::ShaderRead,
+                inputBufferState,
+                NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                NLS::Render::RHI::AccessMask::ShaderRead
+            });
+        }
+        if (request.occlusionConstantsBuffer != nullptr)
+        {
+            occlusion.bufferResourceAccesses.push_back({
+                request.occlusionConstantsBuffer,
+                NLS::Render::Context::ResourceAccessMode::Read,
+                NLS::Render::RHI::ResourceState::GenericRead,
                 NLS::Render::RHI::PipelineStageMask::ComputeShader,
                 NLS::Render::RHI::AccessMask::ShaderRead
             });

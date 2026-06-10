@@ -363,9 +363,17 @@ void Editor::Core::Editor::SetupUI()
 void Editor::Core::Editor::PreUpdate()
 {
     RefreshProfilerRecordingState();
-    m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").BeginProfilerFrame();
     NLS_PROFILE_SCOPE();
-    m_context.device->PollEvents();
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::PollEvents");
+        m_context.device->PollEvents();
+    }
+}
+
+void Editor::Core::Editor::BeginProfilerFrame()
+{
+    RefreshProfilerRecordingState();
+    m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").BeginProfilerFrame();
 }
 
 void Editor::Core::Editor::Update(float p_deltaTime)
@@ -427,6 +435,11 @@ void Editor::Core::Editor::RefreshProfilerRecordingState()
 
     const bool tracyConnected = NLS::Base::Profiling::TracyProfiler::IsConnected();
     NLS::Base::Profiling::Profiler::SetEnabled(tracyConnected || profilerPanel.IsRecordingEnabled());
+}
+
+bool Editor::Core::Editor::IsProfilerRecordingEnabled()
+{
+    return m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").IsRecordingEnabled();
 }
 
 void Editor::Core::Editor::HandleGlobalShortcuts()

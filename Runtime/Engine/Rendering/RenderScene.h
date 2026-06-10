@@ -13,6 +13,7 @@
 #include <Rendering/Data/DrawCallOptimizationStats.h>
 #include <Rendering/Data/Frustum.h>
 #include <Rendering/Data/FrameInfo.h>
+#include <Rendering/Data/StateMask.h>
 #include <Rendering/Entities/Drawable.h>
 #include <Rendering/Geometry/Bounds.h>
 #include <Rendering/Geometry/BoundingSphere.h>
@@ -216,6 +217,8 @@ namespace NLS::Engine::Rendering
 		uint64_t occlusionTestCount = 0u;
 		uint64_t occlusionCulledCount = 0u;
 		std::array<uint64_t, NLS::Render::Data::kLargeSceneCullReasonCount> culledByReason {};
+		std::array<uint64_t, NLS::Render::Data::kLargeSceneLodSelectionBucketCount> lodSelectionCount {};
+		uint64_t activeHLODClusterCount = 0u;
 		uint64_t spatialCandidateCount = 0u;
 		uint64_t fullScanCandidateCount = 0u;
 		uint64_t primitiveRecordsTouched = 0u;
@@ -239,6 +242,14 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Data::StateMask stateMask{};
 		NLS::Render::Settings::EPrimitiveMode primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
 		uint64_t buildSerial = 0u;
+	};
+
+	struct ScenePickablePrimitiveDrawSource
+	{
+		NLS::Engine::GameObject* owner = nullptr;
+		NLS::Render::Resources::Mesh* mesh = nullptr;
+		Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
+		NLS::Render::Data::StateMask stateMask{};
 	};
 
 	class NLS_ENGINE_API RenderScene
@@ -270,6 +281,11 @@ namespace NLS::Engine::Rendering
 		[[nodiscard]] const std::vector<ScenePrimitiveHandle>& GetLastVisiblePrimitiveHandles() const;
 		[[nodiscard]] const std::vector<ScenePrimitiveHandle>& GetLastRemovedPrimitiveHandles() const;
 		[[nodiscard]] std::vector<ScenePrimitiveHandle> GetLivePrimitiveHandles() const;
+		[[nodiscard]] std::vector<ScenePickablePrimitiveDrawSource> CreatePickablePrimitiveDrawSourcesForHandles(
+			const std::vector<ScenePrimitiveHandle>& handles) const;
+		void AppendPickablePrimitiveDrawSourcesForHandles(
+			const std::vector<ScenePrimitiveHandle>& handles,
+			std::vector<ScenePickablePrimitiveDrawSource>& outSources) const;
 		[[nodiscard]] const std::vector<ScenePrimitiveHandle>& GetLastRepresentationStreamingInterest() const;
 		[[nodiscard]] RenderSceneVisibilitySnapshot EvaluateVisibilityForTesting(
 			const RenderSceneVisibilityOptions& options = {},
@@ -432,6 +448,7 @@ namespace NLS::Engine::Rendering
 		void FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& opaques) const;
 		void AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) const;
 		void RefreshSyncTelemetry(const RenderSceneSyncStats& stats);
+		void RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene);
 		void ResetMovedFromState() noexcept;
 
 		uint64_t m_sceneId = 0u;
@@ -455,5 +472,6 @@ namespace NLS::Engine::Rendering
 		mutable std::vector<ScenePrimitiveHandle> m_lastRepresentationStreamingInterest;
 		std::unique_ptr<SceneSpatialIndex> m_spatialIndex;
 		std::unique_ptr<RepresentationRegistry> m_representationRegistry;
+		std::vector<SceneHLODClusterHandle> m_importedHierarchyHLODClusterHandles;
 	};
 }

@@ -2087,6 +2087,7 @@ TEST(PrefabEditorWorkflowTests, UnpacksGeneratedModelPrefabInstancePreservingAss
         "prefab:GeneratedModel"
     }, scene);
     ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_EQ(instantiate.instance->preservedResolvedAssets.size(), 1u);
 
     const auto result = workflow.UnpackPrefabInstance(*instantiate.instance);
 
@@ -2095,6 +2096,10 @@ TEST(PrefabEditorWorkflowTests, UnpacksGeneratedModelPrefabInstancePreservingAss
     ASSERT_EQ(result.unpack->preservedAssetReferences.size(), 1u);
     EXPECT_EQ(result.unpack->preservedAssetReferences.front().guid.ToString(), "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9b9b");
     EXPECT_EQ(result.unpack->preservedAssetReferences.front().filePath, "material:Body");
+    EXPECT_TRUE(instantiate.instance->preservedResolvedAssets.empty())
+        << "Unpacked scene-owned objects must not retain prefab-instance renderer resource ownership metadata.";
+    ASSERT_TRUE(result.instance.has_value());
+    EXPECT_TRUE(result.instance->preservedResolvedAssets.empty());
 }
 
 TEST(PrefabEditorWorkflowTests, AggregatesEditorDiagnosticsAcrossPrefabOperations)

@@ -152,6 +152,8 @@ namespace NLS::Engine::SceneSystem
 		*/
 		const FastAccessComponents& GetFastAccessComponents() const;
 		uint64_t GetFastAccessComponentsRevision() const;
+		uint64_t GetRenderContentRevision() const;
+		void MarkRenderContentChanged();
 
 		void RebuildRuntimeCachesAfterLoad()
 		{
@@ -172,5 +174,6 @@ namespace NLS::Engine::SceneSystem
 		FastAccessComponents m_fastAccessComponents;
 		bool m_fastAccessComponentsValid = false;
 		uint64_t m_fastAccessComponentsRevision = 0u;
+		uint64_t m_renderContentRevision = 0u;
 	};
 }

@@ -1,9 +1,15 @@
 #include "Rendering/RHI/Backends/DX12/DX12Descriptor.h"
 
 #include <algorithm>
+#include <bit>
 #include <climits>
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <mutex>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -28,6 +34,139 @@ namespace NLS::Render::Backend
 	namespace
 	{
 		constexpr uint64_t kDX12DescriptorFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
+
+		template<typename T>
+		void AppendKeyValue(std::string& key, const T value)
+		{
+			static_assert(std::is_trivially_copyable_v<T>);
+			const auto* bytes = reinterpret_cast<const char*>(&value);
+			key.append(bytes, sizeof(T));
+		}
+
+		void AppendNativeSamplerFloatKeyValue(std::string& key, const float value)
+		{
+			AppendKeyValue<uint32_t>(key, std::bit_cast<uint32_t>(value == 0.0f ? 0.0f : value));
+		}
+
+		void AppendNativeSamplerDescKey(std::string& key, const D3D12_SAMPLER_DESC& desc)
+		{
+			AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(desc.Filter));
+			AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(desc.AddressU));
+			AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(desc.AddressV));
+			AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(desc.AddressW));
+			AppendNativeSamplerFloatKeyValue(key, desc.MipLODBias);
+			AppendKeyValue<uint32_t>(key, desc.MaxAnisotropy);
+			AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(desc.ComparisonFunc));
+			for (const auto value : desc.BorderColor)
+				AppendNativeSamplerFloatKeyValue(key, value);
+			AppendNativeSamplerFloatKeyValue(key, desc.MinLOD);
+			AppendNativeSamplerFloatKeyValue(key, desc.MaxLOD);
+		}
+
+		NLS::Render::RHI::DX12::DX12DescriptorRangeCategory ToDX12DescriptorRangeCategory(
+			NLS::Render::RHI::BindingType type)
+		{
+			switch (type)
+			{
+			case NLS::Render::RHI::BindingType::UniformBuffer:
+				return NLS::Render::RHI::DX12::DX12DescriptorRangeCategory::ConstantBuffer;
+			case NLS::Render::RHI::BindingType::StructuredBuffer:
+			case NLS::Render::RHI::BindingType::Texture:
+				return NLS::Render::RHI::DX12::DX12DescriptorRangeCategory::ShaderResource;
+			case NLS::Render::RHI::BindingType::StorageBuffer:
+			case NLS::Render::RHI::BindingType::RWTexture:
+				return NLS::Render::RHI::DX12::DX12DescriptorRangeCategory::UnorderedAccess;
+			case NLS::Render::RHI::BindingType::Sampler:
+			default:
+				return NLS::Render::RHI::DX12::DX12DescriptorRangeCategory::Sampler;
+			}
+		}
+
+		const NLS::Render::RHI::RHIBindingLayoutEntry* FindDX12BindingLayoutEntry(
+			const NLS::Render::RHI::RHIBindingSetDesc& desc,
+			const NLS::Render::RHI::DX12::DX12DescriptorTableRangeDesc& range)
+		{
+			if (desc.layout == nullptr)
+				return nullptr;
+
+			const auto& entries = desc.layout->GetDesc().entries;
+			const auto entryIt = std::find_if(
+				entries.begin(),
+				entries.end(),
+				[&range](const NLS::Render::RHI::RHIBindingLayoutEntry& entry)
+				{
+					return entry.binding == range.binding &&
+						entry.registerSpace == range.registerSpace &&
+						entry.count == range.descriptorCount &&
+						ToDX12DescriptorRangeCategory(entry.type) == range.category;
+				});
+			return entryIt != entries.end() ? &(*entryIt) : nullptr;
+		}
+
+		const NLS::Render::RHI::RHIBindingSetEntry* FindDX12BindingSetEntry(
+			const NLS::Render::RHI::RHIBindingSetDesc& desc,
+			const NLS::Render::RHI::RHIBindingLayoutEntry& layoutEntry)
+		{
+			const auto entryIt = std::find_if(
+				desc.entries.begin(),
+				desc.entries.end(),
+				[&layoutEntry](const NLS::Render::RHI::RHIBindingSetEntry& entry)
+				{
+					return entry.binding == layoutEntry.binding && entry.type == layoutEntry.type;
+				});
+			return entryIt != desc.entries.end() ? &(*entryIt) : nullptr;
+		}
+
+		std::string BuildDX12SamplerDescriptorTableKey(
+			const NLS::Render::RHI::RHIBindingSetDesc& desc,
+			const std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc>& tables)
+		{
+			std::string key;
+			key.reserve(256u);
+			const auto samplerTableCount = static_cast<uint32_t>(std::count_if(
+				tables.begin(),
+				tables.end(),
+				[](const NLS::Render::RHI::DX12::DX12DescriptorTableDesc& table)
+				{
+					return table.heapKind == NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler;
+				}));
+			AppendKeyValue<uint32_t>(key, samplerTableCount);
+
+			const NLS::Render::RHI::SamplerDesc defaultSamplerDesc{};
+			for (const auto& table : tables)
+			{
+				if (table.heapKind != NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler)
+					continue;
+
+				AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(table.heapKind));
+				AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(table.category));
+				AppendKeyValue<uint32_t>(key, table.set);
+				AppendKeyValue<uint32_t>(key, table.registerSpace);
+				AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(table.ranges.size()));
+
+				for (const auto& range : table.ranges)
+				{
+					AppendKeyValue<uint32_t>(key, static_cast<uint32_t>(range.category));
+					AppendKeyValue<uint32_t>(key, range.registerSpace);
+					AppendKeyValue<uint32_t>(key, range.binding);
+					AppendKeyValue<uint32_t>(key, range.descriptorCount);
+					AppendKeyValue<uint32_t>(key, range.elementStride);
+
+					const auto* layoutEntry = FindDX12BindingLayoutEntry(desc, range);
+					const auto* boundEntry = layoutEntry != nullptr
+						? FindDX12BindingSetEntry(desc, *layoutEntry)
+						: nullptr;
+					const auto& samplerDesc = boundEntry != nullptr && boundEntry->sampler != nullptr
+						? boundEntry->sampler->GetDesc()
+						: defaultSamplerDesc;
+					const auto nativeSamplerDesc = NLS::Render::RHI::DX12::BuildDX12SamplerDesc(samplerDesc);
+					for (uint32_t descriptorIndex = 0u; descriptorIndex < range.descriptorCount; ++descriptorIndex)
+						AppendNativeSamplerDescKey(key, nativeSamplerDesc);
+				}
+			}
+
+			return key;
+		}
 
 		UINT64 AlignUp(UINT64 value, UINT64 alignment)
 		{
@@ -323,7 +462,15 @@ namespace NLS::Render::Backend
 		if (allocation.IsValid())
 			return static_cast<UINT>(allocation.offset);
 
-		NLS_LOG_ERROR(m_heapDebugName + ": Out of descriptors!");
+		const auto stats = m_rangeAllocator.GetStats();
+		NLS_LOG_ERROR(
+			m_heapDebugName +
+			": Out of descriptors! requested=" + std::to_string(count) +
+			" persistentUsed=" + std::to_string(stats.persistentUsed) +
+			" persistentPeak=" + std::to_string(stats.persistentPeak) +
+			" persistentCapacity=" + std::to_string(stats.persistentCapacity) +
+			" released=" + std::to_string(stats.persistentReleased) +
+			" failures=" + std::to_string(stats.allocationFailures));
 		return UINT_MAX;
 	}
 
@@ -342,15 +489,152 @@ namespace NLS::Render::Backend
 		return m_rangeAllocator.GetStats();
 	}
 
+	struct DX12SamplerDescriptorTableCache::Allocation::Impl
+	{
+		struct Entry
+		{
+			UINT offset = UINT_MAX;
+			UINT count = 0u;
+			uint32_t refCount = 0u;
+		};
+
+		std::mutex mutex;
+		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> allocator;
+		std::unordered_map<std::string, Entry> entries;
+	};
+
+	struct DX12SamplerDescriptorTableCache::Impl final
+		: public DX12SamplerDescriptorTableCache::Allocation::Impl
+	{
+	};
+
+	DX12SamplerDescriptorTableCache::Allocation::Allocation(
+		std::shared_ptr<Impl> impl,
+		std::string key,
+		UINT offset,
+		UINT count)
+		: m_impl(std::move(impl))
+		, m_key(std::move(key))
+		, m_offset(offset)
+		, m_count(count)
+	{
+	}
+
+	DX12SamplerDescriptorTableCache::Allocation::~Allocation()
+	{
+		if (m_impl == nullptr || m_offset == UINT_MAX || m_count == 0u)
+			return;
+
+		std::lock_guard<std::mutex> lock(m_impl->mutex);
+		auto entryIt = m_impl->entries.find(m_key);
+		if (entryIt == m_impl->entries.end())
+			return;
+
+		auto& entry = entryIt->second;
+		if (entry.refCount > 1u)
+		{
+			--entry.refCount;
+			return;
+		}
+
+		if (m_impl->allocator != nullptr)
+			m_impl->allocator->Free(entry.offset, entry.count);
+		m_impl->entries.erase(entryIt);
+	}
+
+	UINT DX12SamplerDescriptorTableCache::Allocation::GetOffset() const
+	{
+		return m_offset;
+	}
+
+	UINT DX12SamplerDescriptorTableCache::Allocation::GetCount() const
+	{
+		return m_count;
+	}
+
+	DX12SamplerDescriptorTableCache::DX12SamplerDescriptorTableCache(
+		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> allocator)
+		: m_impl(std::make_shared<Impl>())
+	{
+		m_impl->allocator = std::move(allocator);
+	}
+
+	DX12SamplerDescriptorTableCache::~DX12SamplerDescriptorTableCache() = default;
+
+	std::shared_ptr<DX12SamplerDescriptorTableCache::Allocation> DX12SamplerDescriptorTableCache::Acquire(
+		const NLS::Render::RHI::RHIBindingSetDesc& desc,
+		const std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc>& tables,
+		UINT descriptorCount,
+		const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE, UINT)>& writeDescriptors)
+	{
+		if (m_impl == nullptr || m_impl->allocator == nullptr || descriptorCount == 0u)
+			return nullptr;
+		if (m_impl->allocator->GetHeap() == nullptr)
+			return nullptr;
+
+		auto key = BuildDX12SamplerDescriptorTableKey(desc, tables);
+		std::lock_guard<std::mutex> lock(m_impl->mutex);
+		if (auto found = m_impl->entries.find(key); found != m_impl->entries.end())
+		{
+			++found->second.refCount;
+			return std::shared_ptr<Allocation>(
+				new Allocation(m_impl, std::move(key), found->second.offset, found->second.count));
+		}
+
+		const UINT offset = m_impl->allocator->Allocate(descriptorCount);
+		if (offset == UINT_MAX)
+			return nullptr;
+
+		D3D12_CPU_DESCRIPTOR_HANDLE baseCpuHandle = m_impl->allocator->GetCpuHandle();
+		const UINT descriptorSize = m_impl->allocator->GetDescriptorSize();
+		baseCpuHandle.ptr += static_cast<SIZE_T>(offset) * descriptorSize;
+		writeDescriptors(baseCpuHandle, descriptorSize);
+
+		m_impl->entries.emplace(key, Allocation::Impl::Entry{ offset, descriptorCount, 1u });
+		return std::shared_ptr<Allocation>(
+			new Allocation(m_impl, std::move(key), offset, descriptorCount));
+	}
+
+	UINT DX12SamplerDescriptorTableCache::GetDescriptorSize() const
+	{
+		return m_impl != nullptr && m_impl->allocator != nullptr
+			? m_impl->allocator->GetDescriptorSize()
+			: 0u;
+	}
+
+	ID3D12DescriptorHeap* DX12SamplerDescriptorTableCache::GetHeap() const
+	{
+		return m_impl != nullptr && m_impl->allocator != nullptr
+			? m_impl->allocator->GetHeap()
+			: nullptr;
+	}
+
+	D3D12_GPU_DESCRIPTOR_HANDLE DX12SamplerDescriptorTableCache::GetGpuHandle(
+		UINT offset,
+		UINT descriptorIndex) const
+	{
+		if (m_impl == nullptr || m_impl->allocator == nullptr)
+			return {};
+
+		D3D12_GPU_DESCRIPTOR_HANDLE handle = m_impl->allocator->GetGpuHandle();
+		if (handle.ptr == 0)
+			return {};
+
+		handle.ptr += static_cast<UINT64>(offset + descriptorIndex) * m_impl->allocator->GetDescriptorSize();
+		return handle;
+	}
+
 	NativeDX12BindingSet::NativeDX12BindingSet(
 		ID3D12Device* device,
 		NLS::Render::RHI::RHIBindingSetDesc desc,
 		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> resourceHeapAllocator,
-		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> samplerHeapAllocator)
+		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> samplerHeapAllocator,
+		std::shared_ptr<DX12SamplerDescriptorTableCache> samplerDescriptorTableCache)
 		: m_device(device)
 		, m_desc(std::move(desc))
 		, m_resourceHeapAllocator(std::move(resourceHeapAllocator))
 		, m_samplerHeapAllocator(std::move(samplerHeapAllocator))
+		, m_samplerDescriptorTableCache(std::move(samplerDescriptorTableCache))
 	{
 		if (m_device == nullptr || m_desc.layout == nullptr)
 		{
@@ -396,20 +680,41 @@ namespace NLS::Render::Backend
 
 		if (m_samplerDescriptorCount > 0)
 		{
-			if (m_samplerHeapAllocator == nullptr || m_samplerHeapAllocator->GetHeap() == nullptr)
+			if (m_samplerDescriptorTableCache != nullptr && m_samplerDescriptorTableCache->GetHeap() != nullptr)
+			{
+				m_samplerDescriptorTableAllocation = m_samplerDescriptorTableCache->Acquire(
+					m_desc,
+					tables,
+					m_samplerDescriptorCount,
+					[this, &tables](D3D12_CPU_DESCRIPTOR_HANDLE baseCpuHandle, UINT descriptorSize)
+					{
+						WriteSamplerDescriptorTables(tables, baseCpuHandle, descriptorSize);
+					});
+				if (m_samplerDescriptorTableAllocation == nullptr)
+				{
+					NLS_LOG_ERROR("NativeDX12BindingSet: failed to allocate sampler descriptors");
+					return;
+				}
+
+				m_samplerDescriptorOffset = m_samplerDescriptorTableAllocation->GetOffset();
+				m_samplerDescriptorSize = m_samplerDescriptorTableCache->GetDescriptorSize();
+			}
+			else if (m_samplerHeapAllocator == nullptr || m_samplerHeapAllocator->GetHeap() == nullptr)
 			{
 				NLS_LOG_ERROR("NativeDX12BindingSet: sampler descriptor heap allocator is null");
 				return;
 			}
-
-			m_samplerDescriptorOffset = m_samplerHeapAllocator->Allocate(m_samplerDescriptorCount);
-			if (m_samplerDescriptorOffset == UINT_MAX)
+			else
 			{
-				NLS_LOG_ERROR("NativeDX12BindingSet: failed to allocate sampler descriptors");
-				return;
-			}
+				m_samplerDescriptorOffset = m_samplerHeapAllocator->Allocate(m_samplerDescriptorCount);
+				if (m_samplerDescriptorOffset == UINT_MAX)
+				{
+					NLS_LOG_ERROR("NativeDX12BindingSet: failed to allocate sampler descriptors");
+					return;
+				}
 
-			m_samplerDescriptorSize = m_samplerHeapAllocator->GetDescriptorSize();
+				m_samplerDescriptorSize = m_samplerHeapAllocator->GetDescriptorSize();
+			}
 		}
 
 		UINT resourceCursor = 0;
@@ -425,9 +730,6 @@ namespace NLS::Render::Backend
 
 			const bool usesSamplerHeap =
 				table.heapKind == NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler;
-			D3D12_CPU_DESCRIPTOR_HANDLE tableCpuHandle = usesSamplerHeap
-				? ComputeSamplerCpuHandle(samplerCursor)
-				: ComputeResourceCpuHandle(resourceCursor);
 			const D3D12_GPU_DESCRIPTOR_HANDLE tableGpuHandle = usesSamplerHeap
 				? ComputeSamplerGpuHandle(samplerCursor)
 				: ComputeResourceGpuHandle(resourceCursor);
@@ -439,6 +741,15 @@ namespace NLS::Render::Backend
 
 			m_descriptorTables.push_back({ table.set, table.heapKind, tableGpuHandle });
 
+			if (usesSamplerHeap && m_samplerDescriptorTableAllocation != nullptr)
+			{
+				samplerCursor += tableDescriptorCount;
+				continue;
+			}
+
+			D3D12_CPU_DESCRIPTOR_HANDLE tableCpuHandle = usesSamplerHeap
+				? ComputeSamplerCpuHandle(samplerCursor)
+				: ComputeResourceCpuHandle(resourceCursor);
 			D3D12_CPU_DESCRIPTOR_HANDLE destHandle = tableCpuHandle;
 			for (const auto& range : table.ranges)
 			{
@@ -470,8 +781,13 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		if (m_resourceHeapAllocator != nullptr && m_resourceDescriptorOffset != UINT_MAX && m_resourceDescriptorCount > 0)
 			m_resourceHeapAllocator->Free(m_resourceDescriptorOffset, m_resourceDescriptorCount);
-		if (m_samplerHeapAllocator != nullptr && m_samplerDescriptorOffset != UINT_MAX && m_samplerDescriptorCount > 0)
+		if (m_samplerDescriptorTableAllocation == nullptr &&
+			m_samplerHeapAllocator != nullptr &&
+			m_samplerDescriptorOffset != UINT_MAX &&
+			m_samplerDescriptorCount > 0)
+		{
 			m_samplerHeapAllocator->Free(m_samplerDescriptorOffset, m_samplerDescriptorCount);
+		}
 #endif
 	}
 
@@ -550,9 +866,14 @@ namespace NLS::Render::Backend
 		if (!m_valid)
 			return nullptr;
 
-		return heapKind == NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler
-			? (m_samplerHeapAllocator != nullptr ? m_samplerHeapAllocator->GetHeap() : nullptr)
-			: (m_resourceHeapAllocator != nullptr ? m_resourceHeapAllocator->GetHeap() : nullptr);
+		if (heapKind == NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler)
+		{
+			if (m_samplerDescriptorTableCache != nullptr && m_samplerDescriptorTableAllocation != nullptr)
+				return m_samplerDescriptorTableCache->GetHeap();
+			return m_samplerHeapAllocator != nullptr ? m_samplerHeapAllocator->GetHeap() : nullptr;
+		}
+
+		return m_resourceHeapAllocator != nullptr ? m_resourceHeapAllocator->GetHeap() : nullptr;
 	}
 #endif
 
@@ -575,53 +896,16 @@ namespace NLS::Render::Backend
 	}
 
 #if defined(_WIN32)
-	NLS::Render::RHI::DX12::DX12DescriptorRangeCategory NativeDX12BindingSet::ToRangeCategory(
-		NLS::Render::RHI::BindingType type)
-	{
-		switch (type)
-		{
-		case NLS::Render::RHI::BindingType::UniformBuffer:
-			return NLS::Render::RHI::DX12::DX12DescriptorRangeCategory::ConstantBuffer;
-		case NLS::Render::RHI::BindingType::StructuredBuffer:
-		case NLS::Render::RHI::BindingType::Texture:
-			return NLS::Render::RHI::DX12::DX12DescriptorRangeCategory::ShaderResource;
-		case NLS::Render::RHI::BindingType::StorageBuffer:
-		case NLS::Render::RHI::BindingType::RWTexture:
-			return NLS::Render::RHI::DX12::DX12DescriptorRangeCategory::UnorderedAccess;
-		case NLS::Render::RHI::BindingType::Sampler:
-		default:
-			return NLS::Render::RHI::DX12::DX12DescriptorRangeCategory::Sampler;
-		}
-	}
-
 	const NLS::Render::RHI::RHIBindingLayoutEntry* NativeDX12BindingSet::FindLayoutEntry(
 		const NLS::Render::RHI::DX12::DX12DescriptorTableRangeDesc& range) const
 	{
-		const auto& entries = m_desc.layout->GetDesc().entries;
-		const auto entryIt = std::find_if(
-			entries.begin(),
-			entries.end(),
-			[&range](const NLS::Render::RHI::RHIBindingLayoutEntry& entry)
-			{
-				return entry.binding == range.binding &&
-					entry.registerSpace == range.registerSpace &&
-					entry.count == range.descriptorCount &&
-					ToRangeCategory(entry.type) == range.category;
-			});
-		return entryIt != entries.end() ? &(*entryIt) : nullptr;
+		return FindDX12BindingLayoutEntry(m_desc, range);
 	}
 
 	const NLS::Render::RHI::RHIBindingSetEntry* NativeDX12BindingSet::FindBoundEntry(
 		const NLS::Render::RHI::RHIBindingLayoutEntry& layoutEntry) const
 	{
-		const auto entryIt = std::find_if(
-			m_desc.entries.begin(),
-			m_desc.entries.end(),
-			[&layoutEntry](const NLS::Render::RHI::RHIBindingSetEntry& entry)
-			{
-				return entry.binding == layoutEntry.binding && entry.type == layoutEntry.type;
-			});
-		return entryIt != m_desc.entries.end() ? &(*entryIt) : nullptr;
+		return FindDX12BindingSetEntry(m_desc, layoutEntry);
 	}
 
 	D3D12_CPU_DESCRIPTOR_HANDLE NativeDX12BindingSet::ComputeResourceCpuHandle(UINT descriptorIndex) const
@@ -649,6 +933,9 @@ namespace NLS::Render::Backend
 
 	D3D12_GPU_DESCRIPTOR_HANDLE NativeDX12BindingSet::ComputeSamplerGpuHandle(UINT descriptorIndex) const
 	{
+		if (m_samplerDescriptorTableCache != nullptr && m_samplerDescriptorTableAllocation != nullptr)
+			return m_samplerDescriptorTableCache->GetGpuHandle(m_samplerDescriptorOffset, descriptorIndex);
+
 		D3D12_GPU_DESCRIPTOR_HANDLE handle = m_samplerHeapAllocator->GetGpuHandle();
 		if (handle.ptr == 0)
 			return {};
@@ -666,6 +953,38 @@ namespace NLS::Render::Backend
 			: defaultSamplerDesc;
 		const auto nativeSamplerDesc = NLS::Render::RHI::DX12::BuildDX12SamplerDesc(samplerDesc);
 		m_device->CreateSampler(&nativeSamplerDesc, destination);
+	}
+
+	void NativeDX12BindingSet::WriteSamplerDescriptorTables(
+		const std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc>& tables,
+		D3D12_CPU_DESCRIPTOR_HANDLE baseCpuHandle,
+		UINT descriptorSize) const
+	{
+		UINT samplerCursor = 0u;
+		for (const auto& table : tables)
+		{
+			UINT tableDescriptorCount = 0u;
+			for (const auto& range : table.ranges)
+				tableDescriptorCount += range.descriptorCount;
+
+			if (table.heapKind != NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler)
+				continue;
+
+			D3D12_CPU_DESCRIPTOR_HANDLE destHandle = baseCpuHandle;
+			destHandle.ptr += static_cast<SIZE_T>(samplerCursor) * descriptorSize;
+			for (const auto& range : table.ranges)
+			{
+				const auto* layoutEntry = FindLayoutEntry(range);
+				const auto* boundEntry = layoutEntry != nullptr ? FindBoundEntry(*layoutEntry) : nullptr;
+				for (uint32_t descriptorIndex = 0u; descriptorIndex < range.descriptorCount; ++descriptorIndex)
+				{
+					WriteSamplerDescriptor(boundEntry, destHandle);
+					destHandle.ptr += descriptorSize;
+				}
+			}
+
+			samplerCursor += tableDescriptorCount;
+		}
 	}
 
 	void NativeDX12BindingSet::WriteNullStructuredBufferDescriptor(

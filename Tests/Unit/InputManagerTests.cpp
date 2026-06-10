@@ -58,6 +58,42 @@ TEST(InputManagerTests, ClearEventsClearsWheelMovement)
     EXPECT_FLOAT_EQ(inputManager.GetWheelMovement().y, 0.0f);
 }
 
+TEST(InputManagerTests, TransientInputEventsReportKeysMouseButtonsAndWheel)
+{
+    if (!CanCreateHeadlessGlfwWindow())
+        GTEST_SKIP() << "GLFW display is not available in this environment.";
+
+    Windowing::Settings::DeviceSettings deviceSettings;
+    Context::Device device(deviceSettings);
+
+    Windowing::Settings::WindowSettings windowSettings;
+    windowSettings.title = "InputManagerTransientInputTests";
+    windowSettings.width = 64;
+    windowSettings.height = 64;
+    windowSettings.visible = false;
+    windowSettings.clientAPI = Windowing::Settings::WindowClientAPI::NoAPI;
+
+    Windowing::Window window(device, windowSettings);
+    Windowing::Inputs::InputManager inputManager(window);
+
+    EXPECT_FALSE(inputManager.HasTransientInputEvents());
+
+    window.KeyPressedEvent.Invoke(static_cast<int>(Windowing::Inputs::EKey::KEY_A));
+    EXPECT_TRUE(inputManager.HasTransientInputEvents());
+    inputManager.ClearEvents();
+    EXPECT_FALSE(inputManager.HasTransientInputEvents());
+
+    window.MouseButtonPressedEvent.Invoke(static_cast<int>(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT));
+    EXPECT_TRUE(inputManager.HasTransientInputEvents());
+    inputManager.ClearEvents();
+    EXPECT_FALSE(inputManager.HasTransientInputEvents());
+
+    window.MouseScrollEvent.Invoke(0.0, 1.0);
+    EXPECT_TRUE(inputManager.HasTransientInputEvents());
+    inputManager.ClearEvents();
+    EXPECT_FALSE(inputManager.HasTransientInputEvents());
+}
+
 TEST(InputManagerTests, MousePressAndReleaseInSameFrameAreBothVisible)
 {
     if (!CanCreateHeadlessGlfwWindow())

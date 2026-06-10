@@ -1249,6 +1249,7 @@ bool RefreshConnectedInstanceFromPrefab(
     instance.sourceToInstance.clear();
     instance.sourceByInstanceObject.clear();
     instance.preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(prefab.graph);
+    instance.preservedResolvedAssets = prefab.resolvedAssets;
     instance.nestedInstances = BuildNestedInstanceRecords(
         prefab,
         instance.preservedAssetReferences,
@@ -2230,6 +2231,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::InstantiatePrefab(
     for (const auto& mapping : instantiateResult.sourceByInstanceObject)
         instance.sourceByInstanceObject.emplace(mapping.first, mapping.second);
     instance.preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(prefab->graph);
+    instance.preservedResolvedAssets = prefab->resolvedAssets;
     instance.nestedInstances = BuildNestedInstanceRecords(
         *prefab,
         instance.preservedAssetReferences,
@@ -2294,6 +2296,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::ConnectExistingPrefabInstance(
     instance.instanceRoot = &root;
     instance.sourceGraph = prefab->graph;
     instance.preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(prefab->graph);
+    instance.preservedResolvedAssets = prefab->resolvedAssets;
     instance.nestedInstances = BuildNestedInstanceRecords(
         *prefab,
         instance.preservedAssetReferences,
@@ -2787,6 +2790,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::UnpackPrefabInstance(PrefabIns
     instance.sourceByInstanceObject.clear();
     instance.localPatches.clear();
     instance.preservedAssetReferences.clear();
+    instance.preservedResolvedAssets.clear();
     instance.nestedInstances.clear();
 
     result.unpack = std::move(unpack);

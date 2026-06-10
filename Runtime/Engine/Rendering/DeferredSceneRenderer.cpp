@@ -108,27 +108,13 @@ namespace
 		};
 	}
 
-	uint64_t HashHZBOcclusionPrimitivePackets(
-		std::span<const NLS::Engine::Rendering::SceneOcclusionPrimitivePacket> packets)
+	struct HZBOcclusionConstants
 	{
-		constexpr uint64_t kFnvOffset = 14695981039346656037ull;
-		constexpr uint64_t kFnvPrime = 1099511628211ull;
-		uint64_t hash = kFnvOffset;
-		const auto mixByte = [&hash](const uint8_t byte)
-		{
-			hash ^= byte;
-			hash *= kFnvPrime;
-		};
+		uint32_t primitiveCount = 0u;
+		uint32_t padding[3] = {};
+	};
 
-		const auto count = static_cast<uint64_t>(packets.size());
-		for (size_t index = 0u; index < sizeof(count); ++index)
-			mixByte(static_cast<uint8_t>((count >> (index * 8u)) & 0xffu));
-
-		const auto bytes = std::as_bytes(packets);
-		for (const std::byte byte : bytes)
-			mixByte(static_cast<uint8_t>(byte));
-		return hash == 0u ? 1u : hash;
-	}
+	static_assert(sizeof(HZBOcclusionConstants) == 16u);
 
 	DeferredPreparedFrameDescriptorSnapshot FreezeDeferredPreparedFrameDescriptor(
 		const NLS::Render::Data::FrameDescriptor& source)
@@ -776,8 +762,14 @@ namespace NLS::Engine::Rendering
 	{
 		NLS_PROFILE_SCOPE();
 		NLS_ASSERT(HasFrameObjectBindingProvider(), "DeferredSceneRenderer requires a renderer-owned frame/object binding provider.");
-		PollHZBOcclusionResultReadback();
-		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PollHZBOcclusionResultReadback");
+			PollHZBOcclusionResultReadback();
+		}
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BaseSceneRendererBeginFrame");
+			BaseSceneRenderer::BeginFrame(p_frameDescriptor);
+		}
 
 		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 		uint64_t queuedGBufferDrawCount = 0u;
@@ -793,42 +785,53 @@ namespace NLS::Engine::Rendering
 		m_threadedHZBPostSubmitReadback.reset();
 		ClearFrameGBufferMaterialResolveCache();
 
-		auto drawables = ParseScene();
+		auto drawables = [&]()
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ParseScene");
+			return ParseScene();
+		}();
 		const auto& hzbPacketBuild = GetLastHZBOcclusionPrimitivePacketBuildResult();
 		const auto& hzbOcclusionFrameInput = GetLastHZBOcclusionFrameInput();
-		if (hzbOcclusionFrameInput.enabled &&
-			hzbOcclusionFrameInput.backendSupported &&
-			hzbOcclusionFrameInput.historyTextureValid &&
-			!HasPendingHZBOcclusionObservationFrame() &&
-			m_hzbOcclusionResultReadbackCompletion == nullptr &&
-			m_hzbOcclusionResultReadbackState == nullptr &&
-			!hzbPacketBuild.primitiveInputs.empty() &&
-			PrepareHZBOcclusionPrimitiveBuffers(hzbPacketBuild.primitivePackets))
 		{
-			BeginHZBOcclusionObservationFrame(
-				hzbOcclusionFrameInput,
-				hzbPacketBuild.primitiveInputs);
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PrepareHZBOcclusionObservation");
+			if (hzbOcclusionFrameInput.enabled &&
+				hzbOcclusionFrameInput.backendSupported &&
+				hzbOcclusionFrameInput.historyTextureValid &&
+				!HasPendingHZBOcclusionObservationFrame() &&
+				m_hzbOcclusionResultReadbackCompletion == nullptr &&
+				m_hzbOcclusionResultReadbackState == nullptr &&
+				!hzbPacketBuild.primitiveInputs.empty() &&
+				PrepareHZBOcclusionPrimitiveBuffers(hzbPacketBuild.primitivePackets))
+			{
+				BeginHZBOcclusionObservationFrame(
+					hzbOcclusionFrameInput,
+					hzbPacketBuild.primitiveInputs);
+			}
 		}
 		const auto& frameDescriptor = GetFrameDescriptor();
 		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
 		NLS::Render::Resources::Material* skyboxMaterial = nullptr;
-		for (const auto& entry : drawables.skyboxes)
 		{
-			const auto& drawable = entry.second;
-			if (drawable.material == nullptr)
-				continue;
-			if (skyboxMaterial == nullptr)
-				skyboxMaterial = drawable.material;
-			const auto* skyboxParameter = drawable.material->GetParameterBlock().TryGet("cubeTex");
-			if (skyboxParameter != nullptr && skyboxParameter->type() == typeid(NLS::Render::Resources::TextureCube*))
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ResolveSkyboxTexture");
+			for (const auto& entry : drawables.skyboxes)
 			{
-				skyboxTexture = std::any_cast<NLS::Render::Resources::TextureCube*>(*skyboxParameter);
-				break;
+				const auto& drawable = entry.second;
+				if (drawable.material == nullptr)
+					continue;
+				if (skyboxMaterial == nullptr)
+					skyboxMaterial = drawable.material;
+				const auto* skyboxParameter = drawable.material->GetParameterBlock().TryGet("cubeTex");
+				if (skyboxParameter != nullptr && skyboxParameter->type() == typeid(NLS::Render::Resources::TextureCube*))
+				{
+					skyboxTexture = std::any_cast<NLS::Render::Resources::TextureCube*>(*skyboxParameter);
+					break;
+				}
 			}
 		}
 		const bool hasSkyboxTexture = skyboxTexture != nullptr;
 		if (usesThreadedRendering)
 		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ThreadedCapture");
 			const bool hasPreparedSceneDrawables =
 				!drawables.opaques.empty() ||
 				!drawables.decals.empty() ||
@@ -851,7 +854,10 @@ namespace NLS::Engine::Rendering
 			}
 			else
 			{
-				EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+				{
+					NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::EnsureGBufferTargets");
+					EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+				}
 				if (!HasDeferredThreadedPipelineResources())
 				{
 					m_skipThreadedFramePublish = true;
@@ -871,65 +877,75 @@ namespace NLS::Engine::Rendering
 				}
 				else
 				{
-					PrepareHZBFrameResources(BuildDeferredPreparedSceneResourceRequest());
-					m_threadedHZBPostSubmitReadback = BuildHZBPostSubmitReadbackRequest(true);
+					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PrepareHZBFrameResources");
+						PrepareHZBFrameResources(BuildDeferredPreparedSceneResourceRequest());
+						m_threadedHZBPostSubmitReadback = BuildHZBPostSubmitReadbackRequest(true);
+					}
 					SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
 
 					auto gbufferPso = CreateSceneDefaultPipelineState(*this);
-					for (const auto& entry : drawables.opaques)
 					{
-						const auto& drawable = entry.second;
-						if (!drawable.material)
-							continue;
-						auto gbufferDrawable = drawable;
-						gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
-
-						const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
-
-						PreparedRecordedDraw preparedDraw;
-						const bool captured = CaptureThreadedPreparedDraw(
-							gbufferDrawable,
-							gBufferOverrides,
-							gbufferPso.depthFunc,
-							preparedDraw);
-						bool queued = false;
-						if (captured)
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureGBufferOpaques");
+						for (const auto& entry : drawables.opaques)
 						{
-							queued = QueueThreadedRecordedDraw(preparedDraw);
-							if (queued)
-								++queuedGBufferDrawCount;
+							const auto& drawable = entry.second;
+							if (!drawable.material)
+								continue;
+							auto gbufferDrawable = drawable;
+							gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
+
+							const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
+
+							PreparedRecordedDraw preparedDraw;
+							const bool captured = CaptureThreadedPreparedDraw(
+								gbufferDrawable,
+								gBufferOverrides,
+								gbufferPso.depthFunc,
+								preparedDraw);
+							bool queued = false;
+							if (captured)
+							{
+								queued = QueueThreadedRecordedDraw(preparedDraw);
+								if (queued)
+									++queuedGBufferDrawCount;
+							}
+							LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
 						}
-						LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
-					}
-
-					for (const auto& entry : drawables.decals)
-					{
-						const auto& drawable = entry.second;
-						if (!drawable.material)
-							continue;
-
-						auto gbufferDrawable = drawable;
-						gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
-
-						const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
-
-						PreparedRecordedDraw preparedDraw;
-						const bool captured = CaptureThreadedPreparedDraw(
-							gbufferDrawable,
-							decalOverrides,
-							GetDeferredDecalDepthCompare(),
-							preparedDraw);
-						bool queued = false;
-						if (captured)
-						{
-							queued = QueueThreadedRecordedDraw(preparedDraw);
-							if (queued)
-								++queuedDecalDrawCount;
-						}
-						LogPreparedDrawResult("Decal", captured, queued, preparedDraw);
 					}
 
 					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureDecals");
+						for (const auto& entry : drawables.decals)
+						{
+							const auto& drawable = entry.second;
+							if (!drawable.material)
+								continue;
+
+							auto gbufferDrawable = drawable;
+							gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
+
+							const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
+
+							PreparedRecordedDraw preparedDraw;
+							const bool captured = CaptureThreadedPreparedDraw(
+								gbufferDrawable,
+								decalOverrides,
+								GetDeferredDecalDepthCompare(),
+								preparedDraw);
+							bool queued = false;
+							if (captured)
+							{
+								queued = QueueThreadedRecordedDraw(preparedDraw);
+								if (queued)
+									++queuedDecalDrawCount;
+							}
+							LogPreparedDrawResult("Decal", captured, queued, preparedDraw);
+						}
+					}
+
+					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureLighting");
 						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
 						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferNormal", m_gBufferNormalTexture.get());
 						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferMaterial", m_gBufferMaterialTexture.get());
@@ -963,6 +979,7 @@ namespace NLS::Engine::Rendering
 					}
 
 					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureTransparents");
 						NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
 						transparentOverrides.depthWrite = false;
 						auto transparentPso = CreateSceneDefaultPipelineState(*this);
@@ -999,9 +1016,14 @@ namespace NLS::Engine::Rendering
 
 		}
 
-		auto pendingFrameSnapshot = BuildFrameSnapshot(p_frameDescriptor);
+		auto pendingFrameSnapshot = [&]()
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BuildFrameSnapshot");
+			return BuildFrameSnapshot(p_frameDescriptor);
+		}();
 		if (pendingFrameSnapshot.has_value())
 		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PublishFrameSnapshot");
 			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
 			if (usesThreadedRendering &&
 				ShouldSkipThreadedDeferredFramePublish(
@@ -1055,12 +1077,18 @@ namespace NLS::Engine::Rendering
 
 		NLS::Render::Context::RenderScenePackage scenePackage;
 		if (!usesThreadedRendering && pendingFrameSnapshot.has_value())
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BuildRenderScenePackage");
 			scenePackage = BuildRenderScenePackage(pendingFrameSnapshot.value());
+		}
 
-		AddDescriptor<DeferredSceneDescriptor>({
-			std::move(drawables),
-			std::move(scenePackage),
-			hasSkyboxTexture });
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::AddDeferredSceneDescriptor");
+			AddDescriptor<DeferredSceneDescriptor>({
+				std::move(drawables),
+				std::move(scenePackage),
+				hasSkyboxTexture });
+		}
 
 	}
 
@@ -1244,10 +1272,14 @@ namespace NLS::Engine::Rendering
 			}
 		}
 
-		DrawRegisteredPasses();
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::DrawFrame::DrawRegisteredPasses");
+			DrawRegisteredPasses();
+		}
 
 		if (usesThreadedRendering)
 		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::DrawFrame::ThreadedSnapshotRefresh");
 			const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 			auto pendingFrameSnapshot = BuildFrameSnapshot(m_frameDescriptor);
 			if (pendingFrameSnapshot.has_value())
@@ -1408,7 +1440,7 @@ namespace NLS::Engine::Rendering
 			NLS::Render::RHI::RHIBufferDesc desc;
 			desc.size = NLS::Render::Data::kSceneOcclusionPrimitivePacketStride;
 			desc.usage = NLS::Render::RHI::BufferUsageFlags::ShaderRead;
-			desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+			desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
 			desc.debugName = "SceneHZBOcclusionPrimitiveInputs";
 
 			NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
@@ -1442,9 +1474,30 @@ namespace NLS::Engine::Rendering
 			m_hzbPreparedOcclusionPrimitiveResultBuffer.reset();
 		}
 
+		if (m_hzbOcclusionConstantsBuffer == nullptr)
+		{
+			const HZBOcclusionConstants constants{};
+
+			NLS::Render::RHI::RHIBufferDesc desc;
+			desc.size = sizeof(HZBOcclusionConstants);
+			desc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
+			desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+			desc.debugName = "SceneHZBOcclusionConstants";
+
+			NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+			uploadDesc.data = &constants;
+			uploadDesc.dataSize = sizeof(constants);
+			uploadDesc.debugName = "SceneHZBOcclusionConstantsInitialUpload";
+			m_hzbOcclusionConstantsBuffer = device->CreateBuffer(desc, uploadDesc);
+			m_hzbOcclusionBindingSet.reset();
+			m_hzbPreparedDepthTexture.reset();
+			m_hzbPreparedOcclusionConstantsBuffer.reset();
+		}
+
 		if (m_hzbTexture == nullptr ||
 			m_hzbOcclusionPrimitiveInputBuffer == nullptr ||
-			m_hzbOcclusionPrimitiveResultBuffer == nullptr)
+			m_hzbOcclusionPrimitiveResultBuffer == nullptr ||
+			m_hzbOcclusionConstantsBuffer == nullptr)
 		{
 			return false;
 		}
@@ -1512,23 +1565,37 @@ namespace NLS::Engine::Rendering
 			return false;
 
 		static const SceneOcclusionPrimitivePacket emptyPacket{};
-		const auto packetCount = static_cast<uint32_t>((std::max<size_t>)(packets.size(), 1u));
-		const auto inputSize = static_cast<size_t>(packetCount) * sizeof(SceneOcclusionPrimitivePacket);
-		const auto resultSize = static_cast<size_t>(packetCount) * sizeof(uint32_t);
+		const auto activePacketCount = static_cast<uint32_t>(packets.size());
+		const auto storagePacketCount = static_cast<uint32_t>((std::max<size_t>)(packets.size(), 1u));
+		const auto inputSize = static_cast<size_t>(storagePacketCount) * sizeof(SceneOcclusionPrimitivePacket);
+		const auto activeInputSize = static_cast<size_t>((std::max<size_t>)(packets.size(), 1u)) * sizeof(SceneOcclusionPrimitivePacket);
+		const auto resultSize = static_cast<size_t>(storagePacketCount) * sizeof(uint32_t);
 		const void* inputData = packets.empty() ? static_cast<const void*>(&emptyPacket) : packets.data();
-		std::vector<uint32_t> primitiveResultClear(packetCount, 0u);
+		std::vector<uint32_t> primitiveResultClear(storagePacketCount, 0u);
 		const void* resultData = primitiveResultClear.data();
-		const auto packetHash = HashHZBOcclusionPrimitivePackets(packets);
 
-		const bool inputMatches = m_hzbOcclusionPrimitiveInputBuffer != nullptr &&
-			m_hzbOcclusionPrimitiveInputBuffer->GetDesc().size == inputSize &&
-			m_hzbOcclusionPrimitivePacketHash == packetHash;
-		if (!inputMatches)
+		const auto canReuseCapacityBuffer = [](const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& buffer, const size_t requiredSize)
+		{
+			return buffer != nullptr && buffer->GetDesc().size >= requiredSize;
+		};
+		const auto updateBuffer = [](const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& buffer,
+			const void* data,
+			const size_t dataSize,
+			std::string debugName)
+		{
+			NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+			uploadDesc.data = data;
+			uploadDesc.dataSize = dataSize;
+			uploadDesc.debugName = std::move(debugName);
+			return buffer != nullptr && buffer->UpdateData(uploadDesc).Succeeded();
+		};
+
+		if (!canReuseCapacityBuffer(m_hzbOcclusionPrimitiveInputBuffer, inputSize))
 		{
 			NLS::Render::RHI::RHIBufferDesc desc;
 			desc.size = inputSize;
 			desc.usage = NLS::Render::RHI::BufferUsageFlags::ShaderRead;
-			desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+			desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
 			desc.debugName = "SceneHZBOcclusionPrimitiveInputs";
 
 			NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
@@ -1542,11 +1609,18 @@ namespace NLS::Engine::Rendering
 			m_hzbPreparedDepthTexture.reset();
 			m_hzbPreparedOcclusionPrimitiveInputBuffer.reset();
 		}
+		else if (!updateBuffer(
+			m_hzbOcclusionPrimitiveInputBuffer,
+			inputData,
+			activeInputSize,
+			packets.empty()
+				? "SceneHZBOcclusionPrimitiveInputsInitialUpload"
+				: "SceneHZBOcclusionPrimitiveInputsFrameUpload"))
+		{
+			return false;
+		}
 
-		const bool resultMatches = m_hzbOcclusionPrimitiveResultBuffer != nullptr &&
-			m_hzbOcclusionPrimitiveResultBuffer->GetDesc().size == resultSize &&
-			m_hzbOcclusionPrimitivePacketHash == packetHash;
-		if (!resultMatches)
+		if (!canReuseCapacityBuffer(m_hzbOcclusionPrimitiveResultBuffer, resultSize))
 		{
 			NLS::Render::RHI::RHIBufferDesc desc;
 			desc.size = resultSize;
@@ -1567,10 +1641,37 @@ namespace NLS::Engine::Rendering
 			m_hzbPreparedOcclusionPrimitiveResultBuffer.reset();
 		}
 
-		m_hzbOcclusionPrimitiveCount = packetCount;
-		m_hzbOcclusionPrimitivePacketHash = packetHash;
+		const HZBOcclusionConstants constants{ activePacketCount, {} };
+		if (m_hzbOcclusionConstantsBuffer == nullptr)
+		{
+			NLS::Render::RHI::RHIBufferDesc desc;
+			desc.size = sizeof(HZBOcclusionConstants);
+			desc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
+			desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+			desc.debugName = "SceneHZBOcclusionConstants";
+
+			NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+			uploadDesc.data = &constants;
+			uploadDesc.dataSize = sizeof(constants);
+			uploadDesc.debugName = "SceneHZBOcclusionConstantsInitialUpload";
+			m_hzbOcclusionConstantsBuffer = device->CreateBuffer(desc, uploadDesc);
+			m_hzbOcclusionBindingSet.reset();
+			m_hzbPreparedDepthTexture.reset();
+			m_hzbPreparedOcclusionConstantsBuffer.reset();
+		}
+		else if (!updateBuffer(
+			m_hzbOcclusionConstantsBuffer,
+			&constants,
+			sizeof(constants),
+			"SceneHZBOcclusionConstantsFrameUpload"))
+		{
+			return false;
+		}
+
+		m_hzbOcclusionPrimitiveCount = activePacketCount;
 		return m_hzbOcclusionPrimitiveInputBuffer != nullptr &&
-			m_hzbOcclusionPrimitiveResultBuffer != nullptr;
+			m_hzbOcclusionPrimitiveResultBuffer != nullptr &&
+			m_hzbOcclusionConstantsBuffer != nullptr;
 	}
 
 	bool DeferredSceneRenderer::PollHZBOcclusionResultReadback()
@@ -2008,6 +2109,7 @@ namespace NLS::Engine::Rendering
 			m_hzbPreparedHZBTexture == m_hzbTexture &&
 			m_hzbPreparedOcclusionPrimitiveInputBuffer == m_hzbOcclusionPrimitiveInputBuffer &&
 			m_hzbPreparedOcclusionPrimitiveResultBuffer == m_hzbOcclusionPrimitiveResultBuffer &&
+			m_hzbPreparedOcclusionConstantsBuffer == m_hzbOcclusionConstantsBuffer &&
 			m_hzbDepthReadView != nullptr &&
 			m_hzbBuildBindingSets.size() == hzbMipCount &&
 			std::all_of(m_hzbBuildBindingSets.begin(), m_hzbBuildBindingSets.end(), [](const auto& bindingSet) { return bindingSet != nullptr; }) &&
@@ -2066,6 +2168,10 @@ namespace NLS::Engine::Rendering
 			m_hzbOcclusionBindingLayout,
 			{
 				NLS::Render::Resources::ShaderParameterBindingValue::Texture("u_HZB", m_hzbReadView),
+				NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer(
+					"HZBOcclusionConstants",
+					m_hzbOcclusionConstantsBuffer,
+					sizeof(HZBOcclusionConstants)),
 				NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer(
 					"u_OcclusionPrimitiveInputs",
 					m_hzbOcclusionPrimitiveInputBuffer,
@@ -2094,6 +2200,7 @@ namespace NLS::Engine::Rendering
 			m_hzbPreparedHZBTexture.reset();
 			m_hzbPreparedOcclusionPrimitiveInputBuffer.reset();
 			m_hzbPreparedOcclusionPrimitiveResultBuffer.reset();
+			m_hzbPreparedOcclusionConstantsBuffer.reset();
 			return false;
 		}
 
@@ -2101,6 +2208,7 @@ namespace NLS::Engine::Rendering
 		m_hzbPreparedHZBTexture = m_hzbTexture;
 		m_hzbPreparedOcclusionPrimitiveInputBuffer = m_hzbOcclusionPrimitiveInputBuffer;
 		m_hzbPreparedOcclusionPrimitiveResultBuffer = m_hzbOcclusionPrimitiveResultBuffer;
+		m_hzbPreparedOcclusionConstantsBuffer = m_hzbOcclusionConstantsBuffer;
 		return true;
 	}
 
@@ -2113,6 +2221,7 @@ namespace NLS::Engine::Rendering
 		request.hzbTexture = m_hzbTexture;
 		request.occlusionPrimitiveInputBuffer = m_hzbOcclusionPrimitiveInputBuffer;
 		request.occlusionPrimitiveResultBuffer = m_hzbOcclusionPrimitiveResultBuffer;
+		request.occlusionConstantsBuffer = m_hzbOcclusionConstantsBuffer;
 		request.hzbBuildPipeline = m_hzbBuildPipeline;
 		request.hzbBuildBindingSets = m_hzbBuildBindingSets;
 		request.hzbBuildGroupCountsByMip = m_hzbBuildDispatchGroupsByMip;
@@ -2126,7 +2235,8 @@ namespace NLS::Engine::Rendering
 			m_hzbOcclusionPipeline != nullptr &&
 			m_hzbOcclusionBindingSet != nullptr &&
 			m_hzbOcclusionPrimitiveInputBuffer != nullptr &&
-			m_hzbOcclusionPrimitiveResultBuffer != nullptr;
+			m_hzbOcclusionPrimitiveResultBuffer != nullptr &&
+			m_hzbOcclusionConstantsBuffer != nullptr;
 		request.hzbMipCount = m_hzbTexture != nullptr ? m_hzbTexture->GetDesc().mipLevels : 0u;
 		return request;
 	}

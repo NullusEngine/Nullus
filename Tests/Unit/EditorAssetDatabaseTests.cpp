@@ -11,6 +11,7 @@
 #include "Assets/AssetId.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/AssetImporterFacade.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetDragDropBridge.h"
@@ -69,6 +70,19 @@ std::vector<uint8_t> ReadBinary(const std::filesystem::path& path)
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>()
     };
+}
+
+size_t CountArtifactTelemetryStage(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
+    const NLS::Core::Assets::ArtifactLoadTelemetryStage stage)
+{
+    return static_cast<size_t>(std::count_if(
+        records.begin(),
+        records.end(),
+        [stage](const NLS::Core::Assets::ArtifactLoadTelemetryRecord& record)
+        {
+            return record.stage == stage;
+        }));
 }
 
 std::string ReadArtifactPayloadText(
@@ -1559,6 +1573,112 @@ TEST(EditorAssetDatabaseTests, StartupPreimportReportsOneAggregatedProgressForMu
     std::filesystem::remove_all(root);
 }
 
+TEST(EditorAssetDatabaseTests, StartupPreparedPrefabPreflightBudgetCapsAttempts)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "A_FirstHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "FirstHeroRoot" }]
+        })");
+
+    WriteText(
+        root / "Assets" / "Models" / "B_SecondHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "SecondHeroRoot" }]
+        })");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/A_FirstHero.gltf"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/B_SecondHero.gltf"));
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto secondGuid = database.AssetPathToGUID("Assets/Models/B_SecondHero.gltf");
+    ASSERT_FALSE(secondGuid.empty());
+    NLS::Editor::Assets::UnifiedPrefabLoadRequest secondRequest;
+    secondRequest.source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+        root,
+        "Assets/Models/B_SecondHero.gltf",
+        "prefab:B_SecondHero",
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse(secondGuid)),
+        NLS::Core::Assets::AssetType::ModelScene);
+    secondRequest.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::PrefabGraphOnly;
+    secondRequest.allowPending = false;
+    auto seededSecondCache = bridge.LoadUnifiedPrefabShared(secondRequest);
+    ASSERT_NE(seededSecondCache.prefab, nullptr);
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+#endif
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 1u;
+    options.priorityPreparedPrefabAssetPaths = {"Assets/Models/B_SecondHero.gltf"};
+
+    const auto result = RunBlockingStartupAssetPreimport(options);
+
+    EXPECT_TRUE(result.succeeded);
+    EXPECT_EQ(result.plannedAssetCount, 0u);
+    EXPECT_EQ(result.importedAssetCount, 0u);
+    EXPECT_EQ(result.preparedPrefabCachePreflightAttemptCount, 1u);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    EXPECT_EQ(result.preparedPrefabCachePreflightCount, 1u);
+#else
+    EXPECT_EQ(result.preparedPrefabCachePreflightCount, 0u);
+#endif
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto secondLoad = bridge.LoadUnifiedPrefabShared(secondRequest);
+    ASSERT_NE(secondLoad.prefab, nullptr);
+    const auto secondRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(
+        CountArtifactTelemetryStage(
+            secondRecords,
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheHit),
+        1u);
+
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+    const auto firstGuid = database.AssetPathToGUID("Assets/Models/A_FirstHero.gltf");
+    ASSERT_FALSE(firstGuid.empty());
+    NLS::Editor::Assets::UnifiedPrefabLoadRequest firstRequest;
+    firstRequest.source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+        root,
+        "Assets/Models/A_FirstHero.gltf",
+        "prefab:A_FirstHero",
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse(firstGuid)),
+        NLS::Core::Assets::AssetType::ModelScene);
+    firstRequest.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::PrefabGraphOnly;
+    firstRequest.allowPending = false;
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto firstLoad = bridge.LoadUnifiedPrefabShared(firstRequest);
+    ASSERT_NE(firstLoad.prefab, nullptr);
+    const auto firstRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(
+            firstRecords,
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheHit),
+        0u);
+    EXPECT_GE(
+        CountArtifactTelemetryStage(
+            firstRecords,
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::PrefabGraphLoad),
+        1u);
+#endif
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(EditorAssetDatabaseTests, StartupPreimportProgressLabelIncludesCurrentAssetPath)
 {
     using namespace NLS::Editor::Assets;
@@ -2136,12 +2256,21 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotPrewarmRuntimeMesh
     ScopedServiceOverride<NLS::Core::ResourceManagement::ShaderManager> shaderManagerScope(shaderManager);
     ScopedServiceOverride<NLS::Core::ResourceManagement::TextureManager> textureManagerScope(textureManager);
 
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
     const auto result = RunBlockingStartupAssetPreimport({root});
+    const auto startupRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
 
     EXPECT_TRUE(result.succeeded);
     EXPECT_EQ(result.plannedAssetCount, 1u);
     EXPECT_EQ(result.importedAssetCount, 1u);
+    EXPECT_EQ(result.preparedPrefabCachePreflightAttemptCount, 1u);
+    EXPECT_EQ(result.preparedPrefabCachePreflightCount, 0u);
     EXPECT_EQ(result.prewarmedMaterialArtifactCount, 0u);
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(
+            startupRecords,
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::DependencyScan),
+        0u);
     EXPECT_TRUE(meshManager.GetResources().empty());
     EXPECT_TRUE(materialManager.GetResources().empty());
 
@@ -2177,6 +2306,10 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotPrewarmRuntimeMesh
     EXPECT_FALSE(materialManager.IsResourceRegistered(std::filesystem::path(material->artifactPath)
         .lexically_relative(root)
         .generic_string()));
+
+    EXPECT_FALSE(std::filesystem::exists(root / "Library" / "PreparedPrefabCache"))
+        << "Startup preflight must be cache-only; cold prepared cache generation belongs to the "
+           "normal scene/drag loading path so editor startup cannot block on .nprefab graph parsing.";
 
     meshManager.UnloadResources();
     materialManager.UnloadResources();

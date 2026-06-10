@@ -31,6 +31,8 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
             Engine::GameObject* selectedGameObject;
             bool requestPickingFrame = false;
             Engine::SceneSystem::Scene* previewScene = nullptr;
+            bool requestPickingFrameForClick = false;
+            uint64_t hoverPickingVisibleDrawBudget = 1024u;
 		};
 
 		struct CullingOverlayOptions

@@ -96,6 +96,8 @@ namespace NLS::Render::Backend
 
 			~NativeDX12ExplicitDevice()
 			{
+				if (m_gpuProfilerInitialized)
+					NLS::Base::Profiling::Profiler::ClearGpuContext(m_device.Get());
 				m_samplerDescriptorTableCache.reset();
 				m_samplerHeapAllocator.reset();
 				m_resourceHeapAllocator.reset();

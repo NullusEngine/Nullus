@@ -144,6 +144,18 @@ void Profiler::ReplayGpuContextIfAvailable(IProfilerDestination& destination)
         destination.InitializeGpuContext(contextToReplay.value());
 }
 
+void Profiler::ClearGpuContext(void* nativeDevice)
+{
+    std::lock_guard lock(g_profilerMutex);
+    if (!g_hasGpuContext)
+        return;
+    if (nativeDevice != nullptr && g_lastGpuContext.nativeDevice != nativeDevice)
+        return;
+
+    g_lastGpuContext = {};
+    g_hasGpuContext = false;
+}
+
 void Profiler::ResetForTesting()
 {
     std::lock_guard lock(g_profilerMutex);

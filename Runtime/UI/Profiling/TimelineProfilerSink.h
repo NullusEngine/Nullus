@@ -36,6 +36,11 @@ public:
     size_t GetRecordedTrackCountForTesting() const;
     size_t GetTickFrameCountForTesting() const;
     size_t GetSkippedScopeCountForTesting() const;
+    bool HasRecordedEventForTesting(const char* eventName) const;
+    size_t CountRecordedEventsForTesting(const char* eventName, bool requireValid) const;
+    uint32_t GetPendingGpuProfilerEventCountForTesting() const;
+    uint32_t GetPendingGpuProfilerCommandListQueryCountForTesting() const;
+    size_t GetSubmittedGpuProfilerReadbackCountForTesting() const;
 
     static const char* FormatAvailability(ProfilerAvailability availability);
 
@@ -44,6 +49,7 @@ private:
     bool m_recordingEnabled = false;
     bool m_frameStarted = false;
     bool m_gpuInitialized = false;
+    bool m_gpuScopesAvailable = false;
     size_t m_tickFrameCount = 0u;
     size_t m_skippedScopeCount = 0u;
 #endif

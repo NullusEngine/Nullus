@@ -4,6 +4,7 @@
 #if NLS_ENABLE_TIMELINE_PROFILER
 #include <Profiler.h>
 
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -15,6 +16,7 @@ namespace
 {
 thread_local uint32_t g_timelineScopeDepth = 0u;
 thread_local uint32_t g_timelineSuppressedScopeDepth = 0u;
+thread_local uint32_t g_timelineFlushedScopeDepth = 0u;
 std::mutex g_timelineGpuProfilerMutex;
 uint32_t g_timelineGpuProfilerOwnerCount = 0u;
 bool g_timelineGpuProfilerInitialized = false;
@@ -43,6 +45,17 @@ void EnsureTimelineProfilerInitialized()
         return true;
     }();
     (void)initialized;
+}
+
+void FlushOpenTimelineCpuScopes()
+{
+    const uint32_t flushedScopeDepth = g_timelineScopeDepth;
+    while (g_timelineScopeDepth > 0u)
+    {
+        gProfiler.EndEvent();
+        --g_timelineScopeDepth;
+    }
+    g_timelineFlushedScopeDepth += flushedScopeDepth;
 }
 
 void ShutdownTimelineGpuProfilerForSink(bool& gpuInitialized)
@@ -139,6 +152,7 @@ TimelineProfilerSink::~TimelineProfilerSink()
 #if NLS_ENABLE_TIMELINE_PROFILER
     ShutdownTimelineGpuProfilerForSink(m_gpuInitialized);
     ReleaseTimelineGpuProfilerOwnershipForSinkLocked(m_gpuInitialized);
+    m_gpuScopesAvailable = false;
 #endif
 }
 
@@ -148,7 +162,10 @@ void TimelineProfilerSink::BeginScope(const ProfilerScopeEvent& event)
     if (!m_recordingEnabled)
         return;
 
+    const bool isAmbiguousWithFlushedParent =
+        g_timelineFlushedScopeDepth > 0u && event.depth < g_timelineFlushedScopeDepth;
     if (g_timelineSuppressedScopeDepth > 0u ||
+        isAmbiguousWithFlushedParent ||
         g_timelineScopeDepth >= NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth)
     {
         ++g_timelineSuppressedScopeDepth;
@@ -178,6 +195,12 @@ void TimelineProfilerSink::EndScope(const ProfilerScopeEvent& event)
         return;
     }
 
+    if (g_timelineFlushedScopeDepth > 0u && event.depth < g_timelineFlushedScopeDepth)
+    {
+        --g_timelineFlushedScopeDepth;
+        return;
+    }
+
     if (g_timelineScopeDepth == 0u)
         return;
 
@@ -191,7 +214,7 @@ void TimelineProfilerSink::EndScope(const ProfilerScopeEvent& event)
 void TimelineProfilerSink::BeginGpuScope(const ProfilerGpuScopeEvent& event)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
-    if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandBuffer == nullptr)
+    if (!m_recordingEnabled || !m_gpuScopesAvailable || event.nativeCommandBuffer == nullptr)
         return;
 
     auto* commandList = static_cast<ID3D12GraphicsCommandList*>(event.nativeCommandBuffer);
@@ -205,7 +228,7 @@ void TimelineProfilerSink::BeginGpuScope(const ProfilerGpuScopeEvent& event)
 void TimelineProfilerSink::EndGpuScope(const ProfilerGpuScopeEvent& event)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
-    if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandBuffer == nullptr)
+    if (!m_recordingEnabled || !m_gpuScopesAvailable || event.nativeCommandBuffer == nullptr)
         return;
 
     auto* commandList = static_cast<ID3D12GraphicsCommandList*>(event.nativeCommandBuffer);
@@ -241,8 +264,11 @@ void TimelineProfilerSink::InitializeGpuContext(const ProfilerGpuContextEvent& e
         if (!InitializeTimelineGpuProfilerLocked(device, queues, frameLatency))
         {
             ReleaseTimelineGpuProfilerOwnershipForSink(m_gpuInitialized);
+            m_gpuScopesAvailable = false;
             return;
         }
+
+        m_gpuScopesAvailable = gGPUProfiler.HasProfileableQueues();
 
         if (!wasOwner)
         {
@@ -258,7 +284,7 @@ void TimelineProfilerSink::InitializeGpuContext(const ProfilerGpuContextEvent& e
 void TimelineProfilerSink::SubmitGpuCommandLists(const ProfilerGpuCommandListSubmitEvent& event)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
-    if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandQueue == nullptr || event.nativeCommandLists.empty())
+    if (!m_recordingEnabled || !m_gpuScopesAvailable || event.nativeCommandQueue == nullptr || event.nativeCommandLists.empty())
         return;
 
     std::vector<ID3D12CommandList*> commandLists;
@@ -296,21 +322,20 @@ void TimelineProfilerSink::TickFrame()
     if (!m_recordingEnabled)
         return;
 
+    FlushOpenTimelineCpuScopes();
     g_timelineScopeDepth = 0u;
-    g_timelineSuppressedScopeDepth = 0u;
     ++m_tickFrameCount;
-    if (!m_frameStarted)
     {
         gProfiler.Tick();
+        NLS_PROFILE_NAMED_SCOPE("TimelineProfiler::TickFrame");
         std::lock_guard lock(g_timelineGpuProfilerMutex);
         gGPUProfiler.Tick();
+    }
+    if (!m_frameStarted)
+    {
         m_frameStarted = true;
         return;
     }
-
-    gProfiler.Tick();
-    std::lock_guard lock(g_timelineGpuProfilerMutex);
-    gGPUProfiler.Tick();
 #endif
 }
 
@@ -327,6 +352,64 @@ size_t TimelineProfilerSink::GetSkippedScopeCountForTesting() const
 {
 #if NLS_ENABLE_TIMELINE_PROFILER
     return m_skippedScopeCount;
+#else
+    return 0u;
+#endif
+}
+
+bool TimelineProfilerSink::HasRecordedEventForTesting(const char* eventName) const
+{
+    return CountRecordedEventsForTesting(eventName, true) != 0u;
+}
+
+size_t TimelineProfilerSink::CountRecordedEventsForTesting(const char* eventName, bool requireValid) const
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    if (eventName == nullptr)
+        return 0u;
+
+    size_t count = 0u;
+    for (const auto& track : gProfiler.GetTracks())
+    {
+        for (const auto& frameEvents : track.Events)
+        {
+            for (const auto& event : frameEvents)
+            {
+                if ((!requireValid || event.IsValid()) && std::strcmp(event.GetName(), eventName) == 0)
+                    ++count;
+            }
+        }
+    }
+    return count;
+#else
+    (void)eventName;
+    (void)requireValid;
+    return 0u;
+#endif
+}
+
+uint32_t TimelineProfilerSink::GetPendingGpuProfilerEventCountForTesting() const
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    return gGPUProfiler.GetCurrentEventCountForTesting();
+#else
+    return 0u;
+#endif
+}
+
+uint32_t TimelineProfilerSink::GetPendingGpuProfilerCommandListQueryCountForTesting() const
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    return gGPUProfiler.GetPendingCommandListQueryCountForTesting();
+#else
+    return 0u;
+#endif
+}
+
+size_t TimelineProfilerSink::GetSubmittedGpuProfilerReadbackCountForTesting() const
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    return gGPUProfiler.GetSubmittedReadbackFrameCountForTesting();
 #else
     return 0u;
 #endif
@@ -351,6 +434,7 @@ void TimelineProfilerSink::SetRecordingEnabled(const bool enabled)
     {
         g_timelineScopeDepth = 0u;
         g_timelineSuppressedScopeDepth = 0u;
+        g_timelineFlushedScopeDepth = 0u;
     }
 #else
     (void)enabled;
@@ -386,8 +470,10 @@ ProfilerDestinationState TimelineProfilerSink::GetState() const
         ProfilerAvailability::Available,
         ProfilerCapability_CPUScopes |
             ProfilerCapability_EditorTimeline |
-            (m_gpuInitialized ? ProfilerCapability_GPUScopes : ProfilerCapability_None),
-        ""
+            (m_gpuScopesAvailable ? ProfilerCapability_GPUScopes : ProfilerCapability_None),
+        (m_gpuInitialized && !m_gpuScopesAvailable)
+            ? "TimelineProfiler GPU scopes are unavailable for the current D3D12 queue set. A direct queue must be unique, copy queues require timestamp support, and compute queues are intentionally not profiled to avoid shared timestamp-heap synchronization ambiguity."
+            : ""
     };
 #else
     return {

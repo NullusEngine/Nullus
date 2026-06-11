@@ -105,6 +105,7 @@ public:
     static void RegisterDestination(IProfilerDestination& destination);
     static void UnregisterDestination(IProfilerDestination& destination);
     static void ReplayGpuContextIfAvailable(IProfilerDestination& destination);
+    static void ClearGpuContext(void* nativeDevice);
     static void ResetForTesting();
     static size_t GetDestinationCountForTesting();
     static void RegisterThread(std::string_view name);

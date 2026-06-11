@@ -705,6 +705,50 @@ TEST(PanelWindowHookTests, TimelineProfilerFrameBeginsBeforeApplicationFrameScop
            "frame there can leave unterminated outer scopes in the fixed event stack.";
 }
 
+TEST(PanelWindowHookTests, TimelineProfilerFrameMaintenanceHasNamedScope)
+{
+    const auto timelineSinkSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/Profiling/TimelineProfilerSink.cpp");
+
+    const auto tickFrameFunction = timelineSinkSource.find("void TimelineProfilerSink::TickFrame()");
+    ASSERT_NE(tickFrameFunction, std::string::npos);
+    const auto tickFrameScope = timelineSinkSource.find(
+        "NLS_PROFILE_NAMED_SCOPE(\"TimelineProfiler::TickFrame\")",
+        tickFrameFunction);
+    const auto gpuProfilerTick = timelineSinkSource.find("gGPUProfiler.Tick()", tickFrameFunction);
+
+    ASSERT_NE(tickFrameScope, std::string::npos);
+    ASSERT_NE(gpuProfilerTick, std::string::npos);
+    EXPECT_LT(tickFrameScope, gpuProfilerTick)
+        << "TimelineProfiler frame maintenance must be visible before GPU profiler tick work can create "
+           "anonymous start-of-frame gaps.";
+}
+
+TEST(PanelWindowHookTests, TimelineProfilerFlushesOpenCpuScopesBeforeFrameReset)
+{
+    const auto timelineSinkSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/Profiling/TimelineProfilerSink.cpp");
+
+    const auto flushFunction = timelineSinkSource.find("void FlushOpenTimelineCpuScopes()");
+    ASSERT_NE(flushFunction, std::string::npos);
+    const auto tickFrameFunction = timelineSinkSource.find("void TimelineProfilerSink::TickFrame()");
+    ASSERT_NE(tickFrameFunction, std::string::npos);
+
+    const auto flushEndEvent = timelineSinkSource.find("gProfiler.EndEvent()", flushFunction);
+    const auto tickFrameFlushCall = timelineSinkSource.find("FlushOpenTimelineCpuScopes();", tickFrameFunction);
+    const auto depthReset = timelineSinkSource.find("g_timelineScopeDepth = 0u;", tickFrameFunction);
+    const auto profilerTick = timelineSinkSource.find("gProfiler.Tick()", tickFrameFunction);
+
+    ASSERT_NE(flushEndEvent, std::string::npos);
+    ASSERT_NE(tickFrameFlushCall, std::string::npos);
+    ASSERT_NE(depthReset, std::string::npos);
+    ASSERT_NE(profilerTick, std::string::npos);
+    EXPECT_LT(tickFrameFlushCall, depthReset);
+    EXPECT_LT(tickFrameFlushCall, profilerTick)
+        << "Open CPU scopes must be closed before TimelineProfiler starts the next frame, otherwise "
+           "stale events can pollute subsequent tests and captures.";
+}
+
 TEST(PanelWindowHookTests, TimelineProfilerFixedArrayUsesFullDeclaredCapacity)
 {
     const auto profilerHeader = ReadSourceFile(

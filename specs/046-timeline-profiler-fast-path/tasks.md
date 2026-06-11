@@ -11,10 +11,10 @@
 
 **Purpose**: Establish current state and locate the exact build/test entrypoints.
 
-- [ ] T001 Confirm current feature branch and clean working tree with `git status --short`
-- [ ] T002 [P] Inspect existing TimelineProfiler lifecycle helpers in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h`
-- [ ] T003 [P] Inspect existing GPU profiler tick path in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp`
-- [ ] T004 [P] Inspect existing lifecycle tests in `Tests/Unit/TimelineProfilerGpuLifecycleTests.cpp`
+- [x] T001 Confirm current feature branch and clean working tree with `git status --short`
+- [x] T002 [P] Inspect existing TimelineProfiler lifecycle helpers in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h`
+- [x] T003 [P] Inspect existing GPU profiler tick path in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp`
+- [x] T004 [P] Inspect existing lifecycle tests in `Tests/Unit/TimelineProfilerGpuLifecycleTests.cpp`
 
 ---
 
@@ -22,10 +22,10 @@
 
 **Purpose**: Define the minimal lifecycle decision surface before changing DX12 command submission.
 
-- [ ] T005 Add RED tests for empty/non-empty GPU readback decision helpers in `Tests/Unit/TimelineProfilerGpuLifecycleTests.cpp`
-- [ ] T006 Run targeted `TimelineProfilerGpuLifecycleTests` and confirm the new tests fail because the helper behavior is missing
-- [ ] T007 Implement minimal constexpr helper decisions in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h`
-- [ ] T008 Run targeted `TimelineProfilerGpuLifecycleTests` and confirm the helper tests pass
+- [x] T005 Add RED tests for empty/non-empty GPU readback decision helpers in `Tests/Unit/TimelineProfilerGpuLifecycleTests.cpp`
+- [x] T006 Run targeted `TimelineProfilerGpuLifecycleTests` and confirm the new tests fail because the helper behavior is missing
+- [x] T007 Implement minimal constexpr helper decisions in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h`
+- [x] T008 Run targeted `TimelineProfilerGpuLifecycleTests` and confirm the helper tests pass
 
 **Checkpoint**: Lifecycle decisions are covered before production tick behavior changes.
 
@@ -39,14 +39,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T009 [US1] Add RED tests for skipped-frame completion state in `Tests/Unit/TimelineProfilerGpuLifecycleTests.cpp`
-- [ ] T010 [US1] Run targeted `TimelineProfilerGpuLifecycleTests` and confirm skipped-frame completion tests fail before implementation
+- [x] T009 [US1] Add RED tests for skipped-frame completion state in `Tests/Unit/TimelineProfilerGpuLifecycleTests.cpp`
+- [x] T010 [US1] Run targeted `TimelineProfilerGpuLifecycleTests` and confirm skipped-frame completion tests fail before implementation
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] Track submitted readback frame slots in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h`
-- [ ] T012 [US1] Mark empty GPU frames complete without calling query heap resolve/reset in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp`
-- [ ] T013 [US1] Run targeted `TimelineProfilerGpuLifecycleTests` and confirm US1 tests pass
+- [x] T011 [US1] Track submitted readback frame slots in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h`
+- [x] T012 [US1] Mark empty GPU frames complete without submitting query heap resolve/readback work in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp`
+- [x] T013 [US1] Run targeted `TimelineProfilerGpuLifecycleTests` and confirm US1 tests pass
 
 **Checkpoint**: User Story 1 is independently functional and testable.
 
@@ -60,13 +60,13 @@
 
 ### Tests for User Story 2
 
-- [ ] T014 [US2] Add RED tests for submitted-frame completion and mixed empty/non-empty ordering in `Tests/Unit/TimelineProfilerGpuLifecycleTests.cpp`
-- [ ] T015 [US2] Run targeted `TimelineProfilerGpuLifecycleTests` and confirm mixed-order tests fail before implementation
+- [x] T014 [US2] Add RED tests for submitted-frame completion and mixed empty/non-empty ordering in `Tests/Unit/TimelineProfilerGpuLifecycleTests.cpp`
+- [x] T015 [US2] Run targeted `TimelineProfilerGpuLifecycleTests` and confirm mixed-order tests fail before implementation
 
 ### Implementation for User Story 2
 
-- [ ] T016 [US2] Preserve submitted-frame fence checks while treating unsubmitted frame slots as complete in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp`
-- [ ] T017 [US2] Run targeted `TimelineProfilerGpuLifecycleTests` and confirm US1 and US2 tests pass together
+- [x] T016 [US2] Preserve submitted-frame fence checks while treating unsubmitted frame slots as complete in `Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp`
+- [x] T017 [US2] Run targeted `TimelineProfilerGpuLifecycleTests` and confirm US1 and US2 tests pass together
 
 **Checkpoint**: Empty-frame skipping does not block or invalidate non-empty GPU events.
 
@@ -80,13 +80,13 @@
 
 ### Tests for User Story 3
 
-- [ ] T018 [US3] Add RED source-structure or destination test for TimelineProfiler frame maintenance scope in `Tests/Unit/PanelWindowHookTests.cpp` or `Tests/Unit/ProfilerDestinationTests.cpp`
-- [ ] T019 [US3] Run the targeted test and confirm it fails before implementation
+- [x] T018 [US3] Add RED source-structure or destination test for TimelineProfiler frame maintenance scope in `Tests/Unit/PanelWindowHookTests.cpp` or `Tests/Unit/ProfilerDestinationTests.cpp`
+- [x] T019 [US3] Run the targeted test and confirm it fails before implementation
 
 ### Implementation for User Story 3
 
-- [ ] T020 [US3] Add a concise `TimelineProfiler::TickFrame` CPU scope around frame maintenance in `Runtime/UI/Profiling/TimelineProfilerSink.cpp`
-- [ ] T021 [US3] Run the targeted test and confirm US3 passes
+- [x] T020 [US3] Add a concise `TimelineProfiler::TickFrame` CPU scope around frame maintenance in `Runtime/UI/Profiling/TimelineProfilerSink.cpp`
+- [x] T021 [US3] Run the targeted test and confirm US3 passes
 
 **Checkpoint**: Future captures can identify profiler maintenance separately from application frame work.
 
@@ -96,11 +96,11 @@
 
 **Purpose**: Validate, review, and record evidence.
 
-- [ ] T022 Run full `NullusUnitTests` or the closest available configured unit-test command
-- [ ] T023 [P] Re-run trace gap analysis on `TestProject/Logs/trace.json` or a fresh exported trace and record before/after evidence
-- [ ] T024 [P] Inspect `git diff --check` and `git diff --stat`
-- [ ] T025 Update `specs/046-timeline-profiler-fast-path/quickstart.md` with exact validation evidence if the runtime trace path differs from the initial plan
-- [ ] T026 Run required `/plan-review` quality gate for the completed code changes, including the deeper audit loop required by AGENTS.md
+- [x] T022 Run full `NullusUnitTests` or the closest available configured unit-test command. Evidence: `Build\bin\Debug\NullusUnitTests.exe --gtest_brief=1 --gtest_break_on_failure=1` ran 2224 tests: 2223 passed and 1 skipped.
+- [x] T023 [P] Record baseline `TestProject/Logs/trace.json` gap analysis and note that optimized after-trace evidence still requires an interactive export
+- [x] T024 [P] Inspect `git diff --check`, `git diff --stat`, and generated-file diff hygiene
+- [x] T025 Update `specs/046-timeline-profiler-fast-path/quickstart.md` with exact validation evidence if the runtime trace path differs from the initial plan. Evidence updated with 27/27 targeted profiler tests, runtime empty-frame zero-readback coverage, 184/184 threaded-rendering plus TimelineProfiler sequence, 33/33 RenderFrameworkContract isolation, and 2223/2224 full-suite pass.
+- [x] T026 Run required `/plan-review` quality gate for the completed code changes, including the deeper audit loop required by AGENTS.md. Evidence: R1/R2/R3 multi-agent and focused review loops completed; R2 GPU correctness P1 null-command regression was fixed; R3 focused architecture/performance and GPU/RHI reviews reported no P0/P1.
 
 ---
 

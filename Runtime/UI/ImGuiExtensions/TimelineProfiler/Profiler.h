@@ -40,7 +40,10 @@
 #include <vector>
 #include <queue>
 
+#include "UI/Profiling/TimelineProfilerLimits.h"
+
 #if defined(_WIN32)
+#include <d3d12.h>
 #include <wrl/client.h>
 #endif
 
@@ -127,6 +130,46 @@ constexpr bool ShouldAdvanceGpuProfilerFrame(bool hasPendingCommandListQueries, 
 	return !hasPendingCommandListQueries && !hasOpenQueueEvents;
 }
 
+constexpr bool ShouldSubmitGpuProfilerReadback(uint32 recordedEventCount)
+{
+	return recordedEventCount != 0u;
+}
+
+#if defined(_WIN32)
+constexpr uint32 ResolveGpuProfilerQueryHeapIndex(D3D12_COMMAND_LIST_TYPE commandListType)
+{
+	return commandListType == D3D12_COMMAND_LIST_TYPE_COPY ? 1u : 0u;
+}
+
+constexpr bool ShouldProfileGpuProfilerCommandListType(
+	D3D12_COMMAND_LIST_TYPE commandListType,
+	bool copyQueueTimestampQueriesSupported)
+{
+	return commandListType == D3D12_COMMAND_LIST_TYPE_DIRECT ||
+		(commandListType == D3D12_COMMAND_LIST_TYPE_COPY && copyQueueTimestampQueriesSupported);
+}
+#endif
+
+constexpr uint64 GetGpuProfilerUnsubmittedReadbackSentinel()
+{
+	return UINT64_MAX;
+}
+
+constexpr bool IsGpuProfilerReadbackSubmitted(uint64 submittedFrameIndex)
+{
+	return submittedFrameIndex != GetGpuProfilerUnsubmittedReadbackSentinel();
+}
+
+constexpr bool DoesGpuProfilerReusableSlotDependOnFrame(uint64 submittedFrameIndex, uint64 dependencyFrameIndex)
+{
+	return IsGpuProfilerReadbackSubmitted(submittedFrameIndex) && submittedFrameIndex == dependencyFrameIndex;
+}
+
+constexpr bool IsGpuProfilerFrameSlotReusable(uint32 frameIndex, uint32 frameLatency, uint32 frameToReadback)
+{
+	return frameLatency != 0u && (frameIndex < frameLatency || frameToReadback > frameIndex - frameLatency);
+}
+
 constexpr uint64 GetGpuProfilerResolveFenceValue(uint64 frameIndex)
 {
 	return frameIndex + 1u;
@@ -135,6 +178,12 @@ constexpr uint64 GetGpuProfilerResolveFenceValue(uint64 frameIndex)
 constexpr bool IsGpuProfilerFrameFenceComplete(uint64 completedFenceValue, uint64 frameIndex)
 {
 	return completedFenceValue >= GetGpuProfilerResolveFenceValue(frameIndex);
+}
+
+constexpr bool IsGpuProfilerFrameComplete(uint64 submittedFrameIndex, uint64 completedFenceValue, uint64 frameIndex)
+{
+	return !IsGpuProfilerReadbackSubmitted(submittedFrameIndex) ||
+		IsGpuProfilerFrameFenceComplete(completedFenceValue, frameIndex);
 }
 
 constexpr bool ShouldWaitForGpuProfilerResolveFence(uint64 completedFenceValue, uint64 submittedFenceValue)
@@ -373,7 +422,11 @@ public:
 
 	Span<const QueueInfo> GetQueues() const { return m_Queues; }
 
+	bool HasProfileableQueues();
 	void SetEventCallback(const GPUProfilerCallbacks& inCallbacks);
+	uint32 GetCurrentEventCountForTesting();
+	uint32 GetPendingCommandListQueryCountForTesting();
+	size_t GetSubmittedReadbackFrameCountForTesting();
 
 private:
 	struct QueryHeap
@@ -386,8 +439,15 @@ private:
 
 		uint32 RecordQuery(ID3D12GraphicsCommandList* pCmd);
 		uint32 Resolve(uint32 frameIndex);
+		void   MarkFrameCompleteWithoutReadback(uint32 frameIndex);
+		bool   ReusableFrameSlotDependsOnFrame(uint32 frameIndex, uint32 dependencyFrameIndex) const;
+		bool   IsReusableFrameSlotReady(uint32 frameIndex);
+		bool   WaitForReusableFrameSlot(uint32 frameIndex);
+		bool   ResetReusableFrameSlot(uint32 frameIndex);
 		bool   Reset(uint32 frameIndex);
 		bool   IsFrameComplete(uint64 frameIndex);
+		size_t GetSubmittedReadbackFrameCountForTesting() const;
+		uint32 GetRecordedQueryCount() const { return m_QueryIndex; }
 		uint32 GetQueryCapacity() const { return m_MaxNumQueries; }
 
 		Span<const uint64> GetQueryData(uint32 frameIndex) const
@@ -413,6 +473,8 @@ private:
 		Span<const uint64>			   m_ReadbackData		= {};	   ///< Mapped readback resource pointer
 		Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pResolveQueue; ///< Queue to resolve queries on
 		Microsoft::WRL::ComPtr<ID3D12Fence> m_pResolveFence; ///< Fence for tracking when queries are finished resolving
+		Array<uint64>					   m_SubmittedReadbackFrames;
+		bool							   m_CommandListOpen = false;
 		uint64						   m_LastCompletedFence = 0;	   ///< Last finish fence value
 		uint64						   m_LastSubmittedFence = 0;	   ///< Last resolve fence value submitted to the queue
 		uint64						   m_LastDrainFence = 0;		   ///< Last shutdown drain fence value submitted to the queue
@@ -420,6 +482,8 @@ private:
 
 	bool ShutdownUnlocked();
 	bool HasPendingCommandListQueriesUnlocked();
+	void DrainCompletedReadbackFramesUnlocked();
+	bool PrepareFrameSlotForReuseUnlocked(uint32 frameIndex, bool waitForFence);
 
 	// Data for a single frame of GPU queries. One for each frame latency
 	struct QueryData
@@ -478,11 +542,24 @@ private:
 		return queue.CPUCalibrationTicks + (gpuTicks - queue.GPUCalibrationTicks) * m_CPUTickFrequency / queue.GPUFrequency;
 	}
 
-	QueryHeap& GetHeap(bool isCopyQueue) { return isCopyQueue ? m_QueryHeaps[1] : m_QueryHeaps[0]; }
+	QueryHeap& GetHeap(uint32 queryHeapIndex)
+	{
+		gAssert(queryHeapIndex < m_QueryHeaps.size(), "GPU profiler query heap index is out of range.");
+		return m_QueryHeaps[queryHeapIndex];
+	}
+
+#if defined(_WIN32)
+	QueryHeap& GetHeap(D3D12_COMMAND_LIST_TYPE commandListType)
+	{
+		return GetHeap(TimelineProfilerDetail::ResolveGpuProfilerQueryHeapIndex(commandListType));
+	}
+#endif
 
 	bool m_IsInitialized = false;
 	bool m_IsPaused		 = false;
 	bool m_PauseQueued	 = false;
+	bool m_CopyQueueTimestampQueriesSupported = false;
+	StaticArray<bool, 2> m_QueryHeapProfilingEnabled{};
 	Mutex m_StateLock;
 
 	Array<QueryData>		  m_QueryData;					///< Data containing all intermediate query event data. 1 per frame latency
@@ -606,7 +683,7 @@ public:
 		uint32								Index			= 0;	///< Index in Tracks Array
 		EType								Type			= EType::CPU;
 		
-		static constexpr int				MAX_STACK_DEPTH = 32;
+		static constexpr int				MAX_STACK_DEPTH = static_cast<int>(NLS::UI::Profiling::kTimelineProfilerInternalCpuStackDepth);
 		FixedArray<EventStackEntry, MAX_STACK_DEPTH> EventStack;
 		Array<ProfilerEventData>			Events;
 	};

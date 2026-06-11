@@ -350,6 +350,45 @@ TEST_F(ProfilerDestinationTest, ReplaysGpuContextWhenDestinationBecomesAvailable
     EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
 }
 
+TEST_F(ProfilerDestinationTest, ClearingGpuContextOnlyRemovesMatchingNativeDevice)
+{
+    using namespace NLS::Base::Profiling;
+
+    int oldDevice = 0;
+    int oldQueue = 0;
+    ProfilerGpuContextEvent oldContext;
+    oldContext.nativeDevice = &oldDevice;
+    oldContext.nativeCommandQueues.push_back(&oldQueue);
+    oldContext.frameLatency = 2u;
+
+    int newDevice = 0;
+    int newQueue = 0;
+    ProfilerGpuContextEvent newContext;
+    newContext.nativeDevice = &newDevice;
+    newContext.nativeCommandQueues.push_back(&newQueue);
+    newContext.frameLatency = 2u;
+
+    BaseProfiler::SetEnabled(true);
+    BaseProfiler::InitializeGpuContext(oldContext);
+    BaseProfiler::InitializeGpuContext(newContext);
+    BaseProfiler::ClearGpuContext(&oldDevice);
+
+    RecordingProfilerDestination timeline(ProfilerDestinationId::Timeline);
+    timeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
+    BaseProfiler::RegisterDestination(timeline);
+
+    EXPECT_EQ(timeline.gpuContextInitializeCalls, 1);
+    EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
+
+    BaseProfiler::ClearGpuContext(&newDevice);
+
+    RecordingProfilerDestination lateTimeline(ProfilerDestinationId::Timeline);
+    lateTimeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
+    BaseProfiler::RegisterDestination(lateTimeline);
+
+    EXPECT_EQ(lateTimeline.gpuContextInitializeCalls, 0);
+}
+
 TEST_F(ProfilerDestinationTest, ResetForTestingClearsDestinationsAndCounters)
 {
     using namespace NLS::Base::Profiling;
@@ -469,6 +508,104 @@ TEST_F(ProfilerDestinationTest, TimelineSinkRecordsScopesWhenEnabled)
 #endif
 }
 
+TEST_F(ProfilerDestinationTest, TimelineSinkRecordsFrameMaintenanceScopeThroughBaseProfiler)
+{
+    using namespace NLS::Base::Profiling;
+
+#if NLS_ENABLE_TIMELINE_PROFILER
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
+    BaseProfiler::RegisterDestination(timeline);
+    BaseProfiler::SetEnabled(true);
+
+    const size_t before = timeline.CountRecordedEventsForTesting("TimelineProfiler::TickFrame", true);
+    timeline.TickFrame();
+    timeline.TickFrame();
+
+    EXPECT_GT(timeline.CountRecordedEventsForTesting("TimelineProfiler::TickFrame", true), before)
+        << "TimelineProfiler frame maintenance should be visible as a real Base Profiler scope.";
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineSinkFlushesRealBaseProfilerScopesAcrossFrameBoundary)
+{
+    using namespace NLS::Base::Profiling;
+
+#if NLS_ENABLE_TIMELINE_PROFILER
+    constexpr const char* kParentName = "BaseProfiler Cross Frame Parent For Timeline";
+    constexpr const char* kChildName = "BaseProfiler Child After Timeline Flush";
+
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
+    BaseProfiler::RegisterDestination(timeline);
+    BaseProfiler::SetEnabled(true);
+
+    const auto parentScope = BaseProfiler::BeginScope(kParentName, __FUNCTION__);
+    timeline.TickFrame();
+
+    const auto childScope = BaseProfiler::BeginScope(kChildName, __FUNCTION__);
+    BaseProfiler::EndScope(childScope);
+    BaseProfiler::EndScope(parentScope);
+    timeline.TickFrame();
+
+    EXPECT_TRUE(timeline.HasRecordedEventForTesting(kParentName))
+        << "The open parent should be closed before the TimelineProfiler frame reset.";
+    EXPECT_TRUE(timeline.HasRecordedEventForTesting(kChildName))
+        << "Real Base Profiler child scopes after a frame-boundary flush should remain exportable.";
+    EXPECT_TRUE(timeline.HasRecordedEventForTesting("TimelineProfiler::TickFrame"));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineSinkSuppressesAmbiguousScopesUntilFlushedParentEnds)
+{
+    using namespace NLS::Base::Profiling;
+
+#if NLS_ENABLE_TIMELINE_PROFILER
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
+
+    ProfilerScopeEvent oldParent;
+    oldParent.name = "Cross Frame Parent";
+    oldParent.sourceFunction = __FUNCTION__;
+    oldParent.depth = 0u;
+    oldParent.active = true;
+
+    timeline.BeginScope(oldParent);
+    timeline.TickFrame();
+
+    const size_t skippedAfterFlush = timeline.GetSkippedScopeCountForTesting();
+
+    ProfilerScopeEvent ambiguousScope;
+    ambiguousScope.name = "Ambiguous Same Depth Scope";
+    ambiguousScope.sourceFunction = __FUNCTION__;
+    ambiguousScope.depth = 0u;
+    ambiguousScope.active = true;
+    timeline.BeginScope(ambiguousScope);
+    EXPECT_EQ(timeline.GetSkippedScopeCountForTesting(), skippedAfterFlush + 1u);
+    EXPECT_NO_FATAL_FAILURE(timeline.EndScope(ambiguousScope));
+
+    ProfilerScopeEvent nestedScope;
+    nestedScope.name = "Nested After Flush Scope";
+    nestedScope.sourceFunction = __FUNCTION__;
+    nestedScope.depth = 1u;
+    nestedScope.active = true;
+    timeline.BeginScope(nestedScope);
+    EXPECT_EQ(timeline.GetSkippedScopeCountForTesting(), skippedAfterFlush + 1u);
+
+    EXPECT_NO_FATAL_FAILURE(timeline.EndScope(oldParent));
+    EXPECT_NO_FATAL_FAILURE(timeline.EndScope(nestedScope));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
 TEST_F(ProfilerDestinationTest, TimelineSinkEndScopeIgnoresUnmatchedEvent)
 {
     using namespace NLS::Base::Profiling;
@@ -538,6 +675,45 @@ TEST_F(ProfilerDestinationTest, TimelineSinkKeepsEditorPanelDepthScopes)
     }
 
     EXPECT_EQ(timeline.GetSkippedScopeCountForTesting(), 0u);
+
+    for (auto it = events.rbegin(); it != events.rend(); ++it)
+        EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineSinkReservesDepthForProfilerFrameRoot)
+{
+    using namespace NLS::Base::Profiling;
+
+#if NLS_ENABLE_TIMELINE_PROFILER
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
+    timeline.TickFrame();
+
+    std::vector<ProfilerScopeEvent> events;
+    events.reserve(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth);
+    for (size_t index = 0u; index < NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth; ++index)
+    {
+        ProfilerScopeEvent event;
+        event.name = "Nested Frame Scope " + std::to_string(index);
+        event.sourceFunction = __FUNCTION__;
+        event.active = true;
+        events.push_back(std::move(event));
+        timeline.BeginScope(events.back());
+    }
+
+    EXPECT_EQ(timeline.GetSkippedScopeCountForTesting(), 0u);
+
+    ProfilerScopeEvent extraEvent;
+    extraEvent.name = "Suppressed Frame Scope";
+    extraEvent.sourceFunction = __FUNCTION__;
+    extraEvent.active = true;
+    EXPECT_NO_FATAL_FAILURE(timeline.BeginScope(extraEvent));
+    EXPECT_GT(timeline.GetSkippedScopeCountForTesting(), 0u);
+    EXPECT_NO_FATAL_FAILURE(timeline.EndScope(extraEvent));
 
     for (auto it = events.rbegin(); it != events.rend(); ++it)
         EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));

@@ -1276,6 +1276,36 @@ TEST(PanelWindowHookTests, ContextAppliesFrameInfoStartupValidationOverride)
     EXPECT_NE(applyBody.find("settings.editorValidationOpenFrameInfo = true;"), std::string::npos);
 }
 
+TEST(PanelWindowHookTests, EditorStartupValidationCanOpenProfilerPanel)
+{
+    const auto contextHeader = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.h");
+    const auto editorSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
+
+    const auto applyOverride = contextHeader.find("void ApplyDiagnosticsOverride");
+    ASSERT_NE(applyOverride, std::string::npos);
+    const auto diagnosticsSettingsMember = contextHeader.find(
+        "Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings",
+        applyOverride);
+    ASSERT_NE(diagnosticsSettingsMember, std::string::npos);
+    const auto applyBody = contextHeader.substr(applyOverride, diagnosticsSettingsMember - applyOverride);
+
+    EXPECT_NE(applyBody.find("m_diagnosticsOverride->editorValidationOpenProfiler"), std::string::npos);
+    EXPECT_NE(applyBody.find("settings.editorValidationOpenProfiler = true;"), std::string::npos);
+
+    const auto startupValidation = editorSource.find("void Editor::Core::Editor::ApplyStartupValidationDirectives");
+    ASSERT_NE(startupValidation, std::string::npos);
+    const auto updateMode = editorSource.find("void Editor::Core::Editor::UpdateCurrentEditorMode", startupValidation);
+    ASSERT_NE(updateMode, std::string::npos);
+    const auto validationBody = editorSource.substr(startupValidation, updateMode - startupValidation);
+
+    EXPECT_NE(validationBody.find("GetPanelAs<NLS::Editor::Panels::ProfilerPanel>(\"Profiler\")"), std::string::npos);
+    EXPECT_NE(validationBody.find("diagnostics.editorValidationOpenProfiler"), std::string::npos);
+    EXPECT_NE(validationBody.find("profilerPanel.Open();"), std::string::npos);
+    EXPECT_NE(validationBody.find("Editor validation opened Profiler."), std::string::npos);
+}
+
 TEST(PanelWindowHookTests, EditorResolvesUiSceneWaitAfterCanvasDraw)
 {
     const auto editorSource = ReadSourceFile(

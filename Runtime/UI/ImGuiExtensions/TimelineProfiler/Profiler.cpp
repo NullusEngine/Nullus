@@ -8,6 +8,9 @@
 #include <d3d12.h>
 #include <dxgi.h>
 
+#include "Debug/Logger.h"
+#include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
+
 Profiler gProfiler;
 GPUProfiler gGPUProfiler;
 
@@ -243,6 +246,7 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 		SUCCEEDED(pDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3))) &&
 		options3.CopyQueueTimestampQueriesSupported;
 	m_QueryHeapProfilingEnabled = {};
+	m_HasUnfencedSubmittedWork = false;
 
 	StaticArray<uint32, 2> profileableQueueCounts{};
 	for (ID3D12CommandQueue* pQueue : queues)
@@ -330,6 +334,9 @@ bool GPUProfiler::ShutdownUnlocked()
 	if (!m_IsInitialized)
 		return true;
 
+	if (m_HasUnfencedSubmittedWork || HasUnfencedSubmittedWorkUnlocked())
+		return false;
+
 	if (!TimelineProfilerDetail::CanReleaseGpuProfilerWithPendingCommandListQueries(
 		HasPendingCommandListQueriesUnlocked()))
 	{
@@ -372,6 +379,7 @@ bool GPUProfiler::ShutdownUnlocked()
 	m_IsInitialized = false;
 	m_IsPaused = false;
 	m_PauseQueued = false;
+	m_HasUnfencedSubmittedWork = false;
 	m_CopyQueueTimestampQueriesSupported = false;
 	m_QueryHeapProfilingEnabled = {};
 	m_EventCallback = {};
@@ -394,6 +402,19 @@ bool GPUProfiler::HasPendingCommandListQueriesUnlocked()
 	return hasPendingCommandListQueries;
 }
 
+bool GPUProfiler::HasUnfencedSubmittedWorkUnlocked() const
+{
+	if (m_HasUnfencedSubmittedWork)
+		return true;
+
+	for (const QueryHeap& heap : m_QueryHeaps)
+	{
+		if (heap.HasUnfencedSubmittedWork())
+			return true;
+	}
+	return false;
+}
+
 void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName, uint32 color, const char* pFilePath, uint32 lineNumber)
 {
 	if (pCmd == nullptr)
@@ -403,7 +424,7 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 	const D3D12_COMMAND_LIST_TYPE commandListType = pCmd->GetType();
 	{
 		std::lock_guard lock(m_StateLock);
-		if (!m_IsInitialized)
+		if (!m_IsInitialized || m_HasUnfencedSubmittedWork)
 			return;
 
 		if (m_IsPaused)
@@ -424,7 +445,7 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 
 	std::lock_guard lock(m_StateLock);
 
-	if (!m_IsInitialized)
+	if (!m_IsInitialized || m_HasUnfencedSubmittedWork)
 		return;
 
 	if (m_IsPaused)
@@ -470,7 +491,7 @@ void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
 	const D3D12_COMMAND_LIST_TYPE commandListType = pCmd->GetType();
 	{
 		std::lock_guard lock(m_StateLock);
-		if (!m_IsInitialized)
+		if (!m_IsInitialized || m_HasUnfencedSubmittedWork)
 			return;
 
 		if (m_IsPaused)
@@ -491,7 +512,7 @@ void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
 
 	std::lock_guard lock(m_StateLock);
 
-	if (!m_IsInitialized)
+	if (!m_IsInitialized || m_HasUnfencedSubmittedWork)
 		return;
 
 	if (m_IsPaused)
@@ -582,6 +603,8 @@ void GPUProfiler::Tick()
 
 	if (!m_IsInitialized)
 		return;
+	if (m_HasUnfencedSubmittedWork)
+		return;
 
 	DrainCompletedReadbackFramesUnlocked();
 
@@ -613,12 +636,27 @@ void GPUProfiler::Tick()
 	if (!PrepareFrameSlotForReuseUnlocked(nextFrameIndex, shouldSubmitReadback))
 		return;
 
-	for (QueryHeap& heap : m_QueryHeaps)
+	for (uint32 heapIndex = 0u; heapIndex < m_QueryHeaps.size(); ++heapIndex)
 	{
+		QueryHeap& heap = m_QueryHeaps[heapIndex];
+		if (!m_QueryHeapProfilingEnabled[heapIndex])
+			continue;
+
 		if (!shouldSubmitReadback || heap.GetRecordedQueryCount() == 0u)
+		{
 			heap.MarkFrameCompleteWithoutReadback(m_FrameIndex);
+		}
 		else
-			heap.Resolve(m_FrameIndex);
+		{
+			if (!heap.Resolve(m_FrameIndex))
+			{
+				m_QueryHeapProfilingEnabled[heapIndex] = false;
+				m_HasUnfencedSubmittedWork = true;
+				NLS_LOG_ERROR(
+					"GPUProfiler::Tick: quarantined TimelineProfiler GPU resolve resources after an unfenced submit.");
+				return;
+			}
+		}
 	}
 
 	m_FrameIndex = nextFrameIndex;
@@ -642,7 +680,7 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 {
 	std::lock_guard lock(m_StateLock);
 
-	if (!m_IsInitialized)
+	if (!m_IsInitialized || m_HasUnfencedSubmittedWork)
 		return;
 
 	if (m_IsPaused)
@@ -855,19 +893,22 @@ void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueu
 		.VisibleNodeMask	  = 0,
 	};
 
-	gVerifyHR(pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_pReadbackResource)));
+	gVerifyHR(pDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_pReadbackResource)));
 	void* pReadbackData = nullptr;
 	gVerifyHR(m_pReadbackResource->Map(0, nullptr, &pReadbackData));
 	m_ReadbackData = Span<const uint64>(static_cast<uint64*>(pReadbackData), maxNumQueries * frameLatency);
 
 	gVerifyHR(pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pResolveFence)));
 	m_SubmittedReadbackFrames.assign(frameLatency, TimelineProfilerDetail::GetGpuProfilerUnsubmittedReadbackSentinel());
+	m_HasUnfencedSubmittedWork = false;
 }
 
 bool GPUProfiler::QueryHeap::DrainSubmittedFence()
 {
 	if (!IsInitialized())
 		return true;
+	if (m_HasUnfencedSubmittedWork)
+		return false;
 
 	const bool waitRequired = m_pResolveFence != nullptr &&
 		TimelineProfilerDetail::ShouldWaitForGpuProfilerResolveFence(
@@ -889,11 +930,17 @@ bool GPUProfiler::QueryHeap::DrainQueue(ID3D12CommandQueue* pQueue)
 {
 	if (!IsInitialized() || pQueue == nullptr)
 		return true;
+	if (m_HasUnfencedSubmittedWork)
+		return false;
 	if (!DrainSubmittedFence())
 		return false;
 
 	const uint64 fenceValue = std::max({ m_LastSubmittedFence, m_LastCompletedFence, m_LastDrainFence }) + 1u;
-	const HRESULT hr = pQueue->Signal(m_pResolveFence.Get(), fenceValue);
+	const HRESULT hr = [&]()
+	{
+		NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(pQueue);
+		return pQueue->Signal(m_pResolveFence.Get(), fenceValue);
+	}();
 	if (FAILED(hr))
 		return false;
 
@@ -907,6 +954,8 @@ bool GPUProfiler::QueryHeap::Shutdown()
 {
 	if (!IsInitialized())
 		return true;
+	if (m_HasUnfencedSubmittedWork)
+		return false;
 
 	if (!DrainSubmittedFence())
 		return false;
@@ -928,6 +977,7 @@ bool GPUProfiler::QueryHeap::Shutdown()
 	m_LastCompletedFence = 0;
 	m_LastSubmittedFence = 0;
 	m_LastDrainFence = 0;
+	m_HasUnfencedSubmittedWork = false;
 	return true;
 }
 
@@ -941,10 +991,12 @@ uint32 GPUProfiler::QueryHeap::RecordQuery(ID3D12GraphicsCommandList* pCmd)
 	return index;
 }
 
-uint32 GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
+bool GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
 {
 	if (!IsInitialized())
-		return 0;
+		return true;
+	if (m_HasUnfencedSubmittedWork)
+		return false;
 
 	uint32 frameBit	  = frameIndex % m_FrameLatency;
 	uint32 queryStart = frameBit * m_MaxNumQueries;
@@ -954,15 +1006,29 @@ uint32 GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
 	gVerifyHR(m_pCommandList->Close());
 	m_CommandListOpen = false;
 	ID3D12CommandList* pCmdLists[] = { m_pCommandList.Get() };
-	m_pResolveQueue->ExecuteCommandLists(1, pCmdLists);
 	m_LastSubmittedFence = TimelineProfilerDetail::GetGpuProfilerResolveFenceValue(frameIndex);
-	gVerifyHR(m_pResolveQueue->Signal(m_pResolveFence.Get(), m_LastSubmittedFence));
-	return numQueries;
+	{
+		NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_pResolveQueue.Get());
+		m_pResolveQueue->ExecuteCommandLists(1, pCmdLists);
+		const HRESULT signalHr = m_pResolveQueue->Signal(m_pResolveFence.Get(), m_LastSubmittedFence);
+		if (FAILED(signalHr))
+		{
+			NLS_LOG_ERROR(
+				"GPUProfiler::QueryHeap::Resolve: resolve fence signal failed after ExecuteCommandLists hr=" +
+				std::to_string(signalHr) +
+				" value=" + std::to_string(m_LastSubmittedFence));
+			m_HasUnfencedSubmittedWork = true;
+			return false;
+		}
+	}
+	return true;
 }
 
 void GPUProfiler::QueryHeap::MarkFrameCompleteWithoutReadback(uint32 frameIndex)
 {
 	if (!IsInitialized())
+		return;
+	if (m_HasUnfencedSubmittedWork)
 		return;
 
 	const uint32 frameBit = frameIndex % m_FrameLatency;
@@ -992,6 +1058,8 @@ bool GPUProfiler::QueryHeap::IsReusableFrameSlotReady(uint32 frameIndex)
 {
 	if (!IsInitialized())
 		return true;
+	if (m_HasUnfencedSubmittedWork)
+		return false;
 
 	if (frameIndex < m_FrameLatency)
 		return true;
@@ -1004,6 +1072,8 @@ bool GPUProfiler::QueryHeap::WaitForReusableFrameSlot(uint32 frameIndex)
 {
 	if (!IsInitialized())
 		return true;
+	if (m_HasUnfencedSubmittedWork)
+		return false;
 
 	// Don't reuse a ring slot until the previous submitted readback for that slot has completed.
 	if (frameIndex >= m_FrameLatency)
@@ -1025,6 +1095,8 @@ bool GPUProfiler::QueryHeap::ResetReusableFrameSlot(uint32 frameIndex)
 {
 	if (!IsInitialized())
 		return true;
+	if (m_HasUnfencedSubmittedWork)
+		return false;
 
 	m_QueryIndex					   = 0;
 	ID3D12CommandAllocator* pAllocator = m_CommandAllocators[frameIndex % m_FrameLatency].Get();
@@ -1046,6 +1118,8 @@ bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
 {
 	if (!IsInitialized())
 		return true;
+	if (m_HasUnfencedSubmittedWork)
+		return false;
 
 	const uint32 frameBit = frameIndex % m_FrameLatency;
 	const uint64 submittedFrameIndex = frameBit < m_SubmittedReadbackFrames.size() ?

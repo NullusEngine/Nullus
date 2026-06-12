@@ -77,6 +77,7 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
         "--editor-validation-exclusive-view",
         "game",
         "--editor-validation-open-frame-info",
+        "--editor-validation-open-profiler",
         "--editor-validation-select-gameobject",
         "Validation Cube",
         "--editor-log-render-draw-path",
@@ -91,6 +92,7 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationFocusView, "scene");
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationExclusiveView, "game");
     EXPECT_TRUE(parsed.diagnosticsSettings.editorValidationOpenFrameInfo);
+    EXPECT_TRUE(parsed.diagnosticsSettings.editorValidationOpenProfiler);
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationSelectGameObject, "Validation Cube");
     EXPECT_TRUE(parsed.diagnosticsSettings.logRenderDrawPath);
     EXPECT_TRUE(parsed.diagnosticsSettings.dx12LogFrameFlow);

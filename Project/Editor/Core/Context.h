@@ -141,6 +141,8 @@ private:
             settings.editorValidationExclusiveView = m_diagnosticsOverride->editorValidationExclusiveView;
         if (m_diagnosticsOverride->editorValidationOpenFrameInfo)
             settings.editorValidationOpenFrameInfo = true;
+        if (m_diagnosticsOverride->editorValidationOpenProfiler)
+            settings.editorValidationOpenProfiler = true;
         if (m_diagnosticsOverride->editorValidationDisableHZBOcclusion)
             settings.editorValidationDisableHZBOcclusion = true;
         if (m_diagnosticsOverride->editorValidationOcclusionStackCount != 0u)

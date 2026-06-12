@@ -18,6 +18,7 @@ namespace NLS::Editor::Launch
         std::printf("  --editor-validation-focus-view <scene|game>  Focus a view during startup validation\n");
         std::printf("  --editor-validation-exclusive-view <scene|game>  Close the other view during startup validation\n");
         std::printf("  --editor-validation-open-frame-info  Open Frame Info during startup validation\n");
+        std::printf("  --editor-validation-open-profiler  Open Profiler during startup validation\n");
         std::printf("  --editor-validation-select-gameobject <name>  Select a GameObject during startup validation\n");
         std::printf("  --editor-validation-create-asset <path>  Create an asset instance during startup validation\n");
         std::printf("  --editor-validation-disable-hzb-occlusion  Disable HZB occlusion for A/B validation\n");
@@ -108,6 +109,11 @@ namespace NLS::Editor::Launch
             else if (arg == "--editor-validation-open-frame-info")
             {
                 parsed.diagnosticsSettings.editorValidationOpenFrameInfo = true;
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-open-profiler")
+            {
+                parsed.diagnosticsSettings.editorValidationOpenProfiler = true;
                 parsed.hasDiagnosticsOverride = true;
             }
             else if (arg == "--editor-validation-select-gameobject" && i + 1 < argc)

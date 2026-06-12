@@ -861,6 +861,7 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
     auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
     auto& frameInfo = m_panelsManager.GetPanelAs<NLS::Editor::Panels::FrameInfo>("Frame Info");
+    auto& profilerPanel = m_panelsManager.GetPanelAs<NLS::Editor::Panels::ProfilerPanel>("Profiler");
 
     switch (ResolveValidationFocusTarget(diagnostics.editorValidationExclusiveView))
     {
@@ -898,6 +899,12 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
     {
         frameInfo.Open();
         NLS_LOG_INFO("Editor validation opened Frame Info.");
+    }
+
+    if (diagnostics.editorValidationOpenProfiler)
+    {
+        profilerPanel.Open();
+        NLS_LOG_INFO("Editor validation opened Profiler.");
     }
 
     if (diagnostics.editorValidationDisableHZBOcclusion)

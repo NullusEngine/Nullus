@@ -405,6 +405,12 @@ namespace NLS::Render::Backend
 		}
 
 		bool mayHaveQueuedGpuWork = false;
+		bool commandListsQueued = false;
+		bool submitShouldReturn = false;
+		const bool shouldPublishProfilerMetadata =
+			!commandLists.empty() && NLS::Base::Profiling::Profiler::IsEnabled();
+		std::uint64_t profilerSubmitSequence = 0u;
+		NLS::Render::RHI::RHIQueueOperationResult result;
 		{
 			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::ValidateSubmitSemaphoreWaits");
 			for (const auto& semaphore : submitDesc.waitSemaphores)
@@ -420,152 +426,173 @@ namespace NLS::Render::Backend
 					return waitValueValidation;
 			}
 		}
-		NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_queue);
 		{
-			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitSubmitSemaphores");
-			for (const auto& semaphore : submitDesc.waitSemaphores)
+			NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_queue);
 			{
-				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
-				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
-					continue;
-
-				mayHaveQueuedGpuWork = true;
-				const HRESULT waitHr = m_queue->Wait(
-					nativeSemaphore->GetFence(),
-					nativeSemaphore->GetWaitValue());
-				if (FAILED(waitHr))
+				NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitSubmitSemaphores");
+				for (const auto& semaphore : submitDesc.waitSemaphores)
 				{
-					const std::string message =
-						"NativeDX12Queue::Submit: queue wait on semaphore failed hr=" +
-						std::to_string(waitHr);
-					NLS_LOG_ERROR(message);
-					return ClassifyDx12QueuedWorkFailure(
-						m_device,
-						message,
-						mayHaveQueuedGpuWork);
+					auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
+					if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+						continue;
+
+					mayHaveQueuedGpuWork = true;
+					const HRESULT waitHr = m_queue->Wait(
+						nativeSemaphore->GetFence(),
+						nativeSemaphore->GetWaitValue());
+					if (FAILED(waitHr))
+					{
+						const std::string message =
+							"NativeDX12Queue::Submit: queue wait on semaphore failed hr=" +
+							std::to_string(waitHr);
+						NLS_LOG_ERROR(message);
+						return ClassifyDx12QueuedWorkFailure(
+							m_device,
+							message,
+							mayHaveQueuedGpuWork);
+					}
+				}
+			}
+
+			if (!commandLists.empty())
+			{
+				if (ShouldLogDx12FrameFlow())
+				{
+					NLS_LOG_INFO("NativeDX12Queue::Submit: executing " + std::to_string(commandLists.size()) + " command lists");
+				}
+				{
+					NLS_PROFILE_NAMED_SCOPE("ID3D12CommandQueue::ExecuteCommandLists");
+					mayHaveQueuedGpuWork = true;
+					m_queue->ExecuteCommandLists(static_cast<UINT>(commandLists.size()), commandLists.data());
+				}
+				commandListsQueued = true;
+				if (shouldPublishProfilerMetadata)
+				{
+					profilerSubmitSequence =
+						NLS::Render::RHI::DX12::Detail::ReserveQueueProfilerSubmitSequence(m_queue);
+				}
+				if (ShouldLogDx12FrameFlow())
+				{
+					NLS_LOG_INFO("NativeDX12Queue::Submit: ExecuteCommandLists succeeded");
+				}
+
+				if (m_device != nullptr && ShouldLogDx12ValidationMessages())
+				{
+					LogDx12DebugMessages(m_device, "NativeDX12Queue::Submit(after ExecuteCommandLists)");
+				}
+
+				if (m_device != nullptr)
+				{
+					const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
+					if (FAILED(deviceStatus))
+					{
+						const std::string message =
+							"NativeDX12Queue::Submit: device status after ExecuteCommandLists hr=" +
+							std::to_string(deviceStatus);
+						NLS_LOG_ERROR(message);
+						LogDx12DebugMessages(m_device, "NativeDX12Queue::Submit");
+						LogDx12DredBreadcrumbs(m_device, "NativeDX12Queue::Submit");
+						result = {
+							NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost,
+							message,
+							true
+						};
+						submitShouldReturn = true;
+					}
+				}
+			}
+			else if (ShouldLogDx12FrameFlow())
+			{
+				NLS_LOG_INFO("NativeDX12Queue::Submit: no command lists to execute");
+			}
+
+			if (!submitShouldReturn)
+			{
+				NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalSubmitSemaphores");
+				for (const auto& semaphore : submitDesc.signalSemaphores)
+				{
+					auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
+					if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+						continue;
+
+					mayHaveQueuedGpuWork = true;
+					const HRESULT signalHr = nativeSemaphore->SignalOnQueueChecked(m_queue);
+					if (FAILED(signalHr))
+					{
+						const std::string message =
+							"NativeDX12Queue::Submit: queue signal semaphore failed hr=" +
+							std::to_string(signalHr);
+						NLS_LOG_ERROR(message);
+						bool frameFenceSignalQueued = false;
+						if (submitDesc.signalFence != nullptr)
+						{
+							auto* nativeFence = dynamic_cast<NativeDX12Fence*>(submitDesc.signalFence.get());
+							if (nativeFence != nullptr && nativeFence->GetFence() != nullptr)
+							{
+								submitDesc.signalFence->Reset();
+								const HRESULT fenceSignalHr = m_queue->Signal(
+									nativeFence->GetFence(),
+									nativeFence->GetTargetValue());
+								frameFenceSignalQueued = SUCCEEDED(fenceSignalHr);
+								if (!frameFenceSignalQueued)
+								{
+									NLS_LOG_ERROR(
+										"NativeDX12Queue::Submit: failed to queue retirement fence after semaphore signal failure hr=" +
+										std::to_string(fenceSignalHr));
+								}
+							}
+						}
+						result = ClassifyDx12QueuedWorkFailure(
+							m_device,
+							message,
+							mayHaveQueuedGpuWork,
+							frameFenceSignalQueued);
+						submitShouldReturn = true;
+						break;
+					}
+				}
+			}
+
+			if (!submitShouldReturn && submitDesc.signalFence != nullptr)
+			{
+				NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalSubmitFence");
+				auto* nativeFence = dynamic_cast<NativeDX12Fence*>(submitDesc.signalFence.get());
+				if (nativeFence != nullptr && nativeFence->GetFence() != nullptr)
+				{
+					submitDesc.signalFence->Reset();
+					const UINT64 fenceValue = nativeFence->GetTargetValue();
+					const HRESULT signalHr = m_queue->Signal(nativeFence->GetFence(), fenceValue);
+					if (FAILED(signalHr))
+					{
+						const std::string message =
+							"NativeDX12Queue::Submit: queue signal fence failed hr=" +
+							std::to_string(signalHr) +
+							" value=" + std::to_string(fenceValue);
+						NLS_LOG_ERROR(message);
+						LogDx12DredBreadcrumbs(m_device, "NativeDX12Queue::Submit");
+						result = ClassifyDx12QueuedWorkFailure(m_device, message, mayHaveQueuedGpuWork);
+						submitShouldReturn = true;
+					}
+					else
+					{
+						result.frameFenceSignalQueued = true;
+					}
 				}
 			}
 		}
-
-		if (!commandLists.empty())
+		if (commandListsQueued && shouldPublishProfilerMetadata)
 		{
-			if (ShouldLogDx12FrameFlow())
-			{
-				NLS_LOG_INFO("NativeDX12Queue::Submit: executing " + std::to_string(commandLists.size()) + " command lists");
-			}
-			{
-				NLS_PROFILE_NAMED_SCOPE("ID3D12CommandQueue::ExecuteCommandLists");
-				mayHaveQueuedGpuWork = true;
-				m_queue->ExecuteCommandLists(static_cast<UINT>(commandLists.size()), commandLists.data());
-			}
+			NLS::Render::RHI::DX12::ScopedDX12QueueProfilerSubmissionOrder profilerSubmitOrder(
+				m_queue,
+				profilerSubmitSequence);
 			NLS::Base::Profiling::ProfilerGpuCommandListSubmitEvent profilerSubmit;
 			profilerSubmit.nativeCommandQueue = m_queue;
 			profilerSubmit.nativeCommandLists.reserve(commandLists.size());
 			for (auto* commandList : commandLists)
 				profilerSubmit.nativeCommandLists.push_back(commandList);
 			NLS::Base::Profiling::Profiler::SubmitGpuCommandLists(profilerSubmit);
-			if (ShouldLogDx12FrameFlow())
-			{
-				NLS_LOG_INFO("NativeDX12Queue::Submit: ExecuteCommandLists succeeded");
-			}
-
-			if (m_device != nullptr && ShouldLogDx12ValidationMessages())
-			{
-				LogDx12DebugMessages(m_device, "NativeDX12Queue::Submit(after ExecuteCommandLists)");
-			}
-
-			if (m_device != nullptr)
-			{
-				const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
-				if (FAILED(deviceStatus))
-				{
-					const std::string message =
-						"NativeDX12Queue::Submit: device status after ExecuteCommandLists hr=" +
-						std::to_string(deviceStatus);
-					NLS_LOG_ERROR(message);
-					LogDx12DebugMessages(m_device, "NativeDX12Queue::Submit");
-					LogDx12DredBreadcrumbs(m_device, "NativeDX12Queue::Submit");
-					return {
-						NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost,
-						message,
-						true
-					};
-				}
-			}
 		}
-		else if (ShouldLogDx12FrameFlow())
-		{
-			NLS_LOG_INFO("NativeDX12Queue::Submit: no command lists to execute");
-		}
-
-		{
-			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalSubmitSemaphores");
-			for (const auto& semaphore : submitDesc.signalSemaphores)
-			{
-				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
-				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
-					continue;
-
-				mayHaveQueuedGpuWork = true;
-				const HRESULT signalHr = nativeSemaphore->SignalOnQueueChecked(m_queue);
-				if (FAILED(signalHr))
-				{
-					const std::string message =
-						"NativeDX12Queue::Submit: queue signal semaphore failed hr=" +
-						std::to_string(signalHr);
-					NLS_LOG_ERROR(message);
-					bool frameFenceSignalQueued = false;
-					if (submitDesc.signalFence != nullptr)
-					{
-						auto* nativeFence = dynamic_cast<NativeDX12Fence*>(submitDesc.signalFence.get());
-						if (nativeFence != nullptr && nativeFence->GetFence() != nullptr)
-						{
-							submitDesc.signalFence->Reset();
-							const HRESULT fenceSignalHr = m_queue->Signal(
-								nativeFence->GetFence(),
-								nativeFence->GetTargetValue());
-							frameFenceSignalQueued = SUCCEEDED(fenceSignalHr);
-							if (!frameFenceSignalQueued)
-							{
-								NLS_LOG_ERROR(
-									"NativeDX12Queue::Submit: failed to queue retirement fence after semaphore signal failure hr=" +
-									std::to_string(fenceSignalHr));
-							}
-						}
-					}
-					return ClassifyDx12QueuedWorkFailure(
-						m_device,
-						message,
-						mayHaveQueuedGpuWork,
-						frameFenceSignalQueued);
-				}
-			}
-		}
-
-		NLS::Render::RHI::RHIQueueOperationResult result;
 		result.mayHaveQueuedGpuWork = mayHaveQueuedGpuWork;
-		if (submitDesc.signalFence != nullptr)
-		{
-			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalSubmitFence");
-			auto* nativeFence = dynamic_cast<NativeDX12Fence*>(submitDesc.signalFence.get());
-			if (nativeFence != nullptr && nativeFence->GetFence() != nullptr)
-			{
-				submitDesc.signalFence->Reset();
-				const UINT64 fenceValue = nativeFence->GetTargetValue();
-				const HRESULT signalHr = m_queue->Signal(nativeFence->GetFence(), fenceValue);
-				if (FAILED(signalHr))
-				{
-					const std::string message =
-						"NativeDX12Queue::Submit: queue signal fence failed hr=" +
-						std::to_string(signalHr) +
-						" value=" + std::to_string(fenceValue);
-					NLS_LOG_ERROR(message);
-					LogDx12DredBreadcrumbs(m_device, "NativeDX12Queue::Submit");
-					return ClassifyDx12QueuedWorkFailure(m_device, message, mayHaveQueuedGpuWork);
-				}
-				result.frameFenceSignalQueued = true;
-			}
-		}
 		return result;
 #else
 		(void)submitDesc;

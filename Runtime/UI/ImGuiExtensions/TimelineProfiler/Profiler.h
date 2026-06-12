@@ -438,7 +438,7 @@ private:
 		bool DrainQueue(ID3D12CommandQueue* pQueue);
 
 		uint32 RecordQuery(ID3D12GraphicsCommandList* pCmd);
-		uint32 Resolve(uint32 frameIndex);
+		bool   Resolve(uint32 frameIndex);
 		void   MarkFrameCompleteWithoutReadback(uint32 frameIndex);
 		bool   ReusableFrameSlotDependsOnFrame(uint32 frameIndex, uint32 dependencyFrameIndex) const;
 		bool   IsReusableFrameSlotReady(uint32 frameIndex);
@@ -449,6 +449,7 @@ private:
 		size_t GetSubmittedReadbackFrameCountForTesting() const;
 		uint32 GetRecordedQueryCount() const { return m_QueryIndex; }
 		uint32 GetQueryCapacity() const { return m_MaxNumQueries; }
+		bool   HasUnfencedSubmittedWork() const { return m_HasUnfencedSubmittedWork; }
 
 		Span<const uint64> GetQueryData(uint32 frameIndex) const
 		{
@@ -478,11 +479,13 @@ private:
 		uint64						   m_LastCompletedFence = 0;	   ///< Last finish fence value
 		uint64						   m_LastSubmittedFence = 0;	   ///< Last resolve fence value submitted to the queue
 		uint64						   m_LastDrainFence = 0;		   ///< Last shutdown drain fence value submitted to the queue
+		bool						   m_HasUnfencedSubmittedWork = false;
 	};
 
 	bool ShutdownUnlocked();
 	bool HasPendingCommandListQueriesUnlocked();
 	void DrainCompletedReadbackFramesUnlocked();
+	bool HasUnfencedSubmittedWorkUnlocked() const;
 	bool PrepareFrameSlotForReuseUnlocked(uint32 frameIndex, bool waitForFence);
 
 	// Data for a single frame of GPU queries. One for each frame latency
@@ -558,6 +561,7 @@ private:
 	bool m_IsInitialized = false;
 	bool m_IsPaused		 = false;
 	bool m_PauseQueued	 = false;
+	bool m_HasUnfencedSubmittedWork = false;
 	bool m_CopyQueueTimestampQueriesSupported = false;
 	StaticArray<bool, 2> m_QueryHeapProfilingEnabled{};
 	Mutex m_StateLock;

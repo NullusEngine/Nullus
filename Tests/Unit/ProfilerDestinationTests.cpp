@@ -977,13 +977,27 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterCanFilterEditorUiNoise)
     EXPECT_NE(sceneDraw->find("CaptureThreadedPreparedDraw"), std::string::npos);
 }
 
-TEST_F(ProfilerDestinationTest, DX12UiBridgeUsesAllocatorReuseWaitScope)
+TEST_F(ProfilerDestinationTest, DX12UiBridgeWaitsForBackbufferAndAllocatorReuse)
 {
     const auto source = ReadSourceText(
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12UIBridge.cpp");
 
-    EXPECT_EQ(source.find("DX12UIBridge::WaitForBackbufferReuse"), std::string::npos);
-    EXPECT_NE(source.find("DX12UIBridge::WaitForAllocatorReuse"), std::string::npos);
+    const auto renderDrawData = source.find("void RenderDrawData");
+    ASSERT_NE(renderDrawData, std::string::npos);
+    const auto resolveTextureView = source.find("NativeHandle ResolveTextureView", renderDrawData);
+    ASSERT_NE(resolveTextureView, std::string::npos);
+    const auto body = source.substr(renderDrawData, resolveTextureView - renderDrawData);
+
+    const auto backbufferReuse = body.find("DX12UIBridge::WaitForBackbufferReuse");
+    const auto allocatorReuse = body.find("DX12UIBridge::WaitForAllocatorReuse");
+    const auto allocatorReset = body.find("commandAllocator->Reset()");
+    const auto backbufferBarrier = body.find("barrier.Transition.pResource = backBuffer.Get()");
+    ASSERT_NE(backbufferReuse, std::string::npos);
+    ASSERT_NE(allocatorReuse, std::string::npos);
+    ASSERT_NE(allocatorReset, std::string::npos);
+    ASSERT_NE(backbufferBarrier, std::string::npos);
+    EXPECT_LT(backbufferReuse, allocatorReset);
+    EXPECT_LT(backbufferReuse, backbufferBarrier);
 }
 
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterKeepsEventNamesOwnedUntilExport)

@@ -262,6 +262,24 @@ namespace NLS::Render::RHI
 
                 auto& backBuffer = m_backBuffers[backBufferIndex];
 
+                const auto completedFenceValue = m_fence->GetCompletedValue();
+                const auto reuseWait = m_frameFenceTracker.ResolveReuseWait(
+                    backBufferIndex,
+                    completedFenceValue);
+                if (reuseWait.shouldWait)
+                {
+                    NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::WaitForBackbufferReuse");
+                    if (!WaitForDX12UIFence(
+                        m_fence.Get(),
+                        m_fenceEvent,
+                        reuseWait.fenceValue,
+                        "DX12UIBridge::RenderDrawData(backbuffer reuse)"))
+                    {
+                        DiscardCurrentFrameTextureHandles();
+                        return;
+                    }
+                }
+
                 auto allocatorReuse = m_frameFenceTracker.ResolveAllocatorReuse(m_fence->GetCompletedValue());
                 if (allocatorReuse.shouldWait)
                 {

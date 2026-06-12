@@ -34,6 +34,27 @@ std::string ReadSourceFile(const std::filesystem::path& path)
     return output.str();
 }
 
+size_t FindMatchingBrace(const std::string& source, const size_t openingBrace)
+{
+    size_t depth = 0u;
+    for (size_t index = openingBrace; index < source.size(); ++index)
+    {
+        if (source[index] == '{')
+        {
+            ++depth;
+        }
+        else if (source[index] == '}')
+        {
+            if (depth == 0u)
+                return std::string::npos;
+            --depth;
+            if (depth == 0u)
+                return index;
+        }
+    }
+    return std::string::npos;
+}
+
 }
 
 TEST(TimelineProfilerGpuLifecycleTests, BuildConfigurationExposesExpectedProfilerHelpers)
@@ -104,7 +125,7 @@ TEST(TimelineProfilerGpuLifecycleTests, GpuTickSkipsReadbackSubmissionForEmptyFr
     const auto currentSlotWait = tickBody.find("PrepareFrameSlotForReuseUnlocked(m_FrameIndex, shouldSubmitReadback)");
     const auto emptySlotWait = tickBody.find("PrepareFrameSlotForReuseUnlocked(nextFrameIndex, shouldSubmitReadback)");
     const auto emptyFrameCompletion = tickBody.find("MarkFrameCompleteWithoutReadback");
-    const auto resolve = tickBody.find("heap.Resolve(m_FrameIndex)");
+    const auto resolve = tickBody.find("Resolve(m_FrameIndex)");
     const auto reusableSlotReset = tickBody.find("heap.ResetReusableFrameSlot(m_FrameIndex)");
 
     ASSERT_NE(readbackDecision, std::string::npos);
@@ -127,6 +148,351 @@ TEST(TimelineProfilerGpuLifecycleTests, GpuTickSkipsReadbackSubmissionForEmptyFr
         << "Empty GPU frames must still advance the local command-list allocator slot after skipping resolve.";
 #else
     GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST(TimelineProfilerGpuLifecycleTests, GpuProfilerResolveQueueOperationsUseSharedDx12QueueLock)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    const auto profilerSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp");
+
+    EXPECT_NE(
+        profilerSource.find("Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"),
+        std::string::npos)
+        << "TimelineProfiler's internal DX12 resolve submissions must participate in the same queue "
+           "transaction lock as the RHI queue, UI bridge, uploads, and readbacks.";
+
+    const auto drainQueueFunction = profilerSource.find("bool GPUProfiler::QueryHeap::DrainQueue");
+    ASSERT_NE(drainQueueFunction, std::string::npos);
+    const auto shutdownFunction = profilerSource.find("bool GPUProfiler::QueryHeap::Shutdown", drainQueueFunction);
+    ASSERT_NE(shutdownFunction, std::string::npos);
+    const auto drainQueueBody = profilerSource.substr(drainQueueFunction, shutdownFunction - drainQueueFunction);
+
+    const auto drainQueueLock = drainQueueBody.find("ScopedDX12QueueLock");
+    const auto drainQueueSignal = drainQueueBody.find("pQueue->Signal");
+    ASSERT_NE(drainQueueSignal, std::string::npos);
+    ASSERT_NE(drainQueueLock, std::string::npos);
+    EXPECT_LT(drainQueueLock, drainQueueSignal)
+        << "Shutdown/drain fence signals must be ordered under the shared DX12 queue lock.";
+    const auto drainQueueWait = drainQueueBody.find("WaitForGpuProfilerFenceValue");
+    ASSERT_NE(drainQueueWait, std::string::npos);
+    const auto drainQueueLockBlockStart = drainQueueBody.rfind('{', drainQueueLock);
+    ASSERT_NE(drainQueueLockBlockStart, std::string::npos);
+    const auto drainQueueLockBlockEnd = FindMatchingBrace(drainQueueBody, drainQueueLockBlockStart);
+    ASSERT_NE(drainQueueLockBlockEnd, std::string::npos);
+    EXPECT_LT(drainQueueLock, drainQueueSignal);
+    EXPECT_LT(drainQueueSignal, drainQueueLockBlockEnd)
+        << "The drain fence signal must remain inside the shared DX12 queue lock scope.";
+    EXPECT_LT(drainQueueLockBlockEnd, drainQueueWait)
+        << "Profiler shutdown must not hold the shared DX12 queue lock while blocking on a CPU fence wait.";
+
+    const auto resolveFunction = profilerSource.find("bool GPUProfiler::QueryHeap::Resolve");
+    ASSERT_NE(resolveFunction, std::string::npos);
+    const auto markFrameFunction = profilerSource.find(
+        "void GPUProfiler::QueryHeap::MarkFrameCompleteWithoutReadback",
+        resolveFunction);
+    ASSERT_NE(markFrameFunction, std::string::npos);
+    const auto resolveBody = profilerSource.substr(resolveFunction, markFrameFunction - resolveFunction);
+
+    const auto resolveLock = resolveBody.find("ScopedDX12QueueLock");
+    const auto resolveExecute = resolveBody.find("m_pResolveQueue->ExecuteCommandLists");
+    const auto resolveSignal = resolveBody.find("m_pResolveQueue->Signal");
+    ASSERT_NE(resolveExecute, std::string::npos);
+    ASSERT_NE(resolveSignal, std::string::npos);
+    ASSERT_NE(resolveLock, std::string::npos);
+    EXPECT_LT(resolveLock, resolveExecute)
+        << "Profiler resolve command lists must not race normal graphics/UI submissions.";
+    EXPECT_LT(resolveExecute, resolveSignal)
+        << "The resolve fence must still be signalled after the resolve command list is queued.";
+    const auto resolveLockBlockStart = resolveBody.rfind('{', resolveLock);
+    ASSERT_NE(resolveLockBlockStart, std::string::npos);
+    const auto resolveLockBlockEnd = FindMatchingBrace(resolveBody, resolveLockBlockStart);
+    ASSERT_NE(resolveLockBlockEnd, std::string::npos);
+    EXPECT_LT(resolveExecute, resolveLockBlockEnd)
+        << "The resolve ExecuteCommandLists call must be inside the shared DX12 queue lock scope.";
+    EXPECT_LT(resolveSignal, resolveLockBlockEnd)
+        << "The resolve fence Signal call must be inside the same shared DX12 queue lock scope.";
+    EXPECT_EQ(
+        resolveBody.find("gVerifyHR(m_pResolveQueue->Signal"),
+        std::string::npos)
+        << "Profiler resolve must not assert after queueing GPU work if the resolve fence Signal fails.";
+    EXPECT_NE(
+        resolveBody.find("FAILED(signalHr)"),
+        std::string::npos)
+        << "Profiler resolve must classify/retain failed post-execute Signal state instead of crashing.";
+#else
+    GTEST_SKIP() << "TimelineProfiler or DX12 is not enabled in this build.";
+#endif
+}
+
+TEST(TimelineProfilerGpuLifecycleTests, Dx12QueueSynchronizationRegistryIsProcessLifetimeAndExported)
+{
+#if defined(_WIN32)
+    const auto synchronizationHeader = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h");
+    const auto synchronizationSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12QueueSynchronization.cpp");
+
+    EXPECT_NE(
+        synchronizationHeader.find("NLS_RENDER_API std::mutex* ResolveQueueMutex"),
+        std::string::npos)
+        << "The queue mutex registry must be exported from NLS_Render so NLS_UI and NLS_Render share one registry.";
+    EXPECT_NE(
+        synchronizationHeader.find("NLS_RENDER_API void ReleaseQueueMutex"),
+        std::string::npos)
+        << "Queue mutex release must use the same exported registry as acquisition.";
+    EXPECT_EQ(
+        synchronizationHeader.find("static std::unordered_map"),
+        std::string::npos)
+        << "A header-local registry creates one mutex map per DLL and does not serialize profiler/RHI queue users.";
+    EXPECT_EQ(
+        synchronizationHeader.find("inline std::unordered_map"),
+        std::string::npos)
+        << "The registry must not be inline header state in the shared-library build.";
+    EXPECT_NE(
+        synchronizationSource.find("QueueMutexRegistry()"),
+        std::string::npos)
+        << "The exported registry implementation should live in the NLS_Render source file.";
+    EXPECT_EQ(
+        synchronizationSource.find(".erase(queue)"),
+        std::string::npos)
+        << "Queue lock state is handed out as raw pointers, so release must not destroy it while other "
+           "DX12 queue/profiler users can still hold a lock object.";
+    EXPECT_NE(
+        synchronizationSource.find("process-lifetime"),
+        std::string::npos)
+        << "A non-erasing registry must document that the queue synchronization state intentionally lives "
+           "until process shutdown.";
+#else
+    GTEST_SKIP() << "DX12 queue synchronization is only built on Windows.";
+#endif
+}
+
+TEST(TimelineProfilerGpuLifecycleTests, NativeDx12QueuePreservesProfilerSubmitOrderOutsideSharedQueueLock)
+{
+#if defined(_WIN32)
+    const auto queueSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Queue.cpp");
+
+    const auto submitFunction = queueSource.find("NativeDX12Queue::SubmitChecked(");
+    ASSERT_NE(submitFunction, std::string::npos);
+    const auto presentFunction = queueSource.find("void NativeDX12Queue::Present", submitFunction);
+    ASSERT_NE(presentFunction, std::string::npos);
+    const auto submitBody = queueSource.substr(submitFunction, presentFunction - submitFunction);
+
+    const auto queueLock = submitBody.find("ScopedDX12QueueLock queueLock(m_queue)");
+    const auto profilerEnabled = submitBody.find("Profiler::IsEnabled()");
+    const auto profilerSequence = submitBody.find("ReserveQueueProfilerSubmitSequence");
+    const auto profilerOrder = submitBody.find("ScopedDX12QueueProfilerSubmissionOrder");
+    const auto profilerSubmit = submitBody.find("Profiler::SubmitGpuCommandLists");
+    ASSERT_NE(queueLock, std::string::npos);
+    ASSERT_NE(profilerEnabled, std::string::npos);
+    ASSERT_NE(profilerSequence, std::string::npos);
+    ASSERT_NE(profilerOrder, std::string::npos);
+    ASSERT_NE(profilerSubmit, std::string::npos);
+
+    const auto queueLockBlockStart = submitBody.rfind('{', queueLock);
+    ASSERT_NE(queueLockBlockStart, std::string::npos);
+    const auto queueLockBlockEnd = FindMatchingBrace(submitBody, queueLockBlockStart);
+    ASSERT_NE(queueLockBlockEnd, std::string::npos);
+    EXPECT_LT(profilerEnabled, profilerSequence)
+        << "Profiler-disabled DX12 submits should not pay the metadata ordering gate.";
+    EXPECT_LT(queueLock, profilerSequence)
+        << "Profiler submission order must be reserved while the shared DX12 queue transaction lock is held.";
+    EXPECT_LT(profilerSequence, queueLockBlockEnd)
+        << "The sequence token must reflect native queue execution order, not post-lock thread scheduling.";
+    EXPECT_LT(queueLockBlockEnd, profilerOrder)
+        << "Profiler callbacks take TimelineProfiler locks, so they must not run while the shared queue lock is held.";
+    EXPECT_LT(profilerOrder, profilerSubmit)
+        << "Profiler metadata must wait for its queue-order turn before mutating TimelineProfiler stacks.";
+#else
+    GTEST_SKIP() << "DX12 queue synchronization is only built on Windows.";
+#endif
+}
+
+TEST(TimelineProfilerGpuLifecycleTests, NativeDx12QueuePublishesProfilerMetadataAfterQueuedWorkFailures)
+{
+#if defined(_WIN32)
+    const auto queueSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Queue.cpp");
+
+    const auto submitFunction = queueSource.find("NativeDX12Queue::SubmitChecked(");
+    ASSERT_NE(submitFunction, std::string::npos);
+    const auto presentFunction = queueSource.find("void NativeDX12Queue::Present", submitFunction);
+    ASSERT_NE(presentFunction, std::string::npos);
+    const auto submitBody = queueSource.substr(submitFunction, presentFunction - submitFunction);
+
+    const auto queueLock = submitBody.find("ScopedDX12QueueLock queueLock(m_queue)");
+    const auto profilerEnabled = submitBody.find("Profiler::IsEnabled()");
+    const auto execute = submitBody.find("m_queue->ExecuteCommandLists", queueLock);
+    const auto profilerSequence = submitBody.find("ReserveQueueProfilerSubmitSequence", execute);
+    const auto deviceStatusCheck = submitBody.find("device status after ExecuteCommandLists", execute);
+    const auto signalSemaphoreFailure = submitBody.find("queue signal semaphore failed", execute);
+    const auto signalFenceFailure = submitBody.find("queue signal fence failed", execute);
+    const auto profilerSubmit = submitBody.find("Profiler::SubmitGpuCommandLists");
+    ASSERT_NE(queueLock, std::string::npos);
+    ASSERT_NE(profilerEnabled, std::string::npos);
+    ASSERT_NE(execute, std::string::npos);
+    ASSERT_NE(profilerSequence, std::string::npos);
+    ASSERT_NE(deviceStatusCheck, std::string::npos);
+    ASSERT_NE(signalSemaphoreFailure, std::string::npos);
+    ASSERT_NE(signalFenceFailure, std::string::npos);
+    ASSERT_NE(profilerSubmit, std::string::npos);
+    EXPECT_LT(profilerEnabled, execute)
+        << "The cheap profiler-enabled predicate should be captured before the queue transaction.";
+
+    const auto queueLockBlockStart = submitBody.rfind('{', queueLock);
+    ASSERT_NE(queueLockBlockStart, std::string::npos);
+    const auto queueLockBlockEnd = FindMatchingBrace(submitBody, queueLockBlockStart);
+    ASSERT_NE(queueLockBlockEnd, std::string::npos);
+
+    EXPECT_LT(execute, profilerSequence)
+        << "Profiler metadata order must be reserved immediately after native command-list execution.";
+    EXPECT_LT(profilerSequence, deviceStatusCheck)
+        << "Device-lost checks after ExecuteCommandLists must not return before profiler metadata can be published.";
+    EXPECT_LT(profilerSequence, signalSemaphoreFailure)
+        << "Semaphore signal failures after ExecuteCommandLists must not skip profiler metadata publication.";
+    EXPECT_LT(profilerSequence, signalFenceFailure)
+        << "Frame-fence signal failures after ExecuteCommandLists must not skip profiler metadata publication.";
+    EXPECT_LT(profilerSequence, queueLockBlockEnd)
+        << "The profiler sequence token must still reflect native queue execution order.";
+    EXPECT_LT(queueLockBlockEnd, profilerSubmit)
+        << "Profiler metadata publication must remain outside the shared native queue lock.";
+
+    const auto afterExecuteLockBody = submitBody.substr(execute, queueLockBlockEnd - execute);
+    EXPECT_EQ(afterExecuteLockBody.find("return "), std::string::npos)
+        << "Once command lists have been queued, SubmitChecked must leave the queue lock and publish "
+           "TimelineProfiler metadata before returning any failure result.";
+#else
+    GTEST_SKIP() << "DX12 queue synchronization is only built on Windows.";
+#endif
+}
+
+TEST(TimelineProfilerGpuLifecycleTests, GpuProfilerResolveSignalFailureQuarantinesUnfencedWork)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    const auto profilerHeader = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h");
+    const auto profilerSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp");
+
+    EXPECT_NE(
+        profilerHeader.find("bool   Resolve(uint32 frameIndex)"),
+        std::string::npos)
+        << "Resolve submission must return a status so Tick can stop advancing after a post-execute fence failure.";
+    EXPECT_NE(
+        profilerHeader.find("HasUnfencedSubmittedWork"),
+        std::string::npos)
+        << "The profiler must track accepted resolve work that has no retirement fence.";
+
+    const auto tickFunction = profilerSource.find("void GPUProfiler::Tick()");
+    ASSERT_NE(tickFunction, std::string::npos);
+    const auto executeCommandListsFunction = profilerSource.find("void GPUProfiler::ExecuteCommandLists", tickFunction);
+    ASSERT_NE(executeCommandListsFunction, std::string::npos);
+    const auto tickBody = profilerSource.substr(tickFunction, executeCommandListsFunction - tickFunction);
+
+    const auto resolveResultCheck = tickBody.find("!heap.Resolve(m_FrameIndex)");
+    const auto disableHeap = tickBody.find("m_QueryHeapProfilingEnabled[heapIndex] = false", resolveResultCheck);
+    const auto markGlobalQuarantine = tickBody.find("m_HasUnfencedSubmittedWork = true", resolveResultCheck);
+    const auto tickReturn = tickBody.find("return;", markGlobalQuarantine);
+    const auto frameAdvance = tickBody.find("m_FrameIndex = nextFrameIndex");
+    ASSERT_NE(resolveResultCheck, std::string::npos);
+    ASSERT_NE(disableHeap, std::string::npos);
+    ASSERT_NE(markGlobalQuarantine, std::string::npos);
+    ASSERT_NE(tickReturn, std::string::npos);
+    ASSERT_NE(frameAdvance, std::string::npos);
+    EXPECT_LT(resolveResultCheck, disableHeap);
+    EXPECT_LT(disableHeap, markGlobalQuarantine);
+    EXPECT_LT(markGlobalQuarantine, tickReturn);
+    EXPECT_LT(tickReturn, frameAdvance)
+        << "Tick must not advance/reset a GPU profiler frame after resolve work was queued without a fence.";
+
+    const auto resolveFunction = profilerSource.find("bool GPUProfiler::QueryHeap::Resolve");
+    ASSERT_NE(resolveFunction, std::string::npos);
+    const auto markFrameFunction = profilerSource.find(
+        "void GPUProfiler::QueryHeap::MarkFrameCompleteWithoutReadback",
+        resolveFunction);
+    ASSERT_NE(markFrameFunction, std::string::npos);
+    const auto resolveBody = profilerSource.substr(resolveFunction, markFrameFunction - resolveFunction);
+
+    const auto execute = resolveBody.find("m_pResolveQueue->ExecuteCommandLists");
+    const auto signalFailure = resolveBody.find("FAILED(signalHr)", execute);
+    const auto markHeapQuarantine = resolveBody.find("m_HasUnfencedSubmittedWork = true", signalFailure);
+    const auto failedReturn = resolveBody.find("return false", markHeapQuarantine);
+    ASSERT_NE(execute, std::string::npos);
+    ASSERT_NE(signalFailure, std::string::npos);
+    ASSERT_NE(markHeapQuarantine, std::string::npos);
+    ASSERT_NE(failedReturn, std::string::npos);
+    EXPECT_LT(execute, signalFailure);
+    EXPECT_LT(signalFailure, markHeapQuarantine);
+    EXPECT_LT(markHeapQuarantine, failedReturn);
+
+    const auto shutdownFunction = profilerSource.find("bool GPUProfiler::ShutdownUnlocked()");
+    ASSERT_NE(shutdownFunction, std::string::npos);
+    const auto hasPendingFunction = profilerSource.find("bool GPUProfiler::HasPendingCommandListQueriesUnlocked", shutdownFunction);
+    ASSERT_NE(hasPendingFunction, std::string::npos);
+    const auto shutdownBody = profilerSource.substr(shutdownFunction, hasPendingFunction - shutdownFunction);
+    const auto shutdownQuarantine = shutdownBody.find("HasUnfencedSubmittedWorkUnlocked()");
+    const auto shutdownDrain = shutdownBody.find("DrainSubmittedFence");
+    ASSERT_NE(shutdownQuarantine, std::string::npos);
+    ASSERT_NE(shutdownDrain, std::string::npos);
+    EXPECT_LT(shutdownQuarantine, shutdownDrain)
+        << "Shutdown must retain unfenced resolve resources instead of waiting on a fence that was never queued.";
+
+    const auto drainFunction = profilerSource.find("bool GPUProfiler::QueryHeap::DrainSubmittedFence()");
+    ASSERT_NE(drainFunction, std::string::npos);
+    const auto drainQueueFunction = profilerSource.find("bool GPUProfiler::QueryHeap::DrainQueue", drainFunction);
+    ASSERT_NE(drainQueueFunction, std::string::npos);
+    const auto drainBody = profilerSource.substr(drainFunction, drainQueueFunction - drainFunction);
+    const auto drainQuarantine = drainBody.find("m_HasUnfencedSubmittedWork");
+    const auto drainWait = drainBody.find("WaitForGpuProfilerFenceValue");
+    ASSERT_NE(drainQuarantine, std::string::npos);
+    ASSERT_NE(drainWait, std::string::npos);
+    EXPECT_LT(drainQuarantine, drainWait)
+        << "DrainSubmittedFence must not do a timed wait on an unfenced resolve submission.";
+
+    const auto resetFunction = profilerSource.find("bool GPUProfiler::QueryHeap::ResetReusableFrameSlot");
+    ASSERT_NE(resetFunction, std::string::npos);
+    const auto resetEnd = profilerSource.find("bool GPUProfiler::QueryHeap::Reset(", resetFunction + 1u);
+    ASSERT_NE(resetEnd, std::string::npos);
+    const auto resetBody = profilerSource.substr(resetFunction, resetEnd - resetFunction);
+    const auto resetQuarantine = resetBody.find("m_HasUnfencedSubmittedWork");
+    const auto allocatorReset = resetBody.find("pAllocator->Reset()");
+    ASSERT_NE(resetQuarantine, std::string::npos);
+    ASSERT_NE(allocatorReset, std::string::npos);
+    EXPECT_LT(resetQuarantine, allocatorReset)
+        << "A query heap with unfenced submitted work must not reset its command allocator.";
+#else
+    GTEST_SKIP() << "TimelineProfiler or DX12 is not enabled in this build.";
+#endif
+}
+
+TEST(TimelineProfilerGpuLifecycleTests, GpuProfilerReadbackResourceStartsInCopyDestState)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    const auto profilerSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp");
+
+    const auto initializeFunction = profilerSource.find("void GPUProfiler::QueryHeap::Initialize");
+    ASSERT_NE(initializeFunction, std::string::npos);
+    const auto drainSubmittedFenceFunction = profilerSource.find(
+        "bool GPUProfiler::QueryHeap::DrainSubmittedFence",
+        initializeFunction);
+    ASSERT_NE(drainSubmittedFenceFunction, std::string::npos);
+    const auto initializeBody = profilerSource.substr(
+        initializeFunction,
+        drainSubmittedFenceFunction - initializeFunction);
+
+    const auto readbackHeap = initializeBody.find("D3D12_HEAP_TYPE_READBACK");
+    const auto createReadback = initializeBody.find("CreateCommittedResource", readbackHeap);
+    const auto copyDestState = initializeBody.find("D3D12_RESOURCE_STATE_COPY_DEST", createReadback);
+    ASSERT_NE(readbackHeap, std::string::npos);
+    ASSERT_NE(createReadback, std::string::npos);
+    ASSERT_NE(copyDestState, std::string::npos)
+        << "ResolveQueryData writes into the readback buffer, so the readback resource must start as COPY_DEST.";
+#else
+    GTEST_SKIP() << "TimelineProfiler or DX12 is not enabled in this build.";
 #endif
 }
 

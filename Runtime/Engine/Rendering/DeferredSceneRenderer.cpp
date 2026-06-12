@@ -608,6 +608,7 @@ namespace NLS::Engine::Rendering
 		std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs,
 		std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> appendedPassMetadata,
 		std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture,
+		const uint64_t preferredReadbackTextureGeneration,
 		const uint64_t additionalRenderTargetUseCount,
 		std::optional<NLS::Render::Context::PostSubmitBufferReadbackRequest> hzbPostSubmitReadback) const
 	{
@@ -642,6 +643,7 @@ namespace NLS::Engine::Rendering
 				appendedPassInputs = std::move(appendedPassInputs),
 				appendedPassMetadata = std::move(appendedPassMetadata),
 				preferredReadbackTexture = std::move(preferredReadbackTexture),
+				preferredReadbackTextureGeneration,
 				additionalRenderTargetUseCount,
 				queuedDrawCounts = [this]()
 				{
@@ -678,7 +680,8 @@ namespace NLS::Engine::Rendering
 			if (preferredReadbackTexture != nullptr)
 				NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(
 					package,
-					preferredReadbackTexture);
+					preferredReadbackTexture,
+					preferredReadbackTextureGeneration);
 			if (hzbPostSubmitReadback.has_value())
 				package.postSubmitBufferReadbacks.push_back(hzbPostSubmitReadback.value());
 			package.renderTargetUseCount += additionalRenderTargetUseCount;
@@ -1054,6 +1057,7 @@ namespace NLS::Engine::Rendering
 						{},
 						{},
 						nullptr,
+						0u,
 						0u,
 						GetThreadedHZBPostSubmitReadbackForPreparedBuilder()));
 			}

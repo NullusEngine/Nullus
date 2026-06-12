@@ -14453,6 +14453,11 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedPreparedFramePublishesCompletedPre
     package.frameDataReady = true;
     package.objectDataReady = true;
     package.preferredReadbackTexture = preferredReadbackTexture;
+    package.preferredReadbackTextureGeneration =
+        NLS::Render::Context::DriverRendererAccess::BeginReadbackTextureSubmission(
+            driver,
+            preferredReadbackTexture);
+    ASSERT_NE(package.preferredReadbackTextureGeneration, 0u);
     package.extractedTextures.push_back(preferredReadbackTexture);
     NLS::Render::Context::RenderPassCommandInput passInput;
     passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
@@ -14478,6 +14483,10 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedPreparedFramePublishesCompletedPre
     EXPECT_EQ(
         NLS::Render::Context::DriverRendererAccess::ResolveReadbackTexture(driver),
         preferredReadbackTexture);
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+        driver,
+        preferredReadbackTexture,
+        package.preferredReadbackTextureGeneration));
 }
 
 TEST(ThreadedRenderingLifecycleTests, CompletedReadbackHistoryRetainsPreviousTextureForExplicitReadbackConsumers)

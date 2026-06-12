@@ -33,6 +33,7 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
             Engine::SceneSystem::Scene* previewScene = nullptr;
             bool requestPickingFrameForClick = false;
             uint64_t hoverPickingVisibleDrawBudget = 1024u;
+            uint64_t clickMinimumPickingFrameSerial = 0u;
 		};
 
 		struct CullingOverlayOptions

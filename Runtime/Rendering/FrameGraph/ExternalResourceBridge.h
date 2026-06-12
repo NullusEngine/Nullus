@@ -84,7 +84,8 @@ namespace NLS::Render::FrameGraph
         const NLS::Render::Data::FrameDescriptor& frame);
     NLS_RENDER_API bool RegisterPreferredReadbackTexture(
         NLS::Render::Context::RenderScenePackage& package,
-        const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture);
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+        uint64_t generation = 0u);
     NLS_RENDER_API ExternalSceneOutputSummary BuildExternalSceneOutputSummary(
         const NLS::Render::Data::FrameDescriptor& frame);
     NLS_RENDER_API ExternalSceneOutputSummary BuildExternalSceneOutputSummary(
@@ -99,6 +100,9 @@ namespace NLS::Render::FrameGraph
         const NLS::Render::Context::RenderScenePackage& renderScenePackage);
 
     NLS_RENDER_API std::shared_ptr<NLS::Render::RHI::RHITexture> ResolveFrameReadbackTexture(
+        const NLS::Render::Context::RenderScenePackage* renderScenePackage,
+        const NLS::Render::RHI::RHIFrameContext* frameContext);
+    NLS_RENDER_API uint64_t ResolveFrameReadbackTextureGeneration(
         const NLS::Render::Context::RenderScenePackage* renderScenePackage,
         const NLS::Render::RHI::RHIFrameContext* frameContext);
 

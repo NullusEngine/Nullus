@@ -109,6 +109,7 @@ namespace NLS::Engine::Rendering
 			std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs = {},
 			std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> appendedPassMetadata = {},
 			std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture = nullptr,
+			uint64_t preferredReadbackTextureGeneration = 0u,
 			uint64_t additionalRenderTargetUseCount = 0u,
 			std::optional<NLS::Render::Context::PostSubmitBufferReadbackRequest> hzbPostSubmitReadback = std::nullopt) const;
 		NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(

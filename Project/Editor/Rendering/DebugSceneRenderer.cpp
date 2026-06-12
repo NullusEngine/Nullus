@@ -1353,6 +1353,7 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
     auto consumedPickingPassInput = GetPass<PickingRenderPass>("Picking").ConsumePreparedThreadedPassInput();
 
     std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture;
+    uint64_t preferredReadbackTextureGeneration = 0u;
     uint64_t additionalRenderTargetUseCount = 0u;
     if (consumedPickingPassInput.has_value())
     {
@@ -1360,6 +1361,7 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
             !consumedPickingPassInput->colorAttachmentViews.empty()
                 ? consumedPickingPassInput->colorAttachmentViews.front()->GetTexture()
                 : nullptr;
+        preferredReadbackTextureGeneration = consumedPickingPassInput->readbackTextureGeneration;
         additionalRenderTargetUseCount = 2u;
     }
     auto appendedPassInputs = BuildDebugDeferredAppendedPassInputs(
@@ -1379,6 +1381,7 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
         std::move(appendedPassInputs),
         std::move(metadata),
         std::move(preferredReadbackTexture),
+        preferredReadbackTextureGeneration,
         additionalRenderTargetUseCount,
         GetThreadedHZBPostSubmitReadbackForPreparedBuilder());
 }

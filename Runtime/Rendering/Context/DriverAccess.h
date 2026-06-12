@@ -131,6 +131,16 @@ namespace NLS::Render::Context
         static bool HasCompletedReadbackTexture(
             const Driver& driver,
             const std::shared_ptr<RHI::RHITexture>& texture);
+        static bool HasCompletedReadbackTexture(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture,
+            uint64_t generation);
+        static uint64_t BeginReadbackTextureSubmission(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture);
+        static void InvalidateCompletedReadbackTexture(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture);
         static std::shared_ptr<RHI::PipelineCache> GetPipelineCache(const Driver& driver);
         static std::shared_ptr<RHI::DescriptorAllocator> GetActiveDescriptorAllocator(const Driver& driver);
 
@@ -255,6 +265,10 @@ namespace NLS::Render::Context
         static void SetCompletedReadbackTexture(
             Driver& driver,
             std::shared_ptr<RHI::RHITexture> texture);
+        static void SetCompletedReadbackTexture(
+            Driver& driver,
+            std::shared_ptr<RHI::RHITexture> texture,
+            uint64_t generation);
         static size_t GetRetainedThreadedSubmitResourceCount(const Driver& driver);
 #if defined(NLS_ENABLE_TEST_HOOKS)
         static DriverImpl* GetImplForTesting(Driver& driver);

@@ -1478,6 +1478,8 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
         m_cameraController.ResetMouseInteractionState();
         m_gizmoInteraction = {};
         m_pendingClickPickRenderPos.reset();
+        m_pendingClickPickingSignature.reset();
+        m_pendingClickMinReadablePickingFrameSerial = 0u;
         m_highlightedGameObject = nullptr;
         m_hasPickingSample = false;
     }
@@ -1585,7 +1587,8 @@ void Editor::Panels::SceneView::InitFrame()
         m_requestPickingFrame,
         nullptr,
         m_requestPickingFrameForClick,
-        kSceneViewHoverPickingVisibleDrawBudget});
+        kSceneViewHoverPickingVisibleDrawBudget,
+        m_pendingClickMinReadablePickingFrameSerial});
 }
 
 Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
@@ -1728,7 +1731,9 @@ bool Editor::Panels::SceneView::ShouldForceStaticFrameRender() const
         return true;
     if (ShouldForceSceneViewStaticFrameRenderForPicking(
         ShouldRequestPickingFrame(),
-        m_hasPickingSample))
+        m_hasPickingSample,
+        EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT) ||
+            m_pendingClickPickRenderPos.has_value()))
     {
         return true;
     }
@@ -2269,14 +2274,19 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
         {
             LogScenePickingDiagnostics("handle cancelled pending click while camera control is active");
             m_pendingClickPickRenderPos.reset();
+            m_pendingClickPickingSignature.reset();
             m_pendingClickMinReadablePickingFrameSerial = 0u;
         }
         const bool queuedClickPickThisFrame = leftClicked && !cameraControlActive;
         if (queuedClickPickThisFrame)
         {
             m_pendingClickPickRenderPos = mousePos;
-            m_pendingClickMinReadablePickingFrameSerial =
-                gameObjectPickingFeature.GetSubmittedPickingFrameSerial();
+            m_pendingClickMinReadablePickingFrameSerial = ComputePendingClickMinimumReadablePickingFrameSerial(
+                gameObjectPickingFeature.GetSubmittedPickingFrameSerial(),
+                m_requestPickingFrameForClick);
+            m_pendingClickPickingSignature = m_requestPickingFrameForClick
+                ? gameObjectPickingFeature.GetSubmittedPickingFrameSignature()
+                : std::nullopt;
             std::ostringstream stream;
             stream << "queued click"
                 << " local=(" << mousePos.x << "," << mousePos.y << ")"
@@ -2284,6 +2294,13 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
                 << " currentReadableSerial=" << gameObjectPickingFeature.GetReadablePickingFrameSerial()
                 << " requestThisFrame=" << m_requestPickingFrame;
             LogScenePickingDiagnostics(stream.str());
+        }
+        if (m_pendingClickPickRenderPos.has_value() &&
+            !m_pendingClickPickingSignature.has_value() &&
+            m_pendingClickMinReadablePickingFrameSerial > 0u &&
+            gameObjectPickingFeature.GetSubmittedPickingFrameSerial() >= m_pendingClickMinReadablePickingFrameSerial)
+        {
+            m_pendingClickPickingSignature = gameObjectPickingFeature.GetSubmittedPickingFrameSignature();
         }
 
         const bool shouldRepick = ShouldRenderScenePickingFrame(
@@ -2302,20 +2319,24 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
             m_highlightedGameObject = nullptr;
 
             const bool pickingFrameReadable = gameObjectPickingFeature.HasReadablePickingFrame();
-            const bool resolvePendingClickPick = ShouldResolvePendingSceneClickPick(
-                m_pendingClickPickRenderPos.has_value(),
-                queuedClickPickThisFrame,
-                cameraControlActive,
-                m_pendingClickMinReadablePickingFrameSerial,
-                gameObjectPickingFeature.GetReadablePickingFrameSerial());
+            const uint64_t readablePickingFrameSerial = gameObjectPickingFeature.GetReadablePickingFrameSerial();
+            const bool resolvePendingClickPick =
+                m_pendingClickPickRenderPos.has_value() &&
+                !cameraControlActive &&
+                m_pendingClickPickingSignature.has_value() &&
+                gameObjectPickingFeature.CanResolvePickingRequest(
+                    HitProxyPickingRequestKind::Click,
+                    m_pendingClickMinReadablePickingFrameSerial,
+                    m_pendingClickPickingSignature.value());
             if (queuedClickPickThisFrame || m_pendingClickPickRenderPos.has_value())
             {
                 std::ostringstream stream;
                 stream << "repick"
                     << " shouldRepick=" << shouldRepick
                     << " readable=" << pickingFrameReadable
-                    << " readableSerial=" << gameObjectPickingFeature.GetReadablePickingFrameSerial()
+                    << " readableSerial=" << readablePickingFrameSerial
                     << " minReadableSerial=" << m_pendingClickMinReadablePickingFrameSerial
+                    << " hasSignature=" << m_pendingClickPickingSignature.has_value()
                     << " resolvePending=" << resolvePendingClickPick
                     << " requestThisFrame=" << m_requestPickingFrame;
                 LogScenePickingDiagnostics(stream.str());
@@ -2324,12 +2345,18 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
                 (!queuedClickPickThisFrame || resolvePendingClickPick))
             {
                 const bool resolveClickPick = resolvePendingClickPick;
-                const auto samplePos = resolveClickPick
-                    ? m_pendingClickPickRenderPos.value()
-                    : mousePos;
-                m_highlightedGameObject = resolveClickPick
-                    ? PickGameObjectNearRenderCoordinate(gameObjectPickingFeature, samplePos, maxRenderX, maxRenderY)
-                    : PickGameObjectAtRenderCoordinate(gameObjectPickingFeature, mousePos.x, mousePos.y);
+                if (resolveClickPick)
+                {
+                    NLS_PROFILE_NAMED_SCOPE("EditorPicking::ResolveClick");
+                    const auto samplePos = m_pendingClickPickRenderPos.value();
+                    m_highlightedGameObject =
+                        PickGameObjectNearRenderCoordinate(gameObjectPickingFeature, samplePos, maxRenderX, maxRenderY);
+                }
+                else
+                {
+                    m_highlightedGameObject =
+                        PickGameObjectAtRenderCoordinate(gameObjectPickingFeature, mousePos.x, mousePos.y);
+                }
                 if (m_highlightedGameObject != nullptr &&
                     m_importedAssetDragPreviewSession.ContainsObject(*m_highlightedGameObject))
                 {
@@ -2344,6 +2371,10 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
                     LogScenePickingDiagnostics(stream.str());
                 }
             }
+            else if (m_pendingClickPickRenderPos.has_value() && !pickingFrameReadable)
+            {
+                NLS_PROFILE_NAMED_SCOPE("EditorPicking::WaitReadback");
+            }
 
             if (pickingFrameReadable)
             {
@@ -2357,12 +2388,15 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
             m_highlightedGameObject = {};
         }
 
-        const bool resolvePendingClickPick = ShouldResolvePendingSceneClickPick(
-            m_pendingClickPickRenderPos.has_value(),
-            queuedClickPickThisFrame,
-            cameraControlActive,
-            m_pendingClickMinReadablePickingFrameSerial,
-            gameObjectPickingFeature.GetReadablePickingFrameSerial());
+        const uint64_t readablePickingFrameSerial = gameObjectPickingFeature.GetReadablePickingFrameSerial();
+        const bool resolvePendingClickPick =
+            m_pendingClickPickRenderPos.has_value() &&
+            !cameraControlActive &&
+            m_pendingClickPickingSignature.has_value() &&
+            gameObjectPickingFeature.CanResolvePickingRequest(
+                HitProxyPickingRequestKind::Click,
+                m_pendingClickMinReadablePickingFrameSerial,
+                m_pendingClickPickingSignature.value());
         if (resolvePendingClickPick)
         {
             if (m_highlightedGameObject)
@@ -2370,13 +2404,25 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
                 LogScenePickingDiagnostics("select GameObject=" + m_highlightedGameObject->GetName());
                 EDITOR_EXEC(SelectGameObject(*m_highlightedGameObject));
                 m_pendingClickPickRenderPos.reset();
+                m_pendingClickPickingSignature.reset();
             }
             else if (gameObjectPickingFeature.HasReadablePickingFrame())
             {
                 LogScenePickingDiagnostics("unselect GameObject from click");
                 EDITOR_EXEC(UnselectGameObject());
                 m_pendingClickPickRenderPos.reset();
+                m_pendingClickPickingSignature.reset();
             }
+            m_pendingClickMinReadablePickingFrameSerial = 0u;
+        }
+        else if (m_pendingClickPickRenderPos.has_value() &&
+            m_pendingClickPickingSignature.has_value() &&
+            m_pendingClickMinReadablePickingFrameSerial > 0u &&
+            readablePickingFrameSerial >= m_pendingClickMinReadablePickingFrameSerial)
+        {
+            LogScenePickingDiagnostics("cancel pending click because readable picking signature changed");
+            m_pendingClickPickRenderPos.reset();
+            m_pendingClickPickingSignature.reset();
             m_pendingClickMinReadablePickingFrameSerial = 0u;
         }
     }
@@ -2395,5 +2441,8 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
         }
         m_highlightedGameObject = nullptr;
         m_hasPickingSample = false;
+        m_pendingClickPickRenderPos.reset();
+        m_pendingClickPickingSignature.reset();
+        m_pendingClickMinReadablePickingFrameSerial = 0u;
     }
 }

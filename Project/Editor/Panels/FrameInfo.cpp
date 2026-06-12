@@ -70,6 +70,20 @@ void AddLargeSceneTelemetry(
     aggregate.streamingCommitTimeNs += value.streamingCommitTimeNs;
 }
 
+void AddPickingDiagnostics(
+    NLS::Render::Data::PickingDiagnostics& aggregate,
+    const NLS::Render::Data::PickingDiagnostics& value)
+{
+    aggregate.rebuiltFrames += value.rebuiltFrames;
+    aggregate.reusedFrames += value.reusedFrames;
+    aggregate.hoverBudgetSkips += value.hoverBudgetSkips;
+    aggregate.pendingReadback = aggregate.pendingReadback || value.pendingReadback;
+    aggregate.submittedSerial = std::max(aggregate.submittedSerial, value.submittedSerial);
+    aggregate.readableSerial = std::max(aggregate.readableSerial, value.readableSerial);
+    aggregate.clickMinimumSerial = std::max(aggregate.clickMinimumSerial, value.clickMinimumSerial);
+    aggregate.visiblePickableDrawCount += value.visiblePickableDrawCount;
+}
+
 void AddFrameInfo(
     NLS::Render::Data::FrameInfo& aggregate,
     const NLS::Render::Data::FrameInfo& value)
@@ -138,6 +152,7 @@ void AddFrameInfo(
     aggregate.unsafeGpuWorkQuarantined = aggregate.unsafeGpuWorkQuarantined || value.unsafeGpuWorkQuarantined;
     if (aggregate.unsafeGpuWorkQuarantineReason.empty())
         aggregate.unsafeGpuWorkQuarantineReason = value.unsafeGpuWorkQuarantineReason;
+    AddPickingDiagnostics(aggregate.picking, value.picking);
     AddLargeSceneTelemetry(aggregate.largeScene, value.largeScene);
 }
 }

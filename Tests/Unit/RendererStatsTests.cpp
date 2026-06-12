@@ -759,6 +759,57 @@ TEST(RendererStatsTests, DrawCallOptimizationStatsDoesNotOverwriteThreadedTeleme
     EXPECT_EQ(frameInfo.parallelFallbackReason, "unsafe ordered slice fallback");
 }
 
+TEST(RendererStatsTests, RendererStatsTracksPickingDiagnosticsAndResetsPerFrame)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    NLS::Render::Data::PickingDiagnostics first;
+    first.rebuiltFrames = 1u;
+    first.reusedFrames = 2u;
+    first.hoverBudgetSkips = 3u;
+    first.pendingReadback = true;
+    first.submittedSerial = 10u;
+    first.readableSerial = 8u;
+    first.clickMinimumSerial = 9u;
+    first.visiblePickableDrawCount = 100u;
+
+    NLS::Render::Data::PickingDiagnostics second;
+    second.reusedFrames = 4u;
+    second.hoverBudgetSkips = 5u;
+    second.submittedSerial = 12u;
+    second.readableSerial = 11u;
+    second.clickMinimumSerial = 12u;
+    second.visiblePickableDrawCount = 40u;
+
+    stats.BeginFrame();
+    stats.RecordPickingDiagnostics(first);
+    stats.RecordPickingDiagnostics(second);
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.picking.rebuiltFrames, 1u);
+    EXPECT_EQ(frameInfo.picking.reusedFrames, 6u);
+    EXPECT_EQ(frameInfo.picking.hoverBudgetSkips, 8u);
+    EXPECT_TRUE(frameInfo.picking.pendingReadback);
+    EXPECT_EQ(frameInfo.picking.submittedSerial, 12u);
+    EXPECT_EQ(frameInfo.picking.readableSerial, 11u);
+    EXPECT_EQ(frameInfo.picking.clickMinimumSerial, 12u);
+    EXPECT_EQ(frameInfo.picking.visiblePickableDrawCount, 140u);
+
+    stats.BeginFrame();
+    stats.EndFrame();
+
+    const auto& resetFrameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(resetFrameInfo.picking.rebuiltFrames, 0u);
+    EXPECT_EQ(resetFrameInfo.picking.reusedFrames, 0u);
+    EXPECT_EQ(resetFrameInfo.picking.hoverBudgetSkips, 0u);
+    EXPECT_FALSE(resetFrameInfo.picking.pendingReadback);
+    EXPECT_EQ(resetFrameInfo.picking.submittedSerial, 0u);
+    EXPECT_EQ(resetFrameInfo.picking.readableSerial, 0u);
+    EXPECT_EQ(resetFrameInfo.picking.clickMinimumSerial, 0u);
+    EXPECT_EQ(resetFrameInfo.picking.visiblePickableDrawCount, 0u);
+}
+
 TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerFrame)
 {
     NLS::Render::Core::RendererStats stats;

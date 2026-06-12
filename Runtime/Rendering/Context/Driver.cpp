@@ -207,10 +207,47 @@ namespace
 
     void RememberCompletedReadbackTexture(
         DriverImpl& impl,
-        const std::shared_ptr<Render::RHI::RHITexture>& texture)
+        const std::shared_ptr<Render::RHI::RHITexture>& texture,
+        uint64_t generation = 0u)
     {
         std::lock_guard lock(impl.completedReadbackTextureMutex);
+        if (texture != nullptr)
+        {
+            impl.submittedReadbackTextureGenerations.erase(
+                std::remove_if(
+                    impl.submittedReadbackTextureGenerations.begin(),
+                    impl.submittedReadbackTextureGenerations.end(),
+                    [](const CompletedReadbackTextureRecord& record)
+                    {
+                        return record.texture.expired();
+                    }),
+                impl.submittedReadbackTextureGenerations.end());
+
+            const auto submittedIt = generation != 0u
+                ? std::find_if(
+                    impl.submittedReadbackTextureGenerations.begin(),
+                    impl.submittedReadbackTextureGenerations.end(),
+                    [&texture, generation](const CompletedReadbackTextureRecord& record)
+                    {
+                        return record.generation == generation && record.texture.lock() == texture;
+                    })
+                : std::find_if(
+                    impl.submittedReadbackTextureGenerations.begin(),
+                    impl.submittedReadbackTextureGenerations.end(),
+                    [&texture](const CompletedReadbackTextureRecord& record)
+                    {
+                        return record.texture.lock() == texture;
+                    });
+            if (submittedIt != impl.submittedReadbackTextureGenerations.end())
+            {
+                if (generation == 0u)
+                    generation = submittedIt->generation;
+                impl.submittedReadbackTextureGenerations.erase(submittedIt);
+            }
+        }
+
         impl.completedReadbackTexture = texture;
+        impl.completedReadbackTextureGeneration = generation;
         if (texture == nullptr)
             return;
 
@@ -218,14 +255,15 @@ namespace
             std::remove_if(
                 impl.completedReadbackTextureHistory.begin(),
                 impl.completedReadbackTextureHistory.end(),
-                [&texture](const std::weak_ptr<Render::RHI::RHITexture>& storedTexture)
+                [&texture, generation](const CompletedReadbackTextureRecord& record)
                 {
-                    const auto lockedTexture = storedTexture.lock();
-                    return lockedTexture == nullptr || lockedTexture == texture;
+                    const auto lockedTexture = record.texture.lock();
+                    return lockedTexture == nullptr ||
+                        (lockedTexture == texture && record.generation == generation);
                 }),
             impl.completedReadbackTextureHistory.end());
 
-        impl.completedReadbackTextureHistory.push_back(texture);
+        impl.completedReadbackTextureHistory.push_back({ texture, generation });
         constexpr size_t kMaxCompletedReadbackHistory = 8u;
         while (impl.completedReadbackTextureHistory.size() > kMaxCompletedReadbackHistory)
             impl.completedReadbackTextureHistory.erase(impl.completedReadbackTextureHistory.begin());
@@ -242,10 +280,57 @@ namespace
         return std::any_of(
             impl.completedReadbackTextureHistory.begin(),
             impl.completedReadbackTextureHistory.end(),
-            [&texture](const std::weak_ptr<Render::RHI::RHITexture>& storedTexture)
+            [&texture](const CompletedReadbackTextureRecord& record)
             {
-                return storedTexture.lock() == texture;
+                return record.texture.lock() == texture;
             });
+    }
+
+    bool HasRememberedReadbackTexture(
+        const DriverImpl& impl,
+        const std::shared_ptr<Render::RHI::RHITexture>& texture,
+        const uint64_t generation)
+    {
+        if (generation == 0u)
+            return HasRememberedReadbackTexture(impl, texture);
+
+        std::lock_guard lock(impl.completedReadbackTextureMutex);
+        if (impl.completedReadbackTexture == texture &&
+            impl.completedReadbackTextureGeneration == generation)
+        {
+            return true;
+        }
+
+        return std::any_of(
+            impl.completedReadbackTextureHistory.begin(),
+            impl.completedReadbackTextureHistory.end(),
+            [&texture, generation](const CompletedReadbackTextureRecord& record)
+            {
+                return record.generation == generation && record.texture.lock() == texture;
+            });
+    }
+
+    void ForgetRememberedReadbackTexture(
+        DriverImpl& impl,
+        const std::shared_ptr<Render::RHI::RHITexture>& texture)
+    {
+        if (texture == nullptr)
+            return;
+
+        std::lock_guard lock(impl.completedReadbackTextureMutex);
+        if (impl.completedReadbackTexture == texture)
+            impl.completedReadbackTexture.reset();
+
+        impl.completedReadbackTextureHistory.erase(
+            std::remove_if(
+                impl.completedReadbackTextureHistory.begin(),
+                impl.completedReadbackTextureHistory.end(),
+                [&texture](const CompletedReadbackTextureRecord& record)
+                {
+                    const auto lockedTexture = record.texture.lock();
+                    return lockedTexture == nullptr || lockedTexture == texture;
+                }),
+            impl.completedReadbackTextureHistory.end());
     }
 
     bool AppendDriverTelemetry(
@@ -1721,6 +1806,7 @@ namespace
         frameContext.swapchainDepthStencilView = nullptr;
         frameContext.swapchainDepthStencilTexture = nullptr;
         frameContext.explicitReadbackTexture = nullptr;
+        frameContext.explicitReadbackTextureGeneration = 0u;
 
         if (frameContext.resourceStateTracker != nullptr)
         {
@@ -1833,6 +1919,8 @@ namespace
         {
             std::lock_guard lock(impl.completedReadbackTextureMutex);
             impl.completedReadbackTexture = nullptr;
+            impl.completedReadbackTextureGeneration = 0u;
+            impl.submittedReadbackTextureGenerations.clear();
             impl.completedReadbackTextureHistory.clear();
         }
         if (impl.uiStandaloneFrameSubmissionLock.owns_lock())
@@ -1891,6 +1979,14 @@ namespace
         return true;
     }
 
+}
+
+void Detail::RememberCompletedReadbackTexture(
+    DriverImpl& impl,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture,
+    const uint64_t generation)
+{
+    NLS::Render::Context::RememberCompletedReadbackTexture(impl, texture, generation);
 }
 
 const char* Detail::ToPassDebugName(const RenderPassCommandKind kind)
@@ -2392,6 +2488,55 @@ bool DriverRendererAccess::HasCompletedReadbackTexture(
     return HasRememberedReadbackTexture(*driver.m_impl, texture);
 }
 
+bool DriverRendererAccess::HasCompletedReadbackTexture(
+    const Driver& driver,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture,
+    const uint64_t generation)
+{
+    if (driver.m_impl == nullptr || texture == nullptr)
+        return false;
+
+    return HasRememberedReadbackTexture(*driver.m_impl, texture, generation);
+}
+
+uint64_t DriverRendererAccess::BeginReadbackTextureSubmission(
+    const Driver& driver,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture)
+{
+    if (driver.m_impl == nullptr || texture == nullptr)
+        return 0u;
+
+    std::lock_guard lock(driver.m_impl->completedReadbackTextureMutex);
+    const uint64_t generation = driver.m_impl->nextReadbackTextureGeneration++;
+    driver.m_impl->submittedReadbackTextureGenerations.push_back({ texture, generation });
+
+    constexpr size_t kMaxSubmittedReadbackGenerations = 32u;
+    driver.m_impl->submittedReadbackTextureGenerations.erase(
+        std::remove_if(
+            driver.m_impl->submittedReadbackTextureGenerations.begin(),
+            driver.m_impl->submittedReadbackTextureGenerations.end(),
+            [](const CompletedReadbackTextureRecord& record)
+            {
+                return record.texture.expired();
+            }),
+        driver.m_impl->submittedReadbackTextureGenerations.end());
+    while (driver.m_impl->submittedReadbackTextureGenerations.size() > kMaxSubmittedReadbackGenerations)
+        driver.m_impl->submittedReadbackTextureGenerations.erase(
+            driver.m_impl->submittedReadbackTextureGenerations.begin());
+
+    return generation;
+}
+
+void DriverRendererAccess::InvalidateCompletedReadbackTexture(
+    const Driver& driver,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture)
+{
+    if (driver.m_impl == nullptr || texture == nullptr)
+        return;
+
+    ForgetRememberedReadbackTexture(*driver.m_impl, texture);
+}
+
 std::shared_ptr<Render::RHI::PipelineCache> DriverRendererAccess::GetPipelineCache(const Driver& driver)
 {
     return driver.m_impl->pipelineCache;
@@ -2848,7 +2993,15 @@ void DriverTestAccess::SetCompletedReadbackTexture(
     Driver& driver,
     std::shared_ptr<Render::RHI::RHITexture> texture)
 {
-    RememberCompletedReadbackTexture(*driver.m_impl, texture);
+    Detail::RememberCompletedReadbackTexture(*driver.m_impl, texture);
+}
+
+void DriverTestAccess::SetCompletedReadbackTexture(
+    Driver& driver,
+    std::shared_ptr<Render::RHI::RHITexture> texture,
+    const uint64_t generation)
+{
+    Detail::RememberCompletedReadbackTexture(*driver.m_impl, texture, generation);
 }
 
 size_t DriverTestAccess::GetRetainedThreadedSubmitResourceCount(const Driver& driver)
@@ -3147,6 +3300,8 @@ void Driver::ShutdownRhiResources()
     {
         std::lock_guard lock(m_impl->completedReadbackTextureMutex);
         m_impl->completedReadbackTexture = nullptr;
+        m_impl->completedReadbackTextureGeneration = 0u;
+        m_impl->submittedReadbackTextureGenerations.clear();
         m_impl->completedReadbackTextureHistory.clear();
     }
     m_impl->explicitFrameActive = false;
@@ -3395,6 +3550,8 @@ void Driver::ApplyPendingSwapchainResize()
     {
         std::lock_guard lock(m_impl->completedReadbackTextureMutex);
 	    m_impl->completedReadbackTexture = nullptr;
+        m_impl->completedReadbackTextureGeneration = 0u;
+        m_impl->submittedReadbackTextureGenerations.clear();
         m_impl->completedReadbackTextureHistory.clear();
     }
 	for (auto& frameContext : m_impl->frameContexts)
@@ -3405,6 +3562,7 @@ void Driver::ApplyPendingSwapchainResize()
 		frameContext.swapchainDepthStencilTexture = nullptr;
 		frameContext.swapchainDepthStencilView = nullptr;
 		frameContext.explicitReadbackTexture = nullptr;
+        frameContext.explicitReadbackTextureGeneration = 0u;
 	}
     {
         std::lock_guard lock(m_impl->sceneToUiWaitMutex);

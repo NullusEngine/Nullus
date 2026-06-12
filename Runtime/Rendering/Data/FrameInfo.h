@@ -101,6 +101,18 @@ namespace NLS::Render::Data
 		sizeof(LargeSceneTelemetry) == kLargeSceneTelemetryExpectedSize,
 		"Update large-scene telemetry aggregation, formatting, and tests when fields change.");
 
+	struct NLS_RENDER_API PickingDiagnostics
+	{
+		uint64_t rebuiltFrames = 0;
+		uint64_t reusedFrames = 0;
+		uint64_t hoverBudgetSkips = 0;
+		bool pendingReadback = false;
+		uint64_t submittedSerial = 0;
+		uint64_t readableSerial = 0;
+		uint64_t clickMinimumSerial = 0;
+		uint64_t visiblePickableDrawCount = 0;
+	};
+
 	/**
 	* Holds information about a given frame
 	*/
@@ -164,6 +176,7 @@ namespace NLS::Render::Data
         std::string deviceLostReason;
         bool unsafeGpuWorkQuarantined = false;
         std::string unsafeGpuWorkQuarantineReason;
+		PickingDiagnostics picking;
 		LargeSceneTelemetry largeScene;
 	};
 }

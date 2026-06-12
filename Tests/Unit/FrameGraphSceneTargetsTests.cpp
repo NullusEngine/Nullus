@@ -6400,14 +6400,28 @@ TEST(FrameGraphSceneTargetsTests, PreferredReadbackRegistrationDeduplicatesAndPr
     package.extractedTextures.push_back(extractedTexture);
     package.extractedTextures.push_back(preferredTexture);
 
-    EXPECT_TRUE(NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(package, preferredTexture));
+    EXPECT_TRUE(NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(package, preferredTexture, 77u));
     EXPECT_EQ(package.preferredReadbackTexture, preferredTexture);
+    EXPECT_EQ(package.preferredReadbackTextureGeneration, 77u);
     ASSERT_EQ(package.extractedTextures.size(), 2u);
     EXPECT_EQ(package.extractedTextures[0], preferredTexture);
     EXPECT_EQ(package.extractedTextures[1], extractedTexture);
 
-    EXPECT_FALSE(NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(package, preferredTexture));
+    EXPECT_FALSE(NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(package, preferredTexture, 77u));
+    EXPECT_TRUE(NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(package, preferredTexture, 78u));
+    EXPECT_EQ(package.preferredReadbackTextureGeneration, 78u);
+    EXPECT_EQ(NLS::Render::FrameGraph::ResolveFrameReadbackTextureGeneration(&package, nullptr), 78u);
     ASSERT_EQ(package.extractedTextures.size(), 2u);
+}
+
+TEST(FrameGraphSceneTargetsTests, ResolveFrameReadbackTextureGenerationFallsBackToFrameContext)
+{
+    NLS::Render::RHI::RHIFrameContext frameContext;
+    frameContext.explicitReadbackTextureGeneration = 123u;
+
+    EXPECT_EQ(
+        NLS::Render::FrameGraph::ResolveFrameReadbackTextureGeneration(nullptr, &frameContext),
+        123u);
 }
 
 TEST(FrameGraphSceneTargetsTests, PreferredReadbackTextureIsNotCountedAsExternalSceneOutput)

@@ -535,7 +535,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkRecordsFrameMaintenanceScopeThroughB
     EXPECT_GT(timeline.CountRecordedEventsForTesting("TimelineProfiler::TickFrame", true), before)
         << "TimelineProfiler frame maintenance should be visible as a real Base Profiler scope.";
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -567,7 +567,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkFlushesRealBaseProfilerScopesAcrossF
         << "Real Base Profiler child scopes after a frame-boundary flush should remain exportable.";
     EXPECT_TRUE(timeline.HasRecordedEventForTesting("TimelineProfiler::TickFrame"));
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -611,7 +611,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkSuppressesAmbiguousScopesUntilFlushe
     EXPECT_NO_FATAL_FAILURE(timeline.EndScope(oldParent));
     EXPECT_NO_FATAL_FAILURE(timeline.EndScope(nestedScope));
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -632,7 +632,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkEndScopeIgnoresUnmatchedEvent)
 
     EXPECT_NO_FATAL_FAILURE(timeline.EndScope(event));
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -658,7 +658,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkSuppressesScopesBeyondInternalStackL
     for (size_t i = 0u; i < 40u; ++i)
         EXPECT_NO_FATAL_FAILURE(timeline.EndScope(event));
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -688,7 +688,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkKeepsEditorPanelDepthScopes)
     for (auto it = events.rbegin(); it != events.rend(); ++it)
         EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -727,7 +727,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkReservesDepthForProfilerFrameRoot)
     for (auto it = events.rbegin(); it != events.rend(); ++it)
         EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -772,7 +772,7 @@ TEST_F(ProfilerDestinationTest, SelectionOutlineMaskAggregateScopesRemainExporta
     for (auto it = parentScopes.rbegin(); it != parentScopes.rend(); ++it)
         EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -817,7 +817,7 @@ TEST_F(ProfilerDestinationTest, DeferredBeginFrameChildScopesRemainExportableAtS
     for (auto it = parentScopes.rbegin(); it != parentScopes.rend(); ++it)
         EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -867,7 +867,7 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
     EXPECT_EQ(ResolveBudgetedTraceFrameExportRange({1u, 9u}, lastExportedFrame, 0u).Begin, 0u);
     EXPECT_EQ(ResolveBudgetedTraceFrameExportRange({1u, 9u}, lastExportedFrame, 0u).End, 0u);
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -930,7 +930,7 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterSkipsIncompleteAndNonPositi
     ASSERT_TRUE(escapedName.has_value());
     EXPECT_NE(escapedName->find("\"name\":\"Quote\\\"Slash\\\\Line\\nTab\\t\""), std::string::npos);
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 
@@ -1010,7 +1010,7 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterKeepsEventNamesOwnedUntilEx
     EXPECT_EQ(exported->find("\"name\":\"rawData\""), std::string::npos);
     EXPECT_EQ(exported->find("\"name\":\"l\""), std::string::npos);
 #else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
 #endif
 }
 

@@ -178,3 +178,53 @@ TEST(SceneViewPickingPolicyTests, ClickPickingForcesStaticFrameRenderEvenWhenHov
         true,
         false));
 }
+
+TEST(SceneViewPickingPolicyTests, SubmittedPendingClickDoesNotRequestAnotherClickPickingFrame)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRequestHitProxyPickingFrameForClick(
+        true,
+        false,
+        false));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRequestHitProxyPickingFrameForClick(
+        false,
+        true,
+        false));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRequestHitProxyPickingFrameForClick(
+        false,
+        true,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRequestHitProxyPickingFrameForClick(
+        false,
+        false,
+        false));
+}
+
+TEST(SceneViewPickingPolicyTests, SubmittedPendingClickBlocksHoverPickingUntilClickReadbackResolves)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRequestHitProxyPickingFrameWhileClickReadbackPending(
+        false,
+        true,
+        true));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldForceSceneViewStaticFrameRenderForPendingClick(
+        true));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRequestHitProxyPickingFrameWhileClickReadbackPending(
+        true,
+        true,
+        true));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRequestHitProxyPickingFrameWhileClickReadbackPending(
+        false,
+        true,
+        false));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRequestHitProxyPickingFrameWhileClickReadbackPending(
+        false,
+        false,
+        false));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldForceSceneViewStaticFrameRenderForPendingClick(
+        false));
+}

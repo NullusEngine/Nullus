@@ -1575,9 +1575,10 @@ void Editor::Panels::SceneView::InitFrame()
         selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
     }
 
-    m_requestPickingFrameForClick =
-        EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT) ||
-        m_pendingClickPickRenderPos.has_value();
+    m_requestPickingFrameForClick = ShouldRequestHitProxyPickingFrameForClick(
+        EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT),
+        m_pendingClickPickRenderPos.has_value(),
+        m_pendingClickPickingSignature.has_value());
     m_requestPickingFrame = ShouldRequestPickingFrame();
     if (!m_requestPickingFrame)
         m_requestPickingFrameForClick = false;
@@ -1727,7 +1728,7 @@ bool Editor::Panels::SceneView::ShouldForceStaticFrameRender() const
         return true;
     if (m_importedAssetDragPreviewPayload.has_value())
         return true;
-    if (m_pendingClickPickRenderPos.has_value())
+    if (ShouldForceSceneViewStaticFrameRenderForPendingClick(m_pendingClickPickRenderPos.has_value()))
         return true;
     if (ShouldForceSceneViewStaticFrameRenderForPicking(
         ShouldRequestPickingFrame(),
@@ -2130,6 +2131,13 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
         elapsedMs >= kHoverPickingIntervalMs;
     const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
     const bool cameraControlActive = m_cameraController.IsCameraControlActive();
+    if (!ShouldRequestHitProxyPickingFrameWhileClickReadbackPending(
+        leftClicked,
+        m_pendingClickPickRenderPos.has_value(),
+        m_pendingClickPickingSignature.has_value()))
+    {
+        return false;
+    }
     if (ShouldCancelScenePickingWhileCameraControlIsActive(
         cameraControlActive,
         m_pendingClickPickRenderPos.has_value()))
@@ -2142,14 +2150,17 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
         mouseOverView,
         false,
         false,
-        m_pendingClickPickRenderPos.has_value(),
+        m_pendingClickPickRenderPos.has_value() && !m_pendingClickPickingSignature.has_value(),
         leftClicked,
         cameraControlActive,
         m_cameraMovedForPresentation,
         sampleExpired,
         mouseMoved,
         m_hasPickingSample);
-    const bool clickPickingFrame = leftClicked || m_pendingClickPickRenderPos.has_value();
+    const bool clickPickingFrame = ShouldRequestHitProxyPickingFrameForClick(
+        leftClicked,
+        m_pendingClickPickRenderPos.has_value(),
+        m_pendingClickPickingSignature.has_value());
     if (request && !clickPickingFrame)
     {
         const auto* sceneRenderer = dynamic_cast<const Engine::Rendering::BaseSceneRenderer*>(m_renderer.get());

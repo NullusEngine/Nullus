@@ -80,6 +80,31 @@ namespace NLS::Editor::Panels
             : submittedPickingFrameSerial + 1u;
     }
 
+    inline bool ShouldRequestHitProxyPickingFrameForClick(
+        const bool leftClicked,
+        const bool hasPendingClickPick,
+        const bool pendingClickHasSubmittedFrameSignature)
+    {
+        return leftClicked ||
+            (hasPendingClickPick && !pendingClickHasSubmittedFrameSignature);
+    }
+
+    inline bool ShouldRequestHitProxyPickingFrameWhileClickReadbackPending(
+        const bool leftClicked,
+        const bool hasPendingClickPick,
+        const bool pendingClickHasSubmittedFrameSignature)
+    {
+        return leftClicked ||
+            !hasPendingClickPick ||
+            !pendingClickHasSubmittedFrameSignature;
+    }
+
+    inline bool ShouldForceSceneViewStaticFrameRenderForPendingClick(
+        const bool hasPendingClickPick)
+    {
+        return hasPendingClickPick;
+    }
+
     inline bool ShouldSceneViewBlockCameraInput(
         bool shortcutsWindowOpen,
         bool isAnyItemActive,

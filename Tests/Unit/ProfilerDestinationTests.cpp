@@ -21,6 +21,15 @@ namespace
 {
 using BaseProfiler = NLS::Base::Profiling::Profiler;
 
+std::string ReadSourceText(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    EXPECT_TRUE(input.is_open()) << "Failed to open source file: " << path.string();
+    return std::string(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
+}
+
 struct RecordedEvent
 {
     std::string phase;
@@ -966,6 +975,15 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterCanFilterEditorUiNoise)
         false);
     ASSERT_TRUE(sceneDraw.has_value());
     EXPECT_NE(sceneDraw->find("CaptureThreadedPreparedDraw"), std::string::npos);
+}
+
+TEST_F(ProfilerDestinationTest, DX12UiBridgeUsesAllocatorReuseWaitScope)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12UIBridge.cpp");
+
+    EXPECT_EQ(source.find("DX12UIBridge::WaitForBackbufferReuse"), std::string::npos);
+    EXPECT_NE(source.find("DX12UIBridge::WaitForAllocatorReuse"), std::string::npos);
 }
 
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterKeepsEventNamesOwnedUntilExport)

@@ -113,6 +113,13 @@ namespace NLS::Render::RHI
             return true;
         }
 
+        uint32_t ResolveDX12UICommandAllocatorCount(const uint32_t backbufferCount)
+        {
+            constexpr uint32_t kMinimumAllocatorCount = 3u;
+            const uint32_t allocatorCount = backbufferCount + 1u;
+            return allocatorCount > kMinimumAllocatorCount ? allocatorCount : kMinimumAllocatorCount;
+        }
+
         class DX12UIBridge final : public RHIUIBridge
         {
         public:
@@ -238,7 +245,7 @@ namespace NLS::Render::RHI
                 m_waitSemaphore = {};
 
                 const UINT backBufferIndex = m_swapchain->GetCurrentBackBufferIndex();
-                if (backBufferIndex >= m_commandAllocators.size() || backBufferIndex >= m_backBuffers.size())
+                if (backBufferIndex >= m_backBuffers.size())
                 {
                     NLS_LOG_ERROR(
                         "DX12UIBridge::RenderDrawData: swapchain backbuffer index is outside UI frame resources.");
@@ -253,24 +260,30 @@ namespace NLS::Render::RHI
                         std::to_string(backBufferIndex));
                 }
 
-                auto& commandAllocator = m_commandAllocators[backBufferIndex];
                 auto& backBuffer = m_backBuffers[backBufferIndex];
 
-                const auto reuseWait = m_frameFenceTracker.ResolveReuseWait(
-                    backBufferIndex,
-                    m_fence->GetCompletedValue());
-                if (reuseWait.shouldWait)
+                auto allocatorReuse = m_frameFenceTracker.ResolveAllocatorReuse(m_fence->GetCompletedValue());
+                if (allocatorReuse.shouldWait)
                 {
-                    NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::WaitForBackbufferReuse");
+                    NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::WaitForAllocatorReuse");
                     if (!WaitForDX12UIFence(
                         m_fence.Get(),
                         m_fenceEvent,
-                        reuseWait.fenceValue,
-                        "DX12UIBridge::RenderDrawData(backbuffer reuse)"))
+                        allocatorReuse.fenceValue,
+                        "DX12UIBridge::RenderDrawData(allocator reuse)"))
                     {
                         DiscardCurrentFrameTextureHandles();
                         return;
                     }
+                    allocatorReuse = m_frameFenceTracker.ResolveAllocatorReuse(m_fence->GetCompletedValue());
+                }
+
+                if (!allocatorReuse.allocatorIndex.has_value() ||
+                    *allocatorReuse.allocatorIndex >= m_commandAllocators.size())
+                {
+                    NLS_LOG_ERROR("DX12UIBridge::RenderDrawData: no reusable UI command allocator is available.");
+                    DiscardCurrentFrameTextureHandles();
+                    return;
                 }
 
                 if (!WaitForDX12QueueFence(
@@ -282,8 +295,24 @@ namespace NLS::Render::RHI
                     return;
                 }
 
-                commandAllocator->Reset();
-                m_commandList->Reset(commandAllocator.Get(), nullptr);
+                const uint32_t allocatorIndex = *allocatorReuse.allocatorIndex;
+                auto& commandAllocator = m_commandAllocators[allocatorIndex];
+                const HRESULT allocatorResetHr = commandAllocator->Reset();
+                if (FAILED(allocatorResetHr))
+                {
+                    HandlePreSubmitCommandRecordingFailure(
+                        allocatorResetHr,
+                        "DX12UIBridge::RenderDrawData: command allocator reset failed");
+                    return;
+                }
+                const HRESULT commandListResetHr = m_commandList->Reset(commandAllocator.Get(), nullptr);
+                if (FAILED(commandListResetHr))
+                {
+                    HandlePreSubmitCommandRecordingFailure(
+                        commandListResetHr,
+                        "DX12UIBridge::RenderDrawData: command list reset failed");
+                    return;
+                }
 
                 D3D12_RESOURCE_BARRIER barrier{};
                 barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -318,7 +347,14 @@ namespace NLS::Render::RHI
                 barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
                 barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
                 m_commandList->ResourceBarrier(1, &barrier);
-                m_commandList->Close();
+                const HRESULT closeHr = m_commandList->Close();
+                if (FAILED(closeHr))
+                {
+                    HandlePreSubmitCommandRecordingFailure(
+                        closeHr,
+                        "DX12UIBridge::RenderDrawData: command list close failed");
+                    return;
+                }
 
                 m_lastSubmittedUiSignalValue = 0u;
                 const UINT64 fenceValue = ++m_fenceValue;
@@ -345,6 +381,7 @@ namespace NLS::Render::RHI
                             std::to_string(deviceStatus);
                         QuarantineSubmittedUiFrameAfterExecute(
                             backBufferIndex,
+                            allocatorIndex,
                             deviceStatus,
                             fenceValue,
                             "DX12UIBridge::RenderDrawData(device removed after execute)");
@@ -360,6 +397,7 @@ namespace NLS::Render::RHI
                 {
                     QuarantineSubmittedUiFrameAfterExecute(
                         backBufferIndex,
+                        allocatorIndex,
                         frameSignalHr,
                         fenceValue,
                         "DX12UIBridge::RenderDrawData(frame fence signal)");
@@ -370,7 +408,7 @@ namespace NLS::Render::RHI
                         std::to_string(fenceValue));
                     return;
                 }
-                m_frameFenceTracker.RecordSubmitted(backBufferIndex, fenceValue);
+                m_frameFenceTracker.RecordSubmitted(backBufferIndex, fenceValue, allocatorIndex);
                 RetainCurrentFrameTextureHandles(fenceValue);
 
                 if (m_uiFence != nullptr)
@@ -655,6 +693,7 @@ namespace NLS::Render::RHI
 
             void QuarantineSubmittedUiFrameAfterExecute(
                 const UINT backBufferIndex,
+                const uint32_t allocatorIndex,
                 const HRESULT signalResult,
                 const UINT64 attemptedFenceValue,
                 std::string context)
@@ -662,8 +701,8 @@ namespace NLS::Render::RHI
                 QuarantinedUiFrameSubmission submission;
                 submission.srvHeap = m_srvHeap;
                 submission.rtvHeap = m_rtvHeap;
-                if (backBufferIndex < m_commandAllocators.size())
-                    submission.commandAllocator = m_commandAllocators[backBufferIndex];
+                if (allocatorIndex < m_commandAllocators.size())
+                    submission.commandAllocator = m_commandAllocators[allocatorIndex];
                 if (backBufferIndex < m_backBuffers.size())
                     submission.backBuffer = m_backBuffers[backBufferIndex];
                 submission.commandList = m_commandList;
@@ -709,6 +748,26 @@ namespace NLS::Render::RHI
                 MarkDriverUnsafeGpuWorkQuarantined(
                     "DX12UIBridge quarantined resources: " +
                     quarantineContext);
+            }
+
+            void HandlePreSubmitCommandRecordingFailure(
+                const HRESULT result,
+                const std::string& context)
+            {
+                std::string message = context + " hr=" + std::to_string(result);
+                if (m_device != nullptr)
+                {
+                    const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
+                    if (FAILED(deviceStatus))
+                    {
+                        message += "; device status hr=" + std::to_string(deviceStatus);
+                        MarkDriverDeviceLost(message);
+                    }
+                }
+
+                NLS_LOG_ERROR(message);
+                DiscardCurrentFrameTextureHandles();
+                ReleaseSwapchainRenderResources();
             }
 
             bool IsTextureDescriptorReferencedByCurrentFrame(const UINT descriptorIndex) const
@@ -905,7 +964,7 @@ namespace NLS::Render::RHI
                     m_swapchain.Get() == swapchain &&
                     !m_backBuffers.empty() &&
                     m_backBuffers.size() == targetImageCount &&
-                    m_commandAllocators.size() == targetImageCount &&
+                    m_commandAllocators.size() == ResolveDX12UICommandAllocatorCount(targetImageCount) &&
                     m_backbufferWidth == targetWidth &&
                     m_backbufferHeight == targetHeight &&
                     m_backbufferFormat == targetFormat)
@@ -930,10 +989,12 @@ namespace NLS::Render::RHI
                 m_backbufferWidth = targetWidth;
                 m_backbufferHeight = targetHeight;
                 m_backbufferFormat = targetFormat;
+                const uint32_t targetAllocatorCount = ResolveDX12UICommandAllocatorCount(targetImageCount);
                 m_frameFenceTracker.ResetBackbufferCount(m_imageCount);
+                m_frameFenceTracker.ResetAllocatorCount(targetAllocatorCount);
                 m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
                 m_backBuffers.resize(m_imageCount);
-                m_commandAllocators.resize(m_imageCount);
+                m_commandAllocators.resize(targetAllocatorCount);
 
                 D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
                 for (uint32_t i = 0; i < m_imageCount; ++i)
@@ -947,7 +1008,10 @@ namespace NLS::Render::RHI
 
                     m_device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, rtvHandle);
                     rtvHandle.ptr += m_rtvDescriptorSize;
+                }
 
+                for (uint32_t i = 0; i < targetAllocatorCount; ++i)
+                {
                     if (FAILED(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocators[i]))))
                     {
                         NLS_LOG_WARNING("DX12UIBridge failed to create command allocator " + std::to_string(i) + ".");
@@ -994,6 +1058,7 @@ namespace NLS::Render::RHI
                 m_commandList.Reset();
                 m_rtvHeap.Reset();
                 m_frameFenceTracker.ResetBackbufferCount(0u);
+                m_frameFenceTracker.ResetAllocatorCount(0u);
             }
 
             bool WaitForSubmittedUiWork()

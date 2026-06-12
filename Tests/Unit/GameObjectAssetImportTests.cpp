@@ -44,6 +44,10 @@
 #define NLS_HAS_AUTODESK_FBX_SDK 0
 #endif
 
+#ifndef NLS_HAS_ASSIMP_FBX_IMPORTER
+#define NLS_HAS_ASSIMP_FBX_IMPORTER 0
+#endif
+
 namespace
 {
 std::filesystem::path MakeGameObjectAssetImportRoot()
@@ -177,6 +181,19 @@ std::string FormatDragDropDiagnostics(const NLS::Editor::Assets::EditorAssetDrag
     for (const auto& diagnostic : result.dragDrop.diagnostics)
         stream << diagnostic.code << ": " << diagnostic.message << '\n';
     return stream.str();
+}
+
+size_t CountDragDropDiagnosticCode(
+    const NLS::Editor::Assets::EditorAssetDragDropBridgeResult& result,
+    const char* code)
+{
+    return static_cast<size_t>(std::count_if(
+        result.dragDrop.diagnostics.begin(),
+        result.dragDrop.diagnostics.end(),
+        [code](const NLS::Editor::Assets::AssetDragDropDiagnostic& diagnostic)
+        {
+            return diagnostic.code == code;
+        }));
 }
 
 std::string TestFileStamp(const std::filesystem::path& path)
@@ -712,15 +729,33 @@ TEST(GameObjectAssetImportTests, ColdFbxRawModelDropForwardsBackgroundImportDiag
                 EXPECT_FALSE(completion.pendingImport);
                 EXPECT_FALSE(completion.importSucceeded);
                 EXPECT_EQ(completion.dragDrop.status, NLS::Editor::Assets::DragDropOperationStatus::Rejected);
-                EXPECT_EQ(std::count_if(
-                    completion.dragDrop.diagnostics.begin(),
-                    completion.dragDrop.diagnostics.end(),
-                    [](const NLS::Editor::Assets::AssetDragDropDiagnostic& diagnostic)
-                    {
-                        return diagnostic.code == "external-model-importer-autodesk-fbx-unavailable";
-                    }),
+                EXPECT_EQ(
+                    CountDragDropDiagnosticCode(completion, "external-model-importer-fbx-reader-fallback"),
                     1u)
                     << FormatDragDropDiagnostics(completion);
+                EXPECT_EQ(
+                    CountDragDropDiagnosticCode(completion, "external-model-importer-autodesk-fbx-unavailable"),
+                    0u)
+                    << FormatDragDropDiagnostics(completion);
+#if NLS_HAS_ASSIMP_FBX_IMPORTER
+                EXPECT_EQ(
+                    CountDragDropDiagnosticCode(completion, "external-model-importer-source-parse-failed"),
+                    1u)
+                    << FormatDragDropDiagnostics(completion);
+                EXPECT_EQ(
+                    CountDragDropDiagnosticCode(completion, "external-model-importer-assimp-fbx-unavailable"),
+                    0u)
+                    << FormatDragDropDiagnostics(completion);
+#else
+                EXPECT_EQ(
+                    CountDragDropDiagnosticCode(completion, "external-model-importer-source-parse-failed"),
+                    1u)
+                    << FormatDragDropDiagnostics(completion);
+                EXPECT_EQ(
+                    CountDragDropDiagnosticCode(completion, "external-model-importer-assimp-fbx-unavailable"),
+                    1u)
+                    << FormatDragDropDiagnostics(completion);
+#endif
             },
             [&](std::function<void()> task)
             {

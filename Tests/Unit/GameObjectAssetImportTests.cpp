@@ -3304,6 +3304,11 @@ TEST(GameObjectAssetImportTests, StaleEditorAssetHandleDropReportsPendingWithout
     const auto guid = database.AssetPathToGUID("Assets/Models/StaleHandleHero.gltf");
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+    std::error_code error;
+    const auto importedModelWriteTime = std::filesystem::last_write_time(modelPath, error);
+    ASSERT_FALSE(error);
+    const auto importedModelStamp = TestFileStamp(modelPath);
+    ASSERT_FALSE(importedModelStamp.empty());
 
     WriteTextFile(
         modelPath,
@@ -3313,6 +3318,10 @@ TEST(GameObjectAssetImportTests, StaleEditorAssetHandleDropReportsPendingWithout
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "NewRoot" }]
         })");
+    std::filesystem::last_write_time(modelPath, importedModelWriteTime + std::chrono::seconds(1), error);
+    ASSERT_FALSE(error);
+    ASSERT_NE(TestFileStamp(modelPath), importedModelStamp);
+    ASSERT_FALSE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/StaleHandleHero.gltf"));
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
         "Assets/Models/StaleHandleHero.gltf",

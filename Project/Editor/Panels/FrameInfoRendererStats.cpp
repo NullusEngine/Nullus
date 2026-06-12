@@ -331,6 +331,18 @@ namespace
 			", Tickets " +
 			FormatUInt(frameInfo.largeScene.residencyTicketCount);
 	}
+
+	bool HasPickingDiagnostics(const Render::Data::FrameInfo& frameInfo)
+	{
+		return frameInfo.picking.rebuiltFrames != 0u ||
+			frameInfo.picking.reusedFrames != 0u ||
+			frameInfo.picking.hoverBudgetSkips != 0u ||
+			frameInfo.picking.pendingReadback ||
+			frameInfo.picking.submittedSerial != 0u ||
+			frameInfo.picking.readableSerial != 0u ||
+			frameInfo.picking.clickMinimumSerial != 0u ||
+			frameInfo.picking.visiblePickableDrawCount != 0u;
+	}
 }
 
 namespace NLS::Editor::Panels
@@ -432,6 +444,22 @@ void Editor::Panels::FrameInfo::UpdateForFrameInfo(
 	AddMetricRow(rows, "Render Load", "Instance Groups", PreferredDynamicGroupCount(frameInfo));
 	AddMetricRow(rows, "Render Load", "Largest Instance Group", frameInfo.largestInstanceGroupSize);
 	AddMetricRow(rows, "Render Load", "Dropped Objects", frameInfo.objectDataOverflowDroppedObjectCount);
+
+	if (HasPickingDiagnostics(frameInfo))
+	{
+		AddMetricRow(rows, "Picking", "Rebuilt Frames", frameInfo.picking.rebuiltFrames);
+		AddMetricRow(rows, "Picking", "Reused Frames", frameInfo.picking.reusedFrames);
+		AddMetricRow(rows, "Picking", "Hover Budget Skips", frameInfo.picking.hoverBudgetSkips);
+		AddRow(
+			rows,
+			"Picking",
+			"Pending Readback",
+			frameInfo.picking.pendingReadback ? "Yes" : "No");
+		AddMetricRow(rows, "Picking", "Submitted Serial", frameInfo.picking.submittedSerial);
+		AddMetricRow(rows, "Picking", "Readable Serial", frameInfo.picking.readableSerial);
+		AddMetricRow(rows, "Picking", "Click Min Serial", frameInfo.picking.clickMinimumSerial);
+		AddMetricRow(rows, "Picking", "Visible Pickable Draws", frameInfo.picking.visiblePickableDrawCount);
+	}
 
 	if (hasLargeSceneTelemetry)
 	{

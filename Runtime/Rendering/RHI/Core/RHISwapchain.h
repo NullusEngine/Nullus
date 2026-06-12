@@ -120,5 +120,6 @@ namespace NLS::Render::RHI
         std::shared_ptr<RHITexture> swapchainDepthStencilTexture;
         std::shared_ptr<RHITextureView> swapchainDepthStencilView;
         std::shared_ptr<RHITexture> explicitReadbackTexture;
+        uint64_t explicitReadbackTextureGeneration = 0u;
     };
 }

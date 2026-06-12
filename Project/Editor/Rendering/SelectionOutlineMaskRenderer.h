@@ -215,6 +215,8 @@ namespace NLS::Editor::Rendering
         std::vector<Maths::Matrix4> instanceModelMatrices;
     };
 
+    // Selection outline is intentionally independent from editor hit-proxy picking:
+    // it consumes selected debug-draw items and must not depend on picking readback state.
     class SelectionOutlineMaskRenderer
     {
     public:

@@ -28,6 +28,12 @@ namespace NLS::Render::RHI
 
 namespace NLS::Render::Context
 {
+    struct CompletedReadbackTextureRecord
+    {
+        std::weak_ptr<Render::RHI::RHITexture> texture;
+        uint64_t generation = 0u;
+    };
+
     class DriverImpl
     {
     public:
@@ -46,7 +52,10 @@ namespace NLS::Render::Context
         bool uiStandaloneFrameActive = false;
         mutable std::mutex completedReadbackTextureMutex;
         std::shared_ptr<Render::RHI::RHITexture> completedReadbackTexture;
-        std::vector<std::weak_ptr<Render::RHI::RHITexture>> completedReadbackTextureHistory;
+        uint64_t completedReadbackTextureGeneration = 0u;
+        uint64_t nextReadbackTextureGeneration = 1u;
+        std::vector<CompletedReadbackTextureRecord> submittedReadbackTextureGenerations;
+        std::vector<CompletedReadbackTextureRecord> completedReadbackTextureHistory;
         std::vector<PostSubmitBufferReadbackRequest> standalonePostSubmitBufferReadbacks;
         bool hasPendingSwapchainResize = false;
         uint32_t pendingSwapchainWidth = 0u;
@@ -207,6 +216,10 @@ namespace NLS::Render::Context
         NLS_RENDER_API std::optional<uint64_t> ResolveImplicitDependencySourceSubmissionOrder(
             const ParallelCommandWorkUnit& workUnit,
             const std::vector<WorkUnitDependencyEdge>& dependencyEdges);
+        NLS_RENDER_API void RememberCompletedReadbackTexture(
+            DriverImpl& impl,
+            const std::shared_ptr<Render::RHI::RHITexture>& texture,
+            uint64_t generation = 0u);
         NLS_RENDER_API bool ResolveImplicitRequiresDependencyVisibility(
             const ParallelCommandWorkUnit& workUnit);
         NLS_RENDER_API RenderPassCommandInput BuildDependencyVisibilityPassInput(

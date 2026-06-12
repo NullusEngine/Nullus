@@ -504,13 +504,17 @@ namespace NLS::Render::FrameGraph
 
     bool RegisterPreferredReadbackTexture(
         NLS::Render::Context::RenderScenePackage& package,
-        const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture)
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+        const uint64_t generation)
     {
         if (texture == nullptr)
             return false;
 
-        bool changed = package.preferredReadbackTexture != texture;
+        bool changed =
+            package.preferredReadbackTexture != texture ||
+            package.preferredReadbackTextureGeneration != generation;
         package.preferredReadbackTexture = texture;
+        package.preferredReadbackTextureGeneration = generation;
 
         const auto found = std::find(
             package.extractedTextures.begin(),
@@ -622,6 +626,21 @@ namespace NLS::Render::FrameGraph
         }
 
         return ResolveActiveExplicitReadbackTexture(frameContext);
+    }
+
+    uint64_t ResolveFrameReadbackTextureGeneration(
+        const NLS::Render::Context::RenderScenePackage* renderScenePackage,
+        const NLS::Render::RHI::RHIFrameContext* frameContext)
+    {
+        if (renderScenePackage != nullptr &&
+            renderScenePackage->preferredReadbackTexture != nullptr)
+        {
+            return renderScenePackage->preferredReadbackTextureGeneration;
+        }
+
+        return frameContext != nullptr
+            ? frameContext->explicitReadbackTextureGeneration
+            : 0u;
     }
 
     std::shared_ptr<NLS::Render::RHI::RHITexture> ResolveActiveExplicitReadbackTexture(

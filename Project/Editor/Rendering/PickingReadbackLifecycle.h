@@ -7,6 +7,8 @@
 
 #include <GameObject.h>
 
+#include "Panels/SceneViewPickingPolicy.h"
+
 namespace NLS::Render::RHI
 {
     class RHITexture;
@@ -22,7 +24,9 @@ namespace NLS::Editor::Rendering
         uint16_t height = 0u;
         uint64_t serial = 0u;
         std::shared_ptr<NLS::Render::RHI::RHITexture> readbackTexture;
+        uint64_t readbackGeneration = 0u;
         std::vector<NLS::Engine::GameObject*> pickRegistry;
+        NLS::Editor::Panels::HitProxyPickingSignature signature {};
 
         bool IsValid() const
         {

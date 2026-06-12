@@ -48,32 +48,6 @@ namespace NLS::Render::Context
                 : nullptr;
         }
 
-        void RememberCompletedReadbackTexture(
-            DriverImpl& impl,
-            const std::shared_ptr<Render::RHI::RHITexture>& texture)
-        {
-            std::lock_guard lock(impl.completedReadbackTextureMutex);
-            impl.completedReadbackTexture = texture;
-            if (texture == nullptr)
-                return;
-
-            impl.completedReadbackTextureHistory.erase(
-                std::remove_if(
-                    impl.completedReadbackTextureHistory.begin(),
-                    impl.completedReadbackTextureHistory.end(),
-                    [&texture](const std::weak_ptr<Render::RHI::RHITexture>& storedTexture)
-                    {
-                        const auto lockedTexture = storedTexture.lock();
-                        return lockedTexture == nullptr || lockedTexture == texture;
-                    }),
-                impl.completedReadbackTextureHistory.end());
-
-            impl.completedReadbackTextureHistory.push_back(texture);
-            constexpr size_t kMaxCompletedReadbackHistory = 8u;
-            while (impl.completedReadbackTextureHistory.size() > kMaxCompletedReadbackHistory)
-                impl.completedReadbackTextureHistory.erase(impl.completedReadbackTextureHistory.begin());
-        }
-
         bool IsSwapchainDepthStencilCompatible(
             const Render::RHI::RHIFrameContext& frameContext,
             const uint32_t width,
@@ -714,7 +688,10 @@ namespace NLS::Render::Context
             if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext->uploadContext != nullptr)
                 frameContext->uploadContext->EndFrame(impl.currentFrameIndex);
 
-            RememberCompletedReadbackTexture(impl, frameContext->explicitReadbackTexture);
+            Detail::RememberCompletedReadbackTexture(
+                impl,
+                frameContext->explicitReadbackTexture,
+                frameContext->explicitReadbackTextureGeneration);
             impl.explicitFrameActive = false;
             impl.uiStandaloneFrameActive = false;
             ++impl.currentFrameIndex;
@@ -751,7 +728,10 @@ namespace NLS::Render::Context
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::RetireFrameResources");
                 submitPlan.batches.clear();
                 submitPlan.temporarySemaphores.clear();
-                RememberCompletedReadbackTexture(impl, frameContext.explicitReadbackTexture);
+                Detail::RememberCompletedReadbackTexture(
+                    impl,
+                    frameContext.explicitReadbackTexture,
+                    frameContext.explicitReadbackTextureGeneration);
                 ++impl.currentFrameIndex;
             }
         }
@@ -1204,6 +1184,7 @@ namespace NLS::Render::Context
             frameContext.uploadBytesReserved = 0u;
             frameContext.swapchainBackbufferView = nullptr;
             frameContext.explicitReadbackTexture = nullptr;
+            frameContext.explicitReadbackTextureGeneration = 0u;
 
             std::optional<Render::RHI::RHIAcquiredImage> acquiredImage;
             {
@@ -1219,6 +1200,8 @@ namespace NLS::Render::Context
             SeedAcquiredSwapchainBackbufferState(frameContext);
             frameContext.explicitReadbackTexture =
                 Render::FrameGraph::ResolveFrameReadbackTexture(nullptr, &frameContext);
+            frameContext.explicitReadbackTextureGeneration =
+                Render::FrameGraph::ResolveFrameReadbackTextureGeneration(nullptr, &frameContext);
 
             if (impl.renderDocCaptureController != nullptr)
                 impl.renderDocCaptureController->OnPreFrame(true);
@@ -3948,6 +3931,7 @@ namespace NLS::Render::Context
         frameContext.uploadBytesReserved = 0u;
         frameContext.swapchainBackbufferView = nullptr;
         frameContext.explicitReadbackTexture = nullptr;
+        frameContext.explicitReadbackTextureGeneration = 0u;
         if (renderScenePackage.targetsSwapchain && impl.explicitSwapchain != nullptr)
         {
             std::optional<Render::RHI::RHIAcquiredImage> acquiredImage;
@@ -3973,6 +3957,8 @@ namespace NLS::Render::Context
         }
         frameContext.explicitReadbackTexture =
             Render::FrameGraph::ResolveFrameReadbackTexture(&renderScenePackage, &frameContext);
+        frameContext.explicitReadbackTextureGeneration =
+            Render::FrameGraph::ResolveFrameReadbackTextureGeneration(&renderScenePackage, &frameContext);
 
         if (impl.renderDocCaptureController != nullptr)
             impl.renderDocCaptureController->OnPreFrame(renderScenePackage.targetsSwapchain);
@@ -4852,6 +4838,7 @@ namespace NLS::Render::Context
         frameContext.uploadBytesReserved = 0u;
         frameContext.swapchainBackbufferView = nullptr;
         frameContext.explicitReadbackTexture = nullptr;
+        frameContext.explicitReadbackTextureGeneration = 0u;
         driver.m_impl->standalonePostSubmitBufferReadbacks.clear();
         if (acquireSwapchainImage && driver.m_impl->explicitSwapchain != nullptr)
         {
@@ -4879,6 +4866,8 @@ namespace NLS::Render::Context
         }
         frameContext.explicitReadbackTexture =
             Render::FrameGraph::ResolveFrameReadbackTexture(nullptr, &frameContext);
+        frameContext.explicitReadbackTextureGeneration =
+            Render::FrameGraph::ResolveFrameReadbackTextureGeneration(nullptr, &frameContext);
 
         if (driver.m_impl->renderDocCaptureController != nullptr)
             driver.m_impl->renderDocCaptureController->OnPreFrame(acquireSwapchainImage);
@@ -5018,7 +5007,10 @@ namespace NLS::Render::Context
                 outputMayBePresentedLater);
         }
 
-        RememberCompletedReadbackTexture(*driver.m_impl, frameContext.explicitReadbackTexture);
+        Detail::RememberCompletedReadbackTexture(
+            *driver.m_impl,
+            frameContext.explicitReadbackTexture,
+            frameContext.explicitReadbackTextureGeneration);
         ++driver.m_impl->currentFrameIndex;
         driver.m_impl->explicitFrameActive = false;
     }

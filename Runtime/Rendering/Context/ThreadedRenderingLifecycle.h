@@ -207,6 +207,7 @@ namespace NLS::Render::Context
         std::vector<std::shared_ptr<RHI::RHITexture>> gbufferTextures;
         std::vector<std::shared_ptr<RHI::RHITextureView>> colorAttachmentViews;
         std::shared_ptr<RHI::RHITextureView> depthStencilAttachmentView;
+        uint64_t readbackTextureGeneration = 0u;
     };
 
     inline constexpr uint64_t kRecordedDrawCommandSliceThreshold = 512u;
@@ -400,6 +401,7 @@ namespace NLS::Render::Context
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
         std::vector<std::shared_ptr<RHI::RHITexture>> extractedTextures;
         std::shared_ptr<RHI::RHITexture> preferredReadbackTexture;
+        uint64_t preferredReadbackTextureGeneration = 0u;
         std::vector<PostSubmitBufferReadbackRequest> postSubmitBufferReadbacks;
         std::vector<uint64_t> streamingDependencyPins;
         uint64_t externalSceneOutputIdentity = 0u;

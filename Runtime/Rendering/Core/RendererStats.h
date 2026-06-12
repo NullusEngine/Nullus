@@ -32,6 +32,7 @@ public:
     void RecordRenderSnapshotBufferCreation(uint64_t count = 1u);
     void RecordDrawCallOptimizationStats(const NLS::Render::Data::DrawCallOptimizationStats& stats);
     void RecordLargeSceneTelemetry(const NLS::Render::Data::LargeSceneTelemetry& telemetry);
+    void RecordPickingDiagnostics(const NLS::Render::Data::PickingDiagnostics& diagnostics);
     void SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry);
     bool ReuseLastThreadedFrameTelemetry();
     static void ApplyThreadedFrameTelemetry(

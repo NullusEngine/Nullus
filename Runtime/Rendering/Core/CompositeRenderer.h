@@ -69,6 +69,7 @@ public:
     bool IsFrameInfoValid() const;
     void ResetFrameStatistics();
     void FinalizeFrameStatistics();
+    void RecordPickingDiagnostics(const Data::PickingDiagnostics& diagnostics);
 
 protected:
     RendererStats* GetMutableRendererStats() const override;

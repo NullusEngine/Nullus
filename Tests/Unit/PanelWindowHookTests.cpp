@@ -940,6 +940,14 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     frameInfo.preparedRecordedDrawStaticBaseCacheHitCount = 9u;
     frameInfo.preparedRecordedDrawStaticBaseCacheMissCount = 1u;
     frameInfo.unsafeGpuWorkQuarantined = true;
+    frameInfo.picking.rebuiltFrames = 1u;
+    frameInfo.picking.reusedFrames = 2u;
+    frameInfo.picking.hoverBudgetSkips = 3u;
+    frameInfo.picking.pendingReadback = true;
+    frameInfo.picking.submittedSerial = 12u;
+    frameInfo.picking.readableSerial = 11u;
+    frameInfo.picking.clickMinimumSerial = 12u;
+    frameInfo.picking.visiblePickableDrawCount = 40u;
 
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForFrameInfo("Stats View", frameInfo);
@@ -954,6 +962,14 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     ExpectFrameInfoRow(panel, "Render Load", "Instance Groups", "1");
     ExpectFrameInfoRow(panel, "Render Load", "Largest Instance Group", "8");
     ExpectFrameInfoRow(panel, "Render Load", "Dropped Objects", "1");
+    ExpectFrameInfoRow(panel, "Picking", "Rebuilt Frames", "1");
+    ExpectFrameInfoRow(panel, "Picking", "Reused Frames", "2");
+    ExpectFrameInfoRow(panel, "Picking", "Hover Budget Skips", "3");
+    ExpectFrameInfoRow(panel, "Picking", "Pending Readback", "Yes");
+    ExpectFrameInfoRow(panel, "Picking", "Submitted Serial", "12");
+    ExpectFrameInfoRow(panel, "Picking", "Readable Serial", "11");
+    ExpectFrameInfoRow(panel, "Picking", "Click Min Serial", "12");
+    ExpectFrameInfoRow(panel, "Picking", "Visible Pickable Draws", "40");
     ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "0");
     ExpectFrameInfoRow(panel, "Inputs", "Transparent Drawables", "0");
     ExpectFrameInfoRow(panel, "Inputs", "Skybox Drawables", "0");
@@ -990,6 +1006,14 @@ TEST(PanelWindowHookTests, FrameInfoPanelAggregatesDisplayedRenderViewSnapshots)
     sceneFrameInfo.largeScene.submittedDrawCount = 7u;
     sceneFrameInfo.largeScene.occlusionTestCount = 10u;
     sceneFrameInfo.largeScene.occlusionCulledCount = 2u;
+    sceneFrameInfo.picking.rebuiltFrames = 1u;
+    sceneFrameInfo.picking.reusedFrames = 2u;
+    sceneFrameInfo.picking.hoverBudgetSkips = 3u;
+    sceneFrameInfo.picking.pendingReadback = true;
+    sceneFrameInfo.picking.submittedSerial = 10u;
+    sceneFrameInfo.picking.readableSerial = 8u;
+    sceneFrameInfo.picking.clickMinimumSerial = 9u;
+    sceneFrameInfo.picking.visiblePickableDrawCount = 12u;
 
     NLS::Render::Data::FrameInfo gameFrameInfo;
     gameFrameInfo.rawVisibleObjectCount = 20u;
@@ -1006,6 +1030,12 @@ TEST(PanelWindowHookTests, FrameInfoPanelAggregatesDisplayedRenderViewSnapshots)
     gameFrameInfo.largeScene.submittedDrawCount = 9u;
     gameFrameInfo.largeScene.occlusionTestCount = 20u;
     gameFrameInfo.largeScene.occlusionCulledCount = 5u;
+    gameFrameInfo.picking.reusedFrames = 4u;
+    gameFrameInfo.picking.hoverBudgetSkips = 5u;
+    gameFrameInfo.picking.submittedSerial = 12u;
+    gameFrameInfo.picking.readableSerial = 11u;
+    gameFrameInfo.picking.clickMinimumSerial = 12u;
+    gameFrameInfo.picking.visiblePickableDrawCount = 18u;
 
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForFrameInfoViews({
@@ -1023,6 +1053,14 @@ TEST(PanelWindowHookTests, FrameInfoPanelAggregatesDisplayedRenderViewSnapshots)
     ExpectFrameInfoRow(panel, "Large Scene", "Visible Primitives", "120");
     ExpectFrameInfoRow(panel, "Occlusion", "Tests", "30");
     ExpectFrameInfoRow(panel, "Occlusion", "Culled", "7");
+    ExpectFrameInfoRow(panel, "Picking", "Rebuilt Frames", "1");
+    ExpectFrameInfoRow(panel, "Picking", "Reused Frames", "6");
+    ExpectFrameInfoRow(panel, "Picking", "Hover Budget Skips", "8");
+    ExpectFrameInfoRow(panel, "Picking", "Pending Readback", "Yes");
+    ExpectFrameInfoRow(panel, "Picking", "Submitted Serial", "12");
+    ExpectFrameInfoRow(panel, "Picking", "Readable Serial", "11");
+    ExpectFrameInfoRow(panel, "Picking", "Click Min Serial", "12");
+    ExpectFrameInfoRow(panel, "Picking", "Visible Pickable Draws", "30");
     ExpectFrameInfoRow(panel, "Inputs", "Opaque Drawables", "9");
     ExpectFrameInfoRow(panel, "Debug", "GBuffer Syncs", "6");
     ExpectFrameInfoRow(panel, "Debug", "Binding Sets", "12");
@@ -2400,10 +2438,16 @@ TEST(PanelWindowHookTests, SceneViewStaticCacheAllowsHoverPickingFromExistingSam
 
     EXPECT_FALSE(NLS::Editor::Panels::ShouldForceSceneViewStaticFrameRenderForPicking(
         hoverPickingWantsSampleRefresh,
-        true));
+        true,
+        false));
     EXPECT_TRUE(NLS::Editor::Panels::ShouldForceSceneViewStaticFrameRenderForPicking(
         hoverPickingWantsSampleRefresh,
+        false,
         false));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldForceSceneViewStaticFrameRenderForPicking(
+        hoverPickingWantsSampleRefresh,
+        true,
+        true));
 }
 
 TEST(PanelWindowHookTests, SceneViewHoverPickingCanBeBudgetedWithoutAffectingClickPicking)

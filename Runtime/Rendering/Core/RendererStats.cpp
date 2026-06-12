@@ -129,6 +129,7 @@ void RendererStats::BeginFrame()
     m_frameInfo.deviceLostReason.clear();
     m_frameInfo.unsafeGpuWorkQuarantined = false;
     m_frameInfo.unsafeGpuWorkQuarantineReason.clear();
+    m_frameInfo.picking = {};
     m_frameInfo.largeScene = {};
     m_isFrameInfoValid = false;
 }
@@ -267,6 +268,20 @@ void RendererStats::RecordLargeSceneTelemetry(
     target.hzbHistoryPruneRemovedKeyCount += telemetry.hzbHistoryPruneRemovedKeyCount;
     target.hzbHistoryPruneTimeNs += telemetry.hzbHistoryPruneTimeNs;
     target.streamingCommitTimeNs += telemetry.streamingCommitTimeNs;
+}
+
+void RendererStats::RecordPickingDiagnostics(
+    const NLS::Render::Data::PickingDiagnostics& diagnostics)
+{
+    auto& target = m_frameInfo.picking;
+    target.rebuiltFrames += diagnostics.rebuiltFrames;
+    target.reusedFrames += diagnostics.reusedFrames;
+    target.hoverBudgetSkips += diagnostics.hoverBudgetSkips;
+    target.pendingReadback = target.pendingReadback || diagnostics.pendingReadback;
+    target.submittedSerial = std::max(target.submittedSerial, diagnostics.submittedSerial);
+    target.readableSerial = std::max(target.readableSerial, diagnostics.readableSerial);
+    target.clickMinimumSerial = std::max(target.clickMinimumSerial, diagnostics.clickMinimumSerial);
+    target.visiblePickableDrawCount += diagnostics.visiblePickableDrawCount;
 }
 
 void RendererStats::SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry)

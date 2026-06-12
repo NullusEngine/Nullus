@@ -521,4 +521,9 @@ void CompositeRenderer::FinalizeFrameStatistics()
     m_rendererStats.EndFrame();
 }
 
+void CompositeRenderer::RecordPickingDiagnostics(const Data::PickingDiagnostics& diagnostics)
+{
+    m_rendererStats.RecordPickingDiagnostics(diagnostics);
+}
+
 }

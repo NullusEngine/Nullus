@@ -6,6 +6,18 @@ namespace
 {
     struct TestScene {};
 
+    NLS::Editor::Panels::HitProxyPickingSignature MakeSignature()
+    {
+        NLS::Editor::Panels::HitProxyPickingSignature signature;
+        signature.renderWidth = 640u;
+        signature.renderHeight = 480u;
+        signature.cameraViewHash = 11u;
+        signature.pickableSceneRevision = 22u;
+        signature.pickableDrawSourceHash = 33u;
+        signature.viewId = 44u;
+        return signature;
+    }
+
     TEST(PickingReadbackLifecycleTests, PendingFrameIsNotReadableUntilReadbackIsAvailable)
     {
         TestScene scene;
@@ -69,5 +81,21 @@ namespace
         lifecycle.EndPixelReadback();
 
         EXPECT_TRUE(lifecycle.TryBeginPixelReadback());
+    }
+
+    TEST(PickingReadbackLifecycleTests, PromotedReadableFramePreservesPickingSignature)
+    {
+        TestScene scene;
+        NLS::Editor::Rendering::PickingReadbackLifecycle<TestScene> lifecycle;
+        const auto signature = MakeSignature();
+
+        lifecycle.QueueSubmittedFrame({ &scene, 640u, 480u, 13u, nullptr, 0u, {}, signature });
+        lifecycle.PromotePendingFrameIfReadbackAvailable(true);
+
+        const auto* readableFrame = lifecycle.GetReadableFrame();
+        ASSERT_NE(readableFrame, nullptr);
+        EXPECT_TRUE(NLS::Editor::Panels::HitProxyPickingSignaturesMatch(
+            signature,
+            readableFrame->signature));
     }
 }

@@ -15,6 +15,7 @@
 #include "Engine/Assets/PrefabAsset.h"
 #include "Panels/ImportedPrefabDragPreviewSession.h"
 #include "Panels/AViewControllable.h"
+#include "Panels/SceneViewPickingPolicy.h"
 #include "Core/SceneViewImGuizmo.h"
 
 namespace NLS::Editor::Core
@@ -116,6 +117,7 @@ namespace NLS::Editor::Panels
         Editor::Core::SceneCameraFocusState m_cameraFocus;
         Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };
         std::optional<Maths::Vector2> m_pendingClickPickRenderPos;
+        std::optional<NLS::Editor::Panels::HitProxyPickingSignature> m_pendingClickPickingSignature;
 		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
         uint64_t m_pendingClickMinReadablePickingFrameSerial = 0u;
         std::optional<NLS::Editor::Assets::EditorAssetDragPayload> m_importedAssetDragPreviewPayload;

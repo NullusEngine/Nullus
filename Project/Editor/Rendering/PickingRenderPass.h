@@ -44,10 +44,16 @@ namespace NLS::Editor::Rendering
 		* @param p_y
 		*/
 		PickingResult PickAtRenderCoordinate(uint32_t p_x, uint32_t p_y);
-		bool SupportsPickingReadback() const;
+        bool SupportsPickingReadback() const;
         bool HasReadablePickingFrame() const;
         uint64_t GetReadablePickingFrameSerial() const;
         uint64_t GetSubmittedPickingFrameSerial() const;
+        std::optional<NLS::Editor::Panels::HitProxyPickingSignature> GetReadablePickingFrameSignature() const;
+        std::optional<NLS::Editor::Panels::HitProxyPickingSignature> GetSubmittedPickingFrameSignature() const;
+        bool CanResolvePickingRequest(
+            NLS::Editor::Panels::HitProxyPickingRequestKind requestKind,
+            uint64_t minimumReadablePickingFrameSerial,
+            const NLS::Editor::Panels::HitProxyPickingSignature& requestSignature) const;
         const std::optional<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInput() const;
         std::optional<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInput();
 
@@ -63,10 +69,17 @@ namespace NLS::Editor::Rendering
         void ResetPickingFrameState();
         PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame BuildSubmittedReadbackFrame(
             Engine::SceneSystem::Scene& scene,
-            uint64_t serial) const;
+            uint64_t serial,
+            uint64_t readbackGeneration,
+            const NLS::Editor::Panels::HitProxyPickingSignature& signature) const;
+        NLS::Editor::Panels::HitProxyPickingSignature BuildCurrentPickingSignature(
+            Engine::SceneSystem::Scene& scene) const;
+        bool CanReuseReadablePickingFrameForSignature(
+            const NLS::Editor::Panels::HitProxyPickingSignature& signature) const;
         bool RenderPickingScene(NLS::Render::Data::PipelineState p_pso);
         std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
-            NLS::Render::Data::PipelineState p_pso);
+            NLS::Render::Data::PipelineState p_pso,
+            uint64_t readbackGeneration);
         void CapturePickableModels(
             NLS::Render::Data::PipelineState p_pso,
             Engine::SceneSystem::Scene& p_scene,

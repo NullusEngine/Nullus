@@ -239,6 +239,96 @@ TEST(DriverSwapchainResizeTests, ClearsTrackedBackbufferTextureStatesBeforeResiz
     EXPECT_EQ(frameContext.explicitReadbackTexture, nullptr);
 }
 
+TEST(DriverSwapchainResizeTests, CanInvalidateSpecificCompletedReadbackTexture)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto firstTexture = std::make_shared<TestTexture>();
+    auto secondTexture = std::make_shared<TestTexture>();
+
+    NLS::Render::Context::DriverTestAccess::SetCompletedReadbackTexture(driver, firstTexture);
+    NLS::Render::Context::DriverTestAccess::SetCompletedReadbackTexture(driver, secondTexture);
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(driver, firstTexture));
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(driver, secondTexture));
+
+    NLS::Render::Context::DriverRendererAccess::InvalidateCompletedReadbackTexture(driver, firstTexture);
+
+    EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(driver, firstTexture));
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(driver, secondTexture));
+}
+
+TEST(DriverSwapchainResizeTests, CompletedReadbackGenerationDoesNotPromoteLateOldSubmission)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto texture = std::make_shared<TestTexture>();
+
+    const uint64_t oldGeneration =
+        NLS::Render::Context::DriverRendererAccess::BeginReadbackTextureSubmission(driver, texture);
+    const uint64_t newGeneration =
+        NLS::Render::Context::DriverRendererAccess::BeginReadbackTextureSubmission(driver, texture);
+    ASSERT_NE(oldGeneration, 0u);
+    ASSERT_NE(newGeneration, 0u);
+    ASSERT_NE(oldGeneration, newGeneration);
+
+    NLS::Render::Context::DriverTestAccess::SetCompletedReadbackTexture(driver, texture);
+
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+        driver,
+        texture,
+        oldGeneration));
+    EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+        driver,
+        texture,
+        newGeneration));
+
+    NLS::Render::Context::DriverTestAccess::SetCompletedReadbackTexture(driver, texture);
+
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+        driver,
+        texture,
+        newGeneration));
+}
+
+TEST(DriverSwapchainResizeTests, CompletedReadbackGenerationUsesExplicitFrameTokenWhenProvided)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto texture = std::make_shared<TestTexture>();
+
+    const uint64_t oldGeneration =
+        NLS::Render::Context::DriverRendererAccess::BeginReadbackTextureSubmission(driver, texture);
+    const uint64_t newGeneration =
+        NLS::Render::Context::DriverRendererAccess::BeginReadbackTextureSubmission(driver, texture);
+    ASSERT_NE(oldGeneration, newGeneration);
+
+    NLS::Render::Context::DriverTestAccess::SetCompletedReadbackTexture(
+        driver,
+        texture,
+        newGeneration);
+
+    EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+        driver,
+        texture,
+        oldGeneration));
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+        driver,
+        texture,
+        newGeneration));
+}
+
 TEST(DriverSwapchainResizeTests, NotifiesWillResizeOnlyWhenResizeActuallyApplies)
 {
     NLS::Render::Settings::DriverSettings settings;

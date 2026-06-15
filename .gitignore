@@ -51,6 +51,7 @@ TestProject/
 .codex/
 .claude/
 .agents/
+.codegraph/
 .specify/
 AGENTS.md
 CLAUDE.md

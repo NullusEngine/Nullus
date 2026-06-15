@@ -1449,11 +1449,35 @@ namespace
         return resources;
     }
 
+    std::shared_ptr<TestTextureView> MakeTestSwapchainBackbufferView()
+    {
+        NLS::Render::RHI::RHITextureDesc textureDesc;
+        textureDesc.extent = { 128u, 72u, 1u };
+        textureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+        textureDesc.usage =
+            NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+            NLS::Render::RHI::TextureUsageFlags::Present;
+        textureDesc.debugName = "TestSwapchainBackbuffer";
+
+        NLS::Render::RHI::RHITextureViewDesc viewDesc;
+        viewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
+        viewDesc.format = textureDesc.format;
+        viewDesc.subresourceRange.baseMipLevel = 0u;
+        viewDesc.subresourceRange.mipLevelCount = 1u;
+        viewDesc.subresourceRange.baseArrayLayer = 0u;
+        viewDesc.subresourceRange.arrayLayerCount = 1u;
+        viewDesc.debugName = "TestSwapchainBackbufferView";
+
+        return std::make_shared<TestTextureView>(
+            std::make_shared<TestTexture>(std::move(textureDesc)),
+            std::move(viewDesc));
+    }
+
     class TestSwapchain final : public NLS::Render::RHI::RHISwapchain
     {
     public:
         TestSwapchain()
-            : backbufferView(std::make_shared<TestTextureView>())
+            : backbufferView(MakeTestSwapchainBackbufferView())
         {
         }
 
@@ -4594,8 +4618,15 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiOverlayPassRecordsSnapshotDrawsT
 
     NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
 
-    EXPECT_EQ(explicitDevice->GetTestQueue()->submitCalls, 1u);
-    EXPECT_EQ(explicitDevice->GetTestQueue()->presentCalls, 1u);
+    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    const auto* retiredSlot = lifecycle->PeekSlot(0u);
+    ASSERT_NE(retiredSlot, nullptr);
+    ASSERT_TRUE(retiredSlot->submissionFrame.has_value());
+    EXPECT_EQ(explicitDevice->GetTestQueue()->submitCalls, 1u)
+        << retiredSlot->submissionFrame->lastCommandRecordingFailure;
+    EXPECT_EQ(explicitDevice->GetTestQueue()->presentCalls, 1u)
+        << retiredSlot->submissionFrame->lastCommandRecordingFailure;
     auto submittedCommandBuffer = GetSubmittedTestCommandBuffer(explicitDevice->GetTestQueue());
     ASSERT_NE(submittedCommandBuffer, nullptr);
     EXPECT_EQ(submittedCommandBuffer->beginRenderPassCalls, 1u);

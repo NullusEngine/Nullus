@@ -1569,18 +1569,14 @@ namespace NLS::Render::Context
     {
         NLS_PROFILE_SCOPE();
         size_t claimedSlotIndex = 0u;
-        RenderFrameBuild claimedRenderFrameBuild;
-        if (!lifecycle.TryBeginNextRhiFrameExecution(&claimedSlotIndex, &claimedRenderFrameBuild))
-            return false;
-
-        const auto slotState = lifecycle.CopySlot(claimedSlotIndex);
-        if (!slotState.has_value() || !slotState->renderScenePackage.has_value())
+        RenderScenePackage claimedRenderScenePackage;
+        if (!lifecycle.TryBeginNextRhiSubmission(&claimedSlotIndex, &claimedRenderScenePackage))
             return false;
 
         if (slotIndex != nullptr)
             *slotIndex = claimedSlotIndex;
         if (renderScenePackage != nullptr)
-            *renderScenePackage = slotState->renderScenePackage.value();
+            *renderScenePackage = std::move(claimedRenderScenePackage);
         return true;
     }
 

@@ -1313,7 +1313,7 @@ TEST(PanelWindowHookTests, EditorResolvesUiSceneWaitAfterCanvasDraw)
 
     const auto renderCall = editorSource.find("Editor::UIManagerRender");
     ASSERT_NE(renderCall, std::string::npos);
-    const auto renderBlockEnd = editorSource.find("Editor::SetUICompositionSignal", renderCall);
+    const auto renderBlockEnd = editorSource.find("void Editor::Core::Editor::PostUpdate", renderCall);
     ASSERT_NE(renderBlockEnd, std::string::npos);
 
     const auto renderBlock = editorSource.substr(renderCall, renderBlockEnd - renderCall);
@@ -1321,9 +1321,17 @@ TEST(PanelWindowHookTests, EditorResolvesUiSceneWaitAfterCanvasDraw)
     EXPECT_EQ(
         renderBlock.find("if (uiSyncBoundary.sceneToUiWaitSemaphore.IsValid())"),
         std::string::npos);
-    EXPECT_NE(
+    EXPECT_EQ(
         renderBlock.find("DriverUIAccess::GetRenderFinishedSemaphore(*m_context.driver)"),
         std::string::npos);
+
+    const auto postUpdateCall = editorSource.find("DriverUIAccess::PresentSwapchain", renderBlockEnd);
+    ASSERT_NE(postUpdateCall, std::string::npos);
+    const auto inputClear = editorSource.find("InputManager::ClearEvents", postUpdateCall);
+    ASSERT_NE(inputClear, std::string::npos);
+    EXPECT_LT(postUpdateCall, inputClear)
+        << "Migrated UI rendering should present through the RHI frame graph after ImGui draw-data capture "
+           "and before per-frame input events are cleared.";
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelRefreshesFromViewOwnedSnapshotAndRetainsLastSuccessfulRender)

@@ -58,7 +58,7 @@
   - `assetId`
   - `sourceAssetPath`
   - `subAssetKey`
-  - `thumbnailKind`: icon, texture, material sphere, model preview, prefab preview
+  - `thumbnailKind`: icon, decoded texture, deterministic material preview, deterministic model preview, deterministic prefab preview
   - `requestedSize`
   - `freshnessInputs`
 - **Validation**:

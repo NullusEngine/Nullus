@@ -25,7 +25,7 @@ Artists and developers browsing a Nullus project should see a Unity-style Projec
 
 ### User Story 2 - Inspect Imported Assets In A Thumbnail Grid (Priority: P1)
 
-Artists comparing imported FBX/glTF scenes should see source files and generated sub-assets directly in the current-folder grid, including generated prefabs, meshes, materials, textures, shaders, scenes, scripts, and folders.
+Artists comparing imported FBX/glTF scenes should see source files and supported generated sub-assets directly in the current-folder grid, including generated prefabs, meshes, materials, textures, and shaders.
 
 **Why this priority**: The current tree hides imported scene outputs behind text-only entries. Unity-style parity requires imported outputs to be visible, selectable, draggable, and previewable from the grid.
 
@@ -42,17 +42,17 @@ Artists comparing imported FBX/glTF scenes should see source files and generated
 
 ### User Story 3 - See Real Persistent Thumbnails (Priority: P1)
 
-Artists should see real thumbnail previews comparable to Unity's Project grid. Textures use their image content, materials use material preview spheres, models and prefabs use rendered model previews, and unsupported types use project icons.
+Artists should see persistent thumbnail previews comparable to Unity's Project grid where supported. Textures use their image content; material, model, and prefab previews may use deterministic generated previews or stable type icons until renderer-backed preview generation is available.
 
-**Why this priority**: The requested target explicitly chooses the high-fidelity thumbnail path. Without persistent thumbnails, the grid cannot provide Unity-like visual scanning for large imported scenes.
+**Why this priority**: The requested target explicitly chooses persistent thumbnails. Without cached visual previews and stable fallbacks, the grid cannot provide Unity-like visual scanning for large imported scenes.
 
 **Independent Test**: Open a folder containing textures, materials, models, and prefabs; wait for thumbnail generation; restart the editor; verify the grid reuses cached thumbnails from the project Library until source or artifact stamps change.
 
 **Acceptance Scenarios**:
 
 1. **Given** a project texture asset, **When** the grid displays it, **Then** its thumbnail shows the texture image rather than a generic icon.
-2. **Given** a generated or authored material asset, **When** the grid displays it, **Then** its thumbnail shows a lit material sphere preview.
-3. **Given** a model or generated prefab asset, **When** the grid displays it, **Then** its thumbnail shows a rendered asset preview when generation succeeds, otherwise a stable type icon with an error diagnostic.
+2. **Given** a generated or authored material asset, **When** the grid displays it, **Then** its thumbnail shows a generated material preview when generation succeeds, otherwise a stable type icon with an error diagnostic.
+3. **Given** a model or generated prefab asset, **When** the grid displays it, **Then** its thumbnail shows a generated preview when generation succeeds, otherwise a stable type icon with an error diagnostic.
 4. **Given** thumbnail cache entries exist under `Library/AssetThumbnails/`, **When** the editor restarts and the source/import stamps are unchanged, **Then** the thumbnails are reused without regenerating all visible assets.
 5. **Given** a source asset, meta file, generated artifact, or thumbnail setting changes, **When** the grid next requests the thumbnail, **Then** the stale thumbnail is invalidated and rebuilt.
 
@@ -121,8 +121,8 @@ Users who already rely on the Asset Browser should keep existing project asset o
 - **FR-013**: The panel MUST support current-folder type filtering for at least All, Folder, Model, Prefab, Mesh, Material, Texture, Shader, Scene, and Script.
 - **FR-014**: The panel MUST provide a thumbnail-size control that changes grid density without losing selected folder state.
 - **FR-015**: Texture grid items MUST display real texture thumbnails when the texture can be loaded.
-- **FR-016**: Material grid items MUST display generated material-sphere thumbnails when thumbnail generation succeeds.
-- **FR-017**: Model and prefab grid items MUST display generated rendered thumbnails when thumbnail generation succeeds.
+- **FR-016**: Material grid items MUST display generated material preview thumbnails when thumbnail generation succeeds.
+- **FR-017**: Model and prefab grid items MUST display generated preview thumbnails when thumbnail generation succeeds; renderer-backed preview parity remains out of scope until runtime evidence is captured.
 - **FR-018**: Unsupported or failed thumbnail types MUST display stable type icons and record diagnostics without blocking browsing.
 - **FR-019**: Thumbnail files MUST be stored under the active project `Library/AssetThumbnails/` directory.
 - **FR-020**: Thumbnail cache identity MUST include asset identity, sub-asset key when present, source/meta/artifact freshness inputs, thumbnail kind, and thumbnail settings that affect pixels.
@@ -161,5 +161,5 @@ Users who already rely on the Asset Browser should keep existing project asset o
 - Favorites, Packages, label/tag search, global project search, one-column/two-column Unity layout switching, and custom asset labels are out of scope for v1.
 - Engine built-in assets can remain loadable by managers and object pickers; they are only hidden from this Asset Browser view.
 - The editor can add small purpose-built presentation/cache classes under `Project/Editor/Assets` or `Project/Editor/Panels` without introducing a new asset database.
-- Real rendered thumbnails for material/model/prefab previews may use existing editor rendering resources and can fall back to icons when a renderer/backend capability is unavailable.
-- Unit tests should cover deterministic non-rendering behavior; renderer thumbnail visual quality may require focused runtime/manual verification.
+- Texture thumbnails use decoded image content. Material/model/prefab thumbnails may use deterministic CPU-generated previews and can fall back to icons when preview generation is unavailable.
+- Unit tests should cover deterministic non-rendering behavior; renderer-backed thumbnail visual quality requires separate focused runtime/manual verification before claiming parity.

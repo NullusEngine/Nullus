@@ -680,9 +680,10 @@ std::string ExpectedPrefabResolvedAssetType(const NLS::Core::Assets::ArtifactTyp
     case ArtifactType::Audio: return "Audio";
     case ArtifactType::Prefab:
     case ArtifactType::Unknown:
-    default:
+    case ArtifactType::Count:
         return {};
     }
+    return {};
 }
 
 FastImportedPrefabLoadResult ValidateGeneratedModelRendererArtifactsReady(

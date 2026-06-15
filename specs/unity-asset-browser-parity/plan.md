@@ -5,14 +5,14 @@
 
 ## Summary
 
-Replace the existing Nullus `Asset Browser` single-tree panel with a Unity-style project asset browser that shows project `Assets/` only. The panel will split navigation and content into a left folder tree and right current-folder thumbnail grid, expand generated imported sub-assets into visible grid entries, preserve existing asset workflows, and add persistent high-fidelity thumbnail caching under `Library/AssetThumbnails/`.
+Replace the existing Nullus `Asset Browser` single-tree panel with a Unity-style project asset browser that shows project `Assets/` only. The panel will split navigation and content into a left folder tree and right current-folder thumbnail grid, expand generated imported sub-assets into visible grid entries, preserve existing asset workflows, and add persistent thumbnail caching under `Library/AssetThumbnails/`.
 
 ## Technical Context
 
 **Language/Version**: C++17-style editor/runtime code  
-**Primary Dependencies**: Existing ImGui/UI widgets, editor asset database/importer facade, editor resource managers, scene/prefab drag-drop workflows, renderer resources for previews  
+**Primary Dependencies**: Existing ImGui/UI widgets, editor asset database/importer facade, editor resource managers, scene/prefab drag-drop workflows, thumbnail preview/fallback services
 **Storage**: Project files under `Assets/`, generated artifacts under `Library/Artifacts`, new thumbnail cache under `Library/AssetThumbnails/`  
-**Testing**: Focused GoogleTest unit tests through `NullusUnitTests.exe`, plus focused editor/runtime manual verification for rendered thumbnails  
+**Testing**: Focused GoogleTest unit tests through `NullusUnitTests.exe`, plus focused editor/runtime manual verification for UI layout and any renderer-backed thumbnail claims
 **Target Platform**: Windows editor/unit-test build for this phase  
 **Project Type**: Desktop editor feature in a C++ engine/editor repository  
 **Performance Goals**: Large visible folders remain scrollable while thumbnails are pending; unchanged thumbnails are reused after restart; no foreground source reparse for generated prefab drops  
@@ -23,7 +23,7 @@ Replace the existing Nullus `Asset Browser` single-tree panel with a Unity-style
 
 - Spec scope: Required because the change affects Project editor workflow, asset management UI, drag/drop behavior, and thumbnail caching.
 - Generated-file boundaries: No files under `Runtime/*/Gen/` or `Project/*/Gen/` will be hand-edited.
-- Backend/platform validation: Automated validation targets the current Windows unit-test build. Rendered thumbnail visual quality will be validated with focused editor/runtime evidence and no cross-backend claim unless separately verified.
+- Backend/platform validation: Automated validation targets the current Windows unit-test build. Renderer-backed thumbnail visual quality will not be claimed without focused editor/runtime evidence, and no cross-backend claim is made unless separately verified.
 - Product runtime viability: The editor must remain runnable. Thumbnail failure must degrade to icons, not break browsing or drag/drop.
 - Evidence path: Unit tests for deterministic presentation/cache behavior, focused workflow/manual verification for UI/thumbnail behavior, and required plan-review gate before completion.
 

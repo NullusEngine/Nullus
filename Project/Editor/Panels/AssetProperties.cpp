@@ -2,6 +2,11 @@
 #include <Utils/PathParser.h>
 #include <Utils/SizeConverter.h>
 
+#include <fstream>
+#include <optional>
+
+#include <Json/json.hpp>
+
 #include <UI/GUIDrawer.h>
 #include <ServiceLocator.h>
 #include <ResourceManagement/MeshManager.h>
@@ -21,6 +26,8 @@
 #include "Panels/AssetProperties.h"
 #include "Panels/AssetBrowser.h"
 #include "Panels/AssetView.h"
+#include "Assets/AssetMeta.h"
+#include "Assets/EditorAssetManifestJson.h"
 #include "Assets/AssetImporterFacade.h"
 #include "Assets/EditorAssetPath.h"
 #include "Core/EditorActions.h"
@@ -47,6 +54,114 @@ std::string ToEditorAssetPathFromResource(const std::string& resource)
 
     return NLS::Editor::Assets::NormalizeEditorAssetPath(
         std::filesystem::path("Assets") / normalizedResource);
+}
+
+struct AssetPropertiesTarget
+{
+    std::string resourcePath;
+    std::string sourceResourcePath;
+    std::string sourceAssetPath;
+    std::string subAssetKey;
+};
+
+struct AssetPropertiesSubAssetInfo
+{
+    NLS::Core::Assets::AssetId assetId;
+    NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
+    std::string artifactPath;
+};
+
+AssetPropertiesTarget ParseAssetPropertiesTarget(const std::string& resource)
+{
+    AssetPropertiesTarget target;
+    target.resourcePath = resource;
+    target.sourceResourcePath = resource;
+
+    if (const auto delimiter = target.sourceResourcePath.find('#');
+        delimiter != std::string::npos)
+    {
+        target.subAssetKey = target.sourceResourcePath.substr(delimiter + 1u);
+        target.sourceResourcePath = target.sourceResourcePath.substr(0u, delimiter);
+    }
+
+    target.sourceAssetPath = ToEditorAssetPathFromResource(target.sourceResourcePath);
+    return target;
+}
+
+const char* AssetPropertiesArtifactTypeLabel(const NLS::Core::Assets::ArtifactType type)
+{
+    using NLS::Core::Assets::ArtifactType;
+    switch (type)
+    {
+    case ArtifactType::Model: return "Model";
+    case ArtifactType::Mesh: return "Mesh";
+    case ArtifactType::Material: return "Material";
+    case ArtifactType::Texture: return "Texture";
+    case ArtifactType::Skeleton: return "Skeleton";
+    case ArtifactType::Skin: return "Skin";
+    case ArtifactType::AnimationClip: return "Animation";
+    case ArtifactType::MorphTarget: return "Morph Target";
+    case ArtifactType::Prefab: return "Prefab";
+    case ArtifactType::Scene: return "Scene";
+    case ArtifactType::Shader: return "Shader";
+    case ArtifactType::Audio: return "Audio";
+    case ArtifactType::Unknown:
+    case ArtifactType::Count:
+        break;
+    }
+    return "Unknown";
+}
+
+std::filesystem::path RealPathForAssetPropertiesTarget(const std::string& resource)
+{
+    return std::filesystem::path(EDITOR_EXEC(GetRealPath(ParseAssetPropertiesTarget(resource).sourceResourcePath)));
+}
+
+std::optional<AssetPropertiesSubAssetInfo> ReadAssetPropertiesSubAssetInfo(
+    const AssetPropertiesTarget& target,
+    const std::filesystem::path& projectRoot)
+{
+    if (target.sourceAssetPath.empty() || target.subAssetKey.empty() || projectRoot.empty())
+        return std::nullopt;
+
+    const auto sourcePath = NLS::Editor::Assets::ResolveEditorAssetPath(
+        NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot),
+        target.sourceAssetPath);
+    if (sourcePath.empty())
+        return std::nullopt;
+
+    const auto meta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(sourcePath));
+    if (!meta.has_value() || !meta->id.IsValid())
+        return std::nullopt;
+
+    const auto manifestPath =
+        projectRoot /
+        "Library" /
+        "Artifacts" /
+        meta->id.ToString() /
+        "manifest.json";
+    std::ifstream input(manifestPath, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    auto root = nlohmann::json::parse(input, nullptr, false);
+    if (root.is_discarded())
+        return std::nullopt;
+
+    const auto manifest = NLS::Editor::Assets::ParseArtifactManifestJson(root, true);
+    if (!manifest.has_value())
+        return std::nullopt;
+
+    const auto* artifact = manifest->FindSubAsset(target.subAssetKey);
+    if (artifact == nullptr)
+        return std::nullopt;
+
+    return AssetPropertiesSubAssetInfo {
+        meta->id,
+        artifact->artifactType,
+        artifact->artifactPath
+    };
 }
 }
 
@@ -80,7 +195,20 @@ Editor::Panels::AssetProperties::AssetProperties
 
 void Editor::Panels::AssetProperties::SetTarget(const std::string& p_path)
 {
-	m_resource = p_path == "" ? p_path : EDITOR_EXEC(GetResourcePath(p_path));
+    if (p_path.empty())
+    {
+        m_resource.clear();
+    }
+    else
+    {
+        const auto delimiter = p_path.find('#');
+        const auto sourcePath = delimiter == std::string::npos
+            ? p_path
+            : p_path.substr(0u, delimiter);
+        m_resource = EDITOR_EXEC(GetResourcePath(sourcePath));
+        if (delimiter != std::string::npos)
+            m_resource += p_path.substr(delimiter);
+    }
 
     if (m_assetSelector)
     {
@@ -92,7 +220,8 @@ void Editor::Panels::AssetProperties::SetTarget(const std::string& p_path)
 
 void Editor::Panels::AssetProperties::Refresh()
 {
-    m_metadata.reset(new Filesystem::IniFile(EDITOR_EXEC(GetRealPath(m_resource)) + ".meta"));
+    const auto target = ParseAssetPropertiesTarget(m_resource);
+    m_metadata.reset(new Filesystem::IniFile(EDITOR_EXEC(GetRealPath(target.sourceResourcePath)) + ".meta"));
 
     CreateSettings();
     CreateInfo();
@@ -102,7 +231,7 @@ void Editor::Panels::AssetProperties::Refresh()
     m_revertButton->enabled = m_settings->enabled;
     m_reimportButton->enabled = false;
 
-    switch (Utils::PathParser::GetFileType(m_resource))
+    switch (Utils::PathParser::GetFileType(target.sourceResourcePath))
     {
     case Utils::PathParser::EFileType::MODEL:
     case Utils::PathParser::EFileType::TEXTURE:
@@ -114,9 +243,10 @@ void Editor::Panels::AssetProperties::Refresh()
         break;
     }
 
-    if (Utils::PathParser::GetFileType(m_resource) == Utils::PathParser::EFileType::MODEL &&
-        !m_resource.empty() &&
-        m_resource.front() != ':')
+    if (target.subAssetKey.empty() &&
+        Utils::PathParser::GetFileType(target.sourceResourcePath) == Utils::PathParser::EFileType::MODEL &&
+        !target.sourceResourcePath.empty() &&
+        target.sourceResourcePath.front() != ':')
     {
         m_reimportButton->enabled = true;
     }
@@ -130,25 +260,26 @@ void Editor::Panels::AssetProperties::Preview()
 {
 	auto& assetView = EDITOR_PANEL(Editor::Panels::AssetView, "Asset View");
 
-	const auto fileType = Utils::PathParser::GetFileType(m_resource);
+    const auto target = ParseAssetPropertiesTarget(m_resource);
+	const auto fileType = Utils::PathParser::GetFileType(target.sourceResourcePath);
 
 	if (fileType == Utils::PathParser::EFileType::MODEL)
 	{
-		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager).GetResource(m_resource))
+		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager).GetResource(target.sourceResourcePath))
 		{
 			assetView.SetResource(resource);
 		}
 	}
 	else if (fileType == Utils::PathParser::EFileType::MATERIAL)
 	{
-		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager).GetResource(m_resource))
+		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager).GetResource(target.sourceResourcePath))
 		{
 			assetView.SetResource(resource);
 		}
 	}
 	else if (fileType == Utils::PathParser::EFileType::TEXTURE)
 	{
-		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).GetResource(m_resource))
+		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).GetResource(target.sourceResourcePath))
 		{
 			assetView.SetResource(resource);
 		}
@@ -220,15 +351,16 @@ void Editor::Panels::AssetProperties::CreateSettings()
 {
 	m_settingsColumns->RemoveAllWidgets();
 
-	const auto fileType = Utils::PathParser::GetFileType(m_resource);
+    const auto target = ParseAssetPropertiesTarget(m_resource);
+	const auto fileType = Utils::PathParser::GetFileType(target.sourceResourcePath);
 
-    m_settings->enabled = true;
+    m_settings->enabled = target.subAssetKey.empty();
 
-	if (fileType == Utils::PathParser::EFileType::MODEL)
+	if (target.subAssetKey.empty() && fileType == Utils::PathParser::EFileType::MODEL)
 	{
 		CreateModelSettings();
 	}
-	else if (fileType == Utils::PathParser::EFileType::TEXTURE)
+	else if (target.subAssetKey.empty() && fileType == Utils::PathParser::EFileType::TEXTURE)
 	{
 		CreateTextureSettings();
 	}
@@ -240,7 +372,8 @@ void Editor::Panels::AssetProperties::CreateSettings()
 
 void Editor::Panels::AssetProperties::CreateInfo()
 {
-    const auto realPath = EDITOR_EXEC(GetRealPath(m_resource));
+    const auto target = ParseAssetPropertiesTarget(m_resource);
+    const auto realPath = EDITOR_EXEC(GetRealPath(target.sourceResourcePath));
 
     m_infoColumns->RemoveAllWidgets();
 
@@ -257,6 +390,33 @@ void Editor::Panels::AssetProperties::CreateInfo()
 
         NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Metadata");
         m_infoColumns->CreateWidget<UI::Widgets::Text>(std::filesystem::exists(realPath + ".meta") ? "Yes" : "No");
+
+        if (!target.subAssetKey.empty())
+        {
+            NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Sub Asset");
+            m_infoColumns->CreateWidget<UI::Widgets::Text>(target.subAssetKey);
+
+            if (const auto record = ReadAssetPropertiesSubAssetInfo(
+                    target,
+                    ProjectRootFromAssetsPath(EDITOR_EXEC(GetContext()).projectAssetsPath));
+                record.has_value())
+            {
+                NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Asset GUID");
+                m_infoColumns->CreateWidget<UI::Widgets::Text>(record->assetId.ToString());
+
+                NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Artifact Type");
+                m_infoColumns->CreateWidget<UI::Widgets::Text>(
+                    AssetPropertiesArtifactTypeLabel(record->artifactType));
+
+                NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Artifact");
+                m_infoColumns->CreateWidget<UI::Widgets::Text>(record->artifactPath);
+            }
+            else
+            {
+                NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Artifact");
+                m_infoColumns->CreateWidget<UI::Widgets::Text>("Not current");
+            }
+        }
     }
     else
     {
@@ -372,8 +532,9 @@ void Editor::Panels::AssetProperties::Apply()
 {
 	m_metadata->Rewrite();
 
-	const auto resourcePath = EDITOR_EXEC(GetResourcePath(m_resource));
-	const auto fileType = Utils::PathParser::GetFileType(m_resource);
+    const auto target = ParseAssetPropertiesTarget(m_resource);
+	const auto resourcePath = EDITOR_EXEC(GetResourcePath(target.sourceResourcePath));
+	const auto fileType = Utils::PathParser::GetFileType(target.sourceResourcePath);
 
 	if (fileType == Utils::PathParser::EFileType::MODEL)
 	{
@@ -397,7 +558,7 @@ void Editor::Panels::AssetProperties::Apply()
 
 void Editor::Panels::AssetProperties::Reimport()
 {
-    const auto assetPath = ToEditorAssetPathFromResource(m_resource);
+    const auto assetPath = ParseAssetPropertiesTarget(m_resource).sourceAssetPath;
     if (assetPath.empty())
     {
         NLS_LOG_ERROR("Reimport is only available for project assets.");

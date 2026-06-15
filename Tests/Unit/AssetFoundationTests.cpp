@@ -159,6 +159,86 @@ TEST(AssetFoundationTests, ScanClassifiesPrefabAssets)
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetFoundationTests, InferAssetTypesMatchAssetBrowserProjectExtensions)
+{
+    using NLS::Core::Assets::AssetType;
+
+    struct Case
+    {
+        const char* path;
+        AssetType expectedType;
+        const char* expectedImporter;
+    };
+
+    const Case cases[] {
+        {"Models/Hero.fbx", AssetType::ModelScene, "scene-model"},
+        {"Models/Hero.gltf", AssetType::ModelScene, "scene-model"},
+        {"Models/Hero.glb", AssetType::ModelScene, "scene-model"},
+        {"Textures/Hero.png", AssetType::Texture, "texture"},
+        {"Textures/Hero.bmp", AssetType::Texture, "texture"},
+        {"Textures/Hero.dds", AssetType::Texture, "texture"},
+        {"Shaders/Hero.hlsl", AssetType::Shader, "shader"},
+        {"Shaders/Hero.glsl", AssetType::Shader, "shader"},
+        {"Shaders/Hero.shader", AssetType::Shader, "shader"},
+        {"Materials/Hero.nmat", AssetType::Material, "material"},
+        {"Scenes/Hero.scene", AssetType::Scene, "scene"},
+        {"Scenes/Hero.nscene", AssetType::Scene, "scene"},
+        {"Scenes/Hero.objectgraph.json", AssetType::Scene, "scene"},
+        {"Scripts/Hero.lua", AssetType::Script, "script"},
+        {"Scripts/Hero.cs", AssetType::Script, "script"},
+        {"Scripts/Hero.py", AssetType::Script, "script"},
+        {"Prefabs/Hero.prefab", AssetType::Prefab, "prefab"}
+    };
+
+    for (const auto& testCase : cases)
+    {
+        const auto assetPath = std::filesystem::path(testCase.path);
+        const auto inferredType = NLS::Core::Assets::InferAssetType(assetPath);
+        EXPECT_EQ(inferredType, testCase.expectedType) << testCase.path;
+        EXPECT_EQ(NLS::Core::Assets::InferImporterId(inferredType), testCase.expectedImporter) << testCase.path;
+        EXPECT_EQ(NLS::Core::Assets::AssetTypeFromString(NLS::Core::Assets::ToString(inferredType)), inferredType)
+            << testCase.path;
+    }
+}
+
+TEST(AssetFoundationTests, ScanWritesMetaForAssetBrowserProjectExtensions)
+{
+    using NLS::Core::Assets::AssetType;
+
+    const auto root = MakeAssetTestRoot();
+    const auto shaderPath = root / "Shaders" / "Hero.shader";
+    const auto scenePath = root / "Scenes" / "Hero.nscene";
+    const auto objectGraphScenePath = root / "Scenes" / "Hero.objectgraph.json";
+    const auto bmpPath = root / "Textures" / "Hero.bmp";
+    const auto scriptPath = root / "Scripts" / "Hero.cs";
+    WriteTextFile(shaderPath, "shader");
+    WriteTextFile(scenePath, "{}");
+    WriteTextFile(objectGraphScenePath, "{}");
+    WriteTextFile(bmpPath, "bmp");
+    WriteTextFile(scriptPath, "script");
+
+    NLS::Core::Assets::SourceAssetDatabase database;
+    ASSERT_TRUE(database.ScanRoot(root));
+    ASSERT_EQ(database.GetRecords().size(), 5u);
+
+    const auto assertMeta = [](const std::filesystem::path& path, const AssetType type, const char* importerId)
+    {
+        const auto meta = NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(path));
+        ASSERT_TRUE(meta.has_value()) << path;
+        EXPECT_TRUE(meta->id.IsValid()) << path;
+        EXPECT_EQ(meta->assetType, type) << path;
+        EXPECT_EQ(meta->importerId, importerId) << path;
+    };
+
+    assertMeta(shaderPath, AssetType::Shader, "shader");
+    assertMeta(scenePath, AssetType::Scene, "scene");
+    assertMeta(objectGraphScenePath, AssetType::Scene, "scene");
+    assertMeta(bmpPath, AssetType::Texture, "texture");
+    assertMeta(scriptPath, AssetType::Script, "script");
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetFoundationTests, ScanRootsPathOverloadDoesNotRepairSameAssetThroughDuplicateRoots)
 {
     const auto root = MakeAssetTestRoot();

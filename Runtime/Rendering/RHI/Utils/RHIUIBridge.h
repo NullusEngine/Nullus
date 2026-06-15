@@ -29,8 +29,17 @@ namespace NLS::Render::RHI
             uint32_t currentImageIndex,
             const WaitSemaphoreResolver& resolveWaitSemaphore = {}) = 0;
         virtual NativeHandle ResolveTextureView(const std::shared_ptr<RHITextureView>& textureView) = 0;
+        // After this returns, the caller may destroy the texture/view. Backends must retire
+        // any UI descriptor or submitted draw work that can still reference textureView.
+        virtual void ReleaseTextureViewHandle(const std::shared_ptr<RHITextureView>& textureView) = 0;
+        // Non-blocking release for transient UI textures. Backends must keep textureView
+        // alive until submitted UI work no longer references its descriptor; the caller may
+        // only release its own reference after this returns.
+        virtual void RetireTextureViewHandle(const std::shared_ptr<RHITextureView>& textureView)
+        {
+            ReleaseTextureViewHandle(textureView);
+        }
         virtual void NotifySwapchainWillResize() {}
-        virtual void ReleaseTextureViewHandle(const std::shared_ptr<RHITextureView>& textureView) { (void)textureView; }
         virtual void NotifyFontAtlasChanged() {}
 
         // Synchronization - wait semaphore from previous rendering stage

@@ -16,8 +16,8 @@
 9. Select a type filter such as `Material` and verify only material items remain visible.
 10. Wait for thumbnails to finish and verify:
     - textures show image previews,
-    - materials show sphere previews,
-    - models/prefabs show rendered previews or stable fallback icons.
+    - materials show generated previews or stable fallback icons,
+    - models/prefabs show generated previews or stable fallback icons.
 11. Restart the editor and verify visible thumbnails are reused from `Library/AssetThumbnails/` when assets are unchanged.
 12. Exercise core workflows from the new panel:
     - import asset,

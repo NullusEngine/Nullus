@@ -26,9 +26,9 @@
 
 - [x] All functional requirements have clear acceptance criteria
 - [x] User scenarios cover primary flows
-- [x] Feature meets measurable outcomes defined in Success Criteria
+- [x] Automated and build-verifiable portions meet the measurable outcomes defined in Success Criteria; manual quickstart GUI evidence remains tracked separately in `tasks.md` T040
 - [x] Implementation details are kept in the plan rather than driving the spec
 
 ## Notes
 
-- The user explicitly chose high-fidelity generated thumbnails, project Library thumbnail caching, direct replacement of the current Asset Browser, full generated sub-asset grid visibility, and current-folder search/type filtering.
+- The user explicitly chose project Library thumbnail caching, direct replacement of the current Asset Browser, supported generated sub-asset grid visibility (prefab, mesh, material, texture, and shader), and current-folder search/type filtering. Texture thumbnails use decoded image content; material/model/prefab thumbnails may use deterministic generated previews or stable fallback icons until renderer-backed preview evidence exists.

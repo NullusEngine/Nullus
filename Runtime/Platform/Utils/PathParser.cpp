@@ -1,6 +1,29 @@
 ﻿#include <algorithm>
 #include "Utils/PathParser.h"
+#include <cctype>
 #include <filesystem>
+
+namespace
+{
+std::string ToLower(std::string value)
+{
+	std::transform(
+		value.begin(),
+		value.end(),
+		value.begin(),
+		[](const unsigned char character)
+		{
+			return static_cast<char>(std::tolower(character));
+		});
+	return value;
+}
+
+bool EndsWith(const std::string& value, const std::string& suffix)
+{
+	return value.size() >= suffix.size() &&
+		value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+}
 std::string NLS::Utils::PathParser::MakeWindowsStyle(const std::string & p_path)
 {
 	std::string result;
@@ -58,6 +81,9 @@ std::string NLS::Utils::PathParser::FileTypeToString(EFileType p_fileType)
 	case NLS::Utils::PathParser::EFileType::PREFAB:		return "Prefab";
 	case NLS::Utils::PathParser::EFileType::SCRIPT:		return "Script";
 	case NLS::Utils::PathParser::EFileType::FONT:		return "Font";
+	case NLS::Utils::PathParser::EFileType::UNKNOWN:
+	case NLS::Utils::PathParser::EFileType::COUNT:
+		break;
 	}
 
 	return "Unknown";
@@ -65,17 +91,20 @@ std::string NLS::Utils::PathParser::FileTypeToString(EFileType p_fileType)
 
 NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std::string & p_path)
 {
-	std::string ext = GetExtension(p_path);
-	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+	const auto loweredPath = ToLower(MakeNonWindowsStyle(p_path));
+	if (EndsWith(loweredPath, ".objectgraph.json"))							return EFileType::SCENE;
+
+	std::string ext = ToLower(GetExtension(p_path));
 
 	if (ext == "fbx" || ext == "obj" || ext == "gltf" || ext == "glb")			return EFileType::MODEL;
-	else if (ext == "png" || ext == "jpeg" || ext == "jpg" || ext == "tga")		return EFileType::TEXTURE;
-	else if (ext == "glsl" || ext == "hlsl")									return EFileType::SHADER;
-	else if (ext == "mat")														return EFileType::MATERIAL;
+	else if (ext == "png" || ext == "jpeg" || ext == "jpg" || ext == "tga" ||
+		ext == "bmp" || ext == "dds")											return EFileType::TEXTURE;
+	else if (ext == "glsl" || ext == "hlsl" || ext == "shader")					return EFileType::SHADER;
+	else if (ext == "mat" || ext == "nmat")										return EFileType::MATERIAL;
 	else if (ext == "wav" || ext == "mp3" || ext == "ogg")						return EFileType::SOUND;
-	else if (ext == "scene")													return EFileType::SCENE;
+	else if (ext == "scene" || ext == "nscene")									return EFileType::SCENE;
 	else if (ext == "prefab")													return EFileType::PREFAB;
-	else if (ext == "lua")														return EFileType::SCRIPT;
+	else if (ext == "lua" || ext == "cs" || ext == "py")						return EFileType::SCRIPT;
 	else if (ext == "ttf")														return EFileType::FONT;
 
 	return EFileType::UNKNOWN;

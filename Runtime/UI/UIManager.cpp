@@ -714,6 +714,12 @@ void UIManager::ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI:
         m_uiBridge->ReleaseTextureViewHandle(textureView);
 }
 
+void UIManager::RetireTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
+{
+    if (m_uiBridge != nullptr)
+        m_uiBridge->RetireTextureViewHandle(textureView);
+}
+
 void UIManager::SetWaitSemaphore(NLS::Render::RHI::NativeHandle semaphore)
 {
     waitSemaphore_ = semaphore;

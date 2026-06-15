@@ -20,7 +20,7 @@
 
 ## Decision: Expand Generated Sub-Assets Into The Grid
 
-**Rationale**: The user selected full Unity-style visibility. Imported scene outputs such as generated prefabs, meshes, materials, and textures should be visible and draggable as first-class grid items.
+**Rationale**: The user selected full Unity-style visibility. Supported imported outputs such as generated prefabs, meshes, materials, textures, and shaders should be visible and draggable as first-class grid items.
 
 **Alternatives considered**: Folding sub-assets beneath the source file is tidier but less like Unity and weaker for FBX/glTF parity inspection. Showing only scene-droppable assets hides useful material/mesh diagnostics.
 
@@ -36,8 +36,8 @@
 
 **Alternatives considered**: Rewriting everything directly in `AssetBrowser.cpp` is faster initially but would make this already-large panel harder to verify and review.
 
-## Decision: Use Real Thumbnails With Stable Fallback Icons
+## Decision: Use Persistent Thumbnails With Stable Fallback Icons
 
-**Rationale**: The user selected the visually strong path. Texture thumbnails can use texture content, material thumbnails can use a sphere preview, and model/prefab thumbnails can use rendered asset previews. Browsing must still work when generation fails.
+**Rationale**: The user selected the visually strong path. Texture thumbnails can use decoded texture content; material, model, and prefab items can use deterministic generated previews or stable type icons until renderer-backed preview generation has runtime evidence. Browsing must still work when generation fails.
 
-**Alternatives considered**: Type icons only would be faster and enough for basic workflows but not close enough to Unity's visual grid for this request.
+**Alternatives considered**: Type icons only would be faster and enough for basic workflows but not close enough to Unity's visual grid for this request. Renderer-backed AssetPreview parity is deferred because it needs focused runtime/rendering validation.

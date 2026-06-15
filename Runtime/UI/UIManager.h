@@ -158,6 +158,7 @@ public:
     NLS::Render::RHI::NativeHandle ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void NotifySwapchainWillResize();
     void ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
+    void RetireTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void SetCurrentSwapchainImageIndex(uint32_t index) { m_currentSwapchainImageIndex = index; }
     void SetWaitSemaphore(NLS::Render::RHI::NativeHandle semaphore);
     void SetSignalSemaphore(NLS::Render::RHI::NativeHandle semaphore);

@@ -3,6 +3,7 @@ nls_add_runtime_target(
   SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}
   LIBS
     NLS_Base
+    NLS_Platform
   )
 
 target_compile_definitions(NLS_Core PUBLIC

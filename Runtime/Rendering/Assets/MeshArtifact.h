@@ -21,8 +21,17 @@ struct MeshArtifactData
     bool hasBoundingSphere = false;
 };
 
+struct MeshArtifactHeaderPreview
+{
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+};
+
 NLS_RENDER_API std::vector<uint8_t> SerializeMeshArtifact(const MeshArtifactData& mesh);
 NLS_RENDER_API std::optional<MeshArtifactData> DeserializeMeshArtifact(const std::vector<uint8_t>& bytes);
+NLS_RENDER_API std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
+    const std::filesystem::path& path,
+    uint64_t maxMetadataBytes = UINT64_MAX);
 NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifact(const std::filesystem::path& path);
 NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifact(
     const std::filesystem::path& path,

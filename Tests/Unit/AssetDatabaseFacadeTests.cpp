@@ -11,6 +11,7 @@
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDatabase.h"
+#include "Assets/ExternalAssetImporter.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Core/ServiceLocator.h"
 #include "Components/MeshFilter.h"
@@ -37,6 +38,7 @@
 #include <Json/json.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -106,6 +108,32 @@ std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
     };
 }
 
+std::string SafeArtifactPathToken(std::string value)
+{
+    for (auto& character : value)
+    {
+        if (character == ':' || character == '/' || character == '\\')
+            character = '_';
+    }
+    return value;
+}
+
+std::string FileStamp(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error)
+        return {};
+
+    error.clear();
+    const auto writeTime = std::filesystem::last_write_time(path, error);
+    if (error)
+        return {};
+
+    const auto writeTimeTicks = static_cast<std::intmax_t>(writeTime.time_since_epoch().count());
+    return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
+}
+
 std::string ReadArtifactPayloadText(
     const std::filesystem::path& path,
     const NLS::Core::Assets::ArtifactType artifactType,
@@ -142,6 +170,116 @@ NLS::Core::Assets::ImportedArtifact MakeArtifact(
         std::move(artifactPath),
         std::move(contentHash)
     };
+}
+
+void WriteManifestArtifactFiles(
+    const std::filesystem::path& root,
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    for (const auto& artifact : manifest.subAssets)
+        WriteTextFile(root / artifact.artifactPath, artifact.subAssetKey);
+}
+
+std::string ArtifactTypeToken(const NLS::Core::Assets::ArtifactType type)
+{
+    using NLS::Core::Assets::ArtifactType;
+    switch (type)
+    {
+    case ArtifactType::Model: return "model";
+    case ArtifactType::Mesh: return "mesh";
+    case ArtifactType::Material: return "material";
+    case ArtifactType::Texture: return "texture";
+    case ArtifactType::Shader: return "shader";
+    case ArtifactType::Scene: return "scene";
+    case ArtifactType::Prefab: return "prefab";
+    case ArtifactType::Skeleton: return "skeleton";
+    case ArtifactType::Skin: return "skin";
+    case ArtifactType::AnimationClip: return "animation";
+    case ArtifactType::MorphTarget: return "morph-target";
+    case ArtifactType::Audio: return "audio";
+    case ArtifactType::Unknown:
+    case ArtifactType::Count:
+        break;
+    }
+    return "unknown";
+}
+
+std::string DependencyKindToken(const NLS::Core::Assets::AssetDependencyKind kind)
+{
+    using NLS::Core::Assets::AssetDependencyKind;
+    switch (kind)
+    {
+    case AssetDependencyKind::SourceFileHash: return "source-file-hash";
+    case AssetDependencyKind::SourceAssetGuid: return "source-asset-guid";
+    case AssetDependencyKind::ImportedArtifact: return "imported-artifact";
+    case AssetDependencyKind::PathToGuidMapping: return "path-to-guid-mapping";
+    case AssetDependencyKind::BuildTarget: return "build-target";
+    case AssetDependencyKind::ImporterVersion: return "importer-version";
+    case AssetDependencyKind::PostprocessorVersion: return "postprocessor-version";
+    case AssetDependencyKind::PrefabBase: return "prefab-base";
+    case AssetDependencyKind::NestedPrefab: return "nested-prefab";
+    case AssetDependencyKind::PrefabOverrideTarget: return "prefab-override-target";
+    case AssetDependencyKind::RuntimeComponentCapability: return "runtime-component-capability";
+    case AssetDependencyKind::RawPackageFile: return "raw-package-file";
+    }
+    return "source-file-hash";
+}
+
+void WritePersistedArtifactManifest(
+    const std::filesystem::path& root,
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    nlohmann::json document;
+    document["schema"] = 1;
+    document["sourceAssetId"] = manifest.sourceAssetId.ToString();
+    document["importerId"] = manifest.importerId;
+    document["importerVersion"] = manifest.importerVersion;
+    document["targetPlatform"] = manifest.targetPlatform;
+    document["primarySubAssetKey"] = manifest.primarySubAssetKey;
+    document["subAssets"] = nlohmann::json::array();
+    for (const auto& artifact : manifest.subAssets)
+    {
+        document["subAssets"].push_back({
+            {"sourceAssetId", artifact.sourceAssetId.ToString()},
+            {"subAssetKey", artifact.subAssetKey},
+            {"artifactType", ArtifactTypeToken(artifact.artifactType)},
+            {"loaderId", artifact.loaderId},
+            {"targetPlatform", artifact.targetPlatform},
+            {"artifactPath", artifact.artifactPath},
+            {"contentHash", artifact.contentHash}
+        });
+    }
+    document["dependencies"] = nlohmann::json::array();
+    for (const auto& dependency : manifest.dependencies)
+    {
+        document["dependencies"].push_back({
+            {"kind", DependencyKindToken(dependency.kind)},
+            {"value", dependency.value},
+            {"hashOrVersion", dependency.hashOrVersion}
+        });
+    }
+
+    WriteTextFile(
+        root / "Library" / "Artifacts" / manifest.sourceAssetId.ToString() / "manifest.json",
+        document.dump(2));
+}
+
+void AddCurrentSourceDependencies(
+    const std::filesystem::path& root,
+    NLS::Core::Assets::ArtifactManifest& manifest,
+    const std::string& assetPath)
+{
+    const auto sourcePath = root / std::filesystem::path(assetPath);
+    manifest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
+        assetPath,
+        FileStamp(sourcePath)
+    });
+    manifest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        assetPath + ".meta",
+        FileStamp(NLS::Core::Assets::GetAssetMetaPath(sourcePath))
+    });
 }
 
 NLS::Core::Assets::AssetId ParseAssetId(const std::string& guid)
@@ -2517,18 +2655,39 @@ TEST(AssetDatabaseFacadeTests, AssetBrowserExposesImportedModelReferenceableSubA
     ArtifactManifest manifest;
     manifest.sourceAssetId = modelId;
     manifest.importerId = "scene-model";
+    manifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
     manifest.targetPlatform = "editor";
     manifest.primarySubAssetKey = "model:Hero";
-    manifest.subAssets.push_back(MakeArtifact(modelId, "model:Hero", ArtifactType::Model, "model"));
-    manifest.subAssets.push_back(MakeArtifact(modelId, "prefab:Hero", ArtifactType::Prefab, "prefab"));
-    manifest.subAssets.push_back(MakeArtifact(modelId, "mesh:Body", ArtifactType::Mesh, "mesh"));
-    manifest.subAssets.push_back(MakeArtifact(modelId, "material:Body", ArtifactType::Material, "material"));
-    manifest.subAssets.push_back(MakeArtifact(modelId, "texture:Albedo", ArtifactType::Texture, "texture"));
-    manifest.subAssets.push_back(MakeArtifact(modelId, "animation:Idle", ArtifactType::AnimationClip, "animation"));
+    auto makeSafeArtifact = [modelId](
+        const std::string& subAssetKey,
+        const ArtifactType artifactType,
+        const std::string& loaderId)
+    {
+        return MakeArtifact(
+            modelId,
+            subAssetKey,
+            artifactType,
+            loaderId,
+            "Library/Artifacts/" + modelId.ToString() + "/" + SafeArtifactPathToken(subAssetKey));
+    };
+    manifest.subAssets.push_back(makeSafeArtifact("model:Hero", ArtifactType::Model, "model"));
+    manifest.subAssets.push_back(makeSafeArtifact("prefab:Hero", ArtifactType::Prefab, "prefab"));
+    manifest.subAssets.push_back(makeSafeArtifact("mesh:Body", ArtifactType::Mesh, "mesh"));
+    manifest.subAssets.push_back(makeSafeArtifact("material:Body", ArtifactType::Material, "material"));
+    manifest.subAssets.push_back(makeSafeArtifact("texture:Albedo", ArtifactType::Texture, "texture"));
+    manifest.subAssets.push_back(makeSafeArtifact("shader:HeroSurface", ArtifactType::Shader, "shader"));
+    manifest.subAssets.push_back(makeSafeArtifact("animation:Idle", ArtifactType::AnimationClip, "animation"));
+    WriteManifestArtifactFiles(root, manifest);
+    AddCurrentSourceDependencies(root, manifest, "Assets/Models/Hero.gltf");
+    manifest.dependencies.push_back({
+        AssetDependencyKind::PostprocessorVersion,
+        kExternalTextureBuildPipelineDependencyName,
+        std::to_string(kExternalTexturePostprocessorVersion)
+    });
     database.AddArtifactManifest(manifest);
 
     const auto entries = BuildAssetBrowserSubAssetEntries(database, "Assets/Models/Hero.gltf");
-    ASSERT_EQ(entries.size(), 3u);
+    ASSERT_EQ(entries.size(), 4u);
 
     EXPECT_EQ(entries[0].displayName, "Body");
     EXPECT_EQ(entries[0].sourceAssetPath, "Assets/Models/Hero.gltf");
@@ -2545,6 +2704,10 @@ TEST(AssetDatabaseFacadeTests, AssetBrowserExposesImportedModelReferenceableSubA
     EXPECT_EQ(entries[2].displayName, "Albedo");
     EXPECT_EQ(entries[2].subAssetKey, "texture:Albedo");
     EXPECT_EQ(entries[2].artifactType, ArtifactType::Texture);
+
+    EXPECT_EQ(entries[3].displayName, "HeroSurface");
+    EXPECT_EQ(entries[3].subAssetKey, "shader:HeroSurface");
+    EXPECT_EQ(entries[3].artifactType, ArtifactType::Shader);
 
     std::filesystem::remove_all(root);
 }
@@ -3263,6 +3426,147 @@ TEST(AssetDatabaseFacadeTests, LoadsPersistedPrefabArtifactByAssetIdWhenSourcePa
     EXPECT_EQ(prefab->graph.root.GetGuid(), created.artifact->graph.root.GetGuid());
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, RejectsPersistedPrefabArtifactOutsidePhysicalArtifactRoot)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto prefabId = ParseAssetId("e6262626-2626-4626-8626-262626262626");
+    const std::string subAssetKey = "prefab:Escaped";
+    NLS::Engine::GameObject gameObject("Escaped", "Prefab");
+    const auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &gameObject,
+        {},
+        prefabId,
+        "Assets/Prefabs/Escaped.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_FALSE(created.prefabSourceText.empty());
+
+    WriteTextFile(root / "Assets" / "Prefabs" / "Escaped.prefab", created.prefabSourceText);
+    auto meta = AssetMeta::CreateForAsset(root / "Assets" / "Prefabs" / "Escaped.prefab");
+    meta.id = prefabId;
+    ASSERT_TRUE(meta.Save(root / "Assets" / "Prefabs" / "Escaped.prefab.meta"));
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = prefabId;
+    manifest.importerId = "prefab";
+    manifest.importerVersion = GetCurrentImporterVersion(AssetType::Prefab);
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = subAssetKey;
+    manifest.subAssets.push_back(MakeArtifact(
+        prefabId,
+        subAssetKey,
+        ArtifactType::Prefab,
+        "prefab",
+        "Assets/Escaped.nprefab"));
+    WritePersistedArtifactManifest(root, manifest);
+
+    NativeArtifactMetadata metadata;
+    metadata.artifactType = ArtifactType::Prefab;
+    metadata.schemaName = "prefab-artifact";
+    metadata.schemaVersion = 1u;
+    metadata.sourceAssetId = prefabId;
+    metadata.subAssetKey = subAssetKey;
+    metadata.importerId = "prefab";
+    metadata.importerVersion = GetCurrentImporterVersion(AssetType::Prefab);
+    metadata.targetPlatform = "editor";
+    WriteBinaryFile(
+        root / "Assets" / "Escaped.nprefab",
+        WriteNativeArtifactContainer(
+            std::move(metadata),
+            std::vector<uint8_t>(created.prefabSourceText.begin(), created.prefabSourceText.end())));
+
+    std::filesystem::remove(root / "Assets" / "Prefabs" / "Escaped.prefab");
+    std::filesystem::remove(root / "Assets" / "Prefabs" / "Escaped.prefab.meta");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.GUIDToAssetPath(prefabId.ToString()).empty());
+    EXPECT_FALSE(database.LoadPrefabArtifactByAssetId(prefabId, subAssetKey).has_value());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, RejectsPersistedPrefabArtifactSymlinkInsidePhysicalArtifactRoot)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto outside =
+        std::filesystem::temp_directory_path() /
+        ("nullus_prefab_artifact_symlink_outside_" + NLS::Guid::New().ToString());
+    const auto prefabId = ParseAssetId("e6363636-3636-4636-8636-363636363636");
+    const std::string subAssetKey = "prefab:LinkedEscape";
+    NLS::Engine::GameObject gameObject("LinkedEscape", "Prefab");
+    const auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &gameObject,
+        {},
+        prefabId,
+        "Assets/Prefabs/LinkedEscape.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_FALSE(created.prefabSourceText.empty());
+
+    WriteTextFile(root / "Assets" / "Prefabs" / "LinkedEscape.prefab", created.prefabSourceText);
+    auto meta = AssetMeta::CreateForAsset(root / "Assets" / "Prefabs" / "LinkedEscape.prefab");
+    meta.id = prefabId;
+    ASSERT_TRUE(meta.Save(root / "Assets" / "Prefabs" / "LinkedEscape.prefab.meta"));
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = prefabId;
+    manifest.importerId = "prefab";
+    manifest.importerVersion = GetCurrentImporterVersion(AssetType::Prefab);
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = subAssetKey;
+    manifest.subAssets.push_back(MakeArtifact(
+        prefabId,
+        subAssetKey,
+        ArtifactType::Prefab,
+        "prefab",
+        "Library/Artifacts/" + prefabId.ToString() + "/prefab.nprefab"));
+    WritePersistedArtifactManifest(root, manifest);
+
+    NativeArtifactMetadata metadata;
+    metadata.artifactType = ArtifactType::Prefab;
+    metadata.schemaName = "prefab-artifact";
+    metadata.schemaVersion = 1u;
+    metadata.sourceAssetId = prefabId;
+    metadata.subAssetKey = subAssetKey;
+    metadata.importerId = "prefab";
+    metadata.importerVersion = GetCurrentImporterVersion(AssetType::Prefab);
+    metadata.targetPlatform = "editor";
+    WriteBinaryFile(
+        outside / "prefab.nprefab",
+        WriteNativeArtifactContainer(
+            std::move(metadata),
+            std::vector<uint8_t>(created.prefabSourceText.begin(), created.prefabSourceText.end())));
+
+    const auto linkPath = root / "Library" / "Artifacts" / prefabId.ToString() / "prefab.nprefab";
+    std::filesystem::create_directories(linkPath.parent_path());
+    std::error_code error;
+    std::filesystem::create_symlink(outside / "prefab.nprefab", linkPath, error);
+    if (error)
+    {
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(outside);
+        GTEST_SKIP() << "File symlink creation is not available in this environment.";
+    }
+
+    std::filesystem::remove(root / "Assets" / "Prefabs" / "LinkedEscape.prefab");
+    std::filesystem::remove(root / "Assets" / "Prefabs" / "LinkedEscape.prefab.meta");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.GUIDToAssetPath(prefabId.ToString()).empty());
+    EXPECT_FALSE(database.LoadPrefabArtifactByAssetId(prefabId, subAssetKey).has_value());
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(outside);
 }
 
 TEST(AssetDatabaseFacadeTests, FileWatcherPreimportImportsSavedPrefabWithExternalAssetReferences)

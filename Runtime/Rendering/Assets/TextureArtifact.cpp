@@ -839,6 +839,39 @@ std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<
     return texture;
 }
 
+std::optional<TextureArtifactHeaderPreview> ReadTextureArtifactHeaderPreview(
+    const std::filesystem::path& path,
+    const uint64_t maxMetadataBytes)
+{
+    auto prefix = NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+        path,
+        NLS::Core::Assets::ArtifactType::Texture,
+        kTextureArtifactContainerSchemaVersion,
+        static_cast<size_t>(kTextureArtifactHeaderBytes),
+        maxMetadataBytes);
+    if (!prefix.has_value())
+    {
+        prefix = NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+            path,
+            NLS::Core::Assets::ArtifactType::Texture,
+            kLegacyTextureArtifactContainerSchemaVersion,
+            static_cast<size_t>(kLegacyTextureArtifactHeaderBytes),
+            maxMetadataBytes);
+    }
+    if (!prefix.has_value())
+        return std::nullopt;
+
+    const ByteView payload {prefix->bytes.data(), prefix->bytes.size()};
+    TextureArtifactHeader header;
+    if (!ReadHeader(payload, header))
+        return std::nullopt;
+
+    return TextureArtifactHeaderPreview {
+        header.width,
+        header.height
+    };
+}
+
 std::optional<TextureArtifactData> LoadTextureArtifact(const std::filesystem::path& path)
 {
     return LoadTextureArtifact(path, nullptr);

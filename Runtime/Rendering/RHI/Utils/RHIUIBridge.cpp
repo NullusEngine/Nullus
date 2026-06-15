@@ -4,8 +4,56 @@
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/RHI/Utils/RHIUIBridgeInternal.h"
 
+#include <algorithm>
+
 namespace NLS::Render::RHI
 {
+    bool RHIUICurrentFrameTextureRetirementTracker::RetireCurrentFrameUse(
+        const RHIUITextureHandleUse& use,
+        const bool referencedByCurrentFrame)
+    {
+        if (!referencedByCurrentFrame || use.textureViewKey == 0u || use.descriptorIndex == 0u)
+            return false;
+
+        if (!IsRetiredCurrentFrameUse(use))
+            m_retiredCurrentFrameUses.push_back(use);
+        return true;
+    }
+
+    bool RHIUICurrentFrameTextureRetirementTracker::IsRetiredCurrentFrameUse(
+        const RHIUITextureHandleUse& use) const
+    {
+        return std::find(
+            m_retiredCurrentFrameUses.begin(),
+            m_retiredCurrentFrameUses.end(),
+            use) != m_retiredCurrentFrameUses.end();
+    }
+
+    void RHIUICurrentFrameTextureRetirementTracker::RemoveViewKey(const uintptr_t textureViewKey)
+    {
+        m_retiredCurrentFrameUses.erase(
+            std::remove_if(
+                m_retiredCurrentFrameUses.begin(),
+                m_retiredCurrentFrameUses.end(),
+                [textureViewKey](const RHIUITextureHandleUse& use)
+                {
+                    return use.textureViewKey == textureViewKey;
+                }),
+            m_retiredCurrentFrameUses.end());
+    }
+
+    std::vector<RHIUITextureHandleUse> RHIUICurrentFrameTextureRetirementTracker::DiscardCurrentFrame()
+    {
+        auto uses = std::move(m_retiredCurrentFrameUses);
+        m_retiredCurrentFrameUses.clear();
+        return uses;
+    }
+
+    void RHIUICurrentFrameTextureRetirementTracker::RetainCurrentFrame()
+    {
+        m_retiredCurrentFrameUses.clear();
+    }
+
     namespace
     {
         class NullUIBridge final : public RHIUIBridge
@@ -17,6 +65,7 @@ namespace NLS::Render::RHI
             void RenderDrawData(ImDrawData*, uint32_t, const WaitSemaphoreResolver& = {}) override {}
             NativeHandle ResolveTextureView(const std::shared_ptr<RHITextureView>&) override { return {}; }
             void ReleaseTextureViewHandle(const std::shared_ptr<RHITextureView>&) override {}
+            void RetireTextureViewHandle(const std::shared_ptr<RHITextureView>&) override {}
             void SetWaitSemaphore(NativeHandle) override {}
             void SetSignalSemaphore(NativeHandle) override {}
             NativeHandle GetUISignalSemaphore() override { return {}; }

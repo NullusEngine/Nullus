@@ -1,5 +1,7 @@
 #include "Assets/AssetMeta.h"
 
+#include "Utils/PathParser.h"
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -36,6 +38,7 @@ std::string ToLower(std::string value)
         });
     return value;
 }
+
 }
 
 namespace NLS::Core::Assets
@@ -50,10 +53,13 @@ const char* ToString(const AssetType type)
     case AssetType::Material: return "material";
     case AssetType::Audio: return "audio";
     case AssetType::Scene: return "scene";
+    case AssetType::Script: return "script";
     case AssetType::Prefab: return "prefab";
     case AssetType::Unknown:
-    default: return "unknown";
+    case AssetType::Count:
+        break;
     }
+    return "unknown";
 }
 
 AssetType AssetTypeFromString(const std::string& text)
@@ -71,6 +77,8 @@ AssetType AssetTypeFromString(const std::string& text)
         return AssetType::Audio;
     if (lowered == "scene")
         return AssetType::Scene;
+    if (lowered == "script")
+        return AssetType::Script;
     if (lowered == "prefab")
         return AssetType::Prefab;
     return AssetType::Unknown;
@@ -85,21 +93,29 @@ std::filesystem::path GetAssetMetaPath(const std::filesystem::path& assetPath)
 
 AssetType InferAssetType(const std::filesystem::path& assetPath)
 {
-    const auto extension = ToLower(assetPath.extension().string());
-    if (extension == ".gltf" || extension == ".glb" || extension == ".fbx" || extension == ".obj")
+    switch (NLS::Utils::PathParser::GetFileType(assetPath.generic_string()))
+    {
+    case NLS::Utils::PathParser::EFileType::MODEL:
         return AssetType::ModelScene;
-    if (extension == ".png" || extension == ".jpeg" || extension == ".jpg" || extension == ".tga")
+    case NLS::Utils::PathParser::EFileType::TEXTURE:
         return AssetType::Texture;
-    if (extension == ".hlsl")
+    case NLS::Utils::PathParser::EFileType::SHADER:
         return AssetType::Shader;
-    if (extension == ".mat" || extension == ".nmat")
+    case NLS::Utils::PathParser::EFileType::MATERIAL:
         return AssetType::Material;
-    if (extension == ".mp3" || extension == ".ogg" || extension == ".wav")
+    case NLS::Utils::PathParser::EFileType::SOUND:
         return AssetType::Audio;
-    if (extension == ".scene" || extension == ".objectgraph.json")
+    case NLS::Utils::PathParser::EFileType::SCENE:
         return AssetType::Scene;
-    if (extension == ".prefab")
+    case NLS::Utils::PathParser::EFileType::SCRIPT:
+        return AssetType::Script;
+    case NLS::Utils::PathParser::EFileType::PREFAB:
         return AssetType::Prefab;
+    case NLS::Utils::PathParser::EFileType::FONT:
+    case NLS::Utils::PathParser::EFileType::UNKNOWN:
+    case NLS::Utils::PathParser::EFileType::COUNT:
+        break;
+    }
     return AssetType::Unknown;
 }
 
@@ -113,10 +129,13 @@ std::string InferImporterId(const AssetType type)
     case AssetType::Material: return "material";
     case AssetType::Audio: return "audio";
     case AssetType::Scene: return "scene";
+    case AssetType::Script: return "script";
     case AssetType::Prefab: return "prefab";
     case AssetType::Unknown:
-    default: return "unknown";
+    case AssetType::Count:
+        break;
     }
+    return "unknown";
 }
 
 uint32_t GetCurrentImporterVersion(const AssetType type)
@@ -130,11 +149,13 @@ uint32_t GetCurrentImporterVersion(const AssetType type)
     case AssetType::Material:
     case AssetType::Audio:
     case AssetType::Scene:
+    case AssetType::Script:
     case AssetType::Prefab:
     case AssetType::Unknown:
-    default:
+    case AssetType::Count:
         return 1u;
     }
+    return 1u;
 }
 
 std::optional<AssetMeta> AssetMeta::Load(const std::filesystem::path& metaPath)

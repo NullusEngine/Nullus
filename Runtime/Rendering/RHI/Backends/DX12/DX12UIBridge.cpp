@@ -181,6 +181,48 @@ namespace NLS::Render::RHI
                 }
             }
 
+            void RetireTextureViewHandle(const std::shared_ptr<RHITextureView>& textureView) override
+            {
+                if (textureView == nullptr)
+                    return;
+
+                RetireCompletedTextureHandles();
+                const uintptr_t viewKey = reinterpret_cast<uintptr_t>(textureView.get());
+                auto handleIt = m_textureHandles.find(viewKey);
+                if (handleIt == m_textureHandles.end())
+                    return;
+
+                const UINT descriptorIndex = handleIt->second.descriptorIndex;
+                const bool referencedByCurrentFrame =
+                    IsTextureViewHandleReferencedByCurrentFrame(viewKey, descriptorIndex);
+                const bool referencedBySubmittedWork =
+                    m_textureDescriptorInFlightUseCounts.find(descriptorIndex) !=
+                        m_textureDescriptorInFlightUseCounts.end();
+                if (!referencedByCurrentFrame && !referencedBySubmittedWork)
+                {
+                    if (descriptorIndex != 0u)
+                        ReleaseTextureDescriptorIndex(descriptorIndex);
+                    m_textureHandles.erase(handleIt);
+                    return;
+                }
+
+                if (referencedByCurrentFrame)
+                {
+                    m_currentFrameRetirementTracker.RetireCurrentFrameUse(
+                        { viewKey, descriptorIndex },
+                        true);
+                    return;
+                }
+
+                RetiredTextureHandleBatch batch;
+                batch.fenceValue = m_fenceValue;
+                batch.textureHandleUses.push_back({ viewKey, descriptorIndex });
+                batch.textureViews.push_back(textureView);
+                ++m_textureDescriptorInFlightUseCounts[descriptorIndex];
+                m_textureHandles.erase(handleIt);
+                m_retiredTextureHandleBatches.push_back(std::move(batch));
+            }
+
             void NotifyFontAtlasChanged() override
             {
                 if (!m_initialized)
@@ -639,8 +681,26 @@ namespace NLS::Render::RHI
 
             void DiscardCurrentFrameTextureHandles()
             {
+                const auto retiredCurrentFrameUses =
+                    m_currentFrameRetirementTracker.DiscardCurrentFrame();
                 m_currentFrameTextureHandleUses.clear();
                 m_currentFrameTextureViews.clear();
+
+                for (const auto& retiredUse : retiredCurrentFrameUses)
+                {
+                    auto handleIt = m_textureHandles.find(retiredUse.textureViewKey);
+                    if (handleIt != m_textureHandles.end() &&
+                        handleIt->second.descriptorIndex == retiredUse.descriptorIndex)
+                    {
+                        m_textureHandles.erase(handleIt);
+                    }
+
+                    if (m_textureDescriptorInFlightUseCounts.find(retiredUse.descriptorIndex) ==
+                        m_textureDescriptorInFlightUseCounts.end())
+                    {
+                        ReleaseTextureDescriptorIndex(retiredUse.descriptorIndex);
+                    }
+                }
             }
 
             void MarkDriverUnsafeGpuWorkQuarantined(const std::string& reason)
@@ -675,6 +735,7 @@ namespace NLS::Render::RHI
                 submission.attemptedFenceValue = attemptedFenceValue;
                 submission.backBufferIndex = backBufferIndex;
                 submission.context = std::move(context);
+                m_currentFrameRetirementTracker.RetainCurrentFrame();
                 m_currentFrameTextureHandleUses.clear();
                 m_currentFrameTextureViews.clear();
                 m_quarantinedUiFrameSubmissions.push_back(std::move(submission));
@@ -704,6 +765,7 @@ namespace NLS::Render::RHI
                 resources.currentFrameTextureViews = m_currentFrameTextureViews;
                 resources.quarantinedUiFrameSubmissions = m_quarantinedUiFrameSubmissions;
                 resources.context = std::move(context);
+                m_currentFrameRetirementTracker.RetainCurrentFrame();
                 QuarantinedUiBridgeResourcesKeepAlive().push_back(std::move(resources));
                 m_swapchainResourcesQuarantined = true;
                 MarkDriverUnsafeGpuWorkQuarantined(
@@ -735,6 +797,7 @@ namespace NLS::Render::RHI
 
             void DiscardCurrentFrameTextureViewHandle(const uintptr_t viewKey)
             {
+                m_currentFrameRetirementTracker.RemoveViewKey(viewKey);
                 for (size_t index = 0u; index < m_currentFrameTextureHandleUses.size();)
                 {
                     if (m_currentFrameTextureHandleUses[index].textureViewKey != viewKey)
@@ -788,6 +851,7 @@ namespace NLS::Render::RHI
 
             void RetainCurrentFrameTextureHandles(const UINT64 fenceValue)
             {
+                m_currentFrameRetirementTracker.RetainCurrentFrame();
                 if (m_currentFrameTextureViews.empty())
                     return;
 
@@ -1163,6 +1227,7 @@ namespace NLS::Render::RHI
             std::vector<QuarantinedUiFrameSubmission> m_quarantinedUiFrameSubmissions;
             std::vector<RetainedTextureHandleUse> m_currentFrameTextureHandleUses;
             std::vector<std::shared_ptr<RHITextureView>> m_currentFrameTextureViews;
+            RHIUICurrentFrameTextureRetirementTracker m_currentFrameRetirementTracker;
             std::vector<UINT> m_freeTextureDescriptorIndices;
             HANDLE m_fenceEvent = nullptr;
             UINT64 m_fenceValue = 0;

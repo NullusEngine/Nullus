@@ -40,7 +40,8 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     const NLS::Core::Assets::ArtifactType artifactType,
     const bool generatedModelPrefab,
     const bool imported,
-    const bool previewPrefabReady)
+    const bool previewPrefabReady,
+    const bool generatedBrowserSubAsset)
 {
     EditorAssetDragPayload payload;
     CopyPayloadString(payload.assetPath, assetPath);
@@ -50,6 +51,7 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     payload.generatedModelPrefab = generatedModelPrefab ? 1u : 0u;
     payload.imported = imported ? 1u : 0u;
     payload.previewPrefabReady = previewPrefabReady ? 1u : 0u;
+    payload.generatedBrowserSubAsset = generatedBrowserSubAsset ? 1u : 0u;
     return payload;
 }
 
@@ -61,7 +63,8 @@ EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
     const NLS::Core::Assets::ArtifactType artifactType,
     const bool generatedModelPrefab,
     const bool imported,
-    const bool previewPrefabReady)
+    const bool previewPrefabReady,
+    const bool generatedBrowserSubAsset)
 {
     return MakeEditorAssetDragPayload(
         assetPath,
@@ -70,7 +73,8 @@ EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
         artifactType,
         generatedModelPrefab,
         imported,
-        previewPrefabReady);
+        previewPrefabReady,
+        generatedBrowserSubAsset);
 }
 #endif
 
@@ -110,7 +114,11 @@ NLS::Core::Assets::AssetId GetEditorAssetDragPayloadAssetId(const EditorAssetDra
 NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const EditorAssetDragPayload& payload)
 {
     using NLS::Core::Assets::ArtifactType;
-    switch (static_cast<ArtifactType>(payload.artifactType))
+    if (payload.artifactType >= static_cast<uint32_t>(ArtifactType::Count))
+        return ArtifactType::Unknown;
+
+    const auto artifactType = static_cast<ArtifactType>(payload.artifactType);
+    switch (artifactType)
     {
     case ArtifactType::Model:
     case ArtifactType::Mesh:
@@ -124,15 +132,26 @@ NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const Edit
     case ArtifactType::Scene:
     case ArtifactType::Shader:
     case ArtifactType::Audio:
-        return static_cast<ArtifactType>(payload.artifactType);
+        return artifactType;
     case ArtifactType::Unknown:
-    default:
+    case ArtifactType::Count:
         return ArtifactType::Unknown;
     }
+    return ArtifactType::Unknown;
 }
 
 bool IsEditorAssetDragPayloadPreviewPrefabReady(const EditorAssetDragPayload& payload)
 {
     return payload.previewPrefabReady != 0u;
+}
+
+bool IsEditorAssetDragPayloadGeneratedBrowserSubAsset(const EditorAssetDragPayload& payload)
+{
+    return payload.generatedBrowserSubAsset != 0u;
+}
+
+bool CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(const EditorAssetDragPayload& payload)
+{
+    return !IsEditorAssetDragPayloadGeneratedBrowserSubAsset(payload);
 }
 }

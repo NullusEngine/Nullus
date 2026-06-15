@@ -900,6 +900,19 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     ASSERT_TRUE(meshRequest.has_value());
     EXPECT_EQ(meshRequest->kind, AssetThumbnailKind::Icon);
 
+    AssetBrowserItem prefab;
+    prefab.kind = AssetBrowserItemKind::SourceAsset;
+    prefab.type = AssetBrowserItemType::Prefab;
+    prefab.assetId = assetId;
+    prefab.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
+    prefab.subAssetKey = "prefab:Lamp";
+    prefab.artifactPath = "Library/Artifacts/prefab/Lamp.nprefab";
+    prefab.artifactType = ArtifactType::Prefab;
+    const auto prefabRequest = BuildAssetThumbnailRequestForItem(root, prefab, 96u);
+    ASSERT_TRUE(prefabRequest.has_value());
+    EXPECT_EQ(prefabRequest->kind, AssetThumbnailKind::PrefabPreview);
+    EXPECT_EQ(prefabRequest->artifactPath, "Library/Artifacts/prefab/Lamp.nprefab");
+
     AssetBrowserItem folder;
     folder.kind = AssetBrowserItemKind::Folder;
     folder.type = AssetBrowserItemType::Folder;
@@ -934,6 +947,48 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsSourceTextureRequestFromMetaWhenArti
     const auto requestAfterDatabaseRefresh = BuildAssetThumbnailRequestForItem(root, texture, 96u);
     ASSERT_TRUE(requestAfterDatabaseRefresh.has_value());
     EXPECT_EQ(BuildAssetThumbnailCacheKey(*request), BuildAssetThumbnailCacheKey(*requestAfterDatabaseRefresh));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ServiceRetriesPreviewThumbnailsAfterTransientArtifactFailure)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    WriteBinaryFile(root / "Assets" / "Materials" / "Body.mat", std::vector<uint8_t>{'<', 'm', 'a', 't', '/', '>'});
+
+    auto request = MakeThumbnailRequest(root, "material:Body");
+    request.sourceAssetPath = "Assets/Materials/Body.mat";
+    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/materials/Body.nmat";
+    request.kind = AssetThumbnailKind::MaterialSphere;
+    request.requestedSize = 48u;
+    request.freshnessInputs = {{ "artifact", "material:v1" }};
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    const auto firstGenerated = service.GenerateNextThumbnail();
+    ASSERT_TRUE(firstGenerated.has_value());
+    EXPECT_EQ(firstGenerated->status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(firstGenerated->diagnostic, "thumbnail-material-artifact-missing");
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Failed);
+
+    WriteNativeArtifactTextFile(
+        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "materials" / "Body.nmat",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        1u,
+        "<root><uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.1 0.8 0.4 1.0\"/></root>");
+
+    const auto retried = service.GetThumbnail(request);
+    EXPECT_EQ(retried.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+
+    const auto secondGenerated = service.GenerateNextThumbnail();
+    ASSERT_TRUE(secondGenerated.has_value());
+    EXPECT_EQ(secondGenerated->status, AssetThumbnailServiceStatus::Fresh);
+    EXPECT_TRUE(std::filesystem::exists(secondGenerated->imagePath));
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
 
     std::filesystem::remove_all(root);
 }

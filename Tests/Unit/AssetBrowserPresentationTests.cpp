@@ -5,6 +5,7 @@
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/ExternalAssetImporter.h"
+#include "Core/EditorResources.h"
 #include "Guid.h"
 #include "Utils/PathParser.h"
 
@@ -53,6 +54,45 @@ std::string SafeArtifactPathToken(std::string value)
             character = '_';
     }
     return value;
+}
+
+std::string Utf8String(const char8_t* value)
+{
+    const auto text = std::u8string(value);
+    return { reinterpret_cast<const char*>(text.data()), text.size() };
+}
+
+std::filesystem::path Utf8Path(const char8_t* value)
+{
+    return std::filesystem::path(std::u8string(value));
+}
+
+std::pair<std::uint32_t, std::uint32_t> ReadPngDimensions(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return {};
+
+    std::array<unsigned char, 24> header {};
+    input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+    if (input.gcount() != static_cast<std::streamsize>(header.size()))
+        return {};
+
+    constexpr std::array<unsigned char, 8> pngSignature { 137, 80, 78, 71, 13, 10, 26, 10 };
+    if (!std::equal(pngSignature.begin(), pngSignature.end(), header.begin()))
+        return {};
+    if (header[12] != 'I' || header[13] != 'H' || header[14] != 'D' || header[15] != 'R')
+        return {};
+
+    const auto readBigEndian = [&header](const std::size_t offset)
+    {
+        return
+            (static_cast<std::uint32_t>(header[offset]) << 24u) |
+            (static_cast<std::uint32_t>(header[offset + 1u]) << 16u) |
+            (static_cast<std::uint32_t>(header[offset + 2u]) << 8u) |
+            static_cast<std::uint32_t>(header[offset + 3u]);
+    };
+    return { readBigEndian(16u), readBigEndian(20u) };
 }
 
 NLS::Core::Assets::ImportedArtifact MakeArtifact(
@@ -302,6 +342,207 @@ TEST(AssetBrowserPresentationTests, BuildsFolderTreeLazilyByDefault)
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetBrowserPresentationTests, BreadcrumbAcceptsUtf8ProjectFolderWithoutNarrowFilesystemConversion)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto input = Utf8String(u8"Assets/模型\\子目录/../贴图/");
+    const auto expected = Utf8String(u8"Assets/模型/贴图");
+
+    std::vector<AssetBrowserBreadcrumbSegment> breadcrumb;
+    ASSERT_NO_THROW(breadcrumb = BuildAssetBrowserBreadcrumb(input));
+
+    ASSERT_EQ(breadcrumb.size(), 3u);
+    EXPECT_EQ(breadcrumb[0].projectRelativePath, "Assets");
+    EXPECT_EQ(breadcrumb[1].projectRelativePath, Utf8String(u8"Assets/模型"));
+    EXPECT_EQ(breadcrumb[2].projectRelativePath, expected);
+}
+
+TEST(AssetBrowserPresentationTests, ProjectRelativePathNormalizerPreservesInvalidRootAndEscapePrefixes)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_EQ(NormalizeAssetBrowserProjectRelativePath("../Assets/Models"), "../Assets/Models");
+    EXPECT_EQ(NormalizeAssetBrowserProjectRelativePath("/"), "/");
+    EXPECT_EQ(NormalizeAssetBrowserProjectRelativePath("/Assets/Models"), "/Assets/Models");
+    EXPECT_EQ(NormalizeAssetBrowserProjectRelativePath("Assets/.."), "..");
+    EXPECT_EQ(NormalizeAssetBrowserProjectRelativePath("Assets/Models/../../.."), "..");
+}
+
+TEST(AssetBrowserPresentationTests, FolderTreeStopsDrawingInvalidatedNodeAfterSelectionChange)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_FALSE(ShouldStopDrawingAssetBrowserFolderNodeAfterSelection("Assets/Models", "Assets\\Models/"));
+    EXPECT_TRUE(ShouldStopDrawingAssetBrowserFolderNodeAfterSelection("Assets", Utf8String(u8"Assets/模型")));
+}
+
+TEST(AssetBrowserPresentationTests, GridStopsDrawingInvalidatedItemsAfterOpeningFolder)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserItem folder;
+    folder.kind = AssetBrowserItemKind::Folder;
+    folder.projectRelativePath = Utf8String(u8"Assets/模型");
+
+    AssetBrowserItem texture;
+    texture.kind = AssetBrowserItemKind::SourceAsset;
+    texture.projectRelativePath = Utf8String(u8"Assets/模型/英雄.png");
+
+    EXPECT_TRUE(ShouldStopDrawingAssetBrowserGridAfterOpeningItem("Assets", folder));
+    EXPECT_FALSE(ShouldStopDrawingAssetBrowserGridAfterOpeningItem(Utf8String(u8"Assets/模型"), folder));
+    EXPECT_FALSE(ShouldStopDrawingAssetBrowserGridAfterOpeningItem("Assets", texture));
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailSizeMinimumUsesUnityStyleListMode)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_EQ(ResolveAssetBrowserContentViewMode(64.0f), AssetBrowserContentViewMode::List);
+    EXPECT_EQ(ResolveAssetBrowserContentViewMode(65.0f), AssetBrowserContentViewMode::Grid);
+    EXPECT_EQ(ResolveAssetBrowserContentViewMode(96.0f), AssetBrowserContentViewMode::Grid);
+}
+
+TEST(AssetBrowserPresentationTests, FallbackIconsUseProjectEditorIconIds)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Folder), "Icon_Folder");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Texture), "Icon_Texture");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Material), "Icon_Material");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Mesh), "Icon_Model");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Prefab), "Icon_Prefab");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Scene), "Icon_Scene");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Shader), "Icon_Shader");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Script), "Icon_Script");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Other), "Icon_Unknown");
+}
+
+TEST(AssetBrowserPresentationTests, UnityTypeIconOverridesDoNotUsePreviewOrWindowIcons)
+{
+    const auto& overrides = NLS::Editor::Core::EditorResources::EditorIconFileOverrides();
+    std::unordered_set<std::string> unityProjectIconIds;
+    const auto repoRoot = std::filesystem::path(NLS_ROOT_DIR);
+    const auto iconRoot = repoRoot / "App" / "Assets" / "Editor" / "Icon";
+    const auto assetRoot = repoRoot / "App" / "Assets";
+
+    for (const auto& iconOverride : overrides)
+    {
+        EXPECT_STRNE(iconOverride.fileName, "d_prematcube@2x.png")
+            << iconOverride.id << " must not use the material preview cube as a Unity type icon";
+        EXPECT_STRNE(iconOverride.fileName, "d_prematsphere@2x.png")
+            << iconOverride.id << " must not use the material preview sphere as a Unity type icon";
+        EXPECT_STRNE(iconOverride.fileName, "d_unityeditor.inspectorwindow.png")
+            << iconOverride.id << " must not use an editor window icon as a Unity type icon";
+        EXPECT_STRNE(iconOverride.fileName, "d_preset.context.png")
+            << iconOverride.id << " must not use a context preset icon as a Unity type icon";
+
+        const std::string fileName = iconOverride.fileName;
+        if (fileName.rfind("unity_project_", 0) == 0)
+            unityProjectIconIds.insert(iconOverride.id);
+
+        const auto iconPath = std::filesystem::path(fileName).is_relative()
+            ? (fileName.rfind("unity_project_", 0) == 0
+                ? iconRoot / fileName
+                : assetRoot / fileName)
+            : std::filesystem::path(fileName);
+        const auto [width, height] = ReadPngDimensions(iconPath);
+        EXPECT_EQ(width, 128u)
+            << iconOverride.id << " must use a Unity Project-window exported icon";
+        EXPECT_EQ(height, 128u)
+            << iconOverride.id << " must use a Unity Project-window exported icon";
+    }
+
+    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Folder"));
+    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Texture"));
+    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Model"));
+    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Prefab"));
+    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Material"));
+    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Shader"));
+    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Script"));
+    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Unknown"));
+
+    const auto sceneOverride = std::find_if(
+        overrides.begin(),
+        overrides.end(),
+        [](const auto& iconOverride)
+        {
+            return std::string_view(iconOverride.id) == "Icon_Scene";
+        });
+    ASSERT_NE(sceneOverride, overrides.end());
+    EXPECT_STREQ(sceneOverride->fileName, "Engine/Brand/NullusLogoMark.png");
+}
+
+TEST(AssetBrowserPresentationTests, GeneratedSubAssetsAreNestedUnderCollapsedSourceAssets)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserItem source;
+    source.kind = AssetBrowserItemKind::SourceAsset;
+    source.type = AssetBrowserItemType::Model;
+    source.displayName = "Sponza.fbx";
+    source.projectRelativePath = "Assets/Models/Sponza.fbx";
+    source.sourceAssetPath = source.projectRelativePath;
+
+    AssetBrowserItem mesh;
+    mesh.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    mesh.type = AssetBrowserItemType::Mesh;
+    mesh.displayName = "Mesh A";
+    mesh.projectRelativePath = "Assets/Models/Sponza.fbx::mesh:A";
+    mesh.sourceAssetPath = source.sourceAssetPath;
+
+    AssetBrowserItem material;
+    material.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    material.type = AssetBrowserItemType::Material;
+    material.displayName = "Material A";
+    material.projectRelativePath = "Assets/Models/Sponza.fbx::material:A";
+    material.sourceAssetPath = source.sourceAssetPath;
+
+    const std::vector<AssetBrowserItem> items { source, mesh, material };
+    const auto collapsed = BuildAssetBrowserDisplayItems(items, {});
+    ASSERT_EQ(collapsed.size(), 1u);
+    EXPECT_EQ(collapsed[0].item.projectRelativePath, source.projectRelativePath);
+    EXPECT_EQ(collapsed[0].childCount, 2u);
+    EXPECT_FALSE(collapsed[0].subAsset);
+    EXPECT_FALSE(collapsed[0].expanded);
+
+    const auto expanded = BuildAssetBrowserDisplayItems(items, { source.sourceAssetPath });
+    ASSERT_EQ(expanded.size(), 3u);
+    EXPECT_EQ(expanded[0].childCount, 2u);
+    EXPECT_TRUE(expanded[0].expanded);
+    EXPECT_TRUE(expanded[1].subAsset);
+    EXPECT_EQ(expanded[1].item.displayName, "Mesh A");
+    EXPECT_TRUE(expanded[2].subAsset);
+    EXPECT_EQ(expanded[2].item.displayName, "Material A");
+}
+
+TEST(AssetBrowserPresentationTests, GridThumbnailLayoutPreservesImageAspectRatio)
+{
+    const NLS::Editor::Assets::AssetBrowserRect bounds {
+        { 10.0f, 20.0f },
+        { 74.0f, 84.0f }
+    };
+    const auto result = NLS::Editor::Assets::ComputeAssetBrowserThumbnailRect(
+        bounds,
+        256u,
+        128u);
+
+    EXPECT_FLOAT_EQ(result.min.x, 10.0f);
+    EXPECT_FLOAT_EQ(result.min.y, 36.0f);
+    EXPECT_FLOAT_EQ(result.max.x, 74.0f);
+    EXPECT_FLOAT_EQ(result.max.y, 68.0f);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailLetterboxBackgroundOnlyAppliesToTextures)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_TRUE(ShouldDrawAssetBrowserThumbnailLetterboxBackground(AssetBrowserItemType::Texture));
+    EXPECT_FALSE(ShouldDrawAssetBrowserThumbnailLetterboxBackground(AssetBrowserItemType::Material));
+    EXPECT_FALSE(ShouldDrawAssetBrowserThumbnailLetterboxBackground(AssetBrowserItemType::Prefab));
+    EXPECT_FALSE(ShouldDrawAssetBrowserThumbnailLetterboxBackground(AssetBrowserItemType::Model));
+}
+
 TEST(AssetBrowserPresentationTests, ExpandedFolderTreeNodesEnumerateOnlyRequestedBranches)
 {
     using namespace NLS::Editor::Assets;
@@ -533,6 +774,29 @@ TEST(AssetBrowserPresentationTests, ProjectBrowserResourceDropGuardRejectsEngine
         ":Engine/Builtin",
         targetFolder,
         true));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetBrowserPresentationTests, ProjectBrowserResourceDropGuardAcceptsUtf8ProjectPaths)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetBrowserPresentationRoot();
+    const auto assetsRoot = root / "Assets";
+    const auto sourceFolder = assetsRoot / Utf8Path(u8"模型");
+    const auto targetFolder = assetsRoot / Utf8Path(u8"材质");
+    std::filesystem::create_directories(sourceFolder);
+    std::filesystem::create_directories(targetFolder);
+    WriteTextFile(sourceFolder / Utf8Path(u8"英雄_😀.mat"), "material");
+
+    EXPECT_NO_THROW({
+        EXPECT_TRUE(CanMoveProjectBrowserResourcePathIntoFolder(
+            assetsRoot,
+            Utf8String(u8"Assets/模型/英雄_😀.mat"),
+            targetFolder,
+            false));
+    });
 
     std::filesystem::remove_all(root);
 }
@@ -953,7 +1217,7 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeKeyChangesWhenVisibl
         BuildAssetBrowserThumbnailGenerationScopeKey("Assets/Materials", 96u, materialItems));
 }
 
-TEST(AssetBrowserPresentationTests, ThumbnailGenerationItemsUseKnownEmptyVisibleScope)
+TEST(AssetBrowserPresentationTests, ThumbnailGenerationItemsWaitForVisibleScope)
 {
     using namespace NLS::Editor::Assets;
 
@@ -976,13 +1240,20 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationItemsUseKnownEmptyVisible
         currentFolderItems,
         visibleItems,
         false);
-    ASSERT_EQ(unknownVisibleScope.size(), 2u);
+    EXPECT_TRUE(unknownVisibleScope.empty());
 
     const auto knownEmptyVisibleScope = SelectAssetBrowserThumbnailGenerationItems(
         currentFolderItems,
         visibleItems,
         true);
     EXPECT_TRUE(knownEmptyVisibleScope.empty());
+
+    const auto knownVisibleScope = SelectAssetBrowserThumbnailGenerationItems(
+        currentFolderItems,
+        std::vector<AssetBrowserItem> { texture },
+        true);
+    ASSERT_EQ(knownVisibleScope.size(), 1u);
+    EXPECT_EQ(knownVisibleScope[0].projectRelativePath, texture.projectRelativePath);
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeDecisionRequeriesDirtySameScope)

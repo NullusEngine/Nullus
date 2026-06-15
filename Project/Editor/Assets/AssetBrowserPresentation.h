@@ -141,6 +141,16 @@ AssetDatabaseRefreshDiscardAction PlanAssetDatabaseRefreshDiscardAction(
     bool futureValid,
     bool futureReady);
 
+std::string NormalizeAssetBrowserProjectRelativePath(std::string path);
+
+bool ShouldStopDrawingAssetBrowserFolderNodeAfterSelection(
+    const std::string& selectedFolder,
+    const std::string& clickedFolder);
+
+bool ShouldStopDrawingAssetBrowserGridAfterOpeningItem(
+    const std::string& selectedFolder,
+    const AssetBrowserItem& openedItem);
+
 struct AssetBrowserWorkflowCapabilities
 {
     bool canShowInExplorer = false;
@@ -168,6 +178,32 @@ struct AssetBrowserItemTypeColor
     uint8_t alpha = 255u;
 };
 
+enum class AssetBrowserContentViewMode
+{
+    Grid,
+    List
+};
+
+struct AssetBrowserDisplayItem
+{
+    AssetBrowserItem item;
+    size_t childCount = 0u;
+    bool subAsset = false;
+    bool expanded = false;
+};
+
+struct AssetBrowserPoint
+{
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+struct AssetBrowserRect
+{
+    AssetBrowserPoint min;
+    AssetBrowserPoint max;
+};
+
 AssetBrowserWorkflowCapabilities BuildAssetBrowserWorkflowCapabilities(
     const AssetBrowserItem& item);
 
@@ -177,6 +213,21 @@ AssetBrowserItemType AssetBrowserItemTypeFromPathParserFileType(
 const char* AssetBrowserItemTypeDisplayLabel(AssetBrowserItemType type);
 
 AssetBrowserItemTypeColor AssetBrowserItemTypeDisplayColor(AssetBrowserItemType type);
+
+const char* AssetBrowserFallbackIconId(AssetBrowserItemType type);
+
+AssetBrowserContentViewMode ResolveAssetBrowserContentViewMode(float thumbnailSize);
+
+AssetBrowserRect ComputeAssetBrowserThumbnailRect(
+    AssetBrowserRect bounds,
+    uint32_t imageWidth,
+    uint32_t imageHeight);
+
+bool ShouldDrawAssetBrowserThumbnailLetterboxBackground(AssetBrowserItemType type);
+
+std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
+    const std::vector<AssetBrowserItem>& items,
+    const std::unordered_set<std::string>& expandedSourceAssets);
 
 const std::array<AssetBrowserItemType, kAssetBrowserItemTypeCount>& AssetBrowserItemTypeFilterOptions();
 

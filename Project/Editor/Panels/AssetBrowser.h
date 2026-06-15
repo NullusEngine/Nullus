@@ -135,10 +135,13 @@ namespace NLS::Editor::Panels
 		void RebuildProjectAssetPresentation(NLS::Editor::Assets::AssetBrowserRefreshPlan refreshPlan);
 		void SelectProjectFolder(const std::string& projectRelativePath);
 		void DrawProjectAssetBrowser();
-		void DrawProjectFolderTree(const NLS::Editor::Assets::AssetBrowserFolderNode& node);
+		bool DrawProjectFolderTree(const NLS::Editor::Assets::AssetBrowserFolderNode& node);
 		void DrawProjectBreadcrumb();
 		void DrawProjectFilterBar();
 		void DrawCurrentFolderGrid();
+		void DrawCurrentFolderList(
+			const std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem>& displayItems);
+		void DrawAssetBrowserFooter();
 		void RequestProjectBrowserTextDialog(
 			ProjectBrowserTextDialogKind kind,
 			std::string title,
@@ -146,19 +149,24 @@ namespace NLS::Editor::Panels
 			std::string targetProjectRelativeFolder,
 			const std::filesystem::path& sourceAbsolutePath,
 			std::string defaultName);
-		void DrawProjectBrowserTextDialog();
-		bool CommitProjectBrowserTextDialog();
-		void DrawProjectFolderContextMenu(
-			const std::string& popupId,
-			const std::string& projectRelativeFolder,
-			const std::filesystem::path& absoluteFolder);
+			void DrawProjectBrowserTextDialog();
+			bool CommitProjectBrowserTextDialog();
+			void DrawProjectCurrentFolderContextMenu(
+				const std::string& popupId,
+				const std::string& projectRelativeFolder,
+				const std::filesystem::path& absoluteFolder);
+			void DrawProjectFolderContextMenu(
+				const std::string& popupId,
+				const std::string& projectRelativeFolder,
+				const std::filesystem::path& absoluteFolder);
 		void DrawProjectGridItemContextMenu(const NLS::Editor::Assets::AssetBrowserItem& item);
 		void DrawProjectGridItemThumbnail(
 			const NLS::Editor::Assets::AssetBrowserItem& item,
 			const ImVec2& iconMin,
 			const ImVec2& iconMax,
 			float thumbnailSize,
-			bool hovered);
+			bool hovered,
+			bool compact = false);
 		void DrawProjectGridItemDragSource(const NLS::Editor::Assets::AssetBrowserItem& item);
 		void DrawProjectFolderDropTarget(
 			const std::string& projectRelativeFolder,
@@ -168,6 +176,7 @@ namespace NLS::Editor::Panels
 		void OpenProjectGridItemProperties(const NLS::Editor::Assets::AssetBrowserItem& item);
 		void PreviewProjectGridItem(const NLS::Editor::Assets::AssetBrowserItem& item);
 		void RebuildProjectAssetPresentationAfterWorkflow();
+		void ScheduleProjectAssetPreimportForPath(std::string projectRelativePath);
 		void ScheduleProjectAssetPreimportForPath(const std::filesystem::path& projectRelativePath);
 		bool MoveOrCopyProjectBrowserFolderIntoFolder(
 			const std::string& receivedProjectRelativeFolder,
@@ -179,7 +188,8 @@ namespace NLS::Editor::Panels
 			Engine::GameObject* gameObject,
 			const std::string& targetProjectRelativeFolder,
 			const std::filesystem::path& targetAbsoluteFolder);
-		void* ResolveCachedThumbnailTextureHandle(const std::filesystem::path& imagePath);
+			struct ThumbnailTextureHandle;
+			ThumbnailTextureHandle ResolveCachedThumbnailTextureHandle(const std::filesystem::path& imagePath);
 		bool LoadCachedThumbnailTexture(const std::string& normalizedPath);
 		bool LoadDecodedCachedThumbnailTexture(ThumbnailTextureDecodeResult result);
 		static ThumbnailTextureDecodeResult DecodeCachedThumbnailTexture(std::string normalizedPath);
@@ -221,11 +231,19 @@ namespace NLS::Editor::Panels
 		bool m_visibleThumbnailItemsKnown = false;
 		std::unordered_map<std::string, NLS::Editor::Assets::AssetThumbnailServiceResult> m_thumbnailResultsByItemKey;
 		std::unordered_map<std::string, std::string> m_thumbnailItemKeyByCacheKey;
-		struct ThumbnailTextureCacheEntry
-		{
-			NLS::Render::Resources::Texture2D* texture = nullptr;
-			std::shared_ptr<NLS::Render::RHI::RHITextureView> textureView;
-		};
+			struct ThumbnailTextureCacheEntry
+			{
+				NLS::Render::Resources::Texture2D* texture = nullptr;
+				std::shared_ptr<NLS::Render::RHI::RHITextureView> textureView;
+				uint32_t width = 0u;
+				uint32_t height = 0u;
+			};
+			struct ThumbnailTextureHandle
+			{
+				void* textureHandle = nullptr;
+				uint32_t width = 0u;
+				uint32_t height = 0u;
+			};
 		struct ThumbnailTextureDecodeResult
 		{
 			std::string normalizedPath;
@@ -276,6 +294,7 @@ namespace NLS::Editor::Panels
 		std::unordered_map<UI::Widgets::TreeNode*, std::string> m_pathUpdate;
 		std::unordered_set<std::string> m_expandedFolders;
 		std::unordered_set<std::string> m_expandedProjectFolders;
+		std::unordered_set<std::string> m_expandedProjectAssetItems;
 		Core::AssetFileWatcher m_engineAssetsWatcher;
 		Core::AssetFileWatcher m_projectAssetsWatcher;
 		std::future<void> m_watcherStartup;
@@ -285,6 +304,7 @@ namespace NLS::Editor::Panels
 		bool m_projectFolderTreeRefreshRequested = false;
 		bool m_startupWatcherPreimportGateOpen = true;
 		bool m_projectAssetPreimportRunning = false;
+		uint64_t m_projectAssetPresentationGeneration = 0u;
 		std::optional<NLS::Editor::Assets::AssetPreimportRequest> m_pendingProjectAssetPreimportRequest;
 	};
 }

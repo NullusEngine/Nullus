@@ -73,7 +73,7 @@ constexpr std::array<AssetThumbnailKindPolicy, kAssetThumbnailKindCount> kAssetT
     { AssetThumbnailKind::Texture, "Icon_Texture", GenerateTextureThumbnail, "thumbnail-generation-unsupported" },
     { AssetThumbnailKind::MaterialSphere, "Icon_Material", GenerateMaterialThumbnail, "thumbnail-material-preview-generation-failed" },
     { AssetThumbnailKind::ModelPreview, "Icon_Model", GenerateModelThumbnail, "thumbnail-model-preview-generation-failed" },
-    { AssetThumbnailKind::PrefabPreview, "Icon_Model", GeneratePrefabThumbnail, "thumbnail-prefab-preview-generation-failed" },
+    { AssetThumbnailKind::PrefabPreview, "Icon_Prefab", GeneratePrefabThumbnail, "thumbnail-prefab-preview-generation-failed" },
     { AssetThumbnailKind::GenericPreview, "Icon_Unknown", nullptr, "thumbnail-generation-unsupported" }
 }};
 
@@ -187,6 +187,8 @@ bool IsRetryableThumbnailFailureDiagnostic(const std::string& diagnostic)
     return diagnostic == "thumbnail-material-preview-hook-unavailable" ||
         diagnostic == "thumbnail-model-preview-hook-unavailable" ||
         diagnostic == "thumbnail-prefab-preview-hook-unavailable" ||
+        diagnostic == "thumbnail-material-artifact-missing" ||
+        diagnostic == "thumbnail-prefab-artifact-missing" ||
         diagnostic == "thumbnail-material-preview-generation-failed" ||
         diagnostic == "thumbnail-model-preview-generation-failed" ||
         diagnostic == "thumbnail-prefab-preview-generation-failed" ||
@@ -624,6 +626,45 @@ std::filesystem::path ResolveThumbnailArtifactPath(const AssetThumbnailRequest& 
         return artifactRootCandidate;
 
     return {};
+}
+
+bool IsMissingThumbnailArtifactPath(const AssetThumbnailRequest& request)
+{
+    if (request.artifactPath.empty() || !request.assetId.IsValid())
+        return false;
+
+    const auto sourceArtifactRoot = NLS::Core::Assets::NormalizeAssetPath(
+        request.projectRoot / "Library" / "Artifacts" / request.assetId.ToString());
+    if (sourceArtifactRoot.empty())
+        return false;
+
+    const auto rawPath = std::filesystem::path(request.artifactPath).lexically_normal();
+    std::vector<std::filesystem::path> candidates;
+    if (rawPath.is_absolute())
+    {
+        candidates.push_back(rawPath);
+    }
+    else
+    {
+        candidates.push_back(request.projectRoot / rawPath);
+        candidates.push_back(sourceArtifactRoot / rawPath);
+    }
+
+    for (const auto& candidate : candidates)
+    {
+        const auto normalized = NLS::Core::Assets::NormalizeAssetPath(candidate);
+        if (normalized.empty() || !IsPathInsideEditorAssetRoot(normalized, sourceArtifactRoot))
+            continue;
+
+        std::error_code error;
+        const bool exists = std::filesystem::exists(normalized, error);
+        if (!error && !exists)
+            return true;
+        if (!error && exists)
+            return false;
+    }
+
+    return false;
 }
 
 std::vector<uint8_t> ReadAllBytes(const std::filesystem::path& path);
@@ -1407,7 +1448,9 @@ AssetThumbnailServiceResult GenerateMaterialThumbnail(
     const auto previewPath = ResolvePreviewArtifactOrSourcePath(request);
     if (!previewPath.has_value())
     {
-        result.diagnostic = "thumbnail-material-artifact-path-invalid";
+        result.diagnostic = IsMissingThumbnailArtifactPath(request)
+            ? "thumbnail-material-artifact-missing"
+            : "thumbnail-material-artifact-path-invalid";
         WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
         return result;
     }
@@ -1532,7 +1575,9 @@ AssetThumbnailServiceResult GeneratePrefabThumbnail(
     const auto previewPath = ResolvePreviewArtifactOrSourcePath(request);
     if (!previewPath.has_value())
     {
-        result.diagnostic = "thumbnail-prefab-artifact-path-invalid";
+        result.diagnostic = IsMissingThumbnailArtifactPath(request)
+            ? "thumbnail-prefab-artifact-missing"
+            : "thumbnail-prefab-artifact-path-invalid";
         WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
         return result;
     }

@@ -7,7 +7,9 @@
 #include <cctype>
 #include <cstdint>
 #include <iterator>
+#include <optional>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 #include <unordered_set>
 #include <utility>
@@ -53,6 +55,39 @@ std::string MakeSubAssetDisplayName(const std::string& p_subAssetKey)
     return name;
 }
 
+std::string PathToGenericUtf8String(const std::filesystem::path& path)
+{
+    const auto text = path.lexically_normal().generic_u8string();
+    return { reinterpret_cast<const char*>(text.data()), text.size() };
+}
+
+std::string PathFilenameToGenericUtf8String(const std::filesystem::path& path)
+{
+    const auto text = path.filename().generic_u8string();
+    return { reinterpret_cast<const char*>(text.data()), text.size() };
+}
+
+std::optional<std::filesystem::path> PathFromProjectRelativeUtf8(const std::string& path)
+{
+    std::u8string utf8;
+    utf8.reserve(path.size());
+    for (const auto character : path)
+        utf8.push_back(static_cast<char8_t>(static_cast<unsigned char>(character)));
+
+    try
+    {
+        return std::filesystem::path(utf8);
+    }
+    catch (const std::filesystem::filesystem_error&)
+    {
+        return std::nullopt;
+    }
+    catch (const std::system_error&)
+    {
+        return std::nullopt;
+    }
+}
+
 std::filesystem::path ResolveAssetsRoot(const std::filesystem::path& projectRootOrAssetsRoot)
 {
     auto root = projectRootOrAssetsRoot.lexically_normal();
@@ -73,14 +108,7 @@ std::filesystem::path ResolveAssetsRoot(const std::filesystem::path& projectRoot
 
 std::string NormalizeProjectRelativePath(std::filesystem::path path)
 {
-    auto normalized = path.lexically_normal().generic_string();
-    if (normalized.empty() || normalized == ".")
-        return "Assets";
-
-    std::replace(normalized.begin(), normalized.end(), '\\', '/');
-    while (normalized.size() > 1u && normalized.back() == '/')
-        normalized.pop_back();
-    return normalized;
+    return NormalizeAssetBrowserProjectRelativePath(PathToGenericUtf8String(path));
 }
 
 bool IsContainedRelativePath(const std::filesystem::path& relative)
@@ -108,21 +136,24 @@ std::string ToProjectRelativePath(
     const auto relative = normalizedAbsolute.lexically_relative(normalizedAssetsRoot);
     if (relative.empty() || !IsContainedRelativePath(relative))
         return {};
-    return NormalizeProjectRelativePath(std::filesystem::path("Assets") / relative);
+    return NormalizeAssetBrowserProjectRelativePath("Assets/" + PathToGenericUtf8String(relative));
 }
 
 std::filesystem::path AbsolutePathForProjectRelative(
     const std::filesystem::path& assetsRoot,
     const std::string& projectRelativePath)
 {
-    const auto normalized = NormalizeProjectRelativePath(projectRelativePath);
+    const auto normalized = NormalizeAssetBrowserProjectRelativePath(projectRelativePath);
     if (normalized == "Assets")
         return assetsRoot.lexically_normal();
 
-    const auto relative = std::filesystem::path(normalized).lexically_relative("Assets");
-    if (relative.empty() || !IsContainedRelativePath(relative))
+    if (normalized.compare(0u, 7u, "Assets/") != 0)
         return {};
-    return (assetsRoot / relative).lexically_normal();
+
+    const auto relative = PathFromProjectRelativeUtf8(normalized.substr(7u));
+    if (!relative.has_value() || relative->empty() || !IsContainedRelativePath(*relative))
+        return {};
+    return (assetsRoot / *relative).lexically_normal();
 }
 
 bool IsPhysicalDirectoryEntry(const std::filesystem::directory_entry& entry)
@@ -217,16 +248,23 @@ bool ShouldEnumerateFolderChildren(
     if (projectRelativePath == "Assets")
         return true;
 
-    const auto normalized = NormalizeProjectRelativePath(projectRelativePath);
-    const auto selected = NormalizeProjectRelativePath(options.selectedFolder);
-    if (normalized == selected || IsPathInsideEditorAssetRoot(std::filesystem::path(selected), std::filesystem::path(normalized)))
+    const auto normalized = NormalizeAssetBrowserProjectRelativePath(projectRelativePath);
+    const auto selected = NormalizeAssetBrowserProjectRelativePath(options.selectedFolder);
+    if (selected == normalized ||
+        (selected.size() > normalized.size() &&
+         selected.compare(0u, normalized.size(), normalized) == 0 &&
+         selected[normalized.size()] == '/'))
+    {
         return true;
+    }
 
     for (const auto& expanded : options.expandedFolders)
     {
-        const auto normalizedExpanded = NormalizeProjectRelativePath(expanded);
-        if (normalized == normalizedExpanded ||
-            IsPathInsideEditorAssetRoot(std::filesystem::path(normalizedExpanded), std::filesystem::path(normalized)))
+        const auto normalizedExpanded = NormalizeAssetBrowserProjectRelativePath(expanded);
+        if (normalizedExpanded == normalized ||
+            (normalizedExpanded.size() > normalized.size() &&
+             normalizedExpanded.compare(0u, normalized.size(), normalized) == 0 &&
+             normalizedExpanded[normalized.size()] == '/'))
         {
             return true;
         }
@@ -240,7 +278,7 @@ AssetBrowserFolderNode BuildFolderNode(
     const AssetBrowserFolderTreeBuildOptions& options)
 {
     AssetBrowserFolderNode node;
-    node.displayName = absolutePath.filename().generic_string();
+    node.displayName = PathFilenameToGenericUtf8String(absolutePath);
     if (node.displayName.empty())
         node.displayName = "Assets";
     node.projectRelativePath = ToProjectRelativePath(assetsRoot, absolutePath);
@@ -264,7 +302,7 @@ AssetBrowserFolderNode BuildFolderNode(
         {
             directories.push_back({
                 *iterator,
-                iterator->path().filename().generic_string()
+                PathFilenameToGenericUtf8String(iterator->path())
             });
         }
         error.clear();
@@ -602,6 +640,80 @@ constexpr bool AssetBrowserRefreshReasonDescriptorsAreExhaustive()
 static_assert(AssetBrowserRefreshReasonDescriptorsAreExhaustive());
 }
 
+std::string NormalizeAssetBrowserProjectRelativePath(std::string path)
+{
+    std::replace(path.begin(), path.end(), '\\', '/');
+
+    std::vector<std::string_view> parts;
+    const bool rooted = !path.empty() && path.front() == '/';
+    bool sawRegularPart = false;
+    bool sawParentPart = false;
+    size_t offset = 0u;
+    while (offset <= path.size())
+    {
+        const auto separator = path.find('/', offset);
+        const auto end = separator == std::string::npos ? path.size() : separator;
+        const auto length = end - offset;
+        if (length > 0u)
+        {
+            const auto part = std::string_view(path).substr(offset, length);
+            if (part == "..")
+            {
+                sawParentPart = true;
+                if (!parts.empty() && parts.back() != "..")
+                    parts.pop_back();
+                else
+                    parts.push_back(part);
+            }
+            else if (part != ".")
+            {
+                sawRegularPart = true;
+                parts.push_back(part);
+            }
+        }
+
+        if (separator == std::string::npos)
+            break;
+        offset = separator + 1u;
+    }
+
+    if (parts.empty() && rooted)
+        return "/";
+    if (parts.empty() && sawRegularPart && sawParentPart)
+        return "..";
+    if (parts.empty())
+        return "Assets";
+
+    std::string normalized = rooted ? "/" : "";
+    for (const auto part : parts)
+    {
+        if (!normalized.empty() && normalized.back() != '/')
+            normalized += '/';
+        normalized.append(part.data(), part.size());
+    }
+
+    return normalized.empty() ? "Assets" : normalized;
+}
+
+bool ShouldStopDrawingAssetBrowserFolderNodeAfterSelection(
+    const std::string& selectedFolder,
+    const std::string& clickedFolder)
+{
+    return NormalizeAssetBrowserProjectRelativePath(selectedFolder) !=
+        NormalizeAssetBrowserProjectRelativePath(clickedFolder);
+}
+
+bool ShouldStopDrawingAssetBrowserGridAfterOpeningItem(
+    const std::string& selectedFolder,
+    const AssetBrowserItem& openedItem)
+{
+    if (openedItem.kind != AssetBrowserItemKind::Folder)
+        return false;
+
+    return NormalizeAssetBrowserProjectRelativePath(selectedFolder) !=
+        NormalizeAssetBrowserProjectRelativePath(openedItem.projectRelativePath);
+}
+
 const char* AssetBrowserItemTypeDisplayLabel(const AssetBrowserItemType type)
 {
     const auto index = static_cast<size_t>(type);
@@ -626,6 +738,150 @@ AssetBrowserItemTypeColor AssetBrowserItemTypeDisplayColor(const AssetBrowserIte
             return descriptor.color;
     }
     return kAssetBrowserItemTypeDescriptors.back().color;
+}
+
+const char* AssetBrowserFallbackIconId(const AssetBrowserItemType type)
+{
+    switch (type)
+    {
+    case AssetBrowserItemType::Folder:
+        return "Icon_Folder";
+    case AssetBrowserItemType::Model:
+    case AssetBrowserItemType::Mesh:
+        return "Icon_Model";
+    case AssetBrowserItemType::Prefab:
+        return "Icon_Prefab";
+    case AssetBrowserItemType::Material:
+        return "Icon_Material";
+    case AssetBrowserItemType::Texture:
+        return "Icon_Texture";
+    case AssetBrowserItemType::Shader:
+        return "Icon_Shader";
+    case AssetBrowserItemType::Scene:
+        return "Icon_Scene";
+    case AssetBrowserItemType::Script:
+        return "Icon_Script";
+    case AssetBrowserItemType::All:
+    case AssetBrowserItemType::Other:
+    case AssetBrowserItemType::Count:
+        break;
+    }
+    return "Icon_Unknown";
+}
+
+AssetBrowserContentViewMode ResolveAssetBrowserContentViewMode(const float thumbnailSize)
+{
+    return thumbnailSize <= 64.0f
+        ? AssetBrowserContentViewMode::List
+        : AssetBrowserContentViewMode::Grid;
+}
+
+AssetBrowserRect ComputeAssetBrowserThumbnailRect(
+    AssetBrowserRect bounds,
+    uint32_t imageWidth,
+    uint32_t imageHeight)
+{
+    if (imageWidth == 0u || imageHeight == 0u)
+        return bounds;
+
+    const float boundsWidth = bounds.max.x - bounds.min.x;
+    const float boundsHeight = bounds.max.y - bounds.min.y;
+    if (boundsWidth <= 0.0f || boundsHeight <= 0.0f)
+        return bounds;
+
+    const float imageAspect = static_cast<float>(imageWidth) / static_cast<float>(imageHeight);
+    const float boundsAspect = boundsWidth / boundsHeight;
+
+    AssetBrowserRect result = bounds;
+    if (imageAspect > boundsAspect)
+    {
+        const float scaledHeight = boundsWidth / imageAspect;
+        const float offsetY = (boundsHeight - scaledHeight) * 0.5f;
+        result.min.y = bounds.min.y + offsetY;
+        result.max.y = result.min.y + scaledHeight;
+    }
+    else
+    {
+        const float scaledWidth = boundsHeight * imageAspect;
+        const float offsetX = (boundsWidth - scaledWidth) * 0.5f;
+        result.min.x = bounds.min.x + offsetX;
+        result.max.x = result.min.x + scaledWidth;
+    }
+
+    return result;
+}
+
+bool ShouldDrawAssetBrowserThumbnailLetterboxBackground(const AssetBrowserItemType type)
+{
+    return type == AssetBrowserItemType::Texture;
+}
+
+std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
+    const std::vector<AssetBrowserItem>& items,
+    const std::unordered_set<std::string>& expandedSourceAssets)
+{
+    struct SubAssetRange
+    {
+        size_t begin = 0u;
+        size_t count = 0u;
+    };
+
+    std::unordered_map<std::string, SubAssetRange> subAssetsBySource;
+    subAssetsBySource.reserve(items.size());
+    std::vector<size_t> subAssetIndices;
+    subAssetIndices.reserve(items.size());
+
+    for (size_t index = 0u; index < items.size(); ++index)
+    {
+        const auto& item = items[index];
+        if (item.kind != AssetBrowserItemKind::GeneratedSubAsset)
+            continue;
+
+        auto& range = subAssetsBySource[item.sourceAssetPath];
+        if (range.count == 0u)
+            range.begin = subAssetIndices.size();
+        ++range.count;
+        subAssetIndices.push_back(index);
+    }
+
+    std::vector<AssetBrowserDisplayItem> displayItems;
+    displayItems.reserve(items.size());
+
+    for (size_t index = 0u; index < items.size(); ++index)
+    {
+        const auto& item = items[index];
+        if (item.kind == AssetBrowserItemKind::GeneratedSubAsset)
+            continue;
+
+        AssetBrowserDisplayItem displayItem;
+        displayItem.item = item;
+        const auto sourcePath = item.sourceAssetPath.empty()
+            ? item.projectRelativePath
+            : item.sourceAssetPath;
+        const bool expanded = expandedSourceAssets.find(sourcePath) != expandedSourceAssets.end();
+        const auto subAssets = subAssetsBySource.find(sourcePath);
+        displayItem.expanded = expanded;
+        displayItem.childCount = subAssets == subAssetsBySource.end()
+            ? 0u
+            : subAssets->second.count;
+
+        displayItems.push_back(std::move(displayItem));
+
+        if (!expanded || subAssets == subAssetsBySource.end())
+            continue;
+
+        for (size_t childOffset = 0u; childOffset < subAssets->second.count; ++childOffset)
+        {
+            const auto& candidate = items[subAssetIndices[subAssets->second.begin + childOffset]];
+
+            AssetBrowserDisplayItem child;
+            child.item = candidate;
+            child.subAsset = true;
+            displayItems.push_back(std::move(child));
+        }
+    }
+
+    return displayItems;
 }
 
 AssetBrowserRefreshPlan BuildAssetBrowserRefreshPlan(const AssetBrowserRefreshReason reason)
@@ -767,7 +1023,7 @@ std::string BuildAssetBrowserThumbnailGenerationScopeKey(
 
     std::ostringstream stream;
     stream << "folder=";
-    appendPart(stream, NormalizeProjectRelativePath(selectedFolder));
+    appendPart(stream, NormalizeAssetBrowserProjectRelativePath(selectedFolder));
     stream << "size=" << requestedSize << '|';
     stream << "count=" << visibleItems.size() << '|';
     for (const auto& item : visibleItems)
@@ -1087,24 +1343,36 @@ std::vector<AssetBrowserItem> SelectAssetBrowserThumbnailGenerationItems(
     const std::vector<AssetBrowserItem>& visibleItems,
     const bool visibleItemsKnown)
 {
-    return visibleItemsKnown ? visibleItems : currentFolderItems;
+    (void)currentFolderItems;
+    return visibleItemsKnown ? visibleItems : std::vector<AssetBrowserItem> {};
 }
 
 std::vector<AssetBrowserBreadcrumbSegment> BuildAssetBrowserBreadcrumb(const std::string& selectedFolder)
 {
     std::vector<AssetBrowserBreadcrumbSegment> segments;
-    const auto normalized = NormalizeProjectRelativePath(selectedFolder);
-    std::filesystem::path current;
-    for (const auto& part : std::filesystem::path(normalized))
+    const auto normalized = NormalizeAssetBrowserProjectRelativePath(selectedFolder);
+    std::string current;
+    size_t offset = 0u;
+    while (offset <= normalized.size())
     {
-        if (part == ".")
-            continue;
+        const auto separator = normalized.find('/', offset);
+        const auto end = separator == std::string::npos ? normalized.size() : separator;
+        const auto length = end - offset;
+        if (length > 0u)
+        {
+            const auto part = std::string_view(normalized).substr(offset, length);
+            if (!current.empty())
+                current += '/';
+            current.append(part.data(), part.size());
+            segments.push_back({
+                std::string(part),
+                NormalizeAssetBrowserProjectRelativePath(current)
+            });
+        }
 
-        current /= part;
-        segments.push_back({
-            part.generic_string(),
-            NormalizeProjectRelativePath(current)
-        });
+        if (separator == std::string::npos)
+            break;
+        offset = separator + 1u;
     }
 
     if (segments.empty())
@@ -1206,7 +1474,7 @@ bool CanMoveProjectBrowserResourcePathIntoFolder(
     if (sourceResourcePath.empty() || sourceResourcePath.front() == ':')
         return false;
 
-    const auto normalizedResourcePath = NormalizeProjectRelativePath(sourceResourcePath);
+    const auto normalizedResourcePath = NormalizeAssetBrowserProjectRelativePath(sourceResourcePath);
     if (normalizedResourcePath != "Assets" &&
         normalizedResourcePath.compare(0u, 7u, "Assets/") != 0)
     {

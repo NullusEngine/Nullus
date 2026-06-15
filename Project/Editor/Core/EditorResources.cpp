@@ -195,11 +195,19 @@ Editor::Core::EditorResources::EditorResources(
         m_textures["Button_Refresh"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
     }
 
+    const auto editorAssetsRoot = std::filesystem::path(p_editorAssetsPath).parent_path();
     const auto loadEditorIcon = [&](const std::string& id, const std::string& fileName)
     {
-        auto* texture = TextureLoader::Create(editorIconFolder + fileName, firstFilterEditor, secondFilterEditor, false);
-        if (texture != nullptr)
-            m_textures[id] = texture;
+        const auto filePath = std::filesystem::path(fileName).has_parent_path()
+            ? editorAssetsRoot / fileName
+            : std::filesystem::path(editorIconFolder) / fileName;
+        auto* texture = TextureLoader::Create(filePath.string(), firstFilterEditor, secondFilterEditor, false);
+        if (texture == nullptr)
+            return;
+
+        if (const auto existing = m_textures.find(id); existing != m_textures.end())
+            TextureLoader::Destroy(existing->second);
+        m_textures[id] = texture;
     };
 
     loadEditorIcon("Toolbar_Move", "d_movetool.png");
@@ -250,6 +258,8 @@ Editor::Core::EditorResources::EditorResources(
         std::vector<uint64_t> raw = ICON_FONT;
         m_textures["Icon_Font"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
+    for (const auto& iconOverride : EditorIconFileOverrides())
+        loadEditorIcon(iconOverride.id, iconOverride.fileName);
 
     {
         std::vector<uint64_t> raw = BILL_PLIGHT;
@@ -294,6 +304,23 @@ Editor::Core::EditorResources::EditorResources(
     NLS_LOG_INFO(
         "[EditorResources] Startup preload finished in " +
         std::to_string(MillisecondsSince(constructorStart)) + " ms");
+}
+
+const std::array<Editor::Core::EditorResources::IconFileOverride, 9>&
+Editor::Core::EditorResources::EditorIconFileOverrides()
+{
+    static const std::array<IconFileOverride, 9> overrides {{
+        { "Icon_Folder", "unity_project_folder.png" },
+        { "Icon_Texture", "unity_project_texture.png" },
+        { "Icon_Model", "unity_project_prefab_model.png" },
+        { "Icon_Prefab", "unity_project_prefab.png" },
+        { "Icon_Material", "unity_project_material.png" },
+        { "Icon_Scene", "Engine/Brand/NullusLogoMark.png" },
+        { "Icon_Shader", "unity_project_shader.png" },
+        { "Icon_Script", "unity_project_cs_script.png" },
+        { "Icon_Unknown", "unity_project_default_asset.png" },
+    }};
+    return overrides;
 }
 
 Editor::Core::EditorResources::~EditorResources()

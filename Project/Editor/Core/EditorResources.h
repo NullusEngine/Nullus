@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <array>
 #include <string>
 #include <unordered_map>
 
@@ -15,6 +16,12 @@ namespace NLS::Editor::Core
 	class EditorResources
 	{
 	public:
+        struct IconFileOverride
+        {
+            const char* id;
+            const char* fileName;
+        };
+
 		/**
 		* Constructor
 		* @param p_editorAssetsPath
@@ -61,6 +68,8 @@ namespace NLS::Editor::Core
          * default editor views before the main window is shown.
          */
         void PreloadStartupResources();
+
+        static const std::array<IconFileOverride, 9>& EditorIconFileOverrides();
 
 	private:
         NLS::Render::Resources::Mesh* LoadMesh(const std::string& p_id);

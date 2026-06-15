@@ -95,6 +95,22 @@ TEST(RHIUiOverlaySourceGuardTests, UIManagerBeginFrameAllowsNullRendererBridgeOn
            "UIOverlayFrameGraph owns migrated rendering.";
 }
 
+TEST(RHIUiOverlaySourceGuardTests, UIManagerDoesNotWarnForNullBridgeWhenFrameGraphOverlayOwnsRendering)
+{
+    const auto source = ReadSourceText(RepoPath("Runtime/UI/UIManager.cpp"));
+    const auto constructorBody = ExtractFunctionBody(source, "UIManager::UIManager(");
+
+    const auto officialBackendWarning = constructorBody.find("runtime initialization did not complete");
+    ASSERT_NE(officialBackendWarning, std::string::npos);
+
+    const auto overlayCapabilityCheck = constructorBody.rfind(
+        "ShouldPublishUiSnapshotToFrameGraph()",
+        officialBackendWarning);
+    ASSERT_NE(overlayCapabilityCheck, std::string::npos)
+        << "Migrated UIOverlayFrameGraph rendering intentionally uses the null bridge, so the legacy "
+           "official-backend warning must be gated by frame-graph ownership.";
+}
+
 TEST(RHIUiOverlaySourceGuardTests, EditorAndLauncherDoNotSubmitLegacyUiRendering)
 {
     const auto editorSource = ReadSourceText(RepoPath("Project/Editor/Core/Editor.cpp"));
@@ -274,6 +290,28 @@ TEST(RHIUiOverlaySourceGuardTests, DirectImageCallSitesUseUnifiedTextureIdResolv
     const auto drawTextureBody = ExtractFunctionBody(launcherSource, "void DrawTexture(");
     EXPECT_NE(drawTextureBody.find("ResolveTextureId(textureView)"), std::string::npos);
     EXPECT_EQ(drawTextureBody.find("IsValid()"), std::string::npos);
+
+    const auto assetBrowserSource = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
+    const auto assetBrowserResolveBody = ExtractFunctionBody(assetBrowserSource, "void* ResolveAssetBrowserTextureHandle(");
+    EXPECT_NE(assetBrowserResolveBody.find("ResolveTextureId(textureView)"), std::string::npos);
+    EXPECT_EQ(assetBrowserResolveBody.find("ResolveTextureView(textureView)"), std::string::npos);
+    EXPECT_EQ(assetBrowserResolveBody.find("IsValid()"), std::string::npos);
+
+    const auto thumbnailResolveBody = ExtractFunctionBody(
+        assetBrowserSource,
+        "Editor::Panels::AssetBrowser::ThumbnailTextureHandle Editor::Panels::AssetBrowser::ResolveCachedThumbnailTextureHandle(");
+    EXPECT_NE(
+        thumbnailResolveBody.find("ResolveTextureId(found->second.textureView)"),
+        std::string::npos);
+    EXPECT_EQ(thumbnailResolveBody.find("ResolveTextureView(found->second.textureView)"), std::string::npos);
+    EXPECT_EQ(thumbnailResolveBody.find("IsValid()"), std::string::npos);
+
+    const auto thumbnailLoadBody = ExtractFunctionBody(
+        assetBrowserSource,
+        "bool Editor::Panels::AssetBrowser::LoadDecodedCachedThumbnailTexture(");
+    EXPECT_NE(thumbnailLoadBody.find("ResolveTextureId(textureView) == nullptr"), std::string::npos);
+    EXPECT_EQ(thumbnailLoadBody.find("ResolveTextureView(textureView)"), std::string::npos);
+    EXPECT_EQ(thumbnailLoadBody.find("IsValid()"), std::string::npos);
 }
 
 TEST(RHIUiOverlaySourceGuardTests, UIManagerResourceNotificationsRouteThroughFrameGraphOverlayResources)

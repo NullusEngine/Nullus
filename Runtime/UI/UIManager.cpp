@@ -293,7 +293,8 @@ UIManager::UIManager(
         p_nativeDeviceInfo);
     const bool hasRendererBackend = m_uiBridge != nullptr && m_uiBridge->HasRendererBackend();
 
-    if (m_backend != NLS::Render::Settings::EGraphicsBackend::OPENGL)
+    if (m_backend != NLS::Render::Settings::EGraphicsBackend::OPENGL &&
+        !ShouldPublishUiSnapshotToFrameGraph())
     {
         if (NLS::Render::Settings::HasCompiledOfficialImGuiBackend(m_backend))
         {

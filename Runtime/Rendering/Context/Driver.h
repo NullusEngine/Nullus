@@ -71,7 +71,7 @@ public:
 		uint32_t width,
 		uint32_t height,
 		bool vsync,
-		uint32_t imageCount = 2u);
+		uint32_t imageCount = 3u);
 	void ResizePlatformSwapchain(uint32_t width, uint32_t height);
     void ShutdownThreadedRendering();
 

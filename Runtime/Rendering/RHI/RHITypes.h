@@ -362,6 +362,7 @@ namespace NLS::Render::RHI
 		HierarchicalZBuffer,
 		ConservativeOcclusion,
 		AsyncReadback,
+		UIOverlayFrameGraph,
 		Count
 	};
 
@@ -405,6 +406,7 @@ namespace NLS::Render::RHI
 		bool supportsHierarchicalZBuffer = false;
 		bool supportsConservativeOcclusion = false;
 		bool supportsAsyncReadback = false;
+		bool supportsUIOverlayFrameGraph = false;
 		uint32_t maxTextureDimension2D = 0;
 		uint32_t maxColorAttachments = 0;
 		RHIDeviceLimits limits{};
@@ -454,6 +456,7 @@ namespace NLS::Render::RHI
 			SetFeatureStateFromLegacy(RHIDeviceFeature::HierarchicalZBuffer, supportsHierarchicalZBuffer);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::ConservativeOcclusion, supportsConservativeOcclusion);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::AsyncReadback, supportsAsyncReadback);
+			SetFeatureStateFromLegacy(RHIDeviceFeature::UIOverlayFrameGraph, supportsUIOverlayFrameGraph);
 		}
 
 		const TextureFormatCapability& GetTextureFormatCapability(TextureFormat format) const
@@ -476,14 +479,34 @@ namespace NLS::Render::RHI
 		}
 
 	private:
+		static constexpr const char* kDefaultUnsupportedFeatureReason = "Feature is not reported by this RHI device";
+
+		static constexpr std::string_view GetDefaultUnsupportedFeatureReason(RHIDeviceFeature feature)
+		{
+			switch (feature)
+			{
+			case RHIDeviceFeature::UIOverlayFrameGraph:
+				return "UI overlay FrameGraph is not implemented by this RHI device";
+			default:
+				return kDefaultUnsupportedFeatureReason;
+			}
+		}
+
 		void SetFeatureStateFromLegacy(RHIDeviceFeature feature, bool supported)
 		{
 			auto& state = features[static_cast<size_t>(feature)];
+			const bool wasSupported = state.supported;
+			const std::string_view defaultUnsupportedReason = GetDefaultUnsupportedFeatureReason(feature);
 			state.supported = supported;
 			if (supported)
-				state.reason.clear();
-			else if (state.reason.empty())
-				state.reason = "Feature is not reported by this RHI device";
+			{
+				if (!wasSupported || state.reason == defaultUnsupportedReason)
+					state.reason.clear();
+			}
+			else if (wasSupported || state.reason.empty())
+			{
+				state.reason.assign(defaultUnsupportedReason.data(), defaultUnsupportedReason.size());
+			}
 		}
 
 		void SetLegacyFeatureFlag(RHIDeviceFeature feature, bool supported)
@@ -516,6 +539,7 @@ namespace NLS::Render::RHI
 			case RHIDeviceFeature::HierarchicalZBuffer: supportsHierarchicalZBuffer = supported; break;
 			case RHIDeviceFeature::ConservativeOcclusion: supportsConservativeOcclusion = supported; break;
 			case RHIDeviceFeature::AsyncReadback: supportsAsyncReadback = supported; break;
+			case RHIDeviceFeature::UIOverlayFrameGraph: supportsUIOverlayFrameGraph = supported; break;
 			case RHIDeviceFeature::Count: break;
 			}
 		}
@@ -604,7 +628,8 @@ namespace NLS::Render::RHI
 		void* platformWindow = nullptr;
 		void* nativeWindowHandle = nullptr;
 		TextureFormat backbufferFormat = TextureFormat::RGBA8;
-		uint32_t imageCount = 2;
+		uint32_t imageCount = 3;
 		bool vsync = true;
+		bool allowTearing = false;
 	};
 }

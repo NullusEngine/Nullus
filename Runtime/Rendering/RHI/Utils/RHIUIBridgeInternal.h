@@ -23,7 +23,4 @@ namespace NLS::Render::RHI
         return {};
     }
 
-#if defined(_WIN32) && NLS_HAS_IMGUI_DX12_BACKEND
-    std::unique_ptr<RHIUIBridge> CreateDX12RHIUIBridge(const NativeRenderDeviceInfo& nativeInfo);
-#endif
 }

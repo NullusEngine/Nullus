@@ -351,6 +351,10 @@ namespace NLS::Render::Backend
 			capabilities.SetFeature(
 				RHIDeviceFeature::AsyncReadback,
 				true);
+			capabilities.SetFeature(
+				RHIDeviceFeature::UIOverlayFrameGraph,
+				true,
+				"DX12 UI overlay FrameGraph is runtime-selectable after US1/US2/US3 scene overlay, UI-only routing, texture/font retention, and legacy direct-submit exclusion validation");
 			capabilities.maxTextureDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 			capabilities.maxColorAttachments = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
 			capabilities.limits.maxTextureDimension2D = capabilities.maxTextureDimension2D;

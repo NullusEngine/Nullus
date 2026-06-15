@@ -6,6 +6,7 @@
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Shortcuts/EditorShortcutService.h"
 #include <UI/Modules/Canvas.h>
+#include <filesystem>
 namespace NLS
 {
 namespace Editor::Core
@@ -65,6 +66,7 @@ public:
     void RememberLastOpenedScene(const std::string& p_scenePath);
     void RefreshProfilerRecordingState();
     bool IsProfilerRecordingEnabled();
+    void UpdateValidationTimelineTraceExport();
 
     /**
      * Update the current editor mode
@@ -120,6 +122,9 @@ private:
     float m_currentDeltaTime = 0.0f;
     float m_currentFrameRate = 0.0f;
     float m_frameRateAccumulatedTime = 0.0f;
+    std::filesystem::path m_validationTracePath;
+    bool m_validationTraceExportStarted = false;
+    bool m_validationTraceExportFinished = false;
     UI::Canvas			m_canvas;
     Context& m_context;
     PanelsManager	m_panelsManager;

@@ -117,10 +117,8 @@ inline bool IsEditorUiTraceEventName(const char* name)
 		TraceNameStartsWith(name, "Canvas::") ||
 		TraceNameStartsWith(name, "Panel::Draw:") ||
 		TraceNameStartsWith(name, "ProfilerPanel::") ||
-		TraceNameEndsWith(name, "UIBridge::RenderDrawData") ||
-		TraceNameEndsWith(name, "DX12UIBridge::RenderDrawData") ||
+		TraceNameStartsWith(name, "RHIFrameGraph::UIOverlay") ||
 		TraceNameStartsWith(name, "ImGui::") ||
-		TraceNameStartsWith(name, "ImGui_ImplDX12_RenderDrawData") ||
 		TraceNameStartsWith(name, "StandaloneUiFrame::") ||
 		TraceNameStartsWith(name, "RhiThreadCoordinator::BeginStandaloneUiExplicitFrame") ||
 		TraceNameStartsWith(name, "RhiThreadCoordinator::PresentStandaloneUiFrame");

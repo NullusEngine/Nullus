@@ -25,7 +25,7 @@ namespace NLS::Render::RHI
         // queue-side present waits/calls are ordered, but it is not a compositor
         // ownership fence for swapchain backbuffer destruction.
         std::shared_ptr<class RHIFence> signalFence;
-        // UI rendering signal semaphore - Driver sets this from UIManager::ResolveUISignalSemaphore()
+        // Optional UI rendering signal semaphore retained for compatibility with non-migrated tests.
         // Backend should wait on this semaphore before presenting to ensure UI rendering completes first
         NativeHandle uiSignalSemaphore;
         uint64_t uiSignalValue = 0u;

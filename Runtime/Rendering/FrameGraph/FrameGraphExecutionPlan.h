@@ -2249,11 +2249,14 @@ namespace NLS::Render::FrameGraph
 		package.transparentDrawCount = 0u;
 		package.skyboxDrawCount = 0u;
 		package.helperDrawCount = 0u;
+		package.uiOverlayDrawCount = 0u;
 		package.hasOpaquePass = false;
 		package.hasDecalPass = false;
 		package.hasTransparentPass = false;
 		package.hasSkyboxPass = false;
 		package.hasHelperPass = false;
+		package.hasUIOverlayPass = false;
+		package.uiDrawDataSnapshot.reset();
 
 		for (auto& workUnit : additionalWorkUnits)
 			package.parallelCommandWorkUnits.push_back(std::move(workUnit));
@@ -2307,6 +2310,12 @@ namespace NLS::Render::FrameGraph
 				package.helperDrawCount += plannedPass.commandInput.drawCount;
 				package.hasHelperPass = true;
 				break;
+			case ThreadedRenderScenePassRole::UIOverlay:
+				package.uiOverlayDrawCount += plannedPass.visibleDrawCountContribution;
+				package.hasUIOverlayPass = true;
+				if (package.uiDrawDataSnapshot == nullptr)
+					package.uiDrawDataSnapshot = passCommandInput.uiDrawDataSnapshot;
+				break;
 			case ThreadedRenderScenePassRole::Auxiliary:
 				break;
 			}
@@ -2350,7 +2359,7 @@ namespace NLS::Render::FrameGraph
 		package.passPlanCount = static_cast<uint64_t>(package.passCommandInputs.size());
 		package.hasVisibleDraws = package.visibleDrawCount > 0u;
 		package.drawCommandCount = !package.recordedDrawCommands.empty()
-			? static_cast<uint64_t>(package.recordedDrawCommands.size())
+			? static_cast<uint64_t>(package.recordedDrawCommands.size()) + package.uiOverlayDrawCount
 			: package.visibleDrawCount;
 		package.materialBatchCount = package.drawCommandCount;
 		package.renderTargetUseCount = package.targetsSwapchain ? 1u : 2u;

@@ -154,16 +154,12 @@ public:
      * Render ImGui current frane
      * @note Should be called once per frame
      */
-    void Render(const NLS::Render::RHI::WaitSemaphoreResolver& resolveWaitSemaphore = {});
+    void Render();
     NLS::Render::RHI::NativeHandle ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
+    void* ResolveTextureId(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void NotifySwapchainWillResize();
     void ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
-    void SetCurrentSwapchainImageIndex(uint32_t index) { m_currentSwapchainImageIndex = index; }
-    void SetWaitSemaphore(NLS::Render::RHI::NativeHandle semaphore);
-    void SetSignalSemaphore(NLS::Render::RHI::NativeHandle semaphore);
-    void SubmitUIRendering();
-    NLS::Render::RHI::NativeHandle ResolveUISignalSemaphore();
-    uint64_t ResolveUISignalValue() const;
+    bool UsesFrameGraphOverlayRendering() const;
     NLS::Render::Settings::EGraphicsBackend GetGraphicsBackend() const { return m_backend; }
     bool ShouldFlipPresentedRenderTargetVertically() const;
     bool UsesBottomLeftRenderTargetOrigin() const;
@@ -209,6 +205,7 @@ private:
     float ResolveWindowContentScale() const;
     void RefreshScale();
     void RebuildFonts();
+    void NotifyFontAtlasChanged();
     void PushCurrentFont();
     void PopCurrentFont();
     void BeginFrame();
@@ -231,9 +228,6 @@ private:
     NLS::Render::Settings::EGraphicsBackend m_backend = NLS::Render::Settings::EGraphicsBackend::OPENGL;
     ImGuiPlatformBackend m_platformBackend = ImGuiPlatformBackend::GLFW;
     std::unique_ptr<NLS::Render::RHI::RHIUIBridge> m_uiBridge;
-    uint32_t m_currentSwapchainImageIndex = 0;
-    NLS::Render::RHI::NativeHandle waitSemaphore_;
-    NLS::Render::RHI::NativeHandle signalSemaphore_;
     std::unordered_map<std::string, FontEntry> m_fonts;
     std::string m_currentFontId;
     std::string m_layoutSaveFilename = "imgui.ini";

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -17,6 +18,8 @@
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Tooling/RenderDocCaptureController.h"
+#include "Rendering/UI/RHIImGuiOverlayRenderer.h"
+#include "Rendering/UI/RHIImGuiTextureRegistry.h"
 
 namespace NLS::Render::RHI
 {
@@ -48,6 +51,7 @@ namespace NLS::Render::Context
         size_t currentFrameIndex = 0u;
         std::vector<std::vector<std::shared_ptr<void>>> retainedThreadedSubmitResourceKeepAliveByFrameContext;
         std::unordered_set<size_t> deferredThreadedFrameScopedRetirementFrameContexts;
+        std::unordered_map<size_t, uint64_t> deferredUiTextureRetirementFrameIdsByFrameContext;
         bool explicitFrameActive = false;
         bool uiStandaloneFrameActive = false;
         mutable std::mutex completedReadbackTextureMutex;
@@ -65,6 +69,13 @@ namespace NLS::Render::Context
         uint64_t uiRenderFinishedValue = 0u;
         mutable std::mutex sceneToUiWaitMutex;
         Render::RHI::NativeHandle sceneToUiWaitSemaphore;
+        mutable std::mutex pendingUiOverlaySnapshotMutex;
+        std::shared_ptr<const Render::UI::UiDrawDataSnapshot> pendingUiOverlaySnapshot;
+        uint64_t pendingUiOverlaySnapshotFrameId = 0u;
+        uint64_t latestUiOverlaySnapshotFrameId = 0u;
+        uint64_t pendingUiOverlaySnapshotGeneration = 0u;
+        Render::UI::RHIImGuiTextureRegistry uiTextureRegistry;
+        Render::UI::RHIImGuiOverlayRenderer uiOverlayRenderer { &uiTextureRegistry };
         std::function<void()> swapchainWillResizeCallback;
         std::unique_ptr<ThreadedRenderingLifecycle> threadedLifecycle;
         bool threadedWorkersRunning = false;
@@ -170,6 +181,7 @@ namespace NLS::Render::Context
             DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,
             const RenderScenePackage& renderScenePackage,
+            size_t frameContextIndex,
             AsyncComputeSubmitPlan* submitPlan,
             RhiSubmissionFrame* submissionFrame);
         NLS_RENDER_API bool CompleteThreadedRhiSubmissionTelemetry(
@@ -200,6 +212,12 @@ namespace NLS::Render::Context
             Render::RHI::RHIFrameContext& frameContext,
             size_t frameContextIndex);
         NLS_RENDER_API void ReleaseDeferredThreadedFrameScopedResourcesAfterFence(DriverImpl& impl);
+        NLS_RENDER_API void ReleaseRetiredUiTextureViewsForCompletedFrame(
+            DriverImpl& impl,
+            uint64_t completedFrameId);
+        NLS_RENDER_API void ReleaseRetiredUiTextureViewsForCompletedUiFrame(
+            DriverImpl& impl,
+            uint64_t fallbackCompletedFrameId);
         NLS_RENDER_API std::vector<ParallelCommandWorkUnit> BuildParallelCommandWorkUnits(
             const RenderScenePackage& renderScenePackage,
             bool parallelRecordingReady,

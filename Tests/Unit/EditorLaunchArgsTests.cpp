@@ -100,6 +100,25 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
     EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
 }
 
+TEST(EditorLaunchArgsTests, ParsesEditorValidationTimelineTraceFrames)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-validation-trace-frames",
+        "300",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.hasDiagnosticsOverride);
+    EXPECT_TRUE(parsed.diagnosticsSettings.editorValidationOpenProfiler);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationTimelineTraceFrames, 300u);
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
 TEST(EditorLaunchArgsTests, ParsesHZBOcclusionComparisonValidationDirectives)
 {
     std::vector<std::string> storage;

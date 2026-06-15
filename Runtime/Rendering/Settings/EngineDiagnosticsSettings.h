@@ -36,6 +36,7 @@ namespace NLS::Render::Settings
         bool editorLogSceneCameraInput = false;
         bool editorValidationOpenFrameInfo = false;
         bool editorValidationOpenProfiler = false;
+        uint32_t editorValidationTimelineTraceFrames = 0u;
         bool editorValidationDisableHZBOcclusion = false;
         uint32_t editorValidationOcclusionStackCount = 0u;
         std::string editorValidationFocusView;

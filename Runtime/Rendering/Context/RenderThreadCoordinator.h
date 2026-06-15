@@ -28,6 +28,7 @@ namespace NLS::Render::Context
             Driver& driver,
             const FrameSnapshot& snapshot,
             PreparedRenderSceneBuilder renderSceneBuilder,
+            bool applyPendingSwapchainResize = true,
             size_t* publishedSlotIndex = nullptr,
             uint64_t* publishedFrameId = nullptr);
         static bool DrainPendingRenderFrameBuildsSynchronously(Driver& driver);

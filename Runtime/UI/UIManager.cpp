@@ -9,9 +9,12 @@
 #include "Core/ServiceLocator.h"
 #include "Debug/Logger.h"
 #include "Profiling/Profiler.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIRenderSurfaceConvention.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Rendering/UI/UiDrawDataSnapshot.h"
 #include "UI/Icons/FontAwesomeIconFont.h"
 #include "Windowing/Window.h"
 #include "ImGui/backends/imgui_impl_glfw.h"
@@ -82,6 +85,28 @@ NLS::Render::RHI::BackendType ToTaggedBackendType(const NLS::Render::RHI::Native
     default:
         return NLS::Render::RHI::BackendType::Unknown;
     }
+}
+
+bool ShouldPublishUiSnapshotToFrameGraph()
+{
+    auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+    if (driver == nullptr)
+        return false;
+
+    const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+    const auto feature = NLS::Render::RHI::GetUIOverlayFrameGraphFeature(device.get());
+    return feature.supported;
+}
+
+void PublishCurrentUiSnapshotToFrameGraph()
+{
+    auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+    if (driver == nullptr)
+        return;
+
+    const auto frameId = static_cast<uint64_t>(ImGui::GetFrameCount());
+    auto snapshot = NLS::Render::UI::CaptureUiDrawDataSnapshot(ImGui::GetDrawData(), frameId);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(*driver, std::move(snapshot));
 }
 
 #ifdef _WIN32
@@ -328,7 +353,9 @@ void UIManager::BeginFrame()
             m_pendingInfiniteCursorWrapCompensation = ImVec2(0.0f, 0.0f);
     }
 
-    if (m_uiBridge != nullptr && !m_uiBridge->HasRendererBackend())
+    if (m_uiBridge != nullptr &&
+        !m_uiBridge->HasRendererBackend() &&
+        !ShouldPublishUiSnapshotToFrameGraph())
     {
         NLS_LOG_INFO("UIManager::BeginFrame: UI bridge has no renderer backend");
         m_inFrame = false;
@@ -550,6 +577,8 @@ bool UIManager::LoadFont(const std::string& p_id, const std::string& p_path, flo
         {
             Icons::EnsureFontAwesomeIconFontLoaded(p_fontSize * m_uiScale, fontInstance);
             m_fonts.emplace(p_id, FontEntry{ p_path, p_fontSize, fontInstance });
+            ImGui::GetIO().Fonts->Build();
+            NotifyFontAtlasChanged();
             return true;
         }
     }
@@ -564,6 +593,7 @@ bool UIManager::UnloadFont(const std::string& p_id)
         if (m_currentFontId == p_id)
             m_currentFontId.clear();
         m_fonts.erase(p_id);
+        RebuildFonts();
         return true;
     }
 
@@ -657,7 +687,7 @@ void UIManager::RemoveCanvas()
     m_currentCanvas = nullptr;
 }
 
-void UIManager::Render(const NLS::Render::RHI::WaitSemaphoreResolver& resolveWaitSemaphore)
+void UIManager::Render()
 {
     NLS_PROFILE_SCOPE();
     if (m_currentCanvas == nullptr || m_isRenderingFrame)
@@ -679,80 +709,92 @@ void UIManager::Render(const NLS::Render::RHI::WaitSemaphoreResolver& resolveWai
     }
     ReleaseUnrequestedInfiniteDragCursor();
 
-    // All paths: ImGui::Render() must be called before RenderDrawData to build font atlas if needed
-    if (m_uiBridge != nullptr)
     {
-        {
-            NLS_PROFILE_NAMED_SCOPE("ImGui::Render");
-            ImGui::Render();
-        }
-        {
-            NLS_PROFILE_NAMED_SCOPE("UIBridge::RenderDrawData");
-            m_uiBridge->RenderDrawData(
-                ImGui::GetDrawData(),
-                m_currentSwapchainImageIndex,
-                resolveWaitSemaphore);
-        }
+        NLS_PROFILE_NAMED_SCOPE("ImGui::Render");
+        ImGui::Render();
+    }
+
+    if (ShouldPublishUiSnapshotToFrameGraph())
+    {
+        NLS_PROFILE_NAMED_SCOPE("UIManager::PublishUiDrawDataSnapshot");
+        PublishCurrentUiSnapshotToFrameGraph();
+    }
+    else
+    {
+        NLS_LOG_WARNING("UIManager::Render: no frame-graph UI overlay renderer is available for this backend.");
     }
     m_isRenderingFrame = false;
 }
 
 NLS::Render::RHI::NativeHandle UIManager::ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
 {
+    if (textureView == nullptr)
+        return {};
+
+    if (ShouldPublishUiSnapshotToFrameGraph())
+    {
+        auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+        if (driver != nullptr)
+        {
+            const auto textureId = NLS::Render::Context::DriverUIAccess::RegisterUiTextureView(
+                *driver,
+                textureView,
+                NLS::Render::UI::UiTextureSynchronizationScope::PreviousFrameOrStatic);
+            const auto encodedTextureId = NLS::Render::UI::PackUiTextureIdForImGui(textureId);
+            if (encodedTextureId != 0u)
+            {
+                NLS::Render::RHI::NativeHandle nativeHandle;
+                nativeHandle.backend = NLS::Render::RHI::BackendType::Unknown;
+                nativeHandle.handle = reinterpret_cast<void*>(static_cast<uintptr_t>(encodedTextureId));
+                nativeHandle.value = encodedTextureId;
+                return nativeHandle;
+            }
+        }
+    }
+
     return m_uiBridge != nullptr ? m_uiBridge->ResolveTextureView(textureView) : NLS::Render::RHI::NativeHandle{};
+}
+
+void* UIManager::ResolveTextureId(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
+{
+    const auto nativeHandle = ResolveTextureView(textureView);
+    if (nativeHandle.value != 0u)
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(nativeHandle.value));
+
+    return nativeHandle.IsValid() ? nativeHandle.handle : nullptr;
 }
 
 void UIManager::NotifySwapchainWillResize()
 {
+    if (ShouldPublishUiSnapshotToFrameGraph())
+    {
+        auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+        if (driver != nullptr)
+            NLS::Render::Context::DriverUIAccess::NotifyUiOverlaySwapchainWillResize(*driver);
+        return;
+    }
+
     if (m_uiBridge != nullptr)
         m_uiBridge->NotifySwapchainWillResize();
 }
 
 void UIManager::ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
 {
+    if (ShouldPublishUiSnapshotToFrameGraph())
+    {
+        auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+        if (driver != nullptr)
+            NLS::Render::Context::DriverUIAccess::ReleaseUiTextureView(*driver, textureView);
+        return;
+    }
+
     if (m_uiBridge != nullptr)
         m_uiBridge->ReleaseTextureViewHandle(textureView);
 }
 
-void UIManager::SetWaitSemaphore(NLS::Render::RHI::NativeHandle semaphore)
+bool UIManager::UsesFrameGraphOverlayRendering() const
 {
-    waitSemaphore_ = semaphore;
-    if (m_uiBridge != nullptr)
-    {
-        m_uiBridge->SetWaitSemaphore(semaphore);
-    }
-}
-
-void UIManager::SetSignalSemaphore(NLS::Render::RHI::NativeHandle semaphore)
-{
-    signalSemaphore_ = semaphore;
-    if (m_uiBridge != nullptr)
-    {
-        m_uiBridge->SetSignalSemaphore(semaphore);
-    }
-}
-
-void UIManager::SubmitUIRendering()
-{
-    NLS_PROFILE_SCOPE();
-    if (m_uiBridge != nullptr)
-    {
-        m_uiBridge->SubmitCommandBuffer(m_currentSwapchainImageIndex);
-    }
-}
-
-NLS::Render::RHI::NativeHandle UIManager::ResolveUISignalSemaphore()
-{
-    if (m_uiBridge != nullptr)
-    {
-        return m_uiBridge->GetUISignalSemaphore();
-    }
-    return NLS::Render::RHI::NativeHandle{};
-}
-
-uint64_t UIManager::ResolveUISignalValue() const
-{
-    return m_uiBridge != nullptr ? m_uiBridge->GetUISignalValue() : 0u;
+    return ShouldPublishUiSnapshotToFrameGraph();
 }
 
 bool UIManager::ShouldFlipPresentedRenderTargetVertically() const
@@ -829,8 +871,21 @@ void UIManager::RebuildFonts()
     }
 
     io.Fonts->Build();
-    if (m_uiBridge != nullptr)
+    NotifyFontAtlasChanged();
+}
+
+void UIManager::NotifyFontAtlasChanged()
+{
+    if (ShouldPublishUiSnapshotToFrameGraph())
+    {
+        auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+        if (driver != nullptr)
+            NLS::Render::Context::DriverUIAccess::NotifyUiOverlayFontAtlasChanged(*driver);
+    }
+    else if (m_uiBridge != nullptr)
+    {
         m_uiBridge->NotifyFontAtlasChanged();
+    }
 }
 
 void UIManager::PushCurrentFont()

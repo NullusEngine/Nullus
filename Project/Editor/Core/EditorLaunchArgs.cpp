@@ -19,6 +19,7 @@ namespace NLS::Editor::Launch
         std::printf("  --editor-validation-exclusive-view <scene|game>  Close the other view during startup validation\n");
         std::printf("  --editor-validation-open-frame-info  Open Frame Info during startup validation\n");
         std::printf("  --editor-validation-open-profiler  Open Profiler during startup validation\n");
+        std::printf("  --editor-validation-trace-frames <N>  Export TimelineProfiler trace for N validation frames\n");
         std::printf("  --editor-validation-select-gameobject <name>  Select a GameObject during startup validation\n");
         std::printf("  --editor-validation-create-asset <path>  Create an asset instance during startup validation\n");
         std::printf("  --editor-validation-disable-hzb-occlusion  Disable HZB occlusion for A/B validation\n");
@@ -115,6 +116,22 @@ namespace NLS::Editor::Launch
             {
                 parsed.diagnosticsSettings.editorValidationOpenProfiler = true;
                 parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-trace-frames" && i + 1 < argc)
+            {
+                try
+                {
+                    parsed.diagnosticsSettings.editorValidationTimelineTraceFrames =
+                        static_cast<uint32_t>(std::stoul(argv[++i]));
+                    parsed.diagnosticsSettings.editorValidationOpenProfiler = true;
+                    parsed.hasDiagnosticsOverride = true;
+                }
+                catch (...)
+                {
+                    std::fprintf(stderr, "[main] Invalid value for --editor-validation-trace-frames: %s\n", argv[i]);
+                    parsed.hasError = true;
+                    return parsed;
+                }
             }
             else if (arg == "--editor-validation-select-gameobject" && i + 1 < argc)
             {

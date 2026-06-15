@@ -253,6 +253,7 @@ namespace NLS::Render::Context
         Driver& driver,
         const FrameSnapshot& snapshot,
         PreparedRenderSceneBuilder renderSceneBuilder,
+        const bool applyPendingSwapchainResize,
         size_t* publishedSlotIndex,
         uint64_t* publishedFrameId)
     {
@@ -270,7 +271,8 @@ namespace NLS::Render::Context
             return false;
         }
 
-        if (snapshot.targetsSwapchain &&
+        if (applyPendingSwapchainResize &&
+            snapshot.targetsSwapchain &&
             driver.m_impl->hasPendingSwapchainResize &&
             driver.m_impl->threadedLifecycle->GetInFlightDepth() == 0u)
         {

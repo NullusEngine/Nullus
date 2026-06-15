@@ -3,10 +3,15 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <cstdlib>
 #include <type_traits>
 
 #include "Core/ServiceLocator.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/DriverInternal.h"
+#include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
@@ -18,6 +23,9 @@
 #include "UI/UIManager.h"
 #include "UI/Widgets/Buttons/ButtonImage.h"
 #include "UI/Widgets/Visual/Image.h"
+#include "Windowing/Context/Device.h"
+#include "Windowing/Settings/WindowSettings.h"
+#include "Windowing/Window.h"
 
 namespace
 {
@@ -74,6 +82,148 @@ namespace
         }
 
         ImGuiContext* context = nullptr;
+    };
+
+    bool CanCreateHeadlessGlfwWindow()
+    {
+#if defined(_WIN32) || defined(__APPLE__)
+        return true;
+#else
+        return std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
+#endif
+    }
+
+    class TestUiTexture final : public NLS::Render::RHI::RHITexture
+    {
+    public:
+        std::string_view GetDebugName() const override { return "TestUiTexture"; }
+        const NLS::Render::RHI::RHITextureDesc& GetDesc() const override { return desc; }
+        NLS::Render::RHI::ResourceState GetState() const override
+        {
+            return NLS::Render::RHI::ResourceState::ShaderRead;
+        }
+
+        NLS::Render::RHI::RHITextureDesc desc {};
+    };
+
+    class TestUiTextureView final : public NLS::Render::RHI::RHITextureView
+    {
+    public:
+        explicit TestUiTextureView(std::shared_ptr<NLS::Render::RHI::RHITexture> texture)
+            : m_texture(std::move(texture))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return "TestUiTextureView"; }
+        const NLS::Render::RHI::RHITextureViewDesc& GetDesc() const override { return m_desc; }
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetTexture() const override { return m_texture; }
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
+        NLS::Render::RHI::RHITextureViewDesc m_desc {};
+    };
+
+    class TestUiSampler final : public NLS::Render::RHI::RHISampler
+    {
+    public:
+        std::string_view GetDebugName() const override { return "TestUiSampler"; }
+        const NLS::Render::RHI::SamplerDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::SamplerDesc m_desc {};
+    };
+
+    class TestUiBindingSet final : public NLS::Render::RHI::RHIBindingSet
+    {
+    public:
+        std::string_view GetDebugName() const override { return "TestUiBindingSet"; }
+        const NLS::Render::RHI::RHIBindingSetDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIBindingSetDesc m_desc {};
+    };
+
+    class TestUiAdapter final : public NLS::Render::RHI::RHIAdapter
+    {
+    public:
+        std::string_view GetDebugName() const override { return "TestUiAdapter"; }
+        NLS::Render::RHI::NativeBackendType GetBackendType() const override
+        {
+            return NLS::Render::RHI::NativeBackendType::DX12;
+        }
+        std::string_view GetVendor() const override { return "NullusTest"; }
+        std::string_view GetHardware() const override { return "UIOverlayTestDevice"; }
+    };
+
+    class TestUiOverlayCapabilityDevice final : public NLS::Render::RHI::RHIDevice
+    {
+    public:
+        TestUiOverlayCapabilityDevice()
+            : m_adapter(std::make_shared<TestUiAdapter>())
+        {
+            m_capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady, true);
+            m_capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::Graphics, true);
+            m_capabilities.SetFeature(
+                NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+                true,
+                "test overlay support");
+        }
+
+        std::string_view GetDebugName() const override { return "TestUiOverlayCapabilityDevice"; }
+        const std::shared_ptr<NLS::Render::RHI::RHIAdapter>& GetAdapter() const override { return m_adapter; }
+        const NLS::Render::RHI::RHIDeviceCapabilities& GetCapabilities() const override { return m_capabilities; }
+        NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const override
+        {
+            NLS::Render::RHI::NativeRenderDeviceInfo info;
+            info.backend = NLS::Render::RHI::NativeBackendType::DX12;
+            return info;
+        }
+        bool IsBackendReady() const override { return true; }
+        std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(
+            const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+            const NLS::Render::RHI::RHIBufferDesc&,
+            const NLS::Render::RHI::RHIBufferUploadDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+            const NLS::Render::RHI::RHITextureDesc&,
+            const NLS::Render::RHI::RHITextureUploadDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            const NLS::Render::RHI::RHITextureViewDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(
+            const NLS::Render::RHI::SamplerDesc&,
+            std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(
+            const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(
+            const NLS::Render::RHI::RHIBindingSetDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(
+            const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(
+            const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(
+            const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(
+            const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(
+            NLS::Render::RHI::QueueType,
+            std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+        void ReadPixels(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            NLS::Render::Settings::EPixelDataFormat,
+            NLS::Render::Settings::EPixelDataType,
+            void*) override {}
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
+        NLS::Render::RHI::RHIDeviceCapabilities m_capabilities;
     };
 
     int CountDrawElementsWithTextureId(const ImDrawList& commandList, ImTextureID textureId)
@@ -317,5 +467,56 @@ TEST(UIAndToolingBackendAwarenessTests, CreatesNullRendererBridgeForDX11Backend)
     ASSERT_NE(bridge, nullptr);
     EXPECT_FALSE(bridge->HasRendererBackend());
     EXPECT_EQ(bridge->GetNativeBackendType(), NLS::Render::RHI::NativeBackendType::None);
-    EXPECT_EQ(bridge->ResolveTextureView(nullptr), nullptr);
+    EXPECT_FALSE(bridge->ResolveTextureView(nullptr).IsValid());
+}
+
+TEST(UIAndToolingBackendAwarenessTests, UIManagerFontLoadInvalidatesDriverOwnedFrameGraphFontAtlas)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    if (!CanCreateHeadlessGlfwWindow())
+        GTEST_SKIP() << "GLFW display is not available in this environment.";
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestUiOverlayCapabilityDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->uiOverlayRenderer.FontAtlas().SetUploadedResourcesForTesting(
+        std::make_shared<TestUiTexture>(),
+        std::make_shared<TestUiTextureView>(std::make_shared<TestUiTexture>()),
+        std::make_shared<TestUiSampler>(),
+        std::make_shared<TestUiBindingSet>());
+    ASSERT_EQ(impl->uiOverlayRenderer.FontAtlas().GetRetiredResourceCountForTesting(), 0u);
+
+    NLS::Windowing::Settings::DeviceSettings deviceSettings;
+    NLS::Context::Device device(deviceSettings);
+    NLS::Windowing::Settings::WindowSettings windowSettings;
+    windowSettings.title = "UIManagerFontAtlasInvalidationTests";
+    windowSettings.width = 64;
+    windowSettings.height = 64;
+    windowSettings.visible = false;
+    windowSettings.clientAPI = NLS::Windowing::Settings::WindowClientAPI::NoAPI;
+    NLS::Windowing::Window window(device, windowSettings);
+
+    NLS::UI::UIManager uiManager(
+        window.GetGlfwWindow(),
+        NLS::Render::Settings::EGraphicsBackend::DX12,
+        NLS::UI::EStyle::IM_DARK_STYLE,
+        "#version 150");
+
+    const std::filesystem::path fontPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Editor/Fonts/Ruda-Bold.ttf";
+    ASSERT_TRUE(uiManager.LoadFont("framegraph-font-atlas-test", fontPath.string(), 12.0f));
+
+    EXPECT_EQ(impl->uiOverlayRenderer.FontAtlas().GetRetiredResourceCountForTesting(), 1u)
+        << "UIManager font mutations must invalidate the driver-owned RHI ImGui font atlas on the migrated path.";
+#else
+    GTEST_SKIP() << "Requires NLS_ENABLE_TEST_HOOKS.";
+#endif
 }

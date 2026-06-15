@@ -109,6 +109,15 @@ TEST(DX12PresentPolicyTests, VsyncControlsPresentSyncInterval)
     EXPECT_EQ(NLS::Render::Backend::ResolveDX12PresentSyncInterval(false), 0u);
 }
 
+TEST(DX12PresentPolicyTests, TearingRequiresVsyncOffAndPlatformSupport)
+{
+    EXPECT_EQ(NLS::Render::Backend::ResolveDX12PresentFlags(true, true), 0u);
+    EXPECT_EQ(NLS::Render::Backend::ResolveDX12PresentFlags(false, false), 0u);
+    EXPECT_EQ(NLS::Render::Backend::ResolveDX12PresentFlags(false, true), 0x00000200u);
+    EXPECT_EQ(NLS::Render::Backend::ResolveDX12SwapchainFlags(false), 0u);
+    EXPECT_EQ(NLS::Render::Backend::ResolveDX12SwapchainFlags(true), 0x00000800u);
+}
+
 TEST(TimelineProfilerGpuLifecycleTests, GpuTickSkipsReadbackSubmissionForEmptyFrames)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER

@@ -13,4 +13,8 @@ namespace NLS::Render::Context
     NLS_RENDER_API RenderScenePackage BuildSnapshotOwnedRenderScenePackage(
         const FrameSnapshot& snapshot,
         SnapshotRenderScenePackageBuildMode buildMode = SnapshotRenderScenePackageBuildMode::BuildDefaultPassInputs);
+
+    NLS_RENDER_API bool AttachUiOverlaySnapshotToRenderScenePackage(
+        RenderScenePackage& package,
+        std::shared_ptr<const UI::UiDrawDataSnapshot> snapshot);
 }

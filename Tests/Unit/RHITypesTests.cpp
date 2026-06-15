@@ -56,6 +56,13 @@ TEST(RHITypesTests, DefaultSamplerDescPreservesExistingBehavior)
     EXPECT_FLOAT_EQ(desc.borderColor[3], 0.0f);
 }
 
+TEST(RHITypesTests, SwapchainDescDefaultsToTripleBuffering)
+{
+    const NLS::Render::RHI::SwapchainDesc desc{};
+
+    EXPECT_EQ(desc.imageCount, 3u);
+}
+
 TEST(RHITypesTests, OcclusionFeatureFlagsRoundTripThroughLegacyFields)
 {
     using namespace NLS::Render::RHI;
@@ -78,4 +85,25 @@ TEST(RHITypesTests, OcclusionFeatureFlagsRoundTripThroughLegacyFields)
     EXPECT_TRUE(featureCapabilities.supportsHierarchicalZBuffer);
     EXPECT_TRUE(featureCapabilities.supportsConservativeOcclusion);
     EXPECT_TRUE(featureCapabilities.supportsAsyncReadback);
+}
+
+TEST(RHITypesTests, UIOverlayFrameGraphFeatureRoundTripsWithReason)
+{
+    using namespace NLS::Render::RHI;
+
+    RHIDeviceCapabilities capabilities;
+    capabilities.SetFeature(
+        RHIDeviceFeature::UIOverlayFrameGraph,
+        false,
+        "UI overlay frame graph is not runtime-selectable yet");
+
+    const auto disabled = capabilities.GetFeature(RHIDeviceFeature::UIOverlayFrameGraph);
+    EXPECT_FALSE(disabled.supported);
+    EXPECT_NE(disabled.reason.find("not runtime-selectable"), std::string::npos);
+
+    capabilities.SetFeature(RHIDeviceFeature::UIOverlayFrameGraph, true, "validated on DX12");
+
+    const auto enabled = capabilities.GetFeature(RHIDeviceFeature::UIOverlayFrameGraph);
+    EXPECT_TRUE(enabled.supported);
+    EXPECT_EQ(enabled.reason, "validated on DX12");
 }

@@ -1,6 +1,7 @@
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 
 #include "Debug/Logger.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/RHI/Utils/RHIUIBridgeInternal.h"
 
@@ -47,6 +48,25 @@ namespace NLS::Render::RHI
         NLS_LOG_INFO("CreateRHIUIBridge: resolved native backend=" +
             std::to_string(static_cast<int>(resolvedNativeInfo.backend)));
 
+        if (const auto* driver = ResolveUIDriver();
+            driver != nullptr &&
+            NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(*driver))
+        {
+            const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+            const auto overlayFeature = GetUIOverlayFrameGraphFeature(device.get());
+            if (overlayFeature.supported)
+            {
+                NLS_LOG_INFO(
+                    "CreateRHIUIBridge: UIOverlayFrameGraph is supported; returning null UI bridge so "
+                    "RHIFrameGraph::UIOverlay owns migrated UI rendering.");
+                return std::make_unique<NullUIBridge>();
+            }
+
+            NLS_LOG_INFO(
+                "CreateRHIUIBridge: UIOverlayFrameGraph is unsupported; returning null UI bridge. Reason: " +
+                overlayFeature.reason);
+        }
+
         const auto resolvedGraphicsBackend = Render::Settings::ToGraphicsBackend(resolvedNativeInfo.backend);
         if (!Render::Settings::SupportsImGuiRendererBackend(resolvedGraphicsBackend))
         {
@@ -56,13 +76,6 @@ namespace NLS::Render::RHI
                 "; returning null UI bridge.");
             return std::make_unique<NullUIBridge>();
         }
-
-#if defined(_WIN32) && NLS_HAS_IMGUI_DX12_BACKEND
-        if (resolvedNativeInfo.backend == NativeBackendType::DX12)
-        {
-            return CreateDX12RHIUIBridge(resolvedNativeInfo);
-        }
-#endif
 
         return std::make_unique<NullUIBridge>();
     }

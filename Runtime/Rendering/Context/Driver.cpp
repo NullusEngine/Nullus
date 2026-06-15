@@ -35,6 +35,7 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverInternal.h"
+#include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/RenderThreadCoordinator.h"
 #include "Rendering/Context/RhiThreadCoordinator.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
@@ -453,6 +454,9 @@ namespace
 
     bool IsPassRecordable(const RenderScenePackage& package, const RenderPassCommandInput& input)
     {
+        if (input.kind == RenderPassCommandKind::UIOverlay)
+            return false;
+
         if (input.kind == RenderPassCommandKind::Compute)
         {
             if (input.computeDispatchInputs.empty())
@@ -496,6 +500,8 @@ namespace
             return "ThreadedLightingPass";
         case RenderPassCommandKind::Compute:
             return "ThreadedComputePass";
+        case RenderPassCommandKind::UIOverlay:
+            return kUIOverlayRenderPassDebugName;
         default:
             return "ThreadedUnknownPass";
         }
@@ -1282,6 +1288,9 @@ namespace
     {
         NLS_PROFILE_NAMED_SCOPE(ResolvePassProfileScopeName(input));
 
+        if (input.kind == RenderPassCommandKind::UIOverlay)
+            return 0u;
+
         if (commandBuffer == nullptr)
             return input.recordedDrawCommands.empty() ? input.drawCount : 0u;
 
@@ -1311,6 +1320,9 @@ namespace
         const uint64_t recordedDrawCount)
     {
         NLS_PROFILE_NAMED_SCOPE(ResolvePassProfileScopeName(input));
+
+        if (input.kind == RenderPassCommandKind::UIOverlay)
+            return 0u;
 
         if (commandBuffer == nullptr)
             return recordedDrawCount;
@@ -1687,7 +1699,10 @@ namespace
         uint64_t observedGeneration,
         std::chrono::milliseconds timeout = kThreadedWorkerWakeTimeout);
 
-    bool DrainThreadedLifecycleSynchronously(DriverImpl& impl, Driver* driver = nullptr)
+    bool DrainThreadedLifecycleSynchronously(
+        DriverImpl& impl,
+        Driver* driver = nullptr,
+        const bool applyPendingSwapchainResize = true)
     {
         NLS_PROFILE_SCOPE();
         if (impl.threadedLifecycle == nullptr || driver == nullptr)
@@ -1710,7 +1725,8 @@ namespace
                 NLS_PROFILE_NAMED_SCOPE("Driver::DrainRhiSubmissions");
                 if (RhiThreadCoordinator::DrainPendingThreadedSubmissions(
                     *driver,
-                    RhiSubmissionAttribution::SynchronousDrain))
+                    RhiSubmissionAttribution::SynchronousDrain,
+                    applyPendingSwapchainResize))
                 {
                     progressed = true;
                 }
@@ -1859,6 +1875,7 @@ namespace
             (void)ReleaseFrameContextResources(frameContext, &impl);
         impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
         impl.deferredThreadedFrameScopedRetirementFrameContexts.clear();
+        impl.deferredUiTextureRetirementFrameIdsByFrameContext.clear();
         impl.frameContexts.clear();
 
         if (impl.explicitDevice == nullptr)
@@ -1974,6 +1991,7 @@ namespace
 
         impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
         impl.deferredThreadedFrameScopedRetirementFrameContexts.clear();
+        impl.deferredUiTextureRetirementFrameIdsByFrameContext.clear();
         impl.frameContexts.clear();
         impl.explicitSwapchain.reset();
         return true;
@@ -2178,10 +2196,38 @@ bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
     size_t* publishedSlotIndex,
     uint64_t* publishedFrameId)
 {
+    if (driver.m_impl != nullptr)
+    {
+        auto originalRenderSceneBuilder = std::move(renderSceneBuilder);
+        renderSceneBuilder = [&driver, originalRenderSceneBuilder = std::move(originalRenderSceneBuilder)]() mutable
+        {
+            auto package = originalRenderSceneBuilder();
+            if (package.targetsSwapchain)
+            {
+                uint64_t consumedUiSnapshotGeneration = 0u;
+                auto uiSnapshot = DriverUIAccess::ConsumePendingUiDrawDataSnapshot(
+                    driver,
+                    &consumedUiSnapshotGeneration);
+                if (uiSnapshot != nullptr && uiSnapshot->hasVisibleDraws)
+                {
+                    if (!AttachUiOverlaySnapshotToRenderScenePackage(package, uiSnapshot))
+                    {
+                        DriverUIAccess::RestoreConsumedUiDrawDataSnapshotIfUnchanged(
+                            driver,
+                            uiSnapshot,
+                            consumedUiSnapshotGeneration);
+                    }
+                }
+            }
+            return package;
+        };
+    }
+
     return RenderThreadCoordinator::TryPublishPreparedFrameBuilder(
         driver,
         snapshot,
         std::move(renderSceneBuilder),
+        true,
         publishedSlotIndex,
         publishedFrameId);
 }
@@ -2201,13 +2247,16 @@ bool DriverRendererAccess::QueueStandalonePostSubmitBufferReadback(
     return true;
 }
 
-bool DriverRendererAccess::TryDrainThreadedRendering(Driver& driver)
+bool DriverRendererAccess::TryDrainThreadedRendering(Driver& driver, const bool applyPendingSwapchainResize)
 {
     if (driver.m_impl == nullptr)
         return true;
 
-    const bool drained = DrainThreadedLifecycleSynchronously(*driver.m_impl, &driver);
-    if (drained)
+    const bool drained = DrainThreadedLifecycleSynchronously(
+        *driver.m_impl,
+        &driver,
+        applyPendingSwapchainResize);
+    if (drained && applyPendingSwapchainResize)
         driver.ApplyPendingSwapchainResize();
     return drained;
 }
@@ -2883,6 +2932,202 @@ bool DriverUIAccess::IsRenderDocEnabled(const Driver& driver)
 		driver.m_impl->renderDocCaptureController->IsEnabled();
 }
 
+void DriverUIAccess::PublishUiDrawDataSnapshot(
+    Driver& driver,
+    std::shared_ptr<const UI::UiDrawDataSnapshot> snapshot)
+{
+    if (driver.m_impl == nullptr)
+        return;
+
+    const uint64_t frameId = snapshot != nullptr ? snapshot->frameId : 0u;
+    {
+        std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
+        driver.m_impl->pendingUiOverlaySnapshot = std::move(snapshot);
+        driver.m_impl->pendingUiOverlaySnapshotFrameId = frameId;
+        if (frameId != 0u)
+            driver.m_impl->latestUiOverlaySnapshotFrameId = frameId;
+        ++driver.m_impl->pendingUiOverlaySnapshotGeneration;
+    }
+
+    Detail::NotifyThreadedWorkers(*driver.m_impl);
+}
+
+bool DriverUIAccess::PublishUiOnlyFrame(
+    Driver& driver,
+    const uint32_t renderWidth,
+    const uint32_t renderHeight,
+    size_t* publishedSlotIndex,
+    uint64_t* publishedFrameId)
+{
+    if (publishedFrameId != nullptr)
+        *publishedFrameId = 0u;
+    if (publishedSlotIndex != nullptr)
+        *publishedSlotIndex = 0u;
+
+    if (driver.m_impl == nullptr ||
+        driver.m_impl->explicitDevice == nullptr ||
+        driver.m_impl->explicitSwapchain == nullptr ||
+        driver.m_impl->threadedLifecycle == nullptr ||
+        renderWidth == 0u ||
+        renderHeight == 0u)
+    {
+        return false;
+    }
+
+    const auto overlayFeature =
+        RHI::GetUIOverlayFrameGraphFeature(driver.m_impl->explicitDevice.get());
+    if (!overlayFeature.supported)
+        return false;
+
+    std::shared_ptr<const UI::UiDrawDataSnapshot> snapshot;
+    {
+        std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
+        snapshot = driver.m_impl->pendingUiOverlaySnapshot;
+    }
+    if (snapshot == nullptr || !snapshot->hasVisibleDraws)
+        return false;
+
+    FrameSnapshot frameSnapshot;
+    frameSnapshot.frameId = snapshot->frameId != 0u
+        ? snapshot->frameId
+        : driver.m_impl->nextThreadedFrameId++;
+    frameSnapshot.targetsSwapchain = true;
+    frameSnapshot.renderWidth = renderWidth;
+    frameSnapshot.renderHeight = renderHeight;
+    frameSnapshot.clearColorBuffer = false;
+    frameSnapshot.clearDepthBuffer = false;
+    frameSnapshot.clearStencilBuffer = false;
+
+    auto package = BuildSnapshotOwnedRenderScenePackage(
+        frameSnapshot,
+        SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+    if (!AttachUiOverlaySnapshotToRenderScenePackage(package, snapshot))
+        return false;
+
+    const bool published = RenderThreadCoordinator::TryPublishPreparedFrameBuilder(
+        driver,
+        frameSnapshot,
+        [package = std::move(package)]() mutable
+        {
+            return package;
+        },
+        false,
+        publishedSlotIndex,
+        publishedFrameId);
+    if (!published)
+        return false;
+
+    {
+        std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
+        if (driver.m_impl->pendingUiOverlaySnapshot == snapshot)
+        {
+            driver.m_impl->pendingUiOverlaySnapshot.reset();
+            driver.m_impl->pendingUiOverlaySnapshotFrameId = 0u;
+        }
+    }
+
+    return true;
+}
+
+std::shared_ptr<const UI::UiDrawDataSnapshot> DriverUIAccess::ConsumePendingUiDrawDataSnapshot(
+    Driver& driver,
+    uint64_t* consumedGeneration)
+{
+    if (consumedGeneration != nullptr)
+        *consumedGeneration = 0u;
+
+    if (driver.m_impl == nullptr)
+        return nullptr;
+
+    std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
+    auto snapshot = std::move(driver.m_impl->pendingUiOverlaySnapshot);
+    driver.m_impl->pendingUiOverlaySnapshotFrameId = 0u;
+    if (consumedGeneration != nullptr)
+        *consumedGeneration = driver.m_impl->pendingUiOverlaySnapshotGeneration;
+    return snapshot;
+}
+
+bool DriverUIAccess::RestoreConsumedUiDrawDataSnapshotIfUnchanged(
+    Driver& driver,
+    std::shared_ptr<const UI::UiDrawDataSnapshot> snapshot,
+    const uint64_t consumedGeneration)
+{
+    if (driver.m_impl == nullptr || snapshot == nullptr)
+        return false;
+
+    const uint64_t frameId = snapshot->frameId;
+    {
+        std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
+        if (driver.m_impl->pendingUiOverlaySnapshot != nullptr ||
+            driver.m_impl->pendingUiOverlaySnapshotGeneration != consumedGeneration)
+        {
+            return false;
+        }
+
+        driver.m_impl->pendingUiOverlaySnapshot = std::move(snapshot);
+        driver.m_impl->pendingUiOverlaySnapshotFrameId = frameId;
+        if (frameId != 0u)
+            driver.m_impl->latestUiOverlaySnapshotFrameId = std::max(
+                driver.m_impl->latestUiOverlaySnapshotFrameId,
+                frameId);
+        ++driver.m_impl->pendingUiOverlaySnapshotGeneration;
+    }
+
+    Detail::NotifyThreadedWorkers(*driver.m_impl);
+    return true;
+}
+
+UI::UiTextureId DriverUIAccess::RegisterUiTextureView(
+    Driver& driver,
+    const std::shared_ptr<RHI::RHITextureView>& textureView,
+    const UI::UiTextureSynchronizationScope synchronizationScope)
+{
+    if (driver.m_impl == nullptr)
+        return {};
+
+    return driver.m_impl->uiTextureRegistry.RegisterTextureView(textureView, synchronizationScope);
+}
+
+void DriverUIAccess::ReleaseUiTextureView(
+    Driver& driver,
+    const std::shared_ptr<RHI::RHITextureView>& textureView)
+{
+    if (driver.m_impl == nullptr)
+        return;
+
+    uint64_t retireFrameId = 0u;
+    {
+        std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
+        retireFrameId = driver.m_impl->pendingUiOverlaySnapshotFrameId != 0u
+            ? driver.m_impl->pendingUiOverlaySnapshotFrameId
+            : driver.m_impl->latestUiOverlaySnapshotFrameId;
+    }
+
+    driver.m_impl->uiTextureRegistry.ReleaseTextureView(textureView, retireFrameId);
+}
+
+void DriverUIAccess::NotifyUiOverlayFontAtlasChanged(Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return;
+
+    uint64_t retireFrameId = 0u;
+    {
+        std::lock_guard lock(driver.m_impl->pendingUiOverlaySnapshotMutex);
+        retireFrameId = driver.m_impl->pendingUiOverlaySnapshotFrameId != 0u
+            ? driver.m_impl->pendingUiOverlaySnapshotFrameId
+            : driver.m_impl->latestUiOverlaySnapshotFrameId;
+    }
+
+    driver.m_impl->uiOverlayRenderer.InvalidateFontAtlas(retireFrameId);
+}
+
+void DriverUIAccess::NotifyUiOverlaySwapchainWillResize(Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return;
+}
+
 Render::RHI::NativeHandle DriverUIAccess::GetRenderFinishedSemaphore(Driver& driver)
 {
     std::lock_guard lock(driver.m_impl->sceneToUiWaitMutex);
@@ -3133,13 +3378,16 @@ void DriverTestAccess::PauseThreadedRenderingWorkers(Driver& driver)
     driver.m_impl->threadedStopRequested.store(false);
 }
 
-bool DriverTestAccess::TryDrainThreadedRendering(Driver& driver)
+bool DriverTestAccess::TryDrainThreadedRendering(Driver& driver, const bool applyPendingSwapchainResize)
 {
     if (driver.m_impl == nullptr)
         return true;
 
-    const bool drained = DrainThreadedLifecycleSynchronously(*driver.m_impl, &driver);
-    if (drained)
+    const bool drained = DrainThreadedLifecycleSynchronously(
+        *driver.m_impl,
+        &driver,
+        applyPendingSwapchainResize);
+    if (drained && applyPendingSwapchainResize)
         driver.ApplyPendingSwapchainResize();
     return drained;
 }
@@ -3335,6 +3583,7 @@ void Driver::ShutdownRhiResources()
     }
     m_impl->retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
     m_impl->deferredThreadedFrameScopedRetirementFrameContexts.clear();
+    m_impl->deferredUiTextureRetirementFrameIdsByFrameContext.clear();
     m_impl->frameContexts.clear();
 
     m_impl->pipelineCache.reset();
@@ -3503,6 +3752,13 @@ void Driver::ApplyPendingSwapchainResize()
 
     if (m_impl->threadedLifecycle != nullptr && m_impl->threadedLifecycle->GetInFlightDepth() > 0u)
         return;
+
+    if (!m_impl->deferredThreadedFrameScopedRetirementFrameContexts.empty())
+    {
+        Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(*m_impl);
+        if (!m_impl->deferredThreadedFrameScopedRetirementFrameContexts.empty())
+            return;
+    }
 
 	const uint32_t width = m_impl->pendingSwapchainWidth;
 	const uint32_t height = m_impl->pendingSwapchainHeight;

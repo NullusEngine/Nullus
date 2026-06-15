@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <exception>
 #include <limits>
@@ -374,6 +375,60 @@ void Editor::Core::Editor::BeginProfilerFrame()
 {
     RefreshProfilerRecordingState();
     m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").BeginProfilerFrame();
+    UpdateValidationTimelineTraceExport();
+}
+
+void Editor::Core::Editor::UpdateValidationTimelineTraceExport()
+{
+    const auto& diagnostics = m_context.GetDiagnosticsSettings();
+    const uint32_t requestedFrames = diagnostics.editorValidationTimelineTraceFrames;
+    if (requestedFrames == 0u || m_validationTraceExportFinished)
+        return;
+
+    auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
+    if (!profilerPanel.IsRecordingEnabled())
+        return;
+
+    if (!m_validationTraceExportStarted)
+    {
+        const std::filesystem::path logFilePath(NLS::Debug::FileHandler::GetLogFilePath());
+        const auto logDirectory = logFilePath.parent_path();
+        m_validationTracePath = !logDirectory.empty()
+            ? logDirectory / "trace.json"
+            : std::filesystem::path(m_context.projectPath) / "Logs" / "trace.json";
+        auto& timelineSink = profilerPanel.GetTimelineSink();
+        if (!timelineSink.BeginTraceExport(m_validationTracePath))
+        {
+            NLS_LOG_WARNING("Editor validation TimelineProfiler trace failed to open: " + m_validationTracePath.string());
+            m_validationTraceExportFinished = true;
+            return;
+        }
+
+        m_validationTraceExportStarted = true;
+        NLS_LOG_INFO(
+            "Editor validation TimelineProfiler trace started: " +
+            m_validationTracePath.string() +
+            " frames=" +
+            std::to_string(requestedFrames));
+    }
+
+    auto& timelineSink = profilerPanel.GetTimelineSink();
+    const auto exportedFrames = timelineSink.UpdateTraceExport(std::min(8u, requestedFrames));
+    if (exportedFrames != 0u)
+        m_validationTraceExportStarted = true;
+
+    if (timelineSink.GetTraceExportedFrameCount() >= requestedFrames)
+    {
+        timelineSink.EndTraceExport();
+        m_validationTraceExportFinished = true;
+        NLS_LOG_INFO(
+            "Editor validation TimelineProfiler trace finished: " +
+            m_validationTracePath.string() +
+            " exportedFrames=" +
+            std::to_string(timelineSink.GetTraceExportedFrameCount()));
+        if (m_context.window != nullptr)
+            m_context.window->SetShouldClose(true);
+    }
 }
 
 void Editor::Core::Editor::Update(float p_deltaTime)
@@ -1105,39 +1160,12 @@ void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: begin");
 
-    NLS::Render::RHI::NativeHandle uiSignalSemaphore;
-    {
-        NLS_PROFILE_NAMED_SCOPE("UIManager::ResolveUISignalSemaphore");
-        uiSignalSemaphore = m_context.uiManager->ResolveUISignalSemaphore();
-    }
-
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UIManagerRender");
-        EDITOR_CONTEXT(uiManager)->Render(
-            [this]
-            {
-                NLS_PROFILE_NAMED_SCOPE("Editor::ResolveSceneToUiWaitSemaphore");
-                return Render::Context::DriverUIAccess::GetRenderFinishedSemaphore(*m_context.driver);
-            });
+        EDITOR_CONTEXT(uiManager)->Render();
     }
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: UIManager::Render returned");
-
-    if (uiSignalSemaphore.IsValid())
-    {
-        NLS_PROFILE_NAMED_SCOPE("Editor::SetUICompositionSignal");
-        Render::Context::DriverUIAccess::SetUICompositionSignal(
-            *m_context.driver,
-            uiSignalSemaphore,
-            m_context.uiManager->ResolveUISignalValue());
-    }
-
-    {
-        NLS_PROFILE_NAMED_SCOPE("UIManager::SubmitUIRendering");
-        m_context.uiManager->SubmitUIRendering();
-    }
-    if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
-        NLS_LOG_INFO("Editor::RenderEditorUI: SubmitUIRendering returned");
 }
 
 void Editor::Core::Editor::PostUpdate()

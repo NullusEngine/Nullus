@@ -1,5 +1,8 @@
 #pragma once
 
+#include <filesystem>
+#include <fstream>
+
 #include "Profiling/Profiler.h"
 #include "UIDef.h"
 
@@ -32,6 +35,11 @@ public:
     void TickFrame();
     void DrawTimeline();
     void SetRecordingEnabled(bool enabled);
+    bool BeginTraceExport(const std::filesystem::path& path);
+    uint32_t UpdateTraceExport(uint32_t maxFrameCount);
+    void EndTraceExport();
+    bool IsTraceExportOpen() const;
+    uint32_t GetTraceExportedFrameCount() const;
 
     size_t GetRecordedTrackCountForTesting() const;
     size_t GetTickFrameCountForTesting() const;
@@ -46,12 +54,22 @@ public:
 
 private:
 #if NLS_ENABLE_TIMELINE_PROFILER
+    struct TraceExportState
+    {
+        std::ofstream stream;
+        std::filesystem::path path;
+        uint64_t baseTime = 0u;
+        uint32_t lastExportedFrame = 0u;
+        uint32_t exportedFrameCount = 0u;
+    };
+
     bool m_recordingEnabled = false;
     bool m_frameStarted = false;
     bool m_gpuInitialized = false;
     bool m_gpuScopesAvailable = false;
     size_t m_tickFrameCount = 0u;
     size_t m_skippedScopeCount = 0u;
+    TraceExportState m_traceExport;
 #endif
 };
 }

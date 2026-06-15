@@ -85,6 +85,10 @@ namespace
         if (device == nullptr)
             return NLS::Render::RHI::NativeBackendType::None;
 
+        const auto nativeBackend = device->GetNativeDeviceInfo().backend;
+        if (nativeBackend != NLS::Render::RHI::NativeBackendType::None)
+            return nativeBackend;
+
         const auto& adapter = device->GetAdapter();
         return adapter != nullptr
             ? adapter->GetBackendType()

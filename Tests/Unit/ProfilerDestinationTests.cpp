@@ -889,6 +889,41 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterDefaultsToLogDirectory)
     EXPECT_EQ(tracePathFromConfiguredLog, projectRoot / "Logs" / "trace.json");
 }
 
+TEST_F(ProfilerDestinationTest, TimelineTraceExporterStateIsOwnedPerSinkInstance)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    using NLS::Base::Profiling::TimelineProfilerSink;
+
+    const auto firstPath = std::filesystem::temp_directory_path() / "nullus_trace_export_first.json";
+    const auto secondPath = std::filesystem::temp_directory_path() / "nullus_trace_export_second.json";
+    std::error_code ignored;
+    std::filesystem::remove(firstPath, ignored);
+    std::filesystem::remove(secondPath, ignored);
+
+    TimelineProfilerSink firstSink;
+    TimelineProfilerSink secondSink;
+
+    ASSERT_TRUE(firstSink.BeginTraceExport(firstPath));
+    EXPECT_TRUE(firstSink.IsTraceExportOpen());
+    EXPECT_FALSE(secondSink.IsTraceExportOpen());
+    ASSERT_TRUE(secondSink.BeginTraceExport(secondPath))
+        << "Each sink instance must own an independent trace export session instead of sharing static state.";
+    EXPECT_TRUE(secondSink.IsTraceExportOpen());
+
+    firstSink.EndTraceExport();
+    EXPECT_TRUE(secondSink.IsTraceExportOpen());
+    EXPECT_FALSE(firstSink.IsTraceExportOpen());
+    secondSink.EndTraceExport();
+
+    EXPECT_TRUE(std::filesystem::exists(firstPath));
+    EXPECT_TRUE(std::filesystem::exists(secondPath));
+    std::filesystem::remove(firstPath, ignored);
+    std::filesystem::remove(secondPath, ignored);
+#else
+    SUCCEED() << "TimelineProfiler is disabled in this build.";
+#endif
+}
+
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterSkipsIncompleteAndNonPositiveDurationEvents)
 {
 #if NLS_ENABLE_TIMELINE_PROFILER
@@ -944,25 +979,17 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterCanFilterEditorUiNoise)
     EXPECT_TRUE(IsEditorUiTraceEventName("Panel::Draw:Profiler"));
     EXPECT_TRUE(IsEditorUiTraceEventName("Panel::Draw:Material Editor"));
     EXPECT_TRUE(IsEditorUiTraceEventName("Panel::Draw:Scene View"));
-    EXPECT_TRUE(IsEditorUiTraceEventName("DX12UIBridge::RenderDrawData"));
-    EXPECT_TRUE(IsEditorUiTraceEventName("NLS::Render::RHI::DX12UIBridge::RenderDrawData"));
+    EXPECT_TRUE(IsEditorUiTraceEventName("RHIFrameGraph::UIOverlay"));
+    EXPECT_TRUE(IsEditorUiTraceEventName("RHIFrameGraph::UIOverlay.FontAtlasUpload"));
+    EXPECT_FALSE(IsEditorUiTraceEventName("DX12UIBridge::RenderDrawData"));
+    EXPECT_FALSE(IsEditorUiTraceEventName("NLS::Render::RHI::DX12UIBridge::RenderDrawData"));
     EXPECT_FALSE(IsEditorUiTraceEventName("NLS::Engine::Rendering::BaseSceneRenderer::CaptureThreadedPreparedDraw"));
 
     EXPECT_EQ(
         BuildTraceDurationEventJson(7u, 20u, 24u, 10u, 0.5, "Panel::Draw:Profiler", false),
         std::nullopt);
     EXPECT_EQ(
-        BuildTraceDurationEventJson(7u, 20u, 24u, 10u, 0.5, "DX12UIBridge::RenderDrawData", false),
-        std::nullopt);
-    EXPECT_EQ(
-        BuildTraceDurationEventJson(
-            7u,
-            20u,
-            24u,
-            10u,
-            0.5,
-            "NLS::Render::RHI::DX12UIBridge::RenderDrawData",
-            false),
+        BuildTraceDurationEventJson(7u, 20u, 24u, 10u, 0.5, "RHIFrameGraph::UIOverlay", false),
         std::nullopt);
 
     const auto sceneDraw = BuildTraceDurationEventJson(
@@ -977,27 +1004,11 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterCanFilterEditorUiNoise)
     EXPECT_NE(sceneDraw->find("CaptureThreadedPreparedDraw"), std::string::npos);
 }
 
-TEST_F(ProfilerDestinationTest, DX12UiBridgeWaitsForBackbufferAndAllocatorReuse)
+TEST_F(ProfilerDestinationTest, DX12UiBridgeDirectSubmitSourceIsRemoved)
 {
-    const auto source = ReadSourceText(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12UIBridge.cpp");
-
-    const auto renderDrawData = source.find("void RenderDrawData");
-    ASSERT_NE(renderDrawData, std::string::npos);
-    const auto resolveTextureView = source.find("NativeHandle ResolveTextureView", renderDrawData);
-    ASSERT_NE(resolveTextureView, std::string::npos);
-    const auto body = source.substr(renderDrawData, resolveTextureView - renderDrawData);
-
-    const auto backbufferReuse = body.find("DX12UIBridge::WaitForBackbufferReuse");
-    const auto allocatorReuse = body.find("DX12UIBridge::WaitForAllocatorReuse");
-    const auto allocatorReset = body.find("commandAllocator->Reset()");
-    const auto backbufferBarrier = body.find("barrier.Transition.pResource = backBuffer.Get()");
-    ASSERT_NE(backbufferReuse, std::string::npos);
-    ASSERT_NE(allocatorReuse, std::string::npos);
-    ASSERT_NE(allocatorReset, std::string::npos);
-    ASSERT_NE(backbufferBarrier, std::string::npos);
-    EXPECT_LT(backbufferReuse, allocatorReset);
-    EXPECT_LT(backbufferReuse, backbufferBarrier);
+    EXPECT_FALSE(std::filesystem::exists(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12UIBridge.cpp"))
+        << "The old DX12 UI direct-submit bridge must not remain as an executable source path.";
 }
 
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterKeepsEventNamesOwnedUntilExport)

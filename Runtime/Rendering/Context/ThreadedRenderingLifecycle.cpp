@@ -28,6 +28,8 @@ namespace
             return ParallelDrawCommandPassRole::Helper;
         case RenderPassCommandKind::Compute:
             return ParallelDrawCommandPassRole::Compute;
+        case RenderPassCommandKind::UIOverlay:
+            return ParallelDrawCommandPassRole::UIOverlay;
         default:
             return ParallelDrawCommandPassRole::Auxiliary;
         }
@@ -302,6 +304,7 @@ bool IsRenderPassEligibleForParallelRecording(const RenderPassCommandInput& pass
     {
     case RenderPassCommandKind::Compute:
     case RenderPassCommandKind::Lighting:
+    case RenderPassCommandKind::UIOverlay:
         return false;
     case RenderPassCommandKind::Opaque:
     case RenderPassCommandKind::Decal:
@@ -387,6 +390,7 @@ namespace
         copy.requiresDependencyVisibility = input.requiresDependencyVisibility;
         copy.debugName = input.debugName;
         copy.drawCount = input.drawCount;
+        copy.uiDrawDataSnapshot = input.uiDrawDataSnapshot;
         copy.computeDispatchInputs = input.computeDispatchInputs;
         copy.requiresFrameData = input.requiresFrameData;
         copy.requiresObjectData = input.requiresObjectData;

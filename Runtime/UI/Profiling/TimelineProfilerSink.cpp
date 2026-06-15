@@ -1,15 +1,18 @@
 #include "UI/Profiling/TimelineProfilerSink.h"
 #include "UI/Profiling/TimelineProfilerLimits.h"
+#include "ProfilerTraceCursor.h"
 
 #if NLS_ENABLE_TIMELINE_PROFILER
 #include <Profiler.h>
 
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <vector>
 
 #if defined(_WIN32)
 #include <d3d12.h>
+#include <windows.h>
 #endif
 
 namespace
@@ -140,6 +143,31 @@ bool InitializeTimelineGpuProfilerLocked(
 
 namespace NLS::Base::Profiling
 {
+namespace
+{
+uint64_t QueryTimelineTraceCounter()
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    uint64_t value = 0u;
+    QueryPerformanceCounter(reinterpret_cast<LARGE_INTEGER*>(&value));
+    return value;
+#else
+    return 0u;
+#endif
+}
+
+double QueryTimelineTraceTicksToMs()
+{
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
+    uint64_t frequency = 0u;
+    QueryPerformanceFrequency(reinterpret_cast<LARGE_INTEGER*>(&frequency));
+    return frequency != 0u ? 1000.0 / static_cast<double>(frequency) : 0.0;
+#else
+    return 0.0;
+#endif
+}
+}
+
 TimelineProfilerSink::TimelineProfilerSink()
 {
 #if NLS_ENABLE_TIMELINE_PROFILER
@@ -150,6 +178,7 @@ TimelineProfilerSink::TimelineProfilerSink()
 TimelineProfilerSink::~TimelineProfilerSink()
 {
 #if NLS_ENABLE_TIMELINE_PROFILER
+    EndTraceExport();
     ShutdownTimelineGpuProfilerForSink(m_gpuInitialized);
     ReleaseTimelineGpuProfilerOwnershipForSinkLocked(m_gpuInitialized);
     m_gpuScopesAvailable = false;
@@ -438,6 +467,126 @@ void TimelineProfilerSink::SetRecordingEnabled(const bool enabled)
     }
 #else
     (void)enabled;
+#endif
+}
+
+bool TimelineProfilerSink::BeginTraceExport(const std::filesystem::path& path)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    EnsureTimelineProfilerInitialized();
+    if (m_traceExport.stream.is_open())
+        return m_traceExport.path == path;
+
+    std::error_code error;
+    const auto parentPath = path.parent_path();
+    if (!parentPath.empty())
+        std::filesystem::create_directories(parentPath, error);
+    if (error)
+        return false;
+
+    m_traceExport.stream.open(path, std::ios::trunc);
+    if (!m_traceExport.stream.is_open())
+        return false;
+
+    m_traceExport.path = path;
+    m_traceExport.baseTime = QueryTimelineTraceCounter();
+    m_traceExport.exportedFrameCount = 0u;
+    const URange cpuRange = gProfiler.GetFrameRange();
+    m_traceExport.lastExportedFrame = cpuRange.End > 0u ? cpuRange.End - 1u : 0u;
+
+    m_traceExport.stream << "{\n\"traceEvents\": [\n";
+    m_traceExport.stream << NLS::UI::TimelineProfilerDetail::BuildTraceMetadataEventJson(
+        "process_name",
+        0u,
+        std::nullopt,
+        "Track") << ",\n";
+    for (const ::Profiler::EventTrack& track : gProfiler.GetTracks())
+    {
+        m_traceExport.stream << NLS::UI::TimelineProfilerDetail::BuildTraceMetadataEventJson(
+            "thread_name",
+            0u,
+            track.Index,
+            track.Name) << ",\n";
+    }
+    return true;
+#else
+    (void)path;
+    return false;
+#endif
+}
+
+uint32_t TimelineProfilerSink::UpdateTraceExport(const uint32_t maxFrameCount)
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    if (!m_traceExport.stream.is_open() || maxFrameCount == 0u)
+        return 0u;
+
+    const double ticksToMs = QueryTimelineTraceTicksToMs();
+    const URange cpuRange = gProfiler.GetFrameRange();
+    const auto exportRange = NLS::UI::TimelineProfilerDetail::ResolveBudgetedTraceFrameExportRange(
+        { cpuRange.Begin, cpuRange.End },
+        m_traceExport.lastExportedFrame,
+        maxFrameCount);
+
+    uint32_t exportedThisCall = 0u;
+    for (uint32_t frameIndex = exportRange.Begin; frameIndex < exportRange.End; ++frameIndex)
+    {
+        for (const ::Profiler::EventTrack& track : gProfiler.GetTracks())
+        {
+            for (const ::ProfilerEvent& event : track.GetFrameData(frameIndex))
+            {
+                const auto eventJson = NLS::UI::TimelineProfilerDetail::BuildTraceDurationEventJson(
+                    track.Index,
+                    event.TicksBegin,
+                    event.TicksEnd,
+                    m_traceExport.baseTime,
+                    ticksToMs,
+                    event.GetName(),
+                    true);
+                if (!eventJson.has_value())
+                    continue;
+
+                m_traceExport.stream << *eventJson << ",\n";
+            }
+        }
+        m_traceExport.lastExportedFrame = frameIndex;
+        ++m_traceExport.exportedFrameCount;
+        ++exportedThisCall;
+    }
+    return exportedThisCall;
+#else
+    (void)maxFrameCount;
+    return 0u;
+#endif
+}
+
+void TimelineProfilerSink::EndTraceExport()
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    if (!m_traceExport.stream.is_open())
+        return;
+
+    m_traceExport.stream << "{}]\n}";
+    m_traceExport.stream.close();
+    m_traceExport.path.clear();
+#endif
+}
+
+bool TimelineProfilerSink::IsTraceExportOpen() const
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    return m_traceExport.stream.is_open();
+#else
+    return false;
+#endif
+}
+
+uint32_t TimelineProfilerSink::GetTraceExportedFrameCount() const
+{
+#if NLS_ENABLE_TIMELINE_PROFILER
+    return m_traceExport.exportedFrameCount;
+#else
+    return 0u;
 #endif
 }
 

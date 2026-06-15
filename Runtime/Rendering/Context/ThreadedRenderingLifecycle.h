@@ -35,6 +35,11 @@ namespace NLS::Render::RHI
     class RHITextureView;
 }
 
+namespace NLS::Render::UI
+{
+    struct UiDrawDataSnapshot;
+}
+
 namespace NLS::Render::Context
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -50,8 +55,11 @@ namespace NLS::Render::Context
         GBuffer,
         Lighting,
         Compute,
-        Decal
+        Decal,
+        UIOverlay
     };
+
+    inline constexpr const char kUIOverlayRenderPassDebugName[] = "RHIFrameGraph::UIOverlay";
 
     struct NLS_RENDER_API RecordedDrawCommandInput
     {
@@ -183,6 +191,7 @@ namespace NLS::Render::Context
         bool requiresDependencyVisibility = false;
         std::string debugName;
         uint64_t drawCount = 0u;
+        std::shared_ptr<const UI::UiDrawDataSnapshot> uiDrawDataSnapshot;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
         std::vector<RecordedComputeDispatchInput> computeDispatchInputs;
         bool requiresFrameData = false;
@@ -239,7 +248,8 @@ namespace NLS::Render::Context
         Helper,
         Auxiliary,
         Compute,
-        Decal
+        Decal,
+        UIOverlay
     };
 
     struct NLS_RENDER_API ParallelDrawCommandBatchMetadata
@@ -378,11 +388,13 @@ namespace NLS::Render::Context
         uint64_t transparentDrawCount = 0u;
         uint64_t skyboxDrawCount = 0u;
         uint64_t helperDrawCount = 0u;
+        uint64_t uiOverlayDrawCount = 0u;
         bool hasOpaquePass = false;
         bool hasDecalPass = false;
         bool hasTransparentPass = false;
         bool hasSkyboxPass = false;
         bool hasHelperPass = false;
+        bool hasUIOverlayPass = false;
         uint64_t passPlanCount = 0u;
         uint64_t drawCommandCount = 0u;
         uint64_t materialBatchCount = 0u;
@@ -399,6 +411,7 @@ namespace NLS::Render::Context
         bool containsComputeDispatchInputs = false;
         std::vector<RecordedComputeDispatchInput> computeDispatchInputs;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
+        std::shared_ptr<const UI::UiDrawDataSnapshot> uiDrawDataSnapshot;
         std::vector<std::shared_ptr<RHI::RHITexture>> extractedTextures;
         std::shared_ptr<RHI::RHITexture> preferredReadbackTexture;
         uint64_t preferredReadbackTextureGeneration = 0u;
@@ -414,6 +427,7 @@ namespace NLS::Render::Context
     struct NLS_RENDER_API RhiSubmissionFrame
     {
         uint64_t frameId = 0u;
+        uint64_t uiOverlaySnapshotFrameId = 0u;
         uint32_t frameContextIndex = 0u;
         bool retirementFenceWaited = false;
         bool offscreenOnly = false;

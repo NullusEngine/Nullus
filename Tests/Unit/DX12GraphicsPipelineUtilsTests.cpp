@@ -45,6 +45,32 @@ TEST(DX12GraphicsPipelineUtilsTests, BuildsOwnedInputLayoutFromVertexAttributesA
     EXPECT_EQ(inputLayout.elements[3].Format, DXGI_FORMAT_R32G32B32_FLOAT);
 }
 
+TEST(DX12GraphicsPipelineUtilsTests, BuildsImGuiOverlayInputLayoutWithFloatColorTexcoord)
+{
+    NLS::Render::RHI::RHIGraphicsPipelineDesc desc;
+    desc.vertexBuffers = {
+        { 0u, 32u, false }
+    };
+    desc.vertexAttributes = {
+        { 0u, 0u, 0u, 8u },
+        { 1u, 0u, 8u, 8u },
+        { 3u, 0u, 16u, 16u }
+    };
+
+    const auto inputLayout = NLS::Render::RHI::DX12::BuildDX12OwnedInputLayout(desc);
+
+    ASSERT_EQ(inputLayout.elements.size(), 3u);
+    EXPECT_STREQ(inputLayout.elements[0].SemanticName, "POSITION");
+    EXPECT_EQ(inputLayout.elements[0].Format, DXGI_FORMAT_R32G32_FLOAT);
+    EXPECT_STREQ(inputLayout.elements[1].SemanticName, "TEXCOORD");
+    EXPECT_EQ(inputLayout.elements[1].SemanticIndex, 0u);
+    EXPECT_EQ(inputLayout.elements[1].Format, DXGI_FORMAT_R32G32_FLOAT);
+    EXPECT_STREQ(inputLayout.elements[2].SemanticName, "TEXCOORD");
+    EXPECT_EQ(inputLayout.elements[2].SemanticIndex, 1u);
+    EXPECT_EQ(inputLayout.elements[2].Format, DXGI_FORMAT_R32G32B32A32_FLOAT);
+    EXPECT_EQ(inputLayout.elements[2].AlignedByteOffset, 16u);
+}
+
 TEST(DX12GraphicsPipelineUtilsTests, ReturnsEmptyInputLayoutWhenNoVertexAttributesAreProvided)
 {
     NLS::Render::RHI::RHIGraphicsPipelineDesc desc;

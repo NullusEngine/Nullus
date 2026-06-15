@@ -1,5 +1,6 @@
 #include "Rendering/RHI/Backends/DX12/DX12Swapchain.h"
 
+#include "Rendering/RHI/Backends/DX12/DX12PresentPolicy.h"
 #include "Rendering/RHI/Backends/DX12/DX12Synchronization.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 
@@ -19,12 +20,27 @@ namespace NLS::Render::Backend
 {
 	namespace
 	{
+		constexpr uint32_t kDefaultDX12SwapchainImageCount = 3u;
+
 		bool ShouldLogDx12FrameFlow()
 		{
 			return NLS::Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow;
 		}
 
 #if defined(_WIN32)
+		bool QueryDx12AllowTearingSupport(IDXGIFactory6* factory)
+		{
+			if (factory == nullptr)
+				return false;
+
+			BOOL allowTearing = FALSE;
+			const HRESULT hr = factory->CheckFeatureSupport(
+				DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+				&allowTearing,
+				sizeof(allowTearing));
+			return SUCCEEDED(hr) && allowTearing == TRUE;
+		}
+
 		UINT64 GetDx12StoredMessageCount(ID3D12Device* device)
 		{
 			if (device == nullptr)
@@ -70,6 +86,16 @@ namespace NLS::Render::Backend
 					" severity=" + std::to_string(static_cast<int>(message->Severity)) +
 					" text=" + std::string(message->pDescription));
 			}
+		}
+
+		NLS::Render::RHI::SwapchainDesc BuildResolvedDX12SwapchainDesc(
+			NLS::Render::RHI::SwapchainDesc desc,
+			bool allowTearing)
+		{
+			if (desc.imageCount == 0u)
+				desc.imageCount = kDefaultDX12SwapchainImageCount;
+			desc.allowTearing = allowTearing;
+			return desc;
 		}
 #endif
 	}
@@ -182,7 +208,7 @@ namespace NLS::Render::Backend
 		: m_swapchain(swapchain)
 		, m_device(device)
 		, m_desc(desc)
-		, m_imageCount(desc.imageCount > 0 ? desc.imageCount : 2)
+		, m_imageCount(desc.imageCount > 0 ? desc.imageCount : kDefaultDX12SwapchainImageCount)
 	{
 		NLS_LOG_INFO(
 			"NativeDX12Swapchain created: swapchain=" +
@@ -222,9 +248,12 @@ namespace NLS::Render::Backend
 		swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		swapChainDesc.SampleDesc.Count = 1;
 		swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-		swapChainDesc.BufferCount = desc.imageCount > 0 ? desc.imageCount : 2;
+		swapChainDesc.BufferCount = desc.imageCount > 0 ? desc.imageCount : kDefaultDX12SwapchainImageCount;
 		swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 		swapChainDesc.Scaling = DXGI_SCALING_NONE;
+		const bool allowTearing = QueryDx12AllowTearingSupport(factory);
+		swapChainDesc.Flags = ResolveDX12SwapchainFlags(allowTearing);
+		NLS::Render::RHI::SwapchainDesc resolvedDesc = BuildResolvedDX12SwapchainDesc(desc, allowTearing);
 
 		HRESULT hr = factory->CreateSwapChainForHwnd(
 			graphicsQueue,
@@ -233,6 +262,19 @@ namespace NLS::Render::Backend
 			nullptr,
 			nullptr,
 			&swapChain1);
+
+		if (FAILED(hr) && allowTearing)
+		{
+			swapChainDesc.Flags = ResolveDX12SwapchainFlags(false);
+			resolvedDesc.allowTearing = false;
+			hr = factory->CreateSwapChainForHwnd(
+				graphicsQueue,
+				static_cast<HWND>(desc.nativeWindowHandle),
+				&swapChainDesc,
+				nullptr,
+				nullptr,
+				&swapChain1);
+		}
 
 		if (FAILED(hr) && swapChainDesc.Scaling == DXGI_SCALING_NONE)
 		{
@@ -254,7 +296,7 @@ namespace NLS::Render::Backend
 
 		Microsoft::WRL::ComPtr<IDXGISwapChain3> swapChain3;
 		swapChain1.As(&swapChain3);
-		return std::make_shared<NativeDX12Swapchain>(swapChain3, device, desc);
+		return std::make_shared<NativeDX12Swapchain>(swapChain3, device, resolvedDesc);
 	}
 #endif
 
@@ -372,7 +414,7 @@ namespace NLS::Render::Backend
 				width,
 				height,
 				DXGI_FORMAT_R8G8B8A8_UNORM,
-				0);
+				ResolveDX12SwapchainFlags(m_desc.allowTearing));
 			if (FAILED(hr))
 			{
 				NLS_LOG_ERROR(
@@ -432,6 +474,7 @@ namespace NLS::Render::Backend
 		m_imageCount = backbufferCount;
 		m_desc.width = backbufferWidth;
 		m_desc.height = backbufferHeight;
+		m_desc.imageCount = backbufferCount;
 
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;

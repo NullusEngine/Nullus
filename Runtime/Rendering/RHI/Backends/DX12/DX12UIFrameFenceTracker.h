@@ -13,20 +13,20 @@ namespace NLS::Render::RHI::DX12
         return 5000u;
     }
 
-    struct NLS_RENDER_API DX12UIFrameReuseWait
+    struct DX12UIFrameReuseWait
     {
         bool shouldWait = false;
         uint64_t fenceValue = 0u;
     };
 
-    struct NLS_RENDER_API DX12UIAllocatorReuse
+    struct DX12UIAllocatorReuse
     {
         std::optional<uint32_t> allocatorIndex;
         bool shouldWait = false;
         uint64_t fenceValue = 0u;
     };
 
-    class NLS_RENDER_API DX12UIFrameFenceTracker
+    class DX12UIFrameFenceTracker
     {
     public:
         void ResetBackbufferCount(uint32_t backbufferCount)

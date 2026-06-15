@@ -114,11 +114,7 @@ void DrawTexture(
 
     void* resolvedTextureId = nullptr;
     if (Core::ServiceLocator::Contains<UI::UIManager>())
-    {
-        auto nativeHandle = NLS_SERVICE(UI::UIManager).ResolveTextureView(textureView);
-        if (nativeHandle.IsValid())
-            resolvedTextureId = nativeHandle.handle;
-    }
+        resolvedTextureId = NLS_SERVICE(UI::UIManager).ResolveTextureId(textureView);
 
     if (resolvedTextureId == nullptr)
         return;
@@ -1135,7 +1131,6 @@ LauncherRunResult Launcher::Run()
         m_device->PollEvents();
 
         m_uiManager->Render();
-        m_uiManager->SubmitUIRendering();
         Render::Context::DriverUIAccess::PresentSwapchain(*m_driver);
 
         if (!m_mainPanel->IsOpened())

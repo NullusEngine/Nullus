@@ -17,11 +17,7 @@ void ButtonImage::_Draw_Impl()
     ImVec4 tn = Internal::Converter::ToImVec4(tint);
     void* resolvedTextureId = nullptr;
     if (NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
-    {
-        auto nativeHandle = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureView(textureView);
-        if (nativeHandle.IsValid())
-            resolvedTextureId = nativeHandle.handle;
-    }
+        resolvedTextureId = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(textureView);
 
     const ImVec2 imageSize = Internal::Converter::ToImVec2(size);
     const bool clicked = resolvedTextureId != nullptr

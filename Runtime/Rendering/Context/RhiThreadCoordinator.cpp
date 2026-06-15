@@ -30,6 +30,7 @@
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Rendering/UI/RHIImGuiOverlayRenderer.h"
 #include "Jobs/JobSystem.h"
 
 namespace NLS::Render::Context
@@ -261,6 +262,18 @@ namespace NLS::Render::Context
             size_t frameContextIndex,
             const Render::RHI::RHIFrameContext& frameContext,
             const Render::RHI::RHISubmitDesc& submitDesc);
+
+        uint64_t ResolveSubmittedUiOverlaySnapshotFrameId(
+            const RenderScenePackage& renderScenePackage)
+        {
+            if (!renderScenePackage.hasUIOverlayPass ||
+                renderScenePackage.uiDrawDataSnapshot == nullptr)
+            {
+                return 0u;
+            }
+
+            return renderScenePackage.uiDrawDataSnapshot->frameId;
+        }
 
         void DeferStandaloneFrameScopedRetirementAfterSubmit(
             DriverImpl& impl,
@@ -973,6 +986,300 @@ namespace NLS::Render::Context
                 });
         }
 
+        BufferResourceAccess MakeUiOverlayBufferReadAccess(
+            const std::shared_ptr<Render::RHI::RHIBuffer>& buffer,
+            const Render::RHI::AccessMask accessMask)
+        {
+            BufferResourceAccess access;
+            access.buffer = buffer;
+            access.mode = ResourceAccessMode::Read;
+            access.state = Render::RHI::ResourceState::GenericRead;
+            access.stages = Render::RHI::PipelineStageMask::VertexInput;
+            access.access = accessMask;
+            return access;
+        }
+
+        TextureResourceAccess MakeUiOverlaySampledTextureAccess(
+            const std::shared_ptr<Render::RHI::RHITextureView>& textureView)
+        {
+            TextureResourceAccess access;
+            if (textureView == nullptr)
+                return access;
+
+            access.texture = textureView->GetTexture();
+            access.subresourceRange = textureView->GetDesc().subresourceRange;
+            access.mode = ResourceAccessMode::Read;
+            access.state = Render::RHI::ResourceState::ShaderRead;
+            access.stages = Render::RHI::PipelineStageMask::FragmentShader;
+            access.access = Render::RHI::AccessMask::ShaderRead;
+            return access;
+        }
+
+        TextureVisibilityTransition MakeUiOverlayFontAtlasUploadToReadTransition(
+            const std::shared_ptr<Render::RHI::RHITextureView>& textureView)
+        {
+            TextureVisibilityTransition transition;
+            if (textureView == nullptr)
+                return transition;
+
+            transition.texture = textureView->GetTexture();
+            transition.subresourceRange = textureView->GetDesc().subresourceRange;
+            transition.before = Render::RHI::ResourceState::CopyDst;
+            transition.after = Render::RHI::ResourceState::ShaderRead;
+            transition.sourceStages = Render::RHI::PipelineStageMask::Copy;
+            transition.destinationStages = Render::RHI::PipelineStageMask::FragmentShader;
+            transition.sourceAccess = Render::RHI::AccessMask::CopyWrite;
+            transition.destinationAccess = Render::RHI::AccessMask::ShaderRead;
+            return transition;
+        }
+
+        TextureVisibilityTransition MakeUiOverlayTextureReadTransition(
+            const std::shared_ptr<Render::RHI::RHITextureView>& textureView)
+        {
+            TextureVisibilityTransition transition;
+            if (textureView == nullptr)
+                return transition;
+
+            transition.texture = textureView->GetTexture();
+            transition.subresourceRange = textureView->GetDesc().subresourceRange;
+            transition.before = Render::RHI::ResourceState::Unknown;
+            transition.after = Render::RHI::ResourceState::ShaderRead;
+            transition.sourceStages = Render::RHI::PipelineStageMask::None;
+            transition.destinationStages = Render::RHI::PipelineStageMask::FragmentShader;
+            transition.sourceAccess = Render::RHI::AccessMask::None;
+            transition.destinationAccess = Render::RHI::AccessMask::ShaderRead;
+            return transition;
+        }
+
+        bool IsUiOverlaySwapchainRenderTargetAccess(const TextureResourceAccess& access)
+        {
+            return access.mode == ResourceAccessMode::Write &&
+                access.state == Render::RHI::ResourceState::RenderTarget &&
+                access.stages == Render::RHI::PipelineStageMask::RenderTarget &&
+                access.access == Render::RHI::AccessMask::ColorAttachmentWrite;
+        }
+
+        bool IsUiOverlaySwapchainPresentTransition(const TextureVisibilityTransition& transition)
+        {
+            return transition.before == Render::RHI::ResourceState::RenderTarget &&
+                transition.after == Render::RHI::ResourceState::Present &&
+                transition.sourceStages == Render::RHI::PipelineStageMask::RenderTarget &&
+                transition.destinationStages == Render::RHI::PipelineStageMask::Present &&
+                transition.sourceAccess == Render::RHI::AccessMask::ColorAttachmentWrite &&
+                transition.destinationAccess == Render::RHI::AccessMask::Present;
+        }
+
+        bool MaterializeUiOverlaySwapchainResourceAccesses(
+            RenderPassCommandInput& input,
+            const std::shared_ptr<Render::RHI::RHITextureView>& swapchainBackbufferView,
+            std::string& errorMessage)
+        {
+            if (input.kind != RenderPassCommandKind::UIOverlay || !input.targetsSwapchain)
+                return true;
+
+            if (swapchainBackbufferView == nullptr || swapchainBackbufferView->GetTexture() == nullptr)
+            {
+                errorMessage = "UI overlay pass cannot resolve the acquired swapchain backbuffer";
+                return false;
+            }
+
+            const auto backbufferTexture = swapchainBackbufferView->GetTexture();
+            const auto backbufferRange = swapchainBackbufferView->GetDesc().subresourceRange;
+            bool foundRenderTargetAccess = false;
+            for (auto& access : input.textureResourceAccesses)
+            {
+                if (!IsUiOverlaySwapchainRenderTargetAccess(access))
+                    continue;
+
+                access.texture = backbufferTexture;
+                access.subresourceRange = backbufferRange;
+                foundRenderTargetAccess = true;
+            }
+
+            if (!foundRenderTargetAccess)
+            {
+                TextureResourceAccess access;
+                access.texture = backbufferTexture;
+                access.subresourceRange = backbufferRange;
+                access.mode = ResourceAccessMode::Write;
+                access.state = Render::RHI::ResourceState::RenderTarget;
+                access.stages = Render::RHI::PipelineStageMask::RenderTarget;
+                access.access = Render::RHI::AccessMask::ColorAttachmentWrite;
+                input.textureResourceAccesses.push_back(access);
+            }
+
+            bool foundPresentTransition = false;
+            for (auto& transition : input.exportedTextureVisibilityTransitions)
+            {
+                if (!IsUiOverlaySwapchainPresentTransition(transition))
+                    continue;
+
+                transition.texture = backbufferTexture;
+                transition.subresourceRange = backbufferRange;
+                foundPresentTransition = true;
+            }
+
+            if (!foundPresentTransition)
+            {
+                TextureVisibilityTransition transition;
+                transition.texture = backbufferTexture;
+                transition.subresourceRange = backbufferRange;
+                transition.before = Render::RHI::ResourceState::RenderTarget;
+                transition.after = Render::RHI::ResourceState::Present;
+                transition.sourceStages = Render::RHI::PipelineStageMask::RenderTarget;
+                transition.destinationStages = Render::RHI::PipelineStageMask::Present;
+                transition.sourceAccess = Render::RHI::AccessMask::ColorAttachmentWrite;
+                transition.destinationAccess = Render::RHI::AccessMask::Present;
+                input.exportedTextureVisibilityTransitions.push_back(transition);
+            }
+
+            return true;
+        }
+
+        void MaterializeUiOverlayDependencyEdges(
+            std::vector<WorkUnitDependencyEdge>& edges,
+            const RenderPassCommandInput& materializedUiOverlayInput)
+        {
+            if (materializedUiOverlayInput.kind != RenderPassCommandKind::UIOverlay)
+                return;
+
+            const auto accessIt = std::find_if(
+                materializedUiOverlayInput.textureResourceAccesses.begin(),
+                materializedUiOverlayInput.textureResourceAccesses.end(),
+                [](const TextureResourceAccess& access)
+                {
+                    return access.texture != nullptr &&
+                        IsUiOverlaySwapchainRenderTargetAccess(access);
+                });
+            if (accessIt == materializedUiOverlayInput.textureResourceAccesses.end())
+                return;
+
+            for (auto& edge : edges)
+            {
+                if (edge.resourceKind != ThreadedDependencyResourceKind::Texture)
+                    continue;
+
+                if (edge.targetTextureAccess.has_value() &&
+                    edge.targetTextureAccess->texture == nullptr &&
+                    IsUiOverlaySwapchainRenderTargetAccess(*edge.targetTextureAccess))
+                {
+                    edge.targetTextureAccess = *accessIt;
+                }
+
+                if (edge.sourceTextureAccess.has_value() &&
+                    edge.sourceTextureAccess->texture == nullptr &&
+                    IsUiOverlaySwapchainRenderTargetAccess(*edge.sourceTextureAccess))
+                {
+                    edge.sourceTextureAccess = *accessIt;
+                }
+            }
+        }
+
+        void AppendUiOverlayPreparedResourceAccesses(
+            RenderPassCommandInput& input,
+            const Render::UI::RHIImGuiOverlayPreparedResourceSnapshot& resources)
+        {
+            if (resources.vertexBuffer != nullptr)
+            {
+                input.bufferResourceAccesses.push_back(MakeUiOverlayBufferReadAccess(
+                    resources.vertexBuffer,
+                    Render::RHI::AccessMask::VertexRead));
+            }
+            if (resources.indexBuffer != nullptr)
+            {
+                input.bufferResourceAccesses.push_back(MakeUiOverlayBufferReadAccess(
+                    resources.indexBuffer,
+                    Render::RHI::AccessMask::IndexRead));
+            }
+
+            if (resources.fontAtlasTextureView != nullptr)
+            {
+                const auto fontAccess = MakeUiOverlaySampledTextureAccess(resources.fontAtlasTextureView);
+                if (fontAccess.texture != nullptr)
+                {
+                    input.textureResourceAccesses.push_back(fontAccess);
+                    if (resources.fontAtlasUploadTransitionRequired)
+                    {
+                        input.textureVisibilityTransitions.push_back(
+                            MakeUiOverlayFontAtlasUploadToReadTransition(resources.fontAtlasTextureView));
+                    }
+                }
+            }
+
+            for (const auto& textureView : resources.registeredTextureViews)
+            {
+                const auto textureAccess = MakeUiOverlaySampledTextureAccess(textureView);
+                if (textureAccess.texture == nullptr)
+                    continue;
+
+                const auto alreadyDeclared = std::any_of(
+                    input.textureResourceAccesses.begin(),
+                    input.textureResourceAccesses.end(),
+                    [&textureAccess](const TextureResourceAccess& existing)
+                    {
+                        return existing.texture == textureAccess.texture &&
+                            existing.subresourceRange.baseMipLevel == textureAccess.subresourceRange.baseMipLevel &&
+                            existing.subresourceRange.mipLevelCount == textureAccess.subresourceRange.mipLevelCount &&
+                            existing.subresourceRange.baseArrayLayer == textureAccess.subresourceRange.baseArrayLayer &&
+                            existing.subresourceRange.arrayLayerCount == textureAccess.subresourceRange.arrayLayerCount &&
+                            existing.mode == textureAccess.mode &&
+                            existing.state == textureAccess.state;
+                    });
+                if (!alreadyDeclared)
+                    input.textureResourceAccesses.push_back(textureAccess);
+
+                input.textureVisibilityTransitions.push_back(
+                    MakeUiOverlayTextureReadTransition(textureView));
+            }
+        }
+
+        std::optional<RenderPassCommandInput> PrepareUiOverlayPassInput(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            Render::RHI::RHICommandBuffer& commandBuffer,
+            RenderPassCommandInput passInput,
+            const size_t frameContextIndex,
+            std::string& errorMessage)
+        {
+            if (passInput.kind != RenderPassCommandKind::UIOverlay)
+                return passInput;
+
+            if (passInput.uiDrawDataSnapshot == nullptr)
+            {
+                errorMessage = "UI overlay pass is missing a draw-data snapshot";
+                return std::nullopt;
+            }
+
+            if (!MaterializeUiOverlaySwapchainResourceAccesses(
+                    passInput,
+                    frameContext.swapchainBackbufferView,
+                    errorMessage))
+            {
+                return std::nullopt;
+            }
+
+            impl.uiOverlayRenderer.SetTextureRegistry(&impl.uiTextureRegistry);
+            const auto prepareResult = impl.uiOverlayRenderer.PrepareFrameResources(
+                *impl.explicitDevice,
+                commandBuffer,
+                *passInput.uiDrawDataSnapshot,
+                frameContextIndex);
+            if (!prepareResult.success)
+            {
+                errorMessage = prepareResult.message.empty()
+                    ? "UI overlay resource preparation failed"
+                    : prepareResult.message;
+                return std::nullopt;
+            }
+
+            AppendUiOverlayPreparedResourceAccesses(
+                passInput,
+                impl.uiOverlayRenderer.GetPreparedResourceSnapshot(
+                    *passInput.uiDrawDataSnapshot,
+                    frameContextIndex));
+            return passInput;
+        }
+
         bool UsesImplicitDependencySourceIndex(const ParallelCommandWorkUnit& workUnit)
         {
             return workUnit.incomingDependencyEdges.empty() &&
@@ -1034,6 +1341,8 @@ namespace NLS::Render::Context
                 return "ThreadedLightingPass";
             case RenderPassCommandKind::Compute:
                 return "ThreadedComputePass";
+            case RenderPassCommandKind::UIOverlay:
+                return kUIOverlayRenderPassDebugName;
             default:
                 return "ThreadedUnknownPass";
             }
@@ -2234,7 +2543,8 @@ namespace NLS::Render::Context
             DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,
             const RenderScenePackage& renderScenePackage,
-            const ParallelCommandWorkUnit& workUnit)
+            const ParallelCommandWorkUnit& workUnit,
+            const size_t frameContextIndex)
         {
             RecordedParallelCommandWorkUnit recordedWorkUnit;
             recordedWorkUnit.workUnit = workUnit;
@@ -2243,7 +2553,8 @@ namespace NLS::Render::Context
                 return recordedWorkUnit;
 
             const auto& passInput = workUnit.commandInput;
-            if (!Detail::IsPassRecordable(renderScenePackage, passInput))
+            const bool isUiOverlayPass = passInput.kind == RenderPassCommandKind::UIOverlay;
+            if (!isUiOverlayPass && !Detail::IsPassRecordable(renderScenePackage, passInput))
             {
                 Detail::LogSkippedPass(renderScenePackage, passInput, "IsPassRecordable returned false");
                 return recordedWorkUnit;
@@ -2317,43 +2628,135 @@ namespace NLS::Render::Context
             }
 
             const auto effectivePassInput = ResolveSwapchainDepthPassInput(passInput, frameContext);
+            std::optional<RenderPassCommandInput> preparedUiOverlayPassInput;
+            if (isUiOverlayPass)
+            {
+                std::string prepareError;
+                preparedUiOverlayPassInput = PrepareUiOverlayPassInput(
+                    impl,
+                    frameContext,
+                    *commandBuffer,
+                    effectivePassInput,
+                    frameContextIndex,
+                    prepareError);
+                if (!preparedUiOverlayPassInput.has_value())
+                {
+                    Detail::LogSkippedPass(
+                        renderScenePackage,
+                        effectivePassInput,
+                        prepareError.empty()
+                            ? "UI overlay resource preparation failed"
+                            : prepareError.c_str());
+                    MarkRecordedParallelCommandWorkUnitFailure(
+                        recordedWorkUnit,
+                        prepareError.empty()
+                            ? "UI overlay resource preparation failed"
+                            : prepareError.c_str());
+                    if (commandBuffer->IsRecording())
+                        commandBuffer->End();
+                    return recordedWorkUnit;
+                }
+            }
+            const auto& recordablePassInput = preparedUiOverlayPassInput.has_value()
+                ? *preparedUiOverlayPassInput
+                : effectivePassInput;
+            if (isUiOverlayPass)
+            {
+                auto visibilityWorkUnit = workUnit;
+                visibilityWorkUnit.commandInput = recordablePassInput;
+                MaterializeUiOverlayDependencyEdges(
+                    visibilityWorkUnit.incomingDependencyEdges,
+                    recordablePassInput);
+                const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                    visibilityWorkUnit,
+                    visibilityWorkUnit.incomingDependencyEdges);
+                if (Detail::HasResourceVisibilityTransitions(visibilityInput))
+                {
+                    const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
+                        *commandBuffer,
+                        visibilityInput,
+                        &frameContext);
+                    if (!recordedVisibilityTransitions)
+                    {
+                        MarkRecordedParallelCommandWorkUnitFailure(
+                            recordedWorkUnit,
+                            "Dependency visibility transition recording failed");
+                        if (commandBuffer->IsRecording())
+                            commandBuffer->End();
+                        return recordedWorkUnit;
+                    }
+                }
+            }
             if (!Detail::BeginPassCommandPlan(
                 *commandBuffer,
                 frameContext.swapchainBackbufferView,
                 frameContext.swapchainDepthStencilView,
-                effectivePassInput,
+                recordablePassInput,
                 &frameContext))
             {
-                Detail::LogSkippedPass(renderScenePackage, effectivePassInput, "BeginPassCommandPlan failed");
+                Detail::LogSkippedPass(renderScenePackage, recordablePassInput, "BeginPassCommandPlan failed");
                 MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "BeginPassCommandPlan failed");
                 if (commandBuffer->IsRecording())
                     commandBuffer->End();
                 return recordedWorkUnit;
             }
 
-            const auto* effectivePassProfileScopeName = Detail::ResolvePassProfileScopeName(effectivePassInput);
+            const auto* effectivePassProfileScopeName = Detail::ResolvePassProfileScopeName(recordablePassInput);
             NLS_PROFILE_NAMED_SCOPE(effectivePassProfileScopeName);
             commandBuffer->BeginGpuProfileScope(effectivePassProfileScopeName, __FUNCTION__);
+            uint64_t recordedDrawCount = 0u;
             const bool recordsSlicedSourceRange =
+                !isUiOverlayPass &&
                 workUnit.requiresOrderedSlicedSubmission &&
                 workUnit.sourcePassIndex < renderScenePackage.passCommandInputs.size();
-            const auto recordedDrawCount = recordsSlicedSourceRange
-                ? Detail::RecordPreparedDrawCommandsForPassRange(
-                    commandBuffer.get(),
-                    effectivePassInput,
-                    renderScenePackage.passCommandInputs[static_cast<size_t>(workUnit.sourcePassIndex)].recordedDrawCommands,
-                    workUnit.recordedDrawBegin,
-                    workUnit.recordedDrawCount)
-                : Detail::RecordPreparedDrawCommandsForPass(commandBuffer.get(), effectivePassInput);
+            if (isUiOverlayPass)
+            {
+                const auto uiResult = impl.uiOverlayRenderer.RecordPrepared(
+                    *commandBuffer,
+                    *recordablePassInput.uiDrawDataSnapshot,
+                    frameContextIndex);
+                if (!uiResult.success)
+                {
+                    commandBuffer->EndGpuProfileScope();
+                    Detail::EndPassCommandPlan(*commandBuffer, &recordablePassInput, &frameContext);
+                    Detail::LogSkippedPass(
+                        renderScenePackage,
+                        recordablePassInput,
+                        uiResult.message.empty()
+                            ? "UI overlay recording failed"
+                            : uiResult.message.c_str());
+                    MarkRecordedParallelCommandWorkUnitFailure(
+                        recordedWorkUnit,
+                        uiResult.message.empty()
+                            ? "UI overlay recording failed"
+                            : uiResult.message.c_str());
+                    if (commandBuffer->IsRecording())
+                        commandBuffer->End();
+                    return recordedWorkUnit;
+                }
+                recordedDrawCount = uiResult.recordedDraws ? effectivePassInput.drawCount : 0u;
+            }
+            else
+            {
+                recordedDrawCount = recordsSlicedSourceRange
+                    ? Detail::RecordPreparedDrawCommandsForPassRange(
+                        commandBuffer.get(),
+                        effectivePassInput,
+                        renderScenePackage.passCommandInputs[static_cast<size_t>(workUnit.sourcePassIndex)].recordedDrawCommands,
+                        workUnit.recordedDrawBegin,
+                        workUnit.recordedDrawCount)
+                    : Detail::RecordPreparedDrawCommandsForPass(commandBuffer.get(), effectivePassInput);
+            }
             commandBuffer->EndGpuProfileScope();
-            Detail::EndPassCommandPlan(*commandBuffer, &effectivePassInput, &frameContext);
-            if (recordedDrawCount == 0u &&
-                (!effectivePassInput.recordedDrawCommands.empty() ||
+            Detail::EndPassCommandPlan(*commandBuffer, &recordablePassInput, &frameContext);
+            if (!isUiOverlayPass &&
+                recordedDrawCount == 0u &&
+                (!recordablePassInput.recordedDrawCommands.empty() ||
                     (recordsSlicedSourceRange && workUnit.recordedDrawCount > 0u)))
             {
                 Detail::LogSkippedPass(
                     renderScenePackage,
-                    effectivePassInput,
+                    recordablePassInput,
                     "No draws recorded but commands were expected");
                 MarkRecordedParallelCommandWorkUnitFailure(
                     recordedWorkUnit,
@@ -2608,7 +3011,8 @@ namespace NLS::Render::Context
             Render::RHI::RHIFrameContext& frameContext,
             const RenderScenePackage& renderScenePackage,
             const std::vector<ParallelCommandWorkUnit>& workUnits,
-            const std::vector<size_t>& parallelEligibleIndices)
+            const std::vector<size_t>& parallelEligibleIndices,
+            const size_t frameContextIndex)
         {
             if (parallelEligibleIndices.empty())
                 return true;
@@ -2626,6 +3030,7 @@ namespace NLS::Render::Context
                 const std::vector<ParallelCommandWorkUnit>* workUnits = nullptr;
                 const std::vector<size_t>* parallelEligibleIndices = nullptr;
                 std::vector<std::atomic_bool>* workUnitCompleted = nullptr;
+                size_t frameContextIndex = 0u;
 
                 void Execute(uint32_t index)
                 {
@@ -2634,7 +3039,8 @@ namespace NLS::Render::Context
                         *impl,
                         *frameContext,
                         *renderScenePackage,
-                        (*workUnits)[workUnitIndex]);
+                        (*workUnits)[workUnitIndex],
+                        frameContextIndex);
                     (*workUnitCompleted)[static_cast<size_t>(index)].store(true, std::memory_order_release);
                 }
             };
@@ -2647,6 +3053,7 @@ namespace NLS::Render::Context
             job.workUnits = &workUnits;
             job.parallelEligibleIndices = &parallelEligibleIndices;
             job.workUnitCompleted = &workUnitCompleted;
+            job.frameContextIndex = frameContextIndex;
 
             NLS::Base::Jobs::JobParallelForScheduleOptions options;
             options.batchSize = 1u;
@@ -2745,7 +3152,8 @@ namespace NLS::Render::Context
             DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,
             const RenderScenePackage& renderScenePackage,
-            const std::vector<ParallelCommandWorkUnit>& workUnits)
+            const std::vector<ParallelCommandWorkUnit>& workUnits,
+            const size_t frameContextIndex)
         {
             RecordedParallelCommandBufferBatch batch;
             if (impl.explicitDevice == nullptr)
@@ -2791,7 +3199,8 @@ namespace NLS::Render::Context
                         frameContext,
                         renderScenePackage,
                         workUnits,
-                        parallelEligibleIndices);
+                        parallelEligibleIndices,
+                        frameContextIndex);
                     if (scheduledParallelJobs)
                     {
                         batch.parallelWorkerCountUsed = workerCount;
@@ -2805,7 +3214,8 @@ namespace NLS::Render::Context
                                 impl,
                                 frameContext,
                                 renderScenePackage,
-                                workUnits[workUnitIndex]);
+                                workUnits[workUnitIndex],
+                                frameContextIndex);
                         }
                         batch.parallelWorkerCountUsed = 1u;
                     }
@@ -2818,7 +3228,8 @@ namespace NLS::Render::Context
                             impl,
                             frameContext,
                             renderScenePackage,
-                            workUnits[workUnitIndex]);
+                            workUnits[workUnitIndex],
+                            frameContextIndex);
                     }
                     batch.parallelWorkerCountUsed = 1u;
                 }
@@ -2833,7 +3244,8 @@ namespace NLS::Render::Context
                     impl,
                     frameContext,
                     renderScenePackage,
-                    workUnits[index]);
+                    workUnits[index],
+                    frameContextIndex);
             }
 
             for (const auto& recordedWorkUnit : batch.recordedWorkUnits)
@@ -3171,21 +3583,21 @@ namespace NLS::Render::Context
         }
 
         MainCommandBufferSerialRecordResult RecordWorkUnitOnMainCommandBuffer(
+            DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,
             const RenderScenePackage& renderScenePackage,
             const ParallelCommandWorkUnit& workUnit,
             RhiSubmissionFrame* submissionFrame,
+            const size_t frameContextIndex,
             const std::optional<RenderPassCommandInput>& overridePassInput = std::nullopt)
         {
             MainCommandBufferSerialRecordResult result;
             const auto& passInput = overridePassInput.has_value()
                 ? *overridePassInput
                 : workUnit.commandInput;
-            const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
-                workUnit,
-                workUnit.incomingDependencyEdges);
+            const bool isUiOverlayPass = passInput.kind == RenderPassCommandKind::UIOverlay;
 
-            if (!Detail::IsPassRecordable(renderScenePackage, passInput))
+            if (!isUiOverlayPass && !Detail::IsPassRecordable(renderScenePackage, passInput))
             {
                 Detail::LogSkippedPass(
                     renderScenePackage,
@@ -3229,23 +3641,29 @@ namespace NLS::Render::Context
                 return result;
             }
 
-            if (Detail::HasResourceVisibilityTransitions(visibilityInput))
+            if (!isUiOverlayPass)
             {
-                if (!BeginMainCommandBufferIfNeeded(frameContext))
-                    return result;
-
-                const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
-                    *frameContext.commandBuffer,
-                    visibilityInput,
-                    &frameContext);
-                result.recordedAnyCommand |= recordedVisibilityTransitions;
-                if (!recordedVisibilityTransitions)
+                const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                    workUnit,
+                    workUnit.incomingDependencyEdges);
+                if (Detail::HasResourceVisibilityTransitions(visibilityInput))
                 {
-                    MarkCommandRecordingFailure(
-                        submissionFrame,
-                        "Dependency visibility transition recording failed");
-                    result.failed = true;
-                    return result;
+                    if (!BeginMainCommandBufferIfNeeded(frameContext))
+                        return result;
+
+                    const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
+                        *frameContext.commandBuffer,
+                        visibilityInput,
+                        &frameContext);
+                    result.recordedAnyCommand |= recordedVisibilityTransitions;
+                    if (!recordedVisibilityTransitions)
+                    {
+                        MarkCommandRecordingFailure(
+                            submissionFrame,
+                            "Dependency visibility transition recording failed");
+                        result.failed = true;
+                        return result;
+                    }
                 }
             }
 
@@ -3265,16 +3683,71 @@ namespace NLS::Render::Context
                 return result;
 
             const auto effectivePassInput = ResolveSwapchainDepthPassInput(passInput, frameContext);
+            std::optional<RenderPassCommandInput> preparedUiOverlayPassInput;
+            if (isUiOverlayPass)
+            {
+                std::string prepareError;
+                preparedUiOverlayPassInput = PrepareUiOverlayPassInput(
+                    impl,
+                    frameContext,
+                    *frameContext.commandBuffer,
+                    effectivePassInput,
+                    frameContextIndex,
+                    prepareError);
+                if (!preparedUiOverlayPassInput.has_value())
+                {
+                    Detail::LogSkippedPass(
+                        renderScenePackage,
+                        effectivePassInput,
+                        prepareError.empty()
+                            ? "UI overlay resource preparation failed"
+                            : prepareError.c_str());
+                    MarkCommandRecordingFailure(
+                        submissionFrame,
+                        prepareError.empty()
+                            ? "UI overlay resource preparation failed"
+                            : prepareError.c_str());
+                    result.failed = true;
+                    return result;
+                }
+            }
+            const auto& recordablePassInput = preparedUiOverlayPassInput.has_value()
+                ? *preparedUiOverlayPassInput
+                : effectivePassInput;
+            if (isUiOverlayPass)
+            {
+                auto visibilityWorkUnit = workUnit;
+                visibilityWorkUnit.commandInput = recordablePassInput;
+                const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                    visibilityWorkUnit,
+                    visibilityWorkUnit.incomingDependencyEdges);
+                if (Detail::HasResourceVisibilityTransitions(visibilityInput))
+                {
+                    const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
+                        *frameContext.commandBuffer,
+                        visibilityInput,
+                        &frameContext);
+                    result.recordedAnyCommand |= recordedVisibilityTransitions;
+                    if (!recordedVisibilityTransitions)
+                    {
+                        MarkCommandRecordingFailure(
+                            submissionFrame,
+                            "Dependency visibility transition recording failed");
+                        result.failed = true;
+                        return result;
+                    }
+                }
+            }
             if (!Detail::BeginPassCommandPlan(
                 *frameContext.commandBuffer,
                 frameContext.swapchainBackbufferView,
                 frameContext.swapchainDepthStencilView,
-                effectivePassInput,
+                recordablePassInput,
                 &frameContext))
             {
                 Detail::LogSkippedPass(
                     renderScenePackage,
-                    effectivePassInput,
+                    recordablePassInput,
                     "BeginPassCommandPlan failed");
                 MarkCommandRecordingFailure(
                     submissionFrame,
@@ -3285,33 +3758,69 @@ namespace NLS::Render::Context
 
             result.recordedAnyCommand = true;
             const auto* effectivePassProfileScopeName =
-                Detail::ResolvePassProfileScopeName(effectivePassInput);
+                Detail::ResolvePassProfileScopeName(recordablePassInput);
             NLS_PROFILE_NAMED_SCOPE(effectivePassProfileScopeName);
             frameContext.commandBuffer->BeginGpuProfileScope(effectivePassProfileScopeName, __FUNCTION__);
+            uint64_t recordedDrawCount = 0u;
+            const bool recordsUiOverlay =
+                recordablePassInput.kind == RenderPassCommandKind::UIOverlay;
             const bool recordsSlicedSourceRange =
+                !recordsUiOverlay &&
                 !overridePassInput.has_value() &&
                 workUnit.requiresOrderedSlicedSubmission &&
                 workUnit.sourcePassIndex < renderScenePackage.passCommandInputs.size();
-            const auto recordedDrawCount = recordsSlicedSourceRange
-                ? Detail::RecordPreparedDrawCommandsForPassRange(
-                    frameContext.commandBuffer.get(),
-                    effectivePassInput,
-                    renderScenePackage.passCommandInputs[static_cast<size_t>(workUnit.sourcePassIndex)]
-                        .recordedDrawCommands,
-                    workUnit.recordedDrawBegin,
-                    workUnit.recordedDrawCount)
-                : Detail::RecordPreparedDrawCommandsForPass(
-                    frameContext.commandBuffer.get(),
-                    effectivePassInput);
+            if (recordsUiOverlay)
+            {
+                const auto uiResult = impl.uiOverlayRenderer.RecordPrepared(
+                    *frameContext.commandBuffer,
+                    *recordablePassInput.uiDrawDataSnapshot,
+                    frameContextIndex);
+                if (!uiResult.success)
+                {
+                    frameContext.commandBuffer->EndGpuProfileScope();
+                    Detail::EndPassCommandPlan(*frameContext.commandBuffer, &recordablePassInput, &frameContext);
+                    Detail::LogSkippedPass(
+                        renderScenePackage,
+                        recordablePassInput,
+                        uiResult.message.empty()
+                            ? "UI overlay recording failed"
+                            : uiResult.message.c_str());
+                    MarkCommandRecordingFailure(
+                        submissionFrame,
+                        uiResult.message.empty()
+                            ? "UI overlay recording failed"
+                            : uiResult.message.c_str());
+                    result.failed = true;
+                    return result;
+                }
+                recordedDrawCount = uiResult.recordedDraws
+                    ? effectivePassInput.drawCount
+                    : 0u;
+            }
+            else
+            {
+                recordedDrawCount = recordsSlicedSourceRange
+                    ? Detail::RecordPreparedDrawCommandsForPassRange(
+                        frameContext.commandBuffer.get(),
+                        recordablePassInput,
+                        renderScenePackage.passCommandInputs[static_cast<size_t>(workUnit.sourcePassIndex)]
+                            .recordedDrawCommands,
+                        workUnit.recordedDrawBegin,
+                        workUnit.recordedDrawCount)
+                    : Detail::RecordPreparedDrawCommandsForPass(
+                        frameContext.commandBuffer.get(),
+                        recordablePassInput);
+            }
             frameContext.commandBuffer->EndGpuProfileScope();
-            Detail::EndPassCommandPlan(*frameContext.commandBuffer, &effectivePassInput, &frameContext);
-            if (recordedDrawCount == 0u &&
-                (!effectivePassInput.recordedDrawCommands.empty() ||
+            Detail::EndPassCommandPlan(*frameContext.commandBuffer, &recordablePassInput, &frameContext);
+            if (!recordsUiOverlay &&
+                recordedDrawCount == 0u &&
+                (!recordablePassInput.recordedDrawCommands.empty() ||
                     (recordsSlicedSourceRange && workUnit.recordedDrawCount > 0u)))
             {
                 Detail::LogSkippedPass(
                     renderScenePackage,
-                    effectivePassInput,
+                    recordablePassInput,
                     "No draws recorded but commands were expected");
                 MarkCommandRecordingFailure(
                     submissionFrame,
@@ -3344,7 +3853,8 @@ namespace NLS::Render::Context
             const RenderScenePackage& renderScenePackage,
             const std::vector<ParallelCommandWorkUnit>& workUnits,
             Detail::AsyncComputeSubmitPlan* submitPlan,
-            RhiSubmissionFrame* submissionFrame)
+            RhiSubmissionFrame* submissionFrame,
+            const size_t frameContextIndex)
         {
             if (submitPlan == nullptr ||
                 submissionFrame == nullptr ||
@@ -3364,10 +3874,12 @@ namespace NLS::Render::Context
                 if (!workUnit.usesInRenderPassChildCommandRecording)
                 {
                     const auto result = RecordWorkUnitOnMainCommandBuffer(
+                        impl,
                         frameContext,
                         renderScenePackage,
                         workUnit,
-                        submissionFrame);
+                        submissionFrame,
+                        frameContextIndex);
                     AccumulateSerialRecordResult(submissionFrame, result);
                     recordedAnyCommand |= result.recordedAnyCommand;
                     recordedSerialWorkUnit |= result.recordedAnyCommand;
@@ -3433,10 +3945,12 @@ namespace NLS::Render::Context
                 }
 
                 const auto result = RecordWorkUnitOnMainCommandBuffer(
+                    impl,
                     frameContext,
                     renderScenePackage,
                     fallbackWorkUnit,
                     submissionFrame,
+                    frameContextIndex,
                     renderScenePackage.passCommandInputs[static_cast<size_t>(sourcePassIndex)]);
                 AccumulateSerialRecordResult(submissionFrame, result);
                 recordedAnyCommand |= result.recordedAnyCommand;
@@ -3966,10 +4480,29 @@ namespace NLS::Render::Context
         return &frameContext;
     }
 
+    void Detail::ReleaseRetiredUiTextureViewsForCompletedFrame(
+        DriverImpl& impl,
+        const uint64_t completedFrameId)
+    {
+        if (completedFrameId == 0u)
+            return;
+
+        impl.uiOverlayRenderer.ReleaseRetiredResourcesUpTo(completedFrameId);
+        impl.uiTextureRegistry.ReleaseRetiredTextureViewsUpTo(completedFrameId);
+    }
+
+    void Detail::ReleaseRetiredUiTextureViewsForCompletedUiFrame(
+        DriverImpl& impl,
+        const uint64_t fallbackCompletedFrameId)
+    {
+        ReleaseRetiredUiTextureViewsForCompletedFrame(impl, fallbackCompletedFrameId);
+    }
+
     void Detail::RecordThreadedRhiWork(
         DriverImpl& impl,
         Render::RHI::RHIFrameContext& frameContext,
         const RenderScenePackage& renderScenePackage,
+        const size_t frameContextIndex,
         AsyncComputeSubmitPlan* submitPlan,
         RhiSubmissionFrame* submissionFrame)
     {
@@ -4074,7 +4607,8 @@ namespace NLS::Render::Context
                     renderScenePackage,
                     workUnits,
                     submitPlan,
-                    submissionFrame);
+                    submissionFrame,
+                    frameContextIndex);
                 if (!recordedOrderedChildStream)
                 {
                     if (!HasCommandRecordingFailure(submissionFrame))
@@ -4091,7 +4625,8 @@ namespace NLS::Render::Context
                     impl,
                     frameContext,
                     renderScenePackage,
-                    workUnits);
+                    workUnits,
+                    frameContextIndex);
                 const auto translatedBatch = TranslateRecordedParallelCommandWorkUnits(
                     impl,
                     renderScenePackage,
@@ -4137,10 +4672,9 @@ namespace NLS::Render::Context
                 for (const auto& workUnit : workUnits)
                 {
                     const auto& passInput = workUnit.commandInput;
-                    const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
-                        workUnit,
-                        workUnit.incomingDependencyEdges);
-                    if (!Detail::IsPassRecordable(renderScenePackage, passInput))
+                    const bool isUiOverlayPass = passInput.kind == RenderPassCommandKind::UIOverlay;
+                    if (!isUiOverlayPass &&
+                        !Detail::IsPassRecordable(renderScenePackage, passInput))
                     {
                         Detail::LogSkippedPass(
                             renderScenePackage,
@@ -4183,28 +4717,34 @@ namespace NLS::Render::Context
                         continue;
                     }
 
-                    if (Detail::HasResourceVisibilityTransitions(visibilityInput))
+                    if (!isUiOverlayPass)
                     {
-                        if (!beginMainCommandBufferIfNeeded())
-                            continue;
-
-                        const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
-                            *frameContext.commandBuffer,
-                            visibilityInput,
-                            &frameContext);
-                        recordedAnyCommand |= recordedVisibilityTransitions;
-                        if (!recordedVisibilityTransitions)
+                        const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                            workUnit,
+                            workUnit.incomingDependencyEdges);
+                        if (Detail::HasResourceVisibilityTransitions(visibilityInput))
                         {
-                            MarkCommandRecordingFailure(
-                                submissionFrame,
-                                "Dependency visibility transition recording failed");
-                            continue;
+                            if (!beginMainCommandBufferIfNeeded())
+                                continue;
+
+                            const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
+                                *frameContext.commandBuffer,
+                                visibilityInput,
+                                &frameContext);
+                            recordedAnyCommand |= recordedVisibilityTransitions;
+                            if (!recordedVisibilityTransitions)
+                            {
+                                MarkCommandRecordingFailure(
+                                    submissionFrame,
+                                    "Dependency visibility transition recording failed");
+                                continue;
+                            }
                         }
                     }
 
-					if (passInput.targetsSwapchain &&
-						frameContext.swapchainBackbufferView == nullptr)
-					{
+                    if (passInput.targetsSwapchain &&
+                        frameContext.swapchainBackbufferView == nullptr)
+                    {
                         Detail::LogSkippedPass(
                             renderScenePackage,
                             passInput,
@@ -4218,16 +4758,72 @@ namespace NLS::Render::Context
                         continue;
 
                     const auto effectivePassInput = ResolveSwapchainDepthPassInput(passInput, frameContext);
+                    std::optional<RenderPassCommandInput> preparedUiOverlayPassInput;
+                    if (isUiOverlayPass)
+                    {
+                        std::string prepareError;
+                        preparedUiOverlayPassInput = PrepareUiOverlayPassInput(
+                            impl,
+                            frameContext,
+                            *frameContext.commandBuffer,
+                            effectivePassInput,
+                            frameContextIndex,
+                            prepareError);
+                        if (!preparedUiOverlayPassInput.has_value())
+                        {
+                            Detail::LogSkippedPass(
+                                renderScenePackage,
+                                effectivePassInput,
+                                prepareError.empty()
+                                    ? "UI overlay resource preparation failed"
+                                    : prepareError.c_str());
+                            MarkCommandRecordingFailure(
+                                submissionFrame,
+                                prepareError.empty()
+                                    ? "UI overlay resource preparation failed"
+                                    : prepareError.c_str());
+                            continue;
+                        }
+                    }
+                    const auto& recordablePassInput = preparedUiOverlayPassInput.has_value()
+                        ? *preparedUiOverlayPassInput
+                        : effectivePassInput;
+                    if (isUiOverlayPass)
+                    {
+                        auto visibilityWorkUnit = workUnit;
+                        visibilityWorkUnit.commandInput = recordablePassInput;
+                        MaterializeUiOverlayDependencyEdges(
+                            visibilityWorkUnit.incomingDependencyEdges,
+                            recordablePassInput);
+                        const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                            visibilityWorkUnit,
+                            visibilityWorkUnit.incomingDependencyEdges);
+                        if (Detail::HasResourceVisibilityTransitions(visibilityInput))
+                        {
+                            const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
+                                *frameContext.commandBuffer,
+                                visibilityInput,
+                                &frameContext);
+                            recordedAnyCommand |= recordedVisibilityTransitions;
+                            if (!recordedVisibilityTransitions)
+                            {
+                                MarkCommandRecordingFailure(
+                                    submissionFrame,
+                                    "Dependency visibility transition recording failed");
+                                continue;
+                            }
+                        }
+                    }
                     if (!Detail::BeginPassCommandPlan(
                         *frameContext.commandBuffer,
                         frameContext.swapchainBackbufferView,
                         frameContext.swapchainDepthStencilView,
-                        effectivePassInput,
+                        recordablePassInput,
                         &frameContext))
                     {
                         Detail::LogSkippedPass(
                             renderScenePackage,
-                            effectivePassInput,
+                            recordablePassInput,
                             "BeginPassCommandPlan failed");
                         MarkCommandRecordingFailure(
                             submissionFrame,
@@ -4237,19 +4833,52 @@ namespace NLS::Render::Context
 
                     recordedAnyCommand = true;
                     const auto* effectivePassProfileScopeName =
-                        Detail::ResolvePassProfileScopeName(effectivePassInput);
+                        Detail::ResolvePassProfileScopeName(recordablePassInput);
                     NLS_PROFILE_NAMED_SCOPE(effectivePassProfileScopeName);
                     frameContext.commandBuffer->BeginGpuProfileScope(effectivePassProfileScopeName, __FUNCTION__);
-                    const auto recordedDrawCount = Detail::RecordPreparedDrawCommandsForPass(
-                        frameContext.commandBuffer.get(),
-                        effectivePassInput);
+                    uint64_t recordedDrawCount = 0u;
+                    if (isUiOverlayPass)
+                    {
+                        const auto uiResult = impl.uiOverlayRenderer.RecordPrepared(
+                            *frameContext.commandBuffer,
+                            *recordablePassInput.uiDrawDataSnapshot,
+                            frameContextIndex);
+                        if (!uiResult.success)
+                        {
+                            frameContext.commandBuffer->EndGpuProfileScope();
+                            Detail::EndPassCommandPlan(*frameContext.commandBuffer, &recordablePassInput, &frameContext);
+                            Detail::LogSkippedPass(
+                                renderScenePackage,
+                                recordablePassInput,
+                                uiResult.message.empty()
+                                    ? "UI overlay recording failed"
+                                    : uiResult.message.c_str());
+                            MarkCommandRecordingFailure(
+                                submissionFrame,
+                                uiResult.message.empty()
+                                    ? "UI overlay recording failed"
+                                    : uiResult.message.c_str());
+                            continue;
+                        }
+                        recordedDrawCount = uiResult.recordedDraws
+                            ? effectivePassInput.drawCount
+                            : 0u;
+                    }
+                    else
+                    {
+                        recordedDrawCount = Detail::RecordPreparedDrawCommandsForPass(
+                            frameContext.commandBuffer.get(),
+                            recordablePassInput);
+                    }
                     frameContext.commandBuffer->EndGpuProfileScope();
-                    Detail::EndPassCommandPlan(*frameContext.commandBuffer, &effectivePassInput, &frameContext);
-                    if (recordedDrawCount == 0u && !effectivePassInput.recordedDrawCommands.empty())
+                    Detail::EndPassCommandPlan(*frameContext.commandBuffer, &recordablePassInput, &frameContext);
+                    if (!isUiOverlayPass &&
+                        recordedDrawCount == 0u &&
+                        !recordablePassInput.recordedDrawCommands.empty())
                     {
                         Detail::LogSkippedPass(
                             renderScenePackage,
-                            effectivePassInput,
+                            recordablePassInput,
                             "No draws recorded but commands were expected");
                         MarkCommandRecordingFailure(
                             submissionFrame,
@@ -4545,6 +5174,11 @@ namespace NLS::Render::Context
         if (mustDeferFrameScopedRetirement)
         {
             impl.deferredThreadedFrameScopedRetirementFrameContexts.insert(frameContextIndex);
+            if (submissionFrame != nullptr && submissionFrame->uiOverlaySnapshotFrameId != 0u)
+            {
+                impl.deferredUiTextureRetirementFrameIdsByFrameContext[frameContextIndex] =
+                    submissionFrame->uiOverlaySnapshotFrameId;
+            }
         }
     }
 
@@ -4558,6 +5192,7 @@ namespace NLS::Render::Context
             Render::FrameGraph::BuildExternalSceneOutputSummary(renderScenePackage);
         RhiSubmissionFrame submissionFrame;
         submissionFrame.frameId = renderScenePackage.frameId;
+        submissionFrame.uiOverlaySnapshotFrameId = ResolveSubmittedUiOverlaySnapshotFrameId(renderScenePackage);
         submissionFrame.offscreenOnly = !renderScenePackage.targetsSwapchain;
         submissionFrame.usedExternalOutputBridge = externalOutputSummary.hasExternalOutput;
         submissionFrame.externalOutputTextureCount =
@@ -4587,6 +5222,7 @@ namespace NLS::Render::Context
                 impl,
                 frameContext,
                 renderScenePackage,
+                frameContextIndex,
                 &submitPlan,
                 &submissionFrame);
         }
@@ -4755,6 +5391,13 @@ namespace NLS::Render::Context
             NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredTransientResources");
             frameContext.resourceStateTracker->RetireTransientResources(std::numeric_limits<uint64_t>::max());
         }
+        const auto deferredUiTextureFrameId =
+            impl.deferredUiTextureRetirementFrameIdsByFrameContext.find(frameContextIndex);
+        if (deferredUiTextureFrameId != impl.deferredUiTextureRetirementFrameIdsByFrameContext.end())
+        {
+            ReleaseRetiredUiTextureViewsForCompletedFrame(impl, deferredUiTextureFrameId->second);
+            impl.deferredUiTextureRetirementFrameIdsByFrameContext.erase(deferredUiTextureFrameId);
+        }
         return true;
     }
 
@@ -4778,6 +5421,15 @@ namespace NLS::Render::Context
             impl,
             frameContext,
             submissionFrame);
+        if (submissionFrame.submittedSuccessfully &&
+            !submissionFrame.deferredFrameScopedRetirement &&
+            !submissionFrame.deviceLostDetected &&
+            submissionFrame.currentFrameQueueOperationFailureCount == 0u)
+        {
+            ReleaseRetiredUiTextureViewsForCompletedFrame(
+                impl,
+                submissionFrame.uiOverlaySnapshotFrameId);
+        }
     }
 
     bool RhiThreadCoordinator::CanBeginStandaloneExplicitFrame(const Driver& driver)
@@ -5017,7 +5669,8 @@ namespace NLS::Render::Context
 
     bool RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
         Driver& driver,
-        const RhiSubmissionAttribution attribution)
+        const RhiSubmissionAttribution attribution,
+        const bool applyPendingSwapchainResize)
     {
         NLS_PROFILE_SCOPE();
         if (driver.m_impl->threadedLifecycle == nullptr)
@@ -5083,19 +5736,26 @@ namespace NLS::Render::Context
 
         {
             NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::ApplyPendingSwapchainResize");
-            driver.ApplyPendingSwapchainResize();
+            if (applyPendingSwapchainResize)
+                driver.ApplyPendingSwapchainResize();
         }
         return true;
     }
 
     bool RhiThreadCoordinator::DrainPendingThreadedSubmissions(
         Driver& driver,
-        const RhiSubmissionAttribution attribution)
+        const RhiSubmissionAttribution attribution,
+        const bool applyPendingSwapchainResize)
     {
         NLS_PROFILE_SCOPE();
         bool progressed = false;
-        while (TryExecuteNextThreadedSubmission(driver, attribution))
+        while (TryExecuteNextThreadedSubmission(
+            driver,
+            attribution,
+            applyPendingSwapchainResize))
+        {
             progressed = true;
+        }
         return progressed;
     }
 
@@ -5300,6 +5960,13 @@ namespace NLS::Render::Context
         if (driver.m_impl->explicitDevice == nullptr)
             return false;
 
+        const auto overlayFeature =
+            Render::RHI::GetUIOverlayFrameGraphFeature(driver.m_impl->explicitDevice.get());
+        if (overlayFeature.supported)
+        {
+            return driver.m_impl->explicitSwapchain != nullptr;
+        }
+
         if (driver.m_impl->threadedLifecycle != nullptr)
         {
             if (HasInFlightThreadedSwapchainFrame(*driver.m_impl))
@@ -5340,6 +6007,42 @@ namespace NLS::Render::Context
     {
         NLS_PROFILE_SCOPE();
         auto& impl = *driver.m_impl;
+        bool drainedMigratedOverlayWork = false;
+
+        if (impl.explicitDevice != nullptr && impl.explicitSwapchain != nullptr)
+        {
+            const auto overlayFeature =
+                Render::RHI::GetUIOverlayFrameGraphFeature(impl.explicitDevice.get());
+            if (overlayFeature.supported)
+            {
+                const bool hadInFlightOverlayWork =
+                    impl.threadedLifecycle != nullptr &&
+                    impl.threadedLifecycle->GetInFlightDepth() > 0u;
+                bool drainedPendingOverlayWork = true;
+                {
+                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::DrainPendingSceneOrUiOverlayFrame");
+                    drainedPendingOverlayWork = DriverRendererAccess::TryDrainThreadedRendering(driver, false);
+                    drainedMigratedOverlayWork = hadInFlightOverlayWork;
+                }
+
+                const auto& swapchainDesc = impl.explicitSwapchain->GetDesc();
+                bool publishedUiOnlyFrame = false;
+                if (drainedPendingOverlayWork)
+                {
+                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::PublishPendingUiOnlyFrame");
+                    publishedUiOnlyFrame = DriverUIAccess::PublishUiOnlyFrame(
+                        driver,
+                        swapchainDesc.width,
+                        swapchainDesc.height);
+                }
+                if (publishedUiOnlyFrame)
+                {
+                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::DrainPendingUiOnlyFrame");
+                    (void)DriverRendererAccess::TryDrainThreadedRendering(driver, false);
+                    drainedMigratedOverlayWork = true;
+                }
+            }
+        }
 
         {
             NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::PresentStandaloneUiFrame");
@@ -5354,7 +6057,8 @@ namespace NLS::Render::Context
 
         {
             NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::ApplyPendingSwapchainResize");
-            driver.ApplyPendingSwapchainResize();
+            if (!drainedMigratedOverlayWork)
+                driver.ApplyPendingSwapchainResize();
         }
     }
 }

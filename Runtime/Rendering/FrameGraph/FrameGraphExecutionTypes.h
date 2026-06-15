@@ -19,6 +19,7 @@
 namespace NLS::Render::FrameGraph
 {
 	inline constexpr uint64_t kThreadedPlanUsePassDrawCount = (std::numeric_limits<uint64_t>::max)();
+	inline constexpr const char* kUIOverlayFrameGraphPassName = Context::kUIOverlayRenderPassDebugName;
 
 	struct RenderPassExecutionMetadata
 	{
@@ -36,7 +37,8 @@ namespace NLS::Render::FrameGraph
 		Skybox,
 		Helper,
 		Auxiliary,
-		Decal
+		Decal,
+		UIOverlay
 	};
 
 	enum class ThreadedRenderScenePassExecutionMode : uint8_t
@@ -99,6 +101,21 @@ namespace NLS::Render::FrameGraph
 	{
 		metadata.ownedGraphPassName = std::make_shared<std::string>(std::move(graphPassName));
 		metadata.graphPassName = metadata.ownedGraphPassName->c_str();
+	}
+
+	inline ThreadedRenderScenePassMetadata MakeUIOverlayFrameGraphPassMetadata()
+	{
+		ThreadedRenderScenePassMetadata metadata;
+		metadata.commandKind = Context::RenderPassCommandKind::UIOverlay;
+		metadata.role = ThreadedRenderScenePassRole::UIOverlay;
+		metadata.executionMode = ThreadedRenderScenePassExecutionMode::Recorded;
+		metadata.queueType = RHI::QueueType::Graphics;
+		metadata.queueDependencyPolicy = Context::QueueDependencyPolicy::Previous;
+		metadata.graphPassName = kUIOverlayFrameGraphPassName;
+		metadata.visibleDrawCountContribution = kThreadedPlanUsePassDrawCount;
+		metadata.propagatesColorOutput = false;
+		metadata.propagatesDepthOutput = false;
+		return metadata;
 	}
 
 	template<typename TPassData = void>

@@ -109,7 +109,7 @@ namespace NLS::Render::Backend
 		ID3D12Device* m_device = nullptr;
 #endif
 		NLS::Render::RHI::SwapchainDesc m_desc{};
-		uint32_t m_imageCount = 2;
+		uint32_t m_imageCount = 3;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_backbufferViews;
 	};
 

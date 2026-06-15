@@ -729,11 +729,14 @@ namespace NLS::Render::Backend
 			NLS_LOG_INFO("NativeDX12Queue::Present: calling swapchain->Present");
 		}
 		const UINT syncInterval = ResolveDX12PresentSyncInterval(presentDesc.swapchain->GetDesc().vsync);
+		const UINT presentFlags = ResolveDX12PresentFlags(
+			presentDesc.swapchain->GetDesc().vsync,
+			presentDesc.swapchain->GetDesc().allowTearing);
 		HRESULT hr = S_OK;
 		{
 			NLS_PROFILE_NAMED_SCOPE("IDXGISwapChain::Present");
 			mayHaveQueuedGpuWork = true;
-			hr = swapchain->Present(syncInterval, 0);
+			hr = swapchain->Present(syncInterval, presentFlags);
 		}
 		if (ShouldLogDx12FrameFlow())
 		{

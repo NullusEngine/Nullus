@@ -168,4 +168,17 @@ namespace NLS::Render::RHI
 
         const uint64_t m_cacheIdentity;
     };
+
+    inline RHIDeviceFeatureState GetUIOverlayFrameGraphFeature(const RHIDevice* device)
+    {
+        if (device == nullptr)
+        {
+            return {
+                false,
+                "UI overlay FrameGraph is unavailable because there is no active RHI device"
+            };
+        }
+
+        return device->GetCapabilities().GetFeature(RHIDeviceFeature::UIOverlayFrameGraph);
+    }
 }

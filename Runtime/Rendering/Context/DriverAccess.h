@@ -11,6 +11,7 @@
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
+#include "Rendering/UI/UiDrawDataSnapshot.h"
 #include "RenderDef.h"
 
 namespace NLS::Maths
@@ -102,7 +103,7 @@ namespace NLS::Render::Context
         static bool QueueStandalonePostSubmitBufferReadback(
             Driver& driver,
             PostSubmitBufferReadbackRequest request);
-        static bool TryDrainThreadedRendering(Driver& driver);
+        static bool TryDrainThreadedRendering(Driver& driver, bool applyPendingSwapchainResize = true);
         static void DrainThreadedRendering(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
         static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);
@@ -246,6 +247,31 @@ namespace NLS::Render::Context
         static void SetRenderDocAutoOpenEnabled(Driver& driver, bool enabled);
         static void SetRenderDocEnabled(Driver& driver, bool enabled);
         static bool IsRenderDocEnabled(const Driver& driver);
+        static void PublishUiDrawDataSnapshot(
+            Driver& driver,
+            std::shared_ptr<const UI::UiDrawDataSnapshot> snapshot);
+        static bool PublishUiOnlyFrame(
+            Driver& driver,
+            uint32_t renderWidth,
+            uint32_t renderHeight,
+            size_t* publishedSlotIndex = nullptr,
+            uint64_t* publishedFrameId = nullptr);
+        static std::shared_ptr<const UI::UiDrawDataSnapshot> ConsumePendingUiDrawDataSnapshot(
+            Driver& driver,
+            uint64_t* consumedGeneration = nullptr);
+        static bool RestoreConsumedUiDrawDataSnapshotIfUnchanged(
+            Driver& driver,
+            std::shared_ptr<const UI::UiDrawDataSnapshot> snapshot,
+            uint64_t consumedGeneration);
+        static UI::UiTextureId RegisterUiTextureView(
+            Driver& driver,
+            const std::shared_ptr<RHI::RHITextureView>& textureView,
+            UI::UiTextureSynchronizationScope synchronizationScope);
+        static void ReleaseUiTextureView(
+            Driver& driver,
+            const std::shared_ptr<RHI::RHITextureView>& textureView);
+        static void NotifyUiOverlayFontAtlasChanged(Driver& driver);
+        static void NotifyUiOverlaySwapchainWillResize(Driver& driver);
 
         // UI synchronization - get the semaphore UI should wait on before rendering
         static RHI::NativeHandle GetRenderFinishedSemaphore(Driver& driver);
@@ -293,7 +319,7 @@ namespace NLS::Render::Context
         static bool BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage = true);
         static void EndStandaloneExplicitFrame(Driver& driver, bool presentSwapchain = true);
         static void PauseThreadedRenderingWorkers(Driver& driver);
-        static bool TryDrainThreadedRendering(Driver& driver);
+        static bool TryDrainThreadedRendering(Driver& driver, bool applyPendingSwapchainResize = true);
         static void DrainThreadedRendering(Driver& driver);
         static bool TryPublishHarnessFrameSnapshot(
             Driver& driver,

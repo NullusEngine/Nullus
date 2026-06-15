@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -17,7 +18,10 @@
 #include <vector>
 
 #include "Core/ServiceLocator.h"
+#include "Core/ResourceManagement/ShaderManager.h"
+#include "Guid.h"
 #include "Jobs/JobSystem.h"
+#include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/DriverInternal.h"
@@ -38,6 +42,7 @@
 #include "Rendering/RHI/Core/RHIPipeline.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIMesh.h"
+#include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
@@ -49,9 +54,59 @@
 #include "Components/LightComponent.h"
 #include "Components/MeshRenderer.h"
 #include "SceneSystem/Scene.h"
+#include "ImGui/imgui.h"
 
 namespace
 {
+    struct ImGuiContextGuard
+    {
+        ImGuiContextGuard()
+        {
+            IMGUI_CHECKVERSION();
+            context = ImGui::CreateContext();
+            ImGui::GetIO().DisplaySize = ImVec2(320.0f, 200.0f);
+            ImGui::GetIO().Fonts->AddFontDefault();
+        }
+
+        ~ImGuiContextGuard()
+        {
+            ImGui::DestroyContext(context);
+        }
+
+        ImGuiContext* context = nullptr;
+    };
+
+    std::shared_ptr<NLS::Render::UI::UiDrawDataSnapshot> MakeVisibleUiSnapshot(
+        const uint64_t frameId,
+        const float width,
+        const float height)
+    {
+        auto snapshot = std::make_shared<NLS::Render::UI::UiDrawDataSnapshot>();
+        snapshot->frameId = frameId;
+        snapshot->hasVisibleDraws = true;
+        snapshot->displaySize[0] = width;
+        snapshot->displaySize[1] = height;
+        snapshot->framebufferScale[0] = 1.0f;
+        snapshot->framebufferScale[1] = 1.0f;
+        snapshot->totalVertexCount = 3u;
+        snapshot->totalIndexCount = 3u;
+
+        NLS::Render::UI::UiDrawListSnapshot drawList;
+        drawList.vertices.resize(3u);
+        drawList.indices = { 0u, 1u, 2u };
+        drawList.commands.push_back({
+            3u,
+            0u,
+            0u,
+            { 0.0f, 0.0f, width, height },
+            {},
+            NLS::Render::UI::UiDrawCallbackKind::None,
+            false
+        });
+        snapshot->drawLists.push_back(std::move(drawList));
+        return snapshot;
+    }
+
     class ScopedThreadedRenderingJobSystem
     {
     public:
@@ -366,12 +421,29 @@ namespace
             boundBindingSets.push_back(bindingSet);
             events.emplace_back("BindBindingSet");
         }
-        void PushConstants(NLS::Render::RHI::ShaderStageMask, uint32_t, uint32_t, const void*) override {}
+        void PushConstants(
+            NLS::Render::RHI::ShaderStageMask stageMask,
+            uint32_t offset,
+            uint32_t size,
+            const void* data) override
+        {
+            ++pushConstantsCalls;
+            lastPushConstantsStageMask = stageMask;
+            lastPushConstantsOffset = offset;
+            lastPushConstantsSize = size;
+            lastPushConstantsBytes.resize(size);
+            if (data != nullptr && size != 0u)
+                std::memcpy(lastPushConstantsBytes.data(), data, size);
+            events.emplace_back("PushConstants");
+        }
         void BindVertexBuffer(uint32_t, const NLS::Render::RHI::RHIVertexBufferView&) override
         {
             ++bindVertexBufferCalls;
         }
-        void BindIndexBuffer(const NLS::Render::RHI::RHIIndexBufferView&) override {}
+        void BindIndexBuffer(const NLS::Render::RHI::RHIIndexBufferView&) override
+        {
+            ++bindIndexBufferCalls;
+        }
         void Draw(uint32_t, uint32_t, uint32_t, uint32_t) override
         {
             ++drawCalls;
@@ -499,6 +571,7 @@ namespace
         size_t bindGraphicsPipelineCalls = 0u;
         size_t bindBindingSetCalls = 0u;
         size_t bindVertexBufferCalls = 0u;
+        size_t bindIndexBufferCalls = 0u;
         size_t drawCalls = 0u;
         size_t drawIndexedCalls = 0u;
         size_t dispatchCalls = 0u;
@@ -519,7 +592,78 @@ namespace
         std::vector<std::shared_ptr<NLS::Render::RHI::RHIBindingSet>> boundBindingSets;
         std::vector<NLS::Render::RHI::RHIBarrierDesc> barrierHistory;
         std::vector<std::shared_ptr<TestCommandBuffer>> executedChildCommandBuffers;
+        uint32_t pushConstantsCalls = 0u;
+        NLS::Render::RHI::ShaderStageMask lastPushConstantsStageMask = NLS::Render::RHI::ShaderStageMask::None;
+        uint32_t lastPushConstantsOffset = 0u;
+        uint32_t lastPushConstantsSize = 0u;
+        std::vector<uint8_t> lastPushConstantsBytes;
         std::vector<std::string> events;
+    };
+
+    class ScopedOverlayShaderManager final
+    {
+    public:
+        ScopedOverlayShaderManager()
+        {
+            m_tempRoot = std::filesystem::temp_directory_path() /
+                ("nullus_threaded_ui_overlay_shader_" + NLS::Guid::New().ToString());
+            std::filesystem::create_directories(m_tempRoot);
+
+            NLS::Render::Assets::ShaderArtifact artifact;
+            artifact.sourcePath = "App/Assets/Engine/Shaders/RHIImGuiOverlay.hlsl";
+            artifact.subAssetKey = "shader:rhi-imgui-overlay";
+            artifact.stages.push_back({
+                NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+                "VSMain",
+                "vs_6_0",
+                {
+                    NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                    { 0x44u, 0x58u, 0x49u, 0x4cu, 0x56u, 0x53u },
+                    {},
+                    {},
+                    "ui-overlay-vs-cache",
+                    (m_tempRoot / "RHIImGuiOverlay.vs.dxil").string()
+                }
+            });
+            artifact.stages.push_back({
+                NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+                "PSMain",
+                "ps_6_0",
+                {
+                    NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                    { 0x44u, 0x58u, 0x49u, 0x4cu, 0x50u, 0x53u },
+                    {},
+                    {},
+                    "ui-overlay-ps-cache",
+                    (m_tempRoot / "RHIImGuiOverlay.ps.dxil").string()
+                }
+            });
+
+            const auto shaderArtifactPath = m_tempRoot / "RHIImGuiOverlay.nshader";
+            const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
+            std::ofstream output(shaderArtifactPath, std::ios::binary | std::ios::trunc);
+            output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            output.close();
+
+            auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
+            m_shaderManager.RegisterResource(":Shaders/RHIImGuiOverlay.hlsl", shader);
+            NLS::Core::ServiceLocator::Provide(m_shaderManager);
+        }
+
+        ~ScopedOverlayShaderManager()
+        {
+            NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+            std::filesystem::remove_all(m_tempRoot);
+        }
+
+        ScopedOverlayShaderManager(const ScopedOverlayShaderManager&) = delete;
+        ScopedOverlayShaderManager& operator=(const ScopedOverlayShaderManager&) = delete;
+
+    private:
+        std::filesystem::path m_tempRoot;
+        NLS::Core::ResourceManagement::ShaderManager m_shaderManager;
     };
 
     class TestBuffer final : public NLS::Render::RHI::RHIBuffer
@@ -539,6 +683,17 @@ namespace
         const NLS::Render::RHI::RHIBufferDesc& GetDesc() const override { return m_desc; }
         NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
         uint64_t GetGPUAddress() const override { return 0u; }
+        NLS::Render::RHI::RHIUpdateResult UpdateData(
+            const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc) override
+        {
+            ++updateCalls;
+            lastUpload = uploadDesc;
+            return updateResult;
+        }
+
+        uint32_t updateCalls = 0u;
+        NLS::Render::RHI::RHIBufferUploadDesc lastUpload {};
+        NLS::Render::RHI::RHIUpdateResult updateResult { NLS::Render::RHI::RHIUpdateStatusCode::Success, {} };
 
     private:
         NLS::Render::RHI::RHIBufferDesc m_desc {};
@@ -619,11 +774,46 @@ namespace
             m_desc.renderTargetLayout = std::move(renderTargetLayout);
         }
 
+        explicit TestGraphicsPipeline(NLS::Render::RHI::RHIGraphicsPipelineDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
         std::string_view GetDebugName() const override { return m_desc.debugName; }
         const NLS::Render::RHI::RHIGraphicsPipelineDesc& GetDesc() const override { return m_desc; }
 
     private:
         NLS::Render::RHI::RHIGraphicsPipelineDesc m_desc {};
+    };
+
+    class TestPipelineLayout final : public NLS::Render::RHI::RHIPipelineLayout
+    {
+    public:
+        explicit TestPipelineLayout(NLS::Render::RHI::RHIPipelineLayoutDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIPipelineLayoutDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIPipelineLayoutDesc m_desc {};
+    };
+
+    class TestShaderModule final : public NLS::Render::RHI::RHIShaderModule
+    {
+    public:
+        explicit TestShaderModule(NLS::Render::RHI::RHIShaderModuleDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIShaderModuleDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIShaderModuleDesc m_desc {};
     };
 
     class TestComputePipeline final : public NLS::Render::RHI::RHIComputePipeline
@@ -1187,6 +1377,36 @@ namespace
         std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
     };
 
+    class TestSampler final : public NLS::Render::RHI::RHISampler
+    {
+    public:
+        explicit TestSampler(NLS::Render::RHI::SamplerDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return "TestSampler"; }
+        const NLS::Render::RHI::SamplerDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::SamplerDesc m_desc {};
+    };
+
+    class TestBindingLayout final : public NLS::Render::RHI::RHIBindingLayout
+    {
+    public:
+        explicit TestBindingLayout(NLS::Render::RHI::RHIBindingLayoutDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIBindingLayoutDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIBindingLayoutDesc m_desc {};
+    };
+
     NLS::Render::FrameGraph::DeferredPreparedSceneResources BuildDeferredTestPreparedSceneResources(
         const uint16_t width = 64u,
         const uint16_t height = 64u)
@@ -1587,12 +1807,30 @@ namespace
         }
         std::shared_ptr<TestQueue> GetTestQueue() const { return m_queue; }
         std::shared_ptr<TestQueue> GetComputeTestQueue() const { return m_computeQueue; }
+        std::vector<std::shared_ptr<TestBuffer>> createdBuffers;
+        size_t createPipelineLayoutCalls = 0u;
+        size_t createBindingLayoutCalls = 0u;
+        size_t createShaderModuleCalls = 0u;
+        size_t createGraphicsPipelineCalls = 0u;
+        size_t createSamplerCalls = 0u;
+        NLS::Render::RHI::RHIPipelineLayoutDesc lastPipelineLayoutDesc {};
+        NLS::Render::RHI::RHIBindingLayoutDesc lastBindingLayoutDesc {};
+        NLS::Render::RHI::SamplerDesc lastSamplerDesc {};
+        std::vector<NLS::Render::RHI::RHIShaderModuleDesc> shaderModuleDescs;
+        NLS::Render::RHI::RHIGraphicsPipelineDesc lastGraphicsPipelineDesc {};
+        std::shared_ptr<TestPipelineLayout> createdPipelineLayout;
+        std::shared_ptr<TestBindingLayout> createdBindingLayout;
+        std::shared_ptr<TestSampler> createdSampler;
+        std::vector<std::shared_ptr<TestShaderModule>> createdShaderModules;
+        std::shared_ptr<TestGraphicsPipeline> createdGraphicsPipeline;
         std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
-            const NLS::Render::RHI::RHIBufferDesc&,
+            const NLS::Render::RHI::RHIBufferDesc& desc,
             const NLS::Render::RHI::RHIBufferUploadDesc&) override
         {
-            return nullptr;
+            auto buffer = std::make_shared<TestBuffer>(desc);
+            createdBuffers.push_back(buffer);
+            return buffer;
         }
         std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
             const NLS::Render::RHI::RHITextureDesc& desc,
@@ -1606,8 +1844,23 @@ namespace
         {
             return std::make_shared<TestTextureView>(texture, desc);
         }
-        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc&, std::string = {}) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(
+            const NLS::Render::RHI::SamplerDesc& desc,
+            std::string = {}) override
+        {
+            ++createSamplerCalls;
+            lastSamplerDesc = desc;
+            createdSampler = std::make_shared<TestSampler>(desc);
+            return createdSampler;
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(
+            const NLS::Render::RHI::RHIBindingLayoutDesc& desc) override
+        {
+            ++createBindingLayoutCalls;
+            lastBindingLayoutDesc = desc;
+            createdBindingLayout = std::make_shared<TestBindingLayout>(desc);
+            return createdBindingLayout;
+        }
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc& desc) override
         {
             return std::make_shared<TestBindingSet>(
@@ -1615,9 +1868,31 @@ namespace
                     ? "TestBindingSet"
                     : desc.debugName);
         }
-        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(
+            const NLS::Render::RHI::RHIPipelineLayoutDesc& desc) override
+        {
+            ++createPipelineLayoutCalls;
+            lastPipelineLayoutDesc = desc;
+            createdPipelineLayout = std::make_shared<TestPipelineLayout>(desc);
+            return createdPipelineLayout;
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(
+            const NLS::Render::RHI::RHIShaderModuleDesc& desc) override
+        {
+            ++createShaderModuleCalls;
+            shaderModuleDescs.push_back(desc);
+            auto shaderModule = std::make_shared<TestShaderModule>(desc);
+            createdShaderModules.push_back(shaderModule);
+            return shaderModule;
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(
+            const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc) override
+        {
+            ++createGraphicsPipelineCalls;
+            lastGraphicsPipelineDesc = desc;
+            createdGraphicsPipeline = std::make_shared<TestGraphicsPipeline>(desc);
+            return createdGraphicsPipeline;
+        }
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(
             NLS::Render::RHI::QueueType queueType,
@@ -3277,6 +3552,129 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderPublishReportsActualFrameId
     EXPECT_EQ(publishedSlotState->snapshot->frameId, publishedFrameId);
 }
 
+TEST(ThreadedRenderingLifecycleTests, OffscreenPreparedBuilderLeavesPendingUiSnapshotForUiOnlyFrame)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 2u;
+    settings.framesInFlight = 2u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto uiSnapshot = MakeVisibleUiSnapshot(918u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
+
+    NLS::Render::Context::FrameSnapshot offscreenSnapshot;
+    offscreenSnapshot.frameId = 917u;
+    offscreenSnapshot.targetsSwapchain = false;
+    offscreenSnapshot.renderWidth = 64u;
+    offscreenSnapshot.renderHeight = 64u;
+    offscreenSnapshot.visibleOpaqueDrawCount = 1u;
+
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+        driver,
+        offscreenSnapshot,
+        []()
+        {
+            NLS::Render::Context::RenderScenePackage package;
+            package.frameId = 917u;
+            package.targetsSwapchain = false;
+            package.renderWidth = 64u;
+            package.renderHeight = 64u;
+            package.visibleDrawCount = 1u;
+            package.opaqueDrawCount = 1u;
+            package.hasVisibleDraws = true;
+            package.hasOpaquePass = true;
+            package.frameDataReady = true;
+            package.objectDataReady = true;
+            return package;
+        }));
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    size_t offscreenSlot = 99u;
+    NLS::Render::Context::FrameSnapshot claimedSnapshot;
+    ASSERT_TRUE(lifecycle->TryBeginNextRenderScene(&offscreenSlot, &claimedSnapshot));
+    EXPECT_EQ(claimedSnapshot.frameId, offscreenSnapshot.frameId);
+
+    NLS::Render::Context::RenderScenePreparingResolutionDesc resolutionDesc;
+    ASSERT_TRUE(lifecycle->ResolveRenderScenePreparing(offscreenSlot, resolutionDesc));
+    const auto resolvedOffscreenSlot = lifecycle->CopySlot(offscreenSlot);
+    ASSERT_TRUE(resolvedOffscreenSlot.has_value());
+    ASSERT_TRUE(resolvedOffscreenSlot->renderScenePackage.has_value());
+    EXPECT_FALSE(resolvedOffscreenSlot->renderScenePackage->targetsSwapchain);
+    EXPECT_FALSE(resolvedOffscreenSlot->renderScenePackage->hasUIOverlayPass);
+
+    EXPECT_EQ(
+        NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver),
+        uiSnapshot)
+        << "Resolved offscreen prepared scene packages must not consume a pending swapchain UI overlay snapshot.";
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
+
+    size_t publishedUiSlot = 99u;
+    uint64_t publishedUiFrameId = 0u;
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(
+        driver,
+        128u,
+        72u,
+        &publishedUiSlot,
+        &publishedUiFrameId));
+
+    EXPECT_EQ(publishedUiFrameId, uiSnapshot->frameId);
+    EXPECT_NE(publishedUiSlot, 99u);
+    EXPECT_EQ(
+        NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver),
+        nullptr)
+        << "Successful UI-only publication should clear the consumed pending snapshot.";
+}
+
+TEST(ThreadedRenderingLifecycleTests, ConsumedUiSnapshotRestoreDoesNotOverwriteNewerPendingSnapshot)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 2u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    auto oldSnapshot = MakeVisibleUiSnapshot(918u, 128.0f, 72.0f);
+    auto newerSnapshot = MakeVisibleUiSnapshot(919u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, oldSnapshot);
+
+    uint64_t consumedGeneration = 0u;
+    EXPECT_EQ(
+        NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver, &consumedGeneration),
+        oldSnapshot);
+
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, newerSnapshot);
+    EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::RestoreConsumedUiDrawDataSnapshotIfUnchanged(
+        driver,
+        oldSnapshot,
+        consumedGeneration));
+
+    EXPECT_EQ(
+        NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver),
+        newerSnapshot)
+        << "A failed scene-attach path must not requeue an older UI snapshot over a newer pending snapshot.";
+}
+
 #if 0
 TEST(ThreadedRenderingLifecycleTests, PreparedBuilderPublishRejectsAfterDeviceLost)
 {
@@ -4128,6 +4526,171 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedVisibleFrameRecordsSwapchainPassPl
     EXPECT_FLOAT_EQ(submittedCommandBuffer->lastRenderPassDesc.colorAttachments[0].clearValue.r, 0.2f);
     EXPECT_FLOAT_EQ(submittedCommandBuffer->lastRenderPassDesc.colorAttachments[0].clearValue.g, 0.4f);
     EXPECT_FLOAT_EQ(submittedCommandBuffer->lastRenderPassDesc.colorAttachments[0].clearValue.b, 0.6f);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ThreadedUiOverlayPassRecordsSnapshotDrawsThroughRhiWorker)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 407u;
+    snapshot.targetsSwapchain = true;
+    snapshot.renderWidth = 128u;
+    snapshot.renderHeight = 72u;
+
+    auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(snapshot);
+    auto uiSnapshot = std::make_shared<NLS::Render::UI::UiDrawDataSnapshot>();
+    uiSnapshot->frameId = snapshot.frameId;
+    uiSnapshot->hasVisibleDraws = true;
+    uiSnapshot->displaySize[0] = 128.0f;
+    uiSnapshot->displaySize[1] = 72.0f;
+    uiSnapshot->framebufferScale[0] = 1.0f;
+    uiSnapshot->framebufferScale[1] = 1.0f;
+    uiSnapshot->totalVertexCount = 3u;
+    uiSnapshot->totalIndexCount = 3u;
+    NLS::Render::UI::UiDrawListSnapshot drawList;
+    drawList.vertices.resize(3u);
+    drawList.indices = { 0u, 1u, 2u };
+    drawList.commands.push_back({
+        3u,
+        0u,
+        0u,
+        { 4.0f, 5.0f, 44.0f, 45.0f },
+        {},
+        NLS::Render::UI::UiDrawCallbackKind::None,
+        false
+    });
+    uiSnapshot->drawLists.push_back(std::move(drawList));
+    ASSERT_TRUE(NLS::Render::Context::AttachUiOverlaySnapshotToRenderScenePackage(package, uiSnapshot));
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessPreparedFrame(
+        driver,
+        snapshot,
+        package));
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    EXPECT_EQ(explicitDevice->GetTestQueue()->submitCalls, 1u);
+    EXPECT_EQ(explicitDevice->GetTestQueue()->presentCalls, 1u);
+    auto submittedCommandBuffer = GetSubmittedTestCommandBuffer(explicitDevice->GetTestQueue());
+    ASSERT_NE(submittedCommandBuffer, nullptr);
+    EXPECT_EQ(submittedCommandBuffer->beginRenderPassCalls, 1u);
+    EXPECT_EQ(submittedCommandBuffer->endRenderPassCalls, 1u);
+    EXPECT_EQ(submittedCommandBuffer->drawIndexedCalls, 1u);
+    EXPECT_EQ(submittedCommandBuffer->bindGraphicsPipelineCalls, 1u);
+    EXPECT_EQ(submittedCommandBuffer->bindBindingSetCalls, 1u);
+    ASSERT_EQ(submittedCommandBuffer->boundSetIndices.size(), 1u);
+    EXPECT_EQ(submittedCommandBuffer->boundSetIndices[0], 0u);
+    EXPECT_EQ(submittedCommandBuffer->bindVertexBufferCalls, 1u);
+    EXPECT_EQ(submittedCommandBuffer->bindIndexBufferCalls, 1u);
+    EXPECT_EQ(submittedCommandBuffer->pushConstantsCalls, 1u);
+    EXPECT_EQ(submittedCommandBuffer->lastPushConstantsStageMask, NLS::Render::RHI::ShaderStageMask::Vertex);
+    EXPECT_EQ(submittedCommandBuffer->lastPushConstantsOffset, 0u);
+    EXPECT_EQ(submittedCommandBuffer->lastPushConstantsSize, 16u);
+    EXPECT_GE(submittedCommandBuffer->setViewportCalls, 1u);
+    EXPECT_EQ(explicitDevice->createBindingLayoutCalls, 1u);
+    ASSERT_EQ(explicitDevice->lastBindingLayoutDesc.entries.size(), 2u);
+    EXPECT_EQ(explicitDevice->lastBindingLayoutDesc.entries[0].type, NLS::Render::RHI::BindingType::Texture);
+    EXPECT_EQ(explicitDevice->lastBindingLayoutDesc.entries[1].type, NLS::Render::RHI::BindingType::Sampler);
+    EXPECT_EQ(explicitDevice->createSamplerCalls, 1u);
+    EXPECT_EQ(explicitDevice->createPipelineLayoutCalls, 1u);
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.debugName, "RHIImGuiOverlayPipelineLayout");
+    ASSERT_EQ(explicitDevice->lastPipelineLayoutDesc.pushConstants.size(), 1u);
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.pushConstants[0].stageMask, NLS::Render::RHI::ShaderStageMask::Vertex);
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.pushConstants[0].size, 16u);
+    EXPECT_EQ(explicitDevice->createShaderModuleCalls, 2u);
+    ASSERT_EQ(explicitDevice->shaderModuleDescs.size(), 2u);
+    EXPECT_EQ(explicitDevice->shaderModuleDescs[0].stage, NLS::Render::RHI::ShaderStage::Vertex);
+    EXPECT_EQ(explicitDevice->shaderModuleDescs[0].shaderToolchainFingerprint.find("DXIL|vs_6_0|VSMain|"), 0u);
+    EXPECT_NE(explicitDevice->shaderModuleDescs[0].shaderToolchainFingerprint, "RHIImGuiOverlay:placeholder");
+    EXPECT_EQ(explicitDevice->shaderModuleDescs[1].stage, NLS::Render::RHI::ShaderStage::Fragment);
+    EXPECT_EQ(explicitDevice->shaderModuleDescs[1].shaderToolchainFingerprint.find("DXIL|ps_6_0|PSMain|"), 0u);
+    EXPECT_NE(explicitDevice->shaderModuleDescs[1].shaderToolchainFingerprint, "RHIImGuiOverlay:placeholder");
+    EXPECT_EQ(explicitDevice->createGraphicsPipelineCalls, 1u);
+    EXPECT_EQ(explicitDevice->lastGraphicsPipelineDesc.debugName, "RHIImGuiOverlayPipeline");
+    EXPECT_EQ(explicitDevice->lastGraphicsPipelineDesc.pipelineLayout, explicitDevice->createdPipelineLayout);
+    ASSERT_EQ(explicitDevice->createdShaderModules.size(), 2u);
+    EXPECT_EQ(explicitDevice->lastGraphicsPipelineDesc.vertexShader, explicitDevice->createdShaderModules[0]);
+    EXPECT_EQ(explicitDevice->lastGraphicsPipelineDesc.fragmentShader, explicitDevice->createdShaderModules[1]);
+    const auto barrierEvent = std::find(
+        submittedCommandBuffer->events.begin(),
+        submittedCommandBuffer->events.end(),
+        "Barrier");
+    const auto beginRenderPassEvent = std::find(
+        submittedCommandBuffer->events.begin(),
+        submittedCommandBuffer->events.end(),
+        "BeginRenderPass");
+    const auto drawIndexedEvent = std::find(
+        submittedCommandBuffer->events.begin(),
+        submittedCommandBuffer->events.end(),
+        "DrawIndexed");
+    const auto bindGraphicsPipelineEvent = std::find(
+        submittedCommandBuffer->events.begin(),
+        submittedCommandBuffer->events.end(),
+        "BindGraphicsPipeline");
+    const auto endRenderPassEvent = std::find(
+        submittedCommandBuffer->events.begin(),
+        submittedCommandBuffer->events.end(),
+        "EndRenderPass");
+    ASSERT_NE(barrierEvent, submittedCommandBuffer->events.end());
+    ASSERT_NE(beginRenderPassEvent, submittedCommandBuffer->events.end());
+    ASSERT_NE(bindGraphicsPipelineEvent, submittedCommandBuffer->events.end());
+    ASSERT_NE(drawIndexedEvent, submittedCommandBuffer->events.end());
+    ASSERT_NE(endRenderPassEvent, submittedCommandBuffer->events.end());
+    EXPECT_LT(barrierEvent, beginRenderPassEvent);
+    EXPECT_LT(beginRenderPassEvent, bindGraphicsPipelineEvent);
+    EXPECT_LT(bindGraphicsPipelineEvent, drawIndexedEvent);
+    EXPECT_LT(drawIndexedEvent, endRenderPassEvent);
+    const auto vertexBufferIt = std::find_if(
+        explicitDevice->createdBuffers.begin(),
+        explicitDevice->createdBuffers.end(),
+        [](const std::shared_ptr<TestBuffer>& buffer)
+        {
+            return buffer && NLS::Render::RHI::HasBufferUsage(
+                buffer->GetDesc().usage,
+                NLS::Render::RHI::BufferUsageFlags::Vertex);
+        });
+    const auto indexBufferIt = std::find_if(
+        explicitDevice->createdBuffers.begin(),
+        explicitDevice->createdBuffers.end(),
+        [](const std::shared_ptr<TestBuffer>& buffer)
+        {
+            return buffer && NLS::Render::RHI::HasBufferUsage(
+                buffer->GetDesc().usage,
+                NLS::Render::RHI::BufferUsageFlags::Index);
+        });
+    ASSERT_NE(vertexBufferIt, explicitDevice->createdBuffers.end());
+    ASSERT_NE(indexBufferIt, explicitDevice->createdBuffers.end());
+    EXPECT_EQ((*vertexBufferIt)->updateCalls, 1u);
+    EXPECT_EQ((*indexBufferIt)->updateCalls, 1u);
+    ASSERT_EQ(submittedCommandBuffer->lastRenderPassDesc.colorAttachments.size(), 1u);
+    EXPECT_EQ(submittedCommandBuffer->lastRenderPassDesc.colorAttachments[0].loadOp, NLS::Render::RHI::LoadOp::Load);
+    EXPECT_EQ(submittedCommandBuffer->lastRenderPassDesc.renderArea.width, 128u);
+    EXPECT_EQ(submittedCommandBuffer->lastRenderPassDesc.renderArea.height, 72u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ThreadedVisibleFrameRecordsPreparedDrawBindingsAndMeshByDefault)
@@ -14300,6 +14863,314 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiPresentDefersStandaloneFrameAllo
     EXPECT_EQ(uploadContext->beginFrameCalls, 2u);
     EXPECT_EQ(uploadContext->endFrameCalls, 1u);
     EXPECT_EQ(uploadContext->lastEndFrameIndex, 0u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, UiOnlyFramePublishesOverlayOnlySwapchainPackageAndUsesSingleSubmitPresent)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    swapchain->desc.width = 128u;
+    swapchain->desc.height = 72u;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    auto imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+    auto descriptorAllocator = std::make_shared<TestDescriptorAllocator>();
+    auto uploadContext = std::make_shared<TestUploadContext>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+    frameContext.descriptorAllocator = descriptorAllocator;
+    frameContext.uploadContext = uploadContext;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto uiSnapshot = MakeVisibleUiSnapshot(901u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
+
+    size_t publishedSlot = 99u;
+    uint64_t publishedFrameId = 0u;
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(
+        driver,
+        128u,
+        72u,
+        &publishedSlot,
+        &publishedFrameId));
+    EXPECT_EQ(publishedSlot, 0u);
+    EXPECT_EQ(publishedFrameId, uiSnapshot->frameId);
+    EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr)
+        << "UI-only overlay frames must not start the legacy standalone explicit UI frame.";
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    auto testQueue = explicitDevice->GetTestQueue();
+    EXPECT_EQ(testQueue->submitCalls, 1u);
+    EXPECT_EQ(testQueue->presentCalls, 1u);
+    EXPECT_EQ(swapchain->acquireCalls, 1u);
+    EXPECT_EQ(testQueue->lastSubmitDesc.commandBuffers.size(), 1u);
+    auto submittedCommandBuffer = GetSubmittedTestCommandBuffer(testQueue);
+    ASSERT_NE(submittedCommandBuffer, nullptr);
+    EXPECT_EQ(submittedCommandBuffer->beginCalls, 1u);
+
+    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    const auto* retiredSlot = lifecycle->PeekSlot(publishedSlot);
+    ASSERT_NE(retiredSlot, nullptr);
+    ASSERT_TRUE(retiredSlot->renderScenePackage.has_value());
+    const auto& package = retiredSlot->renderScenePackage.value();
+    EXPECT_TRUE(package.targetsSwapchain);
+    EXPECT_TRUE(package.hasUIOverlayPass);
+    EXPECT_EQ(package.passCommandInputs.size(), 1u);
+    ASSERT_FALSE(package.passCommandInputs.empty());
+    EXPECT_EQ(package.passCommandInputs.front().kind, NLS::Render::Context::RenderPassCommandKind::UIOverlay);
+    EXPECT_EQ(package.passCommandInputs.front().debugName, NLS::Render::Context::kUIOverlayRenderPassDebugName);
+    EXPECT_EQ(package.opaqueDrawCount, 0u);
+    EXPECT_EQ(package.transparentDrawCount, 0u);
+    EXPECT_EQ(package.uiDrawDataSnapshot, uiSnapshot);
+    ASSERT_TRUE(retiredSlot->submissionFrame.has_value());
+    EXPECT_EQ(retiredSlot->submissionFrame->uiOverlaySnapshotFrameId, uiSnapshot->frameId);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ResizeDuringUiOnlyFrameWaitsForNormalFrameRetirement)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    auto imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+    auto descriptorAllocator = std::make_shared<TestDescriptorAllocator>();
+    auto uploadContext = std::make_shared<TestUploadContext>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+    frameContext.descriptorAllocator = descriptorAllocator;
+    frameContext.uploadContext = uploadContext;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto uiSnapshot = MakeVisibleUiSnapshot(902u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u));
+
+    driver.ResizePlatformSwapchain(1600u, 900u);
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    EXPECT_EQ(swapchain->resizeWidth, 0u)
+        << "Pending resize must wait while the UI-only frame is still in flight.";
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    EXPECT_EQ(explicitDevice->GetTestQueue()->submitCalls, 1u);
+    EXPECT_EQ(explicitDevice->GetTestQueue()->presentCalls, 1u);
+    EXPECT_EQ(swapchain->resizeWidth, 1600u);
+    EXPECT_EQ(swapchain->resizeHeight, 900u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, PresentSwapchainConsumesPendingUiSnapshotWhenNoSceneFrameWasPublished)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    swapchain->desc.width = 128u;
+    swapchain->desc.height = 72u;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    auto imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+    auto descriptorAllocator = std::make_shared<TestDescriptorAllocator>();
+    auto uploadContext = std::make_shared<TestUploadContext>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+    frameContext.descriptorAllocator = descriptorAllocator;
+    frameContext.uploadContext = uploadContext;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto uiSnapshot = MakeVisibleUiSnapshot(903u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
+
+    EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
+    size_t diagnosticSlot = 99u;
+    uint64_t diagnosticFrameId = 0u;
+    EXPECT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(
+        driver,
+        128u,
+        72u,
+        &diagnosticSlot,
+        &diagnosticFrameId));
+
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    auto testQueue = explicitDevice->GetTestQueue();
+    EXPECT_EQ(testQueue->submitCalls, 1u);
+    EXPECT_EQ(testQueue->presentCalls, 1u);
+    EXPECT_EQ(swapchain->acquireCalls, 1u);
+    EXPECT_EQ(testQueue->lastSubmitDesc.commandBuffers.size(), 1u);
+    EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
+}
+
+TEST(ThreadedRenderingLifecycleTests, PresentSwapchainDrainsPreparedSceneBeforeUiOnlyFallback)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 2u;
+    settings.framesInFlight = 2u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    swapchain->desc.width = 128u;
+    swapchain->desc.height = 72u;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    auto imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+    auto descriptorAllocator = std::make_shared<TestDescriptorAllocator>();
+    auto uploadContext = std::make_shared<TestUploadContext>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+    frameContext.descriptorAllocator = descriptorAllocator;
+    frameContext.uploadContext = uploadContext;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto uiSnapshot = MakeVisibleUiSnapshot(904u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
+
+    NLS::Render::Context::FrameSnapshot sceneSnapshot;
+    sceneSnapshot.frameId = 904u;
+    sceneSnapshot.targetsSwapchain = true;
+    sceneSnapshot.renderWidth = 128u;
+    sceneSnapshot.renderHeight = 72u;
+    sceneSnapshot.visibleOpaqueDrawCount = 1u;
+
+    size_t sceneSlot = 99u;
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+        driver,
+        sceneSnapshot,
+        []()
+        {
+            NLS::Render::Context::RenderScenePackage package;
+            package.frameId = 904u;
+            package.targetsSwapchain = true;
+            package.renderWidth = 128u;
+            package.renderHeight = 72u;
+            package.hasVisibleDraws = true;
+            package.frameDataReady = true;
+            return package;
+        },
+        &sceneSlot,
+        nullptr));
+
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    auto testQueue = explicitDevice->GetTestQueue();
+    EXPECT_EQ(testQueue->submitCalls, 1u)
+        << "PresentSwapchain should let the already-published scene builder consume the UI snapshot instead of "
+           "publishing a second UI-only frame first.";
+    EXPECT_EQ(testQueue->presentCalls, 1u);
+    EXPECT_EQ(swapchain->acquireCalls, 1u);
+    EXPECT_EQ(NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver), nullptr);
+
+    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    const auto* retiredSceneSlot = lifecycle->PeekSlot(sceneSlot);
+    ASSERT_NE(retiredSceneSlot, nullptr);
+    ASSERT_TRUE(retiredSceneSlot->renderScenePackage.has_value());
+    EXPECT_TRUE(retiredSceneSlot->renderScenePackage->targetsSwapchain);
+    EXPECT_TRUE(retiredSceneSlot->renderScenePackage->hasUIOverlayPass);
+    EXPECT_EQ(retiredSceneSlot->renderScenePackage->uiDrawDataSnapshot, uiSnapshot);
 }
 
 #if 0

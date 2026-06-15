@@ -76,8 +76,7 @@ void* ResolveTextureId(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& 
     if (!NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
         return nullptr;
 
-    const auto nativeHandle = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureView(p_textureView);
-    return nativeHandle.IsValid() ? nativeHandle.handle : nullptr;
+    return NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(p_textureView);
 }
 
 void DrawToolbarTooltip(const char* p_text)

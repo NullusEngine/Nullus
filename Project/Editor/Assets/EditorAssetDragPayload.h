@@ -25,7 +25,7 @@ struct EditorAssetDragPayload
     uint8_t generatedModelPrefab = 0u;
     uint8_t imported = 0u;
     uint8_t previewPrefabReady = 0u;
-    uint8_t reserved[1] {};
+    uint8_t generatedBrowserSubAsset = 0u;
 };
 
 static_assert(std::is_trivially_copyable_v<EditorAssetDragPayload>);
@@ -42,7 +42,8 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     NLS::Core::Assets::ArtifactType artifactType,
     bool generatedModelPrefab,
     bool imported,
-    bool previewPrefabReady = false);
+    bool previewPrefabReady = false,
+    bool generatedBrowserSubAsset = false);
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
 EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
@@ -52,7 +53,8 @@ EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
     NLS::Core::Assets::ArtifactType artifactType,
     bool generatedModelPrefab,
     bool imported,
-    bool previewPrefabReady = false);
+    bool previewPrefabReady = false,
+    bool generatedBrowserSubAsset = false);
 #endif
 
 bool CanStoreEditorAssetDragPayload(
@@ -66,4 +68,6 @@ std::string GetEditorAssetDragPayloadSubAssetKey(const EditorAssetDragPayload& p
 NLS::Core::Assets::AssetId GetEditorAssetDragPayloadAssetId(const EditorAssetDragPayload& payload);
 NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const EditorAssetDragPayload& payload);
 bool IsEditorAssetDragPayloadPreviewPrefabReady(const EditorAssetDragPayload& payload);
+bool IsEditorAssetDragPayloadGeneratedBrowserSubAsset(const EditorAssetDragPayload& payload);
+bool CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(const EditorAssetDragPayload& payload);
 }

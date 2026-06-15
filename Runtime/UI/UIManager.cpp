@@ -792,6 +792,20 @@ void UIManager::ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI:
         m_uiBridge->ReleaseTextureViewHandle(textureView);
 }
 
+void UIManager::RetireTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
+{
+    if (ShouldPublishUiSnapshotToFrameGraph())
+    {
+        auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+        if (driver != nullptr)
+            NLS::Render::Context::DriverUIAccess::ReleaseUiTextureView(*driver, textureView);
+        return;
+    }
+
+    if (m_uiBridge != nullptr)
+        m_uiBridge->RetireTextureViewHandle(textureView);
+}
+
 bool UIManager::UsesFrameGraphOverlayRendering() const
 {
     return ShouldPublishUiSnapshotToFrameGraph();

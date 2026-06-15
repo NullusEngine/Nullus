@@ -48,7 +48,7 @@ Image::Image(const uint8_t* encodedData, size_t encodedDataSize, bool flipVertic
     , height(0)
     , channels(0)
 {
-    stbi_set_flip_vertically_on_load(flipVertically);
+    stbi_set_flip_vertically_on_load_thread(flipVertically);
     if (encodedData == nullptr || encodedDataSize == 0u || encodedDataSize > static_cast<size_t>(std::numeric_limits<int>::max()))
     {
         return;
@@ -135,7 +135,7 @@ void Image::Load(const std::string& filename, bool flipVertically)
         return;
     }
 
-    stbi_set_flip_vertically_on_load(flipVertically);
+    stbi_set_flip_vertically_on_load_thread(flipVertically);
     unsigned char* loadedData = stbi_load_from_memory(
         encodedBytes.data(),
         static_cast<int>(encodedBytes.size()),

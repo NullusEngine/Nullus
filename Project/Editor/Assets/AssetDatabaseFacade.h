@@ -29,6 +29,20 @@ struct AssetDatabaseRecord
     bool mainAsset = false;
 };
 
+struct ObjectReferencePickerSubAssetSnapshot
+{
+    std::string subAssetKey;
+    std::string artifactPath;
+    NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
+};
+
+struct ObjectReferencePickerAssetSnapshot
+{
+    std::string sourceAssetPath;
+    NLS::Core::Assets::AssetId assetId;
+    std::vector<ObjectReferencePickerSubAssetSnapshot> subAssets;
+};
+
 struct AssetPackMetadata
 {
     std::string name;
@@ -115,6 +129,10 @@ public:
     std::optional<NLS::Core::Assets::ArtifactManifest> GetArtifactManifestForAssetPath(
         const std::string& assetPath) const;
     bool IsArtifactManifestCurrentForAssetPath(const std::string& assetPath) const;
+    bool IsArtifactManifestKnownCurrentForAssetPath(const std::string& assetPath) const;
+    std::vector<std::string> GetKnownCurrentArtifactManifestAssetPaths() const;
+    std::vector<ObjectReferencePickerAssetSnapshot> GetObjectReferencePickerAssetSnapshots() const;
+    std::vector<ObjectReferencePickerAssetSnapshot> GetFreshObjectReferencePickerAssetSnapshots() const;
     std::optional<std::string> TryGetRootRelativeAssetPath(
         const std::string& ownerAssetPath,
         const std::filesystem::path& path) const;
@@ -171,6 +189,20 @@ private:
     std::filesystem::path GetArtifactManifestPathForAssetPath(const std::filesystem::path& absolutePath) const;
     std::filesystem::path GetArtifactDatabasePathForAssetPath(const std::filesystem::path& absolutePath) const;
     void LoadPersistedArtifactManifests();
+    void RefreshKnownCurrentArtifactManifestSnapshot();
+    void UpdateKnownCurrentArtifactManifestForAssetPath(const std::string& assetPath);
+    bool IsArtifactManifestCurrentForAssetPathUncached(const std::string& assetPath) const;
+    static ObjectReferencePickerAssetSnapshot BuildObjectReferencePickerAssetSnapshot(
+        const std::string& assetPath,
+        const NLS::Core::Assets::ArtifactManifest& manifest);
+    void ReplaceKnownCurrentArtifactManifestSnapshotsLocked(
+        std::unordered_set<std::string> assetPaths,
+        std::vector<ObjectReferencePickerAssetSnapshot> snapshots) const;
+    void PublishKnownCurrentArtifactManifestSnapshotForAssetPathLocked(
+        const std::string& assetPath,
+        const NLS::Core::Assets::ArtifactManifest& manifest);
+    void RemoveKnownCurrentArtifactManifestSnapshotForAssetPathLocked(const std::string& assetPath) const;
+    void PruneStaleObjectReferencePickerSnapshots() const;
     bool CanSaveArtifactManifestForAssetPath(const std::filesystem::path& absolutePath) const;
     bool SaveArtifactManifestForAssetPath(
         const std::filesystem::path& absolutePath,
@@ -219,9 +251,12 @@ private:
     mutable std::recursive_mutex m_manifestMutex;
     std::unordered_map<std::string, NLS::Core::Assets::ArtifactDatabase> m_artifactDatabasesByPath;
     std::unordered_set<std::string> m_dirtyArtifactDatabasePaths;
+    mutable std::unordered_set<std::string> m_knownCurrentArtifactManifestAssetPaths;
+    mutable std::vector<ObjectReferencePickerAssetSnapshot> m_objectReferencePickerAssetSnapshots;
     mutable std::mutex m_artifactDatabaseCacheMutex;
     std::vector<std::string> m_queuedImports;
     bool m_assetEditing = false;
+    bool m_knownCurrentArtifactManifestSnapshotDirty = false;
     size_t m_completedImports = 0u;
 };
 }

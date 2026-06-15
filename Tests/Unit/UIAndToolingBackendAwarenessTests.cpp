@@ -15,6 +15,7 @@
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
+#include "Rendering/RHI/Utils/RHIUIBridgeInternal.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -411,6 +412,68 @@ TEST(UIAndToolingBackendAwarenessTests, RhiDeviceBaseDoesNotExposeDefaultUiBridg
     EXPECT_FALSE(HasDevicePrepareUIRender<NLS::Render::RHI::RHIDevice>::value);
     EXPECT_FALSE(HasDeviceReleaseUITextureHandles<NLS::Render::RHI::RHIDevice>::value);
     EXPECT_FALSE(HasDeviceSetCurrentCommandBuffer<NLS::Render::RHI::RHIDevice>::value);
+}
+
+TEST(UIAndToolingBackendAwarenessTests, NullRendererBridgeAcceptsTransientTextureRetirement)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1;
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+
+    NLS::Render::RHI::NativeRenderDeviceInfo nativeInfo;
+    nativeInfo.backend = NLS::Render::RHI::NativeBackendType::DX11;
+
+    const auto bridge = NLS::Render::RHI::CreateRHIUIBridge(nullptr, "#version 150", &nativeInfo);
+
+    ASSERT_NE(bridge, nullptr);
+    EXPECT_NO_THROW(bridge->RetireTextureViewHandle(nullptr));
+}
+
+TEST(UIAndToolingBackendAwarenessTests, CurrentFrameTextureRetirementReleasesOnDiscardOnlyBeforeSubmit)
+{
+    using NLS::Render::RHI::RHIUICurrentFrameTextureRetirementTracker;
+    using NLS::Render::RHI::RHIUITextureHandleUse;
+
+    RHIUICurrentFrameTextureRetirementTracker tracker;
+    const RHIUITextureHandleUse use{0x101u, 7u};
+
+    EXPECT_TRUE(tracker.RetireCurrentFrameUse(use, true));
+    EXPECT_TRUE(tracker.RetireCurrentFrameUse(use, true));
+    EXPECT_TRUE(tracker.IsRetiredCurrentFrameUse(use));
+
+    const auto discarded = tracker.DiscardCurrentFrame();
+    ASSERT_EQ(discarded.size(), 1u);
+    EXPECT_EQ(discarded.front(), use);
+    EXPECT_TRUE(tracker.DiscardCurrentFrame().empty());
+
+    EXPECT_TRUE(tracker.RetireCurrentFrameUse(use, true));
+    tracker.RetainCurrentFrame();
+    EXPECT_TRUE(tracker.DiscardCurrentFrame().empty());
+}
+
+TEST(UIAndToolingBackendAwarenessTests, CurrentFrameTextureRetirementIgnoresNonCurrentOrInvalidUses)
+{
+    using NLS::Render::RHI::RHIUICurrentFrameTextureRetirementTracker;
+    using NLS::Render::RHI::RHIUITextureHandleUse;
+
+    RHIUICurrentFrameTextureRetirementTracker tracker;
+    EXPECT_FALSE(tracker.RetireCurrentFrameUse({0x101u, 7u}, false));
+    EXPECT_FALSE(tracker.RetireCurrentFrameUse({0u, 7u}, true));
+    EXPECT_FALSE(tracker.RetireCurrentFrameUse({0x101u, 0u}, true));
+    EXPECT_TRUE(tracker.DiscardCurrentFrame().empty());
+
+    const RHIUITextureHandleUse first{0x101u, 7u};
+    const RHIUITextureHandleUse second{0x202u, 8u};
+    EXPECT_TRUE(tracker.RetireCurrentFrameUse(first, true));
+    EXPECT_TRUE(tracker.RetireCurrentFrameUse(second, true));
+    tracker.RemoveViewKey(first.textureViewKey);
+
+    const auto discarded = tracker.DiscardCurrentFrame();
+    ASSERT_EQ(discarded.size(), 1u);
+    EXPECT_EQ(discarded.front(), second);
 }
 
 TEST(UIAndToolingBackendAwarenessTests, ImageWithUnresolvedTextureDoesNotSubmitNullTextureDrawCommand)

@@ -22,7 +22,8 @@ enum class ArtifactType
     Prefab,
     Scene,
     Shader,
-    Audio
+    Audio,
+    Count
 };
 
 enum class AssetDependencyKind

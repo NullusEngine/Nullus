@@ -120,8 +120,10 @@ const char* SchemaNameForArtifactType(const ArtifactType artifactType)
     case ArtifactType::MorphTarget: return "morphTarget";
     case ArtifactType::Model: return "model";
     case ArtifactType::Unknown:
-    default: return "";
+    case ArtifactType::Count:
+        break;
     }
+    return "";
 }
 
 uint32_t SchemaVersionForArtifactType(const ArtifactType artifactType)
@@ -144,9 +146,10 @@ uint32_t SchemaVersionForArtifactType(const ArtifactType artifactType)
     case ArtifactType::MorphTarget:
     case ArtifactType::Model:
     case ArtifactType::Unknown:
-    default:
+    case ArtifactType::Count:
         return 1u;
     }
+    return 1u;
 }
 
 std::vector<uint8_t> BuildStoredArtifactPayload(

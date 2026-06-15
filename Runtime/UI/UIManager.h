@@ -160,6 +160,7 @@ public:
     void NotifySwapchainWillResize();
     void ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     bool UsesFrameGraphOverlayRendering() const;
+    void RetireTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     NLS::Render::Settings::EGraphicsBackend GetGraphicsBackend() const { return m_backend; }
     bool ShouldFlipPresentedRenderTargetVertically() const;
     bool UsesBottomLeftRenderTargetOrigin() const;

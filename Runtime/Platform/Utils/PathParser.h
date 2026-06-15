@@ -21,7 +21,8 @@ namespace NLS::Utils
 			SCENE,
 			PREFAB,
 			SCRIPT,
-			FONT
+			FONT,
+			COUNT
 		};
 
 		/**

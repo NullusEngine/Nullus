@@ -234,6 +234,30 @@ std::optional<MeshArtifactData> DeserializeMeshArtifact(const std::vector<uint8_
     return mesh;
 }
 
+std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
+    const std::filesystem::path& path,
+    const uint64_t maxMetadataBytes)
+{
+    const auto prefix = NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+        path,
+        NLS::Core::Assets::ArtifactType::Mesh,
+        kMeshArtifactContainerSchemaVersion,
+        sizeof(MeshArtifactHeader),
+        maxMetadataBytes);
+    if (!prefix.has_value())
+        return std::nullopt;
+
+    const ByteView payload {prefix->bytes.data(), prefix->bytes.size()};
+    MeshArtifactHeader header;
+    if (!ReadHeader(payload, header))
+        return std::nullopt;
+
+    return MeshArtifactHeaderPreview {
+        header.vertexCount,
+        header.indexCount
+    };
+}
+
 std::optional<MeshArtifactData> LoadMeshArtifact(const std::filesystem::path& path)
 {
     return LoadMeshArtifact(path, nullptr);

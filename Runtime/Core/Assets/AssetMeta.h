@@ -19,7 +19,9 @@ enum class AssetType
     Material,
     Audio,
     Scene,
-    Prefab
+    Script,
+    Prefab,
+    Count
 };
 
 NLS_CORE_API const char* ToString(AssetType type);

@@ -195,8 +195,9 @@ AssetHotReloadPolicy GetHotReloadPolicy(ArtifactType artifactType)
     case ArtifactType::Scene:
     case ArtifactType::Audio:
     case ArtifactType::Unknown:
-    default:
+    case ArtifactType::Count:
         return AssetHotReloadPolicy::RequiresExplicitReload;
     }
+    return AssetHotReloadPolicy::RequiresExplicitReload;
 }
 }

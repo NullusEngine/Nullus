@@ -5,7 +5,11 @@
 
 #include <algorithm>
 #include <charconv>
+#include <array>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <optional>
 #include <sstream>
 
 namespace NLS::Core::Assets
@@ -51,8 +55,10 @@ const char* ToMetadataString(const ArtifactType type)
     case ArtifactType::Shader: return "shader";
     case ArtifactType::Audio: return "audio";
     case ArtifactType::Unknown:
-    default: return "unknown";
+    case ArtifactType::Count:
+        break;
     }
+    return "unknown";
 }
 
 ArtifactType ArtifactTypeFromMetadataString(const std::string& value)
@@ -88,11 +94,11 @@ const char* ToMetadataString(const AssetDependencyKind kind)
     case AssetDependencyKind::PrefabOverrideTarget: return "prefab-override-target";
     case AssetDependencyKind::RuntimeComponentCapability: return "runtime-component-capability";
     case AssetDependencyKind::RawPackageFile: return "raw-package-file";
-    default: return "source-file-hash";
     }
+    return "unknown";
 }
 
-AssetDependencyKind DependencyKindFromMetadataString(const std::string& value)
+std::optional<AssetDependencyKind> DependencyKindFromMetadataString(const std::string& value)
 {
     if (value == "source-file-hash") return AssetDependencyKind::SourceFileHash;
     if (value == "source-asset-guid") return AssetDependencyKind::SourceAssetGuid;
@@ -106,7 +112,7 @@ AssetDependencyKind DependencyKindFromMetadataString(const std::string& value)
     if (value == "prefab-override-target") return AssetDependencyKind::PrefabOverrideTarget;
     if (value == "runtime-component-capability") return AssetDependencyKind::RuntimeComponentCapability;
     if (value == "raw-package-file") return AssetDependencyKind::RawPackageFile;
-    return AssetDependencyKind::SourceFileHash;
+    return std::nullopt;
 }
 
 void AppendUInt32(std::vector<uint8_t>& bytes, const uint32_t value)
@@ -240,6 +246,43 @@ bool ReadHeader(
     }
 
     return true;
+}
+
+bool ReadHeaderPrefix(const std::vector<uint8_t>& bytes, NativeArtifactHeader& header)
+{
+    if (bytes.size() < kNativeArtifactHeaderSize)
+        return false;
+
+    size_t offset = 0u;
+    if (!ReadUInt32(bytes, offset, header.magic) ||
+        !ReadUInt32(bytes, offset, header.containerVersion) ||
+        !ReadUInt32(bytes, offset, header.headerSize) ||
+        !ReadUInt32(bytes, offset, header.flags) ||
+        !ReadUInt32(bytes, offset, header.artifactType) ||
+        !ReadUInt32(bytes, offset, header.schemaVersion) ||
+        !ReadUInt64(bytes, offset, header.metadataSize) ||
+        !ReadUInt64(bytes, offset, header.payloadSize) ||
+        !ReadUInt64(bytes, offset, header.payloadOffset) ||
+        !ReadUInt64(bytes, offset, header.reserved0) ||
+        !ReadUInt64(bytes, offset, header.reserved1))
+    {
+        return false;
+    }
+
+    if (header.magic != kNativeArtifactMagic ||
+        header.containerVersion != kNativeArtifactContainerVersion ||
+        header.headerSize != kNativeArtifactHeaderSize ||
+        header.flags != kNativeArtifactFlagsLittleEndian)
+    {
+        return false;
+    }
+
+    return header.metadataSize <= std::numeric_limits<size_t>::max() &&
+        header.payloadSize <= std::numeric_limits<size_t>::max() &&
+        header.payloadOffset <= std::numeric_limits<size_t>::max() &&
+        header.metadataSize <= static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()) &&
+        header.payloadSize <= static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()) &&
+        header.payloadOffset <= static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max());
 }
 
 std::string EscapeValue(std::string_view value)
@@ -421,8 +464,11 @@ std::optional<NativeArtifactMetadata> DeserializeMetadata(std::string_view text)
             const auto parts = SplitEscapedList(value);
             if (parts.size() != 3u)
                 return std::nullopt;
+            const auto kind = DependencyKindFromMetadataString(parts[0]);
+            if (!kind.has_value())
+                return std::nullopt;
             metadata.dependencies.push_back({
-                DependencyKindFromMetadataString(parts[0]),
+                *kind,
                 UnescapeValue(parts[1]),
                 UnescapeValue(parts[2])
             });
@@ -621,5 +667,90 @@ bool IsNativeArtifactContainer(const std::vector<uint8_t>& bytes)
     size_t offset = 0u;
     uint32_t magic = 0u;
     return ReadUInt32(bytes, offset, magic) && magic == kNativeArtifactMagic;
+}
+
+std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefixFromFile(
+    const std::filesystem::path& path,
+    const ArtifactType expectedType,
+    const uint32_t expectedSchemaVersion,
+    const size_t prefixSize,
+    const uint64_t maxMetadataBytes)
+{
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::NativeArtifactFileRead,
+        {},
+        prefixSize,
+        path.generic_string()
+    });
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    std::array<uint8_t, kNativeArtifactHeaderSize> headerBytes {};
+    input.read(
+        reinterpret_cast<char*>(headerBytes.data()),
+        static_cast<std::streamsize>(headerBytes.size()));
+    if (input.gcount() != static_cast<std::streamsize>(headerBytes.size()))
+        return std::nullopt;
+
+    NativeArtifactHeader header;
+    std::vector<uint8_t> headerVector(headerBytes.begin(), headerBytes.end());
+    if (!ReadHeaderPrefix(headerVector, header) ||
+        static_cast<ArtifactType>(header.artifactType) != expectedType ||
+        header.schemaVersion != expectedSchemaVersion ||
+        header.payloadSize < prefixSize ||
+        header.metadataSize > maxMetadataBytes ||
+        header.metadataSize > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
+        header.payloadOffset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()))
+    {
+        return std::nullopt;
+    }
+
+    std::error_code error;
+    const auto fileSize = std::filesystem::file_size(path, error);
+    if (error ||
+        header.payloadOffset > fileSize ||
+        header.payloadSize > fileSize - header.payloadOffset ||
+        header.payloadOffset != kNativeArtifactHeaderSize + header.metadataSize)
+    {
+        return std::nullopt;
+    }
+
+    std::string metadataText;
+    metadataText.resize(static_cast<size_t>(header.metadataSize));
+    if (header.metadataSize > 0u)
+    {
+        input.read(metadataText.data(), static_cast<std::streamsize>(metadataText.size()));
+        if (input.gcount() != static_cast<std::streamsize>(metadataText.size()))
+            return std::nullopt;
+    }
+
+    auto metadata = DeserializeMetadata(metadataText);
+    if (!metadata.has_value() ||
+        metadata->artifactType != expectedType ||
+        metadata->schemaVersion != expectedSchemaVersion)
+    {
+        return std::nullopt;
+    }
+
+    input.seekg(static_cast<std::streamoff>(header.payloadOffset), std::ios::beg);
+    if (!input)
+        return std::nullopt;
+
+    NativeArtifactPayloadPrefix result;
+    result.metadata = std::move(*metadata);
+    result.bytes.resize(prefixSize);
+    if (prefixSize > 0u)
+    {
+        input.read(
+            reinterpret_cast<char*>(result.bytes.data()),
+            static_cast<std::streamsize>(result.bytes.size()));
+        if (input.gcount() != static_cast<std::streamsize>(result.bytes.size()))
+            return std::nullopt;
+    }
+    result.payloadSize = header.payloadSize;
+    result.payloadOffset = header.payloadOffset;
+    return result;
 }
 }

@@ -163,6 +163,24 @@ bool HasCurrentExternalTextureBuildPipelineDependency(
         std::to_string(kExternalTexturePostprocessorVersion));
 }
 
+std::filesystem::path ResolvePhysicalArtifactFileInsideRoot(
+    const std::filesystem::path& artifactRoot,
+    const std::filesystem::path& rawPath)
+{
+    if (artifactRoot.empty() || rawPath.empty())
+        return {};
+
+    const auto candidate = rawPath.is_absolute()
+        ? NLS::Core::Assets::NormalizeAssetPath(rawPath)
+        : NLS::Core::Assets::NormalizeAssetPath(artifactRoot / rawPath);
+    if (candidate.empty() ||
+        !IsPhysicalRegularFileInsideEditorAssetRoot(candidate, artifactRoot))
+    {
+        return {};
+    }
+    return candidate;
+}
+
 void AddUniqueDependency(
     std::vector<NLS::Core::Assets::AssetDependencyRecord>& dependencies,
     NLS::Core::Assets::AssetDependencyRecord dependency)
@@ -719,8 +737,10 @@ std::string ToArtifactTypeKey(const NLS::Core::Assets::ArtifactType type)
     case ArtifactType::Shader: return "shader";
     case ArtifactType::Audio: return "audio";
     case ArtifactType::Unknown:
-    default: return "asset";
+    case ArtifactType::Count:
+        break;
     }
+    return "asset";
 }
 
 std::string ExpectedPrefabResolvedAssetType(const NLS::Core::Assets::ArtifactType type)
@@ -741,9 +761,10 @@ std::string ExpectedPrefabResolvedAssetType(const NLS::Core::Assets::ArtifactTyp
     case ArtifactType::Audio: return "Audio";
     case ArtifactType::Prefab:
     case ArtifactType::Unknown:
-    default:
+    case ArtifactType::Count:
         return {};
     }
+    return {};
 }
 
 std::string ToDependencyKindKey(const NLS::Core::Assets::AssetDependencyKind kind)
@@ -955,6 +976,11 @@ AssetDatabaseFacade::AssetDatabaseFacade(
 bool AssetDatabaseFacade::Refresh()
 {
     m_diagnostics.clear();
+    {
+        std::lock_guard manifestLock(m_manifestMutex);
+        m_knownCurrentArtifactManifestAssetPaths.clear();
+        m_objectReferencePickerAssetSnapshots.clear();
+    }
     if (!FlushArtifactDatabaseCache())
         return false;
     {
@@ -1160,6 +1186,7 @@ void AssetDatabaseFacade::StartAssetEditing()
     }
 
     m_assetEditing = true;
+    m_knownCurrentArtifactManifestSnapshotDirty = false;
 }
 
 bool AssetDatabaseFacade::StopAssetEditing()
@@ -1181,6 +1208,9 @@ bool AssetDatabaseFacade::StopAssetEditing()
     }
     m_assetEditing = false;
     ok = FlushArtifactDatabaseCache() && ok;
+    if (m_knownCurrentArtifactManifestSnapshotDirty)
+        RefreshKnownCurrentArtifactManifestSnapshot();
+    m_knownCurrentArtifactManifestSnapshotDirty = false;
     return ok;
 }
 
@@ -1414,41 +1444,18 @@ std::optional<NLS::Engine::Assets::PrefabArtifact> AssetDatabaseFacade::LoadPref
 
     std::filesystem::path artifactPath;
     const auto rawPath = NLS::Core::Assets::NormalizeAssetPath(prefabArtifactCopy.artifactPath);
-    if (rawPath.is_absolute())
+    for (const auto& root : m_roots)
     {
-        for (const auto& root : m_roots)
+        const auto artifactRoot = GetEditorAssetRootLibraryPath(root) / "Artifacts" / assetId.ToString();
+        artifactPath = ResolvePhysicalArtifactFileInsideRoot(artifactRoot, rawPath);
+        if (artifactPath.empty() && !rawPath.is_absolute())
         {
-            const auto artifactRoot = GetEditorAssetRootLibraryPath(root) / "Artifacts" / assetId.ToString();
-            if (IsPathInsideEditorAssetRoot(rawPath, artifactRoot) && std::filesystem::exists(rawPath))
-            {
-                artifactPath = rawPath;
-                break;
-            }
+            artifactPath = ResolvePhysicalArtifactFileInsideRoot(
+                artifactRoot,
+                GetEditorAssetRootLibraryPath(root).parent_path() / rawPath);
         }
-    }
-    else
-    {
-        for (const auto& root : m_roots)
-        {
-            const auto libraryPath = GetEditorAssetRootLibraryPath(root);
-            const auto artifactRoot = libraryPath / "Artifacts" / assetId.ToString();
-            const auto candidate = NLS::Core::Assets::NormalizeAssetPath(artifactRoot / rawPath);
-            if (!candidate.empty() &&
-                IsPathInsideEditorAssetRoot(candidate, artifactRoot) &&
-                std::filesystem::exists(candidate))
-            {
-                artifactPath = candidate;
-                break;
-            }
-
-            const auto projectRelative =
-                NLS::Core::Assets::NormalizeAssetPath(libraryPath.parent_path() / rawPath);
-            if (!projectRelative.empty() && std::filesystem::exists(projectRelative))
-            {
-                artifactPath = projectRelative;
-                break;
-            }
-        }
+        if (!artifactPath.empty())
+            break;
     }
 
     if (artifactPath.empty())
@@ -1683,9 +1690,16 @@ void AssetDatabaseFacade::AddArtifactManifest(NLS::Core::Assets::ArtifactManifes
     if (!IsEditorMode())
         return;
 
+    const auto assetPath = GUIDToAssetPath(manifest.sourceAssetId.ToString());
     SaveArtifactDatabaseManifest(manifest);
-    std::lock_guard manifestLock(m_manifestMutex);
-    m_manifestsBySource[manifest.sourceAssetId] = std::move(manifest);
+    {
+        std::lock_guard manifestLock(m_manifestMutex);
+        m_manifestsBySource[manifest.sourceAssetId] = std::move(manifest);
+    }
+    if (!assetPath.empty() && !m_assetEditing)
+        UpdateKnownCurrentArtifactManifestForAssetPath(assetPath);
+    else if (!assetPath.empty())
+        m_knownCurrentArtifactManifestSnapshotDirty = true;
 }
 
 std::optional<NLS::Core::Assets::ArtifactManifest> AssetDatabaseFacade::GetArtifactManifestForAssetPath(
@@ -1707,6 +1721,21 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AssetDatabaseFacade::GetArtif
 }
 
 bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPath(const std::string& assetPath) const
+{
+    const bool current = IsArtifactManifestCurrentForAssetPathUncached(assetPath);
+    if (!current)
+    {
+        const auto normalized = NormalizeEditorAssetPath(assetPath);
+        if (!normalized.empty())
+        {
+            std::lock_guard manifestLock(m_manifestMutex);
+            RemoveKnownCurrentArtifactManifestSnapshotForAssetPathLocked(normalized);
+        }
+    }
+    return current;
+}
+
+bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(const std::string& assetPath) const
 {
     if (!IsEditorMode())
         return false;
@@ -1782,6 +1811,209 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPath(const std::strin
     }
 
     return checkedAsset && checkedMeta;
+}
+
+bool AssetDatabaseFacade::IsArtifactManifestKnownCurrentForAssetPath(const std::string& assetPath) const
+{
+    std::lock_guard manifestLock(m_manifestMutex);
+    return m_knownCurrentArtifactManifestAssetPaths.find(NormalizeEditorAssetPath(assetPath)) !=
+        m_knownCurrentArtifactManifestAssetPaths.end();
+}
+
+std::vector<std::string> AssetDatabaseFacade::GetKnownCurrentArtifactManifestAssetPaths() const
+{
+    std::lock_guard manifestLock(m_manifestMutex);
+    std::vector<std::string> assetPaths(
+        m_knownCurrentArtifactManifestAssetPaths.begin(),
+        m_knownCurrentArtifactManifestAssetPaths.end());
+    std::sort(assetPaths.begin(), assetPaths.end());
+    return assetPaths;
+}
+
+ObjectReferencePickerAssetSnapshot AssetDatabaseFacade::BuildObjectReferencePickerAssetSnapshot(
+    const std::string& assetPath,
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    const auto normalized = NormalizeEditorAssetPath(assetPath);
+    ObjectReferencePickerAssetSnapshot snapshot;
+    snapshot.sourceAssetPath = normalized;
+    snapshot.assetId = manifest.sourceAssetId;
+    snapshot.subAssets.reserve(manifest.subAssets.size());
+    for (const auto& artifact : manifest.subAssets)
+    {
+        snapshot.subAssets.push_back({
+            artifact.subAssetKey,
+            artifact.artifactPath,
+            artifact.artifactType
+        });
+    }
+    return snapshot;
+}
+
+void AssetDatabaseFacade::ReplaceKnownCurrentArtifactManifestSnapshotsLocked(
+    std::unordered_set<std::string> assetPaths,
+    std::vector<ObjectReferencePickerAssetSnapshot> snapshots) const
+{
+    m_knownCurrentArtifactManifestAssetPaths = std::move(assetPaths);
+
+    snapshots.erase(
+        std::remove_if(
+            snapshots.begin(),
+            snapshots.end(),
+            [](const ObjectReferencePickerAssetSnapshot& snapshot)
+            {
+                return snapshot.sourceAssetPath.empty() || snapshot.subAssets.empty();
+            }),
+        snapshots.end());
+    std::sort(
+        snapshots.begin(),
+        snapshots.end(),
+        [](const ObjectReferencePickerAssetSnapshot& left, const ObjectReferencePickerAssetSnapshot& right)
+        {
+            return left.sourceAssetPath < right.sourceAssetPath;
+        });
+    m_objectReferencePickerAssetSnapshots = std::move(snapshots);
+}
+
+void AssetDatabaseFacade::RemoveKnownCurrentArtifactManifestSnapshotForAssetPathLocked(const std::string& assetPath) const
+{
+    const auto normalized = NormalizeEditorAssetPath(assetPath);
+    m_knownCurrentArtifactManifestAssetPaths.erase(normalized);
+    m_objectReferencePickerAssetSnapshots.erase(
+        std::remove_if(
+            m_objectReferencePickerAssetSnapshots.begin(),
+            m_objectReferencePickerAssetSnapshots.end(),
+            [&normalized](const ObjectReferencePickerAssetSnapshot& snapshot)
+            {
+                return NormalizeEditorAssetPath(snapshot.sourceAssetPath) == normalized;
+            }),
+        m_objectReferencePickerAssetSnapshots.end());
+}
+
+void AssetDatabaseFacade::PublishKnownCurrentArtifactManifestSnapshotForAssetPathLocked(
+    const std::string& assetPath,
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    const auto normalized = NormalizeEditorAssetPath(assetPath);
+    if (normalized.empty())
+        return;
+
+    RemoveKnownCurrentArtifactManifestSnapshotForAssetPathLocked(normalized);
+    m_knownCurrentArtifactManifestAssetPaths.insert(normalized);
+
+    auto snapshot = BuildObjectReferencePickerAssetSnapshot(normalized, manifest);
+
+    if (!snapshot.subAssets.empty())
+        m_objectReferencePickerAssetSnapshots.push_back(std::move(snapshot));
+    std::sort(
+        m_objectReferencePickerAssetSnapshots.begin(),
+        m_objectReferencePickerAssetSnapshots.end(),
+        [](const ObjectReferencePickerAssetSnapshot& left, const ObjectReferencePickerAssetSnapshot& right)
+        {
+            return left.sourceAssetPath < right.sourceAssetPath;
+        });
+}
+
+void AssetDatabaseFacade::PruneStaleObjectReferencePickerSnapshots() const
+{
+    std::vector<std::string> candidatePaths;
+    {
+        std::lock_guard manifestLock(m_manifestMutex);
+        candidatePaths.reserve(m_objectReferencePickerAssetSnapshots.size());
+        for (const auto& snapshot : m_objectReferencePickerAssetSnapshots)
+        {
+            const auto normalized = NormalizeEditorAssetPath(snapshot.sourceAssetPath);
+            if (!normalized.empty())
+                candidatePaths.push_back(normalized);
+        }
+    }
+
+    std::sort(candidatePaths.begin(), candidatePaths.end());
+    candidatePaths.erase(std::unique(candidatePaths.begin(), candidatePaths.end()), candidatePaths.end());
+    if (candidatePaths.empty())
+        return;
+
+    std::unordered_set<std::string> currentPaths;
+    std::unordered_set<std::string> stalePaths;
+    std::vector<ObjectReferencePickerAssetSnapshot> rebuiltSnapshots;
+    for (const auto& assetPath : candidatePaths)
+    {
+        if (!IsArtifactManifestCurrentForAssetPath(assetPath))
+        {
+            stalePaths.insert(assetPath);
+            continue;
+        }
+
+        const auto* record = FindRecordByEditorAssetPath(assetPath);
+        if (!record)
+        {
+            stalePaths.insert(assetPath);
+            continue;
+        }
+
+        std::optional<NLS::Core::Assets::ArtifactManifest> manifest;
+        {
+            std::lock_guard manifestLock(m_manifestMutex);
+            const auto found = m_manifestsBySource.find(record->id);
+            if (found != m_manifestsBySource.end())
+                manifest = found->second;
+        }
+        if (!manifest.has_value())
+        {
+            stalePaths.insert(assetPath);
+            continue;
+        }
+
+        currentPaths.insert(assetPath);
+        auto snapshot = BuildObjectReferencePickerAssetSnapshot(assetPath, *manifest);
+        if (!snapshot.subAssets.empty())
+            rebuiltSnapshots.push_back(std::move(snapshot));
+    }
+
+    std::lock_guard manifestLock(m_manifestMutex);
+    m_objectReferencePickerAssetSnapshots.erase(
+        std::remove_if(
+            m_objectReferencePickerAssetSnapshots.begin(),
+            m_objectReferencePickerAssetSnapshots.end(),
+            [&candidatePaths](const ObjectReferencePickerAssetSnapshot& snapshot)
+            {
+                const auto normalized = NormalizeEditorAssetPath(snapshot.sourceAssetPath);
+                return std::binary_search(candidatePaths.begin(), candidatePaths.end(), normalized);
+            }),
+        m_objectReferencePickerAssetSnapshots.end());
+    for (const auto& stalePath : stalePaths)
+        m_knownCurrentArtifactManifestAssetPaths.erase(stalePath);
+    for (const auto& currentPath : currentPaths)
+        m_knownCurrentArtifactManifestAssetPaths.insert(currentPath);
+    for (auto& snapshot : rebuiltSnapshots)
+        m_objectReferencePickerAssetSnapshots.push_back(std::move(snapshot));
+    std::sort(
+        m_objectReferencePickerAssetSnapshots.begin(),
+        m_objectReferencePickerAssetSnapshots.end(),
+        [](const ObjectReferencePickerAssetSnapshot& left, const ObjectReferencePickerAssetSnapshot& right)
+        {
+            return left.sourceAssetPath < right.sourceAssetPath;
+        });
+}
+
+std::vector<ObjectReferencePickerAssetSnapshot> AssetDatabaseFacade::GetObjectReferencePickerAssetSnapshots() const
+{
+    if (!IsEditorMode())
+        return {};
+
+    std::lock_guard manifestLock(m_manifestMutex);
+    return m_objectReferencePickerAssetSnapshots;
+}
+
+std::vector<ObjectReferencePickerAssetSnapshot> AssetDatabaseFacade::GetFreshObjectReferencePickerAssetSnapshots() const
+{
+    if (!IsEditorMode())
+        return {};
+
+    PruneStaleObjectReferencePickerSnapshots();
+
+    std::lock_guard manifestLock(m_manifestMutex);
+    return m_objectReferencePickerAssetSnapshots;
 }
 
 std::optional<std::string> AssetDatabaseFacade::TryGetRootRelativeAssetPath(
@@ -2831,18 +3063,10 @@ std::filesystem::path AssetDatabaseFacade::ResolveArtifactPathForRecord(
 
     for (const auto& candidate : candidates)
     {
-        if (!candidate.empty() &&
-            IsPathInsideEditorAssetRoot(candidate, artifactRoot) &&
-            std::filesystem::exists(candidate))
+        if (IsPhysicalRegularFileInsideEditorAssetRoot(candidate, artifactRoot))
         {
             return candidate;
         }
-    }
-
-    for (const auto& candidate : candidates)
-    {
-        if (!candidate.empty() && IsPathInsideEditorAssetRoot(candidate, artifactRoot))
-            return candidate;
     }
 
     return {};
@@ -2935,12 +3159,91 @@ void AssetDatabaseFacade::LoadPersistedArtifactManifests()
         loadedManifests[manifest->sourceAssetId] = std::move(*manifest);
     }
 
-    std::lock_guard manifestLock(m_manifestMutex);
-    for (const auto& sourceId : visitedSourceIds)
-        m_manifestsBySource.erase(sourceId);
-    for (auto& [sourceId, manifest] : loadedManifests)
     {
-        m_manifestsBySource[sourceId] = std::move(manifest);
+        std::lock_guard manifestLock(m_manifestMutex);
+        for (const auto& sourceId : visitedSourceIds)
+        {
+            m_manifestsBySource.erase(sourceId);
+            const auto path = m_editorPathById.find(sourceId);
+            if (path != m_editorPathById.end())
+                RemoveKnownCurrentArtifactManifestSnapshotForAssetPathLocked(path->second);
+        }
+        for (auto& [sourceId, manifest] : loadedManifests)
+            m_manifestsBySource[sourceId] = std::move(manifest);
+    }
+
+    RefreshKnownCurrentArtifactManifestSnapshot();
+}
+
+void AssetDatabaseFacade::RefreshKnownCurrentArtifactManifestSnapshot()
+{
+    struct Candidate
+    {
+        std::string assetPath;
+        NLS::Core::Assets::AssetId sourceId;
+    };
+
+    std::vector<Candidate> candidates;
+    {
+        std::lock_guard manifestLock(m_manifestMutex);
+        candidates.reserve(m_manifestsBySource.size());
+        for (const auto& [sourceId, _] : m_manifestsBySource)
+        {
+            const auto found = m_editorPathById.find(sourceId);
+            if (found != m_editorPathById.end())
+                candidates.push_back({found->second, sourceId});
+        }
+    }
+
+    std::unordered_set<std::string> knownCurrentPaths;
+    std::vector<ObjectReferencePickerAssetSnapshot> snapshots;
+    for (const auto& candidate : candidates)
+    {
+        const auto normalized = NormalizeEditorAssetPath(candidate.assetPath);
+        if (normalized.empty() || !IsArtifactManifestCurrentForAssetPath(normalized))
+            continue;
+
+        std::optional<NLS::Core::Assets::ArtifactManifest> manifest;
+        {
+            std::lock_guard manifestLock(m_manifestMutex);
+            const auto found = m_manifestsBySource.find(candidate.sourceId);
+            if (found != m_manifestsBySource.end())
+                manifest = found->second;
+        }
+        if (!manifest.has_value())
+            continue;
+
+        knownCurrentPaths.insert(normalized);
+        auto snapshot = BuildObjectReferencePickerAssetSnapshot(normalized, *manifest);
+        if (!snapshot.subAssets.empty())
+            snapshots.push_back(std::move(snapshot));
+    }
+
+    std::lock_guard manifestLock(m_manifestMutex);
+    ReplaceKnownCurrentArtifactManifestSnapshotsLocked(std::move(knownCurrentPaths), std::move(snapshots));
+}
+
+void AssetDatabaseFacade::UpdateKnownCurrentArtifactManifestForAssetPath(const std::string& assetPath)
+{
+    const auto normalized = NormalizeEditorAssetPath(assetPath);
+    if (normalized.empty())
+        return;
+
+    if (IsArtifactManifestCurrentForAssetPath(normalized))
+    {
+        const auto* record = FindRecordByEditorAssetPath(normalized);
+        if (!record)
+            return;
+
+        std::lock_guard manifestLock(m_manifestMutex);
+        const auto manifest = m_manifestsBySource.find(record->id);
+        if (manifest != m_manifestsBySource.end())
+            PublishKnownCurrentArtifactManifestSnapshotForAssetPathLocked(normalized, manifest->second);
+    }
+    else
+    {
+        std::lock_guard manifestLock(m_manifestMutex);
+        RemoveKnownCurrentArtifactManifestSnapshotForAssetPathLocked(normalized);
     }
 }
 

@@ -161,6 +161,23 @@ inline bool IsPhysicalPathInsideEditorAssetRoot(
         IsPathInsideEditorAssetRoot(*canonicalCandidate, *canonicalRoot);
 }
 
+inline bool IsPhysicalRegularFileInsideEditorAssetRoot(
+    const std::filesystem::path& candidate,
+    const std::filesystem::path& root)
+{
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(candidate, error);
+    if (error ||
+        !std::filesystem::is_regular_file(status) ||
+        std::filesystem::is_symlink(status))
+    {
+        return false;
+    }
+
+    return IsPathInsideEditorAssetRoot(candidate, root) &&
+        IsPhysicalPathInsideEditorAssetRoot(candidate, root);
+}
+
 inline std::optional<size_t> ExistingAncestorDepthInsideRoot(
     std::filesystem::path candidate,
     const std::filesystem::path& root)

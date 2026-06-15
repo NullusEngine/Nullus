@@ -72,8 +72,17 @@ struct TextureArtifactData
     std::vector<TextureArtifactSubresource> subresources;
 };
 
+struct TextureArtifactHeaderPreview
+{
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+};
+
 NLS_RENDER_API std::vector<uint8_t> SerializeTextureArtifact(const TextureArtifactData& texture);
 NLS_RENDER_API std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<uint8_t>& bytes);
+NLS_RENDER_API std::optional<TextureArtifactHeaderPreview> ReadTextureArtifactHeaderPreview(
+    const std::filesystem::path& path,
+    uint64_t maxMetadataBytes = UINT64_MAX);
 NLS_RENDER_API std::optional<TextureArtifactData> LoadTextureArtifact(const std::filesystem::path& path);
 NLS_RENDER_API std::optional<TextureArtifactData> LoadTextureArtifact(
     const std::filesystem::path& path,

@@ -214,7 +214,7 @@ namespace
 			return;
 		}
 
-		lightingMaterial.Set<bool>("u_UseProceduralSky", true);
+		lightingMaterial.Set<bool>("u_UseProceduralSky", false);
 		lightingMaterial.Set<NLS::Maths::Vector3>("u_SkyTint", NLS::Maths::Vector3(0.50f, 0.62f, 0.82f));
 		lightingMaterial.Set<NLS::Maths::Vector3>("u_GroundColor", NLS::Maths::Vector3(0.46f, 0.44f, 0.42f));
 		lightingMaterial.Set<NLS::Maths::Vector3>("u_SunDirection", NLS::Maths::Vector3(-0.35f, 0.78f, -0.18f));

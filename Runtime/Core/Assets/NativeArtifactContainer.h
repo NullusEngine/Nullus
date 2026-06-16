@@ -18,6 +18,7 @@ struct NativeArtifactMetadata
     uint32_t schemaVersion = 1u;
     AssetId sourceAssetId;
     std::string subAssetKey;
+    std::string displayName;
     std::string importerId;
     uint32_t importerVersion = 0u;
     std::string targetPlatform;

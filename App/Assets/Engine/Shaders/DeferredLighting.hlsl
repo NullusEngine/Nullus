@@ -129,7 +129,10 @@ float4 PSMain(VSOutput input) : SV_Target0
         if (u_LightGridLightingParams.w > 0.5f)
             return u_SkyboxCube.Sample(u_LinearWrapSampler, skyDirection);
 
-        return float4(EvalProceduralSky(skyDirection), 1.0f);
+        if (u_UseProceduralSky != 0)
+            return float4(EvalProceduralSky(skyDirection), 1.0f);
+
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
     const float4 albedo = u_GBufferAlbedo.Sample(u_LinearWrapSampler, input.TexCoord);

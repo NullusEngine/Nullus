@@ -1,7 +1,6 @@
 #include "Core/EditorResourceCatalog.h"
 
 #include <algorithm>
-#include <cctype>
 #include <system_error>
 #include <utility>
 
@@ -9,15 +8,6 @@ namespace NLS::Editor::Core
 {
 namespace
 {
-    std::string ToLowerAscii(std::string_view text)
-    {
-        std::string lowered;
-        lowered.reserve(text.size());
-        for (const char character : text)
-            lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-        return lowered;
-    }
-
     EditorResourceRecord MakeRecord(
         std::string id,
         EditorResourceType type,
@@ -146,10 +136,7 @@ void EditorResourceCatalog::SetDevelopmentAssetsRoot(std::filesystem::path asset
 bool EditorResourceCatalog::AddRecord(EditorResourceRecord record)
 {
     if (record.id.empty() ||
-        m_indexById.find(record.id) != m_indexById.end() ||
-        ContainsUnityToken(record.id) ||
-        ContainsUnityToken(record.developmentPath.generic_string()) ||
-        ContainsUnityToken(record.packagedPath.generic_string()))
+        m_indexById.find(record.id) != m_indexById.end())
     {
         return false;
     }
@@ -217,12 +204,6 @@ bool EditorResourceCatalog::IsContainedRelativePath(const std::filesystem::path&
             return false;
     }
     return true;
-}
-
-bool EditorResourceCatalog::ContainsUnityToken(std::string_view text)
-{
-    const auto lowered = ToLowerAscii(text);
-    return lowered.find("unity") != std::string::npos;
 }
 
 std::filesystem::path EditorResourceCatalog::NormalizePath(std::filesystem::path path)

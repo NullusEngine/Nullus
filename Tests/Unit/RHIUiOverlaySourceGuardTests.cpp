@@ -279,6 +279,18 @@ TEST(RHIUiOverlaySourceGuardTests, ImageWidgetsPreferPackedUiTextureIdentityWhen
     EXPECT_EQ(buttonBody.find("nativeHandle."), std::string::npos);
 }
 
+TEST(RHIUiOverlaySourceGuardTests, ButtonImageHonorsDisabledState)
+{
+    const auto buttonSource = ReadSourceText(RepoPath("Runtime/UI/Widgets/Buttons/ButtonImage.cpp"));
+    const auto buttonBody = ExtractFunctionBody(buttonSource, "void ButtonImage::_Draw_Impl()");
+
+    EXPECT_NE(buttonBody.find("const bool wasDisabled = disabled"), std::string::npos);
+    EXPECT_NE(buttonBody.find("ImGui::BeginDisabled()"), std::string::npos);
+    EXPECT_NE(buttonBody.find("ImGui::EndDisabled()"), std::string::npos);
+    EXPECT_LT(buttonBody.find("ImGui::BeginDisabled()"), buttonBody.find("ImGui::ImageButton"));
+    EXPECT_LT(buttonBody.find("ImGui::ImageButton"), buttonBody.find("ImGui::EndDisabled()"));
+}
+
 TEST(RHIUiOverlaySourceGuardTests, DirectImageCallSitesUseUnifiedTextureIdResolver)
 {
     const auto editorTopBarSource = ReadSourceText(RepoPath("Project/Editor/Panels/EditorTopBar.cpp"));
@@ -358,4 +370,61 @@ TEST(RHIUiOverlaySourceGuardTests, DriverUIAccessExposesUiOverlayResourceLifecyc
         "void DriverUIAccess::NotifyUiOverlaySwapchainWillResize(");
     EXPECT_EQ(resizeBody.find("ReleaseRetiredResources"), std::string::npos);
     EXPECT_EQ(resizeBody.find("ReleaseRetiredTextureViews"), std::string::npos);
+}
+
+TEST(RHIUiOverlaySourceGuardTests, ToolbarUsesLegacyImageButtonsAndRawTextureIds)
+{
+    const auto toolbarSource = ReadSourceText(RepoPath("Project/Editor/Panels/Toolbar.cpp"));
+    const auto toolbarHeader = ReadSourceText(RepoPath("Project/Editor/Panels/Toolbar.h"));
+    const auto editorResourcesSource = ReadSourceText(RepoPath("Project/Editor/Core/EditorResources.cpp"));
+
+    EXPECT_NE(toolbarHeader.find("ButtonImage.h"), std::string::npos);
+    EXPECT_NE(toolbarHeader.find("ButtonImage*"), std::string::npos);
+    EXPECT_NE(toolbarSource.find("makeToolbarTextureView"), std::string::npos);
+    EXPECT_NE(toolbarSource.find("Button_Play"), std::string::npos);
+    EXPECT_NE(toolbarSource.find("Button_Pause"), std::string::npos);
+    EXPECT_NE(toolbarSource.find("Button_Stop"), std::string::npos);
+    EXPECT_NE(toolbarSource.find("Button_Next"), std::string::npos);
+    EXPECT_NE(toolbarSource.find("Button_Refresh"), std::string::npos);
+    EXPECT_NE(toolbarSource.find("Maths::Vector2{ 20, 20 }"), std::string::npos);
+
+    EXPECT_NE(editorResourcesSource.find("BUTTON_PLAY"), std::string::npos);
+    EXPECT_NE(editorResourcesSource.find("BUTTON_PAUSE"), std::string::npos);
+    EXPECT_NE(editorResourcesSource.find("BUTTON_STOP"), std::string::npos);
+    EXPECT_NE(editorResourcesSource.find("BUTTON_NEXT"), std::string::npos);
+    EXPECT_NE(editorResourcesSource.find("BUTTON_REFRESH"), std::string::npos);
+
+    ExpectNoNeedles(
+        toolbarSource,
+        {
+            "ICON_FA_PLAY",
+            "ICON_FA_PAUSE",
+            "ICON_FA_STOP",
+            "ICON_FA_STEP_FORWARD",
+            "ICON_FA_REFRESH",
+            "EnsureFontAwesomeIconFontLoaded",
+        },
+        "Project/Editor/Panels/Toolbar.cpp");
+}
+
+TEST(RHIUiOverlaySourceGuardTests, EditorCursorImagesUseCurrentEditorCursorResourceDirectory)
+{
+    const auto deviceSource = ReadSourceText(RepoPath("Runtime/Platform/Windowing/Context/Device.cpp"));
+
+    EXPECT_NE(deviceSource.find("\"Editor\" / \"Cursors\" / \"windows\""), std::string::npos);
+    EXPECT_NE(deviceSource.find("\"FPSView.png\""), std::string::npos);
+    EXPECT_NE(deviceSource.find("\"PanView.png\""), std::string::npos);
+    EXPECT_NE(deviceSource.find("\"OrbitView.png\""), std::string::npos);
+    EXPECT_NE(deviceSource.find("\"SlideArrow.png\""), std::string::npos);
+    EXPECT_EQ(deviceSource.find("\"Icon\" / \"cursors\""), std::string::npos);
+
+    const std::vector<std::filesystem::path> cursorFiles = {
+        RepoPath("App/Assets/Editor/Cursors/windows/FPSView.png"),
+        RepoPath("App/Assets/Editor/Cursors/windows/PanView.png"),
+        RepoPath("App/Assets/Editor/Cursors/windows/OrbitView.png"),
+        RepoPath("App/Assets/Editor/Cursors/windows/SlideArrow.png"),
+    };
+
+    for (const auto& cursorFile : cursorFiles)
+        EXPECT_TRUE(std::filesystem::is_regular_file(cursorFile)) << "Missing editor cursor image: " << cursorFile.string();
 }

@@ -23,6 +23,12 @@ namespace NLS::Engine::Components
         using Material = Render::Resources::Material;
         using TextureCube = Render::Resources::TextureCube;
 
+        ENUM(SkyMode)
+        {
+            CubeMap = 0,
+            Procedural = 1
+        };
+
 		/**
 		* Constructor
 		*/
@@ -33,6 +39,14 @@ namespace NLS::Engine::Components
 		 */
         FUNCTION()
 		void SetCubeMap(TextureCube* cubmap);
+
+        PROPERTY(skyMode)
+        FUNCTION()
+        SkyMode GetSkyMode() const { return mSkyMode; }
+
+        PROPERTY(skyMode)
+        FUNCTION()
+        void SetSkyMode(SkyMode mode);
 
         /**
 		 * @brief
@@ -48,7 +62,11 @@ namespace NLS::Engine::Components
 		Material* GetMaterial() const { return mMaterial; }
 
 	private:
+        void ApplySkyMode();
+
 		Mesh* mMesh = nullptr;
 		Material* mMaterial = nullptr;
+        TextureCube* mCubeMap = nullptr;
+        SkyMode mSkyMode = SkyMode::Procedural;
 	};
 }

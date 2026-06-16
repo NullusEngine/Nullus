@@ -84,9 +84,11 @@ namespace NLS::Engine::SceneSystem
 		* @param p_name
 		* @param p_tag
 		*/
-		GameObject& CreateGameObject(const std::string& p_name, const std::string& p_tag = "");
+			GameObject& CreateGameObject(const std::string& p_name, const std::string& p_tag = "");
 
-		bool AddGameObject(GameObject* gameObject);
+			GameObject& CreateEditorTransientGameObject(const std::string& p_name, const std::string& p_tag = "");
+
+			bool AddGameObject(GameObject* gameObject);
 
 		/**
 		* Destroy and GameObject and return true on success

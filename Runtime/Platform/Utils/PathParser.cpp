@@ -103,7 +103,7 @@ NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std:
 	else if (ext == "mat" || ext == "nmat")										return EFileType::MATERIAL;
 	else if (ext == "wav" || ext == "mp3" || ext == "ogg")						return EFileType::SOUND;
 	else if (ext == "scene" || ext == "nscene")									return EFileType::SCENE;
-	else if (ext == "prefab")													return EFileType::PREFAB;
+	else if (ext == "prefab" || ext == "nprefab")								return EFileType::PREFAB;
 	else if (ext == "lua" || ext == "cs" || ext == "py")						return EFileType::SCRIPT;
 	else if (ext == "ttf")														return EFileType::FONT;
 

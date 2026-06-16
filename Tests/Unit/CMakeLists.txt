@@ -92,6 +92,7 @@ set_target_properties(NullusUnitTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 nls_copy_shared_runtime_to_target(NullusUnitTests)
+nls_copy_editor_resources_to_target(NullusUnitTests)
 
 add_test(NAME NullusUnitTests COMMAND NullusUnitTests)
 set_tests_properties(NullusUnitTests PROPERTIES

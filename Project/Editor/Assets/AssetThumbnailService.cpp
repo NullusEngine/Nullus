@@ -2,6 +2,7 @@
 
 #include "Assets/AssetMeta.h"
 #include "Assets/ArtifactLoadTelemetry.h"
+#include "Assets/EditorThumbnailPreviewRenderer.h"
 #include "Assets/EditorAssetManifestJson.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/NativeArtifactContainer.h"
@@ -44,6 +45,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
 #include <vector>
@@ -56,9 +58,6 @@ using AssetThumbnailCancelToken = std::weak_ptr<AssetThumbnailGenerationCancelTo
 using AssetThumbnailGenerator = AssetThumbnailServiceResult (*)(const AssetThumbnailRequest&, const AssetThumbnailCancelToken&);
 
 AssetThumbnailServiceResult GenerateTextureThumbnail(const AssetThumbnailRequest& request, const AssetThumbnailCancelToken& cancelToken);
-AssetThumbnailServiceResult GenerateMaterialThumbnail(const AssetThumbnailRequest& request, const AssetThumbnailCancelToken& cancelToken);
-AssetThumbnailServiceResult GenerateModelThumbnail(const AssetThumbnailRequest& request, const AssetThumbnailCancelToken& cancelToken);
-AssetThumbnailServiceResult GeneratePrefabThumbnail(const AssetThumbnailRequest& request, const AssetThumbnailCancelToken& cancelToken);
 
 struct AssetThumbnailKindPolicy
 {
@@ -71,23 +70,27 @@ struct AssetThumbnailKindPolicy
 constexpr std::array<AssetThumbnailKindPolicy, kAssetThumbnailKindCount> kAssetThumbnailKindPolicies {{
     { AssetThumbnailKind::Icon, "editor.icon.asset.default", nullptr, "thumbnail-generation-unsupported" },
     { AssetThumbnailKind::Texture, "editor.icon.asset.texture", GenerateTextureThumbnail, "thumbnail-generation-unsupported" },
-    { AssetThumbnailKind::MaterialSphere, "editor.icon.asset.material", GenerateMaterialThumbnail, "thumbnail-material-preview-generation-failed" },
-    { AssetThumbnailKind::ModelPreview, "editor.icon.asset.mesh", GenerateModelThumbnail, "thumbnail-model-preview-generation-failed" },
-    { AssetThumbnailKind::PrefabPreview, "editor.icon.asset.prefab", GeneratePrefabThumbnail, "thumbnail-prefab-preview-generation-failed" },
+    { AssetThumbnailKind::MaterialSphere, "editor.icon.asset.material", nullptr, "thumbnail-material-gpu-preview-required" },
+    { AssetThumbnailKind::ModelPreview, "editor.icon.asset.mesh", nullptr, "thumbnail-model-gpu-preview-required" },
+    { AssetThumbnailKind::PrefabPreview, "editor.icon.asset.prefab", nullptr, "thumbnail-prefab-gpu-preview-required" },
     { AssetThumbnailKind::GenericPreview, "editor.icon.asset.default", nullptr, "thumbnail-generation-unsupported" }
 }};
 
-constexpr size_t kMaxMeshPreviewVertices = 20000u;
-constexpr size_t kMaxMeshPreviewTriangles = 8000u;
+constexpr size_t kMaxMeshPreviewLoadedVertices = 240000u;
+constexpr size_t kMaxMeshPreviewLoadedIndices = 720000u;
+constexpr size_t kMaxMeshPreviewRenderedTriangles = 12000u;
+constexpr float kUnityMeshPreviewFieldOfViewDegrees = 30.0f;
+constexpr float kUnityMeshPreviewYawDegrees = -120.0f;
+constexpr float kUnityMeshPreviewPitchDegrees = 20.0f;
+constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
 constexpr size_t kMaxObsoleteThumbnailGenerationInFlightRequests = 2u;
 constexpr size_t kMaxThumbnailGenerationTotalInFlightSlots =
     kMaxObsoleteThumbnailGenerationInFlightRequests + 1u;
 constexpr uint64_t kMaxSourceThumbnailImageBytes = 128ull * 1024ull * 1024ull;
 constexpr uint64_t kMaxSourceThumbnailPixels = 4096ull * 4096ull;
+constexpr uint32_t kMaxTextureThumbnailGenerationSize = 96u;
 constexpr uint64_t kMaxStructurePreviewArtifactPayloadBytes = 1024ull * 1024ull;
 constexpr uint64_t kMaxThumbnailPreviewNativeArtifactFileBytes = 128ull * 1024ull * 1024ull;
-constexpr const char* kMeshPreviewBudgetExceededDiagnostic =
-    "thumbnail-model-mesh-preview-budget-exceeded";
 constexpr const char* kSourcePreviewBudgetExceededDiagnostic =
     "thumbnail-source-preview-budget-exceeded";
 constexpr const char* kMaterialPreviewBudgetExceededDiagnostic =
@@ -142,6 +145,9 @@ AssetThumbnailKind ThumbnailKindForItem(const AssetBrowserItem& item)
     case AssetBrowserItemType::Material:
         return AssetThumbnailKind::MaterialSphere;
     case AssetBrowserItemType::Model:
+        if (item.kind == AssetBrowserItemKind::SourceAsset)
+            return AssetThumbnailKind::PrefabPreview;
+        return AssetThumbnailKind::ModelPreview;
     case AssetBrowserItemType::Mesh:
         return AssetThumbnailKind::ModelPreview;
     case AssetBrowserItemType::Prefab:
@@ -161,6 +167,18 @@ bool CanGenerateThumbnail(const AssetThumbnailKind kind)
 {
     const auto* policy = PolicyForKind(kind);
     return policy != nullptr && policy->generator != nullptr;
+}
+
+bool SupportsGpuThumbnailPreview(const AssetThumbnailKind kind)
+{
+    return kind == AssetThumbnailKind::MaterialSphere ||
+        kind == AssetThumbnailKind::ModelPreview ||
+        kind == AssetThumbnailKind::PrefabPreview;
+}
+
+bool CanRequestThumbnailGeneration(const AssetThumbnailKind kind)
+{
+    return CanGenerateThumbnail(kind) || SupportsGpuThumbnailPreview(kind);
 }
 
 AssetThumbnailGenerator GeneratorForKind(const AssetThumbnailKind kind)
@@ -185,22 +203,22 @@ bool IsThumbnailGenerationCancelled(const AssetThumbnailCancelToken& cancelToken
 
 bool IsRetryableThumbnailFailureDiagnostic(const std::string& diagnostic)
 {
+    if (diagnostic == "thumbnail-gpu-preview-empty-frame")
+        return false;
+    if (diagnostic.rfind("thumbnail-gpu-preview-", 0u) == 0u)
+        return true;
     return diagnostic == "thumbnail-material-preview-hook-unavailable" ||
         diagnostic == "thumbnail-model-preview-hook-unavailable" ||
         diagnostic == "thumbnail-prefab-preview-hook-unavailable" ||
+        diagnostic == "thumbnail-material-gpu-preview-required" ||
+        diagnostic == "thumbnail-model-gpu-preview-required" ||
+        diagnostic == "thumbnail-prefab-gpu-preview-required" ||
         diagnostic == "thumbnail-material-artifact-missing" ||
         diagnostic == "thumbnail-prefab-artifact-missing" ||
         diagnostic == "thumbnail-material-preview-generation-failed" ||
         diagnostic == "thumbnail-model-preview-generation-failed" ||
         diagnostic == "thumbnail-prefab-preview-generation-failed" ||
         diagnostic == "thumbnail-generation-worker-start-failed";
-}
-
-bool IsMeshPreviewWithinBudget(const NLS::Render::Assets::MeshArtifactData& mesh)
-{
-    const auto triangleCount = mesh.indices.size() / 3u;
-    return mesh.vertices.size() <= kMaxMeshPreviewVertices &&
-        triangleCount <= kMaxMeshPreviewTriangles;
 }
 
 bool IsTextureThumbnailSourceExtension(const std::filesystem::path& path)
@@ -460,10 +478,17 @@ bool ImageDimensionsExceedPreviewBudget(const ImageHeaderDimensions& dimensions)
     return pixels > kMaxSourceThumbnailPixels;
 }
 
-bool MeshHeaderPreviewExceedsBudget(const NLS::Render::Assets::MeshArtifactHeaderPreview& header)
+std::string ToLowerAscii(std::string value)
 {
-    return header.vertexCount > kMaxMeshPreviewVertices ||
-        header.indexCount / 3u > kMaxMeshPreviewTriangles;
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](const unsigned char character)
+        {
+            return static_cast<char>(std::tolower(character));
+        });
+    return value;
 }
 
 std::vector<uint8_t> ConvertToRgba8(const NLS::Image& image)
@@ -520,6 +545,21 @@ struct DownsampledThumbnail
     std::vector<uint8_t> pixels;
     uint32_t width = 0u;
     uint32_t height = 0u;
+};
+
+struct ThumbnailTextureSampleData
+{
+    std::vector<uint8_t> pixels;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    uint32_t rowPitch = 0u;
+    bool flipV = false;
+};
+
+struct MaterialTextureReference
+{
+    std::string resourcePath;
+    std::string textureKey;
 };
 
 DownsampledThumbnail DownsampleRgba8ToThumbnail(
@@ -583,6 +623,62 @@ DownsampledThumbnail DownsampleImageToThumbnail(
         static_cast<uint32_t>(sourceHeight),
         static_cast<uint32_t>(sourceWidth) * 4u,
         requestedSize);
+}
+
+uint32_t GetTextureThumbnailGenerationSize(const AssetThumbnailRequest& request)
+{
+    return (std::min)(std::max(1u, request.requestedSize), kMaxTextureThumbnailGenerationSize);
+}
+
+bool IsRgba8TextureArtifactMipUsable(const NLS::Render::Assets::TextureArtifactMip& mip)
+{
+    return mip.width > 0u &&
+        mip.height > 0u &&
+        mip.rowPitch >= mip.width * 4u &&
+        !mip.pixels.empty();
+}
+
+const NLS::Render::Assets::TextureArtifactMip* SelectTextureThumbnailMip(
+    const NLS::Render::Assets::TextureArtifactData& texture,
+    const uint32_t targetSize)
+{
+    const NLS::Render::Assets::TextureArtifactMip* best = nullptr;
+    uint64_t bestPixels = 0u;
+    const auto minUsableDimension = std::max(1u, targetSize);
+
+    for (const auto& mip : texture.mips)
+    {
+        if (!IsRgba8TextureArtifactMipUsable(mip))
+            continue;
+
+        const auto pixels = static_cast<uint64_t>(mip.width) * static_cast<uint64_t>(mip.height);
+        const auto coversTarget = mip.width >= minUsableDimension || mip.height >= minUsableDimension;
+        if (!best)
+        {
+            best = &mip;
+            bestPixels = pixels;
+            continue;
+        }
+
+        const auto bestCoversTarget = best->width >= minUsableDimension || best->height >= minUsableDimension;
+        if (coversTarget != bestCoversTarget)
+        {
+            if (coversTarget)
+            {
+                best = &mip;
+                bestPixels = pixels;
+            }
+            continue;
+        }
+
+        if ((coversTarget && pixels < bestPixels) || (!coversTarget && pixels > bestPixels))
+        {
+            best = &mip;
+            bestPixels = pixels;
+        }
+    }
+
+    return best;
 }
 
 std::filesystem::path ResolveThumbnailSourcePath(const AssetThumbnailRequest& request)
@@ -892,6 +988,32 @@ AssetThumbnailServiceResult WriteThumbnailPngResult(
     return result;
 }
 
+AssetThumbnailServiceResult WriteRgbaThumbnailResult(
+    const AssetThumbnailRequest& request,
+    const AssetThumbnailCacheEvaluation& evaluation,
+    const uint8_t* pixels,
+    const uint32_t width,
+    const uint32_t height,
+    const std::string& emptyDiagnostic,
+    const AssetThumbnailCancelToken& cancelToken)
+{
+    DownsampledThumbnail thumbnail;
+    if (pixels != nullptr && width > 0u && height > 0u)
+    {
+        thumbnail.pixels.assign(
+            pixels,
+            pixels + static_cast<size_t>(width) * height * 4u);
+        thumbnail.width = width;
+        thumbnail.height = height;
+    }
+    return WriteThumbnailPngResult(
+        request,
+        evaluation,
+        thumbnail,
+        emptyDiagnostic,
+        cancelToken);
+}
+
 std::vector<uint8_t> ReadAllBytes(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
@@ -1016,6 +1138,83 @@ std::optional<std::filesystem::path> ResolveArtifactPathForPreview(
     return resolved;
 }
 
+std::optional<std::filesystem::path> ResolveSourceMaterialPathForPreview(
+    const AssetThumbnailRequest& request,
+    const std::string& artifactPath)
+{
+    if (artifactPath.empty())
+        return std::nullopt;
+
+    const auto rawPath = std::filesystem::path(artifactPath).lexically_normal();
+    if (rawPath.extension() != ".mat")
+        return std::nullopt;
+
+    const auto assetsRoot = NLS::Core::Assets::NormalizeAssetPath(request.projectRoot / "Assets");
+    if (assetsRoot.empty())
+        return std::nullopt;
+
+    const auto candidate = rawPath.is_absolute()
+        ? rawPath
+        : request.projectRoot / rawPath;
+    const auto normalized = NLS::Core::Assets::NormalizeAssetPath(candidate);
+    if (normalized.empty() ||
+        !IsPhysicalRegularFileInsideEditorAssetRoot(normalized, assetsRoot))
+    {
+        return std::nullopt;
+    }
+    return normalized;
+}
+
+std::optional<std::filesystem::path> ResolveSourceMaterialPathForPreview(
+    const AssetThumbnailRequest& request)
+{
+    if (auto resolved = ResolveSourceMaterialPathForPreview(request, request.artifactPath);
+        resolved.has_value())
+    {
+        return resolved;
+    }
+    return ResolveSourceMaterialPathForPreview(request, request.sourceAssetPath);
+}
+
+bool IsGpuPreviewClearFrame(
+    const std::vector<uint8_t>& rgbaPixels,
+    const uint32_t width,
+    const uint32_t height)
+{
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    if (pixelCount == 0u || rgbaPixels.size() < pixelCount * 4u)
+        return true;
+
+    const uint8_t firstR = rgbaPixels[0u];
+    const uint8_t firstG = rgbaPixels[1u];
+    const uint8_t firstB = rgbaPixels[2u];
+    const uint8_t firstA = rgbaPixels[3u];
+    if (firstA != 0u)
+        return false;
+
+    for (size_t pixel = 0u; pixel < pixelCount; ++pixel)
+    {
+        const uint8_t r = rgbaPixels[pixel * 4u + 0u];
+        const uint8_t g = rgbaPixels[pixel * 4u + 1u];
+        const uint8_t b = rgbaPixels[pixel * 4u + 2u];
+        const uint8_t a = rgbaPixels[pixel * 4u + 3u];
+        if (r != firstR || g != firstG || b != firstB || a != firstA)
+            return false;
+    }
+    return true;
+}
+
+bool PreviewArtifactPathResolvesForRequest(
+    const AssetThumbnailRequest& request,
+    const std::string& artifactPath)
+{
+    if (ResolveArtifactPathForPreview(request, artifactPath).has_value())
+        return true;
+
+    return request.kind == AssetThumbnailKind::MaterialSphere &&
+        ResolveSourceMaterialPathForPreview(request, artifactPath).has_value();
+}
+
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadThumbnailArtifactManifest(
     const AssetThumbnailRequest& request)
 {
@@ -1039,18 +1238,300 @@ std::optional<NLS::Core::Assets::ArtifactManifest> LoadThumbnailArtifactManifest
     return ParseArtifactManifestJson(root, true);
 }
 
-std::optional<std::filesystem::path> ResolveFirstMeshArtifactPath(
-    const AssetThumbnailRequest& request)
+std::string GpuPreviewArtifactPathInvalidDiagnostic(const AssetThumbnailKind kind)
 {
-    if (const auto path = ResolveArtifactPathForPreview(request, request.artifactPath);
-        path.has_value() && path->extension() == ".nmesh")
+    switch (kind)
     {
-        return path;
+    case AssetThumbnailKind::MaterialSphere:
+        return "thumbnail-material-artifact-path-invalid";
+    case AssetThumbnailKind::PrefabPreview:
+        return "thumbnail-prefab-artifact-path-invalid";
+    case AssetThumbnailKind::ModelPreview:
+        return "thumbnail-model-mesh-artifact-path-invalid";
+    default:
+        return "thumbnail-artifact-path-invalid";
+    }
+}
+
+std::optional<std::string> ValidateGpuPreviewRequestArtifactPaths(const AssetThumbnailRequest& request)
+{
+    if (!SupportsGpuThumbnailPreview(request.kind))
+        return std::nullopt;
+
+    if (!request.artifactPath.empty() &&
+        !ResolveArtifactPathForPreview(request, request.artifactPath).has_value() &&
+        !(request.kind == AssetThumbnailKind::MaterialSphere &&
+            ResolveSourceMaterialPathForPreview(request, request.artifactPath).has_value()))
+    {
+        return GpuPreviewArtifactPathInvalidDiagnostic(request.kind);
     }
 
     const auto manifest = LoadThumbnailArtifactManifest(request);
     if (!manifest.has_value())
         return std::nullopt;
+
+    auto validateArtifactPath = [&request](const NLS::Core::Assets::ImportedArtifact& artifact)
+        -> std::optional<std::string>
+    {
+        if (artifact.artifactPath.empty() ||
+            PreviewArtifactPathResolvesForRequest(request, artifact.artifactPath))
+        {
+            return std::nullopt;
+        }
+        return GpuPreviewArtifactPathInvalidDiagnostic(request.kind);
+    };
+
+    if (!request.subAssetKey.empty())
+    {
+        const auto* artifact = manifest->FindSubAsset(request.subAssetKey);
+        if (artifact == nullptr)
+            return std::nullopt;
+
+        const bool matchesRequest =
+            (request.kind == AssetThumbnailKind::MaterialSphere &&
+                artifact->artifactType == NLS::Core::Assets::ArtifactType::Material) ||
+            (request.kind == AssetThumbnailKind::PrefabPreview &&
+                artifact->artifactType == NLS::Core::Assets::ArtifactType::Prefab) ||
+            (request.kind == AssetThumbnailKind::ModelPreview &&
+                artifact->artifactType == NLS::Core::Assets::ArtifactType::Mesh);
+        if (!matchesRequest)
+            return std::nullopt;
+        return validateArtifactPath(*artifact);
+    }
+
+    for (const auto& artifact : manifest->subAssets)
+    {
+        const bool relevant =
+            (request.kind == AssetThumbnailKind::MaterialSphere &&
+                artifact.artifactType == NLS::Core::Assets::ArtifactType::Material) ||
+            (request.kind == AssetThumbnailKind::PrefabPreview &&
+                artifact.artifactType == NLS::Core::Assets::ArtifactType::Prefab) ||
+            (request.kind == AssetThumbnailKind::ModelPreview &&
+                artifact.artifactType == NLS::Core::Assets::ArtifactType::Mesh);
+        if (!relevant || artifact.artifactPath.empty())
+            continue;
+        if (auto diagnostic = validateArtifactPath(artifact);
+            diagnostic.has_value())
+        {
+            return diagnostic;
+        }
+    }
+    return std::nullopt;
+}
+
+const std::optional<NLS::Core::Assets::ArtifactManifest>* LoadThumbnailArtifactManifestCached(
+    const AssetThumbnailRequest& request,
+    AssetThumbnailRequestBuildContext* context)
+{
+    if (context == nullptr)
+        return nullptr;
+
+    const auto key = request.assetId.ToString();
+    auto [iterator, inserted] = context->artifactManifestsByAssetId.emplace(
+        key,
+        std::optional<NLS::Core::Assets::ArtifactManifest> {});
+    if (inserted)
+        iterator->second = LoadThumbnailArtifactManifest(request);
+    return &iterator->second;
+}
+
+const NLS::Core::Assets::ImportedArtifact* FindThumbnailArtifactForItem(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const AssetBrowserItem& item)
+{
+    if (!item.subAssetKey.empty())
+    {
+        if (const auto* subAsset = manifest.FindSubAsset(item.subAssetKey))
+            return subAsset;
+    }
+
+    const auto wantedType = item.type == AssetBrowserItemType::Prefab ||
+            (item.type == AssetBrowserItemType::Model && item.kind == AssetBrowserItemKind::SourceAsset)
+        ? NLS::Core::Assets::ArtifactType::Prefab
+        : item.type == AssetBrowserItemType::Material
+            ? NLS::Core::Assets::ArtifactType::Material
+            : item.type == AssetBrowserItemType::Mesh || item.type == AssetBrowserItemType::Model
+                ? NLS::Core::Assets::ArtifactType::Mesh
+                : NLS::Core::Assets::ArtifactType::Unknown;
+
+    if (const auto* primary = manifest.FindPrimaryArtifact())
+    {
+        if ((wantedType != NLS::Core::Assets::ArtifactType::Unknown && primary->artifactType == wantedType) ||
+            (wantedType == NLS::Core::Assets::ArtifactType::Unknown &&
+                (primary->artifactType == item.artifactType ||
+                    item.artifactType == NLS::Core::Assets::ArtifactType::Unknown)))
+        {
+            return primary;
+        }
+    }
+
+    if (wantedType == NLS::Core::Assets::ArtifactType::Unknown)
+        return nullptr;
+
+    for (const auto& artifact : manifest.subAssets)
+    {
+        if (artifact.artifactType == wantedType)
+            return &artifact;
+    }
+    return nullptr;
+}
+
+bool HasExtension(const std::filesystem::path& path, const char* extension)
+{
+    return ToLowerAscii(path.extension().generic_string()) == extension;
+}
+
+bool IsRgba8TextureArtifactMipUsable(const NLS::Render::Assets::TextureArtifactData& artifact)
+{
+    return artifact.format == NLS::Render::RHI::TextureFormat::RGBA8 &&
+        SelectTextureThumbnailMip(artifact, kMaxTextureThumbnailGenerationSize) != nullptr;
+}
+
+std::string TextureSourceKeyFromSubAssetKey(const std::string& subAssetKey)
+{
+    constexpr std::string_view kPrefix = "texture:";
+    if (subAssetKey.rfind(kPrefix, 0u) != 0u)
+        return {};
+    return subAssetKey.substr(kPrefix.size());
+}
+
+std::optional<std::string> TextureDependencySourcePath(
+    const NLS::Core::Assets::AssetDependencyRecord& dependency,
+    const std::string& textureSourceKey)
+{
+    if (dependency.kind != NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion ||
+        textureSourceKey.empty())
+    {
+        return std::nullopt;
+    }
+
+    const std::string expectedValue = "texture-build:texture:" + textureSourceKey;
+    if (dependency.value != expectedValue)
+        return std::nullopt;
+
+    constexpr std::string_view kSourcePathToken = "sourcePath=";
+    const auto sourceBegin = dependency.hashOrVersion.find(kSourcePathToken);
+    if (sourceBegin == std::string::npos)
+        return std::nullopt;
+
+    const auto valueBegin = sourceBegin + kSourcePathToken.size();
+    auto valueEnd = dependency.hashOrVersion.find('|', valueBegin);
+    if (valueEnd == std::string::npos)
+        valueEnd = dependency.hashOrVersion.size();
+    if (valueEnd <= valueBegin)
+        return std::nullopt;
+
+    auto sourcePath = dependency.hashOrVersion.substr(valueBegin, valueEnd - valueBegin);
+    std::replace(sourcePath.begin(), sourcePath.end(), '\\', '/');
+    while (sourcePath.rfind("./", 0u) == 0u)
+        sourcePath.erase(0u, 2u);
+    return sourcePath.empty() ? std::nullopt : std::optional<std::string>(sourcePath);
+}
+
+std::optional<std::filesystem::path> ResolveTextureSourceDependencyPath(const AssetThumbnailRequest& request)
+{
+    const auto textureSourceKey = TextureSourceKeyFromSubAssetKey(request.subAssetKey);
+    if (textureSourceKey.empty())
+        return std::nullopt;
+    const auto manifest = LoadThumbnailArtifactManifest(request);
+    if (!manifest.has_value())
+        return std::nullopt;
+
+    for (const auto& dependency : manifest->dependencies)
+    {
+        const auto sourcePathText = TextureDependencySourcePath(dependency, textureSourceKey);
+        if (!sourcePathText.has_value())
+            continue;
+
+        const auto sourcePath = std::filesystem::path(*sourcePathText).lexically_normal();
+        std::vector<std::filesystem::path> candidates;
+        if (sourcePath.is_absolute())
+        {
+            candidates.push_back(sourcePath);
+        }
+        else
+        {
+            candidates.push_back(request.projectRoot / sourcePath);
+            if (!request.sourceAssetPath.empty())
+            {
+                candidates.push_back(
+                    request.projectRoot /
+                    std::filesystem::path(request.sourceAssetPath).parent_path() /
+                    sourcePath);
+            }
+        }
+
+        const auto assetRoots = MakeProjectEditorAssetRoots(request.projectRoot);
+        for (const auto& candidate : candidates)
+        {
+            const auto normalized = NLS::Core::Assets::NormalizeAssetPath(candidate);
+            if (normalized.empty() || !IsTextureThumbnailSourceExtension(normalized))
+                continue;
+
+            const auto editorAssetPath = ToEditorAssetPath(assetRoots, normalized);
+            if (!ResolveEditorAssetPath(assetRoots, editorAssetPath).empty())
+                return normalized;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> ResolveTextureSourceDependencyPathForKey(
+    const AssetThumbnailRequest& request,
+    const std::string& textureSourceKey)
+{
+    if (textureSourceKey.empty())
+        return std::nullopt;
+
+    AssetThumbnailRequest textureRequest = request;
+    textureRequest.subAssetKey = "texture:" + textureSourceKey;
+    return ResolveTextureSourceDependencyPath(textureRequest);
+}
+
+bool ShouldFlipMaterialSourceTextureVertically(const AssetThumbnailRequest& request)
+{
+    const auto extension = ToLowerAscii(std::filesystem::path(request.sourceAssetPath).extension().generic_string());
+    return extension != ".gltf" && extension != ".glb";
+}
+
+std::vector<std::filesystem::path> ResolveMeshArtifactPaths(
+    const AssetThumbnailRequest& request)
+{
+    std::vector<std::filesystem::path> paths;
+    const auto directMeshPath = ResolveArtifactPathForPreview(request, request.artifactPath);
+    const bool directPathIsMesh =
+        directMeshPath.has_value() && HasExtension(*directMeshPath, ".nmesh");
+
+    const auto manifest = LoadThumbnailArtifactManifest(request);
+    if (!manifest.has_value())
+    {
+        if (directPathIsMesh)
+            paths.push_back(*directMeshPath);
+        return paths;
+    }
+
+    if (!request.subAssetKey.empty())
+    {
+        for (const auto& artifact : manifest->subAssets)
+        {
+            if (artifact.artifactType != NLS::Core::Assets::ArtifactType::Mesh ||
+                artifact.subAssetKey != request.subAssetKey)
+            {
+                continue;
+            }
+
+            if (auto resolved = ResolveArtifactPathForPreview(request, artifact.artifactPath);
+                resolved.has_value())
+            {
+                paths.push_back(*resolved);
+                return paths;
+            }
+        }
+
+        if (directPathIsMesh)
+            paths.push_back(*directMeshPath);
+        return paths;
+    }
 
     for (const auto& artifact : manifest->subAssets)
     {
@@ -1060,10 +1541,21 @@ std::optional<std::filesystem::path> ResolveFirstMeshArtifactPath(
         if (auto resolved = ResolveArtifactPathForPreview(request, artifact.artifactPath);
             resolved.has_value())
         {
-            return resolved;
+            paths.push_back(*resolved);
         }
     }
-    return std::nullopt;
+    if (paths.empty() && directPathIsMesh)
+        paths.push_back(*directMeshPath);
+    return paths;
+}
+
+std::optional<std::filesystem::path> ResolveFirstMeshArtifactPath(
+    const AssetThumbnailRequest& request)
+{
+    const auto paths = ResolveMeshArtifactPaths(request);
+    if (paths.empty())
+        return std::nullopt;
+    return paths.front();
 }
 
 std::optional<std::filesystem::path> ResolvePreviewArtifactOrSourcePath(
@@ -1239,6 +1731,26 @@ std::optional<std::string> ExtractXmlAttribute(
     return element.substr(valueBegin, valueEnd - valueBegin);
 }
 
+std::string UnescapeXmlAttributeValue(std::string value)
+{
+    auto replaceAll = [&value](const std::string_view from, const std::string_view to)
+    {
+        size_t position = 0u;
+        while ((position = value.find(from, position)) != std::string::npos)
+        {
+            value.replace(position, from.size(), to);
+            position += to.size();
+        }
+    };
+
+    replaceAll("&quot;", "\"");
+    replaceAll("&apos;", "'");
+    replaceAll("&lt;", "<");
+    replaceAll("&gt;", ">");
+    replaceAll("&amp;", "&");
+    return value;
+}
+
 std::array<float, 4u> ExtractMaterialBaseColor(const std::string& xml)
 {
     auto parseNamedValue = [&xml](const std::string& name) -> std::optional<std::array<float, 4u>>
@@ -1282,12 +1794,606 @@ std::array<float, 4u> ExtractMaterialBaseColor(const std::string& xml)
     return {0.72f, 0.74f, 0.78f, 1.0f};
 }
 
-DownsampledThumbnail RenderMaterialSphereThumbnail(
+std::optional<MaterialTextureReference> ExtractMaterialTextureReference(const std::string& xml)
+{
+    constexpr std::array<std::string_view, 6u> kPreferredTextureSlotNames {
+        "BaseColor",
+        "Albedo",
+        "Diffuse",
+        "baseColor",
+        "albedo",
+        "diffuse"
+    };
+    constexpr std::array<std::string_view, 8u> kTextureUniformNames {
+        "u_AlbedoMap",
+        "u_DiffuseMap",
+        "BaseColorTexture",
+        "BaseColorMap",
+        "DiffuseTexture",
+        "DiffuseMap",
+        "AlbedoTexture",
+        "AlbedoMap"
+    };
+
+    for (const auto slotName : kPreferredTextureSlotNames)
+    {
+        size_t position = 0u;
+        const std::string needle = "name=\"" + std::string(slotName) + "\"";
+        while ((position = xml.find(needle, position)) != std::string::npos)
+        {
+            const auto elementBegin = xml.rfind('<', position);
+            const auto elementEnd = xml.find('>', position);
+            if (elementBegin == std::string::npos || elementEnd == std::string::npos)
+            {
+                position += needle.size();
+                continue;
+            }
+
+            const auto element = xml.substr(elementBegin, elementEnd - elementBegin + 1u);
+            if (element.find("<textureSlot") == std::string::npos)
+            {
+                position = elementEnd + 1u;
+                continue;
+            }
+
+            MaterialTextureReference reference;
+            if (auto key = ExtractXmlAttribute(element, "texture");
+                key.has_value() && !key->empty())
+            {
+                reference.textureKey = UnescapeXmlAttributeValue(*key);
+            }
+            for (const auto attribute : {"resourcePath", "texture", "value"})
+            {
+                if (auto value = ExtractXmlAttribute(element, attribute);
+                    value.has_value() && !value->empty())
+                {
+                    reference.resourcePath = UnescapeXmlAttributeValue(*value);
+                    return reference;
+                }
+            }
+            position = elementEnd + 1u;
+        }
+    }
+
+    for (const auto uniformName : kTextureUniformNames)
+    {
+        size_t position = 0u;
+        const std::string needle = "name=\"" + std::string(uniformName) + "\"";
+        while ((position = xml.find(needle, position)) != std::string::npos)
+        {
+            const auto elementBegin = xml.rfind('<', position);
+            const auto elementEnd = xml.find('>', position);
+            if (elementBegin == std::string::npos || elementEnd == std::string::npos)
+            {
+                position += needle.size();
+                continue;
+            }
+
+            const auto element = xml.substr(elementBegin, elementEnd - elementBegin + 1u);
+            if (auto value = ExtractXmlAttribute(element, "value");
+                value.has_value() && !value->empty())
+            {
+                return MaterialTextureReference {UnescapeXmlAttributeValue(*value), {}};
+            }
+            position = elementEnd + 1u;
+        }
+    }
+
+    size_t textureSlotPosition = 0u;
+    while ((textureSlotPosition = xml.find("<textureSlot", textureSlotPosition)) != std::string::npos)
+    {
+        const auto elementEnd = xml.find('>', textureSlotPosition);
+        if (elementEnd == std::string::npos)
+            break;
+
+        const auto element = xml.substr(textureSlotPosition, elementEnd - textureSlotPosition + 1u);
+        MaterialTextureReference reference;
+        if (auto key = ExtractXmlAttribute(element, "texture");
+            key.has_value() && !key->empty())
+        {
+            reference.textureKey = UnescapeXmlAttributeValue(*key);
+        }
+        for (const auto attribute : {"resourcePath", "texture", "value"})
+        {
+            if (auto value = ExtractXmlAttribute(element, attribute);
+                value.has_value() && !value->empty())
+            {
+                reference.resourcePath = UnescapeXmlAttributeValue(*value);
+                return reference;
+            }
+        }
+        textureSlotPosition = elementEnd + 1u;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> ResolveMaterialSourceTextureDependency(
+    const AssetThumbnailRequest& request,
+    const std::string& materialPayload,
+    const std::string& textureKey)
+{
+    if (textureKey.empty())
+        return std::nullopt;
+
+    if (auto manifestSource = ResolveTextureSourceDependencyPathForKey(request, textureKey);
+        manifestSource.has_value())
+    {
+        return manifestSource;
+    }
+
+    const std::string needle = "texture-build:texture:" + textureKey + "\\p";
+    const auto position = materialPayload.find(needle);
+    if (position == std::string::npos)
+        return std::nullopt;
+
+    const auto sourcePathBegin = materialPayload.find("\\psourcePath=", position + needle.size());
+    if (sourcePathBegin == std::string::npos)
+        return std::nullopt;
+
+    const auto valueBegin = sourcePathBegin + std::string_view("\\psourcePath=").size();
+    auto valueEnd = materialPayload.find("\\\\p", valueBegin);
+    if (valueEnd == std::string::npos)
+        valueEnd = materialPayload.find("\\p", valueBegin);
+    if (valueEnd == std::string::npos || valueEnd <= valueBegin)
+        return std::nullopt;
+
+    auto sourcePathText = materialPayload.substr(valueBegin, valueEnd - valueBegin);
+    std::replace(sourcePathText.begin(), sourcePathText.end(), '\\', '/');
+    while (sourcePathText.rfind("./", 0u) == 0u)
+        sourcePathText.erase(0u, 2u);
+    if (sourcePathText.empty())
+        return std::nullopt;
+
+    std::vector<std::filesystem::path> candidates;
+    const auto sourcePath = std::filesystem::path(sourcePathText).lexically_normal();
+    if (sourcePath.is_absolute())
+    {
+        candidates.push_back(sourcePath);
+    }
+    else
+    {
+        candidates.push_back(request.projectRoot / sourcePath);
+        if (!request.sourceAssetPath.empty())
+        {
+            candidates.push_back(
+                request.projectRoot /
+                std::filesystem::path(request.sourceAssetPath).parent_path() /
+                sourcePath);
+        }
+    }
+
+    const auto assetRoots = MakeProjectEditorAssetRoots(request.projectRoot);
+    for (const auto& candidate : candidates)
+    {
+        const auto normalized = NLS::Core::Assets::NormalizeAssetPath(candidate);
+        if (normalized.empty() || !IsTextureThumbnailSourceExtension(normalized))
+            continue;
+
+        const auto editorAssetPath = ToEditorAssetPath(assetRoots, normalized);
+        if (!ResolveEditorAssetPath(assetRoots, editorAssetPath).empty())
+            return normalized;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> ResolveTexturePathFromMaterialPayload(
+    const AssetThumbnailRequest& request,
+    const std::string& materialPayload)
+{
+    const auto textureReference = ExtractMaterialTextureReference(materialPayload);
+    if (!textureReference.has_value() || textureReference->resourcePath.empty())
+        return std::nullopt;
+
+    auto texturePath = std::filesystem::path(textureReference->resourcePath).lexically_normal();
+    if (!HasExtension(texturePath, ".ntex") &&
+        !IsTextureThumbnailSourceExtension(texturePath))
+    {
+        return ResolveMaterialSourceTextureDependency(
+            request,
+            materialPayload,
+            textureReference->textureKey);
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    if (texturePath.is_absolute())
+    {
+        candidates.push_back(texturePath);
+    }
+    else
+    {
+        candidates.push_back(request.projectRoot / texturePath);
+        if (request.assetId.IsValid())
+        {
+            candidates.push_back(
+                request.projectRoot /
+                "Library" /
+                "Artifacts" /
+                request.assetId.ToString() /
+                texturePath);
+        }
+    }
+
+    const auto projectRoot = NLS::Core::Assets::NormalizeAssetPath(request.projectRoot);
+    const auto artifactRoot = NLS::Core::Assets::NormalizeAssetPath(projectRoot / "Library" / "Artifacts");
+    const auto assetRoots = MakeProjectEditorAssetRoots(projectRoot);
+    for (const auto& candidate : candidates)
+    {
+        const auto normalized = NLS::Core::Assets::NormalizeAssetPath(candidate);
+        if (normalized.empty())
+            continue;
+
+        const bool libraryArtifact =
+            HasExtension(normalized, ".ntex") &&
+            !artifactRoot.empty() &&
+            IsPhysicalRegularFileInsideEditorAssetRoot(normalized, artifactRoot);
+        const auto editorAssetPath = ToEditorAssetPath(assetRoots, normalized);
+        const bool sourceTexture =
+            IsTextureThumbnailSourceExtension(normalized) &&
+            !ResolveEditorAssetPath(assetRoots, editorAssetPath).empty();
+        if (libraryArtifact || sourceTexture)
+            return normalized;
+    }
+    return ResolveMaterialSourceTextureDependency(
+        request,
+        materialPayload,
+        textureReference->textureKey);
+}
+
+std::optional<std::filesystem::path> ResolveTextureSamplePathFromMaterialPayload(
+    const AssetThumbnailRequest& request,
+    const std::string& materialPayload)
+{
+    const auto textureReference = ExtractMaterialTextureReference(materialPayload);
+    const auto sourceExtension = ToLowerAscii(std::filesystem::path(request.sourceAssetPath).extension().generic_string());
+    if (textureReference.has_value() &&
+        (sourceExtension == ".fbx" || sourceExtension == ".obj"))
+    {
+        if (auto sourceTexture = ResolveMaterialSourceTextureDependency(
+                request,
+                materialPayload,
+                textureReference->textureKey);
+            sourceTexture.has_value())
+        {
+            return sourceTexture;
+        }
+    }
+
+    const auto texturePath = ResolveTexturePathFromMaterialPayload(request, materialPayload);
+    if (!texturePath.has_value())
+        return std::nullopt;
+
+    if (!HasExtension(*texturePath, ".ntex"))
+        return texturePath;
+
+    const auto artifact = NLS::Render::Assets::LoadTextureArtifact(*texturePath);
+    if (artifact.has_value() &&
+        IsRgba8TextureArtifactMipUsable(*artifact))
+    {
+        return texturePath;
+    }
+
+    if (textureReference.has_value())
+    {
+        return ResolveMaterialSourceTextureDependency(
+            request,
+            materialPayload,
+            textureReference->textureKey);
+    }
+    return std::nullopt;
+}
+
+DownsampledThumbnail RenderTexturePathThumbnail(
+    const std::filesystem::path& texturePath,
+    const uint32_t requestedSize)
+{
+    if (HasExtension(texturePath, ".ntex"))
+    {
+        const auto artifact = NLS::Render::Assets::LoadTextureArtifact(texturePath);
+        if (!artifact.has_value() ||
+            !IsRgba8TextureArtifactMipUsable(*artifact))
+        {
+            return {};
+        }
+
+        const auto& mip = artifact->mips.front();
+        return DownsampleRgba8ToThumbnail(
+            mip.pixels.data(),
+            mip.width,
+            mip.height,
+            mip.rowPitch,
+            requestedSize);
+    }
+
+    NLS::Image sourceImage(texturePath.string(), false);
+    if (sourceImage.GetData() == nullptr ||
+        sourceImage.GetWidth() <= 0 ||
+        sourceImage.GetHeight() <= 0 ||
+        sourceImage.GetChannels() <= 0)
+    {
+        return {};
+    }
+    return DownsampleImageToThumbnail(sourceImage, requestedSize);
+}
+
+const NLS::Render::Assets::TextureArtifactMip* SelectTexturePreviewMip(
+    const NLS::Render::Assets::TextureArtifactData& artifact,
+    const uint32_t requestedSize)
+{
+    if (artifact.mips.empty())
+        return nullptr;
+
+    const auto targetSize = std::max(1u, requestedSize);
+    const NLS::Render::Assets::TextureArtifactMip* bestMip = nullptr;
+    uint32_t bestScore = std::numeric_limits<uint32_t>::max();
+    for (const auto& mip : artifact.mips)
+    {
+        if (mip.width == 0u || mip.height == 0u || mip.rowPitch < mip.width * 4u || mip.pixels.empty())
+            continue;
+
+        const auto mipLargestDimension = (std::max)(mip.width, mip.height);
+        const auto score = mipLargestDimension > targetSize
+            ? mipLargestDimension - targetSize
+            : (targetSize - mipLargestDimension) * 2u;
+        if (bestMip == nullptr || score < bestScore)
+        {
+            bestMip = &mip;
+            bestScore = score;
+        }
+    }
+    return bestMip;
+}
+
+std::optional<ThumbnailTextureSampleData> LoadTextureSampleData(
+    const std::filesystem::path& texturePath,
+    const uint32_t requestedSize)
+{
+    ThumbnailTextureSampleData data;
+    if (HasExtension(texturePath, ".ntex"))
+    {
+        const auto artifact = NLS::Render::Assets::LoadTextureArtifact(texturePath);
+        if (!artifact.has_value() ||
+            !IsRgba8TextureArtifactMipUsable(*artifact))
+        {
+            return std::nullopt;
+        }
+
+        const auto* mip = SelectTexturePreviewMip(*artifact, requestedSize);
+        if (mip == nullptr)
+            return std::nullopt;
+
+        data.pixels = mip->pixels;
+        data.width = mip->width;
+        data.height = mip->height;
+        data.rowPitch = mip->rowPitch;
+    }
+    else
+    {
+        NLS::Image sourceImage(texturePath.string(), false);
+        if (sourceImage.GetData() == nullptr ||
+            sourceImage.GetWidth() <= 0 ||
+            sourceImage.GetHeight() <= 0 ||
+            sourceImage.GetChannels() <= 0)
+        {
+            return std::nullopt;
+        }
+
+        const auto sourcePixels = ConvertToRgba8(sourceImage);
+        if (sourcePixels.empty())
+            return std::nullopt;
+
+        const auto downsampled = DownsampleRgba8ToThumbnail(
+            sourcePixels.data(),
+            static_cast<uint32_t>(sourceImage.GetWidth()),
+            static_cast<uint32_t>(sourceImage.GetHeight()),
+            static_cast<uint32_t>(sourceImage.GetWidth()) * 4u,
+            std::max(1u, requestedSize));
+        if (downsampled.pixels.empty() || downsampled.width == 0u || downsampled.height == 0u)
+            return std::nullopt;
+
+        data.pixels = downsampled.pixels;
+        data.width = downsampled.width;
+        data.height = downsampled.height;
+        data.rowPitch = data.width * 4u;
+    }
+
+    if (data.pixels.empty() || data.width == 0u || data.height == 0u || data.rowPitch < data.width * 4u)
+        return std::nullopt;
+    return data;
+}
+
+std::array<float, 4u> SampleTextureNearest(
+    const ThumbnailTextureSampleData& texture,
+    float u,
+    float v)
+{
+    if (texture.pixels.empty() || texture.width == 0u || texture.height == 0u || texture.rowPitch < texture.width * 4u)
+        return {1.0f, 1.0f, 1.0f, 1.0f};
+
+    u = u - std::floor(u);
+    v = v - std::floor(v);
+    if (texture.flipV)
+        v = 1.0f - v;
+    const auto x = std::min(
+        texture.width - 1u,
+        static_cast<uint32_t>(std::floor(u * static_cast<float>(texture.width))));
+    const auto y = std::min(
+        texture.height - 1u,
+        static_cast<uint32_t>(std::floor((1.0f - v) * static_cast<float>(texture.height))));
+    const auto* source = texture.pixels.data() + static_cast<size_t>(y) * texture.rowPitch + x * 4u;
+    return {
+        static_cast<float>(source[0]) / 255.0f,
+        static_cast<float>(source[1]) / 255.0f,
+        static_cast<float>(source[2]) / 255.0f,
+        static_cast<float>(source[3]) / 255.0f
+    };
+}
+
+struct MaterialPreviewStyle
+{
+    std::array<float, 4u> baseColor {0.58f, 0.66f, 0.76f, 1.0f};
+    std::optional<ThumbnailTextureSampleData> albedoTexture;
+};
+
+MaterialPreviewStyle BuildMaterialPreviewStyle(
+    const AssetThumbnailRequest& request,
     const std::string& materialPayload,
     const uint32_t requestedSize)
 {
+    MaterialPreviewStyle style;
+    style.baseColor = ExtractMaterialBaseColor(materialPayload);
+    if (const auto texturePath = ResolveTextureSamplePathFromMaterialPayload(request, materialPayload);
+        texturePath.has_value())
+    {
+        style.albedoTexture = LoadTextureSampleData(*texturePath, requestedSize);
+        if (style.albedoTexture.has_value() && !HasExtension(*texturePath, ".ntex"))
+            style.albedoTexture->flipV = ShouldFlipMaterialSourceTextureVertically(request);
+    }
+    return style;
+}
+
+std::optional<size_t> MaterialPreviewIndexForSubAssetKey(const std::string& subAssetKey)
+{
+    constexpr std::string_view kPrefix = "material:";
+    if (subAssetKey.rfind(kPrefix, 0u) != 0u)
+        return std::nullopt;
+
+    auto token = subAssetKey.substr(kPrefix.size());
+    if (const auto separator = token.find_last_of("/\\:");
+        separator != std::string::npos && separator + 1u < token.size())
+    {
+        token = token.substr(separator + 1u);
+    }
+
+    if (token.empty() || !std::all_of(token.begin(), token.end(), [](const unsigned char character)
+        {
+            return std::isdigit(character) != 0;
+        }))
+    {
+        return std::nullopt;
+    }
+
+    try
+    {
+        return static_cast<size_t>(std::stoull(token));
+    }
+    catch (...)
+    {
+        return std::nullopt;
+    }
+}
+
+struct MaterialPreviewArtifact
+{
+    std::filesystem::path path;
+    std::string subAssetKey;
+};
+
+std::vector<MaterialPreviewArtifact> ResolveMaterialArtifactPaths(
+    const AssetThumbnailRequest& request)
+{
+    std::vector<MaterialPreviewArtifact> paths;
+    if (!request.subAssetKey.empty() &&
+        request.subAssetKey.rfind("material:", 0u) == 0u)
+    {
+        if (auto resolved = ResolveArtifactPathForPreview(request, request.artifactPath);
+            resolved.has_value())
+        {
+            paths.push_back({*resolved, request.subAssetKey});
+            return paths;
+        }
+        if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request, request.artifactPath);
+            sourceMaterial.has_value())
+        {
+            paths.push_back({*sourceMaterial, request.subAssetKey});
+            return paths;
+        }
+        if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request);
+            sourceMaterial.has_value())
+        {
+            paths.push_back({*sourceMaterial, request.subAssetKey});
+            return paths;
+        }
+    }
+
+    const auto manifest = LoadThumbnailArtifactManifest(request);
+    if (!manifest.has_value())
+    {
+        if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request);
+            sourceMaterial.has_value())
+        {
+            paths.push_back({*sourceMaterial, request.subAssetKey});
+        }
+        return paths;
+    }
+
+    for (const auto& artifact : manifest->subAssets)
+    {
+        if (artifact.artifactType != NLS::Core::Assets::ArtifactType::Material)
+            continue;
+
+        if (auto resolved = ResolveArtifactPathForPreview(request, artifact.artifactPath);
+            resolved.has_value())
+        {
+            paths.push_back({*resolved, artifact.subAssetKey});
+        }
+        else if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request, artifact.artifactPath);
+            sourceMaterial.has_value())
+        {
+            paths.push_back({*sourceMaterial, artifact.subAssetKey});
+        }
+    }
+    if (paths.empty())
+    {
+        if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request);
+            sourceMaterial.has_value())
+        {
+            paths.push_back({*sourceMaterial, request.subAssetKey});
+        }
+    }
+    return paths;
+}
+
+std::vector<MaterialPreviewStyle> LoadMaterialPreviewStyles(const AssetThumbnailRequest& request)
+{
+    std::vector<MaterialPreviewStyle> styles;
+    size_t sequentialIndex = 0u;
+    for (const auto& materialArtifact : ResolveMaterialArtifactPaths(request))
+    {
+        const auto& materialPath = materialArtifact.path;
+        if (StructurePreviewArtifactExceedsBudget(
+                materialPath,
+                NLS::Core::Assets::ArtifactType::Material,
+                1u))
+        {
+            const auto materialIndex = MaterialPreviewIndexForSubAssetKey(materialArtifact.subAssetKey)
+                .value_or(sequentialIndex);
+            if (materialIndex >= styles.size())
+                styles.resize(materialIndex + 1u);
+            ++sequentialIndex;
+            continue;
+        }
+
+        const auto payload = ReadNativeOrPlainTextArtifact(
+            materialPath,
+            NLS::Core::Assets::ArtifactType::Material,
+            1u);
+        const auto materialIndex = MaterialPreviewIndexForSubAssetKey(materialArtifact.subAssetKey)
+            .value_or(sequentialIndex);
+        if (materialIndex >= styles.size())
+            styles.resize(materialIndex + 1u);
+        styles[materialIndex] = payload.has_value()
+            ? BuildMaterialPreviewStyle(request, *payload, request.requestedSize)
+            : MaterialPreviewStyle {};
+        ++sequentialIndex;
+    }
+    return styles;
+}
+
+DownsampledThumbnail RenderMaterialSphereThumbnail(
+    const MaterialPreviewStyle& style,
+    const uint32_t requestedSize)
+{
     auto canvas = MakeCanvas(requestedSize);
-    const auto baseColor = ExtractMaterialBaseColor(materialPayload);
     const auto center = (static_cast<float>(canvas.width) - 1.0f) * 0.5f;
     const auto radius = std::max(1.0f, static_cast<float>(canvas.width) * 0.42f);
     constexpr float lightX = -0.35f;
@@ -1305,6 +2411,18 @@ DownsampledThumbnail RenderMaterialSphereThumbnail(
                 continue;
 
             const float nz = std::sqrt(std::max(0.0f, 1.0f - rr));
+            auto materialColor = style.baseColor;
+            if (style.albedoTexture.has_value())
+            {
+                const float u = 0.5f + std::atan2(nx, nz) / (2.0f * 3.14159265358979323846f);
+                const float v = 0.5f - std::asin(std::clamp(ny, -1.0f, 1.0f)) / 3.14159265358979323846f;
+                const auto texel = SampleTextureNearest(*style.albedoTexture, u, v);
+                materialColor[0] *= texel[0];
+                materialColor[1] *= texel[1];
+                materialColor[2] *= texel[2];
+                materialColor[3] *= texel[3];
+            }
+
             const float diffuse = std::max(0.0f, nx * lightX + ny * lightY + nz * lightZ);
             const float rim = std::pow(std::max(0.0f, 1.0f - nz), 2.0f) * 0.18f;
             const float shade = std::clamp(0.22f + diffuse * 0.78f + rim, 0.0f, 1.0f);
@@ -1312,12 +2430,293 @@ DownsampledThumbnail RenderMaterialSphereThumbnail(
                 canvas,
                 static_cast<int>(x),
                 static_cast<int>(y),
-                static_cast<uint8_t>(std::clamp(baseColor[0] * shade * 255.0f, 0.0f, 255.0f)),
-                static_cast<uint8_t>(std::clamp(baseColor[1] * shade * 255.0f, 0.0f, 255.0f)),
-                static_cast<uint8_t>(std::clamp(baseColor[2] * shade * 255.0f, 0.0f, 255.0f)),
-                static_cast<uint8_t>(std::clamp(baseColor[3] * 255.0f, 0.0f, 255.0f)));
+                static_cast<uint8_t>(std::clamp(materialColor[0] * shade * 255.0f, 0.0f, 255.0f)),
+                static_cast<uint8_t>(std::clamp(materialColor[1] * shade * 255.0f, 0.0f, 255.0f)),
+                static_cast<uint8_t>(std::clamp(materialColor[2] * shade * 255.0f, 0.0f, 255.0f)),
+                static_cast<uint8_t>(std::clamp(materialColor[3] * 255.0f, 0.0f, 255.0f)));
         }
     }
+    return CanvasToThumbnail(std::move(canvas));
+}
+
+struct MeshPreviewTriangle
+{
+    struct Vertex
+    {
+        std::array<float, 3u> screen {};
+        std::array<float, 3u> normal {};
+        std::array<float, 2u> uv {};
+    };
+    std::array<Vertex, 3u> vertices {};
+    size_t materialIndex = 0u;
+};
+
+float Dot3(const std::array<float, 3u>& left, const std::array<float, 3u>& right)
+{
+    return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+}
+
+std::array<float, 3u> Normalize3(std::array<float, 3u> value)
+{
+    const auto length = std::sqrt(std::max(0.000001f, Dot3(value, value)));
+    value[0] /= length;
+    value[1] /= length;
+    value[2] /= length;
+    return value;
+}
+
+std::array<float, 3u> RotateUnityPreviewVector(std::array<float, 3u> value)
+{
+    const auto yaw = kUnityMeshPreviewYawDegrees * kDegreesToRadians;
+    const auto pitch = kUnityMeshPreviewPitchDegrees * kDegreesToRadians;
+
+    const auto cy = std::cos(yaw);
+    const auto sy = std::sin(yaw);
+    std::array<float, 3u> rotated {
+        value[0] * cy + value[2] * sy,
+        value[1],
+        -value[0] * sy + value[2] * cy
+    };
+
+    const auto cp = std::cos(pitch);
+    const auto sp = std::sin(pitch);
+    return {
+        rotated[0],
+        rotated[1] * cp - rotated[2] * sp,
+        rotated[1] * sp + rotated[2] * cp
+    };
+}
+
+std::array<float, 3u> TransformUnityPreviewPoint(
+    const NLS::Render::Geometry::Vertex& vertex,
+    const std::array<float, 3u>& center,
+    const float cameraDistance)
+{
+    auto rotated = RotateUnityPreviewVector({
+        vertex.position[0] - center[0],
+        vertex.position[1] - center[1],
+        vertex.position[2] - center[2]
+    });
+    rotated[2] += cameraDistance;
+    return rotated;
+}
+
+std::array<float, 4u> ShadeUnityPreviewMaterial(
+    const MaterialPreviewStyle& material,
+    const std::array<float, 3u>& normal,
+    const std::array<float, 2u>& uv)
+{
+    std::array<float, 4u> color = material.baseColor;
+    if (material.albedoTexture.has_value())
+    {
+        const auto texel = SampleTextureNearest(*material.albedoTexture, uv[0], uv[1]);
+        color[0] *= texel[0];
+        color[1] *= texel[1];
+        color[2] *= texel[2];
+        color[3] *= texel[3];
+    }
+
+    const auto n = Normalize3(normal);
+    const auto light0 = Normalize3({0.58f, 0.64f, 0.50f});
+    const auto light1 = Normalize3({-0.35f, 0.25f, 0.90f});
+    const auto diffuse =
+        std::max(0.0f, Dot3(n, light0)) * 1.15f +
+        std::max(0.0f, Dot3(n, light1)) * 0.45f;
+    const auto shade = std::clamp(0.18f + diffuse, 0.0f, 1.35f);
+    color[0] = std::clamp(color[0] * shade, 0.0f, 1.0f);
+    color[1] = std::clamp(color[1] * shade, 0.0f, 1.0f);
+    color[2] = std::clamp(color[2] * shade, 0.0f, 1.0f);
+    color[3] = std::clamp(color[3], 0.0f, 1.0f);
+    return color;
+}
+
+DownsampledThumbnail RenderMeshSetThumbnail(
+    const std::vector<NLS::Render::Assets::MeshArtifactData>& meshes,
+    const std::vector<MaterialPreviewStyle>& materials,
+    const uint32_t requestedSize)
+{
+    auto canvas = MakeCanvas(requestedSize);
+    if (meshes.empty())
+        return CanvasToThumbnail(std::move(canvas));
+
+    std::array<float, 3u> minBounds {
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max()
+    };
+    std::array<float, 3u> maxBounds {
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest()
+    };
+    size_t vertexCount = 0u;
+    for (const auto& mesh : meshes)
+    {
+        for (const auto& vertex : mesh.vertices)
+        {
+            ++vertexCount;
+            for (size_t axis = 0u; axis < 3u; ++axis)
+            {
+                minBounds[axis] = std::min(minBounds[axis], vertex.position[axis]);
+                maxBounds[axis] = std::max(maxBounds[axis], vertex.position[axis]);
+            }
+        }
+    }
+    if (vertexCount == 0u)
+        return CanvasToThumbnail(std::move(canvas));
+
+    const std::array<float, 3u> center {
+        (minBounds[0] + maxBounds[0]) * 0.5f,
+        (minBounds[1] + maxBounds[1]) * 0.5f,
+        (minBounds[2] + maxBounds[2]) * 0.5f
+    };
+    const auto extentX = maxBounds[0] - minBounds[0];
+    const auto extentY = maxBounds[1] - minBounds[1];
+    const auto extentZ = maxBounds[2] - minBounds[2];
+    const auto halfSize = std::max(0.0001f, 0.5f * std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ));
+    const auto cameraDistance = halfSize * 4.0f;
+    const auto focalLength = (static_cast<float>(canvas.height) * 0.5f) /
+        std::tan((kUnityMeshPreviewFieldOfViewDegrees * 0.5f) * kDegreesToRadians);
+    const auto project = [&](const NLS::Render::Geometry::Vertex& vertex) -> MeshPreviewTriangle::Vertex
+    {
+        const auto view = TransformUnityPreviewPoint(vertex, center, cameraDistance);
+        const auto depth = std::max(0.0001f, view[2]);
+        return {
+            {
+                view[0] * focalLength / depth + static_cast<float>(canvas.width) * 0.5f,
+                static_cast<float>(canvas.height) * 0.5f - view[1] * focalLength / depth,
+                depth
+            },
+            Normalize3(RotateUnityPreviewVector({
+                vertex.normals[0],
+                vertex.normals[1],
+                vertex.normals[2]
+            })),
+            {vertex.texCoords[0], vertex.texCoords[1]}
+        };
+    };
+
+    size_t totalTriangleCount = 0u;
+    for (const auto& mesh : meshes)
+        totalTriangleCount += mesh.indices.size() / 3u;
+    const auto triangleStride = totalTriangleCount > kMaxMeshPreviewRenderedTriangles
+        ? (totalTriangleCount + kMaxMeshPreviewRenderedTriangles - 1u) / kMaxMeshPreviewRenderedTriangles
+        : 1u;
+
+    std::vector<float> depthBuffer(
+        static_cast<size_t>(canvas.width) * canvas.height,
+        std::numeric_limits<float>::max());
+    std::vector<MeshPreviewTriangle> triangles;
+    triangles.reserve(std::min(totalTriangleCount, kMaxMeshPreviewRenderedTriangles));
+    size_t globalTriangleIndex = 0u;
+    for (const auto& mesh : meshes)
+    {
+        for (size_t index = 0u; index + 2u < mesh.indices.size(); index += 3u)
+        {
+            if ((globalTriangleIndex++ % triangleStride) != 0u)
+                continue;
+
+            const auto i0 = mesh.indices[index + 0u];
+            const auto i1 = mesh.indices[index + 1u];
+            const auto i2 = mesh.indices[index + 2u];
+            if (i0 >= mesh.vertices.size() || i1 >= mesh.vertices.size() || i2 >= mesh.vertices.size())
+                continue;
+
+            const auto& v0 = mesh.vertices[i0];
+            const auto& v1 = mesh.vertices[i1];
+            const auto& v2 = mesh.vertices[i2];
+            triangles.push_back({{project(v0), project(v1), project(v2)}, mesh.materialIndex});
+        }
+    }
+
+    for (const auto& triangle : triangles)
+    {
+        const auto& a = triangle.vertices[0];
+        const auto& b = triangle.vertices[1];
+        const auto& c = triangle.vertices[2];
+        const int minX = std::max(0, static_cast<int>(std::floor(std::min({a.screen[0], b.screen[0], c.screen[0]}))));
+        const int maxX = std::min(static_cast<int>(canvas.width) - 1, static_cast<int>(std::ceil(std::max({a.screen[0], b.screen[0], c.screen[0]}))));
+        const int minY = std::max(0, static_cast<int>(std::floor(std::min({a.screen[1], b.screen[1], c.screen[1]}))));
+        const int maxY = std::min(static_cast<int>(canvas.height) - 1, static_cast<int>(std::ceil(std::max({a.screen[1], b.screen[1], c.screen[1]}))));
+        if (minX > maxX || minY > maxY)
+            continue;
+
+        const auto edge = [](const MeshPreviewTriangle::Vertex& left, const MeshPreviewTriangle::Vertex& right, const float x, const float y)
+        {
+            return (x - left.screen[0]) * (right.screen[1] - left.screen[1]) -
+                (y - left.screen[1]) * (right.screen[0] - left.screen[0]);
+        };
+        const auto area = edge(a, b, c.screen[0], c.screen[1]);
+        if (std::abs(area) < 0.0001f)
+            continue;
+
+        const auto material = triangle.materialIndex < materials.size()
+            ? materials[triangle.materialIndex]
+            : MaterialPreviewStyle {};
+        for (int y = minY; y <= maxY; ++y)
+        {
+            for (int x = minX; x <= maxX; ++x)
+            {
+                const auto px = static_cast<float>(x) + 0.5f;
+                const auto py = static_cast<float>(y) + 0.5f;
+                const auto w0 = edge(b, c, px, py);
+                const auto w1 = edge(c, a, px, py);
+                const auto w2 = edge(a, b, px, py);
+                const bool insidePositive = w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f;
+                const bool insideNegative = w0 <= 0.0f && w1 <= 0.0f && w2 <= 0.0f;
+                if (!insidePositive && !insideNegative)
+                    continue;
+
+                const auto invArea = 1.0f / area;
+                const auto b0 = w0 * invArea;
+                const auto b1 = w1 * invArea;
+                const auto b2 = w2 * invArea;
+                const auto depth = a.screen[2] * b0 + b.screen[2] * b1 + c.screen[2] * b2;
+                const auto depthIndex = static_cast<size_t>(y) * canvas.width + static_cast<size_t>(x);
+                if (depth >= depthBuffer[depthIndex])
+                    continue;
+                depthBuffer[depthIndex] = depth;
+
+                const std::array<float, 3u> normal {
+                    a.normal[0] * b0 + b.normal[0] * b1 + c.normal[0] * b2,
+                    a.normal[1] * b0 + b.normal[1] * b1 + c.normal[1] * b2,
+                    a.normal[2] * b0 + b.normal[2] * b1 + c.normal[2] * b2
+                };
+                const std::array<float, 2u> uv {
+                    a.uv[0] * b0 + b.uv[0] * b1 + c.uv[0] * b2,
+                    a.uv[1] * b0 + b.uv[1] * b1 + c.uv[1] * b2
+                };
+                const auto shaded = ShadeUnityPreviewMaterial(material, normal, uv);
+                PutPixel(
+                    canvas,
+                    x,
+                    y,
+                    static_cast<uint8_t>(std::clamp(shaded[0] * 255.0f, 0.0f, 255.0f)),
+                    static_cast<uint8_t>(std::clamp(shaded[1] * 255.0f, 0.0f, 255.0f)),
+                    static_cast<uint8_t>(std::clamp(shaded[2] * 255.0f, 0.0f, 255.0f)),
+                    static_cast<uint8_t>(std::clamp(shaded[3] * 255.0f, 0.0f, 255.0f)));
+            }
+        }
+    }
+
+    if (triangles.empty())
+    {
+        for (const auto& mesh : meshes)
+        {
+            for (const auto& vertex : mesh.vertices)
+            {
+                const auto p = project(vertex);
+                PutPixel(
+                    canvas,
+                    static_cast<int>(std::lround(p.screen[0])),
+                    static_cast<int>(std::lround(p.screen[1])),
+                    150u,
+                    210u,
+                    255u);
+            }
+        }
+    }
+
     return CanvasToThumbnail(std::move(canvas));
 }
 
@@ -1325,77 +2724,14 @@ DownsampledThumbnail RenderMeshThumbnail(
     const NLS::Render::Assets::MeshArtifactData& mesh,
     const uint32_t requestedSize)
 {
-    auto canvas = MakeCanvas(requestedSize);
-    if (mesh.vertices.empty())
-        return CanvasToThumbnail(std::move(canvas));
+    return RenderMeshSetThumbnail({mesh}, {}, requestedSize);
+}
 
-    float minX = std::numeric_limits<float>::max();
-    float minY = std::numeric_limits<float>::max();
-    float maxX = std::numeric_limits<float>::lowest();
-    float maxY = std::numeric_limits<float>::lowest();
-    bool useZForVertical = false;
-    for (const auto& vertex : mesh.vertices)
-    {
-        minX = std::min(minX, vertex.position[0]);
-        maxX = std::max(maxX, vertex.position[0]);
-        minY = std::min(minY, vertex.position[1]);
-        maxY = std::max(maxY, vertex.position[1]);
-    }
-
-    if (maxY - minY < 0.0001f)
-    {
-        useZForVertical = true;
-        minY = std::numeric_limits<float>::max();
-        maxY = std::numeric_limits<float>::lowest();
-        for (const auto& vertex : mesh.vertices)
-        {
-            minY = std::min(minY, vertex.position[2]);
-            maxY = std::max(maxY, vertex.position[2]);
-        }
-    }
-
-    const auto rangeX = std::max(0.0001f, maxX - minX);
-    const auto rangeY = std::max(0.0001f, maxY - minY);
-    const auto scale = static_cast<float>(canvas.width) * 0.78f / std::max(rangeX, rangeY);
-    const auto centerX = (minX + maxX) * 0.5f;
-    const auto centerY = (minY + maxY) * 0.5f;
-    const auto project = [&](const NLS::Render::Geometry::Vertex& vertex)
-    {
-        const auto vx = vertex.position[0];
-        const auto vy = useZForVertical ? vertex.position[2] : vertex.position[1];
-        const auto px = static_cast<int>(std::lround((vx - centerX) * scale + canvas.width * 0.5f));
-        const auto py = static_cast<int>(std::lround(canvas.height * 0.5f - (vy - centerY) * scale));
-        return std::array<int, 2u>{px, py};
-    };
-
-    for (size_t index = 0u; index + 2u < mesh.indices.size(); index += 3u)
-    {
-        const auto i0 = mesh.indices[index + 0u];
-        const auto i1 = mesh.indices[index + 1u];
-        const auto i2 = mesh.indices[index + 2u];
-        if (i0 >= mesh.vertices.size() || i1 >= mesh.vertices.size() || i2 >= mesh.vertices.size())
-            continue;
-
-        const auto p0 = project(mesh.vertices[i0]);
-        const auto p1 = project(mesh.vertices[i1]);
-        const auto p2 = project(mesh.vertices[i2]);
-        const auto shade = static_cast<uint8_t>(90u + (index / 3u % 5u) * 16u);
-        FillTriangle(canvas, p0, p1, p2, shade, static_cast<uint8_t>(shade + 24u), 170u, 180u);
-        DrawLine(canvas, p0[0], p0[1], p1[0], p1[1], 220u, 226u, 235u);
-        DrawLine(canvas, p1[0], p1[1], p2[0], p2[1], 220u, 226u, 235u);
-        DrawLine(canvas, p2[0], p2[1], p0[0], p0[1], 120u, 190u, 255u);
-    }
-
-    if (mesh.indices.empty())
-    {
-        for (const auto& vertex : mesh.vertices)
-        {
-            const auto p = project(vertex);
-            PutPixel(canvas, p[0], p[1], 150u, 210u, 255u);
-        }
-    }
-
-    return CanvasToThumbnail(std::move(canvas));
+DownsampledThumbnail RenderMeshSetThumbnail(
+    const std::vector<NLS::Render::Assets::MeshArtifactData>& meshes,
+    const uint32_t requestedSize)
+{
+    return RenderMeshSetThumbnail(meshes, {}, requestedSize);
 }
 
 DownsampledThumbnail RenderPrefabStructureThumbnail(
@@ -1433,6 +2769,16 @@ DownsampledThumbnail RenderPrefabStructureThumbnail(
     }
 
     return CanvasToThumbnail(std::move(canvas));
+}
+
+DownsampledThumbnail RenderMaterialPreviewThumbnail(
+    const AssetThumbnailRequest& request,
+    const std::string& materialPayload,
+    const uint32_t requestedSize)
+{
+    return RenderMaterialSphereThumbnail(
+        BuildMaterialPreviewStyle(request, materialPayload, requestedSize),
+        requestedSize);
 }
 
 AssetThumbnailServiceResult GenerateMaterialThumbnail(
@@ -1483,7 +2829,7 @@ AssetThumbnailServiceResult GenerateMaterialThumbnail(
     return WriteThumbnailPngResult(
         request,
         evaluation,
-        RenderMaterialSphereThumbnail(*payload, request.requestedSize),
+        RenderMaterialPreviewThumbnail(request, *payload, request.requestedSize),
         "thumbnail-material-preview-generation-failed",
         cancelToken);
 }
@@ -1518,28 +2864,12 @@ AssetThumbnailServiceResult GenerateMeshBackedThumbnail(
         WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
         return result;
     }
-    if (MeshHeaderPreviewExceedsBudget(*meshHeader))
-    {
-        result.status = AssetThumbnailServiceStatus::Fallback;
-        result.diagnostic = kMeshPreviewBudgetExceededDiagnostic;
-        WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
-        return result;
-    }
-
     const auto mesh = NLS::Render::Assets::LoadMeshArtifact(*meshPath);
     if (IsThumbnailGenerationCancelled(cancelToken))
         return BuildCancelledThumbnailRequestResult(request, evaluation);
     if (!mesh.has_value())
     {
         result.diagnostic = "thumbnail-model-mesh-artifact-read-failed";
-        WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
-        return result;
-    }
-
-    if (!IsMeshPreviewWithinBudget(*mesh))
-    {
-        result.status = AssetThumbnailServiceStatus::Fallback;
-        result.diagnostic = kMeshPreviewBudgetExceededDiagnostic;
         WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
         return result;
     }
@@ -1552,19 +2882,132 @@ AssetThumbnailServiceResult GenerateMeshBackedThumbnail(
         cancelToken);
 }
 
+AssetThumbnailServiceResult GenerateMeshSetThumbnail(
+    const AssetThumbnailRequest& request,
+    const std::vector<std::filesystem::path>& meshPaths,
+    const std::string& missingDiagnostic,
+    const AssetThumbnailCancelToken& cancelToken)
+{
+    const auto evaluation = EvaluateAssetThumbnailCache(request);
+    auto result = BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Failed);
+    if (!IsThumbnailRequestStillFresh(request))
+        return BuildStaleThumbnailRequestResult(request, evaluation);
+    if (IsThumbnailGenerationCancelled(cancelToken))
+        return BuildCancelledThumbnailRequestResult(request, evaluation);
+    if (meshPaths.empty())
+    {
+        result.diagnostic = missingDiagnostic;
+        WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+        return result;
+    }
+
+    struct MeshPreviewArtifactCandidate
+    {
+        std::filesystem::path path;
+        NLS::Render::Assets::MeshArtifactHeaderPreview header;
+        size_t score = 0u;
+    };
+
+    std::vector<MeshPreviewArtifactCandidate> candidates;
+    candidates.reserve(meshPaths.size());
+    for (const auto& meshPath : meshPaths)
+    {
+        const auto meshHeader = NLS::Render::Assets::ReadMeshArtifactHeaderPreview(
+            meshPath,
+            kMaxStructurePreviewArtifactPayloadBytes);
+        if (!meshHeader.has_value() ||
+            NativeArtifactFileExceedsThumbnailPreviewBudget(meshPath))
+        {
+            result.diagnostic = "thumbnail-model-mesh-artifact-read-failed";
+            WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+            return result;
+        }
+
+        candidates.push_back({
+            meshPath,
+            *meshHeader,
+            static_cast<size_t>(meshHeader->vertexCount) + static_cast<size_t>(meshHeader->indexCount)
+        });
+    }
+
+    std::stable_sort(
+        candidates.begin(),
+        candidates.end(),
+        [](const MeshPreviewArtifactCandidate& left, const MeshPreviewArtifactCandidate& right)
+        {
+            return left.score > right.score;
+        });
+
+    std::vector<NLS::Render::Assets::MeshArtifactData> meshes;
+    meshes.reserve(candidates.size());
+    size_t loadedVertices = 0u;
+    size_t loadedIndices = 0u;
+    for (const auto& candidate : candidates)
+    {
+        const bool wouldExceedBudget =
+            !meshes.empty() &&
+            (loadedVertices + candidate.header.vertexCount > kMaxMeshPreviewLoadedVertices ||
+                loadedIndices + candidate.header.indexCount > kMaxMeshPreviewLoadedIndices);
+        if (wouldExceedBudget)
+            continue;
+
+        const auto mesh = NLS::Render::Assets::LoadMeshArtifact(candidate.path);
+        if (IsThumbnailGenerationCancelled(cancelToken))
+            return BuildCancelledThumbnailRequestResult(request, evaluation);
+        if (!mesh.has_value())
+        {
+            result.diagnostic = "thumbnail-model-mesh-artifact-read-failed";
+            WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+            return result;
+        }
+        loadedVertices += mesh->vertices.size();
+        loadedIndices += mesh->indices.size();
+        meshes.push_back(*mesh);
+    }
+
+    if (meshes.empty())
+    {
+        result.diagnostic = "thumbnail-model-mesh-artifact-read-failed";
+        WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+        return result;
+    }
+
+    return WriteThumbnailPngResult(
+        request,
+        evaluation,
+        RenderMeshSetThumbnail(
+            meshes,
+            request.kind == AssetThumbnailKind::PrefabPreview
+                ? LoadMaterialPreviewStyles(request)
+                : std::vector<MaterialPreviewStyle> {},
+            request.requestedSize),
+        "thumbnail-model-preview-generation-failed",
+        cancelToken);
+}
+
 AssetThumbnailServiceResult GenerateModelThumbnail(
     const AssetThumbnailRequest& request,
     const AssetThumbnailCancelToken& cancelToken)
 {
-    return GenerateMeshBackedThumbnail(request, "thumbnail-model-mesh-artifact-missing", cancelToken);
+    const auto meshPaths = ResolveMeshArtifactPaths(request);
+    if (meshPaths.empty())
+        return GenerateMeshBackedThumbnail(request, "thumbnail-model-mesh-artifact-missing", cancelToken);
+    if (meshPaths.size() > 1u || !HasExtension(meshPaths.front(), ".nmesh"))
+    {
+        return GenerateMeshSetThumbnail(request, meshPaths, "thumbnail-model-mesh-artifact-missing", cancelToken);
+    }
+    return GenerateMeshSetThumbnail(request, meshPaths, "thumbnail-model-mesh-artifact-missing", cancelToken);
 }
 
 AssetThumbnailServiceResult GeneratePrefabThumbnail(
     const AssetThumbnailRequest& request,
     const AssetThumbnailCancelToken& cancelToken)
 {
-    if (ResolveFirstMeshArtifactPath(request).has_value())
-        return GenerateMeshBackedThumbnail(request, "thumbnail-prefab-mesh-artifact-missing", cancelToken);
+    if (const auto meshPaths = ResolveMeshArtifactPaths(request);
+        !meshPaths.empty())
+    {
+        return GenerateMeshSetThumbnail(request, meshPaths, "thumbnail-prefab-mesh-artifact-missing", cancelToken);
+    }
 
     const auto evaluation = EvaluateAssetThumbnailCache(request);
     auto result = BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Failed);
@@ -1619,6 +3062,7 @@ AssetThumbnailServiceResult GenerateTextureThumbnail(
     const AssetThumbnailRequest& request,
     const AssetThumbnailCancelToken& cancelToken)
 {
+    const auto generationSize = GetTextureThumbnailGenerationSize(request);
     auto evaluation = EvaluateAssetThumbnailCache(request);
     auto result = BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Failed);
     if (!IsThumbnailRequestStillFresh(request))
@@ -1668,12 +3112,40 @@ AssetThumbnailServiceResult GenerateTextureThumbnail(
         if (IsThumbnailGenerationCancelled(cancelToken))
             return BuildCancelledThumbnailRequestResult(request, evaluation);
         if (!textureArtifact.has_value() ||
-            textureArtifact->format != NLS::Render::RHI::TextureFormat::RGBA8 ||
-            textureArtifact->mips.empty() ||
-            textureArtifact->mips.front().pixels.empty() ||
-            textureArtifact->mips.front().width == 0u ||
-            textureArtifact->mips.front().height == 0u)
+            !IsRgba8TextureArtifactMipUsable(*textureArtifact))
         {
+            auto sourcePath = ResolveThumbnailSourcePath(request);
+            if (sourcePath.empty() || !IsTextureThumbnailSourceExtension(sourcePath))
+            {
+                if (auto dependencySourcePath = ResolveTextureSourceDependencyPath(request);
+                    dependencySourcePath.has_value())
+                {
+                    sourcePath = *dependencySourcePath;
+                }
+            }
+            if (!sourcePath.empty() && IsTextureThumbnailSourceExtension(sourcePath))
+            {
+                const auto dimensions = ReadImageHeaderDimensions(sourcePath);
+                if (FileSizeOrMax(sourcePath) <= kMaxSourceThumbnailImageBytes &&
+                    !(dimensions.has_value() && ImageDimensionsExceedPreviewBudget(*dimensions)) &&
+                    !(!dimensions.has_value() && IsKnownSourceImageExtension(sourcePath)))
+                {
+                    NLS::Image sourceImage(sourcePath.string(), false);
+                    if (sourceImage.GetData() != nullptr &&
+                        sourceImage.GetWidth() > 0 &&
+                        sourceImage.GetHeight() > 0 &&
+                        sourceImage.GetChannels() > 0)
+                    {
+                        return WriteThumbnailPngResult(
+                            request,
+                            evaluation,
+                            DownsampleImageToThumbnail(sourceImage, generationSize),
+                            "thumbnail-source-downsample-failed",
+                            cancelToken);
+                    }
+                }
+            }
+
             result.diagnostic = "thumbnail-texture-artifact-unsupported";
             result.status = AssetThumbnailServiceStatus::Fallback;
             WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
@@ -1688,16 +3160,23 @@ AssetThumbnailServiceResult GenerateTextureThumbnail(
             return result;
         }
 
-        const auto& mip = textureArtifact->mips.front();
+        const auto* mip = SelectTextureThumbnailMip(*textureArtifact, generationSize);
+        if (mip == nullptr)
+        {
+            result.diagnostic = "thumbnail-texture-artifact-unsupported";
+            result.status = AssetThumbnailServiceStatus::Fallback;
+            WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+            return result;
+        }
         return WriteThumbnailPngResult(
             request,
             evaluation,
             DownsampleRgba8ToThumbnail(
-                mip.pixels.data(),
-                mip.width,
-                mip.height,
-                mip.rowPitch,
-                request.requestedSize),
+                mip->pixels.data(),
+                mip->width,
+                mip->height,
+                mip->rowPitch,
+                generationSize),
             "thumbnail-texture-artifact-downsample-failed",
             cancelToken);
     }
@@ -1758,7 +3237,7 @@ AssetThumbnailServiceResult GenerateTextureThumbnail(
         return result;
     }
 
-    const auto thumbnail = DownsampleImageToThumbnail(sourceImage, request.requestedSize);
+    const auto thumbnail = DownsampleImageToThumbnail(sourceImage, generationSize);
     if (thumbnail.pixels.empty() || thumbnail.width == 0u || thumbnail.height == 0u)
     {
         result.diagnostic = "thumbnail-source-downsample-failed";
@@ -1795,6 +3274,13 @@ AssetThumbnailServiceResult GenerateThumbnailForRequest(
 
     if (IsThumbnailGenerationCancelled(cancelToken))
         return BuildCancelledThumbnailRequestResult(request, evaluation);
+
+    if (SupportsGpuThumbnailPreview(request.kind))
+    {
+        auto result = BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Pending);
+        result.diagnostic = UnsupportedDiagnosticForKind(request.kind);
+        return result;
+    }
 
     if (const auto generator = GeneratorForKind(request.kind);
         generator != nullptr)
@@ -1896,12 +3382,38 @@ std::optional<NLS::Core::Assets::AssetId> LoadSourceAssetIdFromMeta(
 
     return meta->id;
 }
+
+std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContext(
+    const std::filesystem::path& projectRoot,
+    const AssetBrowserItem& item,
+    uint32_t requestedSize,
+    AssetThumbnailRequestBuildContext* context);
 }
 
 std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItem(
     const std::filesystem::path& projectRoot,
     const AssetBrowserItem& item,
     const uint32_t requestedSize)
+{
+    return BuildAssetThumbnailRequestForItemWithContext(projectRoot, item, requestedSize, nullptr);
+}
+
+std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItem(
+    const std::filesystem::path& projectRoot,
+    const AssetBrowserItem& item,
+    const uint32_t requestedSize,
+    AssetThumbnailRequestBuildContext& context)
+{
+    return BuildAssetThumbnailRequestForItemWithContext(projectRoot, item, requestedSize, &context);
+}
+
+namespace
+{
+std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContext(
+    const std::filesystem::path& projectRoot,
+    const AssetBrowserItem& item,
+    const uint32_t requestedSize,
+    AssetThumbnailRequestBuildContext* context)
 {
     if (projectRoot.empty() ||
         item.kind == AssetBrowserItemKind::Folder ||
@@ -1924,15 +3436,37 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItem(
     request.assetId = assetId;
     request.sourceAssetPath = item.sourceAssetPath;
     request.subAssetKey = item.subAssetKey;
+    request.artifactPath = item.artifactPath;
+    auto cachedManifest = LoadThumbnailArtifactManifestCached(request, context);
+    const auto localManifest = cachedManifest == nullptr
+        ? LoadThumbnailArtifactManifest(request)
+        : std::optional<NLS::Core::Assets::ArtifactManifest> {};
+    const auto& manifest = cachedManifest != nullptr ? *cachedManifest : localManifest;
+    if (manifest.has_value())
+    {
+        if (const auto* artifact = FindThumbnailArtifactForItem(*manifest, item))
+        {
+            if (request.subAssetKey.empty())
+                request.subAssetKey = artifact->subAssetKey;
+            if (request.artifactPath.empty())
+                request.artifactPath = artifact->artifactPath;
+        }
+    }
+    if (request.subAssetKey.empty() && item.type == AssetBrowserItemType::Prefab)
+        request.subAssetKey = "prefab:" + std::filesystem::path(item.sourceAssetPath).stem().generic_string();
     if (item.kind == AssetBrowserItemKind::GeneratedSubAsset ||
         item.type == AssetBrowserItemType::Model ||
         item.type == AssetBrowserItemType::Prefab)
     {
-        request.artifactPath = item.artifactPath;
+        request.artifactPath = request.artifactPath.empty() ? item.artifactPath : request.artifactPath;
     }
     request.kind = ThumbnailKindForItem(item);
-    request.requestedSize = std::max(1u, requestedSize);
-    request.settingsFingerprint = "asset-browser-thumbnail:v2-downsampled";
+    request.requestedSize = request.kind == AssetThumbnailKind::Texture
+        ? (std::min)(std::max(1u, requestedSize), kMaxTextureThumbnailGenerationSize)
+        : std::max(1u, requestedSize);
+    request.settingsFingerprint = request.kind == AssetThumbnailKind::Texture
+        ? "asset-browser-thumbnail:v15-lowres-image-thumbnails"
+        : "asset-browser-thumbnail:v19-gpu-preview-textured-materials";
     request.freshnessInputs.push_back({
         "item",
         ItemFreshnessIdentity(item, assetId)
@@ -1940,6 +3474,7 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItem(
     AddSourceFreshnessInputs(request);
     AddArtifactFreshnessInputs(request, item);
     return request;
+}
 }
 
 AssetThumbnailService::~AssetThumbnailService()
@@ -1980,7 +3515,7 @@ AssetThumbnailServiceResult AssetThumbnailService::GetThumbnail(
         return result;
     }
 
-    if (!CanGenerateThumbnail(request.kind))
+    if (!CanRequestThumbnailGeneration(request.kind))
     {
         result.status = AssetThumbnailServiceStatus::Fallback;
         result.diagnostic = UnsupportedDiagnosticForKind(request.kind);
@@ -2009,6 +3544,14 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
         m_generationCancelToken = std::make_shared<AssetThumbnailGenerationCancelToken>();
     m_generationCancelToken->generation = m_generationSerial;
 
+    std::vector<std::string> deferredCacheKeys;
+    auto restoreDeferredCacheKeys = [&deferredCacheKeys, this]()
+    {
+        for (const auto& deferred : deferredCacheKeys)
+            m_queuedCacheKeys.push(deferred);
+        deferredCacheKeys.clear();
+    };
+
     while (!m_queuedCacheKeys.empty())
     {
         const auto cacheKey = m_queuedCacheKeys.front();
@@ -2019,15 +3562,151 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             continue;
 
         const auto request = requestIterator->second;
+        if (SupportsGpuThumbnailPreview(request.kind))
+        {
+            m_queuedRequestsByCacheKey.erase(requestIterator);
+            const auto evaluation = EvaluateAssetThumbnailCache(request);
+            if (const auto invalidPathDiagnostic = ValidateGpuPreviewRequestArtifactPaths(request);
+                invalidPathDiagnostic.has_value())
+            {
+                auto result = BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Failed);
+                result.diagnostic = *invalidPathDiagnostic;
+                WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+                restoreDeferredCacheKeys();
+                return result;
+            }
+            auto result = BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Fallback);
+            result.diagnostic = "thumbnail-gpu-preview-renderer-unavailable";
+            restoreDeferredCacheKeys();
+            return result;
+        }
+
         m_queuedRequestsByCacheKey.erase(requestIterator);
 
+        restoreDeferredCacheKeys();
         return TryGenerateThumbnailForRequest(request, m_generationCancelToken);
     }
 
+    restoreDeferredCacheKeys();
+    return std::nullopt;
+}
+
+std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextThumbnail(
+    EditorThumbnailPreviewRenderer& previewRenderer)
+{
+    if (!m_generationCancelToken)
+        m_generationCancelToken = std::make_shared<AssetThumbnailGenerationCancelToken>();
+    m_generationCancelToken->generation = m_generationSerial;
+
+    std::vector<std::string> deferredCacheKeys;
+    auto restoreDeferredCacheKeys = [&deferredCacheKeys, this]()
+    {
+        for (const auto& deferred : deferredCacheKeys)
+            m_queuedCacheKeys.push(deferred);
+        deferredCacheKeys.clear();
+    };
+    while (!m_queuedCacheKeys.empty())
+    {
+        const auto cacheKey = m_queuedCacheKeys.front();
+        m_queuedCacheKeys.pop();
+
+        const auto requestIterator = m_queuedRequestsByCacheKey.find(cacheKey);
+        if (requestIterator == m_queuedRequestsByCacheKey.end())
+            continue;
+
+        const auto request = requestIterator->second;
+        if (!previewRenderer.Supports(request))
+        {
+            deferredCacheKeys.push_back(cacheKey);
+            continue;
+        }
+
+        m_queuedRequestsByCacheKey.erase(requestIterator);
+
+        const auto evaluation = EvaluateAssetThumbnailCache(request);
+        if (const auto invalidPathDiagnostic = ValidateGpuPreviewRequestArtifactPaths(request);
+            invalidPathDiagnostic.has_value())
+        {
+            auto result = BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Failed);
+            result.diagnostic = *invalidPathDiagnostic;
+            WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+            restoreDeferredCacheKeys();
+            return result;
+        }
+        if (!evaluation.entry.has_value())
+        {
+            restoreDeferredCacheKeys();
+            return BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Failed);
+        }
+        if (!IsThumbnailRequestStillFresh(request))
+        {
+            restoreDeferredCacheKeys();
+            return BuildStaleThumbnailRequestResult(request, evaluation);
+        }
+        if (IsThumbnailGenerationCancelled(m_generationCancelToken))
+        {
+            restoreDeferredCacheKeys();
+            return BuildCancelledThumbnailRequestResult(request, evaluation);
+        }
+
+        const auto preview = previewRenderer.Render(request);
+        if (preview.rgbaPixels.empty() || preview.width == 0u || preview.height == 0u)
+        {
+            const auto diagnostic = preview.diagnostic.empty()
+                ? std::string("thumbnail-gpu-preview-generation-failed")
+                : preview.diagnostic;
+            const bool retryableGpuFailure = IsRetryableThumbnailFailureDiagnostic(diagnostic);
+            auto result = BuildResultFromEvaluation(
+                request,
+                evaluation,
+                retryableGpuFailure
+                    ? AssetThumbnailServiceStatus::Fallback
+                    : AssetThumbnailServiceStatus::Failed);
+            result.diagnostic = diagnostic;
+            if (!retryableGpuFailure)
+                WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+            restoreDeferredCacheKeys();
+            return result;
+        }
+        if (IsGpuPreviewClearFrame(preview.rgbaPixels, preview.width, preview.height))
+        {
+            auto result = BuildResultFromEvaluation(
+                request,
+                evaluation,
+                AssetThumbnailServiceStatus::Failed);
+            result.diagnostic = "thumbnail-gpu-preview-empty-frame";
+            WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Failed, result.diagnostic);
+            restoreDeferredCacheKeys();
+            return result;
+        }
+
+        restoreDeferredCacheKeys();
+
+        return WriteRgbaThumbnailResult(
+            request,
+            evaluation,
+            preview.rgbaPixels.data(),
+            preview.width,
+            preview.height,
+            "thumbnail-gpu-preview-generation-failed",
+            m_generationCancelToken);
+    }
+
+    restoreDeferredCacheKeys();
     return std::nullopt;
 }
 
 bool AssetThumbnailService::StartNextThumbnailGeneration()
+{
+    return StartNextThumbnailGeneration(nullptr);
+}
+
+bool AssetThumbnailService::StartNextThumbnailGeneration(EditorThumbnailPreviewRenderer& previewRenderer)
+{
+    return StartNextThumbnailGeneration(&previewRenderer);
+}
+
+bool AssetThumbnailService::StartNextThumbnailGeneration(EditorThumbnailPreviewRenderer* previewRenderer)
 {
     for (auto iterator = m_inFlightThumbnails.begin(); iterator != m_inFlightThumbnails.end();)
     {
@@ -2060,6 +3739,14 @@ bool AssetThumbnailService::StartNextThumbnailGeneration()
         return false;
     }
 
+    std::vector<std::string> deferredCacheKeys;
+    auto restoreDeferredCacheKeys = [&deferredCacheKeys, this]()
+    {
+        for (const auto& deferred : deferredCacheKeys)
+            m_queuedCacheKeys.push(deferred);
+        deferredCacheKeys.clear();
+    };
+
     while (!m_queuedCacheKeys.empty())
     {
         const auto cacheKey = m_queuedCacheKeys.front();
@@ -2070,6 +3757,16 @@ bool AssetThumbnailService::StartNextThumbnailGeneration()
             continue;
 
         const auto request = requestIterator->second;
+        if (SupportsGpuThumbnailPreview(request.kind))
+        {
+            deferredCacheKeys.push_back(cacheKey);
+            continue;
+        }
+        if (previewRenderer != nullptr && previewRenderer->Supports(request))
+        {
+            deferredCacheKeys.push_back(cacheKey);
+            continue;
+        }
         m_queuedRequestsByCacheKey.erase(requestIterator);
         if (!m_generationCancelToken)
             m_generationCancelToken = std::make_shared<AssetThumbnailGenerationCancelToken>();
@@ -2093,11 +3790,14 @@ bool AssetThumbnailService::StartNextThumbnailGeneration()
         catch (...)
         {
             (void)BuildExceptionThumbnailResult(request, "thumbnail-generation-worker-start-failed");
+            restoreDeferredCacheKeys();
             return false;
         }
+        restoreDeferredCacheKeys();
         return true;
     }
 
+    restoreDeferredCacheKeys();
     return false;
 }
 

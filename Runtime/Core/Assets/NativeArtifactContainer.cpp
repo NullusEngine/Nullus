@@ -386,6 +386,7 @@ std::string SerializeMetadata(const NativeArtifactMetadata& metadata)
     AppendMetadataLine(text, "SCHEMA_VERSION", std::to_string(metadata.schemaVersion));
     AppendMetadataLine(text, "SOURCE_ASSET_ID", metadata.sourceAssetId.ToString());
     AppendMetadataLine(text, "SUB_ASSET_KEY", metadata.subAssetKey);
+    AppendMetadataLine(text, "DISPLAY_NAME", metadata.displayName);
     AppendMetadataLine(text, "IMPORTER_ID", metadata.importerId);
     AppendMetadataLine(text, "IMPORTER_VERSION", std::to_string(metadata.importerVersion));
     AppendMetadataLine(text, "TARGET_PLATFORM", metadata.targetPlatform);
@@ -444,6 +445,8 @@ std::optional<NativeArtifactMetadata> DeserializeMetadata(std::string_view text)
         }
         else if (key == "SUB_ASSET_KEY")
             metadata.subAssetKey = value;
+        else if (key == "DISPLAY_NAME")
+            metadata.displayName = value;
         else if (key == "IMPORTER_ID")
             metadata.importerId = value;
         else if (key == "IMPORTER_VERSION")

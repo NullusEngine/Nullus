@@ -47,10 +47,24 @@ SkyBoxComponent::SkyBoxComponent()
 
 void SkyBoxComponent::SetCubeMap(Render::Resources::TextureCube* cubmap)
 {
-    if (mMaterial)
-    {
-        mMaterial->Set("u_UseProceduralSky", cubmap == nullptr);
-        mMaterial->Set("cubeTex", cubmap);
-    }
+    mCubeMap = cubmap;
+    if (cubmap != nullptr)
+        mSkyMode = SkyMode::CubeMap;
+    ApplySkyMode();
+}
+
+void SkyBoxComponent::SetSkyMode(SkyMode mode)
+{
+    mSkyMode = mode;
+    ApplySkyMode();
+}
+
+void SkyBoxComponent::ApplySkyMode()
+{
+    if (mMaterial == nullptr)
+        return;
+
+    mMaterial->Set("u_UseProceduralSky", mSkyMode == SkyMode::Procedural);
+    mMaterial->Set("cubeTex", mSkyMode == SkyMode::CubeMap ? mCubeMap : nullptr);
 }
 }

@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <Rendering/Resources/Texture.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -164,7 +165,30 @@ auto FindFailedMaterialLoadByEquivalentArtifactPath(
 		[&realPath](const auto& entry)
 		{
 			return ArtifactPathMatchesResolvedPath(entry.second.realPath, realPath);
-		});
+	});
+}
+
+bool HasResolvedTextureDependencies(const NLS::Render::Resources::Material& material)
+{
+	const auto& texturePaths = material.GetTextureResourcePaths();
+	if (texturePaths.empty())
+		return true;
+
+	const auto& uniforms = material.GetUniformsData();
+	for (const auto& [name, path] : texturePaths)
+	{
+		if (path.empty())
+			continue;
+
+		const auto uniform = uniforms.find(name);
+		if (uniform == uniforms.end())
+			return false;
+
+		const auto* texture = std::any_cast<NLS::Render::Resources::Texture2D*>(&uniform->second);
+		if (texture == nullptr || *texture == nullptr)
+			return false;
+	}
+	return true;
 }
 
 void EraseCancelledMaterialArtifactByEquivalentPath(
@@ -210,6 +234,31 @@ Material* MaterialManager::PrewarmArtifact(const std::string& path)
 		return cached;
 
 	auto* prewarmed = CreateResource(path, {false, false});
+	if (prewarmed && prewarmed->IsValid())
+		return RegisterResource(path, prewarmed);
+
+	if (prewarmed)
+		DestroyResource(prewarmed);
+	return nullptr;
+}
+
+Material* MaterialManager::PrewarmArtifactWithDependencies(const std::string& path)
+{
+	if (auto* cached = GetResource(path, false))
+	{
+		if (!HasResolvedTextureDependencies(*cached))
+			NLS::Render::Resources::Loaders::MaterialLoader::Reload(*cached, ResolveResourcePath(path), {true, true});
+		return HasResolvedTextureDependencies(*cached) ? cached : nullptr;
+	}
+	const auto realPath = ResolveResourcePath(path);
+	if (auto* cached = FindCachedMaterialByEquivalentArtifactPath(*this, realPath))
+	{
+		if (!HasResolvedTextureDependencies(*cached))
+			NLS::Render::Resources::Loaders::MaterialLoader::Reload(*cached, realPath, {true, true});
+		return HasResolvedTextureDependencies(*cached) ? cached : nullptr;
+	}
+
+	auto* prewarmed = CreateResource(path, {true, true});
 	if (prewarmed && prewarmed->IsValid())
 		return RegisterResource(path, prewarmed);
 

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <array>
 #include <filesystem>
@@ -42,9 +42,9 @@ class TextClickable;
 }
 namespace NLS::Editor::Panels
 {
-	/**
-	* A panel that handle asset management
-	*/
+		/**
+		* A panel that handle asset management
+		*/
 	class AssetBrowser : public UI::PanelWindow
 	{
 	public:
@@ -134,9 +134,17 @@ namespace NLS::Editor::Panels
 		void RebuildProjectFolderTreePresentation();
 		void RebuildProjectAssetPresentation(NLS::Editor::Assets::AssetBrowserRefreshPlan refreshPlan);
 		void SelectProjectFolder(const std::string& projectRelativePath);
-		void DrawProjectAssetBrowser();
-		bool DrawProjectFolderTree(const NLS::Editor::Assets::AssetBrowserFolderNode& node);
-		void DrawProjectBreadcrumb();
+			void DrawProjectAssetBrowser();
+			bool DrawProjectFolderTree(const NLS::Editor::Assets::AssetBrowserFolderNode& node);
+			void AdvanceProjectAssetSubAssetRevealCounts(
+				const std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem>& displayItems);
+			std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem> BuildProgressiveProjectAssetDisplayItems(
+				const std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem>& displayItems) const;
+			bool IsAssetBrowserInteractive() const;
+			void MarkProjectAssetDisplayItemsDirty();
+			void RebuildProjectAssetDisplayItemsIfNeeded();
+			void SetVisibleThumbnailItems(std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleItems);
+			void DrawProjectBreadcrumb();
 		void DrawProjectFilterBar();
 		void DrawCurrentFolderGrid();
 		void DrawCurrentFolderList(
@@ -189,15 +197,30 @@ namespace NLS::Editor::Panels
 			const std::string& targetProjectRelativeFolder,
 			const std::filesystem::path& targetAbsoluteFolder);
 			struct ThumbnailTextureHandle;
-			ThumbnailTextureHandle ResolveCachedThumbnailTextureHandle(const std::filesystem::path& imagePath);
-		bool LoadCachedThumbnailTexture(const std::string& normalizedPath);
-		bool LoadDecodedCachedThumbnailTexture(ThumbnailTextureDecodeResult result);
-		static ThumbnailTextureDecodeResult DecodeCachedThumbnailTexture(std::string normalizedPath);
+			ThumbnailTextureHandle ResolveCachedThumbnailTextureHandle(
+				const std::filesystem::path& imagePath,
+				bool queueIfMissing = true);
+			bool LoadCachedThumbnailTexture(const std::string& normalizedPath);
+			bool LoadDecodedCachedThumbnailTexture(ThumbnailTextureDecodeResult result);
+			void ApplyThumbnailServiceResult(
+				const NLS::Editor::Assets::AssetThumbnailServiceResult& generated);
+			void PumpThumbnailGeneration();
+			bool TryGenerateNextGpuThumbnail();
+			static ThumbnailTextureDecodeResult DecodeCachedThumbnailTexture(std::string normalizedPath);
 		void QueueCachedThumbnailTextureLoad(const std::filesystem::path& imagePath);
-		void PumpQueuedCachedThumbnailTextureLoads();
-		void StartQueuedCachedThumbnailTextureDecodes();
-		void ConsumeCompletedCachedThumbnailTextureDecodes();
-		void PumpRetiredProjectAssetDatabaseRefreshes();
+			void PumpQueuedCachedThumbnailTextureLoads();
+			void StartQueuedCachedThumbnailTextureDecodes();
+			void ConsumeCompletedCachedThumbnailTextureDecodes();
+			void PumpCurrentFolderItemsRefresh();
+			void RefreshProjectAssetSubAssetSnapshotCache();
+			void PumpProjectAssetSubAssetMaterialization();
+			void StartCurrentFolderItemsRefresh(
+				const std::filesystem::path& projectRoot,
+				std::string selectedFolder,
+				NLS::Editor::Assets::AssetBrowserBuildOptions buildOptions,
+				const NLS::Editor::Assets::AssetDatabaseFacade* database);
+			void DiscardCurrentFolderItemsRefresh();
+			void PumpRetiredProjectAssetDatabaseRefreshes();
 		void DiscardProjectAssetDatabaseRefresh();
 		void PumpObjectReferencePickerEntriesRefresh();
 		void RequestObjectReferencePickerEntriesRefresh();
@@ -221,29 +244,49 @@ namespace NLS::Editor::Panels
 		std::string m_selectedProjectItem;
 		std::string m_projectSearchQuery;
 		NLS::Editor::Assets::AssetBrowserItemType m_projectTypeFilter = NLS::Editor::Assets::AssetBrowserItemType::All;
-		float m_thumbnailSize = 96.0f;
-		NLS::Editor::Assets::AssetBrowserFolderNode m_projectFolderTree;
-		std::vector<NLS::Editor::Assets::AssetBrowserItem> m_unfilteredCurrentFolderItems;
-		std::vector<NLS::Editor::Assets::AssetBrowserItem> m_currentFolderItems;
-		std::vector<NLS::Editor::Assets::AssetBrowserBreadcrumbSegment> m_currentBreadcrumb;
-		NLS::Editor::Assets::AssetThumbnailService m_thumbnailService;
-		std::vector<NLS::Editor::Assets::AssetBrowserItem> m_visibleThumbnailItems;
-		bool m_visibleThumbnailItemsKnown = false;
+			float m_thumbnailSize = 96.0f;
+				NLS::Editor::Assets::AssetBrowserFolderNode m_projectFolderTree;
+				std::vector<NLS::Editor::Assets::AssetBrowserItem> m_unfilteredCurrentFolderItems;
+				std::vector<NLS::Editor::Assets::AssetBrowserItem> m_currentFolderItems;
+					std::vector<NLS::Editor::Assets::AssetBrowserItem> m_projectDisplayRebuildMergedItems;
+					size_t m_projectDisplayRebuildSourceOffset = 0u;
+					std::string m_projectDisplayRebuildChildSourcePath;
+					size_t m_projectDisplayRebuildChildOffset = 0u;
+					bool m_projectDisplayRebuildInProgress = false;
+				std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem> m_projectBaseDisplayItems;
+				std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem> m_projectDisplayItems;
+				std::vector<NLS::Editor::Assets::AssetBrowserBreadcrumbSegment> m_currentBreadcrumb;
+				NLS::Editor::Assets::AssetThumbnailService m_thumbnailService;
+				std::unique_ptr<NLS::Editor::Assets::EditorThumbnailPreviewRenderer> m_thumbnailPreviewRenderer;
+				double m_nextGpuThumbnailGenerationTime = 0.0;
+				double m_assetBrowserInteractiveUntil = 0.0;
+				std::vector<NLS::Editor::Assets::AssetBrowserItem> m_visibleThumbnailItems;
+			bool m_visibleThumbnailItemsKnown = false;
+			std::string m_visibleThumbnailScopeKey;
+			uint64_t m_visibleThumbnailFingerprint = 0u;
+			size_t m_visibleThumbnailCount = 0u;
+			uint32_t m_visibleThumbnailRequestSize = 0u;
+			std::vector<NLS::Editor::Assets::AssetBrowserItem> m_pendingThumbnailScopeItems;
+			size_t m_pendingThumbnailScopeOffset = 0u;
+			NLS::Editor::Assets::AssetThumbnailRequestBuildContext m_pendingThumbnailRequestContext;
+			bool m_thumbnailScopeBuildInProgress = false;
+		bool m_projectDisplayItemsDirty = true;
 		std::unordered_map<std::string, NLS::Editor::Assets::AssetThumbnailServiceResult> m_thumbnailResultsByItemKey;
 		std::unordered_map<std::string, std::string> m_thumbnailItemKeyByCacheKey;
-			struct ThumbnailTextureCacheEntry
-			{
-				NLS::Render::Resources::Texture2D* texture = nullptr;
-				std::shared_ptr<NLS::Render::RHI::RHITextureView> textureView;
-				uint32_t width = 0u;
-				uint32_t height = 0u;
-			};
-			struct ThumbnailTextureHandle
-			{
-				void* textureHandle = nullptr;
-				uint32_t width = 0u;
-				uint32_t height = 0u;
-			};
+		struct ThumbnailTextureCacheEntry
+		{
+			NLS::Render::Resources::Texture2D* texture = nullptr;
+			std::shared_ptr<NLS::Render::RHI::RHITextureView> textureView;
+			uint32_t width = 0u;
+			uint32_t height = 0u;
+			uint64_t lastUsedFrame = 0u;
+		};
+		struct ThumbnailTextureHandle
+		{
+			void* textureHandle = nullptr;
+			uint32_t width = 0u;
+			uint32_t height = 0u;
+		};
 		struct ThumbnailTextureDecodeResult
 		{
 			std::string normalizedPath;
@@ -262,11 +305,18 @@ namespace NLS::Editor::Panels
 			std::future<std::vector<NLS::Editor::Assets::ObjectReferencePickerEntry>> future;
 		};
 
-		struct AssetDatabaseRefresh
-		{
-			std::filesystem::path root;
-			std::future<std::unique_ptr<NLS::Editor::Assets::AssetDatabaseFacade>> future;
-		};
+			struct AssetDatabaseRefresh
+			{
+				std::filesystem::path root;
+				std::future<std::unique_ptr<NLS::Editor::Assets::AssetDatabaseFacade>> future;
+			};
+			struct CurrentFolderItemsRefresh
+			{
+				uint64_t generation = 0u;
+				std::filesystem::path projectRoot;
+				std::string selectedFolder;
+				std::future<std::vector<NLS::Editor::Assets::AssetBrowserItem>> future;
+			};
 		std::unordered_map<std::string, ThumbnailTextureCacheEntry> m_thumbnailTexturesByPath;
 		std::vector<std::string> m_thumbnailTextureLru;
 		std::unordered_set<std::string> m_thumbnailTexturesUsedThisFrame;
@@ -274,8 +324,9 @@ namespace NLS::Editor::Panels
 		std::vector<std::string> m_thumbnailTextureLoadQueue;
 		std::unordered_set<std::string> m_thumbnailTexturesQueuedForLoad;
 		std::unordered_set<std::string> m_thumbnailTexturesFailedToLoad;
-		std::vector<InFlightThumbnailTextureDecode> m_thumbnailTextureDecodes;
-		std::unordered_set<std::string> m_thumbnailTexturesDecoding;
+			std::vector<InFlightThumbnailTextureDecode> m_thumbnailTextureDecodes;
+			std::unordered_set<std::string> m_thumbnailTexturesDecoding;
+			uint64_t m_thumbnailTextureFrameSerial = 0u;
 		std::optional<ObjectReferencePickerRefresh> m_objectReferencePickerRefresh;
 		std::vector<ObjectReferencePickerRefresh> m_retiredObjectReferencePickerRefreshes;
 		uint64_t m_objectReferencePickerRefreshGeneration = 0u;
@@ -286,16 +337,23 @@ namespace NLS::Editor::Panels
 		std::unique_ptr<NLS::Editor::Assets::AssetDatabaseFacade> m_projectAssetDatabase;
 		std::filesystem::path m_projectAssetDatabaseRoot;
 		bool m_projectAssetDatabaseReady = false;
-		std::optional<AssetDatabaseRefresh> m_projectAssetDatabaseRefresh;
-		std::vector<AssetDatabaseRefresh> m_retiredProjectAssetDatabaseRefreshes;
-		bool m_projectAssetDatabaseRefreshQueuedAfterInFlight = false;
+			std::optional<AssetDatabaseRefresh> m_projectAssetDatabaseRefresh;
+			std::vector<AssetDatabaseRefresh> m_retiredProjectAssetDatabaseRefreshes;
+			bool m_projectAssetDatabaseRefreshQueuedAfterInFlight = false;
+			std::optional<CurrentFolderItemsRefresh> m_currentFolderItemsRefresh;
+			std::vector<CurrentFolderItemsRefresh> m_retiredCurrentFolderItemsRefreshes;
 		ProjectBrowserTextDialogState m_projectBrowserTextDialog;
 		std::pair<std::string, UI::Widgets::Group*> m_projectGridDragPairPayload;
 		std::unordered_map<UI::Widgets::TreeNode*, std::string> m_pathUpdate;
-		std::unordered_set<std::string> m_expandedFolders;
-		std::unordered_set<std::string> m_expandedProjectFolders;
-		std::unordered_set<std::string> m_expandedProjectAssetItems;
-		Core::AssetFileWatcher m_engineAssetsWatcher;
+			std::unordered_set<std::string> m_expandedFolders;
+			std::unordered_set<std::string> m_expandedProjectFolders;
+			std::unordered_set<std::string> m_expandedProjectAssetItems;
+			std::unordered_map<std::string, size_t> m_projectAssetSubAssetRevealCounts;
+			std::unordered_map<std::string, size_t> m_projectAssetSubAssetChildCountHints;
+			std::unordered_map<std::string, NLS::Editor::Assets::ObjectReferencePickerAssetSnapshot> m_projectAssetSubAssetSnapshotsBySource;
+			std::unordered_map<std::string, std::vector<NLS::Editor::Assets::AssetBrowserItem>> m_projectAssetSubAssetItemsBySource;
+			std::unordered_map<std::string, size_t> m_projectAssetSubAssetMaterializeOffsets;
+			Core::AssetFileWatcher m_engineAssetsWatcher;
 		Core::AssetFileWatcher m_projectAssetsWatcher;
 		std::future<void> m_watcherStartup;
 		bool m_watchersStartupQueued = false;

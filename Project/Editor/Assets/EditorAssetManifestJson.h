@@ -223,6 +223,7 @@ inline std::optional<NLS::Core::Assets::ArtifactManifest> ParseArtifactManifestJ
             const auto artifactTargetPlatform = JsonStringOrDefault(artifactJson, "targetPlatform");
             const auto artifactPath = JsonStringOrDefault(artifactJson, "artifactPath");
             const auto contentHash = JsonStringOrDefault(artifactJson, "contentHash");
+            const auto displayName = JsonStringOrDefault(artifactJson, "displayName");
             if (!subAssetKey.has_value() ||
                 !artifactType.has_value() ||
                 !loaderId.has_value() ||
@@ -240,7 +241,8 @@ inline std::optional<NLS::Core::Assets::ArtifactManifest> ParseArtifactManifestJ
                 *loaderId,
                 *artifactTargetPlatform,
                 *artifactPath,
-                *contentHash
+                *contentHash,
+                displayName.value_or(std::string {})
             });
         }
     }

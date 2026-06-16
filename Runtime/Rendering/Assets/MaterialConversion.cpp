@@ -798,6 +798,7 @@ std::vector<NLS::Core::Assets::ArtifactPayload> BuildMaterialArtifactPayloads(
             material.subAssetKey,
             NLS::Core::Assets::ArtifactType::Material,
             "material",
+            material.displayName,
             "materials/" + EncodeArtifactFileName(material.subAssetKey) + ".nmat",
             std::move(bytes)
         });

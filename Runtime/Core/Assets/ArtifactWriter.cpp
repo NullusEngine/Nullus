@@ -176,6 +176,7 @@ std::vector<uint8_t> BuildStoredArtifactPayload(
     metadata.schemaVersion = SchemaVersionForArtifactType(artifact.artifactType);
     metadata.sourceAssetId = request.sourceAssetId;
     metadata.subAssetKey = artifact.subAssetKey;
+    metadata.displayName = artifact.displayName;
     metadata.importerId = request.importerId;
     metadata.importerVersion = request.importerVersion;
     metadata.targetPlatform = request.targetPlatform;
@@ -384,6 +385,7 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
         imported.targetPlatform = request.targetPlatform;
         imported.artifactPath = (committedRoot / artifact.relativePath).string();
         imported.contentHash = ComputeArtifactContentHash(storedPayload);
+        imported.displayName = artifact.displayName;
         nextManifest.subAssets.push_back(std::move(imported));
     }
 

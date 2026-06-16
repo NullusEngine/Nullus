@@ -975,6 +975,7 @@ TEST(AssetBrowserPresentationTests, BuildsCurrentFolderItemsWithGeneratedSubAsse
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
+    options.expandedSourceAssets.insert("Assets/Models/Hero.gltf");
     const auto items = BuildCurrentFolderAssetItems(root, "Assets/Models", &database, options);
 
     ASSERT_EQ(items.size(), 6u);
@@ -1283,6 +1284,42 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationItemsWaitForVisibleScope)
         true);
     ASSERT_EQ(knownVisibleScope.size(), 1u);
     EXPECT_EQ(knownVisibleScope[0].projectRelativePath, texture.projectRelativePath);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailGenerationExpandsVisibleSubAssetSourceScope)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserItem source;
+    source.displayName = "Hero.gltf";
+    source.projectRelativePath = "Assets/Models/Hero.gltf";
+    source.sourceAssetPath = "Assets/Models/Hero.gltf";
+    source.kind = AssetBrowserItemKind::SourceAsset;
+    source.type = AssetBrowserItemType::Model;
+
+    AssetBrowserItem visibleMesh;
+    visibleMesh.displayName = "Body";
+    visibleMesh.projectRelativePath = "Assets/Models/Hero.gltf::mesh:Body";
+    visibleMesh.sourceAssetPath = "Assets/Models/Hero.gltf";
+    visibleMesh.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    visibleMesh.type = AssetBrowserItemType::Mesh;
+
+    AssetBrowserItem offscreenMaterial;
+    offscreenMaterial.displayName = "BodyMat";
+    offscreenMaterial.projectRelativePath = "Assets/Models/Hero.gltf::material:Body";
+    offscreenMaterial.sourceAssetPath = "Assets/Models/Hero.gltf";
+    offscreenMaterial.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    offscreenMaterial.type = AssetBrowserItemType::Material;
+
+    const auto selected = SelectAssetBrowserThumbnailGenerationItems(
+        std::vector<AssetBrowserItem> { source, visibleMesh, offscreenMaterial },
+        std::vector<AssetBrowserItem> { source, visibleMesh },
+        true);
+
+    ASSERT_EQ(selected.size(), 3u);
+    EXPECT_EQ(selected[0].projectRelativePath, source.projectRelativePath);
+    EXPECT_EQ(selected[1].projectRelativePath, visibleMesh.projectRelativePath);
+    EXPECT_EQ(selected[2].projectRelativePath, offscreenMaterial.projectRelativePath);
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeDecisionRequeriesDirtySameScope)
@@ -1752,6 +1789,7 @@ TEST(AssetBrowserPresentationTests, SkipsGeneratedSubAssetsWhenManifestIsStale)
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
+    options.expandedSourceAssets.insert("Assets/Models/Hero.gltf");
     const auto freshItems = BuildCurrentFolderAssetItems(root, "Assets/Models", &database, options);
     ASSERT_NE(FindGeneratedSubAssetItem(freshItems, "prefab:Hero"), nullptr);
     ASSERT_NE(FindGeneratedSubAssetItem(freshItems, "mesh:Body"), nullptr);
@@ -1794,6 +1832,7 @@ TEST(AssetBrowserPresentationTests, FastGeneratedSubAssetBuildUsesKnownCurrentMa
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
+    options.expandedSourceAssets.insert("Assets/Models/Hero.gltf");
     options.verifyGeneratedSubAssetManifests = false;
     const auto freshItems = BuildCurrentFolderAssetItems(root, "Assets/Models", &database, options);
 
@@ -1848,6 +1887,7 @@ TEST(AssetBrowserPresentationTests, RestartedFastGeneratedSubAssetBuildRejectsSt
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
+    options.expandedSourceAssets.insert("Assets/Models/Hero.gltf");
     options.verifyGeneratedSubAssetManifests = false;
     const auto items = BuildCurrentFolderAssetItems(root, "Assets/Models", &restartedDatabase, options);
 
@@ -1884,6 +1924,7 @@ TEST(AssetBrowserPresentationTests, SourceModelCardKeepsFileTypeWhenPrimaryArtif
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
+    options.expandedSourceAssets.insert("Assets/Models/Hero.gltf");
     const auto items = BuildCurrentFolderAssetItems(root, "Assets/Models", &database, options);
 
     const auto* source = FindItem(items, "Hero.gltf");
@@ -1927,6 +1968,7 @@ TEST(AssetBrowserPresentationTests, GeneratedSubAssetItemsPreserveEditorDragPayl
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
+    options.expandedSourceAssets.insert("Assets/Models/Hero.gltf");
     const auto items = BuildCurrentFolderAssetItems(root, "Assets/Models", &database, options);
 
     const auto* prefab = FindGeneratedSubAssetItem(items, "prefab:Hero");
@@ -1999,6 +2041,7 @@ TEST(AssetBrowserPresentationTests, RejectsGeneratedDragPayloadWhenCachedItemMan
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
+    options.expandedSourceAssets.insert("Assets/Models/Hero.gltf");
     const auto items = BuildCurrentFolderAssetItems(root, "Assets/Models", &database, options);
     const auto* cachedPrefab = FindGeneratedSubAssetItem(items, "prefab:Hero");
     ASSERT_NE(cachedPrefab, nullptr);

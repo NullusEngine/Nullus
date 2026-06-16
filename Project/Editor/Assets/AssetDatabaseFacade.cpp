@@ -139,6 +139,78 @@ bool HasDependency(
         });
 }
 
+uint32_t NativeArtifactSchemaVersionForSnapshotType(
+    const NLS::Core::Assets::ArtifactType artifactType)
+{
+    switch (artifactType)
+    {
+    case NLS::Core::Assets::ArtifactType::Mesh:
+        return 3u;
+    case NLS::Core::Assets::ArtifactType::Texture:
+        return 4u;
+    case NLS::Core::Assets::ArtifactType::Material:
+    case NLS::Core::Assets::ArtifactType::Prefab:
+    case NLS::Core::Assets::ArtifactType::Shader:
+    case NLS::Core::Assets::ArtifactType::Scene:
+    case NLS::Core::Assets::ArtifactType::Audio:
+    case NLS::Core::Assets::ArtifactType::Skeleton:
+    case NLS::Core::Assets::ArtifactType::Skin:
+    case NLS::Core::Assets::ArtifactType::AnimationClip:
+    case NLS::Core::Assets::ArtifactType::MorphTarget:
+    case NLS::Core::Assets::ArtifactType::Model:
+    case NLS::Core::Assets::ArtifactType::Unknown:
+    case NLS::Core::Assets::ArtifactType::Count:
+        return 1u;
+    }
+    return 1u;
+}
+
+std::string ReadSubAssetDisplayNameFromArtifact(
+    const std::string& artifactPath,
+    const NLS::Core::Assets::ArtifactType artifactType)
+{
+    if (artifactPath.empty())
+        return {};
+
+    const auto prefix = NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+        artifactPath,
+        artifactType,
+        NativeArtifactSchemaVersionForSnapshotType(artifactType),
+        0u,
+        64u * 1024u);
+    if (!prefix.has_value())
+        return {};
+    return prefix->metadata.displayName;
+}
+
+bool SubAssetKeyNeedsDisplayNameProbe(const std::string& subAssetKey)
+{
+    const auto separator = subAssetKey.find(':');
+    auto name = separator == std::string::npos || separator + 1u >= subAssetKey.size()
+        ? subAssetKey
+        : subAssetKey.substr(separator + 1u);
+    const auto slash = name.find_last_of("/\\");
+    if (slash != std::string::npos && slash + 1u < name.size())
+        name = name.substr(slash + 1u);
+    return name.empty() || std::all_of(
+        name.begin(),
+        name.end(),
+        [](const unsigned char ch)
+        {
+            return std::isdigit(ch) != 0;
+        });
+}
+
+std::string ReadSubAssetDisplayNameForSnapshot(
+    const NLS::Core::Assets::ImportedArtifact& artifact)
+{
+    if (!artifact.displayName.empty())
+        return artifact.displayName;
+    if (!SubAssetKeyNeedsDisplayNameProbe(artifact.subAssetKey))
+        return {};
+    return ReadSubAssetDisplayNameFromArtifact(artifact.artifactPath, artifact.artifactType);
+}
+
 bool HasCurrentExternalTextureBuildPipelineDependency(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::AssetType assetType)
@@ -808,7 +880,8 @@ nlohmann::json ToJson(const NLS::Core::Assets::ArtifactManifest& manifest)
             {"loaderId", artifact.loaderId},
             {"targetPlatform", artifact.targetPlatform},
             {"artifactPath", artifact.artifactPath},
-            {"contentHash", artifact.contentHash}
+            {"contentHash", artifact.contentHash},
+            {"displayName", artifact.displayName}
         });
     }
 
@@ -971,6 +1044,20 @@ AssetDatabaseFacade::AssetDatabaseFacade(
             root.libraryPath = NLS::Core::Assets::NormalizeAssetPath(root.libraryPath);
         m_roots.push_back(std::move(root));
     }
+}
+
+std::shared_ptr<const AssetDatabaseFacade> AssetDatabaseFacade::CreateReadOnlySnapshot(const AssetDatabaseFacade& other)
+{
+    std::scoped_lock lock(other.m_manifestMutex, other.m_artifactDatabaseCacheMutex);
+    auto snapshot = std::shared_ptr<AssetDatabaseFacade>(new AssetDatabaseFacade(other.m_roots, other.m_mode));
+    snapshot->m_sourceDatabase = other.m_sourceDatabase;
+    snapshot->m_diagnostics = other.m_diagnostics;
+    snapshot->m_idByEditorPath = other.m_idByEditorPath;
+    snapshot->m_editorPathById = other.m_editorPathById;
+    snapshot->m_manifestsBySource = other.m_manifestsBySource;
+    snapshot->m_knownCurrentArtifactManifestAssetPaths = other.m_knownCurrentArtifactManifestAssetPaths;
+    snapshot->m_objectReferencePickerAssetSnapshots = other.m_objectReferencePickerAssetSnapshots;
+    return snapshot;
 }
 
 bool AssetDatabaseFacade::Refresh()
@@ -1844,7 +1931,8 @@ ObjectReferencePickerAssetSnapshot AssetDatabaseFacade::BuildObjectReferencePick
         snapshot.subAssets.push_back({
             artifact.subAssetKey,
             artifact.artifactPath,
-            artifact.artifactType
+            artifact.artifactType,
+            ReadSubAssetDisplayNameForSnapshot(artifact)
         });
     }
     return snapshot;
@@ -2323,6 +2411,8 @@ bool AssetDatabaseFacade::CreateAsset(
     manifest.targetPlatform = "editor";
     manifest.primarySubAssetKey = subAssetKey;
     manifest.subAssets.push_back(MakeImportedArtifact(meta.id, asset, subAssetKey, absolutePath));
+    if (!SaveArtifactManifestForAssetPath(absolutePath, manifest))
+        return false;
     AddArtifactManifest(std::move(manifest));
     return true;
 }
@@ -2690,6 +2780,7 @@ bool AssetDatabaseFacade::RefreshSingle(
             primarySubAssetKey,
             NLS::Core::Assets::ArtifactType::Prefab,
             "prefab",
+            absolutePath.stem().generic_string(),
             "prefab.nprefab",
             std::vector<uint8_t>(sourceText.begin(), sourceText.end())
         });
@@ -2821,6 +2912,7 @@ bool AssetDatabaseFacade::RefreshSingle(
             subAssetKey,
             NLS::Core::Assets::ArtifactType::Shader,
             "shader",
+            absolutePath.stem().generic_string(),
             "shader.nshader",
             NLS::Render::Assets::SerializeShaderArtifact(shaderArtifact)
         });
@@ -3424,7 +3516,8 @@ NLS::Core::Assets::ImportedArtifact AssetDatabaseFacade::MakeImportedArtifact(
         asset.loaderId.empty() ? ToArtifactTypeKey(asset.artifactType) : asset.loaderId,
         "editor",
         ToEditorAssetPath(artifactPath),
-        "sha256:" + owner.ToString() + ":" + subAssetKey
+        "sha256:" + owner.ToString() + ":" + subAssetKey,
+        asset.name
     };
 }
 

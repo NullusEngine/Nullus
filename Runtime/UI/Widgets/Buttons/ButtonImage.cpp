@@ -20,9 +20,16 @@ void ButtonImage::_Draw_Impl()
         resolvedTextureId = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(textureView);
 
     const ImVec2 imageSize = Internal::Converter::ToImVec2(size);
+    const bool wasDisabled = disabled;
+    if (wasDisabled)
+        ImGui::BeginDisabled();
+
     const bool clicked = resolvedTextureId != nullptr
         ? ImGui::ImageButton(resolvedTextureId, imageSize, ImVec2(0.f, 1.f), ImVec2(1.f, 0.f), -1, bg, tn)
         : ImGui::InvisibleButton(m_widgetID.c_str(), imageSize);
+
+    if (wasDisabled)
+        ImGui::EndDisabled();
 
     if (clicked)
         ClickedEvent.Invoke();

@@ -10,6 +10,7 @@
 #include "Engine/Assets/RuntimeAssetDatabase.h"
 
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -34,6 +35,7 @@ struct ObjectReferencePickerSubAssetSnapshot
     std::string subAssetKey;
     std::string artifactPath;
     NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
+    std::string displayName;
 };
 
 struct ObjectReferencePickerAssetSnapshot
@@ -74,6 +76,12 @@ public:
     AssetDatabaseFacade(
         std::vector<EditorAssetRoot> roots,
         AssetDatabaseAccessMode mode);
+    static std::shared_ptr<const AssetDatabaseFacade> CreateReadOnlySnapshot(const AssetDatabaseFacade& other);
+
+    AssetDatabaseFacade(const AssetDatabaseFacade& other) = delete;
+    AssetDatabaseFacade& operator=(const AssetDatabaseFacade& other) = delete;
+    AssetDatabaseFacade(AssetDatabaseFacade&& other) = delete;
+    AssetDatabaseFacade& operator=(AssetDatabaseFacade&& other) = delete;
 
     bool Refresh();
     bool ImportAsset(const std::string& assetPath);

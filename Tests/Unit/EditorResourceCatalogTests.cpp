@@ -68,7 +68,7 @@ TEST(EditorResourceCatalogTests, ResolvesPackagedResourcesThroughSameId)
     std::filesystem::remove_all(root, error);
 }
 
-TEST(EditorResourceCatalogTests, RejectsUnityNamedResourceIdsAndPaths)
+TEST(EditorResourceCatalogTests, AllowsExternalResourceIdsWithoutBrandSpecificTokenFilters)
 {
     const auto root = MakeCatalogTestRoot();
     EditorResourceCatalog catalog(root / "bin" / "Editor.exe");
@@ -77,8 +77,8 @@ TEST(EditorResourceCatalogTests, RejectsUnityNamedResourceIdsAndPaths)
     record.id = "editor.icon.unity.project.folder";
     record.developmentPath = "Editor/Icons/unity_project_folder.png";
 
-    EXPECT_FALSE(catalog.AddRecord(record));
-    EXPECT_FALSE(catalog.Contains("editor.icon.unity.project.folder"));
+    EXPECT_TRUE(catalog.AddRecord(record));
+    EXPECT_TRUE(catalog.Contains("editor.icon.unity.project.folder"));
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

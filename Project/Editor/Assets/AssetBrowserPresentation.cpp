@@ -2,15 +2,19 @@
 
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetPath.h"
+#include "Assets/NativeArtifactContainer.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <optional>
 #include <sstream>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -22,6 +26,7 @@ std::vector<EditorAssetRoot> g_objectReferencePickerAssetRoots;
 std::vector<ObjectReferencePickerEntry> g_objectReferencePickerEntries;
 ObjectReferencePickerEntriesProvider g_objectReferencePickerEntriesProvider;
 bool g_objectReferencePickerEntriesDirty = false;
+constexpr uint64_t kMaxDisplayNameArtifactProbeBytes = 1024ull * 1024ull;
 
 bool IsInspectorReferenceableSubAsset(const NLS::Core::Assets::ArtifactType p_type)
 {
@@ -42,6 +47,12 @@ bool IsGridVisibleGeneratedSubAsset(const NLS::Core::Assets::ArtifactType p_type
            p_type == ArtifactType::Shader;
 }
 
+bool AssetTypeCanHaveGeneratedSubAssets(const AssetBrowserItemType type)
+{
+    return type == AssetBrowserItemType::Model ||
+           type == AssetBrowserItemType::Prefab;
+}
+
 std::string MakeSubAssetDisplayName(const std::string& p_subAssetKey)
 {
     const auto separator = p_subAssetKey.find(':');
@@ -53,6 +64,235 @@ std::string MakeSubAssetDisplayName(const std::string& p_subAssetKey)
     if (slash != std::string::npos && slash + 1u < name.size())
         name = name.substr(slash + 1u);
     return name;
+}
+
+std::string PrettyTypeName(const NLS::Core::Assets::ArtifactType type)
+{
+    using NLS::Core::Assets::ArtifactType;
+    switch (type)
+    {
+    case ArtifactType::Prefab: return "Prefab";
+    case ArtifactType::Mesh: return "Mesh";
+    case ArtifactType::Material: return "Material";
+    case ArtifactType::Texture: return "Texture";
+    case ArtifactType::Shader: return "Shader";
+    case ArtifactType::Scene: return "Scene";
+    default: return "Sub Asset";
+    }
+}
+
+std::string MakeReadableGeneratedSubAssetFallback(
+    const AssetDatabaseRecord& record,
+    const std::string& rawName)
+{
+    if (rawName.empty())
+        return PrettyTypeName(record.artifactType);
+
+    const auto numeric = std::all_of(
+        rawName.begin(),
+        rawName.end(),
+        [](const unsigned char ch)
+        {
+            return std::isdigit(ch) != 0;
+        });
+    if (!numeric)
+        return rawName;
+
+    return PrettyTypeName(record.artifactType) + " " + rawName;
+}
+
+std::optional<std::string> ExtractLineValue(
+    const std::string& text,
+    const std::string& key)
+{
+    size_t position = 0u;
+    while ((position = text.find(key, position)) != std::string::npos)
+    {
+        if (position != 0u && text[position - 1u] != '\n' && text[position - 1u] != '\r')
+        {
+            position += key.size();
+            continue;
+        }
+
+        const auto valueBegin = position + key.size();
+        auto valueEnd = text.find('\n', valueBegin);
+        if (valueEnd == std::string::npos)
+            valueEnd = text.size();
+        while (valueEnd > valueBegin &&
+            (text[valueEnd - 1u] == '\r' || text[valueEnd - 1u] == '\n'))
+        {
+            --valueEnd;
+        }
+        if (valueEnd > valueBegin)
+            return text.substr(valueBegin, valueEnd - valueBegin);
+        position = valueBegin;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> ExtractMaterialName(const std::string& text)
+{
+    const std::string beginTag = "<name>";
+    const std::string endTag = "</name>";
+    const auto begin = text.find(beginTag);
+    if (begin == std::string::npos)
+        return std::nullopt;
+    const auto valueBegin = begin + beginTag.size();
+    const auto end = text.find(endTag, valueBegin);
+    if (end == std::string::npos || end <= valueBegin)
+        return std::nullopt;
+    return text.substr(valueBegin, end - valueBegin);
+}
+
+uint32_t PreviewMetadataSchemaVersionForArtifactType(const NLS::Core::Assets::ArtifactType artifactType)
+{
+    switch (artifactType)
+    {
+    case NLS::Core::Assets::ArtifactType::Mesh:
+        return 3u;
+    case NLS::Core::Assets::ArtifactType::Texture:
+        return 4u;
+    case NLS::Core::Assets::ArtifactType::Material:
+    case NLS::Core::Assets::ArtifactType::Prefab:
+    case NLS::Core::Assets::ArtifactType::Shader:
+    case NLS::Core::Assets::ArtifactType::Scene:
+    case NLS::Core::Assets::ArtifactType::Audio:
+    case NLS::Core::Assets::ArtifactType::Skeleton:
+    case NLS::Core::Assets::ArtifactType::Skin:
+    case NLS::Core::Assets::ArtifactType::AnimationClip:
+    case NLS::Core::Assets::ArtifactType::MorphTarget:
+    case NLS::Core::Assets::ArtifactType::Model:
+    case NLS::Core::Assets::ArtifactType::Unknown:
+    case NLS::Core::Assets::ArtifactType::Count:
+        return 1u;
+    }
+    return 1u;
+}
+
+std::optional<std::string> ReadArtifactDisplayName(const AssetDatabaseRecord& record)
+{
+    if (record.artifactPath.empty())
+        return std::nullopt;
+    if (record.artifactType != NLS::Core::Assets::ArtifactType::Mesh &&
+        record.artifactType != NLS::Core::Assets::ArtifactType::Material &&
+        record.artifactType != NLS::Core::Assets::ArtifactType::Prefab &&
+        record.artifactType != NLS::Core::Assets::ArtifactType::Shader &&
+        record.artifactType != NLS::Core::Assets::ArtifactType::Unknown)
+    {
+        return std::nullopt;
+    }
+    if (auto prefix = NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+            record.artifactPath,
+            record.artifactType,
+            PreviewMetadataSchemaVersionForArtifactType(record.artifactType),
+            0u);
+        prefix.has_value() && !prefix->metadata.displayName.empty())
+    {
+        return prefix->metadata.displayName;
+    }
+
+    std::error_code error;
+    const auto fileSize = std::filesystem::file_size(record.artifactPath, error);
+    if (error || fileSize > kMaxDisplayNameArtifactProbeBytes)
+        return std::nullopt;
+
+    std::ifstream input(std::filesystem::path(record.artifactPath), std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    std::string bytes {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+    if (bytes.empty())
+        return std::nullopt;
+
+    if (auto displayName = ExtractLineValue(bytes, "DISPLAY_NAME=");
+        displayName.has_value() && !displayName->empty())
+    {
+        return displayName;
+    }
+
+    if (record.artifactType == NLS::Core::Assets::ArtifactType::Material)
+        return ExtractMaterialName(bytes);
+
+    return std::nullopt;
+}
+
+std::string ExtractTextureSourceKeyFromSubAssetKey(const std::string& subAssetKey)
+{
+    constexpr std::string_view kPrefix = "texture:";
+    if (subAssetKey.rfind(kPrefix, 0u) != 0u)
+        return {};
+    return subAssetKey.substr(kPrefix.size());
+}
+
+std::optional<std::string> ExtractTextureSourcePathFromDependency(
+    const NLS::Core::Assets::AssetDependencyRecord& dependency,
+    const std::string& textureSourceKey)
+{
+    if (dependency.kind != NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion ||
+        textureSourceKey.empty())
+    {
+        return std::nullopt;
+    }
+
+    const std::string buildPrefix = "texture-build:texture:" + textureSourceKey;
+    if (dependency.value != buildPrefix)
+        return std::nullopt;
+
+    const std::string sourceNeedle = "sourcePath=";
+    const auto sourceBegin = dependency.hashOrVersion.find(sourceNeedle);
+    if (sourceBegin == std::string::npos)
+        return std::nullopt;
+
+    const auto valueBegin = sourceBegin + sourceNeedle.size();
+    auto valueEnd = dependency.hashOrVersion.find('|', valueBegin);
+    if (valueEnd == std::string::npos)
+        valueEnd = dependency.hashOrVersion.size();
+    if (valueEnd <= valueBegin)
+        return std::nullopt;
+
+    auto sourcePath = dependency.hashOrVersion.substr(valueBegin, valueEnd - valueBegin);
+    std::replace(sourcePath.begin(), sourcePath.end(), '\\', '/');
+    return sourcePath;
+}
+
+std::unordered_map<std::string, std::string> BuildGeneratedSubAssetDisplayNameOverrides(
+    const std::vector<AssetDatabaseRecord>& records,
+    const AssetDatabaseFacade* database,
+    const std::string& sourceAssetPath)
+{
+    std::unordered_map<std::string, std::string> overrides;
+    if (database == nullptr || sourceAssetPath.empty())
+        return overrides;
+
+    const auto manifest = database->GetArtifactManifestForAssetPath(sourceAssetPath);
+    if (!manifest.has_value())
+        return overrides;
+
+    for (const auto& record : records)
+    {
+        if (record.artifactType != NLS::Core::Assets::ArtifactType::Texture)
+            continue;
+
+        const auto textureSourceKey = ExtractTextureSourceKeyFromSubAssetKey(record.subAssetKey);
+        if (textureSourceKey.empty())
+            continue;
+
+        for (const auto& dependency : manifest->dependencies)
+        {
+            const auto sourcePath = ExtractTextureSourcePathFromDependency(dependency, textureSourceKey);
+            if (!sourcePath.has_value())
+                continue;
+
+            const auto filename = std::filesystem::path(*sourcePath).filename().generic_string();
+            if (!filename.empty())
+                overrides[record.subAssetKey] = filename;
+            break;
+        }
+    }
+    return overrides;
 }
 
 std::string PathToGenericUtf8String(const std::filesystem::path& path)
@@ -459,6 +699,7 @@ AssetBrowserItem MakeSourceAssetItem(
         item.type == AssetBrowserItemType::Model ||
         item.type == AssetBrowserItemType::Material ||
         item.type == AssetBrowserItemType::Texture;
+    item.hasGeneratedSubAssets = AssetTypeCanHaveGeneratedSubAssets(item.type);
 
     if (database != nullptr)
     {
@@ -483,10 +724,28 @@ AssetBrowserItem MakeSourceAssetItem(
     return item;
 }
 
-AssetBrowserItem MakeGeneratedSubAssetItem(const AssetDatabaseRecord& record)
+AssetBrowserItem MakeGeneratedSubAssetItem(
+    const AssetDatabaseRecord& record,
+    const std::unordered_map<std::string, std::string>& displayNameOverrides,
+    const bool fastPath)
 {
     AssetBrowserItem item;
-    item.displayName = MakeSubAssetDisplayName(record.subAssetKey);
+    if (const auto overrideName = displayNameOverrides.find(record.subAssetKey);
+        overrideName != displayNameOverrides.end() && !overrideName->second.empty())
+    {
+        item.displayName = overrideName->second;
+    }
+    else
+    {
+        std::optional<std::string> artifactName;
+        if (!fastPath)
+            artifactName = ReadArtifactDisplayName(record);
+        item.displayName = artifactName.has_value() && !artifactName->empty()
+            ? *artifactName
+            : MakeReadableGeneratedSubAssetFallback(
+                record,
+                MakeSubAssetDisplayName(record.subAssetKey));
+    }
     item.projectRelativePath = record.assetPath + "::" + record.subAssetKey;
     item.sourceAssetPath = record.assetPath;
     item.kind = AssetBrowserItemKind::GeneratedSubAsset;
@@ -505,7 +764,8 @@ AssetBrowserItem MakeGeneratedSubAssetItem(const AssetDatabaseRecord& record)
 std::vector<AssetBrowserItem> BuildGeneratedSubAssetItems(
     const AssetBrowserItem& sourceItem,
     const AssetDatabaseFacade* database,
-    const bool verifyManifestFreshness)
+    const bool verifyManifestFreshness,
+    const bool fastPath)
 {
     std::vector<AssetBrowserItem> generatedItems;
     if (database == nullptr ||
@@ -524,6 +784,12 @@ std::vector<AssetBrowserItem> BuildGeneratedSubAssetItems(
     }
 
     const auto records = database->LoadAllAssetsAtPath(sourceItem.sourceAssetPath);
+    const auto displayNameOverrides = fastPath
+        ? std::unordered_map<std::string, std::string> {}
+        : BuildGeneratedSubAssetDisplayNameOverrides(
+            records,
+            database,
+            sourceItem.sourceAssetPath);
     generatedItems.reserve(records.size());
     for (const auto& record : records)
     {
@@ -533,7 +799,7 @@ std::vector<AssetBrowserItem> BuildGeneratedSubAssetItems(
             continue;
         }
 
-        generatedItems.push_back(MakeGeneratedSubAssetItem(record));
+        generatedItems.push_back(MakeGeneratedSubAssetItem(record, displayNameOverrides, fastPath));
     }
 
     std::stable_sort(
@@ -818,7 +1084,8 @@ bool ShouldDrawAssetBrowserThumbnailLetterboxBackground(const AssetBrowserItemTy
 
 std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
     const std::vector<AssetBrowserItem>& items,
-    const std::unordered_set<std::string>& expandedSourceAssets)
+    const std::unordered_set<std::string>& expandedSourceAssets,
+    const std::unordered_map<std::string, size_t>& generatedSubAssetCountHints)
 {
     struct SubAssetRange
     {
@@ -860,10 +1127,15 @@ std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
             : item.sourceAssetPath;
         const bool expanded = expandedSourceAssets.find(sourcePath) != expandedSourceAssets.end();
         const auto subAssets = subAssetsBySource.find(sourcePath);
+        const auto countHint = generatedSubAssetCountHints.find(sourcePath);
         displayItem.expanded = expanded;
         displayItem.childCount = subAssets == subAssetsBySource.end()
-            ? 0u
-            : subAssets->second.count;
+            ? (countHint == generatedSubAssetCountHints.end()
+                ? (item.hasGeneratedSubAssets ? 1u : 0u)
+                : countHint->second)
+            : (std::max)(
+                subAssets->second.count,
+                countHint == generatedSubAssetCountHints.end() ? 0u : countHint->second);
 
         displayItems.push_back(std::move(displayItem));
 
@@ -1168,12 +1440,14 @@ std::vector<AssetBrowserItem> BuildCurrentFolderAssetItems(
             database,
             options.loadSourceAssetMetadataWithoutDatabase);
         items.push_back(sourceItem);
-        if (options.includeGeneratedSubAssets)
+        if (options.includeGeneratedSubAssets &&
+            options.expandedSourceAssets.find(sourceItem.sourceAssetPath) != options.expandedSourceAssets.end())
         {
             auto generatedItems = BuildGeneratedSubAssetItems(
                 sourceItem,
                 database,
-                options.verifyGeneratedSubAssetManifests);
+                options.verifyGeneratedSubAssetManifests,
+                false);
             items.insert(
                 items.end(),
                 std::make_move_iterator(generatedItems.begin()),
@@ -1186,7 +1460,7 @@ std::vector<AssetBrowserItem> BuildCurrentFolderAssetItems(
 
 std::vector<AssetBrowserItem> FilterAssetBrowserItems(
     const std::vector<AssetBrowserItem>& items,
-    const AssetBrowserBuildOptions options)
+    const AssetBrowserBuildOptions& options)
 {
     std::vector<AssetBrowserItem> filtered;
     filtered.reserve(items.size());
@@ -1343,8 +1617,41 @@ std::vector<AssetBrowserItem> SelectAssetBrowserThumbnailGenerationItems(
     const std::vector<AssetBrowserItem>& visibleItems,
     const bool visibleItemsKnown)
 {
-    (void)currentFolderItems;
-    return visibleItemsKnown ? visibleItems : std::vector<AssetBrowserItem> {};
+    if (!visibleItemsKnown)
+        return {};
+
+    std::vector<AssetBrowserItem> items;
+    items.reserve(visibleItems.size());
+    std::unordered_set<std::string> selectedKeys;
+    auto addItem = [&items, &selectedKeys](const AssetBrowserItem& item)
+    {
+        if (item.kind == AssetBrowserItemKind::Folder || item.projectRelativePath.empty())
+            return;
+        if (selectedKeys.insert(item.projectRelativePath).second)
+            items.push_back(item);
+    };
+
+    std::unordered_set<std::string> expandedSources;
+    for (const auto& visible : visibleItems)
+    {
+        addItem(visible);
+        if (visible.kind == AssetBrowserItemKind::GeneratedSubAsset && !visible.sourceAssetPath.empty())
+            expandedSources.insert(visible.sourceAssetPath);
+    }
+
+    if (expandedSources.empty())
+        return items;
+
+    for (const auto& item : currentFolderItems)
+    {
+        if (item.kind != AssetBrowserItemKind::GeneratedSubAsset ||
+            expandedSources.find(item.sourceAssetPath) == expandedSources.end())
+        {
+            continue;
+        }
+        addItem(item);
+    }
+    return items;
 }
 
 std::vector<AssetBrowserBreadcrumbSegment> BuildAssetBrowserBreadcrumb(const std::string& selectedFolder)
@@ -1595,8 +1902,11 @@ std::vector<AssetBrowserSubAssetEntry> BuildAssetBrowserSubAssetEntries(
         if (!IsInspectorReferenceableSubAsset(record.artifactType) || record.subAssetKey.empty())
             continue;
 
+        const auto displayName = ReadArtifactDisplayName(record);
         entries.push_back({
-            MakeSubAssetDisplayName(record.subAssetKey),
+            displayName.has_value() && !displayName->empty()
+                ? *displayName
+                : MakeSubAssetDisplayName(record.subAssetKey),
             record.assetPath,
             record.subAssetKey,
             record.assetPath,
@@ -1641,7 +1951,8 @@ std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntriesFromSna
             }
 
             entries.push_back({
-                snapshot.sourceAssetPath + " / " + subAsset.subAssetKey,
+                snapshot.sourceAssetPath + " / " +
+                (!subAsset.displayName.empty() ? subAsset.displayName : subAsset.subAssetKey),
                 MakeEditorAssetDragPayload(
                     snapshot.sourceAssetPath,
                     snapshot.assetId,

@@ -2,6 +2,7 @@
 
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetThumbnailCache.h"
+#include "Assets/ArtifactManifest.h"
 
 #include <atomic>
 #include <cstddef>
@@ -18,6 +19,13 @@
 
 namespace NLS::Editor::Assets
 {
+class EditorThumbnailPreviewRenderer;
+
+struct AssetThumbnailRequestBuildContext
+{
+    std::unordered_map<std::string, std::optional<NLS::Core::Assets::ArtifactManifest>> artifactManifestsByAssetId;
+};
+
 struct AssetThumbnailGenerationCancelToken
 {
     std::atomic_bool cancelled {false};
@@ -45,6 +53,11 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItem(
     const std::filesystem::path& projectRoot,
     const AssetBrowserItem& item,
     uint32_t requestedSize);
+std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItem(
+    const std::filesystem::path& projectRoot,
+    const AssetBrowserItem& item,
+    uint32_t requestedSize,
+    AssetThumbnailRequestBuildContext& context);
 
 class AssetThumbnailService
 {
@@ -53,7 +66,9 @@ public:
 
     AssetThumbnailServiceResult GetThumbnail(const AssetThumbnailRequest& request);
     std::optional<AssetThumbnailServiceResult> GenerateNextThumbnail();
+    std::optional<AssetThumbnailServiceResult> GenerateNextThumbnail(EditorThumbnailPreviewRenderer& previewRenderer);
     bool StartNextThumbnailGeneration();
+    bool StartNextThumbnailGeneration(EditorThumbnailPreviewRenderer& previewRenderer);
     std::optional<AssetThumbnailServiceResult> ConsumeCompletedThumbnail();
     bool HasInFlightRequest() const;
     size_t GetQueuedRequestCount() const;
@@ -73,6 +88,7 @@ private:
     void ClearPendingQueuedRequests();
     bool HasCurrentGenerationInFlightRequest() const;
     bool AdoptMatchingInFlightRequest(const std::string& cacheKey);
+    bool StartNextThumbnailGeneration(EditorThumbnailPreviewRenderer* previewRenderer);
 
     std::queue<std::string> m_queuedCacheKeys;
     std::unordered_map<std::string, AssetThumbnailRequest> m_queuedRequestsByCacheKey;

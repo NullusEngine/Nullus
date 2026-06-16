@@ -108,6 +108,16 @@ Engine::GameObject& Scene::CreateGameObject(const std::string& p_name, const std
 	return *newGameObject;
 }
 
+Engine::GameObject& Scene::CreateEditorTransientGameObject(const std::string& p_name, const std::string& p_tag)
+{
+	GameObject* newGameObject = new Engine::GameObject(Engine::GameObject::SilentCreationTag {}, p_name, p_tag);
+	newGameObject->SetEditorTransient(true);
+
+	AddGameObject(newGameObject);
+
+	return *newGameObject;
+}
+
 bool Scene::AddGameObject(GameObject* gameObject)
 {
 	if (!gameObject)

@@ -1,10 +1,10 @@
 # 收集头文件和源文件
 ###############################################################################
-file(GLOB_RECURSE EDITOR_HEAD_FILES
+file(GLOB_RECURSE EDITOR_HEAD_FILES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/*.h
   ${CMAKE_CURRENT_SOURCE_DIR}/*.inl
 )
-file(GLOB_RECURSE EDITOR_SOURCE_FILES
+file(GLOB_RECURSE EDITOR_SOURCE_FILES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/*.c
 )
@@ -53,6 +53,7 @@ nls_add_meta_generation(EditorProject "${CMAKE_CURRENT_SOURCE_DIR}" "${EDITOR_HE
 
 add_executable(Editor ${EDITOR_ENTRY_SOURCE})
 nls_add_windows_app_icon(Editor)
+nls_copy_editor_resources_to_target(Editor)
 
 # 指定输出路径
 ###############################################################################

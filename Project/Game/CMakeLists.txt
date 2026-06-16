@@ -1,10 +1,10 @@
 # 收集头文件和源文件
 ###############################################################################
-file(GLOB_RECURSE GAME_HEAD_FILES
+file(GLOB_RECURSE GAME_HEAD_FILES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/*.h
   ${CMAKE_CURRENT_SOURCE_DIR}/*.inl
 )
-file(GLOB_RECURSE GAME_SOURCE_FILES
+file(GLOB_RECURSE GAME_SOURCE_FILES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/*.c
 )
@@ -39,6 +39,7 @@ nls_target_precompile_headers(GameProject "${NLS_ROOT_DIR}/Project/NullusProject
 
 add_executable(Game ${GAME_ENTRY_SOURCE})
 nls_add_windows_app_icon(Game)
+nls_copy_editor_resources_to_target(Game)
 
 # 指定输出路径
 ###############################################################################

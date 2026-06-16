@@ -2942,6 +2942,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                 subAsset.key,
                 ToArtifactType(subAsset.type),
                 LoaderIdFor(subAsset.type),
+                subAsset.displayName,
                 RelativePathFor(subAsset),
                 std::move(artifactPayload)
             });
@@ -2994,6 +2995,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             subAsset.key,
             ToArtifactType(subAsset.type),
             LoaderIdFor(subAsset.type),
+            subAsset.displayName,
             RelativePathFor(subAsset),
             std::move(prefabBytes)
         });

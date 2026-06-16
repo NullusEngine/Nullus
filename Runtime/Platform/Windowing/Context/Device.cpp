@@ -1,6 +1,8 @@
 
 #include "Windowing/Context/Device.h"
 
+#include "Process/Process.h"
+
 #include <stdexcept>
 #include <cstdlib>
 #include <algorithm>
@@ -71,8 +73,13 @@ namespace
 
     std::filesystem::path ResolveEditorCursorAssetPath(const std::string& filename)
     {
+        const auto installRoots = NLS::Platform::Process::ResolveInstallResourceRoots();
+        const auto packagedPath = installRoots.editorAssetsRoot / "Cursors" / "windows" / filename;
+        if (std::filesystem::exists(packagedPath))
+            return packagedPath;
+
         const std::filesystem::path relativePath =
-            std::filesystem::path("App") / "Assets" / "Editor" / "Icon" / "cursors" / "windows" / filename;
+            std::filesystem::path("App") / "Assets" / "Editor" / "Cursors" / "windows" / filename;
 
         auto current = std::filesystem::current_path();
         for (int i = 0; i < 6; ++i)

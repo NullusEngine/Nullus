@@ -58,6 +58,7 @@ struct ImportedArtifact
     std::string targetPlatform;
     std::string artifactPath;
     std::string contentHash;
+    std::string displayName;
 };
 
 struct NLS_CORE_API ArtifactManifest

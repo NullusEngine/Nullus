@@ -182,6 +182,27 @@ Editor::Core::EditorResources::EditorResources(
     const auto firstFilterBillboard = NLS::Render::Settings::ETextureFilteringMode::NEAREST;
     const auto secondFilterBillboard = NLS::Render::Settings::ETextureFilteringMode::NEAREST;
 
+    {
+        std::vector<uint64_t> raw = BUTTON_PLAY;
+        m_textures["Button_Play"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
+    }
+    {
+        std::vector<uint64_t> raw = BUTTON_PAUSE;
+        m_textures["Button_Pause"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
+    }
+    {
+        std::vector<uint64_t> raw = BUTTON_STOP;
+        m_textures["Button_Stop"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
+    }
+    {
+        std::vector<uint64_t> raw = BUTTON_NEXT;
+        m_textures["Button_Next"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
+    }
+    {
+        std::vector<uint64_t> raw = BUTTON_REFRESH;
+        m_textures["Button_Refresh"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
+    }
+
     const auto loadEditorIcon = [&](const std::string& id)
     {
         const auto filePath = ResolveDevelopmentPath(id);

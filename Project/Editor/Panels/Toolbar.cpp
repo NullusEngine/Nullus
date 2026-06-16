@@ -6,8 +6,6 @@
 #include "Core/EditorActions.h"
 
 #include <ServiceLocator.h>
-#include "UI/Icons/FontAwesomeIconFont.h"
-#include "UI/ImGuiExtensions/TimelineProfiler/IconsFontAwesome4.h"
 #include "UI/UIManager.h"
 using namespace NLS;
 Editor::Panels::Toolbar::Toolbar
@@ -17,28 +15,21 @@ Editor::Panels::Toolbar::Toolbar
 	const UI::PanelWindowSettings& p_windowSettings
 ) : PanelWindow(p_title, p_opened, p_windowSettings)
 {
-    (void)NLS::UI::Icons::EnsureFontAwesomeIconFontLoaded(14.0f);
+    auto makeToolbarTextureView = [](const char* textureName)
+    {
+        auto* texture = EDITOR_CONTEXT(editorResources)->GetTexture(textureName);
+        return texture != nullptr
+            ? texture->GetOrCreateExplicitTextureView(std::string("Toolbar.") + textureName)
+            : nullptr;
+    };
 
-	m_playButton	= &CreateWidget<UI::Widgets::Button>(ICON_FA_PLAY, Maths::Vector2{ 24, 22 });
-	m_pauseButton	= &CreateWidget<UI::Widgets::Button>(ICON_FA_PAUSE, Maths::Vector2{ 24, 22 });
-	m_stopButton	= &CreateWidget<UI::Widgets::Button>(ICON_FA_STOP, Maths::Vector2{ 24, 22 });
-	m_nextButton	= &CreateWidget<UI::Widgets::Button>(ICON_FA_STEP_FORWARD, Maths::Vector2{ 24, 22 });
+	m_playButton	= &CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Play"), Maths::Vector2{ 20, 20 });
+	m_pauseButton	= &CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Pause"), Maths::Vector2{ 20, 20 });
+	m_stopButton	= &CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Stop"), Maths::Vector2{ 20, 20 });
+	m_nextButton	= &CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Next"), Maths::Vector2{ 20, 20 });
 
 	CreateWidget<UI::Widgets::Spacing>(0).lineBreak = false;
-	auto& refreshButton	= CreateWidget<UI::Widgets::Button>(ICON_FA_REFRESH, Maths::Vector2{ 24, 22 });
-
-	auto styleToolbarButton = [](UI::Widgets::Button* p_button)
-	{
-		p_button->idleBackgroundColor = { 0.0f, 0.0f, 0.0f, 0.0f };
-		p_button->hoveredBackgroundColor = { 0.24f, 0.24f, 0.24f, 1.0f };
-		p_button->clickedBackgroundColor = { 0.18f, 0.18f, 0.18f, 1.0f };
-		p_button->textColor = { 1.0f, 1.0f, 1.0f, 1.0f };
-	};
-	styleToolbarButton(m_playButton);
-	styleToolbarButton(m_pauseButton);
-	styleToolbarButton(m_stopButton);
-	styleToolbarButton(m_nextButton);
-	styleToolbarButton(&refreshButton);
+	auto& refreshButton	= CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Refresh"), Maths::Vector2{ 20, 20 });
 
 	m_playButton->lineBreak		= false;
 	m_pauseButton->lineBreak	= false;
@@ -53,10 +44,10 @@ Editor::Panels::Toolbar::Toolbar
 
 	m_editorModeChangedListener = EDITOR_EVENT(EditorModeChangedEvent) += [this](Editor::Core::EditorActions::EEditorMode p_newMode)
 	{
-		auto enable = [](UI::Widgets::Button* p_button, bool p_enable)
+		auto enable = [](UI::Widgets::ButtonImage* p_button, bool p_enable)
 		{
 			p_button->disabled = !p_enable;
-			p_button->textColor = p_enable ? Maths::Color{1.0f, 1.0f, 1.0f, 1.0f} : Maths::Color{1.0f, 1.0f, 1.0f, 0.25f};
+			p_button->tint = p_enable ? Maths::Color{1.0f, 1.0f, 1.0f, 1.0f} : Maths::Color{1.0f, 1.0f, 1.0f, 0.15f};
 		};
 
 		switch (p_newMode)

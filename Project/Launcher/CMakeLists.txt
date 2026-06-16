@@ -1,10 +1,10 @@
 # Collect headers and source files
 ###############################################################################
-file(GLOB_RECURSE LAUNCHER_HEAD_FILES
+file(GLOB_RECURSE LAUNCHER_HEAD_FILES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/*.h
   ${CMAKE_CURRENT_SOURCE_DIR}/*.inl
 )
-file(GLOB_RECURSE LAUNCHER_SOURCE_FILES
+file(GLOB_RECURSE LAUNCHER_SOURCE_FILES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/*.c
 )
@@ -39,6 +39,7 @@ nls_target_precompile_headers(LauncherProject "${NLS_ROOT_DIR}/Project/NullusPro
 
 add_executable(Launcher ${LAUNCHER_ENTRY_SOURCE})
 nls_add_windows_app_icon(Launcher)
+nls_copy_editor_resources_to_target(Launcher)
 
 # Configure output path
 ###############################################################################

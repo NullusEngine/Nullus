@@ -12,6 +12,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -68,6 +69,7 @@ struct AssetBrowserItem
     NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
     bool generatedReadOnly = false;
     bool previewableInAssetView = false;
+    bool hasGeneratedSubAssets = false;
 };
 
 struct AssetBrowserBreadcrumbSegment
@@ -88,6 +90,8 @@ struct AssetBrowserBuildOptions
     bool includeGeneratedSubAssets = false;
     bool verifyGeneratedSubAssetManifests = true;
     bool loadSourceAssetMetadataWithoutDatabase = true;
+    std::unordered_set<std::string> expandedSourceAssets;
+    std::unordered_map<std::string, size_t> generatedSubAssetCountHints;
     std::string searchQuery;
     AssetBrowserItemType typeFilter = AssetBrowserItemType::All;
 };
@@ -190,6 +194,7 @@ struct AssetBrowserDisplayItem
     size_t childCount = 0u;
     bool subAsset = false;
     bool expanded = false;
+    bool loadingPlaceholder = false;
 };
 
 struct AssetBrowserPoint
@@ -227,7 +232,8 @@ bool ShouldDrawAssetBrowserThumbnailLetterboxBackground(AssetBrowserItemType typ
 
 std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
     const std::vector<AssetBrowserItem>& items,
-    const std::unordered_set<std::string>& expandedSourceAssets);
+    const std::unordered_set<std::string>& expandedSourceAssets,
+    const std::unordered_map<std::string, size_t>& generatedSubAssetCountHints = {});
 
 const std::array<AssetBrowserItemType, kAssetBrowserItemTypeCount>& AssetBrowserItemTypeFilterOptions();
 
@@ -269,7 +275,7 @@ std::vector<AssetBrowserItem> BuildCurrentFolderAssetItems(
 
 std::vector<AssetBrowserItem> FilterAssetBrowserItems(
     const std::vector<AssetBrowserItem>& items,
-    AssetBrowserBuildOptions options);
+    const AssetBrowserBuildOptions& options);
 
 std::vector<std::string> SelectAssetBrowserThumbnailTextureEvictionCandidates(
     const std::vector<std::string>& lruKeys,

@@ -83,6 +83,7 @@ namespace NLS::Engine::Rendering
 			std::optional<Frustum> frustumOverride;
 			Material* overrideMaterial;
 			std::vector<SceneSystem::Scene*> additiveScenes;
+			bool includeSkyboxes = true;
 		};
 
 		using SnapshotRenderScenePackageBuildMode = Render::Context::SnapshotRenderScenePackageBuildMode;

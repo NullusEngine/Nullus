@@ -456,6 +456,24 @@ void ExpectGeneratedFreshPng(
     EXPECT_TRUE(IsAssetThumbnailCachePathContained(root, generated->imagePath));
 }
 
+void ExpectGpuPreviewDefersWithoutRenderer(
+    const std::filesystem::path& root,
+    NLS::Editor::Assets::AssetThumbnailRequest request)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    const auto generated = service.GenerateNextThumbnail();
+    ASSERT_TRUE(generated.has_value());
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
+    ASSERT_TRUE(generated->cacheEntry.has_value());
+    EXPECT_FALSE(std::filesystem::exists(generated->cacheEntry->imagePath));
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
+    EXPECT_TRUE(IsAssetThumbnailCachePathContained(root, generated->cacheEntry->metadataPath));
+}
+
 std::string FileStampForTest(const std::filesystem::path& path)
 {
     std::error_code error;
@@ -853,10 +871,10 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto textureRequest = BuildAssetThumbnailRequestForItem(root, texture, 128u);
     ASSERT_TRUE(textureRequest.has_value());
     EXPECT_EQ(textureRequest->kind, AssetThumbnailKind::Texture);
-    EXPECT_EQ(textureRequest->requestedSize, 128u);
+    EXPECT_EQ(textureRequest->requestedSize, 96u);
     EXPECT_EQ(textureRequest->sourceAssetPath, "Assets/Textures/Hero.png");
     EXPECT_EQ(textureRequest->subAssetKey, "texture:Hero");
-    EXPECT_TRUE(textureRequest->artifactPath.empty());
+    EXPECT_EQ(textureRequest->artifactPath, "Library/Artifacts/source-texture/texture.ntex");
     EXPECT_FALSE(textureRequest->freshnessInputs.empty());
 
     AssetBrowserItem material;
@@ -886,7 +904,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
 
     const auto modelRequest = BuildAssetThumbnailRequestForItem(root, modelSource, 96u);
     ASSERT_TRUE(modelRequest.has_value());
-    EXPECT_EQ(modelRequest->kind, AssetThumbnailKind::ModelPreview);
+    EXPECT_EQ(modelRequest->kind, AssetThumbnailKind::PrefabPreview);
     EXPECT_EQ(modelRequest->artifactPath, "Library/Artifacts/model/prefab.nprefab");
 
     AssetBrowserItem mesh;
@@ -953,12 +971,18 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsSourceTextureRequestFromMetaWhenArti
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, ServiceRetriesPreviewThumbnailsAfterTransientArtifactFailure)
+TEST(AssetThumbnailCacheTests, ServiceDefersGpuPreviewThumbnailsWithoutRenderer)
 {
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Materials" / "Body.mat", std::vector<uint8_t>{'<', 'm', 'a', 't', '/', '>'});
+    WriteNativeArtifactTextFile(
+        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "materials" / "Body.nmat",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        1u,
+        "<root><uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.1 0.8 0.4 1.0\"/></root>");
 
     auto request = MakeThumbnailRequest(root, "material:Body");
     request.sourceAssetPath = "Assets/Materials/Body.mat";
@@ -971,26 +995,13 @@ TEST(AssetThumbnailCacheTests, ServiceRetriesPreviewThumbnailsAfterTransientArti
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto firstGenerated = service.GenerateNextThumbnail();
     ASSERT_TRUE(firstGenerated.has_value());
-    EXPECT_EQ(firstGenerated->status, AssetThumbnailServiceStatus::Failed);
-    EXPECT_EQ(firstGenerated->diagnostic, "thumbnail-material-artifact-missing");
-    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Failed);
-
-    WriteNativeArtifactTextFile(
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "materials" / "Body.nmat",
-        NLS::Core::Assets::ArtifactType::Material,
-        "material",
-        1u,
-        "<root><uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.1 0.8 0.4 1.0\"/></root>");
+    EXPECT_EQ(firstGenerated->status, AssetThumbnailServiceStatus::Fallback);
+    EXPECT_EQ(firstGenerated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
 
     const auto retried = service.GetThumbnail(request);
     EXPECT_EQ(retried.status, AssetThumbnailServiceStatus::Pending);
     EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
-
-    const auto secondGenerated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(secondGenerated.has_value());
-    EXPECT_EQ(secondGenerated->status, AssetThumbnailServiceStatus::Fresh);
-    EXPECT_TRUE(std::filesystem::exists(secondGenerated->imagePath));
-    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
 
     std::filesystem::remove_all(root);
 }
@@ -1698,13 +1709,13 @@ TEST(AssetThumbnailCacheTests, ServiceRecordsOversizedMeshPreviewAsStableFailure
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-model-mesh-preview-budget-exceeded");
-    EXPECT_TRUE(std::filesystem::is_regular_file(entry->metadataPath));
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
+    EXPECT_FALSE(std::filesystem::exists(entry->metadataPath));
     EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
-    EXPECT_GE(
+    EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
-        1u);
+        0u);
     EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy),
         0u);
@@ -1713,13 +1724,11 @@ TEST(AssetThumbnailCacheTests, ServiceRecordsOversizedMeshPreviewAsStableFailure
         0u);
 
     const auto evaluated = EvaluateAssetThumbnailCache(request);
-    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
-    EXPECT_EQ(evaluated.diagnostic, "thumbnail-model-mesh-preview-budget-exceeded");
+    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Missing);
 
     const auto repeated = service.GetThumbnail(request);
-    EXPECT_EQ(repeated.status, AssetThumbnailServiceStatus::Failed);
-    EXPECT_EQ(repeated.diagnostic, "thumbnail-model-mesh-preview-budget-exceeded");
-    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+    EXPECT_EQ(repeated.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
 
     std::filesystem::remove_all(root);
 }
@@ -1749,10 +1758,13 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsMalformedMeshArtifactBeforeFullPayl
     NLS::Core::Assets::ClearArtifactLoadTelemetry();
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Failed);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-model-mesh-artifact-read-failed");
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
+        0u);
     EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy),
         0u);
@@ -1796,20 +1808,19 @@ TEST(AssetThumbnailCacheTests, ServiceRecordsOversizedMaterialPreviewBeforePaylo
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-material-preview-budget-exceeded");
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
     EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
-    EXPECT_GE(
+    EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
-        1u);
+        0u);
     EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy),
         0u);
 
     const auto evaluated = EvaluateAssetThumbnailCache(request);
-    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
-    EXPECT_EQ(evaluated.diagnostic, "thumbnail-material-preview-budget-exceeded");
+    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
@@ -1847,20 +1858,19 @@ TEST(AssetThumbnailCacheTests, ServiceRecordsOversizedPrefabPreviewBeforePayload
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-prefab-preview-budget-exceeded");
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
     EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
-    EXPECT_GE(
+    EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
-        1u);
+        0u);
     EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy),
         0u);
 
     const auto evaluated = EvaluateAssetThumbnailCache(request);
-    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
-    EXPECT_EQ(evaluated.diagnostic, "thumbnail-prefab-preview-budget-exceeded");
+    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
@@ -1895,9 +1905,12 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsTrailingNativeMaterialPreviewBefore
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-material-preview-budget-exceeded");
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
+        0u);
     EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy),
         0u);
@@ -1935,9 +1948,12 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsTrailingNativePrefabPreviewBeforeFu
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-prefab-preview-budget-exceeded");
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
+        0u);
     EXPECT_EQ(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy),
         0u);
@@ -2388,7 +2404,7 @@ TEST(AssetThumbnailCacheTests, ServiceAdoptsMatchingInFlightRequestAfterGenerati
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, ServiceGeneratesMaterialModelAndPrefabPreviewThumbnails)
+TEST(AssetThumbnailCacheTests, ServiceKeepsGpuPreviewThumbnailsPendingWithoutRenderer)
 {
     using namespace NLS::Editor::Assets;
 
@@ -2426,7 +2442,28 @@ TEST(AssetThumbnailCacheTests, ServiceGeneratesMaterialModelAndPrefabPreviewThum
     materialRequest.kind = AssetThumbnailKind::MaterialSphere;
     materialRequest.requestedSize = 48u;
     materialRequest.freshnessInputs = {{"artifact", "material:v1"}};
-    ExpectGeneratedFreshPng(root, materialRequest, 48, 48);
+    ExpectGpuPreviewDefersWithoutRenderer(root, materialRequest);
+
+    WriteBinaryFile(
+        root / "Assets" / "Materials" / "New.mat",
+        std::vector<uint8_t>(
+            {
+                '<', 'r', 'o', 'o', 't', '>', '\n',
+                ' ', ' ', '<', 'n', 'a', 'm', 'e', '>', 'N', 'e', 'w', '<', '/', 'n', 'a', 'm', 'e', '>', '\n',
+                '<', '/', 'r', 'o', 'o', 't', '>', '\n'
+            }));
+    auto sourceMaterialRequest = MakeThumbnailRequest(root, "material:New");
+    sourceMaterialRequest.sourceAssetPath = "Assets/Materials/New.mat";
+    sourceMaterialRequest.artifactPath = "Assets/Materials/New.mat";
+    sourceMaterialRequest.kind = AssetThumbnailKind::MaterialSphere;
+    sourceMaterialRequest.requestedSize = 48u;
+    sourceMaterialRequest.freshnessInputs = {{"source", "material-source:v1"}};
+    ExpectGpuPreviewDefersWithoutRenderer(root, sourceMaterialRequest);
+
+    auto sourceMaterialRequestWithoutArtifactPath = sourceMaterialRequest;
+    sourceMaterialRequestWithoutArtifactPath.artifactPath.clear();
+    sourceMaterialRequestWithoutArtifactPath.freshnessInputs = {{"source", "material-source-no-artifact:v1"}};
+    ExpectGpuPreviewDefersWithoutRenderer(root, sourceMaterialRequestWithoutArtifactPath);
 
     auto modelRequest = MakeThumbnailRequest(root, "mesh:Body");
     modelRequest.sourceAssetPath = "Assets/Models/Hero.gltf";
@@ -2435,7 +2472,7 @@ TEST(AssetThumbnailCacheTests, ServiceGeneratesMaterialModelAndPrefabPreviewThum
     modelRequest.kind = AssetThumbnailKind::ModelPreview;
     modelRequest.requestedSize = 48u;
     modelRequest.freshnessInputs = {{"artifact", "mesh:v1"}};
-    ExpectGeneratedFreshPng(root, modelRequest, 48, 48);
+    ExpectGpuPreviewDefersWithoutRenderer(root, modelRequest);
 
     auto prefabRequest = MakeThumbnailRequest(root, "prefab:Hero");
     prefabRequest.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
@@ -2444,7 +2481,7 @@ TEST(AssetThumbnailCacheTests, ServiceGeneratesMaterialModelAndPrefabPreviewThum
     prefabRequest.kind = AssetThumbnailKind::PrefabPreview;
     prefabRequest.requestedSize = 48u;
     prefabRequest.freshnessInputs = {{"artifact", "prefab:v1"}};
-    ExpectGeneratedFreshPng(root, prefabRequest, 48, 48);
+    ExpectGpuPreviewDefersWithoutRenderer(root, prefabRequest);
 
     std::filesystem::remove_all(root);
 }

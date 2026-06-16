@@ -155,7 +155,7 @@ function(nls_add_windows_app_icon target_name)
         return()
     endif()
 
-    set(NLS_APP_ICON_ICO "${NLS_ROOT_DIR}/App/Assets/Engine/Brand/NullusLogoMark.ico")
+    set(NLS_APP_ICON_ICO "${NLS_ROOT_DIR}/App/Resources/NullusAppIcon.ico")
     set(_nls_app_icon_rc "${CMAKE_CURRENT_BINARY_DIR}/${target_name}NullusAppIcon.rc")
     configure_file(
         "${NLS_ROOT_DIR}/App/Resources/NullusAppIcon.rc.in"
@@ -192,6 +192,31 @@ function(nls_copy_shared_runtime_to_target TARGET_NAME)
         )
     endif()
 endfunction()
+
+function(nls_copy_app_assets_to_target TARGET_NAME)
+    set(_nls_app_assets_source "${NLS_ROOT_DIR}/App/Assets")
+    if(NOT EXISTS "${_nls_app_assets_source}")
+        return()
+    endif()
+
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${_nls_app_assets_source}"
+            "$<TARGET_FILE_DIR:${TARGET_NAME}>/Assets"
+        VERBATIM
+        COMMENT "Copying Nullus app assets for ${TARGET_NAME}"
+    )
+endfunction()
+
+function(nls_copy_editor_resources_to_target TARGET_NAME)
+    nls_copy_app_assets_to_target(${TARGET_NAME})
+endfunction()
+
+if(EXISTS "${NLS_ROOT_DIR}/App/Assets")
+    install(
+        DIRECTORY "${NLS_ROOT_DIR}/App/Assets/"
+        DESTINATION "Assets")
+endif()
 
 function(nls_target_precompile_headers TARGET_NAME PCH_HEADER)
     if(NOT NLS_ENABLE_PCH)

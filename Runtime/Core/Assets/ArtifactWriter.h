@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace NLS::Core::Assets
@@ -20,9 +21,42 @@ public:
 
 struct ArtifactPayload
 {
+    ArtifactPayload() = default;
+
+    ArtifactPayload(
+        std::string subAssetKeyValue,
+        ArtifactType artifactTypeValue,
+        std::string loaderIdValue,
+        std::filesystem::path relativePathValue,
+        std::vector<uint8_t> payloadValue)
+        : subAssetKey(std::move(subAssetKeyValue))
+        , artifactType(artifactTypeValue)
+        , loaderId(std::move(loaderIdValue))
+        , relativePath(std::move(relativePathValue))
+        , payload(std::move(payloadValue))
+    {
+    }
+
+    ArtifactPayload(
+        std::string subAssetKeyValue,
+        ArtifactType artifactTypeValue,
+        std::string loaderIdValue,
+        std::string displayNameValue,
+        std::filesystem::path relativePathValue,
+        std::vector<uint8_t> payloadValue)
+        : subAssetKey(std::move(subAssetKeyValue))
+        , artifactType(artifactTypeValue)
+        , loaderId(std::move(loaderIdValue))
+        , displayName(std::move(displayNameValue))
+        , relativePath(std::move(relativePathValue))
+        , payload(std::move(payloadValue))
+    {
+    }
+
     std::string subAssetKey;
     ArtifactType artifactType = ArtifactType::Unknown;
     std::string loaderId;
+    std::string displayName;
     std::filesystem::path relativePath;
     std::vector<uint8_t> payload;
 };

@@ -73,7 +73,6 @@ namespace NLS::Editor::Core
 
     private:
         static bool IsContainedRelativePath(const std::filesystem::path& path);
-        static bool ContainsUnityToken(std::string_view text);
         static std::filesystem::path NormalizePath(std::filesystem::path path);
 
         EditorResourceRoots m_roots;

@@ -60,7 +60,9 @@ const char* ToSpaceLabel(const Editor::Core::SceneViewGizmoSpace p_space)
 
 const char* ToSpaceIconId(const Editor::Core::SceneViewGizmoSpace p_space)
 {
-    return p_space == Editor::Core::SceneViewGizmoSpace::Local ? "Toolbar_Local" : "Toolbar_Global";
+    return p_space == Editor::Core::SceneViewGizmoSpace::Local
+        ? "editor.icon.toolbar.local"
+        : "editor.icon.toolbar.global";
 }
 
 std::shared_ptr<NLS::Render::RHI::RHITextureView> GetToolbarIconView(const char* p_iconId)
@@ -208,19 +210,19 @@ void EditorTopBar::DrawSceneToolRow(const float p_rowY, const float p_availableW
     }
 
     DrawSceneToolButton(
-        "Toolbar_Move",
+        "editor.icon.toolbar.move",
         "Move",
         Editor::Core::EGizmoOperation::TRANSLATE,
         currentOperation == Editor::Core::EGizmoOperation::TRANSLATE);
     ImGui::SameLine(0.0f, Scaled(4.0f));
     DrawSceneToolButton(
-        "Toolbar_Rotate",
+        "editor.icon.toolbar.rotate",
         "Rotate",
         Editor::Core::EGizmoOperation::ROTATE,
         currentOperation == Editor::Core::EGizmoOperation::ROTATE);
     ImGui::SameLine(0.0f, Scaled(4.0f));
     DrawSceneToolButton(
-        "Toolbar_Scale",
+        "editor.icon.toolbar.scale",
         "Scale",
         Editor::Core::EGizmoOperation::SCALE,
         currentOperation == Editor::Core::EGizmoOperation::SCALE);

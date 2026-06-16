@@ -150,6 +150,20 @@ endif()
 set(NLS_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(NLS_ThirdParty_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty")
 
+function(nls_add_windows_app_icon target_name)
+    if(NOT WIN32)
+        return()
+    endif()
+
+    set(NLS_APP_ICON_ICO "${NLS_ROOT_DIR}/App/Assets/Engine/Brand/NullusLogoMark.ico")
+    set(_nls_app_icon_rc "${CMAKE_CURRENT_BINARY_DIR}/${target_name}NullusAppIcon.rc")
+    configure_file(
+        "${NLS_ROOT_DIR}/App/Resources/NullusAppIcon.rc.in"
+        "${_nls_app_icon_rc}"
+        @ONLY)
+    target_sources(${target_name} PRIVATE "${_nls_app_icon_rc}")
+endfunction()
+
 # App Path
 if(MSVC)
     set(NLS_APP_PATH "${NLS_ROOT_DIR}/App")

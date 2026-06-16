@@ -39,4 +39,15 @@ NLS_PLATFORM_API ProcessLaunchResult Launch(
  */
 NLS_PLATFORM_API std::optional<std::filesystem::path> FindExecutable(const std::string& name);
 
+struct NLS_PLATFORM_API InstallResourceRoots
+{
+    std::filesystem::path installRoot;
+    std::filesystem::path assetsRoot;
+    std::filesystem::path editorAssetsRoot;
+    std::filesystem::path engineAssetsRoot;
+};
+
+NLS_PLATFORM_API std::filesystem::path GetCurrentExecutablePath();
+NLS_PLATFORM_API InstallResourceRoots ResolveInstallResourceRoots(const std::filesystem::path& executablePath = {});
+
 } // namespace NLS::Platform::Process

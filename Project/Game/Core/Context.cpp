@@ -8,6 +8,7 @@
 #include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
 #include <stdexcept>
+#include <Platform/Process/Process.h>
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
@@ -19,6 +20,14 @@ using namespace NLS::Core::ResourceManagement;
 
 namespace
 {
+	std::string EnsureTrailingPathSeparator(const std::filesystem::path& path)
+	{
+		auto text = path.lexically_normal().string();
+		if (!text.empty() && text.back() != '\\' && text.back() != '/')
+			text += Utils::PathParser::Separator();
+		return text;
+	}
+
 	struct ResolvedGameProjectPaths
 	{
 		std::string settingsPath;
@@ -164,7 +173,7 @@ Game::Context::Context(
 	std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride,
 	std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
 	std::optional<std::string> p_projectPathOverride)
-    : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), projectAssetsPath(ResolveGameProjectPaths(p_projectPathOverride).assetsPath),
+    : engineAssetsPath(EnsureTrailingPathSeparator(NLS::Platform::Process::ResolveInstallResourceRoots().engineAssetsRoot)), projectAssetsPath(ResolveGameProjectPaths(p_projectPathOverride).assetsPath),
 	projectScriptsPath(ResolveGameProjectPaths(p_projectPathOverride).scriptsPath),
 	projectSettings(ResolveGameProjectPaths(p_projectPathOverride).settingsPath),
 	sceneManager(projectAssetsPath),

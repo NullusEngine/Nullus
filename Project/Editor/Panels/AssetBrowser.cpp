@@ -3845,7 +3845,7 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 	if (item.kind == NLS::Editor::Assets::AssetBrowserItemKind::Folder)
 	{
 		if (void* textureHandle = ResolveAssetBrowserTextureHandle(
-				EDITOR_CONTEXT(editorResources)->GetTexture("Icon_Folder"),
+                    EDITOR_CONTEXT(editorResources)->GetTexture("editor.icon.asset.folder"),
 				"AssetBrowser.Folder"))
 		{
 			drawList->AddImage(textureHandle, iconMin, iconMax, kAssetBrowserImageUv0, kAssetBrowserImageUv1);
@@ -4422,7 +4422,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 
 	/* Find the icon to apply to the item */
     auto* iconTexture = isDirectory
-        ? EDITOR_CONTEXT(editorResources)->GetTexture("Icon_Folder")
+        ? EDITOR_CONTEXT(editorResources)->GetTexture("editor.icon.asset.folder")
         : EDITOR_CONTEXT(editorResources)->GetFileIcon(itemname);
 
 	itemGroup.CreateWidget<UI::Widgets::Image>(

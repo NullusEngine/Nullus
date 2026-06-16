@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include <UI/Widgets/Buttons/ButtonImage.h>
+#include <UI/Widgets/Buttons/Button.h>
 #include <UI/Panels/PanelWindow.h>
 
 namespace NLS::Editor::Panels
@@ -32,10 +32,10 @@ namespace NLS::Editor::Panels
         void DrawToolbarContent();
 
 	private:
-		UI::Widgets::ButtonImage* m_playButton;
-		UI::Widgets::ButtonImage* m_pauseButton;
-		UI::Widgets::ButtonImage* m_stopButton;
-		UI::Widgets::ButtonImage* m_nextButton;
+		UI::Widgets::Button* m_playButton = nullptr;
+		UI::Widgets::Button* m_pauseButton = nullptr;
+		UI::Widgets::Button* m_stopButton = nullptr;
+		UI::Widgets::Button* m_nextButton = nullptr;
 		uint64_t m_editorModeChangedListener = 0;
 	};
 }

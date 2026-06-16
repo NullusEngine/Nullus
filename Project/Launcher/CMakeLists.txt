@@ -38,6 +38,7 @@ target_link_libraries(
 nls_target_precompile_headers(LauncherProject "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")
 
 add_executable(Launcher ${LAUNCHER_ENTRY_SOURCE})
+nls_add_windows_app_icon(Launcher)
 
 # Configure output path
 ###############################################################################

@@ -11,7 +11,9 @@ namespace NLS::Editor::Panels
 {
     inline const char* GetToolbarPivotIconId(const Editor::Core::SceneViewGizmoPivot p_pivot)
     {
-        return p_pivot == Editor::Core::SceneViewGizmoPivot::Center ? "Toolbar_Center" : "Toolbar_Pivot";
+        return p_pivot == Editor::Core::SceneViewGizmoPivot::Center
+            ? "editor.icon.toolbar.center"
+            : "editor.icon.toolbar.pivot";
     }
 
     class EditorTopBar : public UI::PanelViewportBar

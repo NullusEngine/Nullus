@@ -20,6 +20,7 @@
 #include "Core/EditorFrameLatency.h"
 #include "Core/EditorProgressTargets.h"
 #include "Debug/FileHandler.h"
+#include "Platform/Process/Process.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
@@ -41,6 +42,14 @@ namespace NLS
 {
 namespace
 {
+    std::string EnsureTrailingPathSeparator(const std::filesystem::path& path)
+    {
+        auto text = path.lexically_normal().string();
+        if (!text.empty() && text.back() != '\\' && text.back() != '/')
+            text += Utils::PathParser::Separator();
+        return text;
+    }
+
 #ifdef _WIN32
     constexpr wchar_t kNativeProgressWindowClassName[] = L"NullusNativeProgressDialog";
     constexpr UINT_PTR kProgressCancelButtonId = 1001u;
@@ -719,9 +728,9 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     : projectPath(p_projectPath),
     projectName(p_projectName),
     projectFilePath(p_projectPath + Utils::PathParser::Separator() + p_projectName + ".nullus"), 
-    engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
+    engineAssetsPath(EnsureTrailingPathSeparator(NLS::Platform::Process::ResolveInstallResourceRoots().engineAssetsRoot)),
     projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets" + Utils::PathParser::Separator()), 
-    editorAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Editor")).string() + Utils::PathParser::Separator()), 
+    editorAssetsPath(EnsureTrailingPathSeparator(NLS::Platform::Process::ResolveInstallResourceRoots().editorAssetsRoot)),
     sceneManager(projectAssetsPath), projectSettings(projectFilePath),
     m_backendOverride(p_backendOverride),
     m_renderDocOverride(std::move(p_renderDocOverride)),

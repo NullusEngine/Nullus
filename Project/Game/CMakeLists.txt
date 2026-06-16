@@ -38,6 +38,7 @@ target_link_libraries(
 nls_target_precompile_headers(GameProject "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")
 
 add_executable(Game ${GAME_ENTRY_SOURCE})
+nls_add_windows_app_icon(Game)
 
 # 指定输出路径
 ###############################################################################

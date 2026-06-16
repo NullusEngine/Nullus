@@ -63,18 +63,18 @@ AssetThumbnailServiceResult GeneratePrefabThumbnail(const AssetThumbnailRequest&
 struct AssetThumbnailKindPolicy
 {
     AssetThumbnailKind kind = AssetThumbnailKind::GenericPreview;
-    const char* fallbackIcon = "Icon_Unknown";
+    const char* fallbackIcon = "editor.icon.asset.default";
     AssetThumbnailGenerator generator = nullptr;
     const char* unsupportedDiagnostic = "thumbnail-generation-unsupported";
 };
 
 constexpr std::array<AssetThumbnailKindPolicy, kAssetThumbnailKindCount> kAssetThumbnailKindPolicies {{
-    { AssetThumbnailKind::Icon, "Icon_Unknown", nullptr, "thumbnail-generation-unsupported" },
-    { AssetThumbnailKind::Texture, "Icon_Texture", GenerateTextureThumbnail, "thumbnail-generation-unsupported" },
-    { AssetThumbnailKind::MaterialSphere, "Icon_Material", GenerateMaterialThumbnail, "thumbnail-material-preview-generation-failed" },
-    { AssetThumbnailKind::ModelPreview, "Icon_Model", GenerateModelThumbnail, "thumbnail-model-preview-generation-failed" },
-    { AssetThumbnailKind::PrefabPreview, "Icon_Prefab", GeneratePrefabThumbnail, "thumbnail-prefab-preview-generation-failed" },
-    { AssetThumbnailKind::GenericPreview, "Icon_Unknown", nullptr, "thumbnail-generation-unsupported" }
+    { AssetThumbnailKind::Icon, "editor.icon.asset.default", nullptr, "thumbnail-generation-unsupported" },
+    { AssetThumbnailKind::Texture, "editor.icon.asset.texture", GenerateTextureThumbnail, "thumbnail-generation-unsupported" },
+    { AssetThumbnailKind::MaterialSphere, "editor.icon.asset.material", GenerateMaterialThumbnail, "thumbnail-material-preview-generation-failed" },
+    { AssetThumbnailKind::ModelPreview, "editor.icon.asset.mesh", GenerateModelThumbnail, "thumbnail-model-preview-generation-failed" },
+    { AssetThumbnailKind::PrefabPreview, "editor.icon.asset.prefab", GeneratePrefabThumbnail, "thumbnail-prefab-preview-generation-failed" },
+    { AssetThumbnailKind::GenericPreview, "editor.icon.asset.default", nullptr, "thumbnail-generation-unsupported" }
 }};
 
 constexpr size_t kMaxMeshPreviewVertices = 20000u;
@@ -142,6 +142,7 @@ AssetThumbnailKind ThumbnailKindForItem(const AssetBrowserItem& item)
     case AssetBrowserItemType::Material:
         return AssetThumbnailKind::MaterialSphere;
     case AssetBrowserItemType::Model:
+    case AssetBrowserItemType::Mesh:
         return AssetThumbnailKind::ModelPreview;
     case AssetBrowserItemType::Prefab:
         return AssetThumbnailKind::PrefabPreview;
@@ -153,7 +154,7 @@ AssetThumbnailKind ThumbnailKindForItem(const AssetBrowserItem& item)
 std::string FallbackIconForKind(const AssetThumbnailKind kind)
 {
     const auto* policy = PolicyForKind(kind);
-    return policy != nullptr ? policy->fallbackIcon : "Icon_Unknown";
+    return policy != nullptr ? policy->fallbackIcon : "editor.icon.asset.default";
 }
 
 bool CanGenerateThumbnail(const AssetThumbnailKind kind)
@@ -2124,13 +2125,13 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::ConsumeComplet
         catch (const std::bad_alloc&)
         {
             result.status = AssetThumbnailServiceStatus::Failed;
-            result.fallbackIcon = "Icon_Unknown";
+            result.fallbackIcon = "editor.icon.asset.default";
             result.diagnostic = "thumbnail-generation-out-of-memory";
         }
         catch (...)
         {
             result.status = AssetThumbnailServiceStatus::Failed;
-            result.fallbackIcon = "Icon_Unknown";
+            result.fallbackIcon = "editor.icon.asset.default";
             result.diagnostic = "thumbnail-generation-exception";
         }
         const bool currentGeneration = iterator->generation == m_generationSerial;

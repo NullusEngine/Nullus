@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <unordered_set>
 
 #include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
@@ -65,6 +66,14 @@ namespace
             return std::nullopt;
 
         return projectRoot / "Library";
+    }
+
+    std::filesystem::path StripTrailingEmptyFilename(std::filesystem::path path)
+    {
+        path = path.lexically_normal();
+        while (!path.empty() && !path.has_filename())
+            path = path.parent_path();
+        return path;
     }
 
     template<typename Parser>
@@ -153,6 +162,7 @@ namespace
 
         return std::nullopt;
     }
+
 }
 
 Editor::Core::EditorResources::EditorResources(
@@ -163,103 +173,84 @@ Editor::Core::EditorResources::EditorResources(
     const auto constructorStart = Clock::now();
     m_projectAssetsPath = p_projectAssetsPath;
 
-    const std::string buttonsFolder = p_editorAssetsPath + "Textures/Buttons/";
-    const std::string iconsFolder = p_editorAssetsPath + "Textures/Icons/";
-    const std::string editorIconFolder = p_editorAssetsPath + "Icon/";
-    m_modelsFolder = p_editorAssetsPath + "Models/";
-    m_shadersFolder = p_editorAssetsPath + "Shaders/";
+    m_catalog = EditorResourceCatalog::CreateDefault();
+    const auto editorAssetsPath = StripTrailingEmptyFilename(std::filesystem::path(p_editorAssetsPath));
+    m_catalog.SetDevelopmentAssetsRoot(editorAssetsPath.parent_path());
 
     const auto firstFilterEditor = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
     const auto secondFilterEditor = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
     const auto firstFilterBillboard = NLS::Render::Settings::ETextureFilteringMode::NEAREST;
     const auto secondFilterBillboard = NLS::Render::Settings::ETextureFilteringMode::NEAREST;
 
+    const auto loadEditorIcon = [&](const std::string& id)
     {
-        std::vector<uint64_t> raw = BUTTON_PLAY;
-        m_textures["Button_Play"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = BUTTON_PAUSE;
-        m_textures["Button_Pause"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = BUTTON_STOP;
-        m_textures["Button_Stop"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = BUTTON_NEXT;
-        m_textures["Button_Next"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = BUTTON_REFRESH;
-        m_textures["Button_Refresh"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
-    }
-
-    const auto editorAssetsRoot = std::filesystem::path(p_editorAssetsPath).parent_path();
-    const auto loadEditorIcon = [&](const std::string& id, const std::string& fileName)
-    {
-        const auto filePath = std::filesystem::path(fileName).has_parent_path()
-            ? editorAssetsRoot / fileName
-            : std::filesystem::path(editorIconFolder) / fileName;
-        auto* texture = TextureLoader::Create(filePath.string(), firstFilterEditor, secondFilterEditor, false);
-        if (texture == nullptr)
+        const auto filePath = ResolveDevelopmentPath(id);
+        if (!filePath.has_value())
+        {
+            NLS_LOG_WARNING("[EditorResources] Missing catalog path for texture resource \"" + id + "\"");
             return;
+        }
+
+        auto* texture = TextureLoader::Create(filePath->string(), firstFilterEditor, secondFilterEditor, false);
+        if (texture == nullptr)
+        {
+            NLS_LOG_WARNING(
+                "[EditorResources] Failed to load texture resource \"" + id +
+                "\" from " + filePath->string());
+            return;
+        }
 
         if (const auto existing = m_textures.find(id); existing != m_textures.end())
             TextureLoader::Destroy(existing->second);
         m_textures[id] = texture;
     };
 
-    loadEditorIcon("Toolbar_Move", "d_movetool.png");
-    loadEditorIcon("Toolbar_Rotate", "d_rotatetool.png");
-    loadEditorIcon("Toolbar_Scale", "d_scaletool.png");
-    loadEditorIcon("Toolbar_Pivot", "d_toolhandlepivot.png");
-    loadEditorIcon("Toolbar_Center", "d_toolhandlecenter.png");
-    loadEditorIcon("Toolbar_Global", "d_toolhandleglobal.png");
-    loadEditorIcon("Toolbar_Local", "d_toolhandlelocal.png");
-
     {
         std::vector<uint64_t> raw = ICON_FILE;
-        m_textures["Icon_Unknown"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.default"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_FOLDER;
-        m_textures["Icon_Folder"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.folder"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_TEXTURE;
-        m_textures["Icon_Texture"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.texture"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_MODEL;
-        m_textures["Icon_Model"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.mesh"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_SHADER;
-        m_textures["Icon_Shader"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.shader"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_MATERIAL;
-        m_textures["Icon_Material"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.material"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_SCENE;
-        m_textures["Icon_Scene"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.scene"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_SOUND;
-        m_textures["Icon_Sound"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.audio"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_SCRIPT;
-        m_textures["Icon_Script"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.script"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_FONT;
-        m_textures["Icon_Font"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
+        m_textures["editor.icon.asset.font"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
-    for (const auto& iconOverride : EditorIconFileOverrides())
-        loadEditorIcon(iconOverride.id, iconOverride.fileName);
+
+    for (const auto& record : m_catalog.GetRecords())
+    {
+        if (record.type == EditorResourceType::Icon)
+            loadEditorIcon(record.id);
+    }
 
     {
         std::vector<uint64_t> raw = BILL_PLIGHT;
@@ -282,18 +273,18 @@ Editor::Core::EditorResources::EditorResources(
         m_textures["Bill_Ambient_Sphere_Light"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 128, 128, firstFilterBillboard, secondFilterBillboard, false);
     }
 
-    m_meshPaths["Cylinder"] = m_modelsFolder + "Cylinder.fbx";
-    m_meshPaths["Plane"] = m_modelsFolder + "Plane.fbx";
-    m_meshPaths["Vertical_Plane"] = m_modelsFolder + "Vertical_Plane.fbx";
-    m_meshPaths["Roll"] = m_modelsFolder + "Roll.fbx";
-    m_meshPaths["Sphere"] = m_modelsFolder + "Sphere.fbx";
-    m_meshPaths["Camera"] = m_modelsFolder + "Camera.fbx";
+    m_meshPaths["Cylinder"] = "editor.model.helper.cylinder";
+    m_meshPaths["Plane"] = "editor.model.helper.plane";
+    m_meshPaths["Vertical_Plane"] = "editor.model.helper.vertical-plane";
+    m_meshPaths["Roll"] = "editor.model.helper.roll";
+    m_meshPaths["Sphere"] = "editor.model.helper.sphere";
+    m_meshPaths["Camera"] = "editor.model.helper.camera";
 
-    m_shaderPaths["Grid"] = m_shadersFolder + "Grid.hlsl";
-    m_shaderPaths["Billboard"] = m_shadersFolder + "Billboard.hlsl";
-    m_shaderPaths["DebugLitColor"] = m_shadersFolder + "DebugLitColor.hlsl";
-    m_shaderPaths["SelectionOutlineMask"] = m_shadersFolder + "SelectionOutlineMask.hlsl";
-    m_shaderPaths["SelectionOutlineComposite"] = m_shadersFolder + "SelectionOutlineComposite.hlsl";
+    m_shaderPaths["Grid"] = "editor.shader.grid";
+    m_shaderPaths["Billboard"] = "editor.shader.billboard";
+    m_shaderPaths["DebugLitColor"] = "editor.shader.debug-lit-color";
+    m_shaderPaths["SelectionOutlineMask"] = "editor.shader.selection-outline-mask";
+    m_shaderPaths["SelectionOutlineComposite"] = "editor.shader.selection-outline-composite";
 
     {
         std::vector<uint64_t> raw = EMPTY_TEXTURE;
@@ -306,27 +297,14 @@ Editor::Core::EditorResources::EditorResources(
         std::to_string(MillisecondsSince(constructorStart)) + " ms");
 }
 
-const std::array<Editor::Core::EditorResources::IconFileOverride, 9>&
-Editor::Core::EditorResources::EditorIconFileOverrides()
-{
-    static const std::array<IconFileOverride, 9> overrides {{
-        { "Icon_Folder", "unity_project_folder.png" },
-        { "Icon_Texture", "unity_project_texture.png" },
-        { "Icon_Model", "unity_project_prefab_model.png" },
-        { "Icon_Prefab", "unity_project_prefab.png" },
-        { "Icon_Material", "unity_project_material.png" },
-        { "Icon_Scene", "Engine/Brand/NullusLogoMark.png" },
-        { "Icon_Shader", "unity_project_shader.png" },
-        { "Icon_Script", "unity_project_cs_script.png" },
-        { "Icon_Unknown", "unity_project_default_asset.png" },
-    }};
-    return overrides;
-}
-
 Editor::Core::EditorResources::~EditorResources()
 {
+    std::unordered_set<NLS::Render::Resources::Texture2D*> destroyedTextures;
     for (auto [id, texture] : m_textures)
-        NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture);
+    {
+        if (destroyedTextures.insert(texture).second)
+            NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture);
+    }
 
     for (auto [id, shader] : m_shaders)
         NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
@@ -334,8 +312,36 @@ Editor::Core::EditorResources::~EditorResources()
 
 NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetFileIcon(const std::string& p_filename)
 {
+    return GetTexture(GetFileIconId(p_filename));
+}
+
+const char* Editor::Core::EditorResources::GetFileIconId(const std::string& p_filename)
+{
     using namespace Utils;
-    return GetTexture("Icon_" + PathParser::FileTypeToString(PathParser::GetFileType(p_filename)));
+    const auto fileType = PathParser::GetFileType(p_filename);
+    switch (fileType)
+    {
+    case PathParser::EFileType::TEXTURE:
+        return "editor.icon.asset.texture";
+    case PathParser::EFileType::MODEL:
+        return "editor.icon.asset.mesh";
+    case PathParser::EFileType::PREFAB:
+        return "editor.icon.asset.prefab";
+    case PathParser::EFileType::SHADER:
+        return "editor.icon.asset.shader";
+    case PathParser::EFileType::MATERIAL:
+        return "editor.icon.asset.material";
+    case PathParser::EFileType::SCENE:
+        return "editor.icon.asset.scene";
+    case PathParser::EFileType::SOUND:
+        return "editor.icon.asset.audio";
+    case PathParser::EFileType::SCRIPT:
+        return "editor.icon.asset.script";
+    case PathParser::EFileType::FONT:
+        return "editor.icon.asset.font";
+    default:
+        return "editor.icon.asset.default";
+    }
 }
 
 NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetTexture(const std::string& p_id)
@@ -368,6 +374,11 @@ NLS::Render::Resources::Shader* Editor::Core::EditorResources::GetLoadedShader(c
     return found != m_shaders.end() ? found->second : nullptr;
 }
 
+std::optional<std::filesystem::path> Editor::Core::EditorResources::ResolveDevelopmentPath(const std::string& p_id) const
+{
+    return m_catalog.ResolvePath(p_id, EditorResourceBackendMode::Development);
+}
+
 void Editor::Core::EditorResources::PreloadStartupResources()
 {
     GetShader("Grid");
@@ -387,9 +398,16 @@ NLS::Render::Resources::Mesh* Editor::Core::EditorResources::LoadMesh(const std:
     if (found == m_meshPaths.end())
         return nullptr;
 
+    const auto sourcePath = ResolveDevelopmentPath(found->second);
+    if (!sourcePath.has_value())
+    {
+        NLS_LOG_WARNING("[EditorResources] Missing catalog path for mesh resource \"" + found->second + "\"");
+        return nullptr;
+    }
+
     const auto loadStart = Clock::now();
     auto& meshManager = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MeshManager>();
-    const auto resourcePath = EnsureEditorHelperMeshArtifact(m_projectAssetsPath, p_id, found->second);
+    const auto resourcePath = EnsureEditorHelperMeshArtifact(m_projectAssetsPath, p_id, sourcePath->string());
     auto* mesh = resourcePath.has_value()
         ? meshManager.GetResource(resourcePath->string(), true)
         : nullptr;
@@ -408,8 +426,15 @@ NLS::Render::Resources::Shader* Editor::Core::EditorResources::LoadShader(const 
     if (found == m_shaderPaths.end())
         return nullptr;
 
+    const auto shaderPath = ResolveDevelopmentPath(found->second);
+    if (!shaderPath.has_value())
+    {
+        NLS_LOG_WARNING("[EditorResources] Missing catalog path for shader resource \"" + found->second + "\"");
+        return nullptr;
+    }
+
     const auto loadStart = Clock::now();
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(found->second, m_projectAssetsPath);
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderPath->string(), m_projectAssetsPath);
     if (shader != nullptr)
     {
         m_shaders[p_id] = shader;

@@ -1,12 +1,15 @@
 ﻿#pragma once
 
-#include <array>
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
 #include <ResourceManagement/MeshManager.h>
 #include <ResourceManagement/TextureManager.h>
 #include <ResourceManagement/ShaderManager.h>
+
+#include "Core/EditorResourceCatalog.h"
 
 namespace NLS::Editor::Core
 {
@@ -16,12 +19,6 @@ namespace NLS::Editor::Core
 	class EditorResources
 	{
 	public:
-        struct IconFileOverride
-        {
-            const char* id;
-            const char* fileName;
-        };
-
 		/**
 		* Constructor
 		* @param p_editorAssetsPath
@@ -38,6 +35,7 @@ namespace NLS::Editor::Core
 		* @param p_filename
 		*/
         NLS::Render::Resources::Texture2D* GetFileIcon(const std::string& p_filename);
+        static const char* GetFileIconId(const std::string& p_filename);
 
 		/**
 		* Returns the texture identified by the given string or nullptr on fail
@@ -69,15 +67,13 @@ namespace NLS::Editor::Core
          */
         void PreloadStartupResources();
 
-        static const std::array<IconFileOverride, 9>& EditorIconFileOverrides();
-
 	private:
         NLS::Render::Resources::Mesh* LoadMesh(const std::string& p_id);
         NLS::Render::Resources::Shader* LoadShader(const std::string& p_id);
+        std::optional<std::filesystem::path> ResolveDevelopmentPath(const std::string& p_id) const;
 
 	private:
-        std::string m_modelsFolder;
-        std::string m_shadersFolder;
+        EditorResourceCatalog m_catalog;
         std::string m_projectAssetsPath;
         std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> m_textures;
         std::unordered_map<std::string, NLS::Render::Resources::Mesh*> m_meshes;

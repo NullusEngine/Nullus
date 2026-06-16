@@ -394,7 +394,7 @@ TEST(AssetBrowserPresentationTests, GridStopsDrawingInvalidatedItemsAfterOpening
     EXPECT_FALSE(ShouldStopDrawingAssetBrowserGridAfterOpeningItem("Assets", texture));
 }
 
-TEST(AssetBrowserPresentationTests, ThumbnailSizeMinimumUsesUnityStyleListMode)
+TEST(AssetBrowserPresentationTests, ThumbnailSizeMinimumUsesProjectBrowserListMode)
 {
     using namespace NLS::Editor::Assets;
 
@@ -407,70 +407,61 @@ TEST(AssetBrowserPresentationTests, FallbackIconsUseProjectEditorIconIds)
 {
     using namespace NLS::Editor::Assets;
 
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Folder), "Icon_Folder");
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Texture), "Icon_Texture");
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Material), "Icon_Material");
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Mesh), "Icon_Model");
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Prefab), "Icon_Prefab");
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Scene), "Icon_Scene");
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Shader), "Icon_Shader");
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Script), "Icon_Script");
-    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Other), "Icon_Unknown");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Folder), "editor.icon.asset.folder");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Texture), "editor.icon.asset.texture");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Material), "editor.icon.asset.material");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Mesh), "editor.icon.asset.mesh");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Prefab), "editor.icon.asset.prefab");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Scene), "editor.icon.asset.scene");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Shader), "editor.icon.asset.shader");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Script), "editor.icon.asset.script");
+    EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Other), "editor.icon.asset.default");
 }
 
-TEST(AssetBrowserPresentationTests, UnityTypeIconOverridesDoNotUsePreviewOrWindowIcons)
+TEST(AssetBrowserPresentationTests, EditorResourcesUsePrefabFileIconIdForPrefabFiles)
 {
-    const auto& overrides = NLS::Editor::Core::EditorResources::EditorIconFileOverrides();
-    std::unordered_set<std::string> unityProjectIconIds;
-    const auto repoRoot = std::filesystem::path(NLS_ROOT_DIR);
-    const auto iconRoot = repoRoot / "App" / "Assets" / "Editor" / "Icon";
-    const auto assetRoot = repoRoot / "App" / "Assets";
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.prefab"),
+        "editor.icon.asset.prefab");
+}
 
-    for (const auto& iconOverride : overrides)
+TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusResources)
+{
+    const auto& records = NLS::Editor::Core::EditorResourceCatalog::DefaultRecords();
+    bool foundSceneIcon = false;
+    bool foundPrefabIcon = false;
+    bool foundMaterialIcon = false;
+    for (const auto& record : records)
     {
-        EXPECT_STRNE(iconOverride.fileName, "d_prematcube@2x.png")
-            << iconOverride.id << " must not use the material preview cube as a Unity type icon";
-        EXPECT_STRNE(iconOverride.fileName, "d_prematsphere@2x.png")
-            << iconOverride.id << " must not use the material preview sphere as a Unity type icon";
-        EXPECT_STRNE(iconOverride.fileName, "d_unityeditor.inspectorwindow.png")
-            << iconOverride.id << " must not use an editor window icon as a Unity type icon";
-        EXPECT_STRNE(iconOverride.fileName, "d_preset.context.png")
-            << iconOverride.id << " must not use a context preset icon as a Unity type icon";
+        if (record.type != NLS::Editor::Core::EditorResourceType::Icon ||
+            record.developmentPath.empty())
+        {
+            continue;
+        }
 
-        const std::string fileName = iconOverride.fileName;
-        if (fileName.rfind("unity_project_", 0) == 0)
-            unityProjectIconIds.insert(iconOverride.id);
-
-        const auto iconPath = std::filesystem::path(fileName).is_relative()
-            ? (fileName.rfind("unity_project_", 0) == 0
-                ? iconRoot / fileName
-                : assetRoot / fileName)
-            : std::filesystem::path(fileName);
+        EXPECT_EQ(record.id.find("unity"), std::string::npos) << record.id;
+        EXPECT_EQ(record.developmentPath.generic_string().find("unity"), std::string::npos)
+            << record.developmentPath.generic_string();
+        const auto iconPath =
+            std::filesystem::path(NLS_ROOT_DIR) / "App" / "Assets" / record.developmentPath;
         const auto [width, height] = ReadPngDimensions(iconPath);
-        EXPECT_EQ(width, 128u)
-            << iconOverride.id << " must use a Unity Project-window exported icon";
-        EXPECT_EQ(height, 128u)
-            << iconOverride.id << " must use a Unity Project-window exported icon";
+        EXPECT_GT(width, 0u) << iconPath.string();
+        EXPECT_GT(height, 0u) << iconPath.string();
+
+        if (record.id == "editor.icon.asset.scene")
+        {
+            foundSceneIcon = true;
+            EXPECT_EQ(record.developmentPath.generic_string(), "Editor/Brand/NullusLogoMark.png");
+        }
+        if (record.id == "editor.icon.asset.prefab")
+            foundPrefabIcon = true;
+        if (record.id == "editor.icon.asset.material")
+            foundMaterialIcon = true;
     }
 
-    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Folder"));
-    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Texture"));
-    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Model"));
-    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Prefab"));
-    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Material"));
-    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Shader"));
-    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Script"));
-    EXPECT_TRUE(unityProjectIconIds.contains("Icon_Unknown"));
-
-    const auto sceneOverride = std::find_if(
-        overrides.begin(),
-        overrides.end(),
-        [](const auto& iconOverride)
-        {
-            return std::string_view(iconOverride.id) == "Icon_Scene";
-        });
-    ASSERT_NE(sceneOverride, overrides.end());
-    EXPECT_STREQ(sceneOverride->fileName, "Engine/Brand/NullusLogoMark.png");
+    EXPECT_TRUE(foundSceneIcon);
+    EXPECT_TRUE(foundPrefabIcon);
+    EXPECT_TRUE(foundMaterialIcon);
 }
 
 TEST(AssetBrowserPresentationTests, GeneratedSubAssetsAreNestedUnderCollapsedSourceAssets)
@@ -1215,6 +1206,44 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeKeyChangesWhenVisibl
     EXPECT_EQ(
         materialScope,
         BuildAssetBrowserThumbnailGenerationScopeKey("Assets/Materials", 96u, materialItems));
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailGenerationSelectionKeepsVisibleMaterialAndPrefabPreviewItems)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserItem material;
+    material.displayName = "Lamp.mat";
+    material.projectRelativePath = "Assets/Materials/Lamp.mat";
+    material.sourceAssetPath = material.projectRelativePath;
+    material.kind = AssetBrowserItemKind::SourceAsset;
+    material.type = AssetBrowserItemType::Material;
+
+    AssetBrowserItem prefab;
+    prefab.displayName = "Lamp.prefab";
+    prefab.projectRelativePath = "Assets/Prefabs/Lamp.prefab";
+    prefab.sourceAssetPath = prefab.projectRelativePath;
+    prefab.kind = AssetBrowserItemKind::SourceAsset;
+    prefab.type = AssetBrowserItemType::Prefab;
+
+    AssetBrowserItem hiddenTexture;
+    hiddenTexture.displayName = "Hidden.png";
+    hiddenTexture.projectRelativePath = "Assets/Textures/Hidden.png";
+    hiddenTexture.sourceAssetPath = hiddenTexture.projectRelativePath;
+    hiddenTexture.kind = AssetBrowserItemKind::SourceAsset;
+    hiddenTexture.type = AssetBrowserItemType::Texture;
+
+    const std::vector<AssetBrowserItem> currentFolderItems { material, prefab, hiddenTexture };
+    const std::vector<AssetBrowserItem> visibleItems { material, prefab };
+
+    const auto selected = SelectAssetBrowserThumbnailGenerationItems(
+        currentFolderItems,
+        visibleItems,
+        true);
+
+    ASSERT_EQ(selected.size(), 2u);
+    EXPECT_EQ(selected[0].type, AssetBrowserItemType::Material);
+    EXPECT_EQ(selected[1].type, AssetBrowserItemType::Prefab);
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailGenerationItemsWaitForVisibleScope)

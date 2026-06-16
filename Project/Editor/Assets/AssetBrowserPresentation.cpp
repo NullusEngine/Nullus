@@ -745,28 +745,28 @@ const char* AssetBrowserFallbackIconId(const AssetBrowserItemType type)
     switch (type)
     {
     case AssetBrowserItemType::Folder:
-        return "Icon_Folder";
+        return "editor.icon.asset.folder";
     case AssetBrowserItemType::Model:
     case AssetBrowserItemType::Mesh:
-        return "Icon_Model";
+        return "editor.icon.asset.mesh";
     case AssetBrowserItemType::Prefab:
-        return "Icon_Prefab";
+        return "editor.icon.asset.prefab";
     case AssetBrowserItemType::Material:
-        return "Icon_Material";
+        return "editor.icon.asset.material";
     case AssetBrowserItemType::Texture:
-        return "Icon_Texture";
+        return "editor.icon.asset.texture";
     case AssetBrowserItemType::Shader:
-        return "Icon_Shader";
+        return "editor.icon.asset.shader";
     case AssetBrowserItemType::Scene:
-        return "Icon_Scene";
+        return "editor.icon.asset.scene";
     case AssetBrowserItemType::Script:
-        return "Icon_Script";
+        return "editor.icon.asset.script";
     case AssetBrowserItemType::All:
     case AssetBrowserItemType::Other:
     case AssetBrowserItemType::Count:
         break;
     }
-    return "Icon_Unknown";
+    return "editor.icon.asset.default";
 }
 
 AssetBrowserContentViewMode ResolveAssetBrowserContentViewMode(const float thumbnailSize)

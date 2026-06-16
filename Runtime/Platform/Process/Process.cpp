@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <sstream>
+#include <system_error>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -17,6 +18,26 @@
 #include <mach-o/dyld.h>
 #endif
 #endif
+
+namespace
+{
+std::filesystem::path NormalizePath(std::filesystem::path path)
+{
+    std::error_code error;
+    auto normalized = std::filesystem::weakly_canonical(path, error);
+    if (error)
+        normalized = path.lexically_normal();
+    return normalized;
+}
+
+std::filesystem::path StripTrailingEmptyFilename(std::filesystem::path path)
+{
+    path = path.lexically_normal();
+    while (!path.empty() && !path.has_filename())
+        path = path.parent_path();
+    return path;
+}
+}
 
 namespace NLS::Platform::Process
 {
@@ -140,33 +161,71 @@ ProcessLaunchResult Launch(
 
 std::optional<std::filesystem::path> FindExecutable(const std::string& name)
 {
-    std::filesystem::path exeDir;
-
-#ifdef _WIN32
-    {
-        char modulePath[MAX_PATH];
-        GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
-        exeDir = std::filesystem::path(modulePath).parent_path();
-    }
-#elif __APPLE__
-    {
-        uint32_t size = 0;
-        _NSGetExecutablePath(nullptr, &size);
-        std::vector<char> buffer(size);
-        _NSGetExecutablePath(buffer.data(), &size);
-        exeDir = std::filesystem::path(buffer.data()).parent_path();
-    }
-#else
-    {
-        exeDir = std::filesystem::canonical("/proc/self/exe").parent_path();
-    }
-#endif
+    const auto exeDir = GetCurrentExecutablePath().parent_path();
 
     auto candidate = exeDir / name;
     if (std::filesystem::exists(candidate))
         return std::filesystem::canonical(candidate);
 
     return std::nullopt;
+}
+
+std::filesystem::path GetCurrentExecutablePath()
+{
+#ifdef _WIN32
+    wchar_t modulePath[MAX_PATH] {};
+    const DWORD size = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    if (size > 0u)
+        return NormalizePath(std::filesystem::path(modulePath));
+#elif __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::vector<char> buffer(size);
+    if (_NSGetExecutablePath(buffer.data(), &size) == 0)
+        return NormalizePath(std::filesystem::path(buffer.data()));
+#else
+    char buffer[4096] {};
+    const auto size = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1u);
+    if (size > 0)
+        return NormalizePath(std::filesystem::path(std::string(buffer, static_cast<size_t>(size))));
+#endif
+    return NormalizePath(std::filesystem::current_path());
+}
+
+InstallResourceRoots ResolveInstallResourceRoots(const std::filesystem::path& executablePath)
+{
+    auto executable = StripTrailingEmptyFilename(executablePath.empty() ? GetCurrentExecutablePath() : executablePath);
+    const auto executableDirectory = executable.has_filename()
+        ? executable.parent_path()
+        : executable;
+
+    auto installRoot = executableDirectory;
+    std::error_code error;
+    for (auto candidate = executableDirectory; !candidate.empty(); candidate = candidate.parent_path())
+    {
+        if (std::filesystem::is_directory(candidate / "Assets" / "Editor", error) ||
+            std::filesystem::is_directory(candidate / "App" / "Assets" / "Editor", error))
+        {
+            installRoot = candidate;
+            break;
+        }
+        if (candidate == candidate.parent_path())
+            break;
+    }
+
+    auto assetsRoot = installRoot / "Assets";
+    if (!std::filesystem::is_directory(assetsRoot / "Editor", error) &&
+        std::filesystem::is_directory(installRoot / "App" / "Assets" / "Editor", error))
+    {
+        assetsRoot = installRoot / "App" / "Assets";
+    }
+
+    InstallResourceRoots roots;
+    roots.installRoot = NormalizePath(installRoot);
+    roots.assetsRoot = NormalizePath(assetsRoot);
+    roots.editorAssetsRoot = NormalizePath(assetsRoot / "Editor");
+    roots.engineAssetsRoot = NormalizePath(assetsRoot / "Engine");
+    return roots;
 }
 
 } // namespace NLS::Platform::Process

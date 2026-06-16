@@ -895,10 +895,12 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     mesh.assetId = assetId;
     mesh.sourceAssetPath = "Assets/Models/Hero.gltf";
     mesh.subAssetKey = "mesh:Body";
+    mesh.artifactPath = "Library/Artifacts/model/mesh.nmesh";
     mesh.artifactType = ArtifactType::Mesh;
     const auto meshRequest = BuildAssetThumbnailRequestForItem(root, mesh, 96u);
     ASSERT_TRUE(meshRequest.has_value());
-    EXPECT_EQ(meshRequest->kind, AssetThumbnailKind::Icon);
+    EXPECT_EQ(meshRequest->kind, AssetThumbnailKind::ModelPreview);
+    EXPECT_EQ(meshRequest->artifactPath, "Library/Artifacts/model/mesh.nmesh");
 
     AssetBrowserItem prefab;
     prefab.kind = AssetBrowserItemKind::SourceAsset;

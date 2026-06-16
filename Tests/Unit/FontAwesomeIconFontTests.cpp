@@ -18,6 +18,11 @@ TEST(FontAwesomeIconFontTests, LoadsSearchGlyphIntoCurrentFontAtlas)
     EXPECT_NE(io.Fonts->Fonts[0]->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeCaretDownGlyph)), nullptr);
     EXPECT_NE(io.Fonts->Fonts[0]->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeCaretRightGlyph)), nullptr);
     EXPECT_NE(io.Fonts->Fonts[0]->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomePaintBrushGlyph)), nullptr);
+    EXPECT_NE(io.Fonts->Fonts[0]->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomePlayGlyph)), nullptr);
+    EXPECT_NE(io.Fonts->Fonts[0]->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomePauseGlyph)), nullptr);
+    EXPECT_NE(io.Fonts->Fonts[0]->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeStopGlyph)), nullptr);
+    EXPECT_NE(io.Fonts->Fonts[0]->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeStepForwardGlyph)), nullptr);
+    EXPECT_NE(io.Fonts->Fonts[0]->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeRefreshGlyph)), nullptr);
 
     ImGui::DestroyContext();
 }
@@ -40,6 +45,11 @@ TEST(FontAwesomeIconFontTests, LoadsSearchGlyphIntoRequestedFont)
     EXPECT_NE(secondFont->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeCaretDownGlyph)), nullptr);
     EXPECT_NE(secondFont->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeCaretRightGlyph)), nullptr);
     EXPECT_NE(secondFont->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomePaintBrushGlyph)), nullptr);
+    EXPECT_NE(secondFont->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomePlayGlyph)), nullptr);
+    EXPECT_NE(secondFont->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomePauseGlyph)), nullptr);
+    EXPECT_NE(secondFont->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeStopGlyph)), nullptr);
+    EXPECT_NE(secondFont->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeStepForwardGlyph)), nullptr);
+    EXPECT_NE(secondFont->FindGlyphNoFallback(static_cast<ImWchar>(NLS::UI::Icons::kFontAwesomeRefreshGlyph)), nullptr);
 
     ImGui::DestroyContext();
 }

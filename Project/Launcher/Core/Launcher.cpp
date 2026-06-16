@@ -23,6 +23,7 @@
 #include <Debug/Logger.h>
 #include <Filesystem/IniFile.h>
 #include <Image.h>
+#include <Platform/Process/Process.h>
 #include <UI/Icons/FontAwesomeIconFont.h>
 #include <UI/UIManager.h>
 
@@ -46,6 +47,10 @@ namespace NLS
 {
 namespace
 {
+std::filesystem::path ResolveLauncherAssetsRoot()
+{
+    return Platform::Process::ResolveInstallResourceRoots().assetsRoot;
+}
 
 const char* Tr(LauncherTextKey key)
 {
@@ -1142,7 +1147,8 @@ LauncherRunResult Launcher::Run()
 
 void Launcher::SetupContext()
 {
-    GetLauncherLocalization().Load(std::filesystem::path("../Assets/Localization/Launcher"), ResolveLauncherLocale());
+    const auto assetsRoot = ResolveLauncherAssetsRoot();
+    GetLauncherLocalization().Load(assetsRoot / "Localization" / "Launcher", ResolveLauncherLocale());
 
     Windowing::Settings::DeviceSettings deviceSettings;
     Windowing::Settings::WindowSettings windowSettings;
@@ -1193,7 +1199,7 @@ void Launcher::SetupContext()
 
     m_device = std::make_unique<Context::Device>(deviceSettings);
     m_window = std::make_unique<Windowing::Window>(*m_device, windowSettings);
-    const std::string brandIconPath = std::filesystem::canonical(std::filesystem::path("../Assets/Engine/Brand/NullusLogoMark.png")).string();
+    const std::string brandIconPath = (assetsRoot / "Engine" / "Brand" / "NullusLogoMark.png").string();
     m_window->SetIcon(brandIconPath);
 
     auto monSize = m_device->GetMonitorSize();
@@ -1244,7 +1250,7 @@ void Launcher::SetupContext()
         if (cjkFont)
         {
             UI::Icons::EnsureFontAwesomeIconFontLoaded(18.0f, cjkFont);
-            m_uiManager->LoadFont("Ruda_Title", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 30);
+            m_uiManager->LoadFont("Ruda_Title", (assetsRoot / "Editor" / "Fonts" / "Ruda-Bold.ttf").string(), 30);
             // Use the CJK font as the primary font
             io.FontDefault = cjkFont;
         }
@@ -1252,8 +1258,8 @@ void Launcher::SetupContext()
 #endif
         {
             // Fallback: load Ruda without CJK support
-            m_uiManager->LoadFont("Ruda_Medium", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 18);
-            m_uiManager->LoadFont("Ruda_Title", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 30);
+            m_uiManager->LoadFont("Ruda_Medium", (assetsRoot / "Editor" / "Fonts" / "Ruda-Bold.ttf").string(), 18);
+            m_uiManager->LoadFont("Ruda_Title", (assetsRoot / "Editor" / "Fonts" / "Ruda-Bold.ttf").string(), 30);
             m_uiManager->UseFont("Ruda_Medium");
         }
     }
@@ -1281,7 +1287,7 @@ void Launcher::SetupContext()
 
     // Load project templates
     {
-        auto templatePath = std::filesystem::path("../Assets/Templates");
+        auto templatePath = assetsRoot / "Templates";
         std::error_code ec;
         auto resolvedPath = std::filesystem::canonical(templatePath, ec);
         if (!ec && std::filesystem::exists(resolvedPath))

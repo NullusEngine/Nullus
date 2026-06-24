@@ -983,7 +983,7 @@ GameObject* FindLiveObjectForSource(
     const PrefabInstanceRecord& instance,
     const ObjectId& sourceObject)
 {
-    if (instance.sourceGraph.root == sourceObject)
+    if (instance.SourceGraph().root == sourceObject)
         return instance.instanceRoot;
 
     for (const auto& mapping : instance.sourceByInstanceObject)
@@ -998,14 +998,15 @@ NLS::Engine::Components::Component* FindLiveComponentForSource(
     const PrefabInstanceRecord& instance,
     const ObjectId& sourceComponent)
 {
-    const auto* sourceRecord = FindObjectRecord(instance.sourceGraph, sourceComponent);
+    const auto& sourceGraph = instance.SourceGraph();
+    const auto* sourceRecord = FindObjectRecord(sourceGraph, sourceComponent);
     if (!sourceRecord)
         return nullptr;
 
     for (const auto& mapping : instance.sourceByInstanceObject)
     {
         auto* owner = const_cast<GameObject*>(mapping.first);
-        const auto* ownerRecord = FindObjectRecord(instance.sourceGraph, mapping.second);
+        const auto* ownerRecord = FindObjectRecord(sourceGraph, mapping.second);
         if (!owner || !ownerRecord)
             continue;
 
@@ -1064,7 +1065,7 @@ bool RevertLiveStructuralPatch(
     PrefabInstanceRecord& instance,
     const PatchOperation& patch)
 {
-    const auto& sourceGraph = instance.sourceGraph;
+    const auto& sourceGraph = instance.SourceGraph();
     if (!sourceGraph.root.IsValid())
         return true;
 
@@ -1132,8 +1133,9 @@ bool RevertLivePropertyToPrefabValue(
         return true;
 
     const auto sourceId = patch.target;
-    const auto& sourceGraph = instance.sourceGraph.root.IsValid()
-        ? instance.sourceGraph
+    const auto& instanceSourceGraph = instance.SourceGraph();
+    const auto& sourceGraph = instanceSourceGraph.root.IsValid()
+        ? instanceSourceGraph
         : prefab.graph;
     const auto* sourceRecord = FindObjectRecord(sourceGraph, sourceId);
     if (!sourceRecord)
@@ -2111,13 +2113,12 @@ PrefabHierarchyPresentation PrefabInstanceRegistry::GetPresentation(const GameOb
     const auto prefabSourceStateKey =
         MakePrefabSourceStateKey(instance->prefabAssetId, instance->prefabSubAssetKey);
     presentation.missingAsset =
-        m_missingPrefabSources.find(prefabSourceStateKey) != m_missingPrefabSources.end() ||
-        (instance->instanceRoot != nullptr &&
-            m_failedResourceInstanceRoots.find(instance->instanceRoot) != m_failedResourceInstanceRoots.end());
+        m_missingPrefabSources.find(prefabSourceStateKey) != m_missingPrefabSources.end();
     presentation.pendingResources =
         m_pendingResourcePrefabSources.find(prefabSourceStateKey) != m_pendingResourcePrefabSources.end() ||
         (instance->instanceRoot != nullptr &&
-            m_pendingResourceInstanceRoots.find(instance->instanceRoot) != m_pendingResourceInstanceRoots.end());
+            (m_pendingResourceInstanceRoots.find(instance->instanceRoot) != m_pendingResourceInstanceRoots.end() ||
+                m_failedResourceInstanceRoots.find(instance->instanceRoot) != m_failedResourceInstanceRoots.end()));
     presentation.unpacked = instance->unpacked;
     presentation.hasOverrides = !instance->localPatches.empty();
     presentation.state = instance->instanceRoot == &object
@@ -2136,6 +2137,30 @@ PrefabHierarchyPresentation PrefabInstanceRegistry::GetPresentation(const GameOb
     }
 
     return presentation;
+}
+
+const NLS::Engine::Serialize::ObjectGraphDocument& PrefabInstanceRecord::SourceGraph() const
+{
+    if (sharedSourcePrefab && sharedSourcePrefab->graph.root.IsValid())
+        return sharedSourcePrefab->graph;
+    return sourceGraph;
+}
+
+const NLS::Engine::Assets::PrefabArtifact* PrefabInstanceRecord::SharedSourcePrefab() const
+{
+    return sharedSourcePrefab.get();
+}
+
+void PrefabInstanceRecord::UseSharedSourcePrefab(
+    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab)
+{
+    sharedSourcePrefab = std::move(prefab);
+    if (sharedSourcePrefab)
+    {
+        prefabAssetId = sharedSourcePrefab->assetId;
+        generatedReadOnly = sharedSourcePrefab->generatedModelPrefab;
+        sourceGraph = {};
+    }
 }
 
 PrefabEditorOperationResult PrefabEditorWorkflow::CreatePrefabFromSelection(
@@ -2211,6 +2236,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::InstantiatePrefab(
 
     NLS::Engine::Serialize::LoadPolicy loadPolicy;
     loadPolicy.deferAssetReferenceResolution = request.deferAssetReferenceResolution;
+    loadPolicy.synchronousAssetReferencePrewarm = request.synchronousAssetReferencePrewarm;
     auto instantiateResult = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, scene, loadPolicy);
     if (instantiateResult.diagnostics.HasErrors())
     {
@@ -2420,7 +2446,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::RevertSelectedOverride(
         return result;
     }
 
-    const PrefabArtifact sourcePrefab {instance.prefabAssetId, instance.sourceGraph};
+    PrefabArtifact sourcePrefab {instance.prefabAssetId, instance.SourceGraph()};
     if (!RevertLivePropertyToPrefabValue(sourcePrefab, instance, patch))
     {
         AddDiagnostic(
@@ -2464,7 +2490,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::RevertAllOverrides(PrefabInsta
     PrefabEditorOperationResult result;
     const bool hadOverrides = !instance.localPatches.empty();
     const auto patches = instance.localPatches;
-    const PrefabArtifact sourcePrefab {instance.prefabAssetId, instance.sourceGraph};
+    PrefabArtifact sourcePrefab {instance.prefabAssetId, instance.SourceGraph()};
     for (const auto& patch : patches)
     {
         if (!RevertLivePropertyToPrefabValue(sourcePrefab, instance, patch))

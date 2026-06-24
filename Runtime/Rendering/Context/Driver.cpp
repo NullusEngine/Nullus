@@ -2788,6 +2788,13 @@ Render::RHI::RHIReadbackResult DriverRendererAccess::BeginReadPixels(
         data);
 }
 
+Render::RHI::RHIReadbackResult DriverRendererAccess::PollReadbackCompletion(
+    const Driver& driver,
+    const Render::RHI::RHIReadbackResult& readback)
+{
+    return RhiThreadCoordinator::PollReadbackCompletion(driver, readback);
+}
+
 
 void DriverRendererAccess::Clear(
 	Driver& /*driver*/,

@@ -2,6 +2,10 @@
 
 #include "Assets/AssetImporterSettings.h"
 #include "Assets/ArtifactWriter.h"
+#include "Assets/EditorAssetManifestJson.h"
+#include "Assets/ModelTextureReferenceResolver.h"
+#include "Assets/ModelTextureResolutionReport.h"
+#include "Assets/ModelTextureTextCodec.h"
 #include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Debug/Logger.h"
 #include "Engine/Assets/ModelPrefabBuilder.h"
@@ -48,6 +52,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace NLS::Editor::Assets
@@ -74,6 +79,72 @@ struct ExternalModelImportTimingStats
     const char* status = "failed";
 };
 
+struct ModelTextureAutoImportSideEffect
+{
+    std::filesystem::path sourcePath;
+    std::filesystem::path artifactRoot;
+    std::filesystem::path metaPath;
+    NLS::Core::Assets::ArtifactManifest manifest;
+    bool createdMeta = false;
+    bool committedArtifact = false;
+    bool persistedManifest = false;
+};
+
+void CleanupModelTextureAutoImportSideEffects(
+    const std::vector<ModelTextureAutoImportSideEffect>& sideEffects)
+{
+    std::error_code cleanupError;
+    for (const auto& sideEffect : sideEffects)
+    {
+        if (sideEffect.committedArtifact && !sideEffect.artifactRoot.empty())
+        {
+            std::filesystem::remove_all(sideEffect.artifactRoot, cleanupError);
+            cleanupError.clear();
+        }
+        if (sideEffect.createdMeta && !sideEffect.metaPath.empty())
+        {
+            std::filesystem::remove(sideEffect.metaPath, cleanupError);
+            cleanupError.clear();
+        }
+    }
+}
+
+class ModelTextureAutoImportCleanupGuard
+{
+public:
+    explicit ModelTextureAutoImportCleanupGuard(
+        std::vector<ModelTextureAutoImportSideEffect>& sideEffects)
+        : m_sideEffects(sideEffects)
+    {
+    }
+
+    ~ModelTextureAutoImportCleanupGuard()
+    {
+        if (!m_committed)
+        {
+            CleanupModelTextureAutoImportSideEffects(m_sideEffects);
+            return;
+        }
+
+        std::vector<ModelTextureAutoImportSideEffect> incompleteSideEffects;
+        for (const auto& sideEffect : m_sideEffects)
+        {
+            if (sideEffect.committedArtifact && !sideEffect.persistedManifest)
+                incompleteSideEffects.push_back(sideEffect);
+        }
+        CleanupModelTextureAutoImportSideEffects(incompleteSideEffects);
+    }
+
+    void Commit()
+    {
+        m_committed = true;
+    }
+
+private:
+    std::vector<ModelTextureAutoImportSideEffect>& m_sideEffects;
+    bool m_committed = false;
+};
+
 std::string ToLower(std::string value)
 {
     std::transform(
@@ -83,8 +154,13 @@ std::string ToLower(std::string value)
         [](const unsigned char character)
         {
             return static_cast<char>(std::tolower(character));
-        });
+    });
     return value;
+}
+
+bool CaseInsensitiveMatch(const std::string& lhs, const std::string& rhs)
+{
+    return ToLower(lhs) == ToLower(rhs);
 }
 
 bool IsGltfModelSourcePath(const std::filesystem::path& sourcePath)
@@ -238,6 +314,16 @@ std::string ReadTextFile(const std::filesystem::path& path)
     return std::string(
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>());
+}
+
+bool WriteTextFile(const std::filesystem::path& path, const std::string& content)
+{
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output)
+        return false;
+
+    output << content;
+    return static_cast<bool>(output);
 }
 
 std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
@@ -559,6 +645,7 @@ std::optional<std::filesystem::path> ResolveExternalSceneResourceFilePath(
 
 std::optional<NLS::Core::Assets::AssetDependencyRecord> MakeExternalSourceFileDependency(
     const std::filesystem::path& projectRoot,
+    const std::filesystem::path& editorPathRoot,
     const std::filesystem::path& sourcePath,
     const std::string& uri)
 {
@@ -573,6 +660,7 @@ std::optional<NLS::Core::Assets::AssetDependencyRecord> MakeExternalSourceFileDe
     const auto editorPath = dependencyPath->lexically_relative(normalizedRoot);
     if (PathEscapesRoot(editorPath))
         return std::nullopt;
+    const auto dependencyEditorPath = (editorPathRoot / editorPath).lexically_normal();
 
     const auto stamp = FileStamp(*dependencyPath);
     if (stamp.empty())
@@ -580,7 +668,7 @@ std::optional<NLS::Core::Assets::AssetDependencyRecord> MakeExternalSourceFileDe
 
     return NLS::Core::Assets::AssetDependencyRecord {
         NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
-        editorPath.generic_string(),
+        dependencyEditorPath.generic_string(),
         stamp
     };
 }
@@ -645,6 +733,71 @@ void AddTextureBuildIdentityDependencies(
     }
 }
 
+std::string MappingModeForTextureResolutionKind(const ModelTextureResolutionKind kind)
+{
+    switch (kind)
+    {
+    case ModelTextureResolutionKind::ExplicitRemap: return "explicit-remap";
+    case ModelTextureResolutionKind::SourcePath: return "source-path";
+    case ModelTextureResolutionKind::NameSearch: return "name-search";
+    case ModelTextureResolutionKind::ModelEmbeddedFallback:
+    case ModelTextureResolutionKind::Missing:
+    case ModelTextureResolutionKind::Invalid:
+        break;
+    }
+    return {};
+}
+
+void AddResolvedTextureDependencies(
+    std::vector<NLS::Core::Assets::AssetDependencyRecord>& dependencies,
+    const ExternalModelImportRequest& request,
+    const std::vector<ResolvedModelTextureReference>& resolvedTextures)
+{
+    for (const auto& resolved : resolvedTextures)
+    {
+        const auto mode = resolved.mappingMode.empty()
+            ? MappingModeForTextureResolutionKind(resolved.kind)
+            : resolved.mappingMode;
+        if (mode.empty())
+            continue;
+
+        if (!resolved.mappingQuery.empty())
+        {
+            AddUniqueDependency(dependencies, {
+                NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+                MakeModelTextureMappingDependencyValue(resolved.mappingQuery, mode),
+                BuildModelTextureMappingFingerprint(resolved.mappingCandidates)
+            });
+        }
+
+        if (!resolved.targetAssetId.IsValid())
+            continue;
+
+        auto targetProjectRelativePath = resolved.targetEditorPath.lexically_normal();
+        if (!request.editorPathRoot.empty())
+        {
+            const auto relative = targetProjectRelativePath.lexically_relative(request.editorPathRoot.lexically_normal());
+            if (!PathEscapesRoot(relative))
+                targetProjectRelativePath = relative.lexically_normal();
+        }
+
+        AddUniqueDependency(dependencies, {
+            NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid,
+            resolved.targetAssetId.ToString(),
+            FileStamp(NLS::Core::Assets::GetAssetMetaPath(request.projectRoot / targetProjectRelativePath))
+        });
+
+        if (!resolved.targetSubAssetKey.empty())
+        {
+            AddUniqueDependency(dependencies, {
+                NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,
+                resolved.targetAssetId.ToString() + "#" + resolved.targetSubAssetKey + "@" + request.targetPlatform,
+                resolved.targetArtifactHashOrVersion
+            });
+        }
+    }
+}
+
 std::vector<NLS::Core::Assets::AssetDependencyRecord> CollectExternalSourceFileDependencies(
     const ExternalModelImportRequest& request,
     const NLS::Render::Assets::ImportedScene& scene)
@@ -657,6 +810,7 @@ std::vector<NLS::Core::Assets::AssetDependencyRecord> CollectExternalSourceFileD
 
         auto dependency = MakeExternalSourceFileDependency(
             request.projectRoot,
+            request.editorPathRoot,
             request.sourcePath,
             buffer.uri);
         if (dependency.has_value())
@@ -670,6 +824,7 @@ std::vector<NLS::Core::Assets::AssetDependencyRecord> CollectExternalSourceFileD
 
         auto dependency = MakeExternalSourceFileDependency(
             request.projectRoot,
+            request.editorPathRoot,
             request.sourcePath,
             texture.uri);
         if (dependency.has_value())
@@ -1299,7 +1454,11 @@ void AddObjDependencyUri(
     std::vector<NLS::Core::Assets::AssetDependencyRecord>& dependencies,
     const std::string& uri)
 {
-    auto dependency = MakeExternalSourceFileDependency(request.projectRoot, request.sourcePath, uri);
+    auto dependency = MakeExternalSourceFileDependency(
+        request.projectRoot,
+        request.editorPathRoot,
+        request.sourcePath,
+        uri);
     if (dependency.has_value())
         AddUniqueDependency(dependencies, std::move(*dependency));
 }
@@ -1317,9 +1476,10 @@ void AddMtlTextureDependencyUri(
     const auto dependencyPath = (uriPath.is_absolute()
         ? uriPath
         : mtlPath.parent_path() / uriPath).lexically_normal();
-    const auto editorPath = dependencyPath.lexically_relative(request.projectRoot.lexically_normal());
+    auto editorPath = dependencyPath.lexically_relative(request.projectRoot.lexically_normal());
     if (PathEscapesRoot(editorPath))
         return;
+    editorPath = (request.editorPathRoot / editorPath).lexically_normal();
 
     const auto stamp = FileStamp(dependencyPath);
     if (stamp.empty())
@@ -1405,6 +1565,7 @@ void CollectParserExternalFileDependencies(
     {
         auto dependency = MakeExternalSourceFileDependency(
             request.projectRoot,
+            request.editorPathRoot,
             request.sourcePath,
             uri);
         if (dependency.has_value())
@@ -1507,6 +1668,1170 @@ std::unordered_map<std::string, std::filesystem::path> BuildTextureArtifactPathM
             artifactPath);
     }
     return paths;
+}
+
+std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestFile(
+    const std::filesystem::path& manifestPath)
+{
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(manifestPath, error))
+        return std::nullopt;
+
+    std::ifstream input(manifestPath, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    const auto root = nlohmann::json::parse(input, nullptr, false);
+    if (root.is_discarded())
+        return std::nullopt;
+    return ParseArtifactManifestJson(root, true);
+}
+
+std::string ArtifactTypeManifestKey(const NLS::Core::Assets::ArtifactType type)
+{
+    switch (type)
+    {
+    case NLS::Core::Assets::ArtifactType::Model: return "model";
+    case NLS::Core::Assets::ArtifactType::Mesh: return "mesh";
+    case NLS::Core::Assets::ArtifactType::Material: return "material";
+    case NLS::Core::Assets::ArtifactType::Texture: return "texture";
+    case NLS::Core::Assets::ArtifactType::Skeleton: return "skeleton";
+    case NLS::Core::Assets::ArtifactType::Skin: return "skin";
+    case NLS::Core::Assets::ArtifactType::AnimationClip: return "animation-clip";
+    case NLS::Core::Assets::ArtifactType::MorphTarget: return "morph-target";
+    case NLS::Core::Assets::ArtifactType::Prefab: return "prefab";
+    case NLS::Core::Assets::ArtifactType::Scene: return "scene";
+    case NLS::Core::Assets::ArtifactType::Shader: return "shader";
+    case NLS::Core::Assets::ArtifactType::Audio: return "audio";
+    case NLS::Core::Assets::ArtifactType::Unknown:
+    case NLS::Core::Assets::ArtifactType::Count:
+        break;
+    }
+    return "unknown";
+}
+
+std::string DependencyKindManifestKey(const NLS::Core::Assets::AssetDependencyKind kind)
+{
+    switch (kind)
+    {
+    case NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid: return "source-asset-guid";
+    case NLS::Core::Assets::AssetDependencyKind::ImportedArtifact: return "imported-artifact";
+    case NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping: return "path-to-guid-mapping";
+    case NLS::Core::Assets::AssetDependencyKind::BuildTarget: return "build-target";
+    case NLS::Core::Assets::AssetDependencyKind::ImporterVersion: return "importer-version";
+    case NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion: return "postprocessor-version";
+    case NLS::Core::Assets::AssetDependencyKind::PrefabBase: return "prefab-base";
+    case NLS::Core::Assets::AssetDependencyKind::NestedPrefab: return "nested-prefab";
+    case NLS::Core::Assets::AssetDependencyKind::PrefabOverrideTarget: return "prefab-override-target";
+    case NLS::Core::Assets::AssetDependencyKind::RuntimeComponentCapability: return "runtime-component-capability";
+    case NLS::Core::Assets::AssetDependencyKind::RawPackageFile: return "raw-package-file";
+    case NLS::Core::Assets::AssetDependencyKind::SourceFileHash:
+    default:
+        return "source-file-hash";
+    }
+}
+
+bool SaveArtifactManifestFile(
+    const std::filesystem::path& manifestPath,
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    nlohmann::json root;
+    root["schema"] = 1;
+    root["sourceAssetId"] = manifest.sourceAssetId.ToString();
+    root["importerId"] = manifest.importerId;
+    root["importerVersion"] = manifest.importerVersion;
+    root["targetPlatform"] = manifest.targetPlatform;
+    root["primarySubAssetKey"] = manifest.primarySubAssetKey;
+    root["subAssets"] = nlohmann::json::array();
+    for (const auto& artifact : manifest.subAssets)
+    {
+        root["subAssets"].push_back({
+            {"sourceAssetId", artifact.sourceAssetId.ToString()},
+            {"subAssetKey", artifact.subAssetKey},
+            {"artifactType", ArtifactTypeManifestKey(artifact.artifactType)},
+            {"loaderId", artifact.loaderId},
+            {"targetPlatform", artifact.targetPlatform},
+            {"artifactPath", artifact.artifactPath},
+            {"contentHash", artifact.contentHash},
+            {"displayName", artifact.displayName}
+        });
+    }
+    root["dependencies"] = nlohmann::json::array();
+    for (const auto& dependency : manifest.dependencies)
+    {
+        root["dependencies"].push_back({
+            {"kind", DependencyKindManifestKey(dependency.kind)},
+            {"value", dependency.value},
+            {"hashOrVersion", dependency.hashOrVersion}
+        });
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(manifestPath.parent_path(), error);
+    if (error)
+        return false;
+
+    auto stagingPath = manifestPath;
+    stagingPath += ".staging";
+    std::filesystem::remove(stagingPath, error);
+    error.clear();
+
+    std::ofstream output(stagingPath, std::ios::binary | std::ios::trunc);
+    if (!output)
+        return false;
+    output << root.dump(2);
+    output.close();
+    if (!output)
+    {
+        std::filesystem::remove(stagingPath, error);
+        return false;
+    }
+
+    std::filesystem::rename(stagingPath, manifestPath, error);
+    if (!error)
+        return true;
+
+    error.clear();
+    std::filesystem::copy_file(
+        stagingPath,
+        manifestPath,
+        std::filesystem::copy_options::overwrite_existing,
+        error);
+    if (!error)
+    {
+        std::filesystem::remove(stagingPath, error);
+        return true;
+    }
+
+    std::filesystem::remove(stagingPath, error);
+    return false;
+}
+
+ModelTextureResolutionReport BuildModelTextureResolutionReport(
+    const ExternalModelImportRequest& request,
+    std::vector<ResolvedModelTextureReference> resolvedTextures)
+{
+    ModelTextureResolutionReport report;
+    report.modelAssetId = request.meta.id.ToString();
+    report.targetPlatform = request.targetPlatform;
+    report.importerVersion = request.meta.importerVersion;
+    report.settingsFingerprint = ComputeModelTextureSettingsFingerprint(request.meta);
+    report.entries = std::move(resolvedTextures);
+    return report;
+}
+
+bool WriteCommittedModelTextureResolutionReport(
+    const std::filesystem::path& committedRoot,
+    const ModelTextureResolutionReport& report)
+{
+    const auto reportPath = ModelTextureResolutionReportPath(committedRoot);
+    const auto reportText = SerializeModelTextureResolutionReport(report);
+    if (!ParseModelTextureResolutionReport(reportText).has_value())
+        return false;
+
+    std::error_code error;
+    std::filesystem::create_directories(reportPath.parent_path(), error);
+    if (error)
+        return false;
+
+    auto pendingPath = reportPath;
+    pendingPath += ".pending";
+    std::filesystem::remove(pendingPath, error);
+    error.clear();
+
+    if (!WriteTextFile(pendingPath, reportText))
+    {
+        std::filesystem::remove(pendingPath, error);
+        return false;
+    }
+
+    std::filesystem::rename(pendingPath, reportPath, error);
+    if (!error)
+        return true;
+
+    error.clear();
+    std::filesystem::copy_file(
+        pendingPath,
+        reportPath,
+        std::filesystem::copy_options::overwrite_existing,
+        error);
+    if (!error)
+    {
+        std::filesystem::remove(pendingPath, error);
+        return true;
+    }
+
+    std::filesystem::remove(pendingPath, error);
+    return false;
+}
+
+void AppendDiagnostics(
+    NLS::Core::Assets::AssetDiagnostics& target,
+    const NLS::Core::Assets::AssetDiagnostics& source);
+
+bool EnsureProjectTextureMeta(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath,
+    const bool createMissing,
+    NLS::Core::Assets::AssetMeta& meta,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects);
+
+std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextureAsset(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath,
+    const NLS::Core::Assets::AssetMeta& textureMeta,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects);
+
+bool ValidateDecodedTextureSafetyLimits(
+    const NLS::Render::Assets::TextureArtifactData& artifact,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    NLS::Core::Assets::AssetId assetId,
+    const std::filesystem::path& sourcePath,
+    const std::string& textureKey,
+    const std::string& textureUri);
+
+std::optional<std::filesystem::path> ToProjectRelativePath(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath);
+
+std::filesystem::path NormalizeProjectRelativePath(
+    const std::filesystem::path& path,
+    const std::filesystem::path& projectRoot)
+{
+    auto normalized = path.lexically_normal();
+    if (!projectRoot.empty())
+    {
+        const auto relative = normalized.lexically_relative(projectRoot.lexically_normal());
+        if (!PathEscapesRoot(relative))
+            normalized = relative;
+    }
+    return normalized.lexically_normal();
+}
+
+std::filesystem::path ToImportEditorPath(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& projectRelativePath)
+{
+    return (request.editorPathRoot / projectRelativePath).lexically_normal();
+}
+
+std::optional<std::filesystem::path> ToProjectRelativePath(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath)
+{
+    const auto normalized = editorPath.lexically_normal();
+    if (request.editorPathRoot.empty())
+        return normalized;
+
+    const auto relative = normalized.lexically_relative(request.editorPathRoot.lexically_normal());
+    if (PathEscapesRoot(relative))
+        return std::nullopt;
+    return relative.lexically_normal();
+}
+
+std::optional<std::filesystem::path> ResolveModelTextureProjectRelativePath(
+    const ExternalModelImportRequest& request,
+    const NLS::Render::Assets::ImportedSceneNamedRecord& texture)
+{
+    if (texture.uri.empty() || IsEmbeddedUri(texture.uri))
+        return std::nullopt;
+
+    auto resolved = ResolveExternalSceneResourcePath(request, texture.uri);
+    if (!resolved.has_value())
+        return std::nullopt;
+
+    const auto relative = NormalizeProjectRelativePath(*resolved, request.projectRoot);
+    if (PathEscapesRoot(relative) || relative.empty())
+        return std::nullopt;
+    return ToImportEditorPath(request, relative);
+}
+
+TextureSourceKind TextureSourceKindForRecord(
+    const NLS::Render::Assets::ImportedSceneNamedRecord& texture)
+{
+    if (!texture.bufferViewKey.empty())
+        return TextureSourceKind::BufferView;
+    if (texture.embedded || IsEmbeddedUri(texture.uri))
+        return TextureSourceKind::EmbeddedData;
+    if (!texture.uri.empty())
+        return TextureSourceKind::ExternalFile;
+    return TextureSourceKind::Missing;
+}
+
+std::vector<ModelTextureSourceReference> BuildModelTextureSourceReferences(
+    const ExternalModelImportRequest& request,
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::unordered_map<std::string, std::vector<uint8_t>>& texturePayloads)
+{
+    std::vector<ModelTextureSourceReference> sources;
+    sources.reserve(scene.textures.size());
+    for (const auto& texture : scene.textures)
+    {
+        ModelTextureSourceReference source;
+        source.sourceKey = texture.sourceKey;
+        source.materialTextureKey = texture.sourceKey;
+        source.displayName = texture.name.empty()
+            ? std::filesystem::path(texture.uri).filename().generic_string()
+            : texture.name;
+        source.uri = texture.uri;
+        source.bufferViewKey = texture.bufferViewKey;
+        source.kind = TextureSourceKindForRecord(texture);
+        if (auto normalizedUri = ResolveModelTextureProjectRelativePath(request, texture);
+            normalizedUri.has_value())
+        {
+            source.normalizedUri = normalizedUri->generic_string();
+        }
+        else if (IsEmbeddedUri(texture.uri))
+        {
+            source.normalizedUri = texture.uri;
+        }
+        source.hasModelLocalPayload =
+            !texture.sourceKey.empty() &&
+            texturePayloads.find(texture.sourceKey) != texturePayloads.end();
+        sources.push_back(std::move(source));
+    }
+
+    return AssignModelTextureStableKeys(std::move(sources));
+}
+
+std::string TextureCandidateDisplayName(const std::filesystem::path& editorPath)
+{
+    return editorPath.stem().generic_string();
+}
+
+const NLS::Core::Assets::ImportedArtifact* FindTextureArtifactForRequest(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const std::string& targetPlatform,
+    const std::string& requestedSubAssetKey = {})
+{
+    if (!requestedSubAssetKey.empty())
+    {
+        const auto* artifact = manifest.FindSubAsset(requestedSubAssetKey);
+        return artifact &&
+                artifact->artifactType == NLS::Core::Assets::ArtifactType::Texture &&
+                artifact->targetPlatform == targetPlatform
+            ? artifact
+            : nullptr;
+    }
+
+    const auto* primary = manifest.FindPrimaryArtifact();
+    if (primary &&
+        primary->artifactType == NLS::Core::Assets::ArtifactType::Texture &&
+        primary->targetPlatform == targetPlatform)
+    {
+        return primary;
+    }
+
+    const auto found = std::find_if(
+        manifest.subAssets.begin(),
+        manifest.subAssets.end(),
+        [&targetPlatform](const NLS::Core::Assets::ImportedArtifact& artifact)
+        {
+            return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture &&
+                artifact.targetPlatform == targetPlatform;
+        });
+    return found != manifest.subAssets.end() ? &*found : nullptr;
+}
+
+std::filesystem::path ResolveCommittedTextureArtifactPath(
+    const NLS::Core::Assets::ImportedArtifact& artifact,
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& artifactRoot)
+{
+    if (artifact.artifactPath.empty())
+        return {};
+
+    const auto path = std::filesystem::path(artifact.artifactPath).lexically_normal();
+    if (path.is_absolute())
+        return path;
+
+    std::error_code error;
+    auto candidate = (projectRoot / path).lexically_normal();
+    if (std::filesystem::is_regular_file(candidate, error) && !error)
+        return candidate;
+    error.clear();
+
+    candidate = (artifactRoot / path).lexically_normal();
+    if (std::filesystem::is_regular_file(candidate, error) && !error)
+        return candidate;
+
+    return {};
+}
+
+std::optional<std::filesystem::path> ResolveExistingCommittedTextureArtifactPath(
+    const NLS::Core::Assets::ImportedArtifact& artifact,
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& artifactRoot)
+{
+    const auto resolvedPath = ResolveCommittedTextureArtifactPath(
+        artifact,
+        projectRoot,
+        artifactRoot);
+    if (resolvedPath.empty())
+        return std::nullopt;
+
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(resolvedPath, error) || error)
+        return std::nullopt;
+    return resolvedPath;
+}
+
+bool TryApplyTextureArtifactCandidate(
+    ModelTextureAssetCandidate& candidate,
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const std::string& targetPlatform,
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& artifactRoot,
+    const std::string& requestedSubAssetKey = {})
+{
+    const auto* artifact = FindTextureArtifactForRequest(
+        manifest,
+        targetPlatform,
+        requestedSubAssetKey);
+    if (artifact == nullptr)
+        return false;
+    const auto resolvedPath = ResolveExistingCommittedTextureArtifactPath(
+        *artifact,
+        projectRoot,
+        artifactRoot);
+    if (!resolvedPath.has_value())
+        return false;
+
+    candidate.subAssetKey = artifact->subAssetKey;
+    candidate.artifactPath = NormalizeProjectRelativePath(*resolvedPath, projectRoot);
+    candidate.displayName = artifact->displayName.empty()
+        ? candidate.displayName
+        : artifact->displayName;
+    candidate.imported = true;
+    candidate.artifactHashOrVersion = artifact->contentHash;
+    return true;
+}
+
+std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForPath(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath,
+    const ModelTextureResolutionSettings& settings,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects)
+{
+    std::vector<ModelTextureAssetCandidate> candidates;
+    NLS::Core::Assets::AssetMeta meta;
+    if (!EnsureProjectTextureMeta(
+            request,
+            editorPath,
+            settings.autoImportMissingTextureFiles,
+            meta,
+            diagnostics,
+            sideEffects))
+        return candidates;
+    if (meta.assetType != NLS::Core::Assets::AssetType::Texture)
+        return candidates;
+
+    ModelTextureAssetCandidate candidate;
+    candidate.assetId = meta.id;
+    candidate.editorPath = editorPath.lexically_normal();
+    candidate.displayName = TextureCandidateDisplayName(editorPath);
+    candidate.assetType = meta.assetType;
+    candidate.imported = false;
+    candidate.rootIndex = 0u;
+
+    const auto artifactRoot = request.projectRoot / "Library" / "Artifacts" / meta.id.ToString();
+    auto manifest = LoadArtifactManifestFile(artifactRoot / "manifest.json");
+    if (!manifest.has_value() && settings.autoImportMissingTextureFiles)
+        manifest = AutoImportMissingProjectTextureAsset(request, editorPath, meta, diagnostics, sideEffects);
+    if (manifest.has_value() &&
+        TryApplyTextureArtifactCandidate(
+            candidate,
+            *manifest,
+            request.targetPlatform,
+            request.projectRoot,
+            artifactRoot))
+    {
+        candidates.push_back(std::move(candidate));
+        return candidates;
+    }
+
+    if (settings.autoImportMissingTextureFiles)
+    {
+        manifest = AutoImportMissingProjectTextureAsset(request, editorPath, meta, diagnostics, sideEffects);
+        if (manifest.has_value())
+        {
+            (void)TryApplyTextureArtifactCandidate(
+                candidate,
+                *manifest,
+                request.targetPlatform,
+                request.projectRoot,
+                artifactRoot);
+        }
+    }
+
+    candidates.push_back(std::move(candidate));
+    return candidates;
+}
+
+std::optional<ModelTextureAssetCandidate> BuildTextureAssetCandidateForExistingAsset(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath,
+    const std::string& nameQuery)
+{
+    const auto projectRelativePath = ToProjectRelativePath(request, editorPath);
+    if (!projectRelativePath.has_value())
+        return std::nullopt;
+    const auto absolutePath = (request.projectRoot / *projectRelativePath).lexically_normal();
+    const auto meta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+    if (!meta.has_value() || meta->assetType != NLS::Core::Assets::AssetType::Texture)
+        return std::nullopt;
+
+    ModelTextureAssetCandidate candidate;
+    candidate.assetId = meta->id;
+    candidate.editorPath = editorPath.lexically_normal();
+    candidate.displayName = TextureCandidateDisplayName(editorPath);
+    candidate.assetType = meta->assetType;
+    candidate.imported = false;
+    candidate.rootIndex = 0u;
+    candidate.nameQuery = nameQuery;
+
+    const auto artifactRoot = request.projectRoot / "Library" / "Artifacts" / meta->id.ToString();
+    const auto manifest = LoadArtifactManifestFile(artifactRoot / "manifest.json");
+    if (!manifest.has_value())
+        return candidate;
+
+    const auto* artifact = FindTextureArtifactForRequest(*manifest, request.targetPlatform);
+    if (artifact == nullptr)
+        return candidate;
+
+    (void)TryApplyTextureArtifactCandidate(
+        candidate,
+        *manifest,
+        request.targetPlatform,
+        request.projectRoot,
+        artifactRoot);
+    return candidate;
+}
+
+std::optional<std::filesystem::path> FindAssetPathById(
+    const std::filesystem::path& projectRoot,
+    const NLS::Core::Assets::AssetId assetId)
+{
+    if (projectRoot.empty() || !assetId.IsValid())
+        return std::nullopt;
+
+    std::error_code error;
+    if (!std::filesystem::is_directory(projectRoot, error) || error)
+        return std::nullopt;
+
+    const auto normalizedRoot = projectRoot.lexically_normal();
+    std::filesystem::recursive_directory_iterator iterator(normalizedRoot, error);
+    if (error)
+        return std::nullopt;
+
+    const std::filesystem::recursive_directory_iterator end;
+    for (; iterator != end; iterator.increment(error))
+    {
+        if (error)
+        {
+            error.clear();
+            continue;
+        }
+
+        const auto& entry = *iterator;
+        if (entry.is_directory(error))
+        {
+            const auto directoryName = entry.path().filename().generic_string();
+            if (directoryName == "Library" || directoryName == ".git")
+                iterator.disable_recursion_pending();
+            error.clear();
+            continue;
+        }
+        if (error)
+        {
+            error.clear();
+            continue;
+        }
+
+        if (!entry.is_regular_file(error) || error)
+        {
+            error.clear();
+            continue;
+        }
+
+        const auto absolutePath = entry.path().lexically_normal();
+        if (absolutePath.extension() != ".meta")
+            continue;
+
+        const auto meta = NLS::Core::Assets::AssetMeta::Load(absolutePath);
+        if (!meta.has_value() || meta->id != assetId)
+            continue;
+
+        auto assetPath = absolutePath;
+        assetPath.replace_extension();
+        const auto editorPath = NormalizeProjectRelativePath(assetPath, normalizedRoot);
+        if (!PathEscapesRoot(editorPath))
+            return editorPath;
+    }
+
+    return std::nullopt;
+}
+
+std::optional<ModelTextureAssetCandidate> BuildTextureAssetCandidateForRemapSetting(
+    const ExternalModelImportRequest& request,
+    const ModelTextureExplicitRemapSetting& setting)
+{
+    auto editorPath = FindAssetPathById(request.projectRoot, setting.targetAssetId);
+    if (editorPath.has_value())
+        editorPath = ToImportEditorPath(request, *editorPath);
+    if (!editorPath.has_value() && !setting.targetEditorPath.empty())
+        editorPath = std::filesystem::path(setting.targetEditorPath).lexically_normal();
+    if (!editorPath.has_value() || PathEscapesRoot(*editorPath))
+        return std::nullopt;
+
+    const auto projectRelativePath = ToProjectRelativePath(request, *editorPath);
+    if (!projectRelativePath.has_value())
+        return std::nullopt;
+    const auto absolutePath = (request.projectRoot / *projectRelativePath).lexically_normal();
+    const auto meta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+    if (!meta.has_value())
+        return std::nullopt;
+
+    ModelTextureAssetCandidate candidate;
+    candidate.subAssetKey = setting.targetSubAssetKey;
+    candidate.editorPath = editorPath->lexically_normal();
+    candidate.displayName = TextureCandidateDisplayName(*editorPath);
+    candidate.assetType = meta->assetType;
+    candidate.imported = false;
+    candidate.rootIndex = 0u;
+
+    if (meta->id != setting.targetAssetId)
+        return candidate;
+
+    candidate.assetId = setting.targetAssetId;
+    const auto artifactRoot = request.projectRoot / "Library" / "Artifacts" / setting.targetAssetId.ToString();
+    const auto manifest = LoadArtifactManifestFile(artifactRoot / "manifest.json");
+    if (!manifest.has_value())
+        return candidate;
+
+    (void)TryApplyTextureArtifactCandidate(
+        candidate,
+        *manifest,
+        request.targetPlatform,
+        request.projectRoot,
+        artifactRoot,
+        setting.targetSubAssetKey);
+
+    return candidate;
+}
+
+std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForName(
+    const ExternalModelImportRequest& request,
+    const std::string& nameQuery)
+{
+    std::vector<ModelTextureAssetCandidate> candidates;
+    if (request.projectRoot.empty() || nameQuery.empty())
+        return candidates;
+
+    std::error_code error;
+    if (!std::filesystem::is_directory(request.projectRoot, error) || error)
+        return candidates;
+
+    const auto normalizedRoot = request.projectRoot.lexically_normal();
+    std::filesystem::recursive_directory_iterator iterator(normalizedRoot, error);
+    if (error)
+        return candidates;
+
+    const std::filesystem::recursive_directory_iterator end;
+    for (; iterator != end; iterator.increment(error))
+    {
+        if (error)
+        {
+            error.clear();
+            continue;
+        }
+
+        const auto& entry = *iterator;
+        if (entry.is_directory(error))
+        {
+            const auto directoryName = entry.path().filename().generic_string();
+            if (directoryName == "Library" || directoryName == ".git")
+                iterator.disable_recursion_pending();
+            error.clear();
+            continue;
+        }
+        if (error)
+        {
+            error.clear();
+            continue;
+        }
+
+        if (!entry.is_regular_file(error) || error)
+        {
+            error.clear();
+            continue;
+        }
+
+        const auto absolutePath = entry.path().lexically_normal();
+        if (absolutePath.extension() == ".meta" ||
+            NLS::Core::Assets::InferAssetType(absolutePath) != NLS::Core::Assets::AssetType::Texture)
+        {
+            continue;
+        }
+
+        const auto projectRelativePath = NormalizeProjectRelativePath(absolutePath, normalizedRoot);
+        if (PathEscapesRoot(projectRelativePath))
+            continue;
+        const auto editorPath = ToImportEditorPath(request, projectRelativePath);
+
+        const bool nameMatches = CaseInsensitiveMatch(editorPath.filename().generic_string(), nameQuery) ||
+            CaseInsensitiveMatch(editorPath.stem().generic_string(), nameQuery);
+        if (!nameMatches)
+            continue;
+
+        if (auto candidate = BuildTextureAssetCandidateForExistingAsset(request, editorPath, nameQuery);
+            candidate.has_value())
+        {
+            candidates.push_back(std::move(*candidate));
+        }
+    }
+
+    std::sort(
+        candidates.begin(),
+        candidates.end(),
+        [](const ModelTextureAssetCandidate& lhs, const ModelTextureAssetCandidate& rhs)
+        {
+            if (lhs.rootIndex != rhs.rootIndex)
+                return lhs.rootIndex < rhs.rootIndex;
+            const auto lhsPath = lhs.editorPath.generic_string();
+            const auto rhsPath = rhs.editorPath.generic_string();
+            if (lhsPath != rhsPath)
+                return lhsPath < rhsPath;
+            return lhs.assetId.ToString() < rhs.assetId.ToString();
+        });
+    return candidates;
+}
+
+std::vector<ModelTextureExplicitRemap> BuildModelTextureExplicitRemaps(
+    const ExternalModelImportRequest& request,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics)
+{
+    std::vector<ModelTextureExplicitRemap> remaps;
+    for (const auto& setting : LoadModelTextureRemapSettings(request.meta, &diagnostics))
+    {
+        ModelTextureExplicitRemap remap;
+        remap.sourceStableKey = setting.sourceStableKey;
+        if (auto candidate = BuildTextureAssetCandidateForRemapSetting(request, setting);
+            candidate.has_value())
+        {
+            remap.target = std::move(*candidate);
+        }
+        else
+        {
+            diagnostics.push_back({
+                NLS::Core::Assets::AssetDiagnosticSeverity::Warning,
+                "model-texture-remap-invalid-target",
+                request.meta.id,
+                request.sourcePath,
+                "Texture remap target " + setting.targetEditorPath + " is missing or invalid."
+            });
+        }
+        remaps.push_back(std::move(remap));
+    }
+    return remaps;
+}
+
+ModelTextureResolveRequest BuildModelTextureResolveRequest(
+    const ExternalModelImportRequest& request,
+    const std::vector<ModelTextureSourceReference>& sources,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects)
+{
+    ModelTextureResolveRequest resolveRequest;
+    resolveRequest.settings = LoadModelTextureResolutionSettings(request.meta);
+    resolveRequest.remaps = BuildModelTextureExplicitRemaps(request, diagnostics);
+    if (!resolveRequest.settings.useExternalTextures)
+        return resolveRequest;
+
+    std::set<std::filesystem::path> pathQueries;
+    std::set<std::string> nameQueries;
+    for (const auto& source : sources)
+    {
+        if (source.kind == TextureSourceKind::ExternalFile && !source.normalizedUri.empty())
+            pathQueries.insert(std::filesystem::path(source.normalizedUri).lexically_normal());
+        if (resolveRequest.settings.searchByName)
+        {
+            auto nameQuery = source.displayName;
+            if (nameQuery.empty() && !source.normalizedUri.empty())
+                nameQuery = std::filesystem::path(source.normalizedUri).filename().generic_string();
+            if (!nameQuery.empty())
+                nameQueries.insert(std::move(nameQuery));
+        }
+    }
+
+    for (const auto& path : pathQueries)
+    {
+        auto candidates = BuildTextureAssetCandidatesForPath(
+            request,
+            path,
+            resolveRequest.settings,
+            diagnostics,
+            sideEffects);
+        resolveRequest.pathCandidates.insert(
+            resolveRequest.pathCandidates.end(),
+            std::make_move_iterator(candidates.begin()),
+            std::make_move_iterator(candidates.end()));
+    }
+
+    for (const auto& nameQuery : nameQueries)
+    {
+        auto candidates = BuildTextureAssetCandidatesForName(request, nameQuery);
+        resolveRequest.nameCandidates.insert(
+            resolveRequest.nameCandidates.end(),
+            std::make_move_iterator(candidates.begin()),
+            std::make_move_iterator(candidates.end()));
+    }
+
+    return resolveRequest;
+}
+
+void AppendDiagnostics(
+    NLS::Core::Assets::AssetDiagnostics& target,
+    const NLS::Core::Assets::AssetDiagnostics& source)
+{
+    target.insert(target.end(), source.begin(), source.end());
+}
+
+bool EnsureProjectTextureMeta(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath,
+    const bool createMissing,
+    NLS::Core::Assets::AssetMeta& meta,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects)
+{
+    const auto projectRelativePath = ToProjectRelativePath(request, editorPath);
+    if (!projectRelativePath.has_value())
+        return false;
+    const auto absolutePath = (request.projectRoot / *projectRelativePath).lexically_normal();
+    if (NLS::Core::Assets::InferAssetType(absolutePath) != NLS::Core::Assets::AssetType::Texture)
+        return false;
+
+    const auto metaPath = NLS::Core::Assets::GetAssetMetaPath(absolutePath);
+    if (auto loaded = NLS::Core::Assets::AssetMeta::Load(metaPath))
+    {
+        if (loaded->assetType != NLS::Core::Assets::AssetType::Texture)
+            return false;
+        meta = *loaded;
+        return true;
+    }
+    if (!createMissing)
+        return false;
+
+    meta = NLS::Core::Assets::AssetMeta::CreateForAsset(absolutePath);
+    if (meta.assetType != NLS::Core::Assets::AssetType::Texture || !meta.Save(metaPath))
+    {
+        AddWarning(
+            diagnostics,
+            request.meta.id,
+            absolutePath,
+            "model-texture-auto-import-failed",
+            "Texture " + editorPath.generic_string() + " could not create a texture meta file.");
+        return false;
+    }
+    if (sideEffects != nullptr)
+    {
+        sideEffects->push_back({
+            absolutePath,
+            request.projectRoot / "Library" / "Artifacts" / meta.id.ToString(),
+            metaPath,
+            {},
+            true,
+            false,
+            false
+        });
+    }
+    return true;
+}
+
+std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextureAsset(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath,
+    const NLS::Core::Assets::AssetMeta& textureMeta,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects)
+{
+    const auto projectRelativePath = ToProjectRelativePath(request, editorPath);
+    if (!projectRelativePath.has_value())
+        return std::nullopt;
+    const auto absolutePath = (request.projectRoot / *projectRelativePath).lexically_normal();
+    const auto encodedBytes = ReadBinaryFile(absolutePath);
+    if (encodedBytes.empty())
+    {
+        AddWarning(
+            diagnostics,
+            request.meta.id,
+            absolutePath,
+            "model-texture-auto-import-failed",
+            "Texture " + editorPath.generic_string() + " could not be read for automatic import.");
+        return std::nullopt;
+    }
+
+    auto artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        encodedBytes.data(),
+        encodedBytes.size(),
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        false);
+    if (!artifact.has_value())
+    {
+        AddWarning(
+            diagnostics,
+            request.meta.id,
+            absolutePath,
+            "model-texture-auto-import-failed",
+            "Texture " + editorPath.generic_string() + " could not be decoded for automatic import.");
+        return std::nullopt;
+    }
+    if (!ValidateDecodedTextureSafetyLimits(
+            *artifact,
+            diagnostics,
+            request.meta.id,
+            request.sourcePath,
+            "texture:main",
+            editorPath.generic_string()))
+    {
+        return std::nullopt;
+    }
+
+    artifact->targetPlatform = request.targetPlatform;
+    artifact->encoderId = "rgba8-passthrough";
+    artifact->encoderVersion = 1u;
+    artifact->buildIdentity = "auto-import|" +
+        textureMeta.id.ToString() +
+        "|" +
+        request.targetPlatform +
+        "|" +
+        FileStamp(absolutePath);
+
+    const auto serialized = NLS::Render::Assets::SerializeTextureArtifact(*artifact);
+    if (serialized.empty())
+    {
+        AddWarning(
+            diagnostics,
+            request.meta.id,
+            absolutePath,
+            "model-texture-auto-import-failed",
+            "Texture " + editorPath.generic_string() + " could not be serialized for automatic import.");
+        return std::nullopt;
+    }
+
+    const auto artifactRoot = request.projectRoot / "Library" / "Artifacts" / textureMeta.id.ToString();
+    const auto stagingRoot = request.projectRoot / "Library" / "ArtifactStaging" / textureMeta.id.ToString();
+    NLS::Core::Assets::ArtifactWriteRequest writeRequest;
+    writeRequest.sourceAssetId = textureMeta.id;
+    writeRequest.importerId = textureMeta.importerId;
+    writeRequest.importerVersion = textureMeta.importerVersion;
+    writeRequest.targetPlatform = request.targetPlatform;
+    writeRequest.primarySubAssetKey = "texture:main";
+    writeRequest.artifacts.push_back({
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        TextureCandidateDisplayName(editorPath),
+        std::filesystem::path("texture.ntex"),
+        serialized
+    });
+
+    const auto previousManifest = LoadArtifactManifestFile(artifactRoot / "manifest.json");
+    NLS::Core::Assets::ArtifactWriter writer(stagingRoot, artifactRoot);
+    const auto writeResult = writer.WriteAndCommit(
+        writeRequest,
+        previousManifest.has_value() ? &*previousManifest : nullptr);
+    AppendDiagnostics(diagnostics, writeResult.diagnostics);
+    if (!writeResult.committed)
+    {
+        AddWarning(
+            diagnostics,
+            request.meta.id,
+            absolutePath,
+            "model-texture-auto-import-failed",
+            "Texture " + editorPath.generic_string() + " automatic import did not commit an artifact.");
+        return std::nullopt;
+    }
+
+    if (sideEffects != nullptr)
+    {
+        auto found = std::find_if(
+            sideEffects->begin(),
+            sideEffects->end(),
+            [&artifactRoot](const ModelTextureAutoImportSideEffect& sideEffect)
+            {
+                return sideEffect.artifactRoot == artifactRoot;
+            });
+        if (found == sideEffects->end())
+        {
+            sideEffects->push_back({
+                absolutePath,
+                artifactRoot,
+                NLS::Core::Assets::GetAssetMetaPath(absolutePath),
+                writeResult.manifest,
+                false,
+                true,
+                false
+            });
+        }
+        else
+        {
+            found->manifest = writeResult.manifest;
+            found->committedArtifact = true;
+            found->persistedManifest = false;
+        }
+    }
+
+    if (!SaveArtifactManifestFile(artifactRoot / "manifest.json", writeResult.manifest))
+    {
+        AddWarning(
+            diagnostics,
+            request.meta.id,
+            absolutePath,
+            "model-texture-auto-import-failed",
+            "Texture " + editorPath.generic_string() + " automatic import could not write its manifest.");
+        return std::nullopt;
+    }
+
+    if (sideEffects != nullptr)
+    {
+        const auto found = std::find_if(
+            sideEffects->begin(),
+            sideEffects->end(),
+            [&artifactRoot](const ModelTextureAutoImportSideEffect& sideEffect)
+            {
+                return sideEffect.artifactRoot == artifactRoot;
+            });
+        if (found != sideEffects->end())
+            found->persistedManifest = true;
+    }
+
+    return writeResult.manifest;
+}
+
+bool IsProjectTextureResolution(const ModelTextureResolutionKind kind)
+{
+    return kind == ModelTextureResolutionKind::ExplicitRemap ||
+        kind == ModelTextureResolutionKind::SourcePath ||
+        kind == ModelTextureResolutionKind::NameSearch;
+}
+
+std::unordered_map<std::string, std::filesystem::path> BuildResolvedTextureArtifactPathMap(
+    const std::vector<ResolvedModelTextureReference>& resolvedTextures)
+{
+    std::unordered_map<std::string, std::filesystem::path> paths;
+    for (const auto& resolved : resolvedTextures)
+    {
+        if (!IsProjectTextureResolution(resolved.kind) ||
+            resolved.materialTextureKey.empty() ||
+            resolved.resourcePath.empty())
+        {
+            continue;
+        }
+
+        paths.emplace(resolved.materialTextureKey, resolved.resourcePath);
+    }
+    return paths;
+}
+
+std::unordered_map<std::string, std::filesystem::path> MergeTextureArtifactPathMaps(
+    std::unordered_map<std::string, std::filesystem::path> modelLocalPaths,
+    const std::unordered_map<std::string, std::filesystem::path>& resolvedPaths)
+{
+    for (const auto& [materialTextureKey, resourcePath] : resolvedPaths)
+        modelLocalPaths[materialTextureKey] = resourcePath;
+    return modelLocalPaths;
+}
+
+std::unordered_set<std::string> BuildExternallyResolvedTextureSourceKeys(
+    const std::vector<ResolvedModelTextureReference>& resolvedTextures)
+{
+    std::unordered_set<std::string> sourceKeys;
+    for (const auto& resolved : resolvedTextures)
+    {
+        if (IsProjectTextureResolution(resolved.kind) && !resolved.source.sourceKey.empty())
+            sourceKeys.insert(resolved.source.sourceKey);
+    }
+    return sourceKeys;
+}
+
+bool ShouldKeepModelLocalTextureArtifactsForImporterUpgrade(const ExternalModelImportRequest& request)
+{
+    return request.preserveModelLocalTextureArtifacts;
+}
+
+void AppendModelTextureResolutionDiagnostics(
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const ExternalModelImportRequest& request,
+    const std::vector<ResolvedModelTextureReference>& resolvedTextures)
+{
+    for (const auto& resolved : resolvedTextures)
+    {
+        for (const auto& diagnostic : resolved.diagnostics)
+        {
+            if (diagnostic.severity == "Error")
+            {
+                AddError(
+                    diagnostics,
+                    request.meta.id,
+                    request.sourcePath,
+                    diagnostic.code,
+                    diagnostic.message);
+            }
+            else
+            {
+                AddWarning(
+                    diagnostics,
+                    request.meta.id,
+                    request.sourcePath,
+                    diagnostic.code,
+                    diagnostic.message);
+            }
+        }
+    }
+}
+
+bool IsSupportedTextureEncodingForMaterialConversion(const NLS::Render::Assets::ImportedSceneNamedRecord& texture)
+{
+    const auto mime = ToLower(texture.mimeType);
+    if (mime.empty() || mime == "image/png" || mime == "image/jpeg" || mime == "image/jpg" || mime == "image/tga")
+        return true;
+
+    const auto uri = ToLower(texture.uri);
+    return uri.ends_with(".png") ||
+        uri.ends_with(".jpg") ||
+        uri.ends_with(".jpeg") ||
+        uri.ends_with(".tga");
+}
+
+void AppendUnsupportedTextureEncodingDiagnostics(
+    const NLS::Render::Assets::ImportedScene& scene,
+    std::vector<ResolvedModelTextureReference>& resolvedTextures)
+{
+    for (auto& resolved : resolvedTextures)
+    {
+        const auto texture = std::find_if(
+            scene.textures.begin(),
+            scene.textures.end(),
+            [&resolved](const NLS::Render::Assets::ImportedSceneNamedRecord& candidate)
+            {
+                return candidate.sourceKey == resolved.source.sourceKey;
+            });
+        if (texture == scene.textures.end() || IsSupportedTextureEncodingForMaterialConversion(*texture))
+            continue;
+
+        resolved.diagnostics.push_back({
+            "Warning",
+            "material-unsupported-texture-encoding",
+            "Material texture uses an unsupported encoding: " + texture->uri
+        });
+    }
 }
 
 std::string SerializeGenericSubAsset(
@@ -1951,41 +3276,33 @@ void AppendTextureFormatResolverDiagnostics(
     }
 }
 
-std::vector<uint8_t> SerializeTextureSubAsset(
+std::vector<uint8_t> BuildExternalModelTextureArtifactPayload(
     const NLS::Render::Assets::ImportedScene& scene,
-    const NLS::Render::Assets::GeneratedSceneSubAsset& subAsset,
-    const std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace>& textureColorSpaces,
-    std::unordered_map<std::string, std::vector<uint8_t>>& texturePayloads,
+    const std::string& textureKey,
+    const std::string& artifactKey,
+    const NLS::Render::Assets::TextureArtifactColorSpace colorSpace,
+    const std::vector<uint8_t>& encodedBytes,
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
     const NLS::Core::Assets::AssetId assetId,
     const ExternalModelImportRequest& request,
     const std::string& textureBuildTargetPlatform,
     const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders)
 {
-    const auto payload = texturePayloads.find(subAsset.sourceKey);
-    const auto* bytes = payload != texturePayloads.end() ? &payload->second : nullptr;
-
-    if (!bytes || bytes->empty())
+    if (encodedBytes.empty())
     {
         AddError(
             diagnostics,
             assetId,
             request.sourcePath,
             "external-model-importer-texture-payload-missing",
-            "Texture " + subAsset.key + " source=" + subAsset.sourceKey + " has no readable encoded payload.");
+            "Texture " + artifactKey + " source=" + textureKey + " has no readable encoded payload.");
         return {};
     }
 
-    const auto textureIntent = ResolveSceneTextureMipIntent(scene, subAsset.sourceKey);
+    const auto textureIntent = ResolveSceneTextureMipIntent(scene, textureKey);
     NLS::Render::Assets::TextureMipGeneratorSettings mipSettings;
     mipSettings.intent = textureIntent;
-    mipSettings.colorSpace = [&]()
-    {
-        const auto colorSpace = textureColorSpaces.find(subAsset.sourceKey);
-        return colorSpace != textureColorSpaces.end()
-            ? colorSpace->second
-            : NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
-    }();
+    mipSettings.colorSpace = colorSpace;
     mipSettings.mipmapEnabled = textureIntent != NLS::Render::Assets::TextureMipIntent::UI;
     mipSettings.format = NLS::Render::RHI::TextureFormat::RGBA8;
     const auto importSettings = BuildTextureImportSettingsSnapshot(mipSettings);
@@ -1994,8 +3311,8 @@ std::vector<uint8_t> SerializeTextureSubAsset(
     decodeSettings.mipmapEnabled = false;
 
     auto artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
-        bytes->data(),
-        bytes->size(),
+        encodedBytes.data(),
+        encodedBytes.size(),
         decodeSettings,
         ShouldFlipExternalModelTextureVertically(request.sourcePath));
     if (!artifact.has_value())
@@ -2005,17 +3322,17 @@ std::vector<uint8_t> SerializeTextureSubAsset(
             assetId,
             request.sourcePath,
             "external-model-importer-texture-decode-failed",
-            "Texture " + subAsset.key + " source=" + subAsset.sourceKey + " could not be decoded.");
+            "Texture " + artifactKey + " source=" + textureKey + " could not be decoded.");
         return {};
     }
 
-    const auto sourceDescriptor = BuildTextureSourceDescriptor(scene, subAsset.sourceKey, *artifact);
+    const auto sourceDescriptor = BuildTextureSourceDescriptor(scene, textureKey, *artifact);
     if (!ValidateDecodedTextureSafetyLimits(
             *artifact,
             diagnostics,
             assetId,
             request.sourcePath,
-            subAsset.key,
+            artifactKey,
             sourceDescriptor.assetPath))
     {
         return {};
@@ -2041,7 +3358,7 @@ std::vector<uint8_t> SerializeTextureSubAsset(
         diagnostics,
         assetId,
         request.sourcePath,
-        subAsset.key,
+        artifactKey,
         resolved.diagnostics);
     if (!resolved.settings.has_value())
         return {};
@@ -2056,7 +3373,7 @@ std::vector<uint8_t> SerializeTextureSubAsset(
             request.sourcePath,
             "external-model-importer-texture-size-limit",
             "Texture " +
-                subAsset.key +
+                artifactKey +
                 " exceeds maxTextureSize=" +
                 std::to_string(resolved.settings->maxTextureSize) +
                 " and resizePolicy=" +
@@ -2065,8 +3382,8 @@ std::vector<uint8_t> SerializeTextureSubAsset(
         return {};
     }
 
-    resolved.settings->sourceAssetIdentity = TextureSourceIdentity(request, subAsset.sourceKey, sourceDescriptor);
-    resolved.settings->sourceContentHash = TextureSourceContentHash(request, sourceDescriptor, *bytes);
+    resolved.settings->sourceAssetIdentity = TextureSourceIdentity(request, textureKey, sourceDescriptor);
+    resolved.settings->sourceContentHash = TextureSourceContentHash(request, sourceDescriptor, encodedBytes);
     resolved.settings->normalizedSettingsHash = BuildTextureSettingsIdentity(importSettings);
     resolved.settings->platformOverrideHash = "none";
     resolved.settings->importerVersion = request.meta.importerVersion;
@@ -2107,7 +3424,7 @@ std::vector<uint8_t> SerializeTextureSubAsset(
                 assetId,
                 request.sourcePath,
                 "external-model-importer-texture-encoding",
-                "Texture " + subAsset.key + " " + diagnostic.stage + ": " + diagnostic.message);
+                "Texture " + artifactKey + " " + diagnostic.stage + ": " + diagnostic.message);
         }
         if (!encodeResult.succeeded)
             return {};
@@ -2121,34 +3438,31 @@ std::vector<uint8_t> SerializeTextureSubAsset(
                 assetId,
                 request.sourcePath,
                 "external-model-importer-texture-serialization-failed",
-                "Texture " + subAsset.key + " encoded artifact could not be serialized.");
+                "Texture " + artifactKey + " encoded artifact could not be serialized.");
             return {};
         }
 
-        texturePayloads.erase(payload);
         return serialized;
     }
-    else
-    {
-        mipSettings.mipmapEnabled = resolved.settings->mipmapEnabled;
-        mipSettings.format = resolved.settings->resolvedFormat;
-        if (mipSettings.format != artifact->format ||
-            mipSettings.mipmapEnabled != (artifact->mips.size() > 1u))
-        {
-            artifact = NLS::Render::Assets::GenerateTextureMipChain(
-                artifact->width,
-                artifact->height,
-                artifact->mips.front().pixels,
-                mipSettings);
-            if (!artifact.has_value())
-                return {};
-        }
 
-        artifact->targetPlatform = resolved.settings->targetPlatform;
-        artifact->encoderId = resolved.settings->encoderId;
-        artifact->encoderVersion = resolved.settings->encoderVersion;
-        artifact->buildIdentity = NLS::Render::Assets::BuildTextureBuildIdentity(*resolved.settings);
+    mipSettings.mipmapEnabled = resolved.settings->mipmapEnabled;
+    mipSettings.format = resolved.settings->resolvedFormat;
+    if (mipSettings.format != artifact->format ||
+        mipSettings.mipmapEnabled != (artifact->mips.size() > 1u))
+    {
+        artifact = NLS::Render::Assets::GenerateTextureMipChain(
+            artifact->width,
+            artifact->height,
+            artifact->mips.front().pixels,
+            mipSettings);
+        if (!artifact.has_value())
+            return {};
     }
+
+    artifact->targetPlatform = resolved.settings->targetPlatform;
+    artifact->encoderId = resolved.settings->encoderId;
+    artifact->encoderVersion = resolved.settings->encoderVersion;
+    artifact->buildIdentity = NLS::Render::Assets::BuildTextureBuildIdentity(*resolved.settings);
 
     const auto serialized = NLS::Render::Assets::SerializeTextureArtifact(*artifact);
     if (serialized.empty())
@@ -2158,11 +3472,49 @@ std::vector<uint8_t> SerializeTextureSubAsset(
             assetId,
             request.sourcePath,
             "external-model-importer-texture-serialization-failed",
-            "Texture " + subAsset.key + " artifact could not be serialized.");
+            "Texture " + artifactKey + " artifact could not be serialized.");
         return {};
     }
 
-    texturePayloads.erase(payload);
+    return serialized;
+}
+
+std::vector<uint8_t> SerializeTextureSubAsset(
+    const NLS::Render::Assets::ImportedScene& scene,
+    const NLS::Render::Assets::GeneratedSceneSubAsset& subAsset,
+    const std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace>& textureColorSpaces,
+    std::unordered_map<std::string, std::vector<uint8_t>>& texturePayloads,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const NLS::Core::Assets::AssetId assetId,
+    const ExternalModelImportRequest& request,
+    const std::string& textureBuildTargetPlatform,
+    const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders)
+{
+    const auto payload = texturePayloads.find(subAsset.sourceKey);
+    const auto* bytes = payload != texturePayloads.end() ? &payload->second : nullptr;
+    const auto colorSpace = [&]()
+    {
+        const auto found = textureColorSpaces.find(subAsset.sourceKey);
+        return found != textureColorSpaces.end()
+            ? found->second
+            : NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    }();
+
+    const auto serialized = bytes != nullptr
+        ? BuildExternalModelTextureArtifactPayload(
+            scene,
+            subAsset.sourceKey,
+            subAsset.key,
+            colorSpace,
+            *bytes,
+            diagnostics,
+            assetId,
+            request,
+            textureBuildTargetPlatform,
+            textureEncoders)
+        : std::vector<uint8_t> {};
+    if (!serialized.empty())
+        texturePayloads.erase(payload);
     return serialized;
 }
 
@@ -2840,6 +4192,29 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         ReportProgress(request, ImportPhase::IntermediateConversion, 0.34, "Loaded texture payloads");
     }
     std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace> textureColorSpaces;
+    std::vector<ModelTextureSourceReference> textureSources;
+    std::vector<ResolvedModelTextureReference> resolvedTextures;
+    std::vector<ModelTextureAutoImportSideEffect> autoImportSideEffects;
+    ModelTextureAutoImportCleanupGuard autoImportCleanupGuard(autoImportSideEffects);
+    std::unordered_set<std::string> externallyResolvedTextureSourceKeys;
+    std::unordered_map<std::string, std::filesystem::path> resolvedTextureArtifactPaths;
+    textureSources = BuildModelTextureSourceReferences(request, scene, texturePayloads);
+    {
+        const auto resolveRequest = BuildModelTextureResolveRequest(
+            request,
+            textureSources,
+            result.diagnostics,
+            &autoImportSideEffects);
+        resolvedTextures.reserve(textureSources.size());
+        for (const auto& source : textureSources)
+            resolvedTextures.push_back(ResolveModelTextureReference(source, resolveRequest));
+        AppendUnsupportedTextureEncodingDiagnostics(scene, resolvedTextures);
+        AppendModelTextureResolutionDiagnostics(result.diagnostics, request, resolvedTextures);
+        externallyResolvedTextureSourceKeys = ShouldKeepModelLocalTextureArtifactsForImporterUpgrade(request)
+            ? std::unordered_set<std::string> {}
+            : BuildExternallyResolvedTextureSourceKeys(resolvedTextures);
+        resolvedTextureArtifactPaths = BuildResolvedTextureArtifactPathMap(resolvedTextures);
+    }
     {
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::ConvertMaterials");
         AppendConvertedMaterialPayloads(
@@ -2847,7 +4222,9 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             extension,
             request.textureResourcePathPrefix,
             request.materialShaderResourcePath,
-            BuildTextureArtifactPathMap(subAssets, request.committedRoot, request.projectRoot),
+            MergeTextureArtifactPathMaps(
+                BuildTextureArtifactPathMap(subAssets, request.committedRoot, request.projectRoot),
+                resolvedTextureArtifactPaths),
             needsEarlyTexturePayloads
                 ? BuildFbxDecalBaseColorAlphaEvidence(scene, texturePayloads, request.sourcePath)
                 : std::unordered_map<std::string, bool> {},
@@ -2898,6 +4275,12 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             if (subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Material ||
                 subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Prefab)
                 continue;
+            if (subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture &&
+                externallyResolvedTextureSourceKeys.find(subAsset.sourceKey) != externallyResolvedTextureSourceKeys.end())
+            {
+                ++processedSubAssets;
+                continue;
+            }
 
             const auto subAssetProgress = subAssets.empty()
                 ? 0.55
@@ -3016,6 +4399,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     CollectObjMaterialFileDependencies(request, externalSourceDependencies);
     for (auto& dependency : externalSourceDependencies)
         AddUniqueDependency(writeRequest.dependencies, std::move(dependency));
+    AddResolvedTextureDependencies(writeRequest.dependencies, request, resolvedTextures);
     AddTextureBuildIdentityDependencies(writeRequest.dependencies, writeRequest.artifacts);
     writeRequest.dependencies.push_back({
         NLS::Core::Assets::AssetDependencyKind::ImporterVersion,
@@ -3051,8 +4435,38 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         writeResult.diagnostics.begin(),
         writeResult.diagnostics.end());
 
-    result.imported = writeResult.committed && !HasErrors(result.diagnostics);
     result.manifest = writeResult.manifest;
+    if (writeResult.committed && !HasErrors(result.diagnostics))
+    {
+        const auto report = BuildModelTextureResolutionReport(request, resolvedTextures);
+        if (!WriteCommittedModelTextureResolutionReport(request.committedRoot, report))
+        {
+            AddError(
+                result.diagnostics,
+                request.meta.id,
+                request.sourcePath,
+                "external-model-importer-texture-report-write-failed",
+                "Model texture resolution report could not be written to the committed artifact directory.");
+        }
+    }
+    result.imported = writeResult.committed && !HasErrors(result.diagnostics);
+    if (result.imported)
+    {
+        result.autoImportedDependencies.reserve(autoImportSideEffects.size());
+        for (const auto& sideEffect : autoImportSideEffects)
+        {
+            if (sideEffect.committedArtifact &&
+                sideEffect.persistedManifest &&
+                sideEffect.manifest.sourceAssetId.IsValid())
+            {
+                result.autoImportedDependencies.push_back({
+                    sideEffect.sourcePath,
+                    sideEffect.manifest
+                });
+            }
+        }
+        autoImportCleanupGuard.Commit();
+    }
     timingStats.diagnosticCount = result.diagnostics.size();
     timingStats.status = result.imported ? "imported" : "failed";
     return result;

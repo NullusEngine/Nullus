@@ -19,8 +19,10 @@
 
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/ShaderManager.h"
+#include "Assets/EditorThumbnailPreviewRenderer.h"
 #include "Guid.h"
 #include "Jobs/JobSystem.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -105,6 +107,21 @@ namespace
         });
         snapshot->drawLists.push_back(std::move(drawList));
         return snapshot;
+    }
+
+    const NLS::Base::Profiling::PerformanceStageEntry* FindStage(
+        const NLS::Base::Profiling::PerformanceStageStatsSnapshot& snapshot,
+        const NLS::Base::Profiling::PerformanceStageDomain domain,
+        const char* stageName)
+    {
+        const auto found = std::find_if(
+            snapshot.stages.begin(),
+            snapshot.stages.end(),
+            [domain, stageName](const NLS::Base::Profiling::PerformanceStageEntry& entry)
+            {
+                return entry.domain == domain && entry.stageName == stageName;
+            });
+        return found == snapshot.stages.end() ? nullptr : &(*found);
     }
 
     class ScopedThreadedRenderingJobSystem
@@ -316,8 +333,11 @@ namespace
     class TestCompletionToken final : public NLS::Render::RHI::RHICompletionToken
     {
     public:
-        explicit TestCompletionToken(NLS::Render::RHI::RHICompletionStatus status)
+        explicit TestCompletionToken(
+            NLS::Render::RHI::RHICompletionStatus status,
+            std::chrono::microseconds waitDelay = std::chrono::microseconds{0})
             : m_status(std::move(status))
+            , m_waitDelay(waitDelay)
         {
         }
 
@@ -325,10 +345,19 @@ namespace
         NLS::Render::RHI::RHICompletionStatus Poll() override { return m_status; }
         bool IsComplete() override { return m_status.IsComplete(); }
         NLS::Render::RHI::RHICompletionStatus GetStatus() override { return m_status; }
-        NLS::Render::RHI::RHICompletionStatus Wait(uint64_t = 0) override { return m_status; }
+        NLS::Render::RHI::RHICompletionStatus Wait(uint64_t = 0) override
+        {
+            ++waitCalls;
+            if (m_waitDelay.count() > 0)
+                std::this_thread::sleep_for(m_waitDelay);
+            return m_status;
+        }
+
+        size_t waitCalls = 0u;
 
     private:
         NLS::Render::RHI::RHICompletionStatus m_status;
+        std::chrono::microseconds m_waitDelay{0};
     };
 
     class TestFence final : public NLS::Render::RHI::RHIFence
@@ -2130,6 +2159,151 @@ namespace
 
         return nullptr;
     }
+}
+
+TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackPollDoesNotWaitForPendingFence)
+{
+    NLS::Editor::Assets::EditorThumbnailPreviewReadbackState state;
+    auto completion = std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
+        NLS::Render::RHI::RHICompletionStatusCode::Pending,
+        {}
+    });
+    state.active = true;
+    state.requestKey = "thumbnail:hero";
+    state.width = 2u;
+    state.height = 2u;
+    state.rgbaPixels = std::make_shared<std::vector<uint8_t>>(16u, 255u);
+    state.completion = completion;
+
+    const auto polled = NLS::Editor::Assets::PollEditorThumbnailPreviewReadback(
+        state,
+        "thumbnail:hero");
+
+    EXPECT_EQ(polled.status, NLS::Editor::Assets::EditorThumbnailPreviewReadbackPollStatus::Pending);
+    EXPECT_TRUE(polled.preview.rgbaPixels.empty());
+    EXPECT_EQ(completion->waitCalls, 0u);
+    EXPECT_TRUE(state.active);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackStateKeepsRenderInputsAliveWhilePending)
+{
+    NLS::Editor::Assets::EditorThumbnailPreviewReadbackState state;
+    auto completion = std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
+        NLS::Render::RHI::RHICompletionStatusCode::Pending,
+        {}
+    });
+    bool destroyed = false;
+    state.active = true;
+    state.requestKey = "thumbnail:hero";
+    state.width = 2u;
+    state.height = 2u;
+    state.rgbaPixels = std::make_shared<std::vector<uint8_t>>(16u, 255u);
+    state.completion = completion;
+    state.renderInputsKeepAlive = std::shared_ptr<void>(
+        new int(7),
+        [&destroyed](void* value)
+        {
+            destroyed = true;
+            delete static_cast<int*>(value);
+        });
+
+    const auto polled = NLS::Editor::Assets::PollEditorThumbnailPreviewReadback(
+        state,
+        "thumbnail:hero");
+
+    EXPECT_EQ(polled.status, NLS::Editor::Assets::EditorThumbnailPreviewReadbackPollStatus::Pending);
+    EXPECT_TRUE(state.renderInputsKeepAlive);
+    EXPECT_FALSE(destroyed);
+    state = {};
+    EXPECT_TRUE(destroyed);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackPollPublishesReadyPixelsAndClearsState)
+{
+    NLS::Editor::Assets::EditorThumbnailPreviewReadbackState state;
+    auto completion = std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
+        NLS::Render::RHI::RHICompletionStatusCode::Success,
+        {}
+    });
+    state.active = true;
+    state.requestKey = "thumbnail:hero";
+    state.width = 1u;
+    state.height = 1u;
+    state.rgbaPixels = std::make_shared<std::vector<uint8_t>>(
+        std::initializer_list<uint8_t>{1u, 2u, 3u, 4u});
+    state.completion = completion;
+
+    const auto polled = NLS::Editor::Assets::PollEditorThumbnailPreviewReadback(
+        state,
+        "thumbnail:hero");
+
+    EXPECT_EQ(polled.status, NLS::Editor::Assets::EditorThumbnailPreviewReadbackPollStatus::Ready);
+    EXPECT_EQ(polled.preview.width, 1u);
+    EXPECT_EQ(polled.preview.height, 1u);
+    EXPECT_EQ(polled.preview.rgbaPixels, (std::vector<uint8_t>{1u, 2u, 3u, 4u}));
+    EXPECT_EQ(completion->waitCalls, 0u);
+    EXPECT_FALSE(state.active);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackPollClearsCompletedDifferentKeyWithoutWaiting)
+{
+    NLS::Editor::Assets::EditorThumbnailPreviewReadbackState state;
+    auto completion = std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
+        NLS::Render::RHI::RHICompletionStatusCode::Success,
+        {}
+    });
+    state.active = true;
+    state.requestKey = "thumbnail:old";
+    state.width = 1u;
+    state.height = 1u;
+    state.rgbaPixels = std::make_shared<std::vector<uint8_t>>(
+        std::initializer_list<uint8_t>{9u, 8u, 7u, 6u});
+    state.completion = completion;
+
+    const auto polled = NLS::Editor::Assets::PollEditorThumbnailPreviewReadback(
+        state,
+        "thumbnail:new");
+
+    EXPECT_EQ(polled.status, NLS::Editor::Assets::EditorThumbnailPreviewReadbackPollStatus::Superseded);
+    EXPECT_EQ(completion->waitCalls, 0u);
+    EXPECT_FALSE(state.active);
+    EXPECT_TRUE(polled.preview.rgbaPixels.empty());
+}
+
+TEST(ThreadedRenderingLifecycleTests, DriverPollReadbackCompletionMarksDeviceLostWithoutWaiting)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+
+    auto completion = std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
+        NLS::Render::RHI::RHICompletionStatusCode::DeviceLost,
+        "async readback detected device removed"
+    });
+    NLS::Render::RHI::RHIReadbackResult pending{
+        NLS::Render::RHI::RHIReadbackStatusCode::Success,
+        {},
+        completion
+    };
+
+    const auto result = NLS::Render::Context::DriverRendererAccess::PollReadbackCompletion(
+        driver,
+        pending);
+
+    EXPECT_EQ(result.code, NLS::Render::RHI::RHIReadbackStatusCode::DeviceLost);
+    EXPECT_EQ(result.message, "async readback detected device removed");
+    EXPECT_EQ(completion->waitCalls, 0u);
+    EXPECT_TRUE(impl->deviceLostDetected.load(std::memory_order_acquire));
+    EXPECT_NE(impl->deviceLostReason.find("device removed"), std::string::npos);
 }
 
 TEST(ThreadedRenderingLifecycleTests, PublishesSnapshotIntoOpenSlotAndTracksInFlightDepth)
@@ -15477,6 +15651,67 @@ TEST(ThreadedRenderingLifecycleTests, DriverReadPixelsCheckedPropagatesExplicitR
     EXPECT_EQ(result.code, NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat);
     EXPECT_EQ(result.message, "test unsupported format");
     EXPECT_EQ(explicitDevice->lastReadPixelsTexture, pickingTexture);
+}
+
+TEST(ThreadedRenderingLifecycleTests, DriverReadPixelsCheckedReportsWaitPreviewFenceStage)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto completion = std::make_shared<TestCompletionToken>(
+        NLS::Render::RHI::RHICompletionStatus{
+            NLS::Render::RHI::RHICompletionStatusCode::Success,
+            {}
+        },
+        std::chrono::microseconds{100});
+    explicitDevice->beginReadPixelsResult = {
+        NLS::Render::RHI::RHIReadbackStatusCode::Success,
+        {},
+        completion
+    };
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::RHI::RHITextureDesc pickingDesc;
+    pickingDesc.debugName = "SceneViewPickingReadback";
+    pickingDesc.extent = { 64u, 64u, 1u };
+    auto pickingTexture = std::make_shared<TestTexture>(pickingDesc);
+
+    NLS::Base::Profiling::PerformanceStageStats stats;
+    uint8_t pixel[3] {};
+    NLS::Render::RHI::RHIReadbackResult result;
+    {
+        NLS::Base::Profiling::PerformanceStageStatsCapture capture(stats);
+        result = NLS::Render::Context::DriverRendererAccess::ReadPixelsChecked(
+            driver,
+            pickingTexture,
+            0u,
+            0u,
+            1u,
+            1u,
+            NLS::Render::Settings::EPixelDataFormat::RGB,
+            NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+            pixel);
+    }
+
+    EXPECT_EQ(result.code, NLS::Render::RHI::RHIReadbackStatusCode::Success);
+    EXPECT_EQ(explicitDevice->lastReadPixelsTexture, pickingTexture);
+    EXPECT_EQ(completion->waitCalls, 1u);
+
+    const auto snapshot = stats.Snapshot();
+    const auto* waitStage = FindStage(
+        snapshot,
+        NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
+        "WaitPreviewFence");
+    ASSERT_NE(waitStage, nullptr);
+    EXPECT_EQ(waitStage->callCount, 1u);
+    EXPECT_GT(waitStage->mainThreadDuration.count(), 0);
+    EXPECT_EQ(waitStage->backgroundThreadDuration.count(), 0);
 }
 
 #if 0

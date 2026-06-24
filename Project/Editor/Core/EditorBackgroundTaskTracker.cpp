@@ -29,7 +29,13 @@ namespace NLS::Editor::Core
     }
 
     EditorBackgroundTaskTracker::EditorBackgroundTaskTracker(const size_t capacity)
-        : m_capacity(capacity)
+        : EditorBackgroundTaskTracker(capacity, std::max(capacity + 1u, capacity * 4u))
+    {
+    }
+
+    EditorBackgroundTaskTracker::EditorBackgroundTaskTracker(const size_t softCapacity, const size_t hardCapacity)
+        : m_capacity(softCapacity),
+          m_hardCapacity(std::max(softCapacity, hardCapacity))
     {
     }
 
@@ -39,6 +45,16 @@ namespace NLS::Editor::Core
     }
 
     bool EditorBackgroundTaskTracker::Track(std::function<void()> task)
+    {
+        return Track(std::move(task), true);
+    }
+
+    bool EditorBackgroundTaskTracker::TrackOpportunistic(std::function<void()> task)
+    {
+        return Track(std::move(task), false);
+    }
+
+    bool EditorBackgroundTaskTracker::Track(std::function<void()> task, const bool warnWhenCapacityReached)
     {
         if (!task)
             return false;
@@ -87,10 +103,15 @@ namespace NLS::Editor::Core
         }
 
         PruneCompletedLocked();
-        if (m_trackedTasks.size() >= m_capacity)
+        if (m_trackedTasks.size() >= m_hardCapacity)
         {
             DeleteTaskPayloadIfUnclaimed(payload);
-            NLS_LOG_WARNING("Editor background task queue is full; dropping queued work");
+            NLS_LOG_WARNING("Editor background task queue hard limit reached; rejecting required work");
+            return false;
+        }
+        if (m_trackedTasks.size() >= m_capacity && !warnWhenCapacityReached)
+        {
+            DeleteTaskPayloadIfUnclaimed(payload);
             return false;
         }
 

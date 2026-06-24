@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -36,6 +37,33 @@
 
 namespace
 {
+std::string JoinDiagnosticSummaries(const NLS::Core::Assets::AssetDiagnostics& diagnostics)
+{
+    std::ostringstream stream;
+    for (const auto& diagnostic : diagnostics)
+    {
+        stream << '[' << (diagnostic.severity == NLS::Core::Assets::AssetDiagnosticSeverity::Error ? "error" : "warning")
+            << "] " << diagnostic.code << ": " << diagnostic.message << '\n';
+    }
+    return stream.str();
+}
+
+std::string JoinImportProgressSummaries(const NLS::Editor::Assets::ImportProgressTracker& tracker)
+{
+    std::ostringstream stream;
+    for (uint64_t jobId = 1u; jobId < 16u; ++jobId)
+    {
+        for (const auto& event : tracker.GetEvents(NLS::Editor::Assets::ImportJobId {jobId}))
+        {
+            stream << "job=" << jobId << " path=" << event.sourcePath
+                << " message=" << event.message
+                << " status=" << static_cast<int>(event.terminalStatus)
+                << '\n';
+        }
+    }
+    return stream.str();
+}
+
 using NLS::Tests::ScopedServiceOverride;
 
 std::filesystem::path MakeEditorAssetTestRoot()
@@ -83,6 +111,39 @@ size_t CountArtifactTelemetryStage(
         {
             return record.stage == stage;
         }));
+}
+
+std::string EditorAssetDatabaseFileStamp(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error)
+        return {};
+
+    error.clear();
+    const auto writeTime = std::filesystem::last_write_time(path, error);
+    if (error)
+        return {};
+
+    return std::to_string(size) + ":" +
+        std::to_string(static_cast<std::intmax_t>(writeTime.time_since_epoch().count()));
+}
+
+NLS::Core::Assets::ImportedArtifact MakeEditorAssetDatabaseArtifact(
+    const NLS::Core::Assets::AssetId assetId,
+    std::string subAssetKey,
+    const NLS::Core::Assets::ArtifactType artifactType,
+    std::string artifactPath)
+{
+    NLS::Core::Assets::ImportedArtifact artifact;
+    artifact.sourceAssetId = assetId;
+    artifact.subAssetKey = std::move(subAssetKey);
+    artifact.artifactType = artifactType;
+    artifact.artifactPath = std::move(artifactPath);
+    artifact.loaderId = "test";
+    artifact.targetPlatform = "editor";
+    artifact.contentHash = artifact.subAssetKey + ":hash";
+    return artifact;
 }
 
 std::string ReadArtifactPayloadText(
@@ -451,7 +512,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsWarmSceneAssetsWhenDepen
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     ASSERT_TRUE(scheduler.Run(database, tracker, {
@@ -608,7 +671,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStartupGeneratedMetaForW
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
     ASSERT_TRUE(database.IsArtifactManifestCurrentForAssetPath(
         "Assets/Models/StartupGeneratedMetaHero.gltf"));
@@ -651,7 +716,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenS
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -692,7 +759,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenA
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     auto manifest = database.GetArtifactManifestForAssetPath("Assets/Models/MissingArtifactHero.gltf");
@@ -730,7 +799,9 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsWarmSceneAssetsWhe
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     WriteText(
@@ -742,7 +813,9 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsWarmSceneAssetsWhe
             "nodes": [{ "name": "StartupChangedHeroRoot" }, { "name": "ChangedWhileClosed" }]
         })");
 
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     EXPECT_EQ(database.GetCompletedImportCount(), 2u);
 
     std::filesystem::remove_all(root);
@@ -767,7 +840,9 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsWarmSceneAssetsWhe
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     auto manifest = database.GetArtifactManifestForAssetPath("Assets/Models/StartupMissingArtifactHero.gltf");
@@ -776,7 +851,9 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsWarmSceneAssetsWhe
     ASSERT_NE(primary, nullptr);
     std::filesystem::remove(primary->artifactPath);
 
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     EXPECT_EQ(database.GetCompletedImportCount(), 2u);
 
     std::filesystem::remove_all(root);
@@ -801,7 +878,9 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsMalformedManifestI
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
@@ -847,7 +926,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenM
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -901,7 +982,9 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyManifestStaysWarmWhenDep
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     ASSERT_TRUE(scheduler.Run(database, tracker, {
@@ -955,7 +1038,9 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyUsesOwningRootWhenAnothe
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     ASSERT_TRUE(scheduler.Run(database, tracker, {
@@ -1007,7 +1092,9 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangePlansOwningModel)
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
-    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
     ASSERT_EQ(database.GetCompletedImportCount(), 1u);
 
     WriteText(texturePath, "texture-after");
@@ -2419,6 +2506,83 @@ TEST(EditorAssetDatabaseTests, LegacyFilesystemRootWithAssetsChildKeepsScanningS
     EXPECT_TRUE(std::filesystem::exists(root / "Packages" / "Starter" / "Tree.obj.meta"));
     EXPECT_FALSE(database.AssetPathToGUID("Assets/Models/Hero.gltf").empty());
     EXPECT_FALSE(database.AssetPathToGUID("Packages/Starter/Tree.obj").empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, ReadOnlySnapshotSharesLargeObjectReferenceSnapshots)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "Heavy.fbx";
+    WriteText(sourcePath, "large model source");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    const auto assetId = AssetId(NLS::Guid::Parse(database.AssetPathToGUID("Assets/Models/Heavy.fbx")));
+    ASSERT_TRUE(assetId.IsValid());
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = assetId;
+    manifest.importerId = "scene-model";
+    manifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::ModelScene);
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "prefab:Heavy";
+    constexpr size_t kLargeSnapshotSubAssetCount = 256u;
+    manifest.subAssets.reserve(kLargeSnapshotSubAssetCount);
+    manifest.subAssets.push_back(MakeEditorAssetDatabaseArtifact(
+        assetId,
+        "prefab:Heavy",
+        ArtifactType::Prefab,
+        "Library/Artifacts/" + assetId.ToString() + "/Heavy.nprefab"));
+    for (size_t index = 0u; index + 1u < kLargeSnapshotSubAssetCount; ++index)
+    {
+        manifest.subAssets.push_back(MakeEditorAssetDatabaseArtifact(
+            assetId,
+            "mesh:Part" + std::to_string(index),
+            ArtifactType::Mesh,
+            "Library/Artifacts/" + assetId.ToString() + "/Meshes/Part" + std::to_string(index) + ".nmesh"));
+    }
+    for (const auto& artifact : manifest.subAssets)
+        WriteText(root / artifact.artifactPath, artifact.subAssetKey);
+    manifest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
+        "Assets/Models/Heavy.fbx",
+        EditorAssetDatabaseFileStamp(sourcePath)
+    });
+    manifest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        "Assets/Models/Heavy.fbx.meta",
+        EditorAssetDatabaseFileStamp(NLS::Core::Assets::GetAssetMetaPath(sourcePath))
+    });
+    database.AddArtifactManifest(std::move(manifest));
+    ASSERT_TRUE(database.IsArtifactManifestKnownCurrentForAssetPath("Assets/Models/Heavy.fbx"));
+
+    const auto* sourceStorage = database.GetObjectReferencePickerAssetSnapshotsStorageForTesting();
+    const auto* sourceManifestStorage = database.GetArtifactManifestMapStorageForTesting();
+    auto snapshot = AssetDatabaseFacade::CreateReadOnlySnapshot(database);
+    ASSERT_NE(snapshot, nullptr);
+
+    EXPECT_EQ(
+        snapshot->GetObjectReferencePickerAssetSnapshotsStorageForTesting(),
+        sourceStorage)
+        << "AssetBrowser database-ready frames must not deep-copy huge model subasset snapshots.";
+    EXPECT_EQ(
+        snapshot->GetArtifactManifestMapStorageForTesting(),
+        sourceManifestStorage)
+        << "AssetBrowser database-ready frames must not deep-copy huge artifact manifests.";
+    size_t visited = 0u;
+    snapshot->ForEachObjectReferencePickerAssetSnapshot(
+        [&visited](const ObjectReferencePickerAssetSnapshot& item)
+        {
+            ++visited;
+            EXPECT_EQ(item.subAssets.size(), kLargeSnapshotSubAssetCount);
+        });
+    EXPECT_EQ(visited, 1u);
 
     std::filesystem::remove_all(root);
 }

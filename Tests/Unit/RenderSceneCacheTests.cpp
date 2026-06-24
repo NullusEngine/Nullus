@@ -566,6 +566,127 @@ TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedComman
     EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
 }
 
+TEST(RenderSceneCacheTests, MutableTransformAccessUpdatesPrimitiveWorldMatrixWithoutCommandRebuild)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).reusedPrimitiveCount, 1u);
+    auto beforeMove = renderScene.CreatePrimitiveSnapshotForHandles(
+        renderScene.GetLivePrimitiveHandles(),
+        {});
+    ASSERT_EQ(beforeMove.primitiveRecords.size(), 1u);
+
+    auto* owner = fixture.meshRenderer->gameobject();
+    ASSERT_NE(owner, nullptr);
+    owner->GetTransform()->TranslateLocal({1.0f, 0.0f, 0.0f});
+
+    const auto moved = renderScene.Synchronize(fixture.scene, options);
+    auto afterMove = renderScene.CreatePrimitiveSnapshotForHandles(
+        renderScene.GetLivePrimitiveHandles(),
+        {});
+    ASSERT_EQ(afterMove.primitiveRecords.size(), 1u);
+
+    EXPECT_EQ(moved.syncTouchedPrimitiveCount, 1u);
+    EXPECT_EQ(moved.reusedPrimitiveCount, 1u);
+    EXPECT_EQ(moved.rebuiltCachedCommandCount, 0u);
+    EXPECT_FALSE(NLS::Maths::Matrix4::AreEquals(
+        beforeMove.primitiveRecords.front().worldMatrix,
+        afterMove.primitiveRecords.front().worldMatrix));
+    EXPECT_TRUE(NLS::Maths::Matrix4::AreEquals(
+        owner->GetTransform()->GetWorldMatrix(),
+        afterMove.primitiveRecords.front().worldMatrix));
+    EXPECT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
+}
+
+TEST(RenderSceneCacheTests, MeshContentRevisionChangeInvalidatesRetainedPrimitive)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+
+    const auto first = renderScene.Synchronize(fixture.scene, options);
+    ASSERT_EQ(first.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
+    auto firstSnapshot = renderScene.CreatePrimitiveSnapshotForHandles(
+        renderScene.GetLastVisiblePrimitiveHandles(),
+        {});
+    ASSERT_EQ(firstSnapshot.primitiveRecords.size(), 1u);
+    EXPECT_EQ(firstSnapshot.primitiveRecords.front().modelBoundingSphere.radius, 1.0f);
+
+    fixture.mesh->Reload(
+        std::vector<NLS::Render::Geometry::Vertex>{
+            VertexAt(-2.0f, -2.0f, 0.0f),
+            VertexAt(2.0f, -2.0f, 0.0f),
+            VertexAt(0.0f, 2.0f, 0.0f)
+        },
+        std::vector<uint32_t>{0u, 1u, 2u},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+        {{0.0f, 0.0f, 0.0f}, 4.0f});
+
+    const auto changed = renderScene.Synchronize(fixture.scene, options);
+    ASSERT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
+    auto changedSnapshot = renderScene.CreatePrimitiveSnapshotForHandles(
+        renderScene.GetLastVisiblePrimitiveHandles(),
+        {});
+
+    EXPECT_EQ(changed.syncTouchedPrimitiveCount, 1u)
+        << "In-place mesh reloads update bounds/material identity without changing MeshFilter revisions.";
+    ASSERT_EQ(changedSnapshot.primitiveRecords.size(), 1u);
+    EXPECT_EQ(changedSnapshot.primitiveRecords.front().modelBoundingSphere.radius, 4.0f);
+}
+
+TEST(RenderSceneCacheTests, StableLargeSceneAvoidsFullPrimitiveSynchronizationAcrossFrames)
+{
+    constexpr size_t kPrimitiveCount = 256u;
+    ManyPrimitiveFixture fixture(kPrimitiveCount);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+
+    const auto first = renderScene.Synchronize(fixture.scene, options);
+    const auto second = renderScene.Synchronize(fixture.scene, options);
+
+    EXPECT_EQ(first.syncTouchedPrimitiveCount, kPrimitiveCount);
+    EXPECT_EQ(first.rebuiltCachedCommandCount, kPrimitiveCount);
+    EXPECT_EQ(second.addedPrimitiveCount, 0u);
+    EXPECT_EQ(second.rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(second.syncTouchedPrimitiveCount, 0u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), kPrimitiveCount);
+}
+
+TEST(RenderSceneCacheTests, DestroyedGameObjectInvalidatesFastAccessSoRenderSceneDropsPrimitive)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+
+    const auto first = renderScene.Synchronize(fixture.scene, options);
+    ASSERT_EQ(first.addedPrimitiveCount, 1u);
+    ASSERT_EQ(renderScene.GetPrimitiveCount(), 1u);
+
+    const auto revisionBeforeDestroy = fixture.scene.GetFastAccessComponentsRevision();
+    ASSERT_TRUE(fixture.scene.DestroyGameObject(*fixture.meshRenderer->gameobject()));
+    const auto revisionAfterDestroy = fixture.scene.GetFastAccessComponentsRevision();
+
+    EXPECT_GT(revisionAfterDestroy, revisionBeforeDestroy)
+        << "RenderScene only removes missing MeshRenderers when Scene fast-access membership changes.";
+    const auto second = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_EQ(second.removedPrimitiveCount, 1u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
+    EXPECT_TRUE(renderScene.GetLastRemovedPrimitiveHandles().size() >= 1u);
+}
+
 TEST(RenderSceneCacheTests, DisabledSpatialIndexDoesNotBuildIndexDuringSync)
 {
     ManyPrimitiveFixture fixture(128u);
@@ -1240,6 +1361,59 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTextu
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
+TEST(RenderSceneCacheTests, ExplicitMaterialTexturePathWithInvalidBytesDoesNotThrowDuringSync)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto materialPath = std::string("Library/Artifacts/Preview/textured-invalid-path.nmat");
+    const std::string invalidTexturePath("Library/Artifacts/Preview/textures/body-\xff-diffuse.ntex", 58u);
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+    const_cast<std::string&>(material.path) = materialPath;
+    material.SetTextureResourcePath("u_DiffuseMap", invalidTexturePath);
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("InvalidTexturePathPrefabInstance");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPathHints({ materialPath });
+    meshRenderer->SetResolvedMaterialFromReference(0u, material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+    syncOptions.requireExplicitMaterialTextures = true;
+
+    EXPECT_NO_THROW({
+        const auto stats = renderScene.Synchronize(scene, syncOptions);
+        EXPECT_EQ(stats.rebuiltCachedCommandCount, 0u);
+    });
+    EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
+
+    delete mesh;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+}
+
 TEST(RenderSceneCacheTests, ExistingSceneExplicitMaterialPathRemainsVisibleWhileDeclaredTexturesArePending)
 {
     NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
@@ -1349,6 +1523,79 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBefor
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
 }
 
+TEST(RenderSceneCacheTests, ExplicitMaterialPathRebindsDeclaredTextureWhenItArrivesAfterFirstSync)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto materialPath = std::string("Library/Artifacts/Preview/textured-late-body.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Preview/textures/late-body-diffuse.ntex");
+    auto* material = new NLS::Render::Resources::Material();
+    material->SetShader(shader);
+    material->path = materialPath;
+    material->SetTextureResourcePath("u_DiffuseMap", texturePath);
+    materialManager.RegisterResource(materialPath, material);
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("MaterialTextureArrivesLate");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPathHints({ materialPath });
+    meshRenderer->SetResolvedMaterialFromReference(0u, *material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    const auto firstSync = renderScene.Synchronize(scene, syncOptions);
+    EXPECT_EQ(firstSync.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
+    const auto* firstParameter = material->GetParameterBlock().TryGet("u_DiffuseMap");
+    ASSERT_NE(firstParameter, nullptr);
+    ASSERT_EQ(firstParameter->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*firstParameter), nullptr);
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = texturePath;
+    textureManager.RegisterResource(texturePath, texture);
+
+    const auto secondSync = renderScene.Synchronize(scene, syncOptions);
+    EXPECT_EQ(secondSync.syncTouchedPrimitiveCount, 1u)
+        << "A primitive with unresolved declared material textures must keep synchronizing until the texture cache can bind them.";
+    EXPECT_EQ(secondSync.rebuiltCachedCommandCount, 1u);
+
+    const auto* parameter = material->GetParameterBlock().TryGet("u_DiffuseMap");
+    ASSERT_NE(parameter, nullptr);
+    ASSERT_EQ(parameter->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter), texture);
+
+    delete mesh;
+    materialManager.UnloadResources();
+    textureManager.UnloadResources();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+}
+
 TEST(RenderSceneCacheTests, ExplicitMaterialPathAcceptsEquivalentCachedDeclaredTexturePath)
 {
     NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
@@ -1421,6 +1668,95 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathAcceptsEquivalentCachedDeclaredT
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
 }
 
+TEST(RenderSceneCacheTests, SharedDeclaredTexturePathIsResolvedOncePerSync)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_shared_declared_texture_path_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto texturePath = std::string("Library/Artifacts/Hero/shared/textures/body-basecolor.ntex");
+    const auto absoluteTexturePath = NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = absoluteTexturePath;
+    textureManager.RegisterResource(absoluteTexturePath, texture);
+
+    constexpr size_t kMaterialCount = 48u;
+    std::vector<std::unique_ptr<NLS::Render::Resources::Material>> materials;
+    std::vector<NLS::Render::Resources::Mesh*> meshes;
+    materials.reserve(kMaterialCount);
+    meshes.reserve(kMaterialCount);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    for (size_t index = 0u; index < kMaterialCount; ++index)
+    {
+        auto material = std::make_unique<NLS::Render::Resources::Material>();
+        material->SetShader(shader);
+        material->path = "Library/Artifacts/Hero/shared/materials/body-" + std::to_string(index) + ".nmat";
+        material->SetTextureResourcePath("u_DiffuseMap", texturePath);
+        ASSERT_TRUE(material->IsValid());
+
+        auto* mesh = CreateSingleMesh(0u);
+        ASSERT_NE(mesh, nullptr);
+        meshes.push_back(mesh);
+
+        auto& object = scene.CreateGameObject("SharedTextureMaterial" + std::to_string(index));
+        auto* meshFilter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
+        auto* meshRenderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
+        ASSERT_NE(meshFilter, nullptr);
+        ASSERT_NE(meshRenderer, nullptr);
+        meshFilter->SetMesh(mesh);
+        meshRenderer->SetMaterialPathHints({ material->path });
+        meshRenderer->SetResolvedMaterialFromReference(0u, *material);
+
+        materials.push_back(std::move(material));
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    const auto stats = renderScene.Synchronize(scene, syncOptions);
+
+    EXPECT_EQ(stats.declaredTextureLookupCount, kMaterialCount);
+    EXPECT_EQ(stats.declaredTextureCacheMissCount, 1u);
+    EXPECT_EQ(stats.declaredTextureCacheHitCount, kMaterialCount - 1u);
+    EXPECT_EQ(stats.declaredTextureResourceScanCount, 1u);
+    EXPECT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), kMaterialCount);
+    for (const auto& material : materials)
+    {
+        const auto* parameter = material->GetParameterBlock().TryGet("u_DiffuseMap");
+        ASSERT_NE(parameter, nullptr);
+        ASSERT_EQ(parameter->type(), typeid(NLS::Render::Resources::Texture2D*));
+        EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter), texture);
+    }
+
+    for (auto* mesh : meshes)
+        delete mesh;
+    textureManager.UnloadResources();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+}
+
 TEST(RenderSceneCacheTests, ResourceManagersReturnEquivalentCachedArtifactsForAsyncRequests)
 {
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
@@ -1473,6 +1809,8 @@ TEST(RenderSceneCacheTests, ResourceManagersTrackEquivalentPendingAsyncArtifactR
 {
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
+    ScopedRenderSceneCacheJobSystem jobSystem(0u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
 
     const ScopedTempDirectory root(
         std::filesystem::temp_directory_path() /
@@ -1527,6 +1865,400 @@ TEST(RenderSceneCacheTests, ResourceManagersTrackEquivalentPendingAsyncArtifactR
 
     NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+}
+
+TEST(RenderSceneCacheTests, ResourceManagersScopePendingAsyncArtifactRequestsPerOwner)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear global async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+    ScopedRenderSceneCacheJobSystem jobSystem(0u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_owner_scoped_pending_artifact_" + NLS::Guid::New().ToString()));
+    const auto meshPath = root.Path() / "Meshes" / "hero.nmesh";
+    const auto materialPath = root.Path() / "Materials" / "hero.nmat";
+    const auto texturePath = root.Path() / "Textures" / "hero.ntex";
+    WriteCubeMeshArtifact(meshPath);
+    std::filesystem::create_directories(materialPath.parent_path());
+    std::ofstream(materialPath, std::ios::binary | std::ios::trunc) << "";
+    std::filesystem::create_directories(texturePath.parent_path());
+    std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    NLS::Core::ResourceManagement::MeshManager meshA;
+    NLS::Core::ResourceManagement::MeshManager meshB;
+    NLS::Core::ResourceManagement::MaterialManager materialA;
+    NLS::Core::ResourceManagement::MaterialManager materialB;
+    NLS::Core::ResourceManagement::TextureManager textureA;
+    NLS::Core::ResourceManagement::TextureManager textureB;
+
+    EXPECT_EQ(meshA.RequestAsyncArtifact(meshPath.string(), true), nullptr);
+    EXPECT_EQ(meshB.RequestAsyncArtifact(meshPath.string(), true), nullptr);
+    EXPECT_TRUE(meshA.IsAsyncArtifactLoadPending(meshPath.string()));
+    EXPECT_TRUE(meshB.IsAsyncArtifactLoadPending(meshPath.string()))
+        << "Preview and final prefab managers may request the same mesh artifact concurrently; one must not hide the other.";
+
+    EXPECT_EQ(materialA.RequestAsyncArtifact(materialPath.string(), true), nullptr);
+    EXPECT_EQ(materialB.RequestAsyncArtifact(materialPath.string(), true), nullptr);
+    EXPECT_TRUE(materialA.IsAsyncArtifactLoadPending(materialPath.string()));
+    EXPECT_TRUE(materialB.IsAsyncArtifactLoadPending(materialPath.string()))
+        << "Material async requests are manager-owned even when their artifact paths are identical.";
+
+    EXPECT_EQ(textureA.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+    EXPECT_EQ(textureB.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+    EXPECT_TRUE(textureA.IsAsyncArtifactLoadPending(texturePath.string()));
+    EXPECT_TRUE(textureB.IsAsyncArtifactLoadPending(texturePath.string()))
+        << "Texture async requests are manager-owned even when their artifact paths are identical.";
+
+    for (size_t attempt = 0; attempt < 64u; ++attempt)
+    {
+        meshB.PumpAsyncLoads(8u);
+        materialB.PumpAsyncLoads(8u);
+        textureB.PumpAsyncLoads(8u);
+        if (!meshB.IsAsyncArtifactLoadPending(meshPath.string()) &&
+            !materialB.IsAsyncArtifactLoadPending(materialPath.string()) &&
+            !textureB.IsAsyncArtifactLoadPending(texturePath.string()))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_FALSE(meshB.IsAsyncArtifactLoadPending(meshPath.string()));
+    EXPECT_TRUE(meshA.IsAsyncArtifactLoadPending(meshPath.string()))
+        << "Pumping one manager must not consume another manager's same-path mesh request.";
+    EXPECT_FALSE(materialB.IsAsyncArtifactLoadPending(materialPath.string()));
+    EXPECT_TRUE(materialA.IsAsyncArtifactLoadPending(materialPath.string()))
+        << "Pumping one manager must not consume another manager's same-path material request.";
+    EXPECT_FALSE(textureB.IsAsyncArtifactLoadPending(texturePath.string()));
+    EXPECT_TRUE(textureA.IsAsyncArtifactLoadPending(texturePath.string()))
+        << "Pumping one manager must not consume another manager's same-path texture request.";
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, ResourceManagersBoundPendingAsyncArtifactRequests)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_bounded_pending_artifact_" + NLS::Guid::New().ToString()));
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    for (size_t index = 0u; index < 80u; ++index)
+    {
+        const auto meshPath = root.Path() / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        WriteCubeMeshArtifact(meshPath);
+        EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), true), nullptr);
+
+        const auto texturePath = root.Path() / "Textures" / ("hero" + std::to_string(index) + ".ntex");
+        std::filesystem::create_directories(texturePath.parent_path());
+        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+    }
+
+    EXPECT_LE(NLS::Core::ResourceManagement::MeshManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u);
+    EXPECT_LE(NLS::Core::ResourceManagement::TextureManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u);
+    EXPECT_TRUE(meshManager.IsAsyncArtifactLoadPending((root.Path() / "Meshes" / "hero79.nmesh").string()))
+        << "Requests beyond the active async cap must stay observable as pending instead of looking like missing resources.";
+    EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending((root.Path() / "Textures" / "hero79.ntex").string()))
+        << "Texture requests beyond the active async cap must stay observable as pending instead of looking like missing resources.";
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, ResourceManagersBoundTotalQueuedAsyncArtifactRequests)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_total_bounded_pending_artifact_" + NLS::Guid::New().ToString()));
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    for (size_t index = 0u; index < 320u; ++index)
+    {
+        const auto meshPath = root.Path() / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        WriteCubeMeshArtifact(meshPath);
+        EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), true), nullptr);
+
+        const auto texturePath = root.Path() / "Textures" / ("hero" + std::to_string(index) + ".ntex");
+        std::filesystem::create_directories(texturePath.parent_path());
+        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+    }
+
+    EXPECT_LE(NLS::Core::ResourceManagement::MeshManager::GetTotalAsyncArtifactRequestCountForTesting(), 256u)
+        << "Large prefab drags must not enqueue an unbounded number of mesh artifact records.";
+    EXPECT_LE(NLS::Core::ResourceManagement::TextureManager::GetTotalAsyncArtifactRequestCountForTesting(), 256u)
+        << "Large prefab drags must not enqueue an unbounded number of texture artifact records.";
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, ResourceManagersBoundGlobalActiveAsyncArtifactRequestsAcrossOwners)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_global_active_pending_artifact_" + NLS::Guid::New().ToString()));
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    std::vector<std::unique_ptr<NLS::Core::ResourceManagement::MeshManager>> meshManagers;
+    std::vector<std::unique_ptr<NLS::Core::ResourceManagement::TextureManager>> textureManagers;
+    meshManagers.reserve(80u);
+    textureManagers.reserve(80u);
+
+    for (size_t index = 0u; index < 80u; ++index)
+    {
+        auto meshManager = std::make_unique<NLS::Core::ResourceManagement::MeshManager>();
+        const auto meshPath = root.Path() / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        std::filesystem::create_directories(meshPath.parent_path());
+        std::ofstream(meshPath, std::ios::binary | std::ios::trunc) << "not-a-mesh";
+        EXPECT_EQ(meshManager->RequestAsyncArtifact(meshPath.string(), true), nullptr);
+        meshManagers.push_back(std::move(meshManager));
+
+        auto textureManager = std::make_unique<NLS::Core::ResourceManagement::TextureManager>();
+        const auto texturePath = root.Path() / "Textures" / ("hero" + std::to_string(index) + ".ntex");
+        std::filesystem::create_directories(texturePath.parent_path());
+        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        EXPECT_EQ(textureManager->RequestAsyncArtifact(texturePath.string(), true), nullptr);
+        textureManagers.push_back(std::move(textureManager));
+    }
+
+    EXPECT_LE(NLS::Core::ResourceManagement::MeshManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
+        << "Mesh artifact loading must use a global active cap so many preview owners cannot fill the editor background queue.";
+    EXPECT_LE(NLS::Core::ResourceManagement::TextureManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
+        << "Texture artifact loading must use a global active cap so many preview owners cannot fill the editor background queue.";
+    EXPECT_EQ(NLS::Core::ResourceManagement::MeshManager::GetTotalAsyncArtifactRequestCountForTesting(), 80u);
+    EXPECT_EQ(NLS::Core::ResourceManagement::TextureManager::GetTotalAsyncArtifactRequestCountForTesting(), 80u);
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, CancelAsyncArtifactDoesNotConsumeSharedMeshOrTextureInterest)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_cancel_shared_interest_artifact_" + NLS::Guid::New().ToString()));
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    const auto meshPath = root.Path() / "Meshes" / "hero.nmesh";
+    WriteCubeMeshArtifact(meshPath);
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), false), nullptr);
+    EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), true), nullptr);
+    meshManager.CancelAsyncArtifact(meshPath.string());
+    meshManager.CancelAsyncArtifact(meshPath.string());
+    EXPECT_TRUE(meshManager.IsAsyncArtifactLoadPending(meshPath.string()))
+        << "Preview cleanup must not cancel shared/final mesh interest by repeating path-only cancellation.";
+
+    const auto texturePath = root.Path() / "Textures" / "hero.ntex";
+    std::filesystem::create_directories(texturePath.parent_path());
+    std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), false), nullptr);
+    EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+    textureManager.CancelAsyncArtifact(texturePath.string());
+    textureManager.CancelAsyncArtifact(texturePath.string());
+    EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending(texturePath.string()))
+        << "Preview cleanup must not cancel shared/final texture interest by repeating path-only cancellation.";
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, ClearingAsyncArtifactStateDrainsMeshAndTextureWorkersForTesting)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_clear_drains_workers_artifact_" + NLS::Guid::New().ToString()));
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    for (size_t index = 0u; index < 8u; ++index)
+    {
+        const auto meshPath = root.Path() / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        WriteCubeMeshArtifact(meshPath);
+        EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), true), nullptr);
+
+        const auto texturePath = root.Path() / "Textures" / ("hero" + std::to_string(index) + ".ntex");
+        std::filesystem::create_directories(texturePath.parent_path());
+        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+    }
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+    EXPECT_TRUE(NLS::Core::ResourceManagement::MeshManager::WaitForAsyncArtifactWorkersForTesting());
+    EXPECT_TRUE(NLS::Core::ResourceManagement::TextureManager::WaitForAsyncArtifactWorkersForTesting());
+#endif
+}
+
+TEST(RenderSceneCacheTests, ResourceManagersBoundPendingAsyncArtifactRequestsPerOwner)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_owner_bounded_pending_artifact_" + NLS::Guid::New().ToString()));
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    NLS::Core::ResourceManagement::MeshManager meshOwnerA;
+    NLS::Core::ResourceManagement::MeshManager meshOwnerB;
+    NLS::Core::ResourceManagement::MaterialManager materialOwnerA;
+    NLS::Core::ResourceManagement::MaterialManager materialOwnerB;
+    NLS::Core::ResourceManagement::TextureManager textureOwnerA;
+    NLS::Core::ResourceManagement::TextureManager textureOwnerB;
+
+    for (size_t index = 0u; index < 64u; ++index)
+    {
+        const auto meshPath = root.Path() / "OwnerA" / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        WriteCubeMeshArtifact(meshPath);
+        EXPECT_EQ(meshOwnerA.RequestAsyncArtifact(meshPath.string(), true), nullptr);
+
+        const auto materialPath = root.Path() / "OwnerA" / "Materials" / ("hero" + std::to_string(index) + ".nmat");
+        std::filesystem::create_directories(materialPath.parent_path());
+        std::ofstream(materialPath, std::ios::binary | std::ios::trunc) << "";
+        EXPECT_EQ(materialOwnerA.RequestAsyncArtifact(materialPath.string(), true), nullptr);
+
+        const auto texturePath = root.Path() / "OwnerA" / "Textures" / ("hero" + std::to_string(index) + ".ntex");
+        std::filesystem::create_directories(texturePath.parent_path());
+        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        EXPECT_EQ(textureOwnerA.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+    }
+
+    const auto meshPathB = root.Path() / "OwnerB" / "Meshes" / "hero.nmesh";
+    const auto materialPathB = root.Path() / "OwnerB" / "Materials" / "hero.nmat";
+    const auto texturePathB = root.Path() / "OwnerB" / "Textures" / "hero.ntex";
+    WriteCubeMeshArtifact(meshPathB);
+    std::filesystem::create_directories(materialPathB.parent_path());
+    std::ofstream(materialPathB, std::ios::binary | std::ios::trunc) << "";
+    std::filesystem::create_directories(texturePathB.parent_path());
+    std::ofstream(texturePathB, std::ios::binary | std::ios::trunc) << "not-a-texture";
+
+    EXPECT_EQ(meshOwnerB.RequestAsyncArtifact(meshPathB.string(), true), nullptr);
+    EXPECT_TRUE(meshOwnerB.IsAsyncArtifactLoadPending(meshPathB.string()))
+        << "A full preview/scene owner must not make another owner treat required mesh work as permanently unavailable.";
+
+    EXPECT_EQ(materialOwnerB.RequestAsyncArtifact(materialPathB.string(), true), nullptr);
+    EXPECT_TRUE(materialOwnerB.IsAsyncArtifactLoadPending(materialPathB.string()))
+        << "A full preview/scene owner must not make another owner treat required material work as permanently unavailable.";
+
+    EXPECT_EQ(textureOwnerB.RequestAsyncArtifact(texturePathB.string(), true), nullptr);
+    EXPECT_TRUE(textureOwnerB.IsAsyncArtifactLoadPending(texturePathB.string()))
+        << "A full preview/scene owner must not make another owner treat required texture work as permanently unavailable.";
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, DestroyedResourceManagersReleasePendingAsyncArtifactRequests)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_destroyed_owner_pending_artifact_" + NLS::Guid::New().ToString()));
+    const auto meshPath = root.Path() / "Meshes" / "owner.nmesh";
+    const auto materialPath = root.Path() / "Materials" / "owner.nmat";
+    const auto texturePath = root.Path() / "Textures" / "owner.ntex";
+    WriteCubeMeshArtifact(meshPath);
+    std::filesystem::create_directories(materialPath.parent_path());
+    std::ofstream(materialPath, std::ios::binary | std::ios::trunc) << "";
+    std::filesystem::create_directories(texturePath.parent_path());
+    std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    {
+        NLS::Core::ResourceManagement::MeshManager meshManager;
+        NLS::Core::ResourceManagement::MaterialManager materialManager;
+        NLS::Core::ResourceManagement::TextureManager textureManager;
+        EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), true), nullptr);
+        EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string(), true), nullptr);
+        EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+        ASSERT_EQ(NLS::Core::ResourceManagement::MeshManager::GetTotalAsyncArtifactRequestCountForTesting(), 1u);
+        ASSERT_EQ(NLS::Core::ResourceManagement::MaterialManager::GetTotalAsyncArtifactRequestCountForTesting(), 1u);
+        ASSERT_EQ(NLS::Core::ResourceManagement::TextureManager::GetTotalAsyncArtifactRequestCountForTesting(), 1u);
+    }
+
+    EXPECT_EQ(NLS::Core::ResourceManagement::MeshManager::GetTotalAsyncArtifactRequestCountForTesting(), 0u);
+    EXPECT_EQ(NLS::Core::ResourceManagement::MaterialManager::GetTotalAsyncArtifactRequestCountForTesting(), 0u);
+    EXPECT_EQ(NLS::Core::ResourceManagement::TextureManager::GetTotalAsyncArtifactRequestCountForTesting(), 0u);
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
 }
 
 TEST(RenderSceneCacheTests, MissingMaterialPathStillUsesDefaultMaterial)

@@ -92,6 +92,9 @@ namespace NLS::Render::Context
             Settings::EPixelDataFormat format,
             Settings::EPixelDataType type,
             void* data);
+        static RHI::RHIReadbackResult PollReadbackCompletion(
+            const Driver& driver,
+            const RHI::RHIReadbackResult& readback);
         static bool PrepareUIRender(Driver& driver);
         static void PresentSwapchain(Driver& driver);
     };

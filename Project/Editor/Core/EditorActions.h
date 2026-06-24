@@ -7,6 +7,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -29,6 +30,24 @@
 
 namespace NLS::Editor::Core
 {
+    enum class RendererResourceResolutionQueueTaskKind
+    {
+        Mesh,
+        Material
+    };
+
+    struct RendererResourceResolutionQueuePlanEntry
+    {
+        RendererResourceResolutionQueueTaskKind kind =
+            RendererResourceResolutionQueueTaskKind::Mesh;
+        size_t sourceIndex = 0u;
+    };
+
+    std::vector<RendererResourceResolutionQueuePlanEntry>
+    PlanRendererResourceResolutionQueue(
+        const std::vector<std::string>& meshSourceKeys,
+        const std::vector<std::string>& materialSourceKeys);
+
     struct PrefabInstanceAssetResolutionOptions
     {
         bool hideRootUntilRendererResourcesReady = false;
@@ -45,8 +64,7 @@ namespace NLS::Editor::Core
     PrefabInstanceAssetResolutionOptions BuildSceneLoadPrefabResourceResolutionOptions();
     bool ShouldRevealRendererResourceResolutionObjectBeforeAllReady(
         bool rootRenderingSuppressedUntilRendererResourcesReady);
-
-	/**
+		/**
 	* A set of editor actions
 	*/
 	class EditorActions
@@ -205,6 +223,16 @@ namespace NLS::Editor::Core
             Engine::GameObject* p_parent = nullptr,
             std::optional<Maths::Vector3> placementOverride = std::nullopt);
         Engine::GameObject* CreateGameObjectFromAsset(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt);
+        Engine::GameObject* CreateGameObjectFromAssetNonBlocking(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt);
+        Engine::GameObject* CreateGameObjectFromAssetBlocking(
             const NLS::Editor::Assets::EditorAssetDragPayload& payload,
             bool focusOnCreation = true,
             Engine::GameObject* p_parent = nullptr,
@@ -430,9 +458,10 @@ namespace NLS::Editor::Core
 		* @param p_action
 		* @param p_frames
 		*/
-		void DelayAction(std::function<void()> p_action, uint32_t p_frames = 1);
-		void ScheduleImportedResourceTrim();
-		bool TrackBackgroundTask(std::function<void()> task);
+			void DelayAction(std::function<void()> p_action, uint32_t p_frames = 1);
+			void ScheduleImportedResourceTrim();
+			bool TrackBackgroundTask(std::function<void()> task);
+			bool TrackOpportunisticBackgroundTask(std::function<void()> task);
         struct SceneMutationToken
         {
             uint64_t mainSceneGeneration = 0u;

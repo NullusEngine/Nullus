@@ -21,15 +21,18 @@
 #include <UI/Widgets/Layout/Columns.h>
 #include <UI/Widgets/Layout/NewLine.h>
 #include <UI/Widgets/Buttons/Button.h>
+#include <UI/Widgets/Buttons/ButtonSmall.h>
 #include <UI/Widgets/Selection/ComboBox.h>
 
 #include "Panels/AssetProperties.h"
 #include "Panels/AssetBrowser.h"
 #include "Panels/AssetView.h"
 #include "Assets/AssetMeta.h"
+#include "Assets/AssetImporterSettings.h"
 #include "Assets/EditorAssetManifestJson.h"
 #include "Assets/AssetImporterFacade.h"
 #include "Assets/EditorAssetPath.h"
+#include "Assets/ModelTextureResolutionReport.h"
 #include "Core/EditorActions.h"
 using namespace NLS;
 
@@ -163,6 +166,208 @@ std::optional<AssetPropertiesSubAssetInfo> ReadAssetPropertiesSubAssetInfo(
         artifact->artifactPath
     };
 }
+
+std::string ReadTextFileIfExists(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return {};
+
+    return std::string(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
+}
+
+std::optional<std::string> ReadModelTextureResolutionReportText(
+    const NLS::Core::Assets::AssetMeta& meta,
+    const std::filesystem::path& projectRoot)
+{
+    if (!meta.id.IsValid() || projectRoot.empty())
+        return std::nullopt;
+
+    const auto reportPath = NLS::Editor::Assets::ModelTextureResolutionReportPath(
+        projectRoot / "Library" / "Artifacts" / meta.id.ToString());
+    if (!std::filesystem::exists(reportPath))
+        return std::nullopt;
+
+    return ReadTextFileIfExists(reportPath);
+}
+
+std::string JoinDiagnosticCodes(const std::vector<std::string>& codes)
+{
+    std::string result;
+    for (const auto& code : codes)
+    {
+        if (!result.empty())
+            result += ", ";
+        result += code;
+    }
+    return result;
+}
+
+std::string BoolSettingText(const bool value)
+{
+    return value ? "true" : "false";
+}
+
+template <typename TValue>
+void SetOrAddIniValue(
+    Filesystem::IniFile& metadata,
+    const std::string& key,
+    const TValue& value)
+{
+    if (!metadata.Set(key, value))
+        metadata.Add(key, value);
+}
+
+NLS::Editor::Assets::ModelTextureResolutionSettings LoadModelTextureResolutionSettingsFromIni(
+    Filesystem::IniFile& metadata)
+{
+    NLS::Core::Assets::AssetMeta meta;
+    meta.settings["MODEL_TEXTURE_SETTINGS_VERSION"] =
+        std::to_string(metadata.GetOrDefault<int>("MODEL_TEXTURE_SETTINGS_VERSION", 1));
+    meta.settings["MODEL_TEXTURE_USE_EXTERNAL_TEXTURES"] =
+        metadata.GetOrDefault<std::string>("MODEL_TEXTURE_USE_EXTERNAL_TEXTURES", "true");
+    meta.settings["MODEL_TEXTURE_SEARCH_BY_NAME"] =
+        metadata.GetOrDefault<std::string>("MODEL_TEXTURE_SEARCH_BY_NAME", "true");
+    meta.settings["MODEL_TEXTURE_AUTO_IMPORT_MISSING"] =
+        metadata.GetOrDefault<std::string>("MODEL_TEXTURE_AUTO_IMPORT_MISSING", "true");
+    meta.settings["MODEL_TEXTURE_EMBEDDED_MODE"] =
+        metadata.GetOrDefault<std::string>("MODEL_TEXTURE_EMBEDDED_MODE", "ModelSubAsset");
+    return NLS::Editor::Assets::LoadModelTextureResolutionSettings(meta);
+}
+
+void StoreModelTextureResolutionSettingsInIni(
+    Filesystem::IniFile& metadata,
+    const NLS::Editor::Assets::ModelTextureResolutionSettings& settings)
+{
+    SetOrAddIniValue(metadata, "MODEL_TEXTURE_SETTINGS_VERSION", static_cast<int>(settings.settingsVersion));
+    SetOrAddIniValue(metadata, "MODEL_TEXTURE_USE_EXTERNAL_TEXTURES", BoolSettingText(settings.useExternalTextures));
+    SetOrAddIniValue(metadata, "MODEL_TEXTURE_SEARCH_BY_NAME", BoolSettingText(settings.searchByName));
+    SetOrAddIniValue(metadata, "MODEL_TEXTURE_AUTO_IMPORT_MISSING", BoolSettingText(settings.autoImportMissingTextureFiles));
+    SetOrAddIniValue(metadata, "MODEL_TEXTURE_EMBEDDED_MODE", std::string("ModelSubAsset"));
+}
+
+void StoreModelTextureRemapInIni(
+    Filesystem::IniFile& metadata,
+    const std::string& stableSourceKey,
+    const std::string& targetEditorPath)
+{
+    auto meta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(
+            RealPathForAssetPropertiesTarget(targetEditorPath)));
+    if (!meta.has_value() || !meta->id.IsValid() || meta->assetType != NLS::Core::Assets::AssetType::Texture)
+        return;
+
+    NLS::Core::Assets::AssetMeta scratch;
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        scratch,
+        { stableSourceKey, meta->id, "texture:main", targetEditorPath });
+    for (const auto& [key, value] : scratch.settings)
+        SetOrAddIniValue(metadata, key, value);
+}
+
+void ClearModelTextureRemapInIni(
+    Filesystem::IniFile& metadata,
+    const std::string& stableSourceKey)
+{
+    metadata.Remove(NLS::Editor::Assets::MakeModelTextureRemapSettingKey(stableSourceKey));
+}
+}
+
+Editor::Panels::ModelTextureAssetPropertiesView Editor::Panels::BuildModelTextureAssetPropertiesView(
+    const NLS::Core::Assets::AssetMeta& modelMeta,
+    const std::string& targetPlatform,
+    const std::optional<std::string>& reportText)
+{
+    ModelTextureAssetPropertiesView view;
+    view.settings = NLS::Editor::Assets::LoadModelTextureResolutionSettings(modelMeta);
+
+    if (!reportText.has_value())
+        return view;
+
+    const auto report = NLS::Editor::Assets::ParseModelTextureResolutionReport(*reportText);
+    if (!report.has_value())
+    {
+        view.reportMalformed = true;
+        return view;
+    }
+
+    const NLS::Editor::Assets::ModelTextureReportContext context {
+        modelMeta.id.ToString(),
+        targetPlatform,
+        modelMeta.importerVersion,
+        NLS::Editor::Assets::ComputeModelTextureSettingsFingerprint(modelMeta)
+    };
+    if (!NLS::Editor::Assets::IsModelTextureResolutionReportCurrent(*report, context))
+    {
+        view.reportStale = true;
+        view.reimportRequired = true;
+        return view;
+    }
+
+    view.hasCurrentReport = true;
+    for (const auto& entry : report->entries)
+    {
+        ModelTextureAssetPropertiesRow row;
+        row.sourceStableKey = entry.source.stableKey;
+        row.resolutionKind = NLS::Editor::Assets::ToString(entry.kind);
+        row.targetAssetId = entry.targetAssetId.IsValid() ? entry.targetAssetId.ToString() : std::string {};
+        row.targetSubAssetKey = entry.targetSubAssetKey;
+        row.targetEditorPath = !entry.targetEditorPath.empty()
+            ? entry.targetEditorPath.generic_string()
+            : entry.resourcePath.generic_string();
+        row.usesOrderDerivedStableKey =
+            entry.source.stableKeyStatus == NLS::Editor::Assets::ModelTextureStableKeyStatus::OrderDerived;
+
+        for (const auto& diagnostic : entry.diagnostics)
+        {
+            row.diagnosticCodes.push_back(diagnostic.code);
+            if (diagnostic.severity == "Warning" || diagnostic.severity == "Error")
+                row.hasWarnings = true;
+            if (diagnostic.code == "model-texture-remap-invalid-target" ||
+                diagnostic.code == "model-texture-remap-non-texture-target" ||
+                diagnostic.code == "model-texture-artifact-missing")
+            {
+                row.hasInvalidTargetWarning = true;
+            }
+            if (diagnostic.code == "model-texture-unsupported-encoding")
+                row.hasUnsupportedEncodingWarning = true;
+        }
+
+        if (row.usesOrderDerivedStableKey)
+            row.hasWarnings = true;
+
+        view.rows.push_back(std::move(row));
+    }
+
+    return view;
+}
+
+void Editor::Panels::StoreModelTextureAssetPropertiesSettings(
+    NLS::Core::Assets::AssetMeta& modelMeta,
+    const NLS::Editor::Assets::ModelTextureResolutionSettings& settings)
+{
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, settings);
+}
+
+void Editor::Panels::StoreModelTextureAssetPropertiesRemap(
+    NLS::Core::Assets::AssetMeta& modelMeta,
+    const std::string& stableSourceKey,
+    const NLS::Core::Assets::AssetId& targetAssetId,
+    const std::string& targetSubAssetKey,
+    const std::string& targetEditorPath)
+{
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        modelMeta,
+        { stableSourceKey, targetAssetId, targetSubAssetKey, targetEditorPath });
+}
+
+void Editor::Panels::ClearModelTextureAssetPropertiesRemap(
+    NLS::Core::Assets::AssetMeta& modelMeta,
+    const std::string& stableSourceKey)
+{
+    NLS::Editor::Assets::ClearModelTextureRemapSetting(modelMeta, stableSourceKey);
 }
 
 Editor::Panels::AssetProperties::AssetProperties
@@ -491,7 +696,134 @@ void Editor::Panels::AssetProperties::CreateModelSettings()
 	MODEL_FLAG_ENTRY("FORCE_GEN_NORMALS");
 	MODEL_FLAG_ENTRY("DROP_NORMALS");
 	MODEL_FLAG_ENTRY("GEN_BOUNDING_BOXES");
+    CreateModelTextureResolutionProperties();
 };
+
+void Editor::Panels::AssetProperties::CreateModelTextureResolutionProperties()
+{
+    const auto target = ParseAssetPropertiesTarget(m_resource);
+    const auto realPath = RealPathForAssetPropertiesTarget(target.sourceResourcePath);
+    auto meta = NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(realPath));
+    if (!meta.has_value() || meta->assetType != NLS::Core::Assets::AssetType::ModelScene)
+        return;
+
+    const auto projectRoot = ProjectRootFromAssetsPath(EDITOR_EXEC(GetContext()).projectAssetsPath);
+    const auto view = BuildModelTextureAssetPropertiesView(
+        *meta,
+        "editor",
+        ReadModelTextureResolutionReportText(*meta, projectRoot));
+
+    NLS::UI::GUIDrawer::CreateTitle(*m_settingsColumns, "Texture Resolution");
+    m_settingsColumns->CreateWidget<UI::Widgets::Text>("Unity-aligned external reuse");
+
+    NLS::UI::GUIDrawer::DrawBoolean(
+        *m_settingsColumns,
+        "Use External Textures",
+        [this, fallback = view.settings]()
+        {
+            if (!m_metadata->IsKeyExisting("MODEL_TEXTURE_USE_EXTERNAL_TEXTURES"))
+                return fallback.useExternalTextures;
+            return m_metadata->GetOrDefault<std::string>(
+                "MODEL_TEXTURE_USE_EXTERNAL_TEXTURES",
+                BoolSettingText(fallback.useExternalTextures)) != "false";
+        },
+        [this](bool value)
+        {
+            auto settings = LoadModelTextureResolutionSettingsFromIni(*m_metadata);
+            settings.useExternalTextures = value;
+            StoreModelTextureResolutionSettingsInIni(*m_metadata, settings);
+        });
+    NLS::UI::GUIDrawer::DrawBoolean(
+        *m_settingsColumns,
+        "Search By Name",
+        [this, fallback = view.settings]()
+        {
+            if (!m_metadata->IsKeyExisting("MODEL_TEXTURE_SEARCH_BY_NAME"))
+                return fallback.searchByName;
+            return m_metadata->GetOrDefault<std::string>(
+                "MODEL_TEXTURE_SEARCH_BY_NAME",
+                BoolSettingText(fallback.searchByName)) != "false";
+        },
+        [this](bool value)
+        {
+            auto settings = LoadModelTextureResolutionSettingsFromIni(*m_metadata);
+            settings.searchByName = value;
+            StoreModelTextureResolutionSettingsInIni(*m_metadata, settings);
+        });
+    NLS::UI::GUIDrawer::DrawBoolean(
+        *m_settingsColumns,
+        "Auto Import Missing",
+        [this, fallback = view.settings]()
+        {
+            if (!m_metadata->IsKeyExisting("MODEL_TEXTURE_AUTO_IMPORT_MISSING"))
+                return fallback.autoImportMissingTextureFiles;
+            return m_metadata->GetOrDefault<std::string>(
+                "MODEL_TEXTURE_AUTO_IMPORT_MISSING",
+                BoolSettingText(fallback.autoImportMissingTextureFiles)) != "false";
+        },
+        [this](bool value)
+        {
+            auto settings = LoadModelTextureResolutionSettingsFromIni(*m_metadata);
+            settings.autoImportMissingTextureFiles = value;
+            StoreModelTextureResolutionSettingsInIni(*m_metadata, settings);
+        });
+
+    NLS::UI::GUIDrawer::CreateTitle(*m_settingsColumns, "External Textures");
+    if (view.reportMalformed)
+    {
+        m_settingsColumns->CreateWidget<UI::Widgets::Text>("Report malformed");
+        return;
+    }
+    if (view.reportStale)
+    {
+        m_settingsColumns->CreateWidget<UI::Widgets::Text>("Reimport required");
+        return;
+    }
+    if (!view.hasCurrentReport)
+    {
+        m_settingsColumns->CreateWidget<UI::Widgets::Text>("No current report");
+        return;
+    }
+    if (view.rows.empty())
+    {
+        m_settingsColumns->CreateWidget<UI::Widgets::Text>("No texture references");
+        return;
+    }
+
+    for (const auto& row : view.rows)
+    {
+        const auto label = row.resolutionKind + (row.hasWarnings ? " warning" : "");
+        NLS::UI::GUIDrawer::CreateTitle(*m_settingsColumns, label);
+
+        auto& rowGroup = m_settingsColumns->CreateWidget<UI::Widgets::Group>();
+        rowGroup.CreateWidget<UI::Widgets::Text>(
+            row.sourceStableKey.empty() ? std::string("Unknown source") : row.sourceStableKey);
+        rowGroup.CreateWidget<UI::Widgets::Text>(
+            row.targetEditorPath.empty() ? std::string("No external target") : row.targetEditorPath);
+
+        if (!row.diagnosticCodes.empty())
+            rowGroup.CreateWidget<UI::Widgets::Text>(JoinDiagnosticCodes(row.diagnosticCodes));
+        else if (row.usesOrderDerivedStableKey)
+            rowGroup.CreateWidget<UI::Widgets::Text>("Order-derived source key");
+
+        std::string remapPath = row.targetEditorPath;
+        NLS::UI::GUIDrawer::DrawDDString(
+            rowGroup,
+            "Remap",
+            [remapPath]() { return remapPath; },
+            [this, stableSourceKey = row.sourceStableKey](std::string value)
+            {
+                StoreModelTextureRemapInIni(*m_metadata, stableSourceKey, value);
+            },
+            "File");
+
+        auto& clearButton = rowGroup.CreateWidget<UI::Widgets::ButtonSmall>("Clear Remap");
+        clearButton.ClickedEvent += [this, stableSourceKey = row.sourceStableKey]
+        {
+            ClearModelTextureRemapInIni(*m_metadata, stableSourceKey);
+        };
+    }
+}
 
 void Editor::Panels::AssetProperties::CreateTextureSettings()
 {
@@ -572,7 +904,7 @@ void Editor::Panels::AssetProperties::Reimport()
     auto& tracker = EDITOR_EXEC(GetContext()).importProgressTracker;
     const auto resourcePath = m_resource;
 
-    EDITOR_EXEC(TrackBackgroundTask([projectRoot, assetPath, resourcePath, &tracker]
+    const auto queued = EDITOR_EXEC(TrackBackgroundTask([projectRoot, assetPath, resourcePath, &tracker]
     {
         NLS::Editor::Assets::AssetImporterFacade importer(
             NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
@@ -595,4 +927,6 @@ void Editor::Panels::AssetProperties::Reimport()
             }
         }));
     }));
+    if (!queued)
+        NLS_LOG_ERROR("Failed to queue asset reimport because the editor background task queue is at capacity: " + assetPath);
 }

@@ -13,11 +13,15 @@ void TransformComponent::OnCreate()
 void TransformComponent::SetParent(TransformComponent& p_parent)
 {
 	m_transform.SetParent(p_parent.GetTransform());
+    MarkRenderTransformChanged();
 }
 
 bool TransformComponent::RemoveParent()
 {
-	return m_transform.RemoveParent();
+	const bool removed = m_transform.RemoveParent();
+    if (removed)
+        MarkRenderTransformChanged();
+    return removed;
 }
 
 bool TransformComponent::HasParent() const
@@ -28,46 +32,64 @@ bool TransformComponent::HasParent() const
 void TransformComponent::SetLocalPosition(Maths::Vector3 p_newPosition)
 {
 	m_transform.SetLocalPosition(p_newPosition);
+    MarkRenderTransformChanged();
 }
 
 void TransformComponent::SetLocalRotation(Maths::Quaternion p_newRotation)
 {
 	m_transform.SetLocalRotation(p_newRotation);
+    MarkRenderTransformChanged();
 }
 
 void TransformComponent::SetLocalScale(Maths::Vector3 p_newScale)
 {
 	m_transform.SetLocalScale(p_newScale);
+    MarkRenderTransformChanged();
+}
+
+void TransformComponent::SetLocalTransform(
+    Maths::Vector3 p_newPosition,
+    Maths::Quaternion p_newRotation,
+    Maths::Vector3 p_newScale)
+{
+    m_transform.GenerateMatricesLocal(p_newPosition, p_newRotation, p_newScale);
+    MarkRenderTransformChanged();
 }
 
 void TransformComponent::SetWorldPosition(Maths::Vector3 p_newPosition)
 {
 	m_transform.SetWorldPosition(p_newPosition);
+    MarkRenderTransformChanged();
 }
 
 void TransformComponent::SetWorldRotation(Maths::Quaternion p_newRotation)
 {
 	m_transform.SetWorldRotation(p_newRotation);
+    MarkRenderTransformChanged();
 }
 
 void TransformComponent::SetWorldScale(Maths::Vector3 p_newScale)
 {
 	m_transform.SetWorldScale(p_newScale);
+    MarkRenderTransformChanged();
 }
 
 void TransformComponent::TranslateLocal(const Maths::Vector3& p_translation)
 {
 	m_transform.TranslateLocal(p_translation);
+    MarkRenderTransformChanged();
 }
 
 void TransformComponent::RotateLocal(const Maths::Quaternion& p_rotation)
 {
 	m_transform.RotateLocal(p_rotation);
+    MarkRenderTransformChanged();
 }
 
 void TransformComponent::ScaleLocal(const Maths::Vector3& p_scale)
 {
 	m_transform.ScaleLocal(p_scale);
+    MarkRenderTransformChanged();
 }
 
 const Maths::Vector3& TransformComponent::GetLocalPosition() const
@@ -113,6 +135,16 @@ const Maths::Matrix4& TransformComponent::GetWorldMatrix() const
 Maths::Transform& TransformComponent::GetTransform()
 {
 	return m_transform;
+}
+
+uint64_t TransformComponent::GetRenderRevision() const
+{
+    return m_renderRevision;
+}
+
+void TransformComponent::MarkRenderTransformChanged()
+{
+    ++m_renderRevision;
 }
 
 Maths::Vector3 TransformComponent::GetWorldForward() const

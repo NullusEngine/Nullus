@@ -4,6 +4,7 @@
 #include "Assets/AssetMeta.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetDatabaseFacade.h"
+#include "Assets/AssetThumbnailService.h"
 #include "Assets/ExternalAssetImporter.h"
 #include "Core/EditorResources.h"
 #include "Guid.h"
@@ -19,6 +20,7 @@
 #include <fstream>
 #include <system_error>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -418,6 +420,43 @@ TEST(AssetBrowserPresentationTests, FallbackIconsUseProjectEditorIconIds)
     EXPECT_STREQ(AssetBrowserFallbackIconId(AssetBrowserItemType::Other), "editor.icon.asset.default");
 }
 
+TEST(AssetBrowserPresentationTests, DisplayFallbackIconsPreferTypeIconWhenThumbnailServiceReturnsDefault)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_EQ(
+        ResolveAssetBrowserDisplayFallbackIconId(
+            AssetBrowserItemType::Shader,
+            "editor.icon.asset.default"),
+        std::string_view("editor.icon.asset.shader"));
+    EXPECT_EQ(
+        ResolveAssetBrowserDisplayFallbackIconId(
+            AssetBrowserItemType::Scene,
+            "editor.icon.asset.default"),
+        std::string_view("editor.icon.asset.scene"));
+    EXPECT_EQ(
+        ResolveAssetBrowserDisplayFallbackIconId(
+            AssetBrowserItemType::Scene,
+            ""),
+        std::string_view("editor.icon.asset.scene"));
+    EXPECT_EQ(
+        ResolveAssetBrowserDisplayFallbackIconId(
+            AssetBrowserItemType::Other,
+            "editor.icon.asset.default"),
+        std::string_view("editor.icon.asset.default"));
+}
+
+TEST(AssetBrowserPresentationTests, DisplayFallbackIconsPreserveExplicitThumbnailFallback)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_EQ(
+        ResolveAssetBrowserDisplayFallbackIconId(
+            AssetBrowserItemType::Shader,
+            "editor.icon.asset.texture"),
+        std::string_view("editor.icon.asset.texture"));
+}
+
 TEST(AssetBrowserPresentationTests, EditorResourcesUsePrefabFileIconIdForPrefabFiles)
 {
     EXPECT_STREQ(
@@ -425,10 +464,44 @@ TEST(AssetBrowserPresentationTests, EditorResourcesUsePrefabFileIconIdForPrefabF
         "editor.icon.asset.prefab");
 }
 
+TEST(AssetBrowserPresentationTests, EditorResourcesUseShaderFileIconIdForHlslFiles)
+{
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.hlsl"),
+        "editor.icon.asset.shader");
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.HLSL"),
+        "editor.icon.asset.shader");
+}
+
+TEST(AssetBrowserPresentationTests, EditorResourcesUseSceneFileIconIdForSceneFiles)
+{
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.scene"),
+        "editor.icon.asset.scene");
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.nscene"),
+        "editor.icon.asset.scene");
+}
+
+TEST(AssetBrowserPresentationTests, OnlyModelAndPrefabSourceAssetsCanExposeGeneratedSubAssets)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_TRUE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Models/Hero.fbx"));
+    EXPECT_TRUE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Models/Hero.gltf"));
+    EXPECT_TRUE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Prefabs/Hero.prefab"));
+
+    EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Shaders/Hero.hlsl"));
+    EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Shaders/Hero.shader"));
+    EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Scenes/New Scene.nscene"));
+}
+
 TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusResources)
 {
     const auto& records = NLS::Editor::Core::EditorResourceCatalog::DefaultRecords();
     bool foundSceneIcon = false;
+    bool foundShaderIcon = false;
     bool foundPrefabIcon = false;
     bool foundMaterialIcon = false;
     for (const auto& record : records)
@@ -453,6 +526,11 @@ TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusReso
             foundSceneIcon = true;
             EXPECT_EQ(record.developmentPath.generic_string(), "Editor/Brand/NullusLogoMark.png");
         }
+        if (record.id == "editor.icon.asset.shader")
+        {
+            foundShaderIcon = true;
+            EXPECT_EQ(record.developmentPath.generic_string(), "Editor/Icons/asset-shader.png");
+        }
         if (record.id == "editor.icon.asset.prefab")
             foundPrefabIcon = true;
         if (record.id == "editor.icon.asset.material")
@@ -460,6 +538,7 @@ TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusReso
     }
 
     EXPECT_TRUE(foundSceneIcon);
+    EXPECT_TRUE(foundShaderIcon);
     EXPECT_TRUE(foundPrefabIcon);
     EXPECT_TRUE(foundMaterialIcon);
 }
@@ -505,6 +584,108 @@ TEST(AssetBrowserPresentationTests, GeneratedSubAssetsAreNestedUnderCollapsedSou
     EXPECT_EQ(expanded[1].item.displayName, "Mesh A");
     EXPECT_TRUE(expanded[2].subAsset);
     EXPECT_EQ(expanded[2].item.displayName, "Material A");
+}
+
+TEST(AssetBrowserPresentationTests, ProgressiveDisplayItemsUseMaterializedSubAssetsAndClampPlaceholders)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserItem source;
+    source.kind = AssetBrowserItemKind::SourceAsset;
+    source.type = AssetBrowserItemType::Model;
+    source.displayName = "City.fbx";
+    source.projectRelativePath = "Assets/Models/City.fbx";
+    source.sourceAssetPath = source.projectRelativePath;
+
+    std::vector<AssetBrowserItem> items {source};
+    for (size_t index = 0u; index < 3u; ++index)
+    {
+        AssetBrowserItem mesh;
+        mesh.kind = AssetBrowserItemKind::GeneratedSubAsset;
+        mesh.type = AssetBrowserItemType::Mesh;
+        mesh.displayName = "Mesh " + std::to_string(index);
+        mesh.projectRelativePath = source.sourceAssetPath + "::mesh:" + std::to_string(index);
+        mesh.sourceAssetPath = source.sourceAssetPath;
+        items.push_back(std::move(mesh));
+    }
+
+    const auto displayItems = BuildAssetBrowserDisplayItems(
+        items,
+        {source.sourceAssetPath},
+        {{source.sourceAssetPath, 10000u}});
+    ASSERT_EQ(displayItems.size(), 4u);
+    EXPECT_EQ(displayItems[0].childCount, 10000u);
+    EXPECT_TRUE(std::all_of(
+        displayItems.begin() + 1,
+        displayItems.end(),
+        [](const AssetBrowserDisplayItem& item)
+        {
+            return item.subAsset && !item.loadingPlaceholder;
+        }))
+        << "Display construction must consume only sub-assets already materialized by the panel budget.";
+
+    const auto progressive = BuildProgressiveAssetBrowserDisplayItems(
+        displayItems,
+        {{source.sourceAssetPath, 3u}},
+        1u);
+
+    ASSERT_EQ(progressive.size(), 5u);
+    EXPECT_EQ(progressive[0].item.projectRelativePath, source.projectRelativePath);
+    EXPECT_FALSE(progressive[0].subAsset);
+    EXPECT_FALSE(progressive[1].loadingPlaceholder);
+    EXPECT_FALSE(progressive[2].loadingPlaceholder);
+    EXPECT_FALSE(progressive[3].loadingPlaceholder);
+    EXPECT_TRUE(progressive[4].subAsset);
+    EXPECT_TRUE(progressive[4].loadingPlaceholder)
+        << "A large model should expose at most a bounded loading row, not one placeholder per child.";
+}
+
+TEST(AssetBrowserPresentationTests, ExpandedSourceAssetFilmstripRangeCoversOnlyContiguousChildren)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserItem source;
+    source.kind = AssetBrowserItemKind::SourceAsset;
+    source.type = AssetBrowserItemType::Model;
+    source.displayName = "Sponza.fbx";
+    source.projectRelativePath = "Assets/Models/Sponza.fbx";
+    source.sourceAssetPath = source.projectRelativePath;
+
+    AssetBrowserItem mesh;
+    mesh.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    mesh.type = AssetBrowserItemType::Mesh;
+    mesh.displayName = "Mesh A";
+    mesh.projectRelativePath = "Assets/Models/Sponza.fbx::mesh:A";
+    mesh.sourceAssetPath = source.sourceAssetPath;
+
+    AssetBrowserItem material = mesh;
+    material.type = AssetBrowserItemType::Material;
+    material.displayName = "Material A";
+    material.projectRelativePath = "Assets/Models/Sponza.fbx::material:A";
+
+    AssetBrowserItem texture = material;
+    texture.type = AssetBrowserItemType::Texture;
+    texture.displayName = "Texture A";
+    texture.projectRelativePath = "Assets/Models/Sponza.fbx::texture:A";
+
+    AssetBrowserItem otherSource = source;
+    otherSource.displayName = "Other.fbx";
+    otherSource.projectRelativePath = "Assets/Models/Other.fbx";
+    otherSource.sourceAssetPath = otherSource.projectRelativePath;
+
+    const std::vector<AssetBrowserItem> items { source, mesh, material, texture, otherSource };
+    const auto expanded = BuildAssetBrowserDisplayItems(items, { source.sourceAssetPath });
+
+    const auto range = ResolveAssetBrowserExpandedSubAssetRange(expanded, 0u);
+    ASSERT_TRUE(range.has_value());
+    EXPECT_EQ(range->begin, 1u);
+    EXPECT_EQ(range->count, 3u);
+
+    EXPECT_FALSE(ResolveAssetBrowserExpandedSubAssetRange(expanded, 1u).has_value());
+    EXPECT_FALSE(ResolveAssetBrowserExpandedSubAssetRange(expanded, 4u).has_value());
+
+    const auto collapsed = BuildAssetBrowserDisplayItems(items, {});
+    EXPECT_FALSE(ResolveAssetBrowserExpandedSubAssetRange(collapsed, 0u).has_value());
 }
 
 TEST(AssetBrowserPresentationTests, GridThumbnailLayoutPreservesImageAspectRatio)
@@ -802,6 +983,8 @@ TEST(AssetBrowserPresentationTests, CurrentFolderSourceAssetTypesMatchPathParser
     WriteTextFile(root / "Assets" / "Hero.bmp", "texture");
     WriteTextFile(root / "Assets" / "Hero.dds", "texture");
     WriteTextFile(root / "Assets" / "Hero.shader", "shader");
+    WriteTextFile(root / "Assets" / "Hero.hlsl", "shader");
+    WriteTextFile(root / "Assets" / "Hero.scene", "scene");
     WriteTextFile(root / "Assets" / "Hero.nscene", "scene");
     WriteTextFile(root / "Assets" / "Hero.cs", "script");
     WriteTextFile(root / "Assets" / "Hero.py", "script");
@@ -821,6 +1004,8 @@ TEST(AssetBrowserPresentationTests, CurrentFolderSourceAssetTypesMatchPathParser
         {"Hero.bmp", AssetBrowserItemType::Texture, FileType::TEXTURE},
         {"Hero.dds", AssetBrowserItemType::Texture, FileType::TEXTURE},
         {"Hero.shader", AssetBrowserItemType::Shader, FileType::SHADER},
+        {"Hero.hlsl", AssetBrowserItemType::Shader, FileType::SHADER},
+        {"Hero.scene", AssetBrowserItemType::Scene, FileType::SCENE},
         {"Hero.nscene", AssetBrowserItemType::Scene, FileType::SCENE},
         {"Hero.cs", AssetBrowserItemType::Script, FileType::SCRIPT},
         {"Hero.py", AssetBrowserItemType::Script, FileType::SCRIPT},
@@ -1067,6 +1252,45 @@ TEST(AssetBrowserPresentationTests, BuildsCurrentFolderItemsWithGeneratedSubAsse
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetBrowserPresentationTests, ShaderSourceAssetsDoNotExposeGeneratedSubAssets)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetBrowserPresentationRoot();
+    WriteTextFile(root / "Assets" / "Shaders" / "HeroSurface.hlsl", "shader");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Shaders/HeroSurface.hlsl"));
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = shaderId;
+    manifest.importerId = "shader";
+    manifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::Shader);
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "shader:HeroSurface";
+    manifest.subAssets.push_back(MakeArtifact(shaderId, "shader:HeroSurface", ArtifactType::Shader, "shader"));
+    WriteManifestArtifactFiles(root, manifest);
+    AddCurrentSourceDependencies(root, manifest, "Assets/Shaders/HeroSurface.hlsl");
+    database.AddArtifactManifest(manifest);
+
+    AssetBrowserBuildOptions options;
+    options.includeGeneratedSubAssets = true;
+    options.expandedSourceAssets.insert("Assets/Shaders/HeroSurface.hlsl");
+    const auto items = BuildCurrentFolderAssetItems(root, "Assets/Shaders", &database, options);
+
+    ASSERT_EQ(items.size(), 1u);
+    const auto* source = FindItem(items, "HeroSurface.hlsl");
+    ASSERT_NE(source, nullptr);
+    EXPECT_EQ(source->kind, AssetBrowserItemKind::SourceAsset);
+    EXPECT_EQ(source->type, AssetBrowserItemType::Shader);
+    EXPECT_FALSE(source->hasGeneratedSubAssets);
+    EXPECT_EQ(FindGeneratedSubAssetItem(items, "shader:HeroSurface"), nullptr);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetBrowserPresentationTests, FiltersCurrentFolderItemsByCaseInsensitiveSearchQuery)
 {
     using namespace NLS::Editor::Assets;
@@ -1209,6 +1433,83 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeKeyChangesWhenVisibl
         BuildAssetBrowserThumbnailGenerationScopeKey("Assets/Materials", 96u, materialItems));
 }
 
+TEST(AssetBrowserPresentationTests, ThumbnailCacheKeyBindingsBackfillAllVisibleItems)
+{
+    using namespace NLS::Editor::Assets;
+
+    std::unordered_map<std::string, std::vector<std::string>> itemKeysByCacheKey;
+    std::unordered_map<std::string, std::string> thumbnailStatusByItemKey;
+
+    RegisterAssetBrowserThumbnailCacheKeyBinding(
+        itemKeysByCacheKey,
+        "shared-cache-key",
+        "Assets/Models/Hero.fbx#96");
+    RegisterAssetBrowserThumbnailCacheKeyBinding(
+        itemKeysByCacheKey,
+        "shared-cache-key",
+        "Assets/Models/Hero.fbx::mesh:Body#96");
+    RegisterAssetBrowserThumbnailCacheKeyBinding(
+        itemKeysByCacheKey,
+        "shared-cache-key",
+        "Assets/Models/Hero.fbx#96");
+
+    ApplyAssetBrowserThumbnailCacheKeyResult(
+        itemKeysByCacheKey,
+        thumbnailStatusByItemKey,
+        "shared-cache-key",
+        "fresh");
+
+    ASSERT_EQ(itemKeysByCacheKey["shared-cache-key"].size(), 2u);
+    EXPECT_EQ(thumbnailStatusByItemKey["Assets/Models/Hero.fbx#96"], "fresh");
+    EXPECT_EQ(thumbnailStatusByItemKey["Assets/Models/Hero.fbx::mesh:Body#96"], "fresh");
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailItemKeySeparatesGeneratedSubAssets)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserItem source;
+    source.kind = AssetBrowserItemKind::SourceAsset;
+    source.projectRelativePath = "Assets/Models/Hero.fbx";
+
+    AssetBrowserItem mesh = source;
+    mesh.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    mesh.sourceAssetPath = source.projectRelativePath;
+    mesh.projectRelativePath = "Assets/Models/Hero.fbx::mesh:Body";
+    mesh.subAssetKey = "mesh:Body";
+
+    AssetBrowserItem material = source;
+    material.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    material.sourceAssetPath = source.projectRelativePath;
+    material.projectRelativePath = "Assets/Models/Hero.fbx::material:Body";
+    material.subAssetKey = "material:Body";
+
+    EXPECT_EQ(
+        BuildAssetBrowserThumbnailItemKey(source, 96u),
+        "Assets/Models/Hero.fbx#96|kind=1|type=10|artifact=0");
+    EXPECT_EQ(
+        BuildAssetBrowserThumbnailItemKey(mesh, 96u),
+        "Assets/Models/Hero.fbx::mesh:Body#96|kind=2|type=10|artifact=0");
+    EXPECT_EQ(
+        BuildAssetBrowserThumbnailItemKey(material, 96u),
+        "Assets/Models/Hero.fbx::material:Body#96|kind=2|type=10|artifact=0");
+    EXPECT_NE(BuildAssetBrowserThumbnailItemKey(mesh, 96u), BuildAssetBrowserThumbnailItemKey(material, 96u));
+
+    mesh.type = AssetBrowserItemType::Mesh;
+    mesh.artifactType = NLS::Core::Assets::ArtifactType::Mesh;
+    material.type = AssetBrowserItemType::Material;
+    material.artifactType = NLS::Core::Assets::ArtifactType::Material;
+    EXPECT_NE(BuildAssetBrowserThumbnailItemKey(mesh, 96u), BuildAssetBrowserThumbnailItemKey(material, 96u));
+
+    AssetBrowserItem staleWrongType = material;
+    staleWrongType.type = AssetBrowserItemType::Prefab;
+    staleWrongType.artifactType = NLS::Core::Assets::ArtifactType::Prefab;
+    EXPECT_NE(
+        BuildAssetBrowserThumbnailItemKey(material, 96u),
+        BuildAssetBrowserThumbnailItemKey(staleWrongType, 96u))
+        << "Sub-asset thumbnail results must not survive an artifact type correction and show a prefab icon for a material.";
+}
+
 TEST(AssetBrowserPresentationTests, ThumbnailGenerationSelectionKeepsVisibleMaterialAndPrefabPreviewItems)
 {
     using namespace NLS::Editor::Assets;
@@ -1286,7 +1587,7 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationItemsWaitForVisibleScope)
     EXPECT_EQ(knownVisibleScope[0].projectRelativePath, texture.projectRelativePath);
 }
 
-TEST(AssetBrowserPresentationTests, ThumbnailGenerationExpandsVisibleSubAssetSourceScope)
+TEST(AssetBrowserPresentationTests, ThumbnailGenerationKeepsOffscreenSubAssetsOutOfVisibleScope)
 {
     using namespace NLS::Editor::Assets;
 
@@ -1316,10 +1617,45 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationExpandsVisibleSubAssetSou
         std::vector<AssetBrowserItem> { source, visibleMesh },
         true);
 
-    ASSERT_EQ(selected.size(), 3u);
+    ASSERT_EQ(selected.size(), 2u);
     EXPECT_EQ(selected[0].projectRelativePath, source.projectRelativePath);
     EXPECT_EQ(selected[1].projectRelativePath, visibleMesh.projectRelativePath);
-    EXPECT_EQ(selected[2].projectRelativePath, offscreenMaterial.projectRelativePath);
+    EXPECT_NE(selected[0].projectRelativePath, offscreenMaterial.projectRelativePath);
+    EXPECT_NE(selected[1].projectRelativePath, offscreenMaterial.projectRelativePath);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailGenerationInteractiveScopeKeepsVisibleItemsOnly)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserItem source;
+    source.displayName = "Hero.fbx";
+    source.projectRelativePath = "Assets/Models/Hero.fbx";
+    source.sourceAssetPath = "Assets/Models/Hero.fbx";
+    source.kind = AssetBrowserItemKind::SourceAsset;
+    source.type = AssetBrowserItemType::Model;
+
+    AssetBrowserItem visibleMesh;
+    visibleMesh.displayName = "Body";
+    visibleMesh.projectRelativePath = "Assets/Models/Hero.fbx::mesh:Body";
+    visibleMesh.sourceAssetPath = "Assets/Models/Hero.fbx";
+    visibleMesh.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    visibleMesh.type = AssetBrowserItemType::Mesh;
+
+    AssetBrowserItem offscreenMaterial = visibleMesh;
+    offscreenMaterial.displayName = "BodyMat";
+    offscreenMaterial.projectRelativePath = "Assets/Models/Hero.fbx::material:Body";
+    offscreenMaterial.type = AssetBrowserItemType::Material;
+
+    const auto selected = SelectAssetBrowserThumbnailGenerationItems(
+        std::vector<AssetBrowserItem> {},
+        std::vector<AssetBrowserItem> { source, visibleMesh },
+        true);
+
+    ASSERT_EQ(selected.size(), 2u);
+    EXPECT_EQ(selected[0].projectRelativePath, source.projectRelativePath);
+    EXPECT_EQ(selected[1].projectRelativePath, visibleMesh.projectRelativePath);
+    EXPECT_NE(selected[0].projectRelativePath, offscreenMaterial.projectRelativePath);
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeDecisionRequeriesDirtySameScope)
@@ -1366,6 +1702,133 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeDecisionRequeriesDir
     EXPECT_FALSE(resizedDecision.canSkip);
     EXPECT_TRUE(resizedDecision.scopeChanged);
     EXPECT_FALSE(resizedDecision.requerySameScope);
+}
+
+TEST(AssetBrowserPresentationTests, HeavyGpuThumbnailPumpRunsOnlyFromBudgetedNonInteractivePump)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserLightGpuThumbnailPumpInput lightInput;
+    lightInput.hasQueuedWork = true;
+    lightInput.hasPreviewRenderer = true;
+    lightInput.nowSeconds = 10.0;
+    lightInput.nextAllowedSeconds = 9.0;
+
+    EXPECT_TRUE(PlanAssetBrowserLightGpuThumbnailPump(lightInput).shouldPump)
+        << "Material GPU thumbnails are light preview work and must still run when prefab heavy previews are disabled.";
+
+    lightInput.allowGpuPreviewStart = false;
+    EXPECT_FALSE(PlanAssetBrowserLightGpuThumbnailPump(lightInput).shouldPump)
+        << "Draw-time thumbnail pumps must only consume completed GPU preview work, never synchronously start material previews.";
+
+    lightInput.allowGpuPreviewStart = true;
+    lightInput.interactive = true;
+    EXPECT_FALSE(PlanAssetBrowserLightGpuThumbnailPump(lightInput).shouldPump)
+        << "Interactive draw/scroll frames must not start even light GPU preview work.";
+
+    lightInput.interactive = false;
+    lightInput.hasInFlightWork = true;
+    EXPECT_TRUE(PlanAssetBrowserLightGpuThumbnailPump(lightInput).shouldPump)
+        << "Background CPU thumbnail writes must not starve visible material GPU previews in large folders.";
+
+    lightInput.hasInFlightWork = false;
+    lightInput.nowSeconds = 8.5;
+    EXPECT_FALSE(PlanAssetBrowserLightGpuThumbnailPump(lightInput).shouldPump);
+
+    AssetBrowserHeavyGpuThumbnailPumpInput input;
+    input.hasQueuedWork = true;
+    input.hasPreviewRenderer = true;
+    input.nowSeconds = 10.0;
+    input.deferredUntilSeconds = 8.0;
+    input.nextAllowedSeconds = 9.0;
+
+    EXPECT_TRUE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump)
+        << "GPU preview work must have a non-draw, budgeted pump so prefab/model thumbnails can finish.";
+
+    input.allowHeavyGpuPreview = false;
+    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump)
+        << "Draw-time thumbnail pumps must not start prefab/model GPU preview work.";
+
+    input.allowHeavyGpuPreview = true;
+    input.interactive = true;
+    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump)
+        << "Interactive draw/scroll frames must not start heavy GPU preview work.";
+
+    input.interactive = false;
+    input.nowSeconds = 7.9;
+    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump);
+
+    input.nowSeconds = 8.5;
+    input.nextAllowedSeconds = 9.0;
+    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump);
+
+    input.nowSeconds = 10.0;
+    input.hasQueuedWork = false;
+    input.hasInFlightWork = false;
+    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump);
+
+    input.hasQueuedWork = true;
+    input.hasInFlightWork = true;
+    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump);
+
+    input.hasInFlightWork = false;
+    input.hasPreviewRenderer = false;
+    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump);
+
+    input.hasPreviewRenderer = true;
+    input.nowSeconds = 10.0;
+    input.nextAllowedSeconds = 10.1;
+    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailPumpAllowsBoundedInteractiveVisibleWork)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserThumbnailPumpInput input;
+    input.hasQueuedWork = true;
+
+    EXPECT_TRUE(PlanAssetBrowserThumbnailPump(input).shouldStartBackgroundWork);
+
+    input.interactive = true;
+    EXPECT_TRUE(PlanAssetBrowserThumbnailPump(input).shouldStartBackgroundWork);
+
+    input.hasInFlightWork = true;
+    EXPECT_FALSE(PlanAssetBrowserThumbnailPump(input).shouldStartBackgroundWork);
+
+    input.hasInFlightWork = false;
+    input.interactiveStartsThisFrame = 1u;
+    input.maxInteractiveStartsPerFrame = 1u;
+    EXPECT_FALSE(PlanAssetBrowserThumbnailPump(input).shouldStartBackgroundWork);
+
+    input.hasQueuedWork = false;
+    input.interactiveStartsThisFrame = 0u;
+    EXPECT_FALSE(PlanAssetBrowserThumbnailPump(input).shouldStartBackgroundWork);
+}
+
+TEST(AssetBrowserPresentationTests, CachedThumbnailTexturePumpRunsDuringInteractiveFramesWithBudget)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserCachedThumbnailTexturePumpInput input;
+    input.queuedTextureLoads = 3u;
+
+    EXPECT_TRUE(PlanAssetBrowserCachedThumbnailTexturePump(input).shouldPump);
+
+    input.interactive = true;
+    EXPECT_TRUE(PlanAssetBrowserCachedThumbnailTexturePump(input).shouldPump);
+
+    input.interactiveStartsThisFrame = 1u;
+    input.maxInteractiveStartsPerFrame = 1u;
+    EXPECT_FALSE(PlanAssetBrowserCachedThumbnailTexturePump(input).shouldPump);
+
+    input.queuedTextureLoads = 0u;
+    input.inFlightDecodes = 1u;
+    input.interactiveStartsThisFrame = 0u;
+    EXPECT_TRUE(PlanAssetBrowserCachedThumbnailTexturePump(input).shouldPump);
+
+    input.inFlightDecodes = 0u;
+    EXPECT_FALSE(PlanAssetBrowserCachedThumbnailTexturePump(input).shouldPump);
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailTextureEvictionSkipsTexturesUsedThisFrame)
@@ -1747,6 +2210,33 @@ TEST(AssetBrowserPresentationTests, RefreshSchedulingQueuesExplicitRefreshBehind
     EXPECT_FALSE(noWork.queueRefreshAfterInFlight);
 }
 
+TEST(AssetBrowserPresentationTests, ExternalDroppedFileQueuePreservesAcceptedIntentUntilHovered)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserExternalDroppedFileQueue queue;
+
+    EnqueueAssetBrowserExternalDroppedFiles(queue, {"C:/Imports/Hero.fbx"});
+    EnqueueAssetBrowserExternalDroppedFiles(queue, {"C:/Imports/Hero.png", ""});
+
+    EXPECT_FALSE(ConsumeAssetBrowserExternalDroppedFiles(queue, false).has_value())
+        << "A window-level file drop must stay queued until the asset folder can consume it.";
+    ASSERT_EQ(queue.size(), 2u);
+
+    auto first = ConsumeAssetBrowserExternalDroppedFiles(queue, true);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_EQ(first->size(), 1u);
+    EXPECT_EQ((*first)[0], "C:/Imports/Hero.fbx");
+    ASSERT_EQ(queue.size(), 1u);
+
+    auto second = ConsumeAssetBrowserExternalDroppedFiles(queue, true);
+    ASSERT_TRUE(second.has_value());
+    ASSERT_EQ(second->size(), 2u);
+    EXPECT_EQ((*second)[0], "C:/Imports/Hero.png");
+    EXPECT_TRUE((*second)[1].empty());
+    EXPECT_TRUE(queue.empty());
+}
+
 TEST(AssetBrowserPresentationTests, InFlightDatabaseRefreshDiscardIsRetiredUntilReady)
 {
     using namespace NLS::Editor::Assets;
@@ -2011,7 +2501,39 @@ TEST(AssetBrowserPresentationTests, GeneratedSubAssetItemsPreserveEditorDragPayl
 
     const auto* source = FindItem(items, "Hero.gltf");
     ASSERT_NE(source, nullptr);
-    EXPECT_FALSE(MakeAssetBrowserItemDragPayload(*source, nullptr).has_value());
+    const auto sourcePayload = MakeAssetBrowserItemDragPayload(*source, nullptr);
+    ASSERT_TRUE(sourcePayload.has_value());
+    EXPECT_EQ(GetEditorAssetDragPayloadPath(*sourcePayload), "Assets/Models/Hero.gltf");
+    EXPECT_EQ(GetEditorAssetDragPayloadAssetId(*sourcePayload), modelId);
+    EXPECT_EQ(GetEditorAssetDragPayloadSubAssetKey(*sourcePayload), "prefab:Hero");
+    EXPECT_EQ(GetEditorAssetDragPayloadArtifactType(*sourcePayload), ArtifactType::Prefab);
+    EXPECT_EQ(sourcePayload->generatedModelPrefab, 0u);
+    EXPECT_EQ(sourcePayload->imported, 0u);
+    EXPECT_EQ(sourcePayload->previewPrefabReady, 0u);
+    EXPECT_FALSE(IsEditorAssetDragPayloadGeneratedBrowserSubAsset(*sourcePayload));
+    EXPECT_TRUE(CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(*sourcePayload));
+
+    AssetBrowserItem sourceMaterial;
+    sourceMaterial.kind = AssetBrowserItemKind::SourceAsset;
+    sourceMaterial.type = AssetBrowserItemType::Material;
+    sourceMaterial.displayName = "Body.mat";
+    sourceMaterial.projectRelativePath = "Assets/Materials/Body.mat";
+    sourceMaterial.sourceAssetPath = sourceMaterial.projectRelativePath;
+    sourceMaterial.dragResourcePath = sourceMaterial.projectRelativePath;
+    sourceMaterial.assetId = modelId;
+
+    const auto materialSourcePayload = MakeAssetBrowserItemDragPayload(sourceMaterial, nullptr);
+    ASSERT_TRUE(materialSourcePayload.has_value())
+        << "Source .mat files must infer a material sub-asset identity before payload validation.";
+    EXPECT_EQ(GetEditorAssetDragPayloadPath(*materialSourcePayload), "Assets/Materials/Body.mat");
+    EXPECT_EQ(GetEditorAssetDragPayloadAssetId(*materialSourcePayload), modelId);
+    EXPECT_EQ(GetEditorAssetDragPayloadSubAssetKey(*materialSourcePayload), "material:Body");
+    EXPECT_EQ(GetEditorAssetDragPayloadArtifactType(*materialSourcePayload), ArtifactType::Material);
+    EXPECT_EQ(materialSourcePayload->generatedModelPrefab, 0u);
+    EXPECT_EQ(materialSourcePayload->imported, 0u);
+    EXPECT_EQ(materialSourcePayload->previewPrefabReady, 0u);
+    EXPECT_FALSE(IsEditorAssetDragPayloadGeneratedBrowserSubAsset(*materialSourcePayload));
+    EXPECT_TRUE(CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(*materialSourcePayload));
 
     std::filesystem::remove_all(root);
 }
@@ -2189,6 +2711,94 @@ TEST(AssetBrowserPresentationTests, ObjectReferencePickerBuildsFromKnownCurrentM
     ASSERT_EQ(pickerEntries.size(), 1u);
     EXPECT_NE(pickerEntries[0].displayName.find("Fresh.gltf"), std::string::npos);
     EXPECT_NE(pickerEntries[0].displayName.find("mesh:FreshBody"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetBrowserPresentationTests, StandaloneTextureManifestLoadsWithoutExpandingKnownCurrentSnapshots)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetBrowserPresentationRoot();
+    WriteTextFile(root / "Assets" / "Textures" / "Albedo.png", "texture");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    const auto textureId = ParseAssetId(database.AssetPathToGUID("Assets/Textures/Albedo.png"));
+    ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureId;
+    textureManifest.importerId = "texture";
+    textureManifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::Texture);
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back(MakeArtifact(textureId, "texture:main", ArtifactType::Texture, "texture"));
+    WriteManifestArtifactFiles(root, textureManifest);
+    database.AddArtifactManifest(textureManifest);
+
+    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Textures/Albedo.png");
+    ASSERT_TRUE(manifest.has_value());
+    ASSERT_NE(manifest->FindSubAsset("texture:main"), nullptr);
+    EXPECT_TRUE(database.LoadSubAssetAtPath("Assets/Textures/Albedo.png", "texture:main").has_value());
+    EXPECT_FALSE(database.IsArtifactManifestKnownCurrentForAssetPath("Assets/Textures/Albedo.png"));
+    EXPECT_TRUE(database.GetObjectReferencePickerAssetSnapshots().empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetBrowserPresentationTests, RestartedBrowserBuildsTextureThumbnailRequestFromPersistedManifest)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetBrowserPresentationRoot();
+    WriteTextFile(root / "Assets" / "Textures" / "Albedo.png", "texture");
+
+    {
+        AssetDatabaseFacade database({root});
+        ASSERT_TRUE(database.Refresh());
+
+        const auto textureId = ParseAssetId(database.AssetPathToGUID("Assets/Textures/Albedo.png"));
+        ArtifactManifest textureManifest;
+        textureManifest.sourceAssetId = textureId;
+        textureManifest.importerId = "texture";
+        textureManifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::Texture);
+        textureManifest.targetPlatform = "editor";
+        textureManifest.primarySubAssetKey = "texture:main";
+        textureManifest.subAssets.push_back(MakeArtifact(textureId, "texture:main", ArtifactType::Texture, "texture"));
+        WriteManifestArtifactFiles(root, textureManifest);
+        WritePersistedArtifactManifest(root, textureManifest);
+        database.AddArtifactManifest(textureManifest);
+    }
+
+    AssetDatabaseFacade restartedDatabase({root});
+    ASSERT_TRUE(restartedDatabase.Refresh());
+
+    AssetBrowserBuildOptions options;
+    options.includeGeneratedSubAssets = true;
+    options.verifyGeneratedSubAssetManifests = false;
+    const auto items = BuildCurrentFolderAssetItems(root, "Assets/Textures", &restartedDatabase, options);
+    const auto* texture = FindItem(items, "Albedo.png");
+    ASSERT_NE(texture, nullptr);
+    EXPECT_EQ(texture->kind, AssetBrowserItemKind::SourceAsset);
+    EXPECT_EQ(texture->type, AssetBrowserItemType::Texture);
+    ASSERT_TRUE(texture->assetId.IsValid());
+    EXPECT_FALSE(texture->hasGeneratedSubAssets);
+    const auto persistedManifest = restartedDatabase.GetArtifactManifestForAssetPath("Assets/Textures/Albedo.png");
+    ASSERT_TRUE(persistedManifest.has_value());
+    ASSERT_NE(persistedManifest->FindSubAsset("texture:main"), nullptr);
+
+    const auto request = BuildAssetThumbnailRequestForItem(root, *texture, 96u);
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(request->kind, AssetThumbnailKind::Texture);
+    EXPECT_EQ(request->assetId, texture->assetId);
+    EXPECT_EQ(request->subAssetKey, "texture:main");
+    EXPECT_EQ(
+        request->artifactPath,
+        "Library/Artifacts/" + texture->assetId.ToString() + "/texture_main");
+    EXPECT_NE(request->dependencyStamp.find("artifact-file="), std::string::npos);
+    EXPECT_TRUE(restartedDatabase.GetObjectReferencePickerAssetSnapshots().empty());
 
     std::filesystem::remove_all(root);
 }

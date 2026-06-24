@@ -2,10 +2,12 @@
 #include <algorithm>
 #include <functional>
 #include <string>
+#include <unordered_set>
 
 #include <Debug/Logger.h>
 #include "SceneSystem/Scene.h"
 #include "GameObject.h"
+#include "Profiling/PerformanceStageStats.h"
 using namespace NLS;
 using namespace NLS::Engine::SceneSystem;
 
@@ -25,7 +27,26 @@ namespace
 			output.push_back(static_cast<ComponentType*>(component.get()));
 		}
 	}
+
 }
+
+class Scene::ScopedFastAccessRebuildDeferral
+{
+public:
+	explicit ScopedFastAccessRebuildDeferral(Scene& scene)
+		: m_scene(scene)
+	{
+		m_scene.BeginFastAccessRebuildDeferral();
+	}
+
+	~ScopedFastAccessRebuildDeferral()
+	{
+		m_scene.EndFastAccessRebuildDeferral();
+	}
+
+private:
+	Scene& m_scene;
+};
 
 Scene::Scene()
 {
@@ -118,55 +139,109 @@ Engine::GameObject& Scene::CreateEditorTransientGameObject(const std::string& p_
 	return *newGameObject;
 }
 
-bool Scene::AddGameObject(GameObject* gameObject)
+bool Scene::AddGameObject(GameObject* gameObject, AddGameObjectActivation activation)
 {
 	if (!gameObject)
 		return false;
 
 	GameObject& instance = *gameObject;
+    size_t sceneObjectCount = 0u;
+    size_t sceneComponentCount = 0u;
+    size_t hashTrackedLookupCount = 0u;
+    ScopedFastAccessRebuildDeferral rebuildDeferral(*this);
 
-	auto AddComponents = [this](GameObject* go)
+	auto AddComponents = [this, &sceneComponentCount](GameObject* go)
 		{
 			if (!go)
 				return;
 
+            NLS::Base::Profiling::PerformanceStageScope componentScope(
+                NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+                "SceneRegisterComponents",
+                NLS::Base::Profiling::PerformanceStageThread::Main);
 			for (auto&& component : go->GetComponents())
 			{
 				OnComponentAdded(component.get());
+                ++sceneComponentCount;
 			}
+            componentScope.AddCounter("componentCount", go->GetComponents().size());
 			go->ComponentAddedEvent += std::bind(&Scene::OnComponentAdded, this, std::placeholders::_1);
 			go->ComponentRemovedEvent += std::bind(&Scene::OnComponentRemoved, this, std::placeholders::_1);
 		};
 
-	std::function<void(GameObject*)> AddGameObjectRecursively = [this, &AddComponents, &AddGameObjectRecursively](GameObject* go)
-		{
-			if (!go)
-				return;
+    {
+        NLS::Base::Profiling::PerformanceStageScope addScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "SceneAddGameObjects",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        std::unordered_set<GameObject*> trackedObjects;
+        trackedObjects.reserve(m_gameobject.size() + 16u);
+        for (auto* tracked : m_gameobject)
+            trackedObjects.insert(tracked);
 
-			const auto alreadyTracked = std::find(m_gameobject.begin(), m_gameobject.end(), go) != m_gameobject.end();
-			if (!alreadyTracked)
-			{
-				m_gameobject.push_back(go);
-				AddComponents(go);
-			}
-			for (auto&& child : go->GetChildren())
-			{
-				AddGameObjectRecursively(child);
-			}
-		};
-	AddGameObjectRecursively(&instance);
+	    std::function<void(GameObject*)> AddGameObjectRecursively =
+            [this,
+             &AddComponents,
+             &AddGameObjectRecursively,
+             &trackedObjects,
+             &sceneObjectCount,
+             &hashTrackedLookupCount](GameObject* go)
+		    {
+			    if (!go)
+				    return;
 
-	if (m_isPlaying)
-	{
-		instance.SetSleeping(false);
-		if (instance.IsActive())
-		{
-			instance.OnAwake();
-			instance.OnEnable();
-			instance.OnStart();
-		}
-	}
+                ++hashTrackedLookupCount;
+			    if (trackedObjects.insert(go).second)
+			    {
+				    m_gameobject.push_back(go);
+                    ++sceneObjectCount;
+				    AddComponents(go);
+			    }
+			    for (auto&& child : go->GetChildren())
+			    {
+				    AddGameObjectRecursively(child);
+			    }
+		    };
+        AddGameObjectRecursively(&instance);
+        addScope.AddCounter("objectCount", sceneObjectCount);
+        addScope.AddCounter("hashTrackedLookupCount", hashTrackedLookupCount);
+        addScope.AddCounter("linearTrackedLookupCount", 0u);
+    }
+
+    if (activation == AddGameObjectActivation::Immediate)
+        ActivateGameObjectForPlay(&instance);
 	return true;
+}
+
+size_t Scene::ActivateGameObjectForPlay(GameObject* gameObject)
+{
+    if (!gameObject)
+        return 0u;
+
+    if (!m_isPlaying)
+        return 0u;
+
+    size_t activatedObjectCount = 0u;
+    const auto wasAwaked = gameObject->HasAwaked();
+    const auto wasStarted = gameObject->HasStarted();
+    if (!wasAwaked || !wasStarted)
+    {
+        gameObject->SetSleeping(false);
+        if (gameObject->IsActive())
+        {
+            if (!wasAwaked)
+                gameObject->OnAwake();
+            gameObject->OnEnable();
+            if (!wasStarted)
+                gameObject->OnStart();
+            ++activatedObjectCount;
+        }
+    }
+
+    for (auto* child : gameObject->GetChildren())
+        activatedObjectCount += ActivateGameObjectForPlay(child);
+
+    return activatedObjectCount;
 }
 
 bool Scene::DestroyGameObject(GameObject& p_target)
@@ -283,13 +358,13 @@ Engine::Components::CameraComponent* Scene::FindMainCamera() const
 void Scene::OnComponentAdded(Components::Component* p_compononent)
 {
     (void)p_compononent;
-    RebuildFastAccessComponents();
+    RequestFastAccessComponentsRebuild();
 }
 
 void Scene::OnComponentRemoved(Components::Component* p_compononent)
 {
     (void)p_compononent;
-    RebuildFastAccessComponents();
+    RequestFastAccessComponentsRebuild();
 }
 
 std::vector<Engine::GameObject*>& Scene::GetGameObjects()
@@ -417,6 +492,13 @@ void Scene::DestroyCollectedGameObjects(std::vector<GameObject*>& p_gameObjects)
 
 void Scene::RebuildFastAccessComponents()
 {
+    NLS::Base::Profiling::PerformanceStageScope rebuildScope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "SceneRebuildFastAccess",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
+    rebuildScope.AddCounter("rebuildCount");
+    rebuildScope.AddCounter("trackedObjectCount", m_gameobject.size());
+
 	m_fastAccessComponents.modelRenderers.clear();
 	m_fastAccessComponents.cameras.clear();
 	m_fastAccessComponents.lights.clear();
@@ -446,5 +528,37 @@ void Scene::RebuildFastAccessComponents()
 	m_fastAccessComponentsValid = true;
 	++m_fastAccessComponentsRevision;
 	MarkRenderContentChanged();
+}
+
+void Scene::RequestFastAccessComponentsRebuild()
+{
+    m_fastAccessComponentsValid = false;
+    MarkRenderContentChanged();
+
+    if (m_fastAccessRebuildDeferralDepth > 0u)
+    {
+        m_fastAccessRebuildPending = true;
+        return;
+    }
+
+    RebuildFastAccessComponents();
+}
+
+void Scene::BeginFastAccessRebuildDeferral()
+{
+    ++m_fastAccessRebuildDeferralDepth;
+}
+
+void Scene::EndFastAccessRebuildDeferral()
+{
+    if (m_fastAccessRebuildDeferralDepth == 0u)
+        return;
+
+    --m_fastAccessRebuildDeferralDepth;
+    if (m_fastAccessRebuildDeferralDepth == 0u && m_fastAccessRebuildPending)
+    {
+        m_fastAccessRebuildPending = false;
+        RebuildFastAccessComponents();
+    }
 }
 

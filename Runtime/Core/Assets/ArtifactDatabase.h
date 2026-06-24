@@ -64,6 +64,7 @@ public:
         const std::string& subAssetKey,
         const std::string& targetPlatform) const;
     std::vector<const ArtifactDatabaseRecord*> FindBySource(AssetId sourceAssetId) const;
+    const std::vector<ArtifactDatabaseRecord>& GetRecords() const;
     ArtifactDatabaseStats GetStats() const;
 #if defined(NLS_ENABLE_TEST_HOOKS)
     size_t GetIndexRebuildCountForTesting() const;

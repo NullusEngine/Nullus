@@ -10,6 +10,7 @@
 #include "Engine/Assets/RuntimeAssetDatabase.h"
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -141,6 +142,14 @@ public:
     std::vector<std::string> GetKnownCurrentArtifactManifestAssetPaths() const;
     std::vector<ObjectReferencePickerAssetSnapshot> GetObjectReferencePickerAssetSnapshots() const;
     std::vector<ObjectReferencePickerAssetSnapshot> GetFreshObjectReferencePickerAssetSnapshots() const;
+    std::shared_ptr<const std::vector<ObjectReferencePickerAssetSnapshot>> GetObjectReferencePickerAssetSnapshotsView() const;
+    std::shared_ptr<const std::vector<ObjectReferencePickerAssetSnapshot>> GetFreshObjectReferencePickerAssetSnapshotsView() const;
+    void ForEachObjectReferencePickerAssetSnapshot(
+        const std::function<void(const ObjectReferencePickerAssetSnapshot&)>& visitor) const;
+    void ForEachFreshObjectReferencePickerAssetSnapshot(
+        const std::function<void(const ObjectReferencePickerAssetSnapshot&)>& visitor) const;
+    const void* GetObjectReferencePickerAssetSnapshotsStorageForTesting() const;
+    const void* GetArtifactManifestMapStorageForTesting() const;
     std::optional<std::string> TryGetRootRelativeAssetPath(
         const std::string& ownerAssetPath,
         const std::filesystem::path& path) const;
@@ -177,6 +186,9 @@ public:
     const NLS::Core::Assets::AssetDiagnostics& GetDiagnostics() const;
 
 private:
+    using ArtifactManifestMap =
+        std::unordered_map<NLS::Core::Assets::AssetId, NLS::Core::Assets::ArtifactManifest>;
+
     std::filesystem::path ResolveAssetPath(const std::string& assetPath) const;
     std::string ToEditorAssetPath(const std::filesystem::path& absolutePath) const;
     const NLS::Core::Assets::SourceAssetRecord* FindRecordByEditorAssetPath(const std::string& assetPath) const;
@@ -200,6 +212,9 @@ private:
     void RefreshKnownCurrentArtifactManifestSnapshot();
     void UpdateKnownCurrentArtifactManifestForAssetPath(const std::string& assetPath);
     bool IsArtifactManifestCurrentForAssetPathUncached(const std::string& assetPath) const;
+    std::optional<std::string> ComputeModelTextureMappingDependencyFingerprint(
+        const std::string& dependencyValue,
+        const std::string& targetPlatform) const;
     static ObjectReferencePickerAssetSnapshot BuildObjectReferencePickerAssetSnapshot(
         const std::string& assetPath,
         const NLS::Core::Assets::ArtifactManifest& manifest);
@@ -230,11 +245,16 @@ private:
     bool IsWritableAssetPath(const std::filesystem::path& absolutePath) const;
     bool IsMutableAssetRecord(const std::string& assetPath) const;
     void RebuildPathIndexes();
+    bool RegisterImportedDependencySourceAsset(
+        NLS::Core::Assets::AssetId assetId,
+        const std::filesystem::path& absolutePath);
     void AddDiagnostic(
         NLS::Core::Assets::AssetDiagnosticSeverity severity,
         std::string code,
         std::filesystem::path path,
         std::string message);
+    const ArtifactManifestMap& ManifestsBySource() const;
+    ArtifactManifestMap& MutableManifestsBySource();
     bool RejectRuntimeEditorApi(std::string apiName);
     bool IsEditorMode() const;
     bool ImportAsset(
@@ -255,12 +275,12 @@ private:
     NLS::Core::Assets::AssetDiagnostics m_diagnostics;
     std::unordered_map<std::string, NLS::Core::Assets::AssetId> m_idByEditorPath;
     std::unordered_map<NLS::Core::Assets::AssetId, std::string> m_editorPathById;
-    std::unordered_map<NLS::Core::Assets::AssetId, NLS::Core::Assets::ArtifactManifest> m_manifestsBySource;
+    std::shared_ptr<ArtifactManifestMap> m_manifestsBySource;
     mutable std::recursive_mutex m_manifestMutex;
     std::unordered_map<std::string, NLS::Core::Assets::ArtifactDatabase> m_artifactDatabasesByPath;
     std::unordered_set<std::string> m_dirtyArtifactDatabasePaths;
     mutable std::unordered_set<std::string> m_knownCurrentArtifactManifestAssetPaths;
-    mutable std::vector<ObjectReferencePickerAssetSnapshot> m_objectReferencePickerAssetSnapshots;
+    mutable std::shared_ptr<const std::vector<ObjectReferencePickerAssetSnapshot>> m_objectReferencePickerAssetSnapshots;
     mutable std::mutex m_artifactDatabaseCacheMutex;
     std::vector<std::string> m_queuedImports;
     bool m_assetEditing = false;

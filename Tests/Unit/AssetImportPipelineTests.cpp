@@ -20,8 +20,12 @@
 #include "Assets/ArtifactWriter.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/NativeArtifactContainer.h"
+#include "Assets/EditorAssetManifestJson.h"
 #include "Assets/AssetImporterSettings.h"
 #include "Assets/ExternalAssetImporter.h"
+#include "Assets/ModelTextureReferenceResolver.h"
+#include "Assets/ModelTextureResolutionReport.h"
+#include "Panels/AssetProperties.h"
 #include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Guid.h"
 #include "Rendering/Assets/ImportedScene.h"
@@ -35,6 +39,8 @@
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/IModelParser.h"
 #include "Serialize/ObjectGraphReader.h"
+
+#include <Json/json.hpp>
 
 #ifndef NLS_HAS_ASSIMP_FBX_IMPORTER
 #define NLS_HAS_ASSIMP_FBX_IMPORTER 0
@@ -87,6 +93,48 @@ bool ContainsDiagnosticCode(
         [&expectedCode](const NLS::Core::Assets::AssetDiagnostic& diagnostic)
         {
             return diagnostic.code == expectedCode;
+        });
+}
+
+bool ContainsDiagnostic(
+    const NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const std::string& expectedCode,
+    const NLS::Core::Assets::AssetDiagnosticSeverity expectedSeverity)
+{
+    return std::any_of(
+        diagnostics.begin(),
+        diagnostics.end(),
+        [&expectedCode, expectedSeverity](const NLS::Core::Assets::AssetDiagnostic& diagnostic)
+        {
+            return diagnostic.code == expectedCode && diagnostic.severity == expectedSeverity;
+        });
+}
+
+const NLS::Core::Assets::AssetDependencyRecord* FindDependency(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::AssetDependencyKind kind,
+    const std::string& value)
+{
+    const auto found = std::find_if(
+        manifest.dependencies.begin(),
+        manifest.dependencies.end(),
+        [kind, &value](const NLS::Core::Assets::AssetDependencyRecord& dependency)
+        {
+            return dependency.kind == kind && dependency.value == value;
+        });
+    return found != manifest.dependencies.end() ? &*found : nullptr;
+}
+
+bool ContainsDiagnosticSeverity(
+    const NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const NLS::Core::Assets::AssetDiagnosticSeverity expectedSeverity)
+{
+    return std::any_of(
+        diagnostics.begin(),
+        diagnostics.end(),
+        [expectedSeverity](const NLS::Core::Assets::AssetDiagnostic& diagnostic)
+        {
+            return diagnostic.severity == expectedSeverity;
         });
 }
 
@@ -342,6 +390,39 @@ const NLS::Core::Assets::ImportedArtifact* FindFirstArtifactOfType(
     return found != manifest.subAssets.end() ? &*found : nullptr;
 }
 
+const NLS::Core::Assets::ImportedArtifact* FindAutoImportedTextureArtifact(
+    const NLS::Editor::Assets::ExternalModelImportResult& result,
+    const std::string& sourcePathFragment = {})
+{
+    for (const auto& dependency : result.autoImportedDependencies)
+    {
+        if (!sourcePathFragment.empty() &&
+            dependency.sourcePath.generic_string().find(sourcePathFragment) == std::string::npos)
+        {
+            continue;
+        }
+
+        if (const auto* artifact = dependency.manifest.FindSubAsset("texture:main");
+            artifact != nullptr &&
+            artifact->artifactType == NLS::Core::Assets::ArtifactType::Texture)
+        {
+            return artifact;
+        }
+    }
+
+    return nullptr;
+}
+
+std::optional<NLS::Render::Assets::TextureArtifactData> ReadAutoImportedTextureArtifact(
+    const NLS::Editor::Assets::ExternalModelImportResult& result,
+    const std::string& sourcePathFragment = {})
+{
+    const auto* artifact = FindAutoImportedTextureArtifact(result, sourcePathFragment);
+    if (artifact == nullptr)
+        return std::nullopt;
+    return NLS::Render::Assets::DeserializeTextureArtifact(ReadBinaryFile(artifact->artifactPath));
+}
+
 void EraseFbxConnectionBlock(std::string& fbx, const std::string& connectionComment)
 {
     const auto commentBegin = fbx.find(connectionComment);
@@ -387,6 +468,82 @@ void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_
         static_cast<std::streamsize>(bytes.size()));
 }
 
+std::string ArtifactTypeManifestKey(const NLS::Core::Assets::ArtifactType type)
+{
+    switch (type)
+    {
+    case NLS::Core::Assets::ArtifactType::Model: return "model";
+    case NLS::Core::Assets::ArtifactType::Mesh: return "mesh";
+    case NLS::Core::Assets::ArtifactType::Material: return "material";
+    case NLS::Core::Assets::ArtifactType::Texture: return "texture";
+    case NLS::Core::Assets::ArtifactType::Skeleton: return "skeleton";
+    case NLS::Core::Assets::ArtifactType::Skin: return "skin";
+    case NLS::Core::Assets::ArtifactType::AnimationClip: return "animation-clip";
+    case NLS::Core::Assets::ArtifactType::MorphTarget: return "morph-target";
+    case NLS::Core::Assets::ArtifactType::Prefab: return "prefab";
+    case NLS::Core::Assets::ArtifactType::Scene: return "scene";
+    case NLS::Core::Assets::ArtifactType::Shader: return "shader";
+    case NLS::Core::Assets::ArtifactType::Audio: return "audio";
+    case NLS::Core::Assets::ArtifactType::Unknown:
+    case NLS::Core::Assets::ArtifactType::Count:
+        break;
+    }
+    return "unknown";
+}
+
+void WriteArtifactManifestFile(
+    const std::filesystem::path& artifactRoot,
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    nlohmann::json root;
+    root["schema"] = 1;
+    root["sourceAssetId"] = manifest.sourceAssetId.ToString();
+    root["importerId"] = manifest.importerId;
+    root["importerVersion"] = manifest.importerVersion;
+    root["targetPlatform"] = manifest.targetPlatform;
+    root["primarySubAssetKey"] = manifest.primarySubAssetKey;
+    root["subAssets"] = nlohmann::json::array();
+    for (const auto& artifact : manifest.subAssets)
+    {
+        root["subAssets"].push_back({
+            {"sourceAssetId", artifact.sourceAssetId.ToString()},
+            {"subAssetKey", artifact.subAssetKey},
+            {"artifactType", ArtifactTypeManifestKey(artifact.artifactType)},
+            {"loaderId", artifact.loaderId},
+            {"targetPlatform", artifact.targetPlatform},
+            {"artifactPath", artifact.artifactPath},
+            {"contentHash", artifact.contentHash},
+            {"displayName", artifact.displayName}
+        });
+    }
+    root["dependencies"] = nlohmann::json::array();
+
+    const auto manifestPath = artifactRoot / "manifest.json";
+    std::filesystem::create_directories(manifestPath.parent_path());
+    std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
+    output << root.dump(2);
+}
+
+std::optional<NLS::Core::Assets::ArtifactManifest> ReadArtifactManifestFile(
+    const std::filesystem::path& manifestPath)
+{
+    std::ifstream input(manifestPath, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    const auto root = nlohmann::json::parse(input, nullptr, false);
+    if (root.is_discarded())
+        return std::nullopt;
+    return NLS::Editor::Assets::ParseArtifactManifestJson(root, true);
+}
+
+void DisableExternalModelTextureResolution(NLS::Core::Assets::AssetMeta& meta)
+{
+    NLS::Editor::Assets::ModelTextureResolutionSettings settings;
+    settings.useExternalTextures = false;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(meta, settings);
+}
+
 std::vector<uint8_t> TinyPng()
 {
     return {
@@ -400,6 +557,60 @@ std::vector<uint8_t> TinyPng()
         0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
         0xAE, 0x42, 0x60, 0x82
     };
+}
+
+std::filesystem::path WriteImportedTextureAssetForTest(
+    const std::filesystem::path& root,
+    const std::filesystem::path& assetPath,
+    const char* assetIdText,
+    const std::string& targetPlatform,
+    const std::string& displayName,
+    const NLS::Render::Assets::TextureArtifactColorSpace colorSpace)
+{
+    NLS::Core::Assets::AssetMeta textureMeta;
+    textureMeta.id = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetIdText));
+    textureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    textureMeta.importerId = "texture";
+    textureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    EXPECT_TRUE(textureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(assetPath)));
+
+    auto decodedTexture = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        TinyPng().data(),
+        TinyPng().size(),
+        colorSpace,
+        false);
+    EXPECT_TRUE(decodedTexture.has_value());
+    if (!decodedTexture.has_value())
+        return {};
+
+    decodedTexture->targetPlatform = targetPlatform;
+    decodedTexture->encoderId = "rgba8-passthrough";
+    decodedTexture->encoderVersion = 1u;
+    decodedTexture->buildIdentity = "unit-test-imported-texture:" + displayName;
+
+    const auto textureArtifactRoot = root / "Library" / "Artifacts" / textureMeta.id.ToString();
+    const auto textureArtifactPath = textureArtifactRoot / "texture.ntex";
+    WriteBinaryFile(textureArtifactPath, NLS::Render::Assets::SerializeTextureArtifact(*decodedTexture));
+
+    NLS::Core::Assets::ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureMeta.id;
+    textureManifest.importerId = textureMeta.importerId;
+    textureManifest.importerVersion = textureMeta.importerVersion;
+    textureManifest.targetPlatform = targetPlatform;
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back({
+        textureMeta.id,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        targetPlatform,
+        textureArtifactPath.string(),
+        "fnv1a64:" + displayName,
+        displayName
+    });
+    WriteArtifactManifestFile(textureArtifactRoot, textureManifest);
+    return textureArtifactPath;
 }
 
 std::vector<uint8_t> TinyTransparentRgbaPng()
@@ -2676,6 +2887,7 @@ f 1/1/1 2/2/1 3/3/1
     meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
     meta.importerId = "scene-model";
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    DisableExternalModelTextureResolution(meta);
 
     const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
         sourcePath,
@@ -2753,6 +2965,7 @@ f 1/1/1 2/2/1 3/3/1
     meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
     meta.importerId = "scene-model";
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    DisableExternalModelTextureResolution(meta);
 
     const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
         sourcePath,
@@ -2860,6 +3073,9 @@ f 1/1/1 2/2/1 3/3/1
     meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
     meta.importerId = "scene-model";
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    DisableExternalModelTextureResolution(meta);
+    DisableExternalModelTextureResolution(meta);
+    DisableExternalModelTextureResolution(meta);
 
     const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
         sourcePath,
@@ -3815,6 +4031,7 @@ TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsPreserveEncodedR
         meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
         meta.importerId = "scene-model";
         meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    DisableExternalModelTextureResolution(meta);
 
         const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
             sourcePath,
@@ -3901,6 +4118,7 @@ f 1/1/1 2/2/1 3/3/1
     meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
     meta.importerId = "scene-model";
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    DisableExternalModelTextureResolution(meta);
 
     const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
         sourcePath,
@@ -3946,6 +4164,1520 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetImportPipelineTests, ExternalModelImportReusesProjectTextureAssetBySourcePath)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "SharedTextureHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "SharedAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    const auto textureAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("11111111-1111-4111-8111-111111111111"));
+    NLS::Core::Assets::AssetMeta textureMeta;
+    textureMeta.id = textureAssetId;
+    textureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    textureMeta.importerId = "texture";
+    textureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(textureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(texturePath)));
+
+    const auto textureArtifactRoot = root / "Library" / "Artifacts" / textureAssetId.ToString();
+    const auto textureArtifactPath = textureArtifactRoot / "texture.ntex";
+    const auto wrongPlatformTextureArtifactPath = textureArtifactRoot / "texture-win64.ntex";
+    auto decodedTexture = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        TinyPng().data(),
+        TinyPng().size(),
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        false);
+    ASSERT_TRUE(decodedTexture.has_value());
+    decodedTexture->targetPlatform = "editor";
+    decodedTexture->encoderId = "rgba8-passthrough";
+    decodedTexture->encoderVersion = 1u;
+    decodedTexture->buildIdentity = "unit-test-shared-texture";
+    WriteBinaryFile(textureArtifactPath, NLS::Render::Assets::SerializeTextureArtifact(*decodedTexture));
+    WriteBinaryFile(wrongPlatformTextureArtifactPath, NLS::Render::Assets::SerializeTextureArtifact(*decodedTexture));
+
+    NLS::Core::Assets::ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureAssetId;
+    textureManifest.importerId = textureMeta.importerId;
+    textureManifest.importerVersion = textureMeta.importerVersion;
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back({
+        textureAssetId,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        "editor",
+        textureArtifactPath.string(),
+        "fnv1a64:shared",
+        "SharedAlbedo"
+    });
+    textureManifest.subAssets.push_back({
+        textureAssetId,
+        "texture:win64",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        "win64-dx12",
+        wrongPlatformTextureArtifactPath.string(),
+        "fnv1a64:wrong-platform",
+        "SharedAlbedoWin64"
+    });
+    WriteArtifactManifestFile(textureArtifactRoot, textureManifest);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/SharedAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("12121212-1212-4121-8121-121212121212"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "SharedTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(
+        std::count_if(
+            result.manifest.subAssets.begin(),
+            result.manifest.subAssets.end(),
+            [](const NLS::Core::Assets::ImportedArtifact& artifact)
+            {
+                return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+            }),
+        0);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    const auto sharedTextureResourcePath = textureArtifactPath.lexically_relative(root).generic_string();
+    const auto wrongPlatformResourcePath = wrongPlatformTextureArtifactPath.lexically_relative(root).generic_string();
+    EXPECT_NE(payload.find("u_AlbedoMap"), std::string::npos);
+    EXPECT_NE(payload.find(sharedTextureResourcePath), std::string::npos);
+    EXPECT_EQ(payload.find(wrongPlatformResourcePath), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aimage%2F0.ntex"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportMatchesProjectTexturesCaseInsensitively)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "CaseTextureHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "CaseAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    const auto textureArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        texturePath,
+        "15151515-1515-4151-8151-151515151515",
+        "editor",
+        "CaseAlbedo",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../textures/casealbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("16161616-1616-4161-8161-161616161616"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "CaseTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(
+        std::count_if(
+            result.manifest.subAssets.begin(),
+            result.manifest.subAssets.end(),
+            [](const NLS::Core::Assets::ImportedArtifact& artifact)
+            {
+                return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+            }),
+        0);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(payload.find(textureArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsMissingProjectTextureAssetWhenEnabled)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "AutoImportTextureHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "AutoImportedAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    EXPECT_FALSE(std::filesystem::exists(NLS::Core::Assets::GetAssetMetaPath(texturePath)));
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/AutoImportedAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("13131313-1313-4131-8131-131313131313"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureResolutionSettings;
+    textureResolutionSettings.autoImportMissingTextureFiles = true;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "AutoImportTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(
+        std::count_if(
+            result.manifest.subAssets.begin(),
+            result.manifest.subAssets.end(),
+            [](const NLS::Core::Assets::ImportedArtifact& artifact)
+            {
+                return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+            }),
+        0);
+
+    const auto importedTextureMeta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(texturePath));
+    ASSERT_TRUE(importedTextureMeta.has_value());
+    EXPECT_TRUE(importedTextureMeta->id.IsValid());
+    EXPECT_EQ(importedTextureMeta->assetType, NLS::Core::Assets::AssetType::Texture);
+    EXPECT_EQ(importedTextureMeta->importerId, "texture");
+    EXPECT_EQ(
+        importedTextureMeta->importerVersion,
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::Texture));
+
+    const auto textureArtifactRoot = root / "Library" / "Artifacts" / importedTextureMeta->id.ToString();
+    const auto importedTextureManifest = ReadArtifactManifestFile(textureArtifactRoot / "manifest.json");
+    ASSERT_TRUE(importedTextureManifest.has_value());
+    ASSERT_EQ(importedTextureManifest->targetPlatform, "editor");
+    const auto* importedTextureArtifact = importedTextureManifest->FindPrimaryArtifact();
+    ASSERT_NE(importedTextureArtifact, nullptr);
+    EXPECT_EQ(importedTextureArtifact->artifactType, NLS::Core::Assets::ArtifactType::Texture);
+    EXPECT_EQ(importedTextureArtifact->targetPlatform, "editor");
+    EXPECT_TRUE(std::filesystem::is_regular_file(importedTextureArtifact->artifactPath));
+
+    const auto decodedTexture = NLS::Render::Assets::DeserializeTextureArtifact(
+        ReadBinaryFile(importedTextureArtifact->artifactPath));
+    ASSERT_TRUE(decodedTexture.has_value());
+    EXPECT_EQ(decodedTexture->targetPlatform, "editor");
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    const auto importedTextureResourcePath =
+        std::filesystem::path(importedTextureArtifact->artifactPath).lexically_relative(root).generic_string();
+    EXPECT_NE(payload.find("u_AlbedoMap"), std::string::npos);
+    EXPECT_NE(payload.find(importedTextureResourcePath), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aimage%2F0.ntex"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportRecordsProjectTextureFreshnessDependencies)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "FreshnessHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "SharedAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    const auto textureAssetIdText = "15151515-1515-4151-8151-151515151515";
+    const auto textureAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(textureAssetIdText));
+    const auto textureArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        texturePath,
+        textureAssetIdText,
+        "editor",
+        "freshness-shared",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+    ASSERT_FALSE(textureArtifactPath.empty());
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/SharedAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("16161616-1616-4161-8161-161616161616"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureResolutionSettings;
+    textureResolutionSettings.autoImportMissingTextureFiles = false;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "FreshnessHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+
+    const auto* sourceAssetDependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid,
+        textureAssetId.ToString());
+    ASSERT_NE(sourceAssetDependency, nullptr);
+    EXPECT_FALSE(sourceAssetDependency->hashOrVersion.empty());
+
+    const auto* artifactDependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,
+        textureAssetId.ToString() + "#texture:main@editor");
+    ASSERT_NE(artifactDependency, nullptr);
+    EXPECT_EQ(artifactDependency->hashOrVersion, "fnv1a64:freshness-shared");
+
+    const auto* mappingDependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        "project|Assets/Textures/SharedAlbedo.png|source-path");
+    ASSERT_NE(mappingDependency, nullptr);
+    EXPECT_FALSE(mappingDependency->hashOrVersion.empty());
+    EXPECT_NE(mappingDependency->hashOrVersion.find(textureAssetId.ToString()), std::string::npos);
+    EXPECT_NE(mappingDependency->hashOrVersion.find("texture:main"), std::string::npos);
+    EXPECT_NE(mappingDependency->hashOrVersion.find("fnv1a64:freshness-shared"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportRecordsPathMappingDependencyWhenTextureArtifactIsMissing)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "MissingArtifactHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "MissingArtifactAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    const auto textureAssetIdText = "33333333-3333-4333-8333-333333333333";
+    const auto textureAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(textureAssetIdText));
+    NLS::Core::Assets::AssetMeta textureMeta;
+    textureMeta.id = textureAssetId;
+    textureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    textureMeta.importerId = "texture";
+    textureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(textureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(texturePath)));
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/MissingArtifactAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("34343434-3434-4343-8343-343434343434"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    NLS::Editor::Assets::ModelTextureResolutionSettings settings;
+    settings.autoImportMissingTextureFiles = false;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, settings);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "MissingArtifactHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_TRUE(ContainsDiagnostic(
+        result.diagnostics,
+        "model-texture-artifact-missing",
+        NLS::Core::Assets::AssetDiagnosticSeverity::Warning))
+        << JoinDiagnosticSummaries(result.diagnostics);
+
+    const auto* mappingDependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        "project|Assets/Textures/MissingArtifactAlbedo.png|source-path");
+    ASSERT_NE(mappingDependency, nullptr);
+    EXPECT_NE(mappingDependency->hashOrVersion.find(textureAssetIdText), std::string::npos);
+    EXPECT_NE(mappingDependency->hashOrVersion.find("unimported"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportRecordsNameSearchCandidateFreshnessDependencies)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "NameSearchHero.gltf";
+    const auto sourceTexturePath = root / "Assets" / "Textures" / "SourceAlbedo.png";
+    const auto textureAPath = root / "Assets" / "Textures" / "SharedWood.png";
+    WriteBinaryFile(sourceTexturePath, TinyPng());
+    WriteBinaryFile(textureAPath, TinyPng());
+
+    const auto textureAIdText = "17171717-1717-4171-8171-171717171717";
+    WriteImportedTextureAssetForTest(
+        root,
+        textureAPath,
+        textureAIdText,
+        "editor",
+        "candidate-a",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "name": "SharedWood", "uri": "../Textures/SourceAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("19191919-1919-4191-8191-191919191919"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureResolutionSettings;
+    textureResolutionSettings.autoImportMissingTextureFiles = false;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "NameSearchHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+
+    const auto* mappingDependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        "project|SharedWood|name-search");
+    ASSERT_NE(mappingDependency, nullptr);
+    EXPECT_NE(mappingDependency->hashOrVersion.find(textureAIdText), std::string::npos);
+    EXPECT_NE(mappingDependency->hashOrVersion.find("candidate-a"), std::string::npos);
+
+    const auto textureBPath = root / "Assets" / "Alternate" / "SharedWood.png";
+    WriteBinaryFile(textureBPath, TinyPng());
+    const auto textureBIdText = "18181818-1818-4181-8181-181818181818";
+    WriteImportedTextureAssetForTest(
+        root,
+        textureBPath,
+        textureBIdText,
+        "editor",
+        "candidate-b",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+
+    const auto changedCandidateSet = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "StagingChanged",
+        root / "Library" / "Artifacts" / "changed-name-search-probe",
+        modelMeta,
+        "NameSearchHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(changedCandidateSet.imported) << JoinDiagnosticSummaries(changedCandidateSet.diagnostics);
+    const auto* changedMappingDependency = FindDependency(
+        changedCandidateSet.manifest,
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        "project|SharedWood|name-search");
+    ASSERT_NE(changedMappingDependency, nullptr);
+    EXPECT_NE(changedMappingDependency->hashOrVersion.find(textureAIdText), std::string::npos);
+    EXPECT_NE(changedMappingDependency->hashOrVersion.find(textureBIdText), std::string::npos);
+    EXPECT_NE(changedMappingDependency->hashOrVersion, mappingDependency->hashOrVersion);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportKeepsPreviousTextureResolutionReportWhenReimportFails)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "ReportHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "ReportAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    const auto textureAssetIdText = "1a1a1a1a-1a1a-41a1-81a1-1a1a1a1a1a1a";
+    WriteImportedTextureAssetForTest(
+        root,
+        texturePath,
+        textureAssetIdText,
+        "editor",
+        "report-albedo",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+
+    const auto validGltf = R"({
+        "asset": { "version": "2.0" },
+        "images": [
+            { "uri": "../Textures/ReportAlbedo.png", "mimeType": "image/png" }
+        ],
+        "textures": [
+            { "source": 0 }
+        ],
+        "materials": [
+            {
+                "name": "Body",
+                "pbrMetallicRoughness": {
+                    "baseColorTexture": { "index": 0 }
+                }
+            }
+        ],
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+        "nodes": [{ "name": "Root", "mesh": 0 }]
+    })";
+    WriteTextFile(sourcePath, validGltf);
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto committedRoot = root / "Library" / "Artifacts" / modelMeta.id.ToString();
+    const auto reportPath = NLS::Editor::Assets::ModelTextureResolutionReportPath(committedRoot);
+    const auto firstResult = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "StagingA",
+        committedRoot,
+        modelMeta,
+        "ReportHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(firstResult.imported) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_TRUE(std::filesystem::is_regular_file(reportPath));
+    const auto originalReportText = ReadTextFile(reportPath);
+    const auto originalReport = NLS::Editor::Assets::ParseModelTextureResolutionReport(originalReportText);
+    ASSERT_TRUE(originalReport.has_value());
+    ASSERT_EQ(originalReport->entries.size(), 1u);
+    EXPECT_EQ(originalReport->entries[0].kind, NLS::Editor::Assets::ModelTextureResolutionKind::SourcePath);
+
+    const auto missingObjPath = root / "Assets" / "Models" / "ReportHeroMissing.obj";
+    const auto failedResult = NLS::Editor::Assets::ImportExternalModelAsset({
+        missingObjPath,
+        root / "StagingB",
+        committedRoot,
+        modelMeta,
+        "ReportHero",
+        "editor",
+        &firstResult.manifest,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    EXPECT_FALSE(failedResult.imported);
+    EXPECT_EQ(ReadTextFile(reportPath), originalReportText);
+
+    const auto secondResult = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "StagingC",
+        committedRoot,
+        modelMeta,
+        "ReportHero",
+        "editor",
+        &firstResult.manifest,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(secondResult.imported) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    const auto replacedReport = NLS::Editor::Assets::ParseModelTextureResolutionReport(ReadTextFile(reportPath));
+    ASSERT_TRUE(replacedReport.has_value());
+    EXPECT_EQ(replacedReport->modelAssetId, modelMeta.id.ToString());
+    EXPECT_EQ(replacedReport->targetPlatform, "editor");
+    EXPECT_EQ(replacedReport->importerVersion, modelMeta.importerVersion);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportAutoImportFailureWarnsAndFallsBack)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "AutoImportFailureHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "BlockedAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    const auto textureAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("14141414-1414-4141-8141-141414141414"));
+    NLS::Core::Assets::AssetMeta textureMeta;
+    textureMeta.id = textureAssetId;
+    textureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    textureMeta.importerId = "texture";
+    textureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(textureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(texturePath)));
+
+    const auto blockedManifestPath =
+        root / "Library" / "Artifacts" / textureAssetId.ToString() / "manifest.json";
+    std::filesystem::create_directories(blockedManifestPath);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/BlockedAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("15151515-1515-4151-8151-151515151515"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureResolutionSettings;
+    textureResolutionSettings.autoImportMissingTextureFiles = true;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "AutoImportFailureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_TRUE(ContainsDiagnostic(
+        result.diagnostics,
+        "model-texture-auto-import-failed",
+        NLS::Core::Assets::AssetDiagnosticSeverity::Warning))
+        << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_FALSE(ContainsDiagnosticSeverity(result.diagnostics, NLS::Core::Assets::AssetDiagnosticSeverity::Error))
+        << JoinDiagnosticSummaries(result.diagnostics);
+
+    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    ASSERT_NE(textureArtifact, nullptr);
+    EXPECT_EQ(textureArtifact->artifactType, NLS::Core::Assets::ArtifactType::Texture);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    const auto fallbackTextureResourcePath =
+        std::filesystem::path(textureArtifact->artifactPath).lexically_relative(root).generic_string();
+    EXPECT_NE(payload.find("u_AlbedoMap"), std::string::npos);
+    EXPECT_NE(payload.find(fallbackTextureResourcePath), std::string::npos);
+    EXPECT_EQ(payload.find("Library/Artifacts/" + textureAssetId.ToString() + "/texture.ntex"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportRollsBackAutoImportedTextureWhenModelImportFails)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "RollbackAutoImportHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "RollbackAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/RollbackAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("23232323-2323-4323-8323-232323232323"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    DisableExternalModelTextureResolution(modelMeta);
+    const auto blockedModelArtifactRoot = root / "BlockedModelArtifactRoot";
+    WriteTextFile(blockedModelArtifactRoot, "not a directory");
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        blockedModelArtifactRoot,
+        modelMeta,
+        "RollbackAutoImportHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    EXPECT_FALSE(result.imported);
+    EXPECT_FALSE(std::filesystem::exists(NLS::Core::Assets::GetAssetMetaPath(texturePath)));
+
+    const auto libraryArtifacts = root / "Library" / "Artifacts";
+    if (std::filesystem::exists(libraryArtifacts))
+    {
+        size_t remainingArtifactRoots = 0u;
+        for (const auto& entry : std::filesystem::directory_iterator(libraryArtifacts))
+        {
+            ++remainingArtifactRoots;
+        }
+        EXPECT_EQ(remainingArtifactRoots, 0u);
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportRollsBackAutoImportedTextureWhenEarlyConversionFails)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "RollbackEarlyAutoImportHero.gltf";
+    const auto validTexturePath = root / "Assets" / "Textures" / "RollbackGoodAlbedo.png";
+    const auto invalidTexturePath = root / "Assets" / "Textures" / "RollbackBadAlbedo.png";
+    WriteBinaryFile(validTexturePath, TinyPng());
+    WriteTextFile(invalidTexturePath, "not an image");
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/RollbackGoodAlbedo.png", "mimeType": "image/png" },
+                { "uri": "../Textures/RollbackBadAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 },
+                { "source": 1 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("24242424-2424-4242-8424-242424242424"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "RollbackEarlyAutoImportHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    EXPECT_FALSE(result.imported);
+    EXPECT_FALSE(std::filesystem::exists(NLS::Core::Assets::GetAssetMetaPath(validTexturePath)));
+    EXPECT_FALSE(std::filesystem::exists(NLS::Core::Assets::GetAssetMetaPath(invalidTexturePath)));
+
+    const auto libraryArtifacts = root / "Library" / "Artifacts";
+    if (std::filesystem::exists(libraryArtifacts))
+    {
+        size_t remainingArtifactRoots = 0u;
+        for (const auto& entry : std::filesystem::directory_iterator(libraryArtifacts))
+        {
+            (void)entry;
+            ++remainingArtifactRoots;
+        }
+        EXPECT_EQ(remainingArtifactRoots, 0u);
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportKeepsModelLocalTextureForEmbeddedFallback)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "EmbeddedTextureHero.glb";
+    WriteBinaryFile(root / "Assets" / "Textures" / "EmbeddedAlbedo.png", TinyPng());
+
+    std::vector<uint8_t> binaryChunk = TinyPng();
+    PadToFour(binaryChunk, 0u);
+    std::ostringstream gltf;
+    gltf << R"({
+            "asset": { "version": "2.0" },
+            "buffers": [
+                { "byteLength": )" << binaryChunk.size() << R"( }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": )" << TinyPng().size() << R"( }
+            ],
+            "images": [
+                { "bufferView": 0, "mimeType": "image/png", "name": "EmbeddedAlbedo" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })";
+    WriteBinaryFile(sourcePath, MakeGlb(gltf.str(), binaryChunk));
+
+    const auto externalTextureAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("16161616-1616-4161-8161-161616161616"));
+    NLS::Core::Assets::AssetMeta externalTextureMeta;
+    externalTextureMeta.id = externalTextureAssetId;
+    externalTextureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    externalTextureMeta.importerId = "texture";
+    externalTextureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(externalTextureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(
+        root / "Assets" / "Textures" / "EmbeddedAlbedo.png")));
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("17171717-1717-4171-8171-171717171717"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "EmbeddedTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    ASSERT_NE(textureArtifact, nullptr);
+    EXPECT_EQ(textureArtifact->artifactType, NLS::Core::Assets::ArtifactType::Texture);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    const auto modelLocalTextureResourcePath =
+        std::filesystem::path(textureArtifact->artifactPath).lexically_relative(root).generic_string();
+    EXPECT_NE(payload.find("u_AlbedoMap"), std::string::npos);
+    EXPECT_NE(payload.find(modelLocalTextureResourcePath), std::string::npos);
+    EXPECT_EQ(payload.find("Library/Artifacts/" + externalTextureAssetId.ToString()), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalGltfModelImportKeepsBaseColorAndNormalMaterialTextureKeysWhenExternallyResolved)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "ExternalGltfTextureSlots.gltf";
+    const auto baseColorPath = root / "Assets" / "Textures" / "HeroBaseColor.png";
+    const auto normalPath = root / "Assets" / "Textures" / "HeroNormal.png";
+    WriteBinaryFile(baseColorPath, TinyPng());
+    WriteBinaryFile(normalPath, TinyPng());
+
+    const auto baseColorArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        baseColorPath,
+        "18181818-1818-4181-8181-181818181818",
+        "editor",
+        "HeroBaseColor",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+    const auto normalArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        normalPath,
+        "19191919-1919-4191-8191-191919191919",
+        "editor",
+        "HeroNormal",
+        NLS::Render::Assets::TextureArtifactColorSpace::Linear);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/HeroBaseColor.png", "mimeType": "image/png" },
+                { "uri": "../Textures/HeroNormal.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 },
+                { "source": 1 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    },
+                    "normalTexture": { "index": 1 }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("20202020-2020-4202-8202-202020202020"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "ExternalGltfTextureSlots",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(result.manifest.FindSubAsset("texture:image/0"), nullptr);
+    EXPECT_EQ(result.manifest.FindSubAsset("texture:image/1"), nullptr);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    const auto baseColorResourcePath = baseColorArtifactPath.lexically_relative(root).generic_string();
+    const auto normalResourcePath = normalArtifactPath.lexically_relative(root).generic_string();
+    EXPECT_NE(payload.find("u_AlbedoMap"), std::string::npos);
+    EXPECT_NE(payload.find(baseColorResourcePath), std::string::npos);
+    EXPECT_NE(payload.find("u_NormalMap"), std::string::npos);
+    EXPECT_NE(payload.find(normalResourcePath), std::string::npos);
+    EXPECT_NE(payload.find("u_EnableNormalMapping\" type=\"float\" value=\"1.000000\""), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aimage%2F0.ntex"), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aimage%2F1.ntex"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportReportsUnsupportedExternallyResolvedTextureEncodingWithoutDuplicateSubAssets)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "UnsupportedExternalTextureHero.gltf";
+    const auto unsupportedPath = root / "Assets" / "Textures" / "HeroUnsupported.bmp";
+    WriteBinaryFile(unsupportedPath, TinyPng());
+
+    const auto unsupportedArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        unsupportedPath,
+        "33333333-3333-4333-8333-333333333333",
+        "editor",
+        "HeroUnsupported",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/HeroUnsupported.bmp", "mimeType": "image/bmp" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("34343434-3434-4343-8343-343434343434"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto committedRoot = root / "Library" / "Artifacts" / modelMeta.id.ToString();
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        committedRoot,
+        modelMeta,
+        "UnsupportedExternalTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(result.manifest.FindSubAsset("texture:image/0"), nullptr);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(payload.find(unsupportedArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aimage%2F0.ntex"), std::string::npos);
+
+    const auto reportText = ReadTextFile(NLS::Editor::Assets::ModelTextureResolutionReportPath(committedRoot));
+    const auto report = NLS::Editor::Assets::ParseModelTextureResolutionReport(reportText);
+    ASSERT_TRUE(report.has_value());
+    ASSERT_EQ(report->entries.size(), 1u);
+
+    const auto unsupportedEntry = std::find_if(
+        report->entries.begin(),
+        report->entries.end(),
+        [](const NLS::Editor::Assets::ResolvedModelTextureReference& entry)
+        {
+            return entry.source.normalizedUri == "Assets/Textures/HeroUnsupported.bmp";
+        });
+    ASSERT_NE(unsupportedEntry, report->entries.end());
+    EXPECT_EQ(unsupportedEntry->kind, NLS::Editor::Assets::ModelTextureResolutionKind::SourcePath);
+    EXPECT_TRUE(std::any_of(
+        unsupportedEntry->diagnostics.begin(),
+        unsupportedEntry->diagnostics.end(),
+        [](const NLS::Editor::Assets::ModelTextureDiagnostic& diagnostic)
+        {
+            return diagnostic.code == "material-unsupported-texture-encoding";
+        }));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelReimportPrunesOnlyExternallyResolvedLegacyTextureSubAssets)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "LegacyTextureReimport.glb";
+    const auto baseColorPath = root / "Assets" / "Textures" / "LegacyBaseColor.png";
+    WriteBinaryFile(baseColorPath, TinyPng());
+
+    std::vector<uint8_t> binaryChunk = TinyPng();
+    PadToFour(binaryChunk, 0u);
+    std::ostringstream gltf;
+    gltf << R"({
+            "asset": { "version": "2.0" },
+            "buffers": [
+                { "byteLength": )" << binaryChunk.size() << R"( }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": )" << TinyPng().size() << R"( }
+            ],
+            "images": [
+                { "uri": "../Textures/LegacyBaseColor.png", "mimeType": "image/png" },
+                { "bufferView": 0, "mimeType": "image/png", "name": "EmbeddedNormal" }
+            ],
+            "textures": [
+                { "source": 0 },
+                { "source": 1 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    },
+                    "normalTexture": { "index": 1 }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })";
+    WriteBinaryFile(sourcePath, MakeGlb(gltf.str(), binaryChunk));
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("35353535-3535-4353-8353-353535353535"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    auto legacyMeta = modelMeta;
+    DisableExternalModelTextureResolution(legacyMeta);
+
+    const auto committedRoot = root / "Library" / "Artifacts" / modelMeta.id.ToString();
+    const auto legacyResult = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "LegacyStaging",
+        committedRoot,
+        legacyMeta,
+        "LegacyTextureReimport",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(legacyResult.imported) << JoinDiagnosticSummaries(legacyResult.diagnostics);
+    ASSERT_NE(legacyResult.manifest.FindSubAsset("texture:image/0"), nullptr);
+    ASSERT_NE(legacyResult.manifest.FindSubAsset("texture:image/1"), nullptr);
+    ASSERT_NE(legacyResult.manifest.FindSubAsset("mesh:mesh/0"), nullptr);
+    ASSERT_NE(legacyResult.manifest.FindSubAsset("material:material/0"), nullptr);
+    ASSERT_NE(legacyResult.manifest.FindSubAsset("prefab:LegacyTextureReimport"), nullptr);
+
+    const auto projectTextureArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        baseColorPath,
+        "36363636-3636-4363-8363-363636363636",
+        "editor",
+        "LegacyBaseColor",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+
+    const auto reimportResult = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "ReimportStaging",
+        committedRoot,
+        modelMeta,
+        "LegacyTextureReimport",
+        "editor",
+        &legacyResult.manifest,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(reimportResult.imported) << JoinDiagnosticSummaries(reimportResult.diagnostics);
+    EXPECT_EQ(reimportResult.manifest.FindSubAsset("texture:image/0"), nullptr);
+    ASSERT_NE(reimportResult.manifest.FindSubAsset("texture:image/1"), nullptr);
+    EXPECT_NE(reimportResult.manifest.FindSubAsset("mesh:mesh/0"), nullptr);
+    EXPECT_NE(reimportResult.manifest.FindSubAsset("material:material/0"), nullptr);
+    EXPECT_NE(reimportResult.manifest.FindSubAsset("prefab:LegacyTextureReimport"), nullptr);
+
+    const auto* materialArtifact = reimportResult.manifest.FindSubAsset("material:material/0");
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(payload.find(projectTextureArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aimage%2F0.ntex"), std::string::npos);
+    EXPECT_NE(payload.find("textures/texture%3Aimage%2F1.ntex"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalObjModelImportKeepsDiffuseOpacityAndNormalMaterialTextureKeysWhenExternallyResolved)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "ExternalObjTextureSlots.obj";
+    const auto diffusePath = root / "Assets" / "Textures" / "HeroDiffuse.png";
+    const auto opacityPath = root / "Assets" / "Textures" / "HeroOpacity.png";
+    const auto normalPath = root / "Assets" / "Textures" / "HeroNormal.png";
+    WriteBinaryFile(diffusePath, TinyPng());
+    WriteBinaryFile(opacityPath, TinyPng());
+    WriteBinaryFile(normalPath, TinyPng());
+
+    const auto diffuseArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        diffusePath,
+        "21212121-2121-4212-8212-212121212121",
+        "editor",
+        "HeroDiffuse",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+    const auto opacityArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        opacityPath,
+        "22222222-2222-4222-8222-222222222222",
+        "editor",
+        "HeroOpacity",
+        NLS::Render::Assets::TextureArtifactColorSpace::Linear);
+    const auto normalArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        normalPath,
+        "23232323-2323-4232-8232-232323232323",
+        "editor",
+        "HeroNormal",
+        NLS::Render::Assets::TextureArtifactColorSpace::Linear);
+
+    WriteTextFile(
+        root / "Assets" / "Models" / "ExternalObjTextureSlots.mtl",
+        R"(
+newmtl HeroMaterial
+map_Kd ../Textures/HeroDiffuse.png
+map_d ../Textures/HeroOpacity.png
+map_Bump ../Textures/HeroNormal.png
+)");
+    WriteTextFile(
+        sourcePath,
+        R"(
+mtllib ExternalObjTextureSlots.mtl
+o Hero
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+vn 0 0 1
+usemtl HeroMaterial
+f 1/1/1 2/2/1 3/3/1
+)");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("24242424-2424-4242-8242-242424242424"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "ExternalObjTextureSlots",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(
+        std::count_if(
+            result.manifest.subAssets.begin(),
+            result.manifest.subAssets.end(),
+            [](const NLS::Core::Assets::ImportedArtifact& artifact)
+            {
+                return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+            }),
+        0);
+
+    const auto* materialArtifact = result.manifest.FindSubAsset("material:parser/material/1");
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(payload.find("u_AlbedoMap"), std::string::npos);
+    EXPECT_NE(payload.find(diffuseArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_NE(payload.find("u_NormalMap"), std::string::npos);
+    EXPECT_NE(payload.find(normalArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_NE(payload.find("u_EnableNormalMapping\" type=\"float\" value=\"1.000000\""), std::string::npos);
+    EXPECT_NE(payload.find("u_OpacityMap"), std::string::npos);
+    EXPECT_NE(payload.find(opacityArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aparser%2Ftexture%2F0.ntex"), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aparser%2Ftexture%2F1.ntex"), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aparser%2Ftexture%2F2.ntex"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsUseMaterialSlotColorSpace)
 {
     const auto root = MakeImportTestRoot();
@@ -3985,6 +5717,7 @@ TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsUseMaterialSlotC
     meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
     meta.importerId = "scene-model";
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    DisableExternalModelTextureResolution(meta);
 
     const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
         sourcePath,
@@ -4136,10 +5869,8 @@ TEST(AssetImportPipelineTests, ExternalModelImportKeepsOversizedReferencedTextur
         result.diagnostics,
         "external-model-importer-texture-size-limit"))
         << JoinDiagnosticSummaries(result.diagnostics);
-    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
-    ASSERT_NE(textureArtifact, nullptr);
-    const auto texture = NLS::Render::Assets::DeserializeTextureArtifact(
-        ReadBinaryFile(textureArtifact->artifactPath));
+    EXPECT_EQ(result.manifest.FindSubAsset("texture:image/0"), nullptr);
+    const auto texture = ReadAutoImportedTextureArtifact(result, "LargeBaseColor.bmp");
     ASSERT_TRUE(texture.has_value());
     EXPECT_EQ(texture->width, 2049u);
     EXPECT_EQ(texture->height, 1u);
@@ -4243,6 +5974,7 @@ TEST(AssetImportPipelineTests, ExternalGltfNormalTexturesUseNormalMipIntent)
     meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
     meta.importerId = "scene-model";
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    DisableExternalModelTextureResolution(meta);
 
     const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
         sourcePath,
@@ -4363,7 +6095,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeTexture
     });
 
     ASSERT_TRUE(result.imported);
-    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    const auto* textureArtifact = FindAutoImportedTextureArtifact(result, "HeroBaseColor.png");
     ASSERT_NE(textureArtifact, nullptr);
     const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
@@ -4440,7 +6172,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedTextureUr
     });
 
     ASSERT_TRUE(result.imported);
-    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    const auto* textureArtifact = FindAutoImportedTextureArtifact(result, "Hero BaseColor.png");
     ASSERT_NE(textureArtifact, nullptr);
     const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
@@ -4508,7 +6240,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesBackslashTextureUrisOn
     });
 
     ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
-    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    const auto* textureArtifact = FindAutoImportedTextureArtifact(result, "HeroBaseColor.png");
     ASSERT_NE(textureArtifact, nullptr);
     const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
@@ -4574,7 +6306,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBacksla
     });
 
     ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
-    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    const auto* textureArtifact = FindAutoImportedTextureArtifact(result, "HeroBaseColor.png");
     ASSERT_NE(textureArtifact, nullptr);
     const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
@@ -4934,6 +6666,1229 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAut
         NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
 }
 
+TEST(AssetImportPipelineTests, ModelTextureResolutionSettingsUseUnityAlignedDefaults)
+{
+    NLS::Core::Assets::AssetMeta meta;
+
+    const auto settings = NLS::Editor::Assets::LoadModelTextureResolutionSettings(meta);
+
+    EXPECT_EQ(settings.settingsVersion, 1u);
+    EXPECT_TRUE(settings.useExternalTextures);
+    EXPECT_TRUE(settings.searchByName);
+    EXPECT_TRUE(settings.autoImportMissingTextureFiles);
+    EXPECT_EQ(
+        settings.embeddedTextureMode,
+        NLS::Editor::Assets::ModelEmbeddedTextureMode::ModelSubAsset);
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolutionSettingsRejectMalformedEncodedValues)
+{
+    NLS::Core::Assets::AssetMeta meta;
+    meta.settings["MODEL_TEXTURE_USE_EXTERNAL_TEXTURES"] = "false";
+    meta.settings["MODEL_TEXTURE_SEARCH_BY_NAME"] = "0";
+    meta.settings["MODEL_TEXTURE_AUTO_IMPORT_MISSING"] = "not-a-bool";
+    meta.settings["MODEL_TEXTURE_EMBEDDED_MODE"] = "Extract";
+    meta.settings["MODEL_TEXTURE_REMAP.mtxsrc%ZZ"] = "bad";
+
+    const auto settings = NLS::Editor::Assets::LoadModelTextureResolutionSettings(meta);
+    const auto remaps = NLS::Editor::Assets::LoadModelTextureRemapSettings(meta);
+
+    EXPECT_FALSE(settings.useExternalTextures);
+    EXPECT_FALSE(settings.searchByName);
+    EXPECT_TRUE(settings.autoImportMissingTextureFiles);
+    EXPECT_EQ(
+        settings.embeddedTextureMode,
+        NLS::Editor::Assets::ModelEmbeddedTextureMode::ModelSubAsset);
+    EXPECT_TRUE(remaps.empty());
+}
+
+TEST(AssetImportPipelineTests, ModelTextureRemapSettingsRoundTripStableSourceKeys)
+{
+    NLS::Core::Assets::AssetMeta meta;
+    const std::string stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Assets/Textures/Wood.png";
+    const auto textureId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("10101010-1010-4010-8010-101010101010"));
+
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        meta,
+        { stableKey, textureId, "texture:main", "Assets/Textures/Wood.png" });
+
+    auto remaps = NLS::Editor::Assets::LoadModelTextureRemapSettings(meta);
+    ASSERT_EQ(remaps.size(), 1u);
+    EXPECT_EQ(remaps[0].sourceStableKey, stableKey);
+    EXPECT_EQ(remaps[0].targetAssetId, textureId);
+    EXPECT_EQ(remaps[0].targetSubAssetKey, "texture:main");
+    EXPECT_EQ(remaps[0].targetEditorPath, "Assets/Textures/Wood.png");
+
+    NLS::Editor::Assets::ClearModelTextureRemapSetting(meta, stableKey);
+    remaps = NLS::Editor::Assets::LoadModelTextureRemapSettings(meta);
+    EXPECT_TRUE(remaps.empty());
+}
+
+TEST(AssetImportPipelineTests, ModelTextureRemapSettingsRoundTripEscapedStableKeysAndRejectMalformedValues)
+{
+    NLS::Core::Assets::AssetMeta meta;
+    const std::string stableKey =
+        "mtxsrc:v1:kind=ExternalFile;uri=Assets/Textures/Wood;Oak|A.png;source=line\nsnowman-\xE2\x98\x83";
+    const auto textureId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("20202020-2020-4020-8020-202020202020"));
+
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        meta,
+        { stableKey, textureId, "texture:main;slot|0", "Assets/Textures/Wood;Oak|A.png" });
+    meta.settings["MODEL_TEXTURE_REMAP.mtxsrc%ZZ"] = "not-a-guid#texture";
+
+    NLS::Core::Assets::AssetDiagnostics diagnostics;
+    const auto remaps = NLS::Editor::Assets::LoadModelTextureRemapSettings(meta, &diagnostics);
+
+    ASSERT_EQ(remaps.size(), 1u);
+    EXPECT_EQ(remaps[0].sourceStableKey, stableKey);
+    EXPECT_EQ(remaps[0].targetAssetId, textureId);
+    EXPECT_EQ(remaps[0].targetSubAssetKey, "texture:main;slot|0");
+    EXPECT_EQ(remaps[0].targetEditorPath, "Assets/Textures/Wood;Oak|A.png");
+    ASSERT_FALSE(diagnostics.empty());
+    EXPECT_EQ(diagnostics[0].severity, NLS::Core::Assets::AssetDiagnosticSeverity::Warning);
+    EXPECT_EQ(diagnostics[0].code, "model-texture-remap-malformed");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureRemapSettingsClearReturnsToAutomaticResolution)
+{
+    NLS::Core::Assets::AssetMeta meta;
+    const std::string stableKey =
+        "mtxsrc:v1:kind=ExternalFile;uri=Assets/Textures/Wood.png";
+    const auto textureId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("30303030-3030-4030-8030-303030303030"));
+
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        meta,
+        { stableKey, textureId, "texture:main", "Assets/Textures/Wood.png" });
+    EXPECT_FALSE(NLS::Editor::Assets::LoadModelTextureRemapSettings(meta).empty());
+
+    NLS::Editor::Assets::ClearModelTextureRemapSetting(meta, stableKey);
+    EXPECT_TRUE(NLS::Editor::Assets::LoadModelTextureRemapSettings(meta).empty());
+}
+
+TEST(AssetImportPipelineTests, ModelTextureRemapSettingsEscapesStableKeysAndRejectsMalformedValues)
+{
+    NLS::Core::Assets::AssetMeta meta;
+    const std::string stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Assets/Textures/Wood;Oak|A.png;source=line\nsnowman-\xE2\x98\x83";
+    const auto textureId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("20202020-2020-4020-8020-202020202020"));
+
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        meta,
+        { stableKey, textureId, "texture:main;slot|0", {} });
+    meta.settings["MODEL_TEXTURE_REMAP.mtxsrc%3Av1%3Akind%3DExternalFile%3Buri%3Dbad"] =
+        "not-a-guid#texture";
+
+    NLS::Core::Assets::AssetDiagnostics diagnostics;
+    const auto remaps = NLS::Editor::Assets::LoadModelTextureRemapSettings(meta, &diagnostics);
+
+    ASSERT_EQ(remaps.size(), 1u);
+    EXPECT_EQ(remaps[0].sourceStableKey, stableKey);
+    EXPECT_EQ(remaps[0].targetAssetId, textureId);
+    EXPECT_EQ(remaps[0].targetSubAssetKey, "texture:main;slot|0");
+    EXPECT_EQ(remaps[0].targetEditorPath, "");
+    ASSERT_FALSE(diagnostics.empty());
+    EXPECT_EQ(diagnostics[0].code, "model-texture-remap-malformed");
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapOverridesSourcePath)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "ExplicitRemapHero.gltf";
+    const auto sourceTexturePath = root / "Assets" / "Textures" / "SharedAlbedo.png";
+    const auto remapTexturePath = root / "Assets" / "Textures" / "OverrideAlbedo.png";
+    WriteBinaryFile(sourceTexturePath, TinyPng());
+    WriteBinaryFile(remapTexturePath, TinyPng());
+
+    const auto sourceTextureId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("40404040-4040-4040-8040-404040404040"));
+    NLS::Core::Assets::AssetMeta sourceTextureMeta;
+    sourceTextureMeta.id = sourceTextureId;
+    sourceTextureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    sourceTextureMeta.importerId = "texture";
+    sourceTextureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(sourceTextureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(sourceTexturePath)));
+
+    const auto remapTextureId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("41414141-4141-4141-8141-414141414141"));
+    NLS::Core::Assets::AssetMeta remapTextureMeta;
+    remapTextureMeta.id = remapTextureId;
+    remapTextureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    remapTextureMeta.importerId = "texture";
+    remapTextureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(remapTextureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(remapTexturePath)));
+
+    auto remapTextureArtifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        TinyPng().data(),
+        TinyPng().size(),
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        false);
+    ASSERT_TRUE(remapTextureArtifact.has_value());
+    remapTextureArtifact->targetPlatform = "editor";
+    remapTextureArtifact->encoderId = "rgba8-passthrough";
+    remapTextureArtifact->encoderVersion = 1u;
+    remapTextureArtifact->buildIdentity = "unit-test-remap-texture";
+    const auto remapTextureArtifactRoot = root / "Library" / "Artifacts" / remapTextureId.ToString();
+    const auto remapTextureArtifactPath = remapTextureArtifactRoot / "texture.ntex";
+    WriteBinaryFile(remapTextureArtifactPath, NLS::Render::Assets::SerializeTextureArtifact(*remapTextureArtifact));
+    NLS::Core::Assets::ArtifactManifest remapTextureManifest;
+    remapTextureManifest.sourceAssetId = remapTextureId;
+    remapTextureManifest.importerId = remapTextureMeta.importerId;
+    remapTextureManifest.importerVersion = remapTextureMeta.importerVersion;
+    remapTextureManifest.targetPlatform = "editor";
+    remapTextureManifest.primarySubAssetKey = "texture:main";
+    remapTextureManifest.subAssets.push_back({
+        remapTextureId,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        "editor",
+        "texture.ntex",
+        "fnv1a64:override",
+        "OverrideAlbedo"
+    });
+    WriteArtifactManifestFile(remapTextureArtifactRoot, remapTextureManifest);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/SharedAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("42424242-4242-4242-8242-424242424242"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    const auto stableKey = "mtxsrc:v1:kind=ExternalFile;source=image/0;uri=Assets/Textures/SharedAlbedo.png";
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        modelMeta,
+        { stableKey, remapTextureId, "texture:main", "Assets/Textures/OverrideAlbedo.png" });
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "ExplicitRemapHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(payload.find(remapTextureArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_EQ(payload.find(sourceTexturePath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_EQ(
+        std::count_if(
+            result.manifest.subAssets.begin(),
+            result.manifest.subAssets.end(),
+            [](const NLS::Core::Assets::ImportedArtifact& artifact)
+            {
+                return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+            }),
+        0);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapSurvivesTargetMoveByGuid)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "MovedRemapHero.gltf";
+    const auto sourceTexturePath = root / "Assets" / "Textures" / "SharedAlbedo.png";
+    const auto oldRemapTexturePath = root / "Assets" / "Textures" / "MovedOverride.png";
+    const auto movedRemapTexturePath = root / "Assets" / "Moved" / "MovedOverride.png";
+    WriteBinaryFile(sourceTexturePath, TinyPng());
+    WriteBinaryFile(movedRemapTexturePath, TinyPng());
+
+    const auto remapTextureId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("46464646-4646-4646-8646-464646464646"));
+    NLS::Core::Assets::AssetMeta remapTextureMeta;
+    remapTextureMeta.id = remapTextureId;
+    remapTextureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    remapTextureMeta.importerId = "texture";
+    remapTextureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(remapTextureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(movedRemapTexturePath)));
+
+    auto remapTextureArtifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        TinyPng().data(),
+        TinyPng().size(),
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        false);
+    ASSERT_TRUE(remapTextureArtifact.has_value());
+    remapTextureArtifact->targetPlatform = "editor";
+    remapTextureArtifact->encoderId = "rgba8-passthrough";
+    remapTextureArtifact->encoderVersion = 1u;
+    remapTextureArtifact->buildIdentity = "unit-test-moved-remap-texture";
+    const auto remapTextureArtifactRoot = root / "Library" / "Artifacts" / remapTextureId.ToString();
+    const auto remapTextureArtifactPath = remapTextureArtifactRoot / "texture.ntex";
+    WriteBinaryFile(remapTextureArtifactPath, NLS::Render::Assets::SerializeTextureArtifact(*remapTextureArtifact));
+
+    NLS::Core::Assets::ArtifactManifest remapTextureManifest;
+    remapTextureManifest.sourceAssetId = remapTextureId;
+    remapTextureManifest.importerId = remapTextureMeta.importerId;
+    remapTextureManifest.importerVersion = remapTextureMeta.importerVersion;
+    remapTextureManifest.targetPlatform = "editor";
+    remapTextureManifest.primarySubAssetKey = "texture:main";
+    remapTextureManifest.subAssets.push_back({
+        remapTextureId,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        "editor",
+        remapTextureArtifactPath.string(),
+        "fnv1a64:moved-override",
+        "MovedOverride"
+    });
+    WriteArtifactManifestFile(remapTextureArtifactRoot, remapTextureManifest);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/SharedAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("47474747-4747-4747-8747-474747474747"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        modelMeta,
+        {
+            "mtxsrc:v1:kind=ExternalFile;source=image/0;uri=Assets/Textures/SharedAlbedo.png",
+            remapTextureId,
+            "texture:main",
+            oldRemapTexturePath.lexically_relative(root).generic_string()
+        });
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "MovedRemapHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(payload.find(remapTextureArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+
+    const auto reportText = ReadTextFile(
+        NLS::Editor::Assets::ModelTextureResolutionReportPath(root / "Library" / "Artifacts" / modelMeta.id.ToString()));
+    const auto report = NLS::Editor::Assets::ParseModelTextureResolutionReport(reportText);
+    ASSERT_TRUE(report.has_value());
+    ASSERT_EQ(report->entries.size(), 1u);
+    EXPECT_EQ(report->entries[0].kind, NLS::Editor::Assets::ModelTextureResolutionKind::ExplicitRemap);
+    EXPECT_EQ(report->entries[0].targetEditorPath.generic_string(), movedRemapTexturePath.lexically_relative(root).generic_string());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportInvalidTextureRemapWarnsAndFallsBack)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "InvalidRemapHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "SharedAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    const auto textureAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("43434343-4343-4343-8343-434343434343"));
+    NLS::Core::Assets::AssetMeta textureMeta;
+    textureMeta.id = textureAssetId;
+    textureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    textureMeta.importerId = "texture";
+    textureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(textureMeta.Save(NLS::Core::Assets::GetAssetMetaPath(texturePath)));
+
+    auto decodedTexture = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        TinyPng().data(),
+        TinyPng().size(),
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        false);
+    ASSERT_TRUE(decodedTexture.has_value());
+    decodedTexture->targetPlatform = "editor";
+    decodedTexture->encoderId = "rgba8-passthrough";
+    decodedTexture->encoderVersion = 1u;
+    decodedTexture->buildIdentity = "unit-test-remap-fallback";
+    const auto textureArtifactRoot = root / "Library" / "Artifacts" / textureAssetId.ToString();
+    const auto textureArtifactPath = textureArtifactRoot / "texture.ntex";
+    WriteBinaryFile(textureArtifactPath, NLS::Render::Assets::SerializeTextureArtifact(*decodedTexture));
+    NLS::Core::Assets::ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureAssetId;
+    textureManifest.importerId = textureMeta.importerId;
+    textureManifest.importerVersion = textureMeta.importerVersion;
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back({
+        textureAssetId,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        "editor",
+        textureArtifactPath.string(),
+        "fnv1a64:shared",
+        "SharedAlbedo"
+    });
+    WriteArtifactManifestFile(textureArtifactRoot, textureManifest);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/SharedAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("44444444-4444-4444-8444-444444444444"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    NLS::Editor::Assets::StoreModelTextureRemapSetting(
+        modelMeta,
+        {
+            "mtxsrc:v1:kind=ExternalFile;source=image/0;uri=Assets/Textures/SharedAlbedo.png",
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("45454545-4545-4545-8545-454545454545")),
+            "texture:main",
+            "Assets/Textures/SharedAlbedo.png"
+        });
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "InvalidRemapHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_TRUE(ContainsDiagnostic(
+        result.diagnostics,
+        "model-texture-remap-invalid-target",
+        NLS::Core::Assets::AssetDiagnosticSeverity::Warning))
+        << JoinDiagnosticSummaries(result.diagnostics);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(payload.find(textureArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolutionReportRoundTripsEntriesAndDiagnostics)
+{
+    NLS::Editor::Assets::ModelTextureResolutionReport report;
+    report.modelAssetId = "30303030-3030-4030-8030-303030303030";
+    report.targetPlatform = "editor-windows";
+    report.importerVersion = 9u;
+    report.settingsFingerprint = "settings;hash|v1";
+
+    NLS::Editor::Assets::ResolvedModelTextureReference sourcePath;
+    sourcePath.source.sourceKey = "image/0";
+    sourcePath.source.materialTextureKey = "image/0";
+    sourcePath.source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Textures/Wood.png";
+    sourcePath.source.displayName = "Wood=Oak";
+    sourcePath.source.uri = "Textures/Wood.png";
+    sourcePath.source.normalizedUri = "Textures/Wood.png";
+    sourcePath.source.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
+    sourcePath.source.stableKeyStatus = NLS::Editor::Assets::ModelTextureStableKeyStatus::Stable;
+    sourcePath.kind = NLS::Editor::Assets::ModelTextureResolutionKind::SourcePath;
+    sourcePath.materialTextureKey = "image/0";
+    sourcePath.targetAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("40404040-4040-4040-8040-404040404040"));
+    sourcePath.targetSubAssetKey = "texture:main";
+    sourcePath.resourcePath = "Library/Artifacts/texture.ntex";
+    sourcePath.diagnostics.push_back({
+        "Warning",
+        "model-texture-name-ambiguous",
+        "Wood;Oak matched multiple candidates"
+    });
+
+    NLS::Editor::Assets::ResolvedModelTextureReference fallback;
+    fallback.source.sourceKey = "bufferView/1";
+    fallback.source.materialTextureKey = "bufferView/1";
+    fallback.source.stableKey = "mtxsrc:v1:kind=BufferView;bufferView=bufferView/1";
+    fallback.source.kind = NLS::Editor::Assets::TextureSourceKind::BufferView;
+    fallback.kind = NLS::Editor::Assets::ModelTextureResolutionKind::ModelEmbeddedFallback;
+    fallback.materialTextureKey = "bufferView/1";
+    fallback.modelSubAssetKey = "texture:bufferView/1";
+
+    report.entries = { sourcePath, fallback };
+
+    const auto parsed = NLS::Editor::Assets::ParseModelTextureResolutionReport(
+        NLS::Editor::Assets::SerializeModelTextureResolutionReport(report));
+
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->modelAssetId, report.modelAssetId);
+    EXPECT_EQ(parsed->targetPlatform, report.targetPlatform);
+    EXPECT_EQ(parsed->importerVersion, report.importerVersion);
+    EXPECT_EQ(parsed->settingsFingerprint, report.settingsFingerprint);
+    ASSERT_EQ(parsed->entries.size(), 2u);
+    EXPECT_EQ(parsed->entries[0].source.stableKey, sourcePath.source.stableKey);
+    EXPECT_EQ(parsed->entries[0].source.sourceKey, "image/0");
+    EXPECT_EQ(parsed->entries[0].source.materialTextureKey, "image/0");
+    EXPECT_EQ(parsed->entries[0].source.displayName, "Wood=Oak");
+    EXPECT_EQ(parsed->entries[0].source.kind, NLS::Editor::Assets::TextureSourceKind::ExternalFile);
+    EXPECT_EQ(parsed->entries[0].kind, NLS::Editor::Assets::ModelTextureResolutionKind::SourcePath);
+    EXPECT_EQ(parsed->entries[0].targetAssetId, sourcePath.targetAssetId);
+    EXPECT_EQ(parsed->entries[0].resourcePath.generic_string(), "Library/Artifacts/texture.ntex");
+    ASSERT_EQ(parsed->entries[0].diagnostics.size(), 1u);
+    EXPECT_EQ(parsed->entries[0].diagnostics[0].code, "model-texture-name-ambiguous");
+    EXPECT_EQ(parsed->entries[1].kind, NLS::Editor::Assets::ModelTextureResolutionKind::ModelEmbeddedFallback);
+    EXPECT_EQ(parsed->entries[1].modelSubAssetKey, "texture:bufferView/1");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolutionReportRejectsMalformedPayload)
+{
+    EXPECT_FALSE(NLS::Editor::Assets::ParseModelTextureResolutionReport("not a report").has_value());
+    EXPECT_FALSE(NLS::Editor::Assets::ParseModelTextureResolutionReport(
+        "NULLUS_MODEL_TEXTURE_RESOLUTION_REPORT=1\nreportVersion=abc\n").has_value());
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolutionReportRejectsStaleContext)
+{
+    NLS::Editor::Assets::ModelTextureResolutionReport report;
+    report.modelAssetId = "50505050-5050-4050-8050-505050505050";
+    report.targetPlatform = "editor-windows";
+    report.importerVersion = 9u;
+    report.settingsFingerprint = "settings:v1";
+
+    EXPECT_TRUE(NLS::Editor::Assets::IsModelTextureResolutionReportCurrent(
+        report,
+        { report.modelAssetId, report.targetPlatform, report.importerVersion, report.settingsFingerprint }));
+    EXPECT_FALSE(NLS::Editor::Assets::IsModelTextureResolutionReportCurrent(
+        report,
+        { "60606060-6060-4060-8060-606060606060", report.targetPlatform, report.importerVersion, report.settingsFingerprint }));
+    EXPECT_FALSE(NLS::Editor::Assets::IsModelTextureResolutionReportCurrent(
+        report,
+        { report.modelAssetId, "win64-dx12", report.importerVersion, report.settingsFingerprint }));
+    EXPECT_FALSE(NLS::Editor::Assets::IsModelTextureResolutionReportCurrent(
+        report,
+        { report.modelAssetId, report.targetPlatform, report.importerVersion + 1u, report.settingsFingerprint }));
+    EXPECT_FALSE(NLS::Editor::Assets::IsModelTextureResolutionReportCurrent(
+        report,
+        { report.modelAssetId, report.targetPlatform, report.importerVersion, "settings:v2" }));
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolutionReportEscapesSpecialCharacters)
+{
+    NLS::Editor::Assets::ModelTextureResolutionReport report;
+    report.modelAssetId = "70707070-7070-4070-8070-707070707070";
+    report.targetPlatform = "editor;windows|debug";
+    report.importerVersion = 9u;
+    report.settingsFingerprint = "hash=with;reserved|chars";
+
+    NLS::Editor::Assets::ResolvedModelTextureReference entry;
+    entry.source.sourceKey = "image;0|slot";
+    entry.source.materialTextureKey = "image;0|slot";
+    entry.source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Textures/A;B|C.png";
+    entry.source.uri = "Textures/A;B|C.png";
+    entry.source.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
+    entry.kind = NLS::Editor::Assets::ModelTextureResolutionKind::Missing;
+    entry.diagnostics.push_back({"Warning", "model-texture-source-path-missing", "missing=A;B|C\nline2"});
+    report.entries.push_back(entry);
+
+    const auto serialized = NLS::Editor::Assets::SerializeModelTextureResolutionReport(report);
+    EXPECT_NE(serialized.find("%3B"), std::string::npos);
+    EXPECT_NE(serialized.find("%7C"), std::string::npos);
+
+    const auto parsed = NLS::Editor::Assets::ParseModelTextureResolutionReport(serialized);
+    ASSERT_TRUE(parsed.has_value());
+    ASSERT_EQ(parsed->entries.size(), 1u);
+    EXPECT_EQ(parsed->targetPlatform, report.targetPlatform);
+    EXPECT_EQ(parsed->entries[0].source.sourceKey, entry.source.sourceKey);
+    EXPECT_EQ(parsed->entries[0].source.stableKey, entry.source.stableKey);
+    ASSERT_EQ(parsed->entries[0].diagnostics.size(), 1u);
+    EXPECT_EQ(parsed->entries[0].diagnostics[0].message, "missing=A;B|C\nline2");
+}
+
+TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsHideMissingStaleAndMalformedReports)
+{
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("51515151-5151-4151-8151-515151515151"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto currentFingerprint = NLS::Editor::Assets::ComputeModelTextureSettingsFingerprint(modelMeta);
+
+    const auto missing = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+        modelMeta,
+        "editor",
+        std::nullopt);
+    EXPECT_FALSE(missing.hasCurrentReport);
+    EXPECT_FALSE(missing.reportMalformed);
+    EXPECT_FALSE(missing.reimportRequired);
+    EXPECT_TRUE(missing.rows.empty());
+
+    const auto malformed = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+        modelMeta,
+        "editor",
+        std::optional<std::string>("not a texture report"));
+    EXPECT_FALSE(malformed.hasCurrentReport);
+    EXPECT_TRUE(malformed.reportMalformed);
+    EXPECT_FALSE(malformed.reimportRequired);
+    EXPECT_TRUE(malformed.rows.empty());
+
+    NLS::Editor::Assets::ModelTextureResolutionReport report;
+    report.modelAssetId = modelMeta.id.ToString();
+    report.targetPlatform = "editor";
+    report.importerVersion = modelMeta.importerVersion;
+    report.settingsFingerprint = currentFingerprint;
+
+    auto staleReport = report;
+    staleReport.settingsFingerprint = "stale-settings";
+    const auto stale = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+        modelMeta,
+        "editor",
+        NLS::Editor::Assets::SerializeModelTextureResolutionReport(staleReport));
+    EXPECT_FALSE(stale.hasCurrentReport);
+    EXPECT_FALSE(stale.reportMalformed);
+    EXPECT_TRUE(stale.reportStale);
+    EXPECT_TRUE(stale.reimportRequired);
+    EXPECT_TRUE(stale.rows.empty());
+}
+
+TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsExposeWarningsAndResolutionDetails)
+{
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("52525252-5252-4252-8252-525252525252"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    NLS::Editor::Assets::ModelTextureResolutionReport report;
+    report.modelAssetId = modelMeta.id.ToString();
+    report.targetPlatform = "editor";
+    report.importerVersion = modelMeta.importerVersion;
+    report.settingsFingerprint = NLS::Editor::Assets::ComputeModelTextureSettingsFingerprint(modelMeta);
+
+    NLS::Editor::Assets::ResolvedModelTextureReference invalidTarget;
+    invalidTarget.source.stableKey = "mtxsrc:v1:kind=ExternalFile;source=image/0;uri=Assets/Textures/A.png";
+    invalidTarget.source.sourceKey = "image/0";
+    invalidTarget.source.materialTextureKey = "image/0";
+    invalidTarget.source.displayName = "A.png";
+    invalidTarget.source.uri = "Assets/Textures/A.png";
+    invalidTarget.source.normalizedUri = "Assets/Textures/A.png";
+    invalidTarget.source.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
+    invalidTarget.source.stableKeyStatus = NLS::Editor::Assets::ModelTextureStableKeyStatus::Stable;
+    invalidTarget.kind = NLS::Editor::Assets::ModelTextureResolutionKind::Missing;
+    invalidTarget.materialTextureKey = "image/0";
+    invalidTarget.diagnostics.push_back({
+        "Warning",
+        "model-texture-remap-invalid-target",
+        "Texture remap target is missing or invalid."
+    });
+
+    NLS::Editor::Assets::ResolvedModelTextureReference orderDerived;
+    orderDerived.source.stableKey = "mtxsrc:v1:kind=Missing;name=Texture;dup=0";
+    orderDerived.source.displayName = "Texture";
+    orderDerived.source.kind = NLS::Editor::Assets::TextureSourceKind::Missing;
+    orderDerived.source.stableKeyStatus = NLS::Editor::Assets::ModelTextureStableKeyStatus::OrderDerived;
+    orderDerived.kind = NLS::Editor::Assets::ModelTextureResolutionKind::ModelEmbeddedFallback;
+    orderDerived.modelSubAssetKey = "texture:image/1";
+
+    NLS::Editor::Assets::ResolvedModelTextureReference unsupportedEncoding;
+    unsupportedEncoding.source.stableKey = "mtxsrc:v1:kind=EmbeddedData;source=image/2";
+    unsupportedEncoding.source.sourceKey = "image/2";
+    unsupportedEncoding.source.kind = NLS::Editor::Assets::TextureSourceKind::EmbeddedData;
+    unsupportedEncoding.kind = NLS::Editor::Assets::ModelTextureResolutionKind::ModelEmbeddedFallback;
+    unsupportedEncoding.modelSubAssetKey = "texture:image/2";
+    unsupportedEncoding.diagnostics.push_back({
+        "Warning",
+        "model-texture-unsupported-encoding",
+        "Texture encoding is unsupported."
+    });
+
+    NLS::Editor::Assets::ResolvedModelTextureReference sourcePath;
+    sourcePath.source.stableKey = "mtxsrc:v1:kind=ExternalFile;source=image/3;uri=Assets/Textures/B.png";
+    sourcePath.source.sourceKey = "image/3";
+    sourcePath.source.materialTextureKey = "image/3";
+    sourcePath.source.displayName = "B.png";
+    sourcePath.source.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
+    sourcePath.kind = NLS::Editor::Assets::ModelTextureResolutionKind::SourcePath;
+    sourcePath.materialTextureKey = "image/3";
+    sourcePath.targetAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("53535353-5353-4353-8353-535353535353"));
+    sourcePath.targetSubAssetKey = "texture:main";
+    sourcePath.resourcePath = "Library/Artifacts/B/texture.ntex";
+    sourcePath.targetEditorPath = "Assets/Textures/B.png";
+
+    report.entries = { invalidTarget, orderDerived, unsupportedEncoding, sourcePath };
+
+    const auto view = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+        modelMeta,
+        "editor",
+        NLS::Editor::Assets::SerializeModelTextureResolutionReport(report));
+
+    ASSERT_TRUE(view.hasCurrentReport);
+    ASSERT_EQ(view.rows.size(), 4u);
+    EXPECT_EQ(view.rows[0].resolutionKind, "Missing");
+    EXPECT_TRUE(view.rows[0].hasWarnings);
+    EXPECT_TRUE(view.rows[0].hasInvalidTargetWarning);
+    EXPECT_EQ(view.rows[0].diagnosticCodes[0], "model-texture-remap-invalid-target");
+    EXPECT_TRUE(view.rows[1].usesOrderDerivedStableKey);
+    EXPECT_TRUE(view.rows[1].hasWarnings);
+    EXPECT_TRUE(view.rows[2].hasUnsupportedEncodingWarning);
+    EXPECT_EQ(view.rows[3].resolutionKind, "SourcePath");
+    EXPECT_EQ(view.rows[3].targetEditorPath, "Assets/Textures/B.png");
+    EXPECT_EQ(view.rows[3].targetAssetId, "53535353-5353-4353-8353-535353535353");
+}
+
+TEST(AssetImportPipelineTests, AssetPropertiesModelTextureSettingAndRemapChangesRequireReimport)
+{
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("54545454-5454-4454-8454-545454545454"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    NLS::Editor::Assets::ModelTextureResolutionReport report;
+    report.modelAssetId = modelMeta.id.ToString();
+    report.targetPlatform = "editor";
+    report.importerVersion = modelMeta.importerVersion;
+    report.settingsFingerprint = NLS::Editor::Assets::ComputeModelTextureSettingsFingerprint(modelMeta);
+
+    const auto clean = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+        modelMeta,
+        "editor",
+        NLS::Editor::Assets::SerializeModelTextureResolutionReport(report));
+    EXPECT_FALSE(clean.reimportRequired);
+
+    auto settings = clean.settings;
+    settings.searchByName = false;
+    NLS::Editor::Panels::StoreModelTextureAssetPropertiesSettings(modelMeta, settings);
+    EXPECT_FALSE(NLS::Editor::Assets::LoadModelTextureResolutionSettings(modelMeta).searchByName);
+
+    const auto changedSettings = NLS::Editor::Panels::BuildModelTextureAssetPropertiesView(
+        modelMeta,
+        "editor",
+        NLS::Editor::Assets::SerializeModelTextureResolutionReport(report));
+    EXPECT_TRUE(changedSettings.reimportRequired);
+
+    const std::string stableKey = "mtxsrc:v1:kind=ExternalFile;source=image/0;uri=Assets/Textures/A.png";
+    const auto remapTargetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("55555555-5555-4555-8555-555555555555"));
+    NLS::Editor::Panels::StoreModelTextureAssetPropertiesRemap(
+        modelMeta,
+        stableKey,
+        remapTargetId,
+        "texture:main",
+        "Assets/Textures/A.png");
+
+    auto remaps = NLS::Editor::Assets::LoadModelTextureRemapSettings(modelMeta);
+    ASSERT_EQ(remaps.size(), 1u);
+    EXPECT_EQ(remaps[0].sourceStableKey, stableKey);
+    EXPECT_EQ(remaps[0].targetAssetId, remapTargetId);
+    EXPECT_EQ(remaps[0].targetEditorPath, "Assets/Textures/A.png");
+
+    NLS::Editor::Panels::ClearModelTextureAssetPropertiesRemap(modelMeta, stableKey);
+    EXPECT_TRUE(NLS::Editor::Assets::LoadModelTextureRemapSettings(modelMeta).empty());
+}
+
+TEST(AssetImportPipelineTests, ModelTextureStableKeyUsesVersionedKindSourceAndNormalizedUri)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
+    source.sourceKey = "image/0";
+    source.normalizedUri = "Textures/Wood.png";
+    source.displayName = "Display Name";
+
+    const auto key = NLS::Editor::Assets::MakeModelTextureStableKey(source);
+
+    EXPECT_EQ(key, "mtxsrc:v1:kind=ExternalFile;source=image/0;uri=Textures/Wood.png");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureStableKeyHandlesEmptySourceKeyDataUriBufferViewAndEmbeddedIndex)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference dataUri;
+    dataUri.kind = NLS::Editor::Assets::TextureSourceKind::EmbeddedData;
+    dataUri.normalizedUri = "data:image/png;base64,AAAA";
+    EXPECT_EQ(
+        NLS::Editor::Assets::MakeModelTextureStableKey(dataUri),
+        "mtxsrc:v1:kind=EmbeddedData;uri=data:image/png%3Bbase64,AAAA");
+
+    NLS::Editor::Assets::ModelTextureSourceReference bufferView;
+    bufferView.kind = NLS::Editor::Assets::TextureSourceKind::BufferView;
+    bufferView.bufferViewKey = "bufferView/3";
+    EXPECT_EQ(
+        NLS::Editor::Assets::MakeModelTextureStableKey(bufferView),
+        "mtxsrc:v1:kind=BufferView;bufferView=bufferView/3");
+
+    NLS::Editor::Assets::ModelTextureSourceReference embedded;
+    embedded.kind = NLS::Editor::Assets::TextureSourceKind::EmbeddedData;
+    embedded.embeddedIndex = "2";
+    EXPECT_EQ(
+        NLS::Editor::Assets::MakeModelTextureStableKey(embedded),
+        "mtxsrc:v1:kind=EmbeddedData;embedded=2");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureStableKeyAddsDeterministicCollisionSuffixes)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference first;
+    first.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
+    first.normalizedUri = "Textures/Wood.png";
+    first.materialTextureKey = "material/Hero/baseColor";
+
+    auto second = first;
+    second.materialTextureKey = "material/Hero/normal";
+
+    const auto assigned = NLS::Editor::Assets::AssignModelTextureStableKeys({ first, second });
+
+    ASSERT_EQ(assigned.size(), 2u);
+    EXPECT_NE(assigned[0].stableKey, assigned[1].stableKey);
+    EXPECT_NE(assigned[0].stableKey.find("discriminator=material/Hero/baseColor"), std::string::npos);
+    EXPECT_NE(assigned[1].stableKey.find("discriminator=material/Hero/normal"), std::string::npos);
+    EXPECT_EQ(assigned[0].stableKeyStatus, NLS::Editor::Assets::ModelTextureStableKeyStatus::Stable);
+    EXPECT_EQ(assigned[1].stableKeyStatus, NLS::Editor::Assets::ModelTextureStableKeyStatus::Stable);
+}
+
+TEST(AssetImportPipelineTests, ModelTextureStableKeyKeepsUriIdentityWhenDisplayNameChanges)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference first;
+    first.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
+    first.normalizedUri = "Textures/Wood.png";
+    first.displayName = "Wood A";
+
+    auto second = first;
+    second.displayName = "Wood B";
+
+    EXPECT_EQ(
+        NLS::Editor::Assets::MakeModelTextureStableKey(first),
+        NLS::Editor::Assets::MakeModelTextureStableKey(second));
+}
+
+TEST(AssetImportPipelineTests, ModelTextureStableKeyEscapesSemicolonAndPipeSeparators)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.kind = NLS::Editor::Assets::TextureSourceKind::ExternalFile;
+    source.normalizedUri = "Textures/Wood;Oak|A.png";
+
+    const auto key = NLS::Editor::Assets::MakeModelTextureStableKey(source);
+
+    EXPECT_NE(key.find("%3B"), std::string::npos);
+    EXPECT_NE(key.find("%7C"), std::string::npos);
+}
+
+TEST(AssetImportPipelineTests, ModelTextureStableKeyMarksOrderDerivedFallback)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference first;
+    first.kind = NLS::Editor::Assets::TextureSourceKind::Missing;
+    first.displayName = "Texture";
+
+    auto second = first;
+
+    const auto assigned = NLS::Editor::Assets::AssignModelTextureStableKeys({ first, second });
+
+    ASSERT_EQ(assigned.size(), 2u);
+    EXPECT_NE(assigned[0].stableKey, assigned[1].stableKey);
+    EXPECT_EQ(assigned[0].stableKeyStatus, NLS::Editor::Assets::ModelTextureStableKeyStatus::OrderDerived);
+    EXPECT_EQ(assigned[1].stableKeyStatus, NLS::Editor::Assets::ModelTextureStableKeyStatus::OrderDerived);
+}
+
+TEST(AssetImportPipelineTests, ModelTextureStableKeyIsStableAcrossRepeatedImports)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.kind = NLS::Editor::Assets::TextureSourceKind::BufferView;
+    source.sourceKey = "image/4";
+    source.bufferViewKey = "bufferView/2";
+    source.stableDiscriminator = "imageIndex/4";
+
+    EXPECT_EQ(
+        NLS::Editor::Assets::MakeModelTextureStableKey(source),
+        NLS::Editor::Assets::MakeModelTextureStableKey(source));
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverUsesExplicitRemapBeforePath)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Textures/Wood.png";
+    source.normalizedUri = "Assets/Textures/Wood.png";
+    source.materialTextureKey = "image/0";
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.remaps.push_back({
+        source.stableKey,
+        {
+            NLS::Core::Assets::AssetId(NLS::Guid::Parse("80808080-8080-4080-8080-808080808080")),
+            "texture:remap",
+            "Assets/Textures/Override.png",
+            "Library/Artifacts/Override.ntex",
+            "Override",
+            NLS::Core::Assets::AssetType::Texture,
+            true
+        }
+    });
+    request.pathCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("81818181-8181-4181-8181-818181818181")),
+        "texture:path",
+        "Assets/Textures/Wood.png",
+        "Library/Artifacts/Wood.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::ExplicitRemap);
+    EXPECT_EQ(resolved.targetSubAssetKey, "texture:remap");
+    EXPECT_EQ(resolved.resourcePath.generic_string(), "Library/Artifacts/Override.ntex");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverUsesSourcePathBeforeNameSearch)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Textures/Wood.png";
+    source.normalizedUri = "Assets/Textures/Wood.png";
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.pathCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("82828282-8282-4282-8282-828282828282")),
+        "texture:path",
+        "Assets/Textures/Wood.png",
+        "Library/Artifacts/Wood.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838383")),
+        "texture:name",
+        "Assets/Other/Wood.png",
+        "Library/Artifacts/OtherWood.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::SourcePath);
+    EXPECT_EQ(resolved.targetSubAssetKey, "texture:path");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverDoesNotBindAmbiguousNameMatches)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
+    source.hasModelLocalPayload = false;
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("84848484-8484-4484-8484-848484848484")),
+        "texture:a",
+        "Assets/A/Wood.png",
+        "Library/Artifacts/A.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("85858585-8585-4585-8585-858585858585")),
+        "texture:b",
+        "Assets/B/Wood.png",
+        "Library/Artifacts/B.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::Missing);
+    ASSERT_FALSE(resolved.diagnostics.empty());
+    EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-name-ambiguous");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverUsesModelLocalFallbackWhenExternalDisabled)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Textures/Wood.png";
+    source.sourceKey = "image/0";
+    source.hasModelLocalPayload = true;
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.settings.useExternalTextures = false;
+    request.pathCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("86868686-8686-4686-8686-868686868686")),
+        "texture:path",
+        "Assets/Textures/Wood.png",
+        "Library/Artifacts/Wood.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::ModelEmbeddedFallback);
+    EXPECT_EQ(resolved.modelSubAssetKey, "texture:image/0");
+    ASSERT_FALSE(resolved.diagnostics.empty());
+    EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-external-resolution-disabled");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverOrdersMultiRootNameCandidatesDeterministically)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("87878787-8787-4787-8787-878787878787")),
+        "texture:later-root",
+        "Packages/Shared/Wood.png",
+        "Library/Artifacts/LaterRoot.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true,
+        1u
+    });
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("88888888-8888-4888-8888-888888888888")),
+        "texture:first-root",
+        "Assets/Textures/Wood.png",
+        "Library/Artifacts/FirstRoot.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true,
+        0u
+    });
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("89898989-8989-4989-8989-898989898989")),
+        "material:not-texture",
+        "Assets/Materials/Wood.mat",
+        "Library/Artifacts/Wood.nmat",
+        "Wood",
+        NLS::Core::Assets::AssetType::Material,
+        true,
+        0u
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::Missing);
+    ASSERT_FALSE(resolved.diagnostics.empty());
+    EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-name-ambiguous");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverBindsUniqueTextureNameAfterRejectingNonTextures)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("90909090-9090-4090-9090-909090909090")),
+        "material:wood",
+        "Assets/Materials/Wood.mat",
+        "Library/Artifacts/Wood.nmat",
+        "Wood",
+        NLS::Core::Assets::AssetType::Material,
+        true
+    });
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("91919191-9191-4191-9191-919191919191")),
+        "texture:wood",
+        "Assets/Textures/Wood.png",
+        "Library/Artifacts/Wood.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::NameSearch);
+    EXPECT_EQ(resolved.targetSubAssetKey, "texture:wood");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverTreatsCaseCollisionAsAmbiguous)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=wood.png";
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("92929292-9292-4292-9292-929292929292")),
+        "texture:lower",
+        "Assets/A/wood.png",
+        "Library/Artifacts/lower.ntex",
+        "wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("93939393-9393-4393-9393-939393939393")),
+        "texture:upper",
+        "Assets/B/Wood.png",
+        "Library/Artifacts/upper.ntex",
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::Missing);
+    ASSERT_FALSE(resolved.diagnostics.empty());
+    EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-name-ambiguous");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverSkipsUnimportedNameCandidatesWhenAutoImportDisabled)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
+    source.hasModelLocalPayload = true;
+    source.sourceKey = "image/0";
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.settings.autoImportMissingTextureFiles = false;
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("94949494-9494-4494-9494-949494949494")),
+        "texture:wood",
+        "Assets/Textures/Wood.png",
+        {},
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        false
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::ModelEmbeddedFallback);
+    EXPECT_EQ(resolved.modelSubAssetKey, "texture:image/0");
+}
+
+TEST(AssetImportPipelineTests, ModelTextureResolverWarnsForUnimportedNameCandidateUntilArtifactExists)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;name=Wood";
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.settings.autoImportMissingTextureFiles = true;
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("95959595-9595-4595-9595-959595959595")),
+        "texture:wood",
+        "Assets/Textures/Wood.png",
+        {},
+        "Wood",
+        NLS::Core::Assets::AssetType::Texture,
+        false
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::Missing);
+    EXPECT_TRUE(resolved.resourcePath.empty());
+    ASSERT_FALSE(resolved.diagnostics.empty());
+    EXPECT_EQ(resolved.diagnostics[0].code, "model-texture-artifact-missing");
+}
+
 TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAutodeskWithAssimpFallback)
 {
     const std::map<std::string, std::string> settings {
@@ -4997,6 +7952,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderFallsBackToAss
     meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
     meta.importerId = "scene-model";
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    DisableExternalModelTextureResolution(meta);
 
     const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
         sourcePath,
@@ -5362,6 +8318,116 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxNeutralDiffusePolicyAffectsMater
         std::string::npos);
     EXPECT_NE(defaultMaterial->contentHash, preservedMaterial->contentHash)
         << "Changing FBX neutral-diffuse compatibility policy must change generated material identity.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalAssimpFbxModelImportKeepsDiffuseOpacityAndNormalMaterialTextureKeysWhenExternallyResolved)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "maxPbrMaterial_metalRough.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+
+    const auto sourcePath = root / "Assets" / "Models" / "ExternalFbxTextureSlots.fbx";
+    WriteTextFile(sourcePath, ReadTextFile(sourceFixture));
+
+    struct TextureFixture
+    {
+        const char* fileName;
+        const char* assetId;
+        const char* displayName;
+        NLS::Render::Assets::TextureArtifactColorSpace colorSpace;
+    };
+    const TextureFixture textureFixtures[] = {
+        {"albedo.png", "25252525-2525-4252-8252-252525252525", "FbxAlbedo", NLS::Render::Assets::TextureArtifactColorSpace::Srgb},
+        {"metalness.png", "26262626-2626-4262-8262-262626262626", "FbxMetalness", NLS::Render::Assets::TextureArtifactColorSpace::Linear},
+        {"roughness.png", "27272727-2727-4272-8272-272727272727", "FbxRoughness", NLS::Render::Assets::TextureArtifactColorSpace::Linear},
+        {"occlusion.png", "28282828-2828-4282-8282-282828282828", "FbxOcclusion", NLS::Render::Assets::TextureArtifactColorSpace::Linear},
+        {"normal.png", "29292929-2929-4292-8292-292929292929", "FbxNormal", NLS::Render::Assets::TextureArtifactColorSpace::Linear},
+        {"emission.png", "30303030-3030-4303-8303-303030303030", "FbxEmission", NLS::Render::Assets::TextureArtifactColorSpace::Srgb},
+        {"opacity.png", "31313131-3131-4313-8313-313131313131", "FbxOpacity", NLS::Render::Assets::TextureArtifactColorSpace::Linear}
+    };
+
+    std::filesystem::path albedoArtifactPath;
+    std::filesystem::path normalArtifactPath;
+    std::filesystem::path opacityArtifactPath;
+    for (const auto& texture : textureFixtures)
+    {
+        const auto texturePath = sourcePath.parent_path() / "Textures" / texture.fileName;
+        WriteBinaryFile(texturePath, TinyPng());
+        const auto artifactPath = WriteImportedTextureAssetForTest(
+            root,
+            texturePath,
+            texture.assetId,
+            "editor",
+            texture.displayName,
+            texture.colorSpace);
+        if (std::string(texture.fileName) == "albedo.png")
+            albedoArtifactPath = artifactPath;
+        else if (std::string(texture.fileName) == "normal.png")
+            normalArtifactPath = artifactPath;
+        else if (std::string(texture.fileName) == "opacity.png")
+            opacityArtifactPath = artifactPath;
+    }
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("32323232-3232-4323-8323-323232323232"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    modelMeta.settings["MODEL_FBX_READER"] = "assimp";
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "ExternalFbxTextureSlots",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(
+        std::count_if(
+            result.manifest.subAssets.begin(),
+            result.manifest.subAssets.end(),
+            [](const NLS::Core::Assets::ImportedArtifact& artifact)
+            {
+                return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+            }),
+        0);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto payload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(payload.find("u_AlbedoMap"), std::string::npos);
+    EXPECT_NE(payload.find(albedoArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_NE(payload.find("u_NormalMap"), std::string::npos);
+    EXPECT_NE(payload.find(normalArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_NE(payload.find("u_OpacityMap"), std::string::npos);
+    EXPECT_NE(payload.find(opacityArtifactPath.lexically_relative(root).generic_string()), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aparser%2Ftexture%2F0.ntex"), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aparser%2Ftexture%2F4.ntex"), std::string::npos);
+    EXPECT_EQ(payload.find("textures/texture%3Aparser%2Ftexture%2F6.ntex"), std::string::npos);
 
     std::filesystem::remove_all(root);
 }

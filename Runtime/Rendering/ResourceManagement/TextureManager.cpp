@@ -5,6 +5,8 @@
 #include "Rendering/Settings/DriverSettings.h"
 
 #include "Rendering/Assets/TextureArtifact.h"
+#include <Jobs/BackgroundJobQueue.h>
+#include <Jobs/JobSystem.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 
 #include <Filesystem/IniFile.h>
@@ -19,9 +21,11 @@
 #include <mutex>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace
 {
@@ -32,29 +36,63 @@ using TextureLoader = NLS::Render::Resources::Loaders::TextureLoader;
 
 struct AsyncTextureArtifactRequest
 {
-	std::string path;
-	std::string realPath;
+    const NLS::Core::ResourceManagement::TextureManager* owner = nullptr;
+    std::string path;
+    std::string realPath;
 	ETextureFilteringMode minFilter = ETextureFilteringMode::NEAREST;
 	ETextureFilteringMode magFilter = ETextureFilteringMode::NEAREST;
-	bool mipmap = false;
-	std::optional<std::filesystem::file_time_type> writeTime;
-	std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
-	size_t cancelableInterestCount = 0u;
-	bool hasSharedInterest = false;
-	std::future<std::optional<NLS::Render::Assets::TextureArtifactData>> future;
-};
+		bool mipmap = false;
+		std::optional<std::filesystem::file_time_type> writeTime;
+				std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
+				size_t cancelableInterestCount = 0u;
+				size_t sharedInterestCount = 0u;
+				bool retryCancelledCompletion = false;
+				NLS::Base::Jobs::JobHandle jobHandle;
+			std::future<std::optional<NLS::Render::Assets::TextureArtifactData>> future;
+	};
 
 struct FailedTextureArtifactLoad
 {
+	const NLS::Core::ResourceManagement::TextureManager* owner = nullptr;
 	std::string realPath;
 	std::optional<std::filesystem::file_time_type> writeTime;
 	std::string runtimeSignature;
 };
 
+struct AsyncTextureArtifactStateKey
+{
+	const NLS::Core::ResourceManagement::TextureManager* owner = nullptr;
+	std::string path;
+	std::string realPath;
+
+	[[nodiscard]] bool operator==(const AsyncTextureArtifactStateKey& other) const
+	{
+		return owner == other.owner && path == other.path;
+	}
+};
+
+struct AsyncTextureArtifactStateKeyHash
+{
+	[[nodiscard]] size_t operator()(const AsyncTextureArtifactStateKey& key) const
+	{
+		return std::hash<const NLS::Core::ResourceManagement::TextureManager*>{}(key.owner) ^
+			(std::hash<std::string>{}(key.path) << 1u);
+	}
+};
+
 std::mutex g_asyncTextureMutex;
-std::unordered_map<std::string, AsyncTextureArtifactRequest> g_asyncTextureRequests;
-std::unordered_map<std::string, FailedTextureArtifactLoad> g_failedAsyncTextureArtifacts;
-std::unordered_set<std::string> g_cancelledAsyncTextureArtifacts;
+std::unordered_map<AsyncTextureArtifactStateKey, AsyncTextureArtifactRequest, AsyncTextureArtifactStateKeyHash> g_asyncTextureRequests;
+std::unordered_map<AsyncTextureArtifactStateKey, FailedTextureArtifactLoad, AsyncTextureArtifactStateKeyHash> g_failedAsyncTextureArtifacts;
+std::unordered_set<AsyncTextureArtifactStateKey, AsyncTextureArtifactStateKeyHash> g_cancelledAsyncTextureArtifacts;
+std::atomic_size_t g_activeTextureArtifactWorkers {0u};
+constexpr size_t kMaxPendingAsyncTextureArtifactRequests = 8u;
+constexpr size_t kMaxQueuedAsyncTextureArtifactRequests = 256u;
+
+struct TrackedTextureArtifactPaths
+{
+	std::unordered_set<std::string> sourcePaths;
+	std::unordered_set<std::string> normalizedRealPaths;
+};
 
 ETextureFilteringMode ParseTextureFilteringMode(int value)
 {
@@ -140,8 +178,19 @@ std::string NormalizeResolvedArtifactPath(std::string path)
 	if (path.empty())
 		return {};
 
-	std::replace(path.begin(), path.end(), '\\', '/');
-	return std::filesystem::path(path).lexically_normal().generic_string();
+	try
+	{
+		std::replace(path.begin(), path.end(), '\\', '/');
+		return std::filesystem::path(path).lexically_normal().generic_string();
+	}
+	catch (const std::filesystem::filesystem_error&)
+	{
+		return {};
+	}
+	catch (const std::system_error&)
+	{
+		return {};
+	}
 }
 
 bool ArtifactPathMatchesResolvedPath(
@@ -161,78 +210,261 @@ std::string TextureManager::ResolveResourcePath(const std::string& path)
 
 namespace
 {
-Texture2D* FindCachedTextureByEquivalentArtifactPath(
-	TextureManager& manager,
-	const std::string& realPath)
-{
-	const auto target = NormalizeResolvedArtifactPath(realPath);
-	if (target.empty())
-		return nullptr;
-
-	for (const auto& [resourcePath, texture] : manager.GetResources())
-	{
-		if (texture == nullptr)
-			continue;
-
-		if (NormalizeResolvedArtifactPath(TextureManager::ResolveResourcePath(resourcePath)) == target ||
-			NormalizeResolvedArtifactPath(TextureManager::ResolveResourcePath(texture->path)) == target)
-		{
-			return texture;
-		}
-	}
-	return nullptr;
-}
+bool TextureRequestMatchesAnyTrackedPath(
+	const AsyncTextureArtifactRequest& request,
+	const TrackedTextureArtifactPaths& paths);
 
 auto FindAsyncTextureRequestByEquivalentArtifactPath(
-	std::unordered_map<std::string, AsyncTextureArtifactRequest>& requests,
-	const std::string& path,
-	const std::string& realPath)
+    std::unordered_map<AsyncTextureArtifactStateKey, AsyncTextureArtifactRequest, AsyncTextureArtifactStateKeyHash>& requests,
+    const TextureManager& manager,
+    const std::string& path,
+    const std::string& realPath)
 {
-	auto exact = requests.find(path);
-	if (exact != requests.end())
-		return exact;
-
-	return std::find_if(
-		requests.begin(),
-		requests.end(),
-		[&realPath](const auto& entry)
-		{
-			return ArtifactPathMatchesResolvedPath(entry.second.realPath, realPath);
-		});
+    return std::find_if(
+        requests.begin(),
+        requests.end(),
+        [&manager, &path, &realPath](const auto& entry)
+        {
+            return entry.second.owner == &manager &&
+                (entry.first.path == path ||
+                 ArtifactPathMatchesResolvedPath(entry.second.realPath, realPath));
+        });
 }
 
 auto FindFailedTextureLoadByEquivalentArtifactPath(
-	std::unordered_map<std::string, FailedTextureArtifactLoad>& failures,
+	std::unordered_map<AsyncTextureArtifactStateKey, FailedTextureArtifactLoad, AsyncTextureArtifactStateKeyHash>& failures,
+	const TextureManager& manager,
 	const std::string& path,
 	const std::string& realPath)
 {
-	auto exact = failures.find(path);
-	if (exact != failures.end())
-		return exact;
-
 	return std::find_if(
 		failures.begin(),
 		failures.end(),
-		[&realPath](const auto& entry)
+		[&manager, &path, &realPath](const auto& entry)
 		{
-			return ArtifactPathMatchesResolvedPath(entry.second.realPath, realPath);
+			return entry.second.owner == &manager &&
+				(entry.first.path == path ||
+				 ArtifactPathMatchesResolvedPath(entry.second.realPath, realPath));
 		});
 }
 
 void EraseCancelledTextureArtifactByEquivalentPath(
-	std::unordered_set<std::string>& cancelledArtifacts,
+	std::unordered_set<AsyncTextureArtifactStateKey, AsyncTextureArtifactStateKeyHash>& cancelledArtifacts,
+	const TextureManager& manager,
 	const std::string& path,
 	const std::string& realPath)
 {
-	cancelledArtifacts.erase(path);
 	for (auto it = cancelledArtifacts.begin(); it != cancelledArtifacts.end();)
 	{
-		if (ArtifactPathMatchesResolvedPath(TextureManager::ResolveResourcePath(*it), realPath))
+		if (it->owner == &manager &&
+			(it->path == path ||
+			 ArtifactPathMatchesResolvedPath(it->realPath, realPath)))
+		{
 			it = cancelledArtifacts.erase(it);
+		}
 		else
 			++it;
 	}
 }
+
+class TextureArtifactWorkerScope
+{
+public:
+	TextureArtifactWorkerScope() { g_activeTextureArtifactWorkers.fetch_add(1u, std::memory_order_acq_rel); }
+	~TextureArtifactWorkerScope() { g_activeTextureArtifactWorkers.fetch_sub(1u, std::memory_order_acq_rel); }
+};
+
+struct TextureArtifactJobPayload
+{
+	std::string realPath;
+	std::shared_ptr<std::atomic_bool> cancellationFlag;
+	std::promise<std::optional<NLS::Render::Assets::TextureArtifactData>> promise;
+};
+
+struct TextureArtifactLoadSubmission
+{
+	NLS::Base::Jobs::JobHandle handle;
+	std::future<std::optional<NLS::Render::Assets::TextureArtifactData>> future;
+};
+
+void RunTextureArtifactJob(void* userData)
+{
+	std::unique_ptr<TextureArtifactJobPayload> payload(static_cast<TextureArtifactJobPayload*>(userData));
+	TextureArtifactWorkerScope workerScope;
+	try
+	{
+		payload->promise.set_value(NLS::Render::Assets::LoadTextureArtifact(
+			payload->realPath,
+			payload->cancellationFlag.get()));
+	}
+	catch (...)
+	{
+		try
+		{
+			payload->promise.set_exception(std::current_exception());
+		}
+		catch (...)
+		{
+		}
+	}
+}
+
+void CancelTextureArtifactJob(void* userData)
+{
+	std::unique_ptr<TextureArtifactJobPayload> payload(static_cast<TextureArtifactJobPayload*>(userData));
+	if (payload->cancellationFlag)
+		payload->cancellationFlag->store(true, std::memory_order_release);
+	try
+	{
+		payload->promise.set_value(std::nullopt);
+	}
+	catch (...)
+	{
+	}
+}
+
+TextureArtifactLoadSubmission StartTextureArtifactLoad(
+	const AsyncTextureArtifactRequest& request)
+{
+	auto payload = std::make_unique<TextureArtifactJobPayload>();
+	payload->realPath = request.realPath;
+	payload->cancellationFlag = request.cancelled;
+	auto future = payload->promise.get_future();
+
+	NLS::Base::Jobs::BackgroundJobDesc desc;
+	desc.function = RunTextureArtifactJob;
+	desc.userData = payload.get();
+	desc.cancelFunction = CancelTextureArtifactJob;
+	desc.cancelUserData = payload.get();
+	desc.debugName = "TextureManager::AsyncArtifactLoad";
+
+	const auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
+	if (handle.id == 0u)
+		return {};
+
+	(void)payload.release();
+	return {handle, std::move(future)};
+}
+
+size_t CountActiveTextureRequests()
+{
+	return static_cast<size_t>(std::count_if(
+		g_asyncTextureRequests.begin(),
+		g_asyncTextureRequests.end(),
+			[](const auto& entry)
+			{
+				if (!entry.second.future.valid())
+					return false;
+				if (entry.second.jobHandle.id != 0u &&
+					NLS::Base::Jobs::IsCompleted(entry.second.jobHandle))
+				{
+					return false;
+				}
+				return entry.second.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+			}));
+}
+
+size_t CountQueuedTextureRequestsForOwner(const TextureManager& manager)
+{
+	return static_cast<size_t>(std::count_if(
+		g_asyncTextureRequests.begin(),
+		g_asyncTextureRequests.end(),
+		[&manager](const auto& entry)
+		{
+			return entry.second.owner == &manager;
+		}));
+}
+
+void PromoteQueuedTextureArtifactLoads(
+	TextureManager& manager,
+	const TrackedTextureArtifactPaths* paths)
+{
+	for (;;)
+	{
+		if (CountActiveTextureRequests() >= kMaxPendingAsyncTextureArtifactRequests)
+			return;
+
+		auto found = std::find_if(
+			g_asyncTextureRequests.begin(),
+			g_asyncTextureRequests.end(),
+			[&manager, paths](auto& entry)
+			{
+				if (entry.second.owner != &manager || entry.second.future.valid())
+					return false;
+				return paths == nullptr || TextureRequestMatchesAnyTrackedPath(entry.second, *paths);
+			});
+		if (found == g_asyncTextureRequests.end())
+			return;
+
+			try
+			{
+					auto load = StartTextureArtifactLoad(found->second);
+					if (!load.future.valid())
+					{
+						if (NLS::Base::Jobs::IsJobSystemInitialized())
+						{
+							g_failedAsyncTextureArtifacts[found->first] =
+								{ found->second.owner, found->second.realPath, found->second.writeTime, CurrentTextureRuntimeSignature() };
+							g_asyncTextureRequests.erase(found);
+							continue;
+						}
+						return;
+					}
+					found->second.jobHandle = load.handle;
+					found->second.future = std::move(load.future);
+			}
+		catch (...)
+		{
+			g_failedAsyncTextureArtifacts[found->first] =
+				{ found->second.owner, found->second.realPath, found->second.writeTime, CurrentTextureRuntimeSignature() };
+			g_asyncTextureRequests.erase(found);
+		}
+	}
+}
+
+void ClearAsyncTextureArtifactStateForOwner(const TextureManager& manager)
+{
+	std::vector<AsyncTextureArtifactRequest> removedRequests;
+	{
+		std::lock_guard lock(g_asyncTextureMutex);
+		for (auto it = g_asyncTextureRequests.begin(); it != g_asyncTextureRequests.end();)
+		{
+			if (it->second.owner == &manager)
+			{
+				if (it->second.cancelled)
+					it->second.cancelled->store(true, std::memory_order_release);
+				removedRequests.push_back(std::move(it->second));
+				it = g_asyncTextureRequests.erase(it);
+			}
+			else
+				++it;
+		}
+		for (auto it = g_failedAsyncTextureArtifacts.begin(); it != g_failedAsyncTextureArtifacts.end();)
+		{
+			if (it->second.owner == &manager)
+				it = g_failedAsyncTextureArtifacts.erase(it);
+			else
+				++it;
+		}
+		for (auto it = g_cancelledAsyncTextureArtifacts.begin(); it != g_cancelledAsyncTextureArtifacts.end();)
+		{
+			if (it->owner == &manager)
+				it = g_cancelledAsyncTextureArtifacts.erase(it);
+			else
+				++it;
+		}
+	}
+	for (auto& request : removedRequests)
+	{
+		if (request.jobHandle.id != 0u)
+			NLS::Base::Jobs::Complete(request.jobHandle);
+	}
+}
+}
+
+TextureManager::~TextureManager()
+{
+	ClearAsyncTextureArtifactStateForOwner(*this);
 }
 
 Texture2D* TextureManager::CreateResource(const std::string& path)
@@ -255,6 +487,142 @@ void TextureManager::DestroyResource(Texture2D* resource)
 	TextureLoader::Destroy(resource);
 }
 
+Texture2D* TextureManager::RegisterResource(const std::string& path, Texture2D* instance)
+{
+	InvalidateArtifactLookupIndex();
+	auto* registered = AResourceManager<Texture2D>::RegisterResource(path, instance);
+	InvalidateArtifactLookupIndex();
+	return registered;
+}
+
+void TextureManager::UnloadResource(const std::string& path)
+{
+	InvalidateArtifactLookupIndex();
+	AResourceManager<Texture2D>::UnloadResource(path);
+	InvalidateArtifactLookupIndex();
+}
+
+bool TextureManager::MoveResource(const std::string& previousPath, const std::string& newPath)
+{
+	InvalidateArtifactLookupIndex();
+	const bool moved = AResourceManager<Texture2D>::MoveResource(previousPath, newPath);
+	if (moved)
+		InvalidateArtifactLookupIndex();
+	return moved;
+}
+
+void TextureManager::UnloadResources()
+{
+	InvalidateArtifactLookupIndex();
+	AResourceManager<Texture2D>::UnloadResources();
+	InvalidateArtifactLookupIndex();
+}
+
+void TextureManager::UnregisterResource(const std::string& path)
+{
+	InvalidateArtifactLookupIndex();
+	AResourceManager<Texture2D>::UnregisterResource(path);
+	InvalidateArtifactLookupIndex();
+}
+
+Texture2D* TextureManager::FindCachedArtifactResourceByResolvedPath(const std::string& realPath) const
+{
+	const auto target = NormalizeResolvedArtifactPath(realPath);
+	if (target.empty())
+		return nullptr;
+
+	EnsureArtifactLookupIndex();
+	std::lock_guard lock(m_artifactLookupIndexMutex);
+	if (auto found = m_texturesByNormalizedArtifactPath.find(target);
+		found != m_texturesByNormalizedArtifactPath.end())
+	{
+		return found->second;
+	}
+	return nullptr;
+}
+
+void TextureManager::InvalidateArtifactLookupIndex() const
+{
+	std::lock_guard lock(m_artifactLookupIndexMutex);
+	m_artifactLookupIndexDirty = true;
+	m_artifactLookupIndexedResourceCount = 0u;
+	++m_artifactLookupGeneration;
+	m_texturesByNormalizedArtifactPath.clear();
+}
+
+void TextureManager::EnsureArtifactLookupIndex() const
+{
+	for (;;)
+	{
+		uint64_t generationBefore = 0u;
+		{
+			std::lock_guard lock(m_artifactLookupIndexMutex);
+			if (!m_artifactLookupIndexDirty &&
+				m_artifactLookupIndexedGeneration == m_artifactLookupGeneration)
+			{
+				return;
+			}
+			generationBefore = m_artifactLookupGeneration;
+		}
+
+		const auto resources = GetResources();
+		std::lock_guard lock(m_artifactLookupIndexMutex);
+		if (!m_artifactLookupIndexDirty &&
+			m_artifactLookupIndexedResourceCount == resources.size() &&
+			m_artifactLookupIndexedGeneration == m_artifactLookupGeneration)
+		{
+			return;
+		}
+		if (generationBefore != m_artifactLookupGeneration)
+			continue;
+
+		m_texturesByNormalizedArtifactPath.clear();
+		m_texturesByNormalizedArtifactPath.reserve(resources.size() * 2u);
+		for (const auto& [resourcePath, texture] : resources)
+		{
+			if (texture == nullptr)
+				continue;
+			IndexTextureArtifactPath(resourcePath, texture);
+			IndexTextureArtifactPath(texture->path, texture);
+		}
+		m_artifactLookupIndexedResourceCount = resources.size();
+		m_artifactLookupIndexedGeneration = m_artifactLookupGeneration;
+		m_artifactLookupIndexDirty = false;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		++m_artifactLookupIndexRebuildCountForTesting;
+#endif
+		return;
+	}
+}
+
+void TextureManager::IndexTextureArtifactPath(const std::string& path, Texture2D* texture) const
+{
+	if (texture == nullptr || path.empty())
+		return;
+
+	const auto key = NormalizeResolvedArtifactPath(ResolveResourcePath(path));
+	if (!key.empty())
+		m_texturesByNormalizedArtifactPath.try_emplace(key, texture);
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void TextureManager::ClearArtifactLookupIndexForTesting() const
+{
+	std::lock_guard lock(m_artifactLookupIndexMutex);
+	m_artifactLookupIndexDirty = true;
+	m_artifactLookupIndexedResourceCount = 0u;
+	m_artifactLookupIndexedGeneration = 0u;
+	m_texturesByNormalizedArtifactPath.clear();
+	m_artifactLookupIndexRebuildCountForTesting = 0u;
+}
+
+size_t TextureManager::GetArtifactLookupIndexRebuildCountForTesting() const
+{
+	std::lock_guard lock(m_artifactLookupIndexMutex);
+	return m_artifactLookupIndexRebuildCountForTesting;
+}
+#endif
+
 void TextureManager::ReloadResource(Texture2D* resource, const std::string& path)
 {
 	std::string realPath = GetRealPath(path);
@@ -264,42 +632,62 @@ void TextureManager::ReloadResource(Texture2D* resource, const std::string& path
 	TextureLoader::Reload(resource, realPath, min, mag, mipmap);
 }
 
+Texture2D* TextureManager::GetArtifactResource(const std::string& path, const bool tryToLoadIfNotFound)
+{
+	if (auto* cached = GetResource(path, false))
+		return cached;
+
+	const auto realPath = GetRealPath(path);
+	if (auto* cached = FindCachedArtifactResourceByResolvedPath(realPath))
+		return cached;
+
+	return tryToLoadIfNotFound ? GetResource(path, true) : nullptr;
+}
+
 Texture2D* TextureManager::RequestAsyncArtifact(const std::string& path, const bool cancelableInterest)
 {
 	if (auto* cached = GetResource(path, false))
 		return cached;
 
 	const auto realPath = GetRealPath(path);
-	if (auto* cached = FindCachedTextureByEquivalentArtifactPath(*this, realPath))
+	if (auto* cached = FindCachedArtifactResourceByResolvedPath(realPath))
 		return cached;
 	if (!IsTextureArtifactPath(realPath))
 		return nullptr;
 
-	const auto writeTime = TryGetLastWriteTime(realPath);
-	const auto runtimeSignature = CurrentTextureRuntimeSignature();
-	auto [min, mag, mipmap] = GetTextureMetadata(realPath);
-	AsyncTextureArtifactRequest request;
-	request.path = path;
-	request.realPath = realPath;
-	request.minFilter = min;
-	request.magFilter = mag;
-	request.mipmap = mipmap;
-	request.writeTime = writeTime;
-	request.cancelableInterestCount = cancelableInterest ? 1u : 0u;
-	request.hasSharedInterest = !cancelableInterest;
-	auto cancellationFlag = request.cancelled;
-	{
-		std::lock_guard lock(g_asyncTextureMutex);
-		if (auto existing = FindAsyncTextureRequestByEquivalentArtifactPath(g_asyncTextureRequests, path, realPath);
-			existing != g_asyncTextureRequests.end())
+		const auto writeTime = TryGetLastWriteTime(realPath);
+		const auto runtimeSignature = CurrentTextureRuntimeSignature();
+		auto [min, mag, mipmap] = GetTextureMetadata(realPath);
+		AsyncTextureArtifactRequest request;
+		request.owner = this;
+		request.path = path;
+		request.realPath = realPath;
+		request.minFilter = min;
+		request.magFilter = mag;
+		request.mipmap = mipmap;
+		request.writeTime = writeTime;
+		request.cancelableInterestCount = cancelableInterest ? 1u : 0u;
+		request.sharedInterestCount = cancelableInterest ? 0u : 1u;
 		{
-			if (cancelableInterest)
-				++existing->second.cancelableInterestCount;
-			else
-				existing->second.hasSharedInterest = true;
-			return nullptr;
-		}
-		auto failed = FindFailedTextureLoadByEquivalentArtifactPath(g_failedAsyncTextureArtifacts, path, realPath);
+			std::lock_guard lock(g_asyncTextureMutex);
+			if (auto existing = FindAsyncTextureRequestByEquivalentArtifactPath(g_asyncTextureRequests, *this, path, realPath);
+				existing != g_asyncTextureRequests.end())
+			{
+				if (cancelableInterest)
+					++existing->second.cancelableInterestCount;
+				else
+					++existing->second.sharedInterestCount;
+				EraseCancelledTextureArtifactByEquivalentPath(
+					g_cancelledAsyncTextureArtifacts,
+					*this,
+					path,
+					realPath);
+				if (existing->second.cancelled)
+					existing->second.cancelled->store(false, std::memory_order_release);
+				existing->second.retryCancelledCompletion = true;
+				return nullptr;
+			}
+		auto failed = FindFailedTextureLoadByEquivalentArtifactPath(g_failedAsyncTextureArtifacts, *this, path, realPath);
 		if (failed != g_failedAsyncTextureArtifacts.end())
 		{
 			if (ArtifactPathMatchesResolvedPath(failed->second.realPath, realPath) &&
@@ -310,34 +698,36 @@ Texture2D* TextureManager::RequestAsyncArtifact(const std::string& path, const b
 			}
 			g_failedAsyncTextureArtifacts.erase(failed);
 		}
-		EraseCancelledTextureArtifactByEquivalentPath(g_cancelledAsyncTextureArtifacts, path, realPath);
-		g_asyncTextureRequests.emplace(path, std::move(request));
-	}
-
-	std::future<std::optional<NLS::Render::Assets::TextureArtifactData>> future;
-	try
-	{
-		future = std::async(
-			std::launch::async,
-			[realPath, cancellationFlag]()
+		EraseCancelledTextureArtifactByEquivalentPath(g_cancelledAsyncTextureArtifacts, *this, path, realPath);
+		if (CountQueuedTextureRequestsForOwner(*this) >= kMaxQueuedAsyncTextureArtifactRequests)
+			return nullptr;
+		if (CountActiveTextureRequests() < kMaxPendingAsyncTextureArtifactRequests)
+		{
+			try
 			{
-				return NLS::Render::Assets::LoadTextureArtifact(realPath, cancellationFlag.get());
-			});
-	}
-	catch (...)
-	{
-		std::lock_guard lock(g_asyncTextureMutex);
-		g_asyncTextureRequests.erase(path);
-		g_failedAsyncTextureArtifacts[path] = { realPath, writeTime, runtimeSignature };
+					auto load = StartTextureArtifactLoad(request);
+					if (load.future.valid())
+					{
+						request.jobHandle = load.handle;
+						request.future = std::move(load.future);
+					}
+					else if (NLS::Base::Jobs::IsJobSystemInitialized())
+					{
+						g_failedAsyncTextureArtifacts[{ this, path }] = { this, realPath, writeTime, runtimeSignature };
+						return nullptr;
+					}
+				}
+			catch (...)
+			{
+				g_failedAsyncTextureArtifacts[{ this, path }] = { this, realPath, writeTime, runtimeSignature };
+				return nullptr;
+			}
+			}
+			g_asyncTextureRequests.emplace(AsyncTextureArtifactStateKey{ this, path }, std::move(request));
+		}
+
 		return nullptr;
 	}
-
-	std::lock_guard lock(g_asyncTextureMutex);
-	auto found = g_asyncTextureRequests.find(path);
-	if (found != g_asyncTextureRequests.end())
-		found->second.future = std::move(future);
-	return nullptr;
-}
 
 void TextureManager::CancelAsyncArtifact(const std::string& path)
 {
@@ -346,20 +736,25 @@ void TextureManager::CancelAsyncArtifact(const std::string& path)
 
 	const auto realPath = GetRealPath(path);
 	std::lock_guard lock(g_asyncTextureMutex);
-	if (auto found = FindAsyncTextureRequestByEquivalentArtifactPath(g_asyncTextureRequests, path, realPath);
+	if (auto found = FindAsyncTextureRequestByEquivalentArtifactPath(g_asyncTextureRequests, *this, path, realPath);
 		found != g_asyncTextureRequests.end())
 	{
 		if (found->second.cancelableInterestCount > 0u)
 			--found->second.cancelableInterestCount;
-		if (found->second.cancelableInterestCount == 0u && !found->second.hasSharedInterest)
+		if (found->second.cancelableInterestCount == 0u && found->second.sharedInterestCount == 0u)
 		{
 			if (found->second.cancelled)
 				found->second.cancelled->store(true, std::memory_order_release);
-			g_cancelledAsyncTextureArtifacts.insert(found->second.path);
+			if (!found->second.future.valid())
+			{
+				g_asyncTextureRequests.erase(found);
+				return;
+			}
+			g_cancelledAsyncTextureArtifacts.insert({ found->second.owner, found->second.path, found->second.realPath });
 		}
 		return;
 	}
-	if (auto failed = FindFailedTextureLoadByEquivalentArtifactPath(g_failedAsyncTextureArtifacts, path, realPath);
+	if (auto failed = FindFailedTextureLoadByEquivalentArtifactPath(g_failedAsyncTextureArtifacts, *this, path, realPath);
 		failed != g_failedAsyncTextureArtifacts.end())
 	{
 		g_failedAsyncTextureArtifacts.erase(failed);
@@ -372,6 +767,7 @@ bool TextureManager::IsAsyncArtifactLoadPending(const std::string& path) const
 	std::lock_guard lock(g_asyncTextureMutex);
 	return FindAsyncTextureRequestByEquivalentArtifactPath(
 		g_asyncTextureRequests,
+		*this,
 		path,
 		realPath) != g_asyncTextureRequests.end();
 }
@@ -382,7 +778,7 @@ bool TextureManager::IsAsyncArtifactLoadFailed(const std::string& path) const
 	const auto writeTime = TryGetLastWriteTime(realPath);
 	const auto runtimeSignature = CurrentTextureRuntimeSignature();
 	std::lock_guard lock(g_asyncTextureMutex);
-	auto failed = FindFailedTextureLoadByEquivalentArtifactPath(g_failedAsyncTextureArtifacts, path, realPath);
+	auto failed = FindFailedTextureLoadByEquivalentArtifactPath(g_failedAsyncTextureArtifacts, *this, path, realPath);
 	return failed != g_failedAsyncTextureArtifacts.end() &&
 		ArtifactPathMatchesResolvedPath(failed->second.realPath, realPath) &&
 		failed->second.writeTime == writeTime &&
@@ -393,23 +789,33 @@ namespace
 {
 bool TextureRequestMatchesAnyTrackedPath(
 	const AsyncTextureArtifactRequest& request,
-	const std::unordered_set<std::string>& paths)
+	const TrackedTextureArtifactPaths& paths)
 {
+	if (paths.sourcePaths.find(request.path) != paths.sourcePaths.end())
+		return true;
+	const auto normalizedRequestPath = NormalizeResolvedArtifactPath(request.realPath);
+	return !normalizedRequestPath.empty() &&
+		paths.normalizedRealPaths.find(normalizedRequestPath) != paths.normalizedRealPaths.end();
+}
+
+TrackedTextureArtifactPaths BuildTrackedTextureArtifactPaths(const std::unordered_set<std::string>& paths)
+{
+	TrackedTextureArtifactPaths tracked;
+	tracked.sourcePaths = paths;
+	tracked.normalizedRealPaths.reserve(paths.size());
 	for (const auto& path : paths)
 	{
-		if (path == request.path ||
-			ArtifactPathMatchesResolvedPath(TextureManager::ResolveResourcePath(path), request.realPath))
-		{
-			return true;
-		}
+		const auto normalized = NormalizeResolvedArtifactPath(TextureManager::ResolveResourcePath(path));
+		if (!normalized.empty())
+			tracked.normalizedRealPaths.insert(normalized);
 	}
-	return false;
+	return tracked;
 }
 
 void PumpAsyncTextureArtifactLoads(
 	TextureManager& manager,
 	const size_t maxCompletions,
-	const std::unordered_set<std::string>* paths)
+	const TrackedTextureArtifactPaths* paths)
 {
 	size_t completedCount = 0u;
 
@@ -418,13 +824,16 @@ void PumpAsyncTextureArtifactLoads(
 		AsyncTextureArtifactRequest request;
 		{
 			std::lock_guard lock(g_asyncTextureMutex);
+			PromoteQueuedTextureArtifactLoads(manager, paths);
 			auto found = std::find_if(
 				g_asyncTextureRequests.begin(),
 				g_asyncTextureRequests.end(),
-				[paths](auto& entry)
-				{
-					if (paths != nullptr && !TextureRequestMatchesAnyTrackedPath(entry.second, *paths))
-						return false;
+                    [&manager, paths](auto& entry)
+                    {
+                        if (entry.second.owner != &manager)
+                            return false;
+                        if (paths != nullptr && !TextureRequestMatchesAnyTrackedPath(entry.second, *paths))
+                            return false;
 					return entry.second.future.valid() &&
 						entry.second.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
 				});
@@ -448,8 +857,8 @@ void PumpAsyncTextureArtifactLoads(
 				" error=" +
 				exception.what());
 			std::lock_guard lock(g_asyncTextureMutex);
-			g_failedAsyncTextureArtifacts[request.path] =
-				{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
+			g_failedAsyncTextureArtifacts[{ request.owner, request.path }] =
+				{ request.owner, request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
 			++completedCount;
 			continue;
 		}
@@ -457,8 +866,8 @@ void PumpAsyncTextureArtifactLoads(
 		{
 			NLS_LOG_ERROR("Async texture artifact load failed: " + request.realPath + " error=unknown");
 			std::lock_guard lock(g_asyncTextureMutex);
-			g_failedAsyncTextureArtifacts[request.path] =
-				{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
+			g_failedAsyncTextureArtifacts[{ request.owner, request.path }] =
+				{ request.owner, request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
 			++completedCount;
 			continue;
 		}
@@ -467,11 +876,12 @@ void PumpAsyncTextureArtifactLoads(
 			auto cancelled = std::find_if(
 				g_cancelledAsyncTextureArtifacts.begin(),
 				g_cancelledAsyncTextureArtifacts.end(),
-				[&request](const auto& path)
-				{
-					return path == request.path ||
-						ArtifactPathMatchesResolvedPath(TextureManager::ResolveResourcePath(path), request.realPath);
-				});
+					[&request](const auto& entry)
+					{
+						return entry.owner == request.owner &&
+							(entry.path == request.path ||
+							 ArtifactPathMatchesResolvedPath(entry.realPath, request.realPath));
+					});
 			if (cancelled != g_cancelledAsyncTextureArtifacts.end())
 			{
 				g_cancelledAsyncTextureArtifacts.erase(cancelled);
@@ -481,10 +891,10 @@ void PumpAsyncTextureArtifactLoads(
 		}
 		if (artifact.has_value())
 		{
-			if (FindCachedTextureByEquivalentArtifactPath(manager, request.realPath) != nullptr)
+			if (manager.GetArtifactResource(request.path, false) != nullptr)
 			{
 				std::lock_guard lock(g_asyncTextureMutex);
-				g_failedAsyncTextureArtifacts.erase(request.path);
+				g_failedAsyncTextureArtifacts.erase({ request.owner, request.path });
 				++completedCount;
 				continue;
 			}
@@ -503,14 +913,29 @@ void PumpAsyncTextureArtifactLoads(
 					manager.RegisterResource(request.path, texture);
 					texture = nullptr;
 					std::lock_guard lock(g_asyncTextureMutex);
-					g_failedAsyncTextureArtifacts.erase(request.path);
+					g_failedAsyncTextureArtifacts.erase({ request.owner, request.path });
+				}
+			else
+			{
+				std::lock_guard lock(g_asyncTextureMutex);
+				if (request.retryCancelledCompletion &&
+					request.cancelableInterestCount + request.sharedInterestCount > 0u)
+				{
+					request.cancelled = std::make_shared<std::atomic_bool>(false);
+					request.jobHandle = {};
+					request.future = {};
+					request.retryCancelledCompletion = false;
+					g_failedAsyncTextureArtifacts.erase({ request.owner, request.path });
+					g_asyncTextureRequests.emplace(
+						AsyncTextureArtifactStateKey{ request.owner, request.path },
+						std::move(request));
 				}
 				else
 				{
-					std::lock_guard lock(g_asyncTextureMutex);
-					g_failedAsyncTextureArtifacts[request.path] =
-						{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
+					g_failedAsyncTextureArtifacts[{ request.owner, request.path }] =
+						{ request.owner, request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
 				}
+			}
 			}
 			catch (const std::exception& exception)
 			{
@@ -522,8 +947,8 @@ void PumpAsyncTextureArtifactLoads(
 					" error=" +
 					exception.what());
 				std::lock_guard lock(g_asyncTextureMutex);
-				g_failedAsyncTextureArtifacts[request.path] =
-					{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
+				g_failedAsyncTextureArtifacts[{ request.owner, request.path }] =
+					{ request.owner, request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
 			}
 			catch (...)
 			{
@@ -531,16 +956,31 @@ void PumpAsyncTextureArtifactLoads(
 					TextureLoader::Destroy(texture);
 				NLS_LOG_ERROR("Async texture runtime creation failed: " + request.realPath + " error=unknown");
 				std::lock_guard lock(g_asyncTextureMutex);
-				g_failedAsyncTextureArtifacts[request.path] =
-					{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
+				g_failedAsyncTextureArtifacts[{ request.owner, request.path }] =
+					{ request.owner, request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
 			}
 		}
-		else
-		{
-			std::lock_guard lock(g_asyncTextureMutex);
-			g_failedAsyncTextureArtifacts[request.path] =
-				{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
-		}
+			else
+			{
+				std::lock_guard lock(g_asyncTextureMutex);
+				if (request.retryCancelledCompletion &&
+					request.cancelableInterestCount + request.sharedInterestCount > 0u)
+				{
+					request.cancelled = std::make_shared<std::atomic_bool>(false);
+					request.jobHandle = {};
+					request.future = {};
+					request.retryCancelledCompletion = false;
+					g_failedAsyncTextureArtifacts.erase({ request.owner, request.path });
+					g_asyncTextureRequests.emplace(
+						AsyncTextureArtifactStateKey{ request.owner, request.path },
+						std::move(request));
+				}
+				else
+				{
+					g_failedAsyncTextureArtifacts[{ request.owner, request.path }] =
+						{ request.owner, request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
+				}
+			}
 
 		++completedCount;
 	}
@@ -558,8 +998,70 @@ void TextureManager::PumpAsyncLoadsForPaths(
 {
 	if (paths.empty())
 		return;
-	PumpAsyncTextureArtifactLoads(*this, maxCompletions, &paths);
+	const auto trackedPaths = BuildTrackedTextureArtifactPaths(paths);
+	PumpAsyncTextureArtifactLoads(*this, maxCompletions, &trackedPaths);
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void TextureManager::ClearAsyncArtifactRequestStateForTesting()
+{
+	std::vector<AsyncTextureArtifactRequest> removedRequests;
+	{
+		std::lock_guard lock(g_asyncTextureMutex);
+		removedRequests.reserve(g_asyncTextureRequests.size());
+		for (auto& [path, request] : g_asyncTextureRequests)
+		{
+			if (request.cancelled)
+				request.cancelled->store(true, std::memory_order_release);
+			removedRequests.push_back(std::move(request));
+		}
+		g_asyncTextureRequests.clear();
+		g_failedAsyncTextureArtifacts.clear();
+		g_cancelledAsyncTextureArtifacts.clear();
+	}
+	for (auto& request : removedRequests)
+	{
+		if (request.jobHandle.id != 0u)
+			NLS::Base::Jobs::Complete(request.jobHandle);
+	}
+}
+
+bool TextureManager::WaitForAsyncArtifactWorkersForTesting(const uint32_t timeoutMilliseconds)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
+	while (g_activeTextureArtifactWorkers.load(std::memory_order_acquire) != 0u)
+	{
+		if (std::chrono::steady_clock::now() >= deadline)
+			return false;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	return true;
+}
+
+size_t TextureManager::GetPendingAsyncArtifactRequestCountForTesting()
+{
+	std::lock_guard lock(g_asyncTextureMutex);
+	return static_cast<size_t>(std::count_if(
+		g_asyncTextureRequests.begin(),
+		g_asyncTextureRequests.end(),
+		[](const auto& entry)
+		{
+			return entry.second.future.valid();
+		}));
+}
+
+size_t TextureManager::GetTotalAsyncArtifactRequestCountForTesting()
+{
+	std::lock_guard lock(g_asyncTextureMutex);
+	return g_asyncTextureRequests.size();
+}
+
+size_t TextureManager::GetFailedAsyncArtifactRequestCountForTesting()
+{
+	std::lock_guard lock(g_asyncTextureMutex);
+	return g_failedAsyncTextureArtifacts.size();
+}
+#endif
 
 TextureCube* TextureManager::CreateCubeMap(const std::vector<std::string>& filePaths)
 {

@@ -354,19 +354,26 @@ bool AssetImporterFacade::SaveAndReimport(
     const std::string& assetPath,
     const EditorImportBudgetRequest& budgetRequest)
 {
+    const auto normalized = NormalizeEditorAssetPath(assetPath);
     auto request = budgetRequest;
     if (request.assetPath.empty())
         request.assetPath = assetPath;
-    else if (NormalizeEditorAssetPath(request.assetPath) != NormalizeEditorAssetPath(assetPath))
+    else if (NormalizeEditorAssetPath(request.assetPath) != normalized)
         return false;
 
     const auto admission = TryReserveEditorImportBudgetInternal(request, true);
     if (!admission.admitted)
+    {
+        if (!normalized.empty() &&
+            std::find(m_queuedReimports.begin(), m_queuedReimports.end(), normalized) == m_queuedReimports.end())
+        {
+            m_queuedReimports.push_back(normalized);
+        }
         return false;
+    }
 
     const auto imported = SaveAndReimport(assetPath, nullptr);
-    if (!imported)
-        ReleaseEditorImportBudgetReservation(request);
+    ReleaseEditorImportBudgetReservation(request);
     return imported;
 }
 

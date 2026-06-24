@@ -760,7 +760,7 @@ TEST(AssetImporterFacadeTests, EditorImportBudgetSharesLargeSceneStreamingLimits
     EXPECT_EQ(rejected.snapshot.remainingCpuBudgetUs, 75u);
 }
 
-TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportRejectsBackgroundImportWithoutQueueingWhenBudgetIsExhausted)
+TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportDefersBackgroundImportWhenBudgetIsExhausted)
 {
     using namespace NLS::Editor::Assets;
 
@@ -789,7 +789,7 @@ TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportRejectsBackgroundImportWit
             1u,
             1u
         }));
-    EXPECT_EQ(facade.GetQueuedReimportCount(), 0u);
+    EXPECT_EQ(facade.GetQueuedReimportCount(), 1u);
 
     const auto importer = facade.GetAtPath("Assets/Models/BudgetedHero.gltf");
     ASSERT_TRUE(importer.has_value());
@@ -817,6 +817,46 @@ TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportReleasesReservationWhenImp
         "Assets/Models/Missing.gltf",
         EditorImportBudgetRequest {
             "Assets/Models/Missing.gltf",
+            7u,
+            7u,
+            7u,
+            7u,
+            7u
+        }));
+
+    const auto snapshot = facade.GetEditorImportBudgetSnapshot();
+    EXPECT_EQ(snapshot.remainingCpuBudgetUs, 10u);
+    EXPECT_EQ(snapshot.remainingIoBudgetBytes, 10u);
+    EXPECT_EQ(snapshot.remainingGpuUploadBudgetBytes, 10u);
+    EXPECT_EQ(snapshot.remainingCpuMemoryBudgetBytes, 10u);
+    EXPECT_EQ(snapshot.remainingGpuMemoryBudgetBytes, 10u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, BudgetedSaveAndReimportReleasesReservationAfterSuccessfulImport)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "BudgetedSuccess.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+    ASSERT_TRUE(facade.SetSerializedSetting("Assets/Models/BudgetedSuccess.gltf", "globalScale", "2.0"));
+
+    EditorImportBudgetSnapshot budget;
+    budget.cpuBudgetUs = 10u;
+    budget.ioBudgetBytes = 10u;
+    budget.gpuUploadBudgetBytes = 10u;
+    budget.cpuMemoryBudgetBytes = 10u;
+    budget.gpuMemoryBudgetBytes = 10u;
+    facade.SetEditorImportBudget(budget);
+
+    ASSERT_TRUE(facade.SaveAndReimport(
+        "Assets/Models/BudgetedSuccess.gltf",
+        EditorImportBudgetRequest {
+            "Assets/Models/BudgetedSuccess.gltf",
             7u,
             7u,
             7u,

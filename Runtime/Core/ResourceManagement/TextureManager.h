@@ -6,6 +6,8 @@
 #include <Rendering/Resources/TextureCube.h>
 
 #include "Core/ResourceManagement/AResourceManager.h"
+#include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -20,7 +22,9 @@ namespace NLS::Core::ResourceManagement
         using Texture2D = Render::Resources::Texture2D;
         using TextureCube = Render::Resources::TextureCube;
 
-		const char* GetResourceTypeName() const override { return "Texture"; }
+			~TextureManager();
+
+			const char* GetResourceTypeName() const override { return "Texture"; }
 
 		/**
 		* Create the resource identified by the given path
@@ -41,6 +45,13 @@ namespace NLS::Core::ResourceManagement
 		*/
 		virtual void ReloadResource(Texture2D* p_resource, const std::string& p_path) override;
 
+		Texture2D* RegisterResource(const std::string& p_path, Texture2D* p_instance);
+		void UnloadResource(const std::string& p_path);
+		bool MoveResource(const std::string& p_previousPath, const std::string& p_newPath);
+		void UnloadResources();
+		void UnregisterResource(const std::string& p_path);
+
+		Texture2D* GetArtifactResource(const std::string& p_path, bool p_tryToLoadIfNotFound = true);
 		Texture2D* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
 		ResourceHandle<Texture2D> AcquireTextureHandle(
 			ResourceLifetimeRegistry& registry,
@@ -63,10 +74,14 @@ namespace NLS::Core::ResourceManagement
 			ResourceLifetimeRegistry& registry,
 			const ResourceLifetimeTrimOptions& options = {})
 		{
-			return TrimUnusedResources(
+			InvalidateArtifactLookupIndex();
+			const auto trimmedCount = TrimUnusedResources(
 				registry,
 				ResourceLifetimeResourceType::Texture,
 				options);
+			if (trimmedCount > 0u)
+				InvalidateArtifactLookupIndex();
+			return trimmedCount;
 		}
 
 		void CancelAsyncArtifact(const std::string& p_path);
@@ -78,5 +93,31 @@ namespace NLS::Core::ResourceManagement
         static std::string ResolveResourcePath(const std::string& p_path);
 
 		static TextureCube* CreateCubeMap(const std::vector<std::string>& filePaths);
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+			static void ClearAsyncArtifactRequestStateForTesting();
+			static bool WaitForAsyncArtifactWorkersForTesting(uint32_t p_timeoutMilliseconds = 5000u);
+			static size_t GetPendingAsyncArtifactRequestCountForTesting();
+			static size_t GetTotalAsyncArtifactRequestCountForTesting();
+			static size_t GetFailedAsyncArtifactRequestCountForTesting();
+			void ClearArtifactLookupIndexForTesting() const;
+			size_t GetArtifactLookupIndexRebuildCountForTesting() const;
+#endif
+
+	private:
+		Texture2D* FindCachedArtifactResourceByResolvedPath(const std::string& p_realPath) const;
+		void InvalidateArtifactLookupIndex() const;
+		void EnsureArtifactLookupIndex() const;
+		void IndexTextureArtifactPath(const std::string& p_path, Texture2D* p_texture) const;
+
+		mutable std::mutex m_artifactLookupIndexMutex;
+		mutable bool m_artifactLookupIndexDirty = true;
+		mutable size_t m_artifactLookupIndexedResourceCount = 0u;
+		mutable uint64_t m_artifactLookupGeneration = 0u;
+		mutable uint64_t m_artifactLookupIndexedGeneration = 0u;
+		mutable std::unordered_map<std::string, Texture2D*> m_texturesByNormalizedArtifactPath;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		mutable size_t m_artifactLookupIndexRebuildCountForTesting = 0u;
+#endif
 	};
 }

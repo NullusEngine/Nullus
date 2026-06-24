@@ -4,6 +4,7 @@
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/SceneRendererFactory.h"
 #include "Core/EditorActions.h"
+#include "Core/RecentBackgroundWorkGate.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/EditorAssetPathUtils.h"
@@ -72,6 +73,75 @@ constexpr size_t kSceneViewDragPreviewTextureCompletionsPerFrame =
 constexpr size_t kSceneViewDragPreviewMeshBindsPerFrame =
     NLS::Editor::Core::GetDragPreviewPrefabRendererResourceStreamingBudget().meshBindsPerFrame;
 constexpr uint64_t kSceneViewHoverPickingVisibleDrawBudget = 1024u;
+constexpr size_t kSceneViewImportedPrefabPreviewPreloadGateCapacity = 256u;
+constexpr auto kSceneViewImportedPrefabPreviewPreloadGateTtl = std::chrono::seconds(3);
+
+std::mutex& ImportedPrefabPreviewPreloadMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+NLS::Editor::Core::RecentBackgroundWorkGate& ImportedPrefabPreviewPreloadGate()
+{
+    static NLS::Editor::Core::RecentBackgroundWorkGate gate(
+        kSceneViewImportedPrefabPreviewPreloadGateCapacity,
+        kSceneViewImportedPrefabPreviewPreloadGateTtl);
+    return gate;
+}
+
+std::string BuildImportedPrefabPreviewPreloadKey(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload)
+{
+    return NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload) + "|" +
+        NLS::Editor::Assets::GetEditorAssetDragPayloadGuid(payload) + "|" +
+        NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(payload);
+}
+
+bool IsImportedPrefabPreviewPreloadInFlight(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload)
+{
+    const auto key = BuildImportedPrefabPreviewPreloadKey(payload);
+    if (key.empty())
+        return false;
+    std::lock_guard lock(ImportedPrefabPreviewPreloadMutex());
+    return ImportedPrefabPreviewPreloadGate().IsInFlight(key);
+}
+
+bool ScheduleImportedPrefabPreviewPreloadOnce(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload)
+{
+    const auto key = BuildImportedPrefabPreviewPreloadKey(payload);
+    if (key.empty())
+        return false;
+    {
+        std::lock_guard lock(ImportedPrefabPreviewPreloadMutex());
+        if (!ImportedPrefabPreviewPreloadGate().TryBegin(
+                key,
+                NLS::Editor::Core::RecentBackgroundWorkGate::Clock::now()))
+            return false;
+    }
+
+    const auto projectAssetsPath = std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath));
+    const bool scheduled = NLS::Editor::Assets::SchedulePreviewPrefabHotCachePreload(
+        payload,
+        projectAssetsPath,
+        [key](std::function<void()> task)
+        {
+            return EDITOR_EXEC(TrackOpportunisticBackgroundTask(
+                [task = std::move(task), key]
+                {
+                    auto completion = ImportedPrefabPreviewPreloadGate().CompleteOnScopeExit(key);
+                    if (task)
+                        task();
+                }));
+        });
+    if (!scheduled)
+    {
+        ImportedPrefabPreviewPreloadGate().End(key);
+    }
+    return scheduled;
+}
 
 void HashSceneViewCacheValue(uint64_t& seed, const uint64_t value)
 {
@@ -190,7 +260,7 @@ bool StartImportedAssetDragPreviewMeshLoad(
 
     auto state = std::make_shared<NLS::Editor::Core::PrefabInstanceMeshArtifactLoadState>();
     loads.emplace(path, state);
-    const bool accepted = EDITOR_EXEC(TrackBackgroundTask(
+    const bool accepted = EDITOR_EXEC(TrackOpportunisticBackgroundTask(
         [state, path]
         {
             std::optional<NLS::Render::Assets::MeshArtifactData> data;
@@ -799,12 +869,15 @@ bool RequestImportedAssetDragPreviewMaterialPath(
 }
 
 void PumpImportedAssetDragPreviewResourceManagers(
+    const std::unordered_set<std::string>& materialRequests,
     const std::unordered_set<std::string>& textureRequests)
 {
     if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
     {
         auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
-        materialManager.PumpAsyncLoads(kSceneViewDragPreviewMaterialPrewarmsPerFrame);
+        materialManager.PumpAsyncLoadsForPaths(
+            materialRequests,
+            kSceneViewDragPreviewMaterialPrewarmsPerFrame);
     }
     if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
     {
@@ -1058,9 +1131,12 @@ bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(
     }
     NLS::Editor::Assets::EditorAssetDragDropBridge dragDropBridge(
         std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)));
-    auto prefab = dragDropBridge.TryLoadPreviewPrefabArtifactShared(payload);
+    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab;
+    if (!IsImportedPrefabPreviewPreloadInFlight(payload))
+        prefab = dragDropBridge.TryGetCachedPreviewPrefabArtifactShared(payload);
     if (!prefab)
     {
+        (void)ScheduleImportedPrefabPreviewPreloadOnce(payload);
         m_importedAssetDragPreviewMeshGhostUnavailable = true;
         m_importedAssetDragPreviewNextMeshGhostRetryTime =
             std::chrono::steady_clock::now() + kSceneViewDragPreviewRetryDelay;
@@ -1166,15 +1242,15 @@ void Editor::Panels::SceneView::HandleViewportAssetDragDrop()
         if (payloadView.delivered)
         {
             if (!CanCommitImportedAssetDragPreviewRootOnRelease(
-                m_importedAssetDragPreviewArtifact != nullptr,
-                m_importedAssetDragPreviewSession.GetRoot() != nullptr))
+                    m_importedAssetDragPreviewArtifact != nullptr,
+                    m_importedAssetDragPreviewSession.GetRoot() != nullptr))
             {
                 auto previewPlacement = m_importedAssetDragPreviewPlacement;
                 if (!previewPlacement.has_value())
                     previewPlacement =
                         ResolveImportedAssetDragPreviewPlacement(EDITOR_CONTEXT(inputManager)->GetMousePosition());
                 ClearImportedAssetDragPreview();
-                EDITOR_EXEC(CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement));
+                EDITOR_EXEC(CreateGameObjectFromAssetNonBlocking(payload, true, nullptr, previewPlacement));
                 UI::EndDragDropTarget();
                 return;
             }
@@ -1217,7 +1293,7 @@ void Editor::Panels::SceneView::HandleViewportAssetDragDrop()
                         previewCommitHandoff.root->MarkAsDestroy();
                     }
                 }
-                EDITOR_EXEC(CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement));
+                EDITOR_EXEC(CreateGameObjectFromAssetNonBlocking(payload, true, nullptr, previewPlacement));
             }
         }
         else
@@ -1288,7 +1364,9 @@ void Editor::Panels::SceneView::PumpImportedAssetDragPreviewResources()
         return;
     }
 
-    PumpImportedAssetDragPreviewResourceManagers(m_importedAssetDragPreviewPrewarmRequest.textureLoadsByPath);
+    PumpImportedAssetDragPreviewResourceManagers(
+        m_importedAssetDragPreviewPrewarmRequest.materialLoadsByPath,
+        m_importedAssetDragPreviewPrewarmRequest.textureLoadsByPath);
 
     auto shouldSkipPreviewResource = [this](const NLS::Engine::Assets::PrefabResolvedAsset& resolved)
     {

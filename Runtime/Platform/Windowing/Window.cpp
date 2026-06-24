@@ -94,6 +94,7 @@ NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::Window
 	BindMoveCallback();
 	BindFocusCallback();
 	BindRefreshCallback();
+	BindDropCallback();
 
 	/* Event listening */
 	ResizeEvent.AddListener(std::bind(&Window::OnResize, this, std::placeholders::_1, std::placeholders::_2));
@@ -880,6 +881,29 @@ void NLS::Windowing::Window::BindCloseCallback() const
 	};
 
 	glfwSetWindowCloseCallback(m_glfwWindow, closeCallback);
+}
+
+void NLS::Windowing::Window::BindDropCallback() const
+{
+	auto dropCallback = [](GLFWwindow* p_window, int p_count, const char** p_paths)
+	{
+		Window* windowInstance = FindInstance(p_window);
+		if (windowInstance == nullptr || p_count <= 0 || p_paths == nullptr)
+			return;
+
+		std::vector<std::string> paths;
+		paths.reserve(static_cast<size_t>(p_count));
+		for (int index = 0; index < p_count; ++index)
+		{
+			if (p_paths[index] != nullptr && p_paths[index][0] != '\0')
+				paths.emplace_back(p_paths[index]);
+		}
+
+		if (!paths.empty())
+			windowInstance->DroppedFilesEvent.Invoke(paths);
+	};
+
+	glfwSetDropCallback(m_glfwWindow, dropCallback);
 }
 
 void NLS::Windowing::Window::OnResize(uint16_t p_width, uint16_t p_height)

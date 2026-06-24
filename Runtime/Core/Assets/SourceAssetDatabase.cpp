@@ -252,7 +252,7 @@ bool SourceAssetDatabase::ScanRootInternal(
                 continue;
             }
 
-            if (!RegisterSourceAsset(normalizedRoot, entry, readOnly, mountedRoots))
+            if (!RegisterSourceAssetEntry(normalizedRoot, entry, readOnly, mountedRoots))
                 return false;
         }
     }
@@ -348,6 +348,28 @@ void SourceAssetDatabase::AddDiagnostic(
 }
 
 bool SourceAssetDatabase::RegisterSourceAsset(
+    const std::filesystem::path& root,
+    const std::filesystem::path& assetPath,
+    const bool readOnly,
+    std::span<const SourceAssetRoot> mountedRoots)
+{
+    std::error_code error;
+    const auto normalizedPath = NormalizeAssetPath(assetPath);
+    if (!std::filesystem::is_regular_file(normalizedPath, error) || error)
+    {
+        AddDiagnostic(
+            AssetDiagnosticSeverity::Warning,
+            "asset-scan-entry-skipped",
+            AssetId(),
+            normalizedPath,
+            "Asset entry could not be read during scan.");
+        return false;
+    }
+
+    return RegisterSourceAssetEntry(root, std::filesystem::directory_entry(normalizedPath, error), readOnly, mountedRoots);
+}
+
+bool SourceAssetDatabase::RegisterSourceAssetEntry(
     const std::filesystem::path& root,
     const std::filesystem::directory_entry& entry,
     const bool readOnly,

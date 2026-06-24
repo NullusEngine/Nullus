@@ -119,7 +119,10 @@ void MeshRenderer::OnCreate()
 
 void MeshRenderer::SetFrustumBehaviour(EFrustumBehaviour p_boundingMode)
 {
+    if (m_frustumBehaviour == p_boundingMode)
+        return;
     m_frustumBehaviour = p_boundingMode;
+    MarkRenderStateChanged();
 }
 
 MeshRenderer::EFrustumBehaviour MeshRenderer::GetFrustumBehaviour() const
@@ -135,6 +138,7 @@ const Render::Geometry::BoundingSphere& MeshRenderer::GetCustomBoundingSphere() 
 void MeshRenderer::SetCustomBoundingSphere(const Render::Geometry::BoundingSphere& p_boundingSphere)
 {
     m_customBoundingSphere = p_boundingSphere;
+    MarkRenderStateChanged();
 }
 
 void MeshRenderer::FillWithMaterial(RenderMaterial& p_material)
@@ -149,6 +153,7 @@ void MeshRenderer::FillWithMaterial(RenderMaterial& p_material)
         m_materialPaths[i] = p_material.path;
         m_failedMaterialPaths[i].clear();
     }
+    MarkRenderStateChanged();
 }
 
 void MeshRenderer::SetMaterialAtIndex(uint8_t p_index, RenderMaterial& p_material)
@@ -161,6 +166,7 @@ void MeshRenderer::SetMaterialAtIndex(uint8_t p_index, RenderMaterial& p_materia
         materials[p_index] = {};
     m_materialPaths[p_index] = p_material.path;
     m_failedMaterialPaths[p_index].clear();
+    MarkRenderStateChanged();
 }
 
 void MeshRenderer::SetResolvedMaterialFromReference(uint8_t p_index, RenderMaterial& p_material)
@@ -189,6 +195,7 @@ void MeshRenderer::SetResolvedMaterialFromReference(uint8_t p_index, RenderMater
     m_materials[p_index] = &p_material;
     m_materialPaths[p_index] = p_material.path;
     m_failedMaterialPaths[p_index].clear();
+    MarkRenderStateChanged();
 }
 
 RenderMaterial* MeshRenderer::GetMaterialAtIndex(uint8_t p_index)
@@ -205,6 +212,7 @@ void MeshRenderer::RemoveMaterialAtIndex(uint8_t p_index)
             materials[p_index] = {};
         m_materialPaths[p_index].clear();
         m_failedMaterialPaths[p_index].clear();
+        MarkRenderStateChanged();
     }
 }
 
@@ -219,6 +227,7 @@ void MeshRenderer::RemoveMaterialByInstance(RenderMaterial& p_instance)
                 materials[i] = {};
             m_materialPaths[i].clear();
             m_failedMaterialPaths[i].clear();
+            MarkRenderStateChanged();
         }
     }
 }
@@ -234,6 +243,7 @@ void MeshRenderer::RemoveAllMaterials()
         m_failedMaterialPaths[i].clear();
     }
     materials.clear();
+    MarkRenderStateChanged();
 }
 
 const Maths::Matrix4& MeshRenderer::GetUserMatrix() const
@@ -244,6 +254,11 @@ const Maths::Matrix4& MeshRenderer::GetUserMatrix() const
 const MeshRenderer::MaterialList& MeshRenderer::GetMaterials() const
 {
     return m_materials;
+}
+
+uint64_t MeshRenderer::GetRenderRevision() const
+{
+    return m_renderRevision;
 }
 
 MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
@@ -281,6 +296,7 @@ MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
         m_materials[p_index] = material;
         m_materialPaths[p_index] = material->path;
         m_failedMaterialPaths[p_index].clear();
+        MarkRenderStateChanged();
         return material;
     }
 
@@ -346,6 +362,7 @@ void MeshRenderer::SetMaterialPaths(const NLS::Array<std::string>& p_paths)
         materials[index] = {};
         m_materialPaths[index] = p_paths[index];
         m_failedMaterialPaths[index].clear();
+        MarkRenderStateChanged();
     }
 
     if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
@@ -367,15 +384,22 @@ void MeshRenderer::SetMaterialPathHints(const NLS::Array<std::string>& p_paths)
     {
         const std::string path = index < p_paths.size() ? p_paths[index] : std::string {};
         if (m_materials[index] != nullptr && !MaterialArtifactPathMatches(m_materials[index]->path, path))
+        {
             m_materials[index] = nullptr;
+            MarkRenderStateChanged();
+        }
         m_materialPaths[index] = path;
         m_failedMaterialPaths[index].clear();
+        MarkRenderStateChanged();
     }
 }
 
 void MeshRenderer::SetTransientRenderingSuppressed(const bool suppressed)
 {
+    if (m_transientRenderingSuppressed == suppressed)
+        return;
     m_transientRenderingSuppressed = suppressed;
+    MarkRenderStateChanged();
 }
 
 bool MeshRenderer::IsTransientRenderingSuppressed() const
@@ -395,6 +419,7 @@ void MeshRenderer::SetMaterialReferences(const NLS::Array<NLS::Engine::Serialize
         else
             m_materialPaths[index].clear();
         m_failedMaterialPaths[index].clear();
+        MarkRenderStateChanged();
     }
 }
 
@@ -415,7 +440,10 @@ void MeshRenderer::FillEmptySlotsWithMaterial(RenderMaterial& p_material)
     for (size_t i = 0; i < materialCount && i < m_materials.size(); ++i)
     {
         if (m_materials[i] == nullptr)
+        {
             m_materials[i] = &p_material;
+            MarkRenderStateChanged();
+        }
     }
 }
 
@@ -482,7 +510,12 @@ size_t MeshRenderer::GetExpectedMaterialSlotCount()
 void MeshRenderer::SetUserMatrixElement(uint32_t p_row, uint32_t p_column, float p_value)
 {
     if (p_row < 4 && p_column < 4)
+    {
+        if (m_userMatrix.data[4 * p_row + p_column] == p_value)
+            return;
         m_userMatrix.data[4 * p_row + p_column] = p_value;
+        MarkRenderStateChanged();
+    }
 }
 
 float MeshRenderer::GetUserMatrixElement(uint32_t p_row, uint32_t p_column) const
@@ -491,5 +524,10 @@ float MeshRenderer::GetUserMatrixElement(uint32_t p_row, uint32_t p_column) cons
         return m_userMatrix.data[4 * p_row + p_column];
     else
         return 0.0f;
+}
+
+void MeshRenderer::MarkRenderStateChanged()
+{
+    ++m_renderRevision;
 }
 }

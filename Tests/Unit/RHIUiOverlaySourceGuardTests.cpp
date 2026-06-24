@@ -372,6 +372,19 @@ TEST(RHIUiOverlaySourceGuardTests, DriverUIAccessExposesUiOverlayResourceLifecyc
     EXPECT_EQ(resizeBody.find("ReleaseRetiredTextureViews"), std::string::npos);
 }
 
+TEST(RHIUiOverlaySourceGuardTests, AssetBrowserProjectCopyRegeneratesMetaIdentity)
+{
+    const auto assetBrowserSource = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
+    const auto copyFileBody = ExtractFunctionBody(assetBrowserSource, "bool CopyAssetFileWithMeta(");
+    const auto copyFolderBody = ExtractFunctionBody(assetBrowserSource, "bool CopyAssetFolderRecursively(");
+
+    EXPECT_NE(copyFileBody.find("AssetId::New()"), std::string::npos);
+    EXPECT_NE(copyFileBody.find("meta.Save(destinationMeta)"), std::string::npos);
+    EXPECT_EQ(copyFileBody.find("std::filesystem::copy_file(sourceMeta"), std::string::npos);
+    EXPECT_NE(copyFolderBody.find("CopyAssetFileWithMeta(entry.path(), destination / relative)"), std::string::npos);
+    EXPECT_EQ(copyFolderBody.find("std::filesystem::copy("), std::string::npos);
+}
+
 TEST(RHIUiOverlaySourceGuardTests, ToolbarUsesLegacyImageButtonsAndRawTextureIds)
 {
     const auto toolbarSource = ReadSourceText(RepoPath("Project/Editor/Panels/Toolbar.cpp"));

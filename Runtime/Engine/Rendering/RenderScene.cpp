@@ -35,9 +35,17 @@
 #include "Rendering/SceneSpatialIndex.h"
 #include "Rendering/SceneVisibilityPipeline.h"
 #include "SceneSystem/Scene.h"
+#include "Profiling/Profiler.h"
 
 namespace NLS::Engine::Rendering
 {
+	struct RenderSceneDeclaredTextureLookupCache
+	{
+		std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> declaredTexturesByNormalizedPath;
+		std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> resourcesByNormalizedPath;
+		bool resourceIndexBuilt = false;
+	};
+
 namespace
 {
 	uint32_t ResolveVisibleInstanceCount(const NLS::Render::Entities::Drawable& drawable)
@@ -219,9 +227,20 @@ namespace
 		if (path.empty())
 			return {};
 
-		auto normalized = NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(path);
-		std::replace(normalized.begin(), normalized.end(), '\\', '/');
-		return std::filesystem::path(normalized).lexically_normal().generic_string();
+		try
+		{
+			auto normalized = NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(path);
+			std::replace(normalized.begin(), normalized.end(), '\\', '/');
+			return std::filesystem::path(normalized).lexically_normal().generic_string();
+		}
+		catch (const std::filesystem::filesystem_error&)
+		{
+			return {};
+		}
+		catch (const std::system_error&)
+		{
+			return {};
+		}
 	}
 
 	bool TexturePathMatchesDeclaredPath(
@@ -235,29 +254,72 @@ namespace
 		return NormalizeResourcePathKey(texture.path) == NormalizeResourcePathKey(declaredPath);
 	}
 
-	NLS::Render::Resources::Texture2D* FindCachedDeclaredTexture(
+	void BuildDeclaredTextureResourceIndex(
 		NLS::Core::ResourceManagement::TextureManager& textureManager,
-		const std::string& texturePath)
+		RenderSceneDeclaredTextureLookupCache& cache,
+		RenderSceneSyncStats& stats)
 	{
-		if (auto* texture = textureManager.GetResource(texturePath, false))
-			return texture;
+		if (cache.resourceIndexBuilt)
+			return;
 
-		const auto declaredKey = NormalizeResourcePathKey(texturePath);
-		if (declaredKey.empty())
-			return nullptr;
-
+		cache.resourceIndexBuilt = true;
+		++stats.declaredTextureResourceScanCount;
 		const auto resources = textureManager.GetResources();
+		cache.resourcesByNormalizedPath.reserve(resources.size() * 2u);
 		for (const auto& [resourcePath, texture] : resources)
 		{
 			if (texture == nullptr)
 				continue;
-			if (NormalizeResourcePathKey(resourcePath) == declaredKey ||
-				TexturePathMatchesDeclaredPath(*texture, texturePath))
+
+			const auto resourceKey = NormalizeResourcePathKey(resourcePath);
+			if (!resourceKey.empty())
+				cache.resourcesByNormalizedPath.try_emplace(resourceKey, texture);
+
+			const auto textureKey = NormalizeResourcePathKey(texture->path);
+			if (!textureKey.empty())
+				cache.resourcesByNormalizedPath.try_emplace(textureKey, texture);
+		}
+	}
+
+	NLS::Render::Resources::Texture2D* FindCachedDeclaredTexture(
+		NLS::Core::ResourceManagement::TextureManager& textureManager,
+		const std::string& texturePath,
+		RenderSceneDeclaredTextureLookupCache& cache,
+		RenderSceneSyncStats& stats)
+	{
+		++stats.declaredTextureLookupCount;
+
+		const auto declaredKey = NormalizeResourcePathKey(texturePath);
+		const auto cacheKey = declaredKey.empty() ? texturePath : declaredKey;
+		if (cacheKey.empty())
+			return nullptr;
+
+		if (const auto cached = cache.declaredTexturesByNormalizedPath.find(cacheKey);
+			cached != cache.declaredTexturesByNormalizedPath.end())
+		{
+			++stats.declaredTextureCacheHitCount;
+			return cached->second;
+		}
+
+		++stats.declaredTextureCacheMissCount;
+		if (auto* texture = textureManager.GetResource(texturePath, false))
+		{
+			cache.declaredTexturesByNormalizedPath.emplace(cacheKey, texture);
+			return texture;
+		}
+
+		if (!declaredKey.empty())
+		{
+			BuildDeclaredTextureResourceIndex(textureManager, cache, stats);
+			if (const auto found = cache.resourcesByNormalizedPath.find(declaredKey);
+				found != cache.resourcesByNormalizedPath.end())
 			{
-				return texture;
+				cache.declaredTexturesByNormalizedPath.emplace(cacheKey, found->second);
+				return found->second;
 			}
 		}
 
+		cache.declaredTexturesByNormalizedPath.emplace(cacheKey, nullptr);
 		return nullptr;
 	}
 
@@ -279,7 +341,10 @@ namespace
 		return true;
 	}
 
-	bool TryBindDeclaredMaterialTexturesFromCache(NLS::Render::Resources::Material& material)
+	bool TryBindDeclaredMaterialTexturesFromCache(
+		NLS::Render::Resources::Material& material,
+		RenderSceneDeclaredTextureLookupCache& cache,
+		RenderSceneSyncStats& stats)
 	{
 		if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
 			return false;
@@ -300,7 +365,7 @@ namespace
 					continue;
 			}
 
-			auto* texture = FindCachedDeclaredTexture(textureManager, texturePath);
+			auto* texture = FindCachedDeclaredTexture(textureManager, texturePath, cache, stats);
 			if (texture == nullptr)
 				continue;
 
@@ -769,12 +834,35 @@ bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputSt
 		primitiveMode == other.primitiveMode;
 }
 
+bool RenderScene::PrimitiveInputStamp::operator==(const PrimitiveInputStamp& other) const
+{
+	return owner == other.owner &&
+		meshFilter == other.meshFilter &&
+		mesh == other.mesh &&
+		AreSameMatrix(worldMatrix, other.worldMatrix) &&
+		layer == other.layer &&
+			ownerRenderRevision == other.ownerRenderRevision &&
+			transformRenderRevision == other.transformRenderRevision &&
+			meshFilterRenderRevision == other.meshFilterRenderRevision &&
+			meshRendererRenderRevision == other.meshRendererRenderRevision &&
+			meshContentRevision == other.meshContentRevision &&
+			materialInstanceId == other.materialInstanceId &&
+			materialParameterRevision == other.materialParameterRevision &&
+			materialRenderStateRevision == other.materialRenderStateRevision &&
+			explicitMaterialTexturesResolved == other.explicitMaterialTexturesResolved &&
+			requireExplicitMaterialTextures == other.requireExplicitMaterialTextures &&
+			ownerAlive == other.ownerAlive &&
+			ownerActive == other.ownerActive;
+}
+
 RenderSceneSyncStats RenderScene::Synchronize(
 	SceneSystem::Scene& scene,
 	const RenderSceneSyncOptions& options)
 {
+	NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize");
 	const auto syncStart = std::chrono::steady_clock::now();
 	RenderSceneSyncStats stats;
+	RenderSceneDeclaredTextureLookupCache declaredTextureCache;
 	m_lastDirtySyncHandles.clear();
 	m_lastRemovedHandles.clear();
 	const auto& fastAccess = scene.GetFastAccessComponents();
@@ -784,32 +872,51 @@ RenderSceneSyncStats RenderScene::Synchronize(
 
 	std::unordered_map<Components::MeshRenderer*, NLS::InstanceID> liveMeshRenderers;
 	if (fastAccessMembershipChanged)
-		liveMeshRenderers.reserve(fastAccess.modelRenderers.size());
-
-	for (auto* meshRenderer : fastAccess.modelRenderers)
 	{
-		if (meshRenderer == nullptr)
-			continue;
-		auto* owner = meshRenderer->gameobject();
-		if (owner == nullptr || !owner->IsAlive())
-		{
-			const auto found = m_primitiveIndexByMeshRenderer.find(meshRenderer);
-			if (found != m_primitiveIndexByMeshRenderer.end())
-				TombstonePrimitive(found->second, stats);
-			continue;
-		}
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::BuildLiveMeshRendererSetReserve");
+		liveMeshRenderers.reserve(fastAccess.modelRenderers.size());
+	}
 
-		if (fastAccessMembershipChanged)
-			liveMeshRenderers.emplace(meshRenderer, meshRenderer->GetInstanceID());
-		auto& primitive = FindOrCreatePrimitive(*meshRenderer, stats);
-		SynchronizePrimitive(primitive, options, stats);
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::SynchronizePrimitiveLoop");
+		for (auto* meshRenderer : fastAccess.modelRenderers)
+		{
+			if (meshRenderer == nullptr)
+				continue;
+			auto* owner = meshRenderer->gameobject();
+			if (owner == nullptr || !owner->IsAlive())
+			{
+				const auto found = m_primitiveIndexByMeshRenderer.find(meshRenderer);
+				if (found != m_primitiveIndexByMeshRenderer.end())
+					TombstonePrimitive(found->second, stats);
+				continue;
+			}
+
+			if (fastAccessMembershipChanged)
+				liveMeshRenderers.emplace(meshRenderer, meshRenderer->GetInstanceID());
+			auto& primitive = FindOrCreatePrimitive(*meshRenderer, stats);
+			const auto inputStamp = BuildPrimitiveInputStamp(*meshRenderer, primitive, options);
+			if (CanReuseSynchronizedPrimitive(primitive, inputStamp))
+				continue;
+			SynchronizePrimitive(primitive, options, stats, declaredTextureCache);
+			primitive.lastInputStamp = BuildPrimitiveInputStamp(*meshRenderer, primitive, options);
+		}
 	}
 
 	if (fastAccessMembershipChanged)
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RemoveMissingPrimitives");
 		RemoveMissingPrimitives(liveMeshRenderers, stats);
+	}
 	m_lastSceneFastAccessRevision = fastAccessRevision;
-	RefreshSpatialIndex(options);
-	RebuildImportedHierarchyHLODRecords(scene);
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshSpatialIndex");
+		RefreshSpatialIndex(options);
+	}
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RebuildImportedHierarchyHLODRecords");
+		RebuildImportedHierarchyHLODRecords(scene);
+	}
 	m_lastSyncStats = stats;
 	stats.syncTimeNs = ElapsedNanoseconds(syncStart);
 	m_lastSyncStats.syncTimeNs = stats.syncTimeNs;
@@ -1581,7 +1688,8 @@ void RenderScene::MarkPrimitiveDirtyForSnapshot(const RenderPrimitive& primitive
 void RenderScene::SynchronizePrimitive(
 	RenderPrimitive& primitive,
 	const RenderSceneSyncOptions& options,
-	RenderSceneSyncStats& stats)
+	RenderSceneSyncStats& stats,
+	RenderSceneDeclaredTextureLookupCache& declaredTextureCache)
 {
 	if (!primitive.occupied || primitive.tombstoned)
 		return;
@@ -1611,6 +1719,7 @@ void RenderScene::SynchronizePrimitive(
 	auto* meshFilter = primitive.owner != nullptr
 		? primitive.owner->GetComponent<Components::MeshFilter>()
 		: nullptr;
+	primitive.meshFilter = meshFilter;
 	auto* resolvedMesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
 	primitive.mesh = resolvedMesh;
 	primitive.frustumBehaviour = meshRenderer->GetFrustumBehaviour();
@@ -1657,7 +1766,7 @@ void RenderScene::SynchronizePrimitive(
 	if (previousCommandCount != 1u)
 		MarkCommandOffsetTableDirty();
 	primitive.cachedCommands.resize(1u);
-	auto* material = ResolveMaterialForMesh(primitive, *primitive.mesh, options);
+	auto* material = ResolveMaterialForMesh(primitive, *primitive.mesh, options, stats, declaredTextureCache);
 	if (material == nullptr || !material->IsValid())
 	{
 		const bool wasValid = primitive.cachedCommands[0].valid;
@@ -1701,6 +1810,90 @@ void RenderScene::SynchronizePrimitive(
 	}
 }
 
+RenderScene::PrimitiveInputStamp RenderScene::BuildPrimitiveInputStamp(
+	Components::MeshRenderer& meshRenderer,
+	const RenderPrimitive& primitive,
+	const RenderSceneSyncOptions& options) const
+{
+	PrimitiveInputStamp stamp;
+	stamp.owner = meshRenderer.gameobject();
+	stamp.ownerAlive = stamp.owner != nullptr && stamp.owner->IsAlive();
+	stamp.ownerActive = stamp.owner != nullptr && stamp.owner->IsActive();
+	const auto layer = stamp.owner != nullptr ? stamp.owner->GetLayer() : 0;
+	stamp.layer = static_cast<uint32_t>(std::clamp(layer, 0, 31));
+	stamp.ownerRenderRevision = stamp.owner != nullptr ? stamp.owner->GetRenderStateRevision() : 0u;
+	if (auto* transform = stamp.owner != nullptr ? stamp.owner->GetTransform() : nullptr)
+	{
+		stamp.transformRenderRevision = transform->GetRenderRevision();
+		stamp.worldMatrix = transform->GetWorldMatrix();
+	}
+	stamp.meshFilter = stamp.owner != nullptr ? stamp.owner->GetComponent<Components::MeshFilter>() : nullptr;
+	stamp.meshFilterRenderRevision = stamp.meshFilter != nullptr ? stamp.meshFilter->GetRenderRevision() : 0u;
+	stamp.meshRendererRenderRevision = meshRenderer.GetRenderRevision();
+	stamp.mesh = stamp.meshFilter != nullptr ? stamp.meshFilter->ResolveMesh() : primitive.mesh;
+	stamp.meshContentRevision = stamp.mesh != nullptr ? stamp.mesh->GetContentRevision() : 0u;
+	stamp.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
+
+	NLS::Render::Resources::Material* material = nullptr;
+	if (options.overrideMaterial != nullptr && options.overrideMaterial->IsValid())
+	{
+		material = options.overrideMaterial;
+	}
+		else if (stamp.mesh != nullptr)
+		{
+			const auto materialIndex = stamp.mesh->GetMaterialIndex();
+			if (materialIndex < Components::MeshRenderer::kMaxMaterialCount)
+				material = meshRenderer.ResolveMaterialAtIndex(static_cast<uint8_t>(materialIndex));
+		}
+	if (material == nullptr && options.defaultMaterial != nullptr && options.defaultMaterial->IsValid())
+		material = options.defaultMaterial;
+
+	if (material != nullptr)
+	{
+		stamp.materialInstanceId = material->GetInstanceId();
+		stamp.materialParameterRevision = material->GetParameterRevision();
+		stamp.materialRenderStateRevision = material->GetRenderStateRevision();
+			if (!material->GetTextureResourcePaths().empty())
+				stamp.explicitMaterialTexturesResolved = HasResolvedDeclaredMaterialTextures(*material);
+		}
+
+	return stamp;
+}
+
+bool RenderScene::CanReuseSynchronizedPrimitive(
+	const RenderPrimitive& primitive,
+	const PrimitiveInputStamp& stamp) const
+{
+	if (!primitive.occupied || primitive.tombstoned)
+		return false;
+	if (primitive.owner == nullptr ||
+		primitive.meshRenderer == nullptr ||
+		primitive.mesh == nullptr ||
+		primitive.cachedCommands.empty() ||
+		std::any_of(
+			primitive.cachedCommands.begin(),
+			primitive.cachedCommands.end(),
+			[](const CachedCommandSlot& slot)
+			{
+				return !slot.valid;
+			}))
+	{
+		return false;
+	}
+	for (const auto& slot : primitive.cachedCommands)
+	{
+		if (slot.command.material != nullptr &&
+			!slot.command.material->GetTextureResourcePaths().empty() &&
+			!HasResolvedDeclaredMaterialTextures(*slot.command.material))
+		{
+			return false;
+		}
+	}
+	if (stamp.requireExplicitMaterialTextures || !stamp.explicitMaterialTexturesResolved)
+		return stamp.explicitMaterialTexturesResolved && primitive.lastInputStamp == stamp;
+	return primitive.lastInputStamp == stamp;
+}
+
 void RenderScene::RemoveMissingPrimitives(
 	const std::unordered_map<Components::MeshRenderer*, NLS::InstanceID>& liveMeshRenderers,
 	RenderSceneSyncStats& stats)
@@ -1727,7 +1920,9 @@ void RenderScene::RemoveMissingPrimitives(
 NLS::Render::Resources::Material* RenderScene::ResolveMaterialForMesh(
 	RenderPrimitive& primitive,
 	NLS::Render::Resources::Mesh& mesh,
-	const RenderSceneSyncOptions& options) const
+	const RenderSceneSyncOptions& options,
+	RenderSceneSyncStats& stats,
+	RenderSceneDeclaredTextureLookupCache& declaredTextureCache) const
 {
 	if (options.overrideMaterial != nullptr && options.overrideMaterial->IsValid())
 		return options.overrideMaterial;
@@ -1742,7 +1937,7 @@ NLS::Render::Resources::Material* RenderScene::ResolveMaterialForMesh(
 			material != nullptr && material->IsValid())
 		{
 			if (hasExplicitMaterialPath)
-				TryBindDeclaredMaterialTexturesFromCache(*material);
+				TryBindDeclaredMaterialTexturesFromCache(*material, declaredTextureCache, stats);
 			if (options.requireExplicitMaterialTextures &&
 				hasExplicitMaterialPath &&
 				!HasResolvedDeclaredMaterialTextures(*material))

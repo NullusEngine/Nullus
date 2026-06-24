@@ -7,13 +7,16 @@
 
 #include <array>
 #include <cstddef>
+#include <deque>
 #include <filesystem>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <algorithm>
 #include <vector>
 
 namespace NLS::Editor::Assets
@@ -127,6 +130,9 @@ struct AssetDatabaseRefreshSchedulingDecision
     bool queueRefreshAfterInFlight = false;
 };
 
+using AssetBrowserExternalDroppedFileBatch = std::vector<std::string>;
+using AssetBrowserExternalDroppedFileQueue = std::deque<AssetBrowserExternalDroppedFileBatch>;
+
 enum class AssetDatabaseRefreshDiscardAction
 {
     Drop,
@@ -134,6 +140,14 @@ enum class AssetDatabaseRefreshDiscardAction
 };
 
 AssetBrowserRefreshPlan BuildAssetBrowserRefreshPlan(AssetBrowserRefreshReason reason);
+
+void EnqueueAssetBrowserExternalDroppedFiles(
+    AssetBrowserExternalDroppedFileQueue& queue,
+    AssetBrowserExternalDroppedFileBatch paths);
+
+std::optional<AssetBrowserExternalDroppedFileBatch> ConsumeAssetBrowserExternalDroppedFiles(
+    AssetBrowserExternalDroppedFileQueue& queue,
+    bool currentFolderHovered);
 
 AssetDatabaseRefreshSchedulingDecision PlanAssetDatabaseRefreshScheduling(
     bool projectRootEmpty,
@@ -209,17 +223,29 @@ struct AssetBrowserRect
     AssetBrowserPoint max;
 };
 
+struct AssetBrowserDisplayItemRange
+{
+    size_t begin = 0u;
+    size_t count = 0u;
+};
+
 AssetBrowserWorkflowCapabilities BuildAssetBrowserWorkflowCapabilities(
     const AssetBrowserItem& item);
 
 AssetBrowserItemType AssetBrowserItemTypeFromPathParserFileType(
     NLS::Utils::PathParser::EFileType fileType);
 
+bool AssetBrowserSourceAssetCanHaveGeneratedSubAssets(const std::string& sourceAssetPath);
+
 const char* AssetBrowserItemTypeDisplayLabel(AssetBrowserItemType type);
 
 AssetBrowserItemTypeColor AssetBrowserItemTypeDisplayColor(AssetBrowserItemType type);
 
 const char* AssetBrowserFallbackIconId(AssetBrowserItemType type);
+
+std::string_view ResolveAssetBrowserDisplayFallbackIconId(
+    AssetBrowserItemType type,
+    std::string_view thumbnailFallbackIcon);
 
 AssetBrowserContentViewMode ResolveAssetBrowserContentViewMode(float thumbnailSize);
 
@@ -235,12 +261,51 @@ std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
     const std::unordered_set<std::string>& expandedSourceAssets,
     const std::unordered_map<std::string, size_t>& generatedSubAssetCountHints = {});
 
+std::vector<AssetBrowserDisplayItem> BuildProgressiveAssetBrowserDisplayItems(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    const std::unordered_map<std::string, size_t>& generatedSubAssetRevealCounts,
+    size_t maxGeneratedSubAssetPlaceholdersPerSource);
+
+std::optional<AssetBrowserDisplayItemRange> ResolveAssetBrowserExpandedSubAssetRange(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    size_t sourceDisplayIndex);
+
 const std::array<AssetBrowserItemType, kAssetBrowserItemTypeCount>& AssetBrowserItemTypeFilterOptions();
 
 std::string BuildAssetBrowserThumbnailGenerationScopeKey(
     const std::string& selectedFolder,
     uint32_t requestedSize,
     const std::vector<AssetBrowserItem>& visibleItems);
+
+std::string BuildAssetBrowserThumbnailItemKey(
+    const AssetBrowserItem& item,
+    uint32_t requestedSize);
+
+template<typename ItemKeyMap>
+void RegisterAssetBrowserThumbnailCacheKeyBinding(
+    ItemKeyMap& itemKeysByCacheKey,
+    const std::string& cacheKey,
+    const std::string& itemKey)
+{
+    auto& itemKeys = itemKeysByCacheKey[cacheKey];
+    if (std::find(itemKeys.begin(), itemKeys.end(), itemKey) == itemKeys.end())
+        itemKeys.push_back(itemKey);
+}
+
+template<typename ItemKeyMap, typename ResultMap, typename Result>
+void ApplyAssetBrowserThumbnailCacheKeyResult(
+    const ItemKeyMap& itemKeysByCacheKey,
+    ResultMap& resultsByItemKey,
+    const std::string& cacheKey,
+    const Result& result)
+{
+    const auto foundItemKeys = itemKeysByCacheKey.find(cacheKey);
+    if (foundItemKeys == itemKeysByCacheKey.end())
+        return;
+
+    for (const auto& itemKey : foundItemKeys->second)
+        resultsByItemKey[itemKey] = result;
+}
 
 struct AssetBrowserThumbnailGenerationScopeDecision
 {
@@ -249,12 +314,85 @@ struct AssetBrowserThumbnailGenerationScopeDecision
     bool requerySameScope = false;
 };
 
+struct AssetBrowserHeavyGpuThumbnailPumpInput
+{
+    bool allowHeavyGpuPreview = true;
+    bool interactive = false;
+    bool hasQueuedWork = false;
+    bool hasInFlightWork = false;
+    bool hasPreviewRenderer = false;
+    double nowSeconds = 0.0;
+    double deferredUntilSeconds = 0.0;
+    double nextAllowedSeconds = 0.0;
+};
+
+struct AssetBrowserHeavyGpuThumbnailPumpDecision
+{
+    bool shouldPump = false;
+};
+
+struct AssetBrowserLightGpuThumbnailPumpInput
+{
+    bool allowGpuPreviewStart = true;
+    bool interactive = false;
+    bool hasQueuedWork = false;
+    bool hasInFlightWork = false;
+    bool hasPreviewRenderer = false;
+    double nowSeconds = 0.0;
+    double nextAllowedSeconds = 0.0;
+};
+
+struct AssetBrowserLightGpuThumbnailPumpDecision
+{
+    bool shouldPump = false;
+};
+
+struct AssetBrowserThumbnailPumpInput
+{
+    bool interactive = false;
+    bool hasQueuedWork = false;
+    bool hasInFlightWork = false;
+    size_t interactiveStartsThisFrame = 0u;
+    size_t maxInteractiveStartsPerFrame = 1u;
+};
+
+struct AssetBrowserThumbnailPumpDecision
+{
+    bool shouldStartBackgroundWork = false;
+};
+
+struct AssetBrowserCachedThumbnailTexturePumpInput
+{
+    bool interactive = false;
+    size_t queuedTextureLoads = 0u;
+    size_t inFlightDecodes = 0u;
+    size_t interactiveStartsThisFrame = 0u;
+    size_t maxInteractiveStartsPerFrame = 1u;
+};
+
+struct AssetBrowserCachedThumbnailTexturePumpDecision
+{
+    bool shouldPump = false;
+};
+
 AssetBrowserThumbnailGenerationScopeDecision EvaluateAssetBrowserThumbnailGenerationScope(
     const std::string& previousScopeKey,
     uint32_t previousRequestedSize,
     bool scopeDirty,
     const std::string& nextScopeKey,
     uint32_t nextRequestedSize);
+
+AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
+    const AssetBrowserHeavyGpuThumbnailPumpInput& input);
+
+AssetBrowserLightGpuThumbnailPumpDecision PlanAssetBrowserLightGpuThumbnailPump(
+    const AssetBrowserLightGpuThumbnailPumpInput& input);
+
+AssetBrowserThumbnailPumpDecision PlanAssetBrowserThumbnailPump(
+    const AssetBrowserThumbnailPumpInput& input);
+
+AssetBrowserCachedThumbnailTexturePumpDecision PlanAssetBrowserCachedThumbnailTexturePump(
+    const AssetBrowserCachedThumbnailTexturePumpInput& input);
 
 AssetBrowserFolderNode BuildProjectAssetFolderTree(const std::filesystem::path& projectRootOrAssetsRoot);
 

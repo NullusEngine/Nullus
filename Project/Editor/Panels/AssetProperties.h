@@ -1,11 +1,17 @@
 ﻿#pragma once
 
+#include <optional>
+#include <string>
 #include <variant>
+#include <vector>
 
 #include <Filesystem/IniFile.h>
 #include <Eventing/Event.h>
 
 #include <UI/Panels/PanelWindow.h>
+
+#include "Assets/AssetImporterSettings.h"
+#include "Assets/ModelTextureResolutionReport.h"
 
 namespace NLS::Render::Resources
 {
@@ -25,6 +31,47 @@ namespace NLS::UI::Widgets
 
 namespace NLS::Editor::Panels
 {
+    struct ModelTextureAssetPropertiesRow
+    {
+        std::string sourceStableKey;
+        std::string resolutionKind;
+        std::string targetAssetId;
+        std::string targetSubAssetKey;
+        std::string targetEditorPath;
+        std::vector<std::string> diagnosticCodes;
+        bool hasWarnings = false;
+        bool hasInvalidTargetWarning = false;
+        bool hasUnsupportedEncodingWarning = false;
+        bool usesOrderDerivedStableKey = false;
+    };
+
+    struct ModelTextureAssetPropertiesView
+    {
+        NLS::Editor::Assets::ModelTextureResolutionSettings settings;
+        bool hasCurrentReport = false;
+        bool reportMalformed = false;
+        bool reportStale = false;
+        bool reimportRequired = false;
+        std::vector<ModelTextureAssetPropertiesRow> rows;
+    };
+
+    ModelTextureAssetPropertiesView BuildModelTextureAssetPropertiesView(
+        const NLS::Core::Assets::AssetMeta& modelMeta,
+        const std::string& targetPlatform,
+        const std::optional<std::string>& reportText);
+    void StoreModelTextureAssetPropertiesSettings(
+        NLS::Core::Assets::AssetMeta& modelMeta,
+        const NLS::Editor::Assets::ModelTextureResolutionSettings& settings);
+    void StoreModelTextureAssetPropertiesRemap(
+        NLS::Core::Assets::AssetMeta& modelMeta,
+        const std::string& stableSourceKey,
+        const NLS::Core::Assets::AssetId& targetAssetId,
+        const std::string& targetSubAssetKey,
+        const std::string& targetEditorPath);
+    void ClearModelTextureAssetPropertiesRemap(
+        NLS::Core::Assets::AssetMeta& modelMeta,
+        const std::string& stableSourceKey);
+
 	class AssetProperties : public UI::PanelWindow
 	{
 	public:
@@ -61,10 +108,11 @@ namespace NLS::Editor::Panels
 	private:
 		void CreateHeaderButtons();
         void CreateAssetSelector();
-		void CreateSettings();
-		void CreateInfo();
-		void CreateModelSettings();
-		void CreateTextureSettings();
+			void CreateSettings();
+			void CreateInfo();
+			void CreateModelSettings();
+            void CreateModelTextureResolutionProperties();
+			void CreateTextureSettings();
 		void Apply();
 		void Reimport();
 

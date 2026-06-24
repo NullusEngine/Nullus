@@ -32,6 +32,8 @@
 #include "Panels/SceneView.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
+#include "ResourceManagement/MaterialManager.h"
+#include "ResourceManagement/TextureManager.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphSerializer.h"
 
@@ -44,6 +46,7 @@ namespace
 using NLS::Core::Assets::AssetId;
 using NLS::Editor::Assets::AssetDragDropWorkflow;
 using NLS::Editor::Assets::DragDropOperationStatus;
+using NLS::Editor::Assets::UnifiedPrefabReadiness;
 using NLS::Engine::Assets::PrefabArtifact;
 
 AssetId Id(const char* guid)
@@ -217,6 +220,77 @@ void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_
     stream.write(
         reinterpret_cast<const char*>(bytes.data()),
         static_cast<std::streamsize>(bytes.size()));
+}
+
+std::filesystem::path FindFirstImportedArtifactPathForSubAssetPrefix(
+    const std::filesystem::path& root,
+    const std::filesystem::path& manifestPath,
+    const std::string& subAssetPrefix,
+    const std::string& extension)
+{
+    std::ifstream input(manifestPath, std::ios::binary);
+    if (!input.good())
+        return {};
+
+    auto manifest = nlohmann::json::parse(input, nullptr, false);
+    if (!manifest.is_object() || !manifest["dependencies"].is_array())
+        return {};
+
+    for (const auto& dependency : manifest["dependencies"])
+    {
+        if (!dependency.is_object() ||
+            dependency.value("kind", std::string {}) != "imported-artifact")
+        {
+            continue;
+        }
+
+        const auto value = dependency.value("value", std::string {});
+        const auto separator = value.find('#');
+        if (separator == std::string::npos)
+            continue;
+
+        const auto assetIdText = value.substr(0u, separator);
+        const auto subAssetAndTarget = value.substr(separator + 1u);
+        if (subAssetAndTarget.rfind(subAssetPrefix, 0u) != 0u)
+            continue;
+
+        const auto targetSeparator = subAssetAndTarget.rfind('@');
+        const auto subAssetKey = targetSeparator == std::string::npos
+            ? subAssetAndTarget
+            : subAssetAndTarget.substr(0u, targetSeparator);
+        const auto importedManifestPath =
+            root / "Library" / "Artifacts" / assetIdText / "manifest.json";
+
+        std::ifstream importedInput(importedManifestPath, std::ios::binary);
+        if (!importedInput.good())
+            continue;
+
+        auto importedManifest = nlohmann::json::parse(importedInput, nullptr, false);
+        if (!importedManifest.is_object() || !importedManifest["subAssets"].is_array())
+            continue;
+
+        for (const auto& subAsset : importedManifest["subAssets"])
+        {
+            if (!subAsset.is_object() ||
+                subAsset.value("subAssetKey", std::string {}) != subAssetKey)
+            {
+                continue;
+            }
+
+            const auto artifactPathText = subAsset.value("artifactPath", std::string {});
+            if (artifactPathText.empty())
+                return {};
+
+            auto artifactPath = std::filesystem::path(artifactPathText);
+            if (artifactPath.extension() != extension)
+                return {};
+            if (artifactPath.is_relative())
+                artifactPath = importedManifestPath.parent_path() / artifactPath;
+            return artifactPath.lexically_normal();
+        }
+    }
+
+    return {};
 }
 
 std::vector<uint8_t> TinyPng()
@@ -406,7 +480,7 @@ TEST(EditorAssetDragDropTests, DropsGeneratedModelPrefabAsReadOnlyConnectedInsta
     EXPECT_EQ(scene.GetGameObjects().front(), result.instance->instanceRoot);
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsGraphWhenRendererTextureArtifactIsMissing)
+TEST(EditorAssetDragDropTests, GeneratedModelBlockingDropReimportsWhenRendererTextureArtifactIsMissing)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -417,11 +491,18 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsGraphWhenRendererTexture
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
     ASSERT_TRUE(database.ImportAsset("Assets/Models/ReadyHero.gltf"));
-    auto texture = database.LoadSubAssetAtPath("Assets/Models/ReadyHero.gltf", "texture:image/0");
-    ASSERT_TRUE(texture.has_value());
-    ASSERT_TRUE(std::filesystem::exists(texture->artifactPath));
-    std::filesystem::remove(texture->artifactPath);
-    ASSERT_FALSE(std::filesystem::exists(texture->artifactPath));
+    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
+        "Assets/Models/ReadyHero.gltf");
+    const auto modelManifestPath = artifactRoot / "manifest.json";
+    const auto textureArtifactPath = FindFirstImportedArtifactPathForSubAssetPrefix(
+        root,
+        modelManifestPath,
+        "texture:",
+        ".ntex");
+    ASSERT_FALSE(textureArtifactPath.empty());
+    ASSERT_TRUE(std::filesystem::exists(textureArtifactPath));
+    std::filesystem::remove(textureArtifactPath);
+    ASSERT_FALSE(std::filesystem::exists(textureArtifactPath));
 
     const auto payload = MakeImportedGeneratedModelPayload(
         database,
@@ -430,15 +511,39 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsGraphWhenRendererTexture
 
     NLS::Engine::SceneSystem::Scene scene;
     NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
-    const auto result = bridge.DropImportedAssetHandleIntoHierarchy(payload, scene);
+    auto finalDropRequest = NLS::Editor::Assets::UnifiedPrefabLoadRequest {};
+    finalDropRequest.source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+        root,
+        "Assets/Models/ReadyHero.gltf",
+        "prefab:ReadyHero",
+        NLS::Editor::Assets::GetEditorAssetDragPayloadAssetId(payload),
+        NLS::Core::Assets::AssetType::ModelScene);
+    finalDropRequest.loadMode = NLS::Editor::Assets::UnifiedPrefabLoadMode::FinalDrop;
+    finalDropRequest.ownerKind = NLS::Editor::Assets::UnifiedPrefabOwnerKind::SceneInstance;
+    finalDropRequest.ownerScopeId = "Assets/Models/ReadyHero.gltf";
+    finalDropRequest.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::MeshMaterialTextureReady;
+    const auto directLoad = bridge.LoadUnifiedPrefabShared(finalDropRequest);
+    ASSERT_FALSE(directLoad.prefab) << "Final-drop ready load must reject the missing renderer texture dependency.";
+    EXPECT_TRUE(directLoad.rendererDependencyMissing || directLoad.pending)
+        << directLoad.diagnosticCode << ": " << directLoad.diagnosticMessage;
+
+    NLS::Editor::Assets::ImportProgressTracker progress;
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchyBlocking(
+        payload,
+        scene,
+        {},
+        nullptr,
+        nullptr,
+        &progress);
 
     ASSERT_TRUE(result.handled);
     EXPECT_FALSE(result.pendingImport) << JoinDiagnosticCodes(result.dragDrop);
     ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
     ASSERT_EQ(scene.GetGameObjects().size(), 1u);
     EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "ReadyHeroRoot");
-    EXPECT_TRUE(result.dragDrop.deferredAssetReferenceResolutionRequested)
-        << "Renderer resources can stream after the cheap prefab graph commit; a missing renderer artifact must not block Scene View release.";
+    EXPECT_TRUE(std::filesystem::exists(textureArtifactPath))
+        << "Blocking final drop must restore missing renderer texture artifacts before committing.";
+    EXPECT_FALSE(progress.HasRunningJobs());
 
     std::filesystem::remove_all(root);
 }
@@ -494,7 +599,10 @@ TEST(EditorAssetDragDropTests, PreviewPrefabArtifactFreshnessInvalidatesWhenMani
     NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
     auto previewPrefab = bridge.TryLoadPreviewPrefabArtifactShared(payload);
     ASSERT_NE(previewPrefab, nullptr);
-    EXPECT_TRUE(bridge.IsPreviewPrefabArtifactCurrent(payload, *previewPrefab, false));
+    EXPECT_TRUE(bridge.IsPreviewPrefabArtifactCurrent(
+        payload,
+        *previewPrefab,
+        UnifiedPrefabReadiness::PrefabGraphOnly));
 
     const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
         "Assets/Models/FreshnessHero.gltf");
@@ -504,7 +612,10 @@ TEST(EditorAssetDragDropTests, PreviewPrefabArtifactFreshnessInvalidatesWhenMani
         output << '\n';
     }
 
-    EXPECT_FALSE(bridge.IsPreviewPrefabArtifactCurrent(payload, *previewPrefab, false))
+    EXPECT_FALSE(bridge.IsPreviewPrefabArtifactCurrent(
+        payload,
+        *previewPrefab,
+        UnifiedPrefabReadiness::PrefabGraphOnly))
         << "Scene View release must reject a drag-start preview artifact if the importer manifest changed before mouse-up.";
 
     std::filesystem::remove_all(root);
@@ -529,11 +640,56 @@ TEST(EditorAssetDragDropTests, PreviewPrefabArtifactFreshnessRejectsValueCopyWit
     NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
     auto previewPrefab = bridge.TryLoadPreviewPrefabArtifactShared(payload);
     ASSERT_NE(previewPrefab, nullptr);
-    EXPECT_TRUE(bridge.IsPreviewPrefabArtifactCurrent(payload, *previewPrefab, false));
+    EXPECT_TRUE(bridge.IsPreviewPrefabArtifactCurrent(
+        payload,
+        *previewPrefab,
+        UnifiedPrefabReadiness::PrefabGraphOnly));
 
     const auto copiedPrefab = *previewPrefab;
-    EXPECT_FALSE(bridge.IsPreviewPrefabArtifactCurrent(payload, copiedPrefab, false))
+    EXPECT_FALSE(bridge.IsPreviewPrefabArtifactCurrent(
+        payload,
+        copiedPrefab,
+        UnifiedPrefabReadiness::PrefabGraphOnly))
         << "Only the shared preview artifact carries the runtime cache identity needed to prove freshness at mouse-up.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, ModelTextureMappingDependencyNameSearchReusesProjectScan)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDragDropRoot();
+    const auto woodPath = root / "Assets" / "Textures" / "SharedWood.png";
+    const auto metalPath = root / "Assets" / "Textures" / "SharedMetal.png";
+    WriteBinaryFile(woodPath, TinyPng());
+    WriteBinaryFile(metalPath, TinyPng());
+
+    auto woodMeta = AssetMeta::CreateForAsset(woodPath);
+    woodMeta.assetType = AssetType::Texture;
+    woodMeta.importerVersion = GetCurrentImporterVersion(AssetType::Texture);
+    ASSERT_TRUE(woodMeta.Save(GetAssetMetaPath(woodPath)));
+
+    auto metalMeta = AssetMeta::CreateForAsset(metalPath);
+    metalMeta.assetType = AssetType::Texture;
+    metalMeta.importerVersion = GetCurrentImporterVersion(AssetType::Texture);
+    ASSERT_TRUE(metalMeta.Save(GetAssetMetaPath(metalPath)));
+
+    ClearModelTextureMappingDependencyFingerprintCacheForTesting();
+    const auto fingerprints = ComputeModelTextureMappingDependencyFingerprintsForTesting(
+        root,
+        {
+            "project|SharedWood|name-search",
+            "project|SharedMetal|name-search"
+        },
+        "editor");
+
+    ASSERT_EQ(fingerprints.size(), 2u);
+    EXPECT_TRUE(fingerprints[0].has_value());
+    EXPECT_TRUE(fingerprints[1].has_value());
+    EXPECT_LE(GetModelTextureMappingDependencyFingerprintScanCountForTesting(), 1u)
+        << "Validating many PathToGuidMapping dependencies must build one project texture index, not recursively rescan Assets/ per dependency.";
 
     std::filesystem::remove_all(root);
 }
@@ -745,19 +901,19 @@ TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewCommitHandoffUsesSamePen
     EXPECT_EQ(handoff.root->GetTransform()->GetWorldPosition(), finalPlacement);
 }
 
-TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewReleaseCommitsRootAndContinuesStreamingResources)
+TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewReleaseBlocksUntilRendererResourcesAreReady)
 {
     EXPECT_TRUE(NLS::Editor::Panels::CanCommitImportedAssetDragPreviewRootOnRelease(true, true))
-        << "Mouse release should commit the same preview root even when renderer resources are still loading.";
+        << "Mouse release should commit the existing preview root; readiness only controls whether it remains hidden while resources finish.";
     EXPECT_FALSE(NLS::Editor::Panels::CanCommitImportedAssetDragPreviewRootOnRelease(true, false));
     EXPECT_FALSE(NLS::Editor::Panels::CanCommitImportedAssetDragPreviewRootOnRelease(false, true));
 
     const auto pendingOptions =
         NLS::Editor::Core::BuildImportedPrefabPreviewCommitResolutionOptions(false);
-    EXPECT_FALSE(pendingOptions.hideRootUntilRendererResourcesReady)
-        << "Mouse release should keep the committed preview root visible and continue renderer-resource streaming.";
-    EXPECT_FALSE(pendingOptions.keepRootRenderingSuppressedOnFailure)
-        << "A failed renderer resource resolution should mark the prefab state without hiding the object after release.";
+    EXPECT_TRUE(pendingOptions.hideRootUntilRendererResourcesReady)
+        << "Mouse release must not reveal graph-only preview roots while renderer resources are still loading.";
+    EXPECT_TRUE(pendingOptions.keepRootRenderingSuppressedOnFailure)
+        << "Failed final renderer resolution must not leave an incomplete prefab visible after release.";
 
     const auto readyOptions =
         NLS::Editor::Core::BuildImportedPrefabPreviewCommitResolutionOptions(true);
@@ -816,6 +972,41 @@ TEST(EditorAssetDragDropTests, SceneLoadPrefabStreamingBudgetMatchesDragPreviewB
     EXPECT_FALSE(previewCommitOptions.shareMeshArtifactLoads);
     EXPECT_EQ(previewCommitOptions.streamingBudget.frameBudget, dragPreviewBudget.frameBudget);
     EXPECT_EQ(previewCommitOptions.streamingBudget.maxInflightMeshLoads, dragPreviewBudget.maxInflightMeshLoads);
+}
+
+TEST(EditorAssetDragDropTests, RendererResourceQueueInterleavesMatchingMeshAndMaterialTasks)
+{
+    using namespace NLS::Editor::Core;
+
+    const std::vector<std::string> meshSources {
+        "renderer-a",
+        "renderer-b",
+        "renderer-c"
+    };
+    const std::vector<std::string> materialSources {
+        "renderer-b",
+        "renderer-a",
+        "renderer-c",
+        "unmatched"
+    };
+
+    const auto plan = PlanRendererResourceResolutionQueue(meshSources, materialSources);
+
+    ASSERT_EQ(plan.size(), 7u);
+    EXPECT_EQ(plan[0].kind, RendererResourceResolutionQueueTaskKind::Mesh);
+    EXPECT_EQ(plan[0].sourceIndex, 0u);
+    EXPECT_EQ(plan[1].kind, RendererResourceResolutionQueueTaskKind::Material);
+    EXPECT_EQ(plan[1].sourceIndex, 1u);
+    EXPECT_EQ(plan[2].kind, RendererResourceResolutionQueueTaskKind::Mesh);
+    EXPECT_EQ(plan[2].sourceIndex, 1u);
+    EXPECT_EQ(plan[3].kind, RendererResourceResolutionQueueTaskKind::Material);
+    EXPECT_EQ(plan[3].sourceIndex, 0u);
+    EXPECT_EQ(plan[4].kind, RendererResourceResolutionQueueTaskKind::Mesh);
+    EXPECT_EQ(plan[4].sourceIndex, 2u);
+    EXPECT_EQ(plan[5].kind, RendererResourceResolutionQueueTaskKind::Material);
+    EXPECT_EQ(plan[5].sourceIndex, 2u);
+    EXPECT_EQ(plan[6].kind, RendererResourceResolutionQueueTaskKind::Material);
+    EXPECT_EQ(plan[6].sourceIndex, 3u);
 }
 
 TEST(EditorAssetDragDropTests, SceneLoadSharedMeshArtifactLoadsUseGlobalInflightCapacity)
@@ -993,6 +1184,58 @@ TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewHandoffPreservesLoadedTr
     std::lock_guard lock(handedLoad->mutex);
     EXPECT_EQ(handedLoad->transientMesh, transientMesh)
         << "Mouse-release commit must adopt the loaded preview mesh; clearing it here makes the formal instance invisible until a slow reload finishes.";
+}
+
+TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewHandoffPromotesPendingMaterialTextureLoadsForCommit)
+{
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(
+        "C:/Nullus/TestProject/Assets/",
+        "C:/Nullus/EngineAssets/");
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(
+        "C:/Nullus/TestProject/Assets/",
+        "C:/Nullus/EngineAssets/");
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+    const std::string materialPath = "Library/Artifacts/Preview/Handoff/body.nmat";
+    const std::string texturePath = "Library/Artifacts/Preview/Handoff/albedo.ntex";
+
+    materialManager.RequestAsyncArtifact(materialPath, true);
+    textureManager.RequestAsyncArtifact(texturePath, true);
+    ASSERT_TRUE(materialManager.IsAsyncArtifactLoadPending(materialPath));
+    ASSERT_TRUE(textureManager.IsAsyncArtifactLoadPending(texturePath));
+
+    NLS::Editor::Core::PrefabInstancePreviewResourceHandoff handoff;
+    handoff.prewarm.materialLoadsByPath.insert(materialPath);
+    handoff.prewarm.textureLoadsByPath.insert(texturePath);
+
+    NLS::Editor::Core::PromotePrefabInstancePreviewResourceHandoffForCommit(handoff);
+
+    materialManager.CancelAsyncArtifact(materialPath);
+    textureManager.CancelAsyncArtifact(texturePath);
+
+    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(materialPath))
+        << "Mouse-release commit must promote preview material loads to scene-owned shared interest before preview cleanup can cancel them.";
+    EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending(texturePath))
+        << "Mouse-release commit must promote preview texture loads to scene-owned shared interest before preview cleanup can cancel them.";
+
+    for (size_t attempt = 0; attempt < 64u; ++attempt)
+    {
+        materialManager.PumpAsyncLoads(8u);
+        textureManager.PumpAsyncLoads(8u);
+        if (!materialManager.IsAsyncArtifactLoadPending(materialPath) &&
+            !textureManager.IsAsyncArtifactLoadPending(texturePath))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
 }
 
 TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesSceneOwnedRendererResources)
@@ -2155,9 +2398,14 @@ TEST(EditorAssetDragDropTests, RepeatedGeneratedModelDropFastBindsThroughUnified
     ASSERT_EQ(repeated.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(repeated.dragDrop);
     const auto repeatedRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_GE(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::CacheHit), 1u);
-    EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::DependencyScan), 0u)
-        << "Generated model final-drop uses the prefab graph hot path; renderer artifact dependency scans are deferred to streaming.";
-    ExpectNoColdPrefabArtifactLoad(repeatedRecords);
+    EXPECT_GE(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::DependencyScan), 1u)
+        << "Generated model final-drop should validate renderer dependency metadata without reloading the prefab graph.";
+    EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy), 0u)
+        << "Final-drop readiness must not fully deserialize mesh/material/texture artifacts on mouse release.";
+    EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::CpuDeserialize), 0u)
+        << "Final-drop readiness must stay metadata/header based so large prefabs do not reload on release.";
+    EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::CacheMiss), 0u);
+    EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 0u);
     EXPECT_EQ(scene.GetGameObjects().size(), 2u);
 
     std::filesystem::remove_all(root);
@@ -2221,9 +2469,10 @@ TEST(EditorAssetDragDropTests, RepeatedImportedFbxDropFastBindsThroughUnifiedHot
     ASSERT_EQ(repeated.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(repeated.dragDrop);
     const auto repeatedRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_GE(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::CacheHit), 1u);
-    EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::DependencyScan), 0u)
-        << "Imported FBX final-drop must match glTF by reusing the prefab graph hot path without synchronous renderer dependency scans.";
-    ExpectNoColdPrefabArtifactLoad(repeatedRecords);
+    EXPECT_GE(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::DependencyScan), 1u)
+        << "Imported FBX final-drop must synchronously validate renderer dependencies even when the prefab graph is hot.";
+    EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::CacheMiss), 0u);
+    EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 0u);
     EXPECT_GT(scene.GetGameObjects().size(), objectCountAfterFirstDrop)
         << "A hot-cache FBX drop should still instantiate another scene object graph.";
     ASSERT_TRUE(first.dragDrop.instance.has_value());
@@ -2268,7 +2517,62 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsAfterReimportRefreshesRe
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsGraphWhenRendererMeshArtifactIsInvalid)
+TEST(EditorAssetDragDropTests, GeneratedModelBlockingDropReimportsWhenPrefabArtifactIsMissing)
+{
+    const auto root = MakeAssetDragDropRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "MissingPrefabArtifactHero.gltf",
+        TexturedSingleNodeGltf("MissingPrefabArtifactHeroRoot"));
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/MissingPrefabArtifactHero.gltf"));
+    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
+        "Assets/Models/MissingPrefabArtifactHero.gltf");
+    std::filesystem::path prefabArtifactPath;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(artifactRoot))
+    {
+        if (entry.is_regular_file() && entry.path().extension() == ".nprefab")
+        {
+            prefabArtifactPath = entry.path();
+            break;
+        }
+    }
+    ASSERT_FALSE(prefabArtifactPath.empty());
+    ASSERT_TRUE(std::filesystem::exists(prefabArtifactPath));
+    std::filesystem::remove(prefabArtifactPath);
+    ASSERT_FALSE(std::filesystem::exists(prefabArtifactPath));
+
+    const auto payload = MakeImportedGeneratedModelPayload(
+        database,
+        "Assets/Models/MissingPrefabArtifactHero.gltf",
+        "prefab:MissingPrefabArtifactHero");
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::ImportProgressTracker tracker;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchyBlocking(
+        payload,
+        scene,
+        {},
+        nullptr,
+        nullptr,
+        &tracker);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_FALSE(result.pendingImport) << JoinDiagnosticCodes(result.dragDrop);
+    EXPECT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed)
+        << JoinDiagnosticCodes(result.dragDrop);
+    ASSERT_EQ(scene.GetGameObjects().size(), 1u);
+    EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "MissingPrefabArtifactHeroRoot");
+    EXPECT_TRUE(std::filesystem::exists(prefabArtifactPath));
+    EXPECT_FALSE(tracker.HasRunningJobs());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, GeneratedModelDropRejectsWhenRendererMeshArtifactIsInvalid)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -2294,15 +2598,15 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsGraphWhenRendererMeshArt
 
     ASSERT_TRUE(result.handled);
     EXPECT_FALSE(result.pendingImport) << JoinDiagnosticCodes(result.dragDrop);
-    ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
-    ASSERT_EQ(scene.GetGameObjects().size(), 1u);
-    EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "InvalidMeshHeroRoot");
-    EXPECT_TRUE(result.dragDrop.deferredAssetReferenceResolutionRequested);
+    EXPECT_NE(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
+    EXPECT_TRUE(HasDiagnosticCode(result.dragDrop, "dragdrop-renderer-dependency-missing"))
+        << JoinDiagnosticCodes(result.dragDrop);
+    EXPECT_TRUE(scene.GetGameObjects().empty());
 
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsGraphWhenRendererMaterialArtifactIsInvalid)
+TEST(EditorAssetDragDropTests, GeneratedModelDropRejectsWhenRendererMaterialArtifactIsInvalid)
 {
     const auto root = MakeAssetDragDropRoot();
     WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
@@ -2328,10 +2632,10 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsGraphWhenRendererMateria
 
     ASSERT_TRUE(result.handled);
     EXPECT_FALSE(result.pendingImport) << JoinDiagnosticCodes(result.dragDrop);
-    ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
-    ASSERT_EQ(scene.GetGameObjects().size(), 1u);
-    EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "InvalidMaterialHeroRoot");
-    EXPECT_TRUE(result.dragDrop.deferredAssetReferenceResolutionRequested);
+    EXPECT_NE(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
+    EXPECT_TRUE(HasDiagnosticCode(result.dragDrop, "dragdrop-renderer-dependency-missing"))
+        << JoinDiagnosticCodes(result.dragDrop);
+    EXPECT_TRUE(scene.GetGameObjects().empty());
 
     std::filesystem::remove_all(root);
 }
@@ -2546,6 +2850,217 @@ TEST(EditorAssetDragDropTests, DropsImportedPrefabHandleAfterFileWatcherPreimpor
     ASSERT_TRUE(result.dragDrop.instance.has_value());
     ASSERT_NE(result.dragDrop.instance->instanceRoot, nullptr);
     EXPECT_EQ(result.dragDrop.instance->instanceRoot->GetName(), "Validation Cube");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, ImportedPrefabHandleDropPublishesBlockingLoadProgress)
+{
+    const auto root = MakeAssetDragDropRoot();
+
+    NLS::Engine::GameObject gameObject("Progress Cube", "Prefab");
+    const auto prefabId = Id("cb030303-0303-4303-8303-030303030303");
+    const auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &gameObject,
+        {},
+        prefabId,
+        "Assets/Progress Cube.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.CreateTextAsset(
+        created.prefabSourceText,
+        "Assets/Progress Cube.prefab",
+        prefabId));
+
+    NLS::Editor::Assets::AssetPreimportScheduler scheduler;
+    NLS::Editor::Assets::ImportProgressTracker importTracker;
+    ASSERT_TRUE(scheduler.Run(database, importTracker, {
+        NLS::Editor::Assets::AssetPreimportReason::FileWatcherChanged,
+        {root / "Assets" / "Progress Cube.prefab"}
+    }));
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
+        "Assets/Progress Cube.prefab",
+        prefabId,
+        "prefab:Progress Cube",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        false,
+        true);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    NLS::Editor::Assets::ImportProgressTracker dropTracker;
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchy(
+        payload,
+        scene,
+        Id("cb040404-0404-4404-8404-040404040404"),
+        nullptr,
+        nullptr,
+        &dropTracker);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_FALSE(result.pendingImport);
+    EXPECT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed);
+    ASSERT_TRUE(result.dragDrop.instance.has_value());
+
+    const auto events = dropTracker.GetEvents({1u});
+    ASSERT_GE(events.size(), 4u);
+    EXPECT_EQ(events.front().phase, NLS::Editor::Assets::ImportPhase::Queued);
+    EXPECT_EQ(events.front().assetId, prefabId);
+    EXPECT_EQ(events.front().sourcePath, "Assets/Progress Cube.prefab");
+    EXPECT_NE(std::find_if(
+        events.begin(),
+        events.end(),
+        [](const auto& event)
+        {
+            return event.phase == NLS::Editor::Assets::ImportPhase::SourceParse;
+        }), events.end());
+    EXPECT_NE(std::find_if(
+        events.begin(),
+        events.end(),
+        [](const auto& event)
+        {
+            return event.phase == NLS::Editor::Assets::ImportPhase::Commit;
+        }), events.end());
+    EXPECT_EQ(events.back().phase, NLS::Editor::Assets::ImportPhase::Finished);
+    EXPECT_EQ(events.back().terminalStatus, NLS::Editor::Assets::ImportJobTerminalStatus::Succeeded);
+    EXPECT_FALSE(dropTracker.HasRunningJobs());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, ImportedPrefabHandleBlockingDropPublishesProgressWhenPayloadAlreadyImported)
+{
+    const auto root = MakeAssetDragDropRoot();
+
+    NLS::Engine::GameObject gameObject("Blocking Progress Cube", "Prefab");
+    const auto prefabId = Id("cb070707-0707-4707-8707-070707070707");
+    const auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &gameObject,
+        {},
+        prefabId,
+        "Assets/Blocking Progress Cube.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.CreateTextAsset(
+        created.prefabSourceText,
+        "Assets/Blocking Progress Cube.prefab",
+        prefabId));
+
+    NLS::Editor::Assets::AssetPreimportScheduler scheduler;
+    NLS::Editor::Assets::ImportProgressTracker importTracker;
+    ASSERT_TRUE(scheduler.Run(database, importTracker, {
+        NLS::Editor::Assets::AssetPreimportReason::FileWatcherChanged,
+        {root / "Assets" / "Blocking Progress Cube.prefab"}
+    }));
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
+        "Assets/Blocking Progress Cube.prefab",
+        prefabId,
+        "prefab:Blocking Progress Cube",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        false,
+        true);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    NLS::Editor::Assets::ImportProgressTracker dropTracker;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchyBlocking(
+        payload,
+        scene,
+        Id("cb080808-0808-4808-8808-080808080808"),
+        &registry,
+        nullptr,
+        &dropTracker);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_FALSE(result.pendingImport) << JoinDiagnosticCodes(result.dragDrop);
+    ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
+
+    const auto events = dropTracker.GetEvents({1u});
+    ASSERT_GE(events.size(), 4u);
+    EXPECT_EQ(events.front().phase, NLS::Editor::Assets::ImportPhase::Queued);
+    EXPECT_EQ(events.front().assetId, prefabId);
+    EXPECT_EQ(events.front().sourcePath, "Assets/Blocking Progress Cube.prefab");
+    EXPECT_NE(std::find_if(
+        events.begin(),
+        events.end(),
+        [](const auto& event)
+        {
+            return event.phase == NLS::Editor::Assets::ImportPhase::SourceParse &&
+                event.message == "Loading prefab artifact";
+        }), events.end());
+    EXPECT_NE(std::find_if(
+        events.begin(),
+        events.end(),
+        [](const auto& event)
+        {
+            return event.phase == NLS::Editor::Assets::ImportPhase::Commit &&
+                event.message == "Instantiating prefab";
+        }), events.end());
+    EXPECT_EQ(events.back().phase, NLS::Editor::Assets::ImportPhase::Finished);
+    EXPECT_EQ(events.back().terminalStatus, NLS::Editor::Assets::ImportJobTerminalStatus::Succeeded);
+    EXPECT_FALSE(dropTracker.HasRunningJobs());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, ImportedPrefabHandleBlockingDropImportsBeforeCommitWhenPayloadIsCold)
+{
+    const auto root = MakeAssetDragDropRoot();
+
+    NLS::Engine::GameObject gameObject("Cold Blocking Cube", "Prefab");
+    const auto prefabId = Id("cb050505-0505-4505-8505-050505050505");
+    const auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &gameObject,
+        {},
+        prefabId,
+        "Assets/Cold Blocking Cube.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.CreateTextAsset(
+        created.prefabSourceText,
+        "Assets/Cold Blocking Cube.prefab",
+        prefabId));
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
+        "Assets/Cold Blocking Cube.prefab",
+        prefabId,
+        "prefab:Cold Blocking Cube",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        false,
+        false);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    NLS::Editor::Assets::ImportProgressTracker progress;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchyBlocking(
+        payload,
+        scene,
+        Id("cb060606-0606-4606-8606-060606060606"),
+        &registry,
+        nullptr,
+        &progress);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_FALSE(result.pendingImport) << JoinDiagnosticCodes(result.dragDrop);
+    ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
+    ASSERT_TRUE(result.dragDrop.instance.has_value());
+    ASSERT_NE(result.dragDrop.instance->instanceRoot, nullptr);
+    EXPECT_EQ(result.dragDrop.instance->instanceRoot->GetName(), "Cold Blocking Cube");
+    EXPECT_NE(registry.FindInstance(*result.dragDrop.instance->instanceRoot), nullptr);
+    EXPECT_FALSE(progress.HasRunningJobs());
 
     std::filesystem::remove_all(root);
 }

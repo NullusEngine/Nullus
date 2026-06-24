@@ -2,6 +2,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "Windowing/Context/Device.h"
 #include "Windowing/Settings/WindowSettings.h"
@@ -26,6 +27,7 @@ namespace NLS::Windowing
 		Event<int> MouseButtonPressedEvent;
 		Event<int> MouseButtonReleasedEvent;
 		Event<double, double> MouseScrollEvent;
+		Event<const std::vector<std::string>&> DroppedFilesEvent;
 		/* Window events */
 		Event<uint16_t, uint16_t> ResizeEvent;
 		Event<uint16_t, uint16_t> FramebufferResizeEvent;
@@ -351,6 +353,7 @@ namespace NLS::Windowing
 		void BindFocusCallback() const;
 		void BindRefreshCallback() const;
 		void BindCloseCallback() const;
+		void BindDropCallback() const;
 
 		/* Event listeners */
 		void OnResize(uint16_t p_width, uint16_t p_height);

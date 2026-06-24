@@ -108,11 +108,46 @@ bool PrefabResolvedAssetMatchesReferenceHint(
         NormalizePrefabReferencePath(resolved.artifactPath) == normalizedReferencePath;
 }
 
+bool IsBuiltinPrimitiveMeshReferencePath(const std::string& path)
+{
+    return path.rfind("builtin:Primitive/", 0) == 0;
+}
+
 std::optional<std::string> ResolvePrefabAssetPath(
     const PrefabResolvedAssetIndex& resolvedAssets,
     const NLS::Engine::Serialize::PropertyValue& value,
     const std::string_view expectedType)
 {
+    if (value.GetKind() == NLS::Engine::Serialize::PropertyValue::Kind::String)
+    {
+        const auto referencePath = NormalizePrefabReferencePath(value.GetString());
+        if (referencePath.empty())
+            return std::nullopt;
+
+        const NLS::Engine::Assets::PrefabResolvedAsset* candidate = nullptr;
+        for (const auto& [assetId, resolvedList] : resolvedAssets.byAssetId)
+        {
+            (void)assetId;
+            for (const auto* resolved : resolvedList)
+            {
+                if (!resolved ||
+                    !PrefabResolvedAssetMatchesReferenceHint(*resolved, value.GetString(), referencePath, expectedType))
+                {
+                    continue;
+                }
+
+                if (candidate)
+                    return std::nullopt;
+
+                candidate = resolved;
+            }
+        }
+
+        if (candidate)
+            return candidate->artifactPath;
+        return referencePath;
+    }
+
     if (value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::ObjectReference ||
         !value.GetObjectReference().guid.IsValid())
     {
@@ -122,6 +157,9 @@ std::optional<std::string> ResolvePrefabAssetPath(
     const auto& reference = value.GetObjectReference();
     const auto assetId = NLS::Core::Assets::AssetId(reference.guid);
     const auto referencePath = NormalizePrefabReferencePath(reference.filePath);
+    if (expectedType == "Mesh" && IsBuiltinPrimitiveMeshReferencePath(referencePath))
+        return referencePath;
+
     const NLS::Engine::Assets::PrefabResolvedAsset* candidate = nullptr;
 
     if (const auto foundByAssetId = resolvedAssets.byAssetId.find(assetId);

@@ -579,7 +579,7 @@ TEST(PrefabEditorWorkflowTests, RegistryTracksConnectedPrefabPresentationStates)
     EXPECT_EQ(unpackedPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::Unpacked);
 }
 
-TEST(PrefabEditorWorkflowTests, RegistryResourceFailurePresentationIsScopedToInstanceRoot)
+TEST(PrefabEditorWorkflowTests, RegistryResourceFailurePresentationIsScopedToInstanceRootWithoutMarkingSourceMissing)
 {
     NLS::Engine::SceneSystem::Scene scene;
     auto& firstRoot = scene.CreateGameObject("SharedPrefab", "Prop");
@@ -606,13 +606,16 @@ TEST(PrefabEditorWorkflowTests, RegistryResourceFailurePresentationIsScopedToIns
     registry.MarkInstancePendingResources(firstRoot, false);
 
     const auto failedPresentation = registry.GetPresentation(firstRoot);
-    EXPECT_TRUE(failedPresentation.missingAsset);
-    EXPECT_EQ(failedPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::Missing);
+    EXPECT_FALSE(failedPresentation.missingAsset)
+        << "Renderer-resource failures are recoverable streaming state and must not look like a missing prefab source.";
+    EXPECT_TRUE(failedPresentation.pendingResources);
+    EXPECT_EQ(failedPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedRoot);
 
     const auto siblingPresentation = registry.GetPresentation(secondRoot);
     EXPECT_FALSE(siblingPresentation.missingAsset)
         << "Renderer-resource failure on one prefab instance must not poison sibling instances "
            "that reference the same prefab asset.";
+    EXPECT_FALSE(siblingPresentation.pendingResources);
     EXPECT_EQ(siblingPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedRoot);
 }
 
@@ -665,11 +668,13 @@ TEST(PrefabEditorWorkflowTests, RegistryClearsInstanceResourceFailureWithoutTouc
     registry.Register(std::move(instance));
 
     registry.MarkInstanceResourceFailure(root, true);
-    EXPECT_TRUE(registry.GetPresentation(root).missingAsset);
+    EXPECT_FALSE(registry.GetPresentation(root).missingAsset);
+    EXPECT_TRUE(registry.GetPresentation(root).pendingResources);
 
     registry.MarkInstanceResourceFailure(root, false);
     EXPECT_FALSE(registry.GetPresentation(root).missingAsset)
         << "A successful retry must be able to clear only the instance-level renderer resource failure.";
+    EXPECT_FALSE(registry.GetPresentation(root).pendingResources);
 
     registry.MarkAssetMissing(prefabAssetId, true);
     registry.MarkInstanceResourceFailure(root, false);

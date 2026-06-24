@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -29,6 +30,7 @@ namespace NLS::Engine::Components
         void SetResolvedTransientMeshFromReference(std::shared_ptr<Mesh> p_mesh);
         bool HasResolvedTransientMesh() const;
         Mesh* ResolveMesh();
+        uint64_t GetRenderRevision() const;
         void SetMeshPath(const std::string& p_path);
 
         PROPERTY(mesh)
@@ -50,5 +52,6 @@ namespace NLS::Engine::Components
         std::shared_ptr<Mesh> m_transientMesh;
         std::string m_meshPath;
         std::string m_failedMeshPath;
+        uint64_t m_renderRevision = 1u;
     };
 }

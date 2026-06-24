@@ -436,7 +436,7 @@ namespace
 
             auto* texture = static_cast<Texture2D*>(nullptr);
             if (!value.empty() && options.loadMissingTextures)
-                texture = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).GetResource(value, true);
+                texture = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).GetArtifactResource(value, true);
             if (!value.empty() && options.loadMissingTextures && !texture)
                 NLS_LOG_WARNING("Material texture failed to load and will use the default white texture: " + value);
             material.Set<Texture2D*>(uniform.name, texture);

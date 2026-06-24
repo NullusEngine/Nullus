@@ -727,7 +727,7 @@ std::vector<NLS::Engine::Serialize::PatchOperation> BuildPrefabInstanceModificat
 {
     PrefabArtifact prefab;
     prefab.assetId = instance.prefabAssetId;
-    prefab.graph = instance.sourceGraph;
+    prefab.graph = instance.SourceGraph();
     prefab.generatedModelPrefab = instance.generatedReadOnly;
 
     auto overrides = PrefabEditorWorkflow().DiscoverOverrides(prefab, instance);
@@ -1245,39 +1245,53 @@ NLS::Engine::GameObject* RestoreStrippedRecoveryRoot(
 PrefabOperationResult InstantiateStrippedPrefabInstance(
     const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
     const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance,
-    const PrefabArtifact& sourcePrefab,
+    std::shared_ptr<const PrefabArtifact> sourcePrefab,
     NLS::Core::Assets::AssetId prefabAssetId,
     const std::string& prefabSubAssetKey,
     NLS::Core::Assets::AssetId sceneAssetId,
     NLS::Engine::SceneSystem::Scene& scene,
     const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*>& sceneObjectsById)
 {
-    auto instantiationPrefab = sourcePrefab;
-    MaterializePrefabInstanceModificationsForInstantiation(instantiationPrefab.graph, prefabInstance);
+    if (!sourcePrefab)
+        return {};
+
+    const bool hasSceneLocalInstantiationEdits =
+        !prefabInstance.modifications.empty() || !prefabInstance.addedObjects.empty();
+    std::optional<PrefabArtifact> materializedPrefab;
+    const PrefabArtifact* prefabForInstantiation = sourcePrefab.get();
+    if (hasSceneLocalInstantiationEdits)
+    {
+        materializedPrefab = *sourcePrefab;
+        MaterializePrefabInstanceModificationsForInstantiation(materializedPrefab->graph, prefabInstance);
+        prefabForInstantiation = &*materializedPrefab;
+    }
 
     InstantiatePrefabRequest request;
-    request.prefab = &instantiationPrefab;
+    request.constPrefab = prefabForInstantiation;
     request.prefabAssetId = prefabAssetId;
     request.prefabSubAssetKey = prefabSubAssetKey;
     request.sceneAssetId = sceneAssetId;
-    request.deferAssetReferenceResolution = true;
+    request.deferAssetReferenceResolution = false;
+    request.synchronousAssetReferencePrewarm = true;
 
     auto instantiate = ConvertResult(PrefabEditorWorkflow().InstantiatePrefab({
         request.prefab,
         request.prefabAssetId,
         request.prefabSubAssetKey,
         request.sceneAssetId,
-        request.deferAssetReferenceResolution
+        request.deferAssetReferenceResolution,
+        request.constPrefab,
+        request.synchronousAssetReferencePrewarm
     }, scene));
 
     if (instantiate.status != PrefabOperationStatus::Committed || !instantiate.instance.has_value())
         return instantiate;
 
-    instantiate.instance->sourceGraph = sourcePrefab.graph;
-    instantiate.instance->generatedReadOnly = prefabInstance.generatedReadOnly || sourcePrefab.generatedModelPrefab;
+    instantiate.instance->UseSharedSourcePrefab(sourcePrefab);
+    instantiate.instance->generatedReadOnly = prefabInstance.generatedReadOnly || sourcePrefab->generatedModelPrefab;
     instantiate.instance->localPatches = prefabInstance.modifications;
-    instantiate.instance->preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(sourcePrefab.graph);
-    instantiate.instance->preservedResolvedAssets = sourcePrefab.resolvedAssets;
+    instantiate.instance->preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(sourcePrefab->graph);
+    instantiate.instance->preservedResolvedAssets = sourcePrefab->resolvedAssets;
     RemoveSceneLocalAddedObjectMappings(*instantiate.instance, prefabInstance);
 
     if (auto* parent = ResolveStrippedPlaceholderParent(sceneDocument, prefabInstance, sceneObjectsById);
@@ -1359,7 +1373,7 @@ PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(
             auto instantiate = InstantiateStrippedPrefabInstance(
                 sceneDocument,
                 prefabInstance,
-                *prefab,
+                prefab,
                 prefabAssetId,
                 prefabSubAssetKey,
                 sceneAssetId,
@@ -1434,7 +1448,7 @@ PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(
             continue;
         }
 
-        connect.instance->sourceGraph = prefab->graph;
+        connect.instance->UseSharedSourcePrefab(prefab);
         connect.instance->generatedReadOnly = prefabInstance.generatedReadOnly || prefab->generatedModelPrefab;
         connect.instance->localPatches = prefabInstance.modifications;
         connect.instance->preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(prefab->graph);
@@ -1705,7 +1719,8 @@ PrefabOperationResult PrefabUtilityFacade::InstantiatePrefab(
         request.prefabSubAssetKey,
         request.sceneAssetId,
         request.deferAssetReferenceResolution,
-        request.constPrefab
+        request.constPrefab,
+        request.synchronousAssetReferencePrewarm
     }, scene));
 }
 

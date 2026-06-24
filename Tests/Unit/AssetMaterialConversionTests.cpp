@@ -2272,6 +2272,176 @@ TEST(AssetMaterialConversionTests, MaterialLoaderAppliesTextureSlotSamplerMetada
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetMaterialConversionTests, MaterialManagerCoalescesDuplicateAsyncArtifactRequests)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_coalescing_" + NLS::Guid::New().ToString());
+    const auto materialPath = root / "Materials" / "Hero.nmat";
+    WriteTextFile(
+        materialPath,
+        "<root>\n"
+        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
+        "</root>\n");
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    MaterialManager materialManager;
+    EXPECT_EQ(MaterialManager::GetPendingAsyncArtifactRequestCountForTesting(), 0u);
+
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
+    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(materialPath.string()));
+    EXPECT_EQ(MaterialManager::GetTotalAsyncArtifactRequestCountForTesting(), 1u);
+
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
+    EXPECT_EQ(MaterialManager::GetTotalAsyncArtifactRequestCountForTesting(), 1u)
+        << "Duplicate material artifact requests must coalesce onto the in-flight load.";
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerBoundsPendingAsyncArtifactRequests)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_bound_" + NLS::Guid::New().ToString());
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    MaterialManager materialManager;
+
+    for (size_t index = 0u; index < 80u; ++index)
+    {
+        const auto materialPath = root / "Materials" / ("Hero" + std::to_string(index) + ".nmat");
+        WriteTextFile(materialPath, "");
+        EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
+    }
+
+    EXPECT_LE(MaterialManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
+        << "Async material artifact scheduling must be bounded so large prefab drags cannot spawn unbounded std::async work.";
+    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending((root / "Materials" / "Hero79.nmat").string()))
+        << "Requests beyond the active material cap must remain pending so large prefab finalization retries instead of failing.";
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerBoundsTotalQueuedAsyncArtifactRequests)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_total_bound_" + NLS::Guid::New().ToString());
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    MaterialManager materialManager;
+
+    for (size_t index = 0u; index < 320u; ++index)
+    {
+        const auto materialPath = root / "Materials" / ("Hero" + std::to_string(index) + ".nmat");
+        WriteTextFile(materialPath, "");
+        EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
+    }
+
+    EXPECT_LE(MaterialManager::GetTotalAsyncArtifactRequestCountForTesting(), 256u)
+        << "Large prefab drags must not enqueue an unbounded number of material artifact records.";
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerBoundsGlobalActiveAsyncArtifactRequestsAcrossOwners)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_global_active_" + NLS::Guid::New().ToString());
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+
+    std::vector<std::unique_ptr<MaterialManager>> materialManagers;
+    materialManagers.reserve(80u);
+    for (size_t index = 0u; index < 80u; ++index)
+    {
+        auto materialManager = std::make_unique<MaterialManager>();
+        const auto materialPath = root / "Materials" / ("Hero" + std::to_string(index) + ".nmat");
+        WriteTextFile(materialPath, "");
+        EXPECT_EQ(materialManager->RequestAsyncArtifact(materialPath.string()), nullptr);
+        materialManagers.push_back(std::move(materialManager));
+    }
+
+    EXPECT_LE(MaterialManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
+        << "Material artifact loading must use a global active cap so many preview owners cannot fill the editor background queue.";
+    EXPECT_EQ(MaterialManager::GetTotalAsyncArtifactRequestCountForTesting(), 80u);
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerCancelAsyncArtifactDoesNotConsumeSharedInterest)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_cancel_shared_" + NLS::Guid::New().ToString());
+    const auto materialPath = root / "Materials" / "Hero.nmat";
+    WriteTextFile(materialPath, "");
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    MaterialManager materialManager;
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string(), false), nullptr);
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string(), true), nullptr);
+    materialManager.CancelAsyncArtifact(materialPath.string());
+    materialManager.CancelAsyncArtifact(materialPath.string());
+    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(materialPath.string()))
+        << "Preview cleanup must not cancel shared/final material interest by repeating path-only cancellation.";
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerClearAsyncArtifactStateDrainsWorkersForTesting)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_clear_drains_" + NLS::Guid::New().ToString());
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    MaterialManager materialManager;
+    for (size_t index = 0u; index < 8u; ++index)
+    {
+        const auto materialPath = root / "Materials" / ("Hero" + std::to_string(index) + ".nmat");
+        WriteTextFile(materialPath, "");
+        EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
+    }
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    EXPECT_TRUE(MaterialManager::WaitForAsyncArtifactWorkersForTesting());
+    std::filesystem::remove_all(root);
+#endif
+}
+
 TEST(AssetMaterialConversionTests, MaterialReloadClearsPreviousTextureSlotSamplerMetadata)
 {
     const auto root = std::filesystem::temp_directory_path() /
@@ -2626,6 +2796,160 @@ TEST(AssetMaterialConversionTests, MaterialArtifactCanLoadShaderWhileDeferringTe
     NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureArtifact)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_equivalent_cached_texture_" + NLS::Guid::New().ToString());
+    const auto projectAssets = root / "Assets";
+    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "shader.nshader";
+    const auto textureResourcePath = std::filesystem::path("Library/Artifacts/texture-guid/textures/BaseColor.ntex")
+        .generic_string();
+
+    WriteBinaryFile(shaderArtifactPath, NLS::Render::Assets::SerializeShaderArtifact(MakeAlbedoMapShaderArtifact()));
+
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    const ScopedShaderManagerAssetPaths shaderAssetPaths(
+        projectAssets.string() + "/",
+        "App/Assets/Engine/");
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(
+        projectAssets.string() + "/",
+        "App/Assets/Engine/");
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
+    ASSERT_NE(shader, nullptr);
+    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
+
+    const auto absoluteTexturePath =
+        NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(textureResourcePath);
+    auto* cachedTexture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    ASSERT_NE(cachedTexture, nullptr);
+    cachedTexture->path = absoluteTexturePath;
+    textureManager.RegisterResource(absoluteTexturePath, cachedTexture);
+
+    const std::string payload =
+        "<root>\n"
+        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
+        "  <uniform name=\"u_AlbedoMap\" type=\"sampler2D\" value=\"" + textureResourcePath + "\"/>\n"
+        "</root>\n";
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::CreateFromSerializedPayload(
+        (root / "Library" / "Artifacts" / "material-guid" / "materials" / "Hero.nmat").string(),
+        payload,
+        {true, true});
+
+    ASSERT_NE(loaded, nullptr);
+    const auto* albedoMap = loaded->GetParameterBlock().TryGet("u_AlbedoMap");
+    ASSERT_NE(albedoMap, nullptr);
+    ASSERT_EQ(albedoMap->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*albedoMap), cachedTexture)
+        << "MaterialLoader must reuse an equivalent cached texture artifact instead of decoding/uploading a duplicate.";
+    EXPECT_FALSE(textureManager.IsResourceRegistered(textureResourcePath));
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    shaderManager.UnloadResources();
+    textureManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureArtifactIndexAcrossManyMaterials)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect texture artifact lookup index rebuilds.";
+#else
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_equivalent_cached_texture_index_" + NLS::Guid::New().ToString());
+    const auto projectAssets = root / "Assets";
+    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "shader.nshader";
+    const auto textureResourcePath = std::filesystem::path("Library/Artifacts/texture-guid/textures/BaseColor.ntex")
+        .generic_string();
+
+    WriteBinaryFile(shaderArtifactPath, NLS::Render::Assets::SerializeShaderArtifact(MakeAlbedoMapShaderArtifact()));
+
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    const ScopedShaderManagerAssetPaths shaderAssetPaths(
+        projectAssets.string() + "/",
+        "App/Assets/Engine/");
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(
+        projectAssets.string() + "/",
+        "App/Assets/Engine/");
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
+    ASSERT_NE(shader, nullptr);
+    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
+
+    const auto absoluteTexturePath =
+        NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(textureResourcePath);
+    auto* cachedTexture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    ASSERT_NE(cachedTexture, nullptr);
+    cachedTexture->path = absoluteTexturePath;
+    textureManager.RegisterResource(absoluteTexturePath, cachedTexture);
+    textureManager.ClearArtifactLookupIndexForTesting();
+
+    constexpr size_t kMaterialCount = 32u;
+    std::vector<NLS::Render::Resources::Material*> loadedMaterials;
+    loadedMaterials.reserve(kMaterialCount);
+
+    const std::string payload =
+        "<root>\n"
+        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
+        "  <uniform name=\"u_AlbedoMap\" type=\"sampler2D\" value=\"" + textureResourcePath + "\"/>\n"
+        "</root>\n";
+
+    for (size_t index = 0u; index < kMaterialCount; ++index)
+    {
+        auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::CreateFromSerializedPayload(
+            (root / "Library" / "Artifacts" / ("material-guid-" + std::to_string(index)) / "materials" / "Hero.nmat").string(),
+            payload,
+            {true, true});
+        ASSERT_NE(loaded, nullptr);
+        loadedMaterials.push_back(loaded);
+
+        const auto* albedoMap = loaded->GetParameterBlock().TryGet("u_AlbedoMap");
+        ASSERT_NE(albedoMap, nullptr);
+        ASSERT_EQ(albedoMap->type(), typeid(NLS::Render::Resources::Texture2D*));
+        EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*albedoMap), cachedTexture);
+    }
+
+    EXPECT_EQ(textureManager.GetArtifactLookupIndexRebuildCountForTesting(), 1u)
+        << "Repeated equivalent artifact lookups should reuse TextureManager's normalized lookup index.";
+    EXPECT_FALSE(textureManager.IsResourceRegistered(textureResourcePath));
+
+    for (auto*& loaded : loadedMaterials)
+        EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    shaderManager.UnloadResources();
+    textureManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+    std::filesystem::remove_all(root);
+#endif
 }
 
 TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedTextureArtifactPayload)

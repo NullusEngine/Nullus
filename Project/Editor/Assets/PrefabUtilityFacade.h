@@ -153,6 +153,7 @@ struct PrefabInstantiateRequest
     NLS::Core::Assets::AssetId sceneAssetId;
     bool deferAssetReferenceResolution = false;
     const NLS::Engine::Assets::PrefabArtifact* constPrefab = nullptr;
+    bool synchronousAssetReferencePrewarm = false;
 };
 
 struct PrefabOverrideDescriptor

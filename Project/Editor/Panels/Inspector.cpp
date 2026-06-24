@@ -406,7 +406,7 @@ void Inspector::DrawPrefabState(Engine::GameObject& p_target)
 
     NLS::Engine::Assets::PrefabArtifact sourcePrefab;
     sourcePrefab.assetId = instance->prefabAssetId;
-    sourcePrefab.graph = instance->sourceGraph;
+    sourcePrefab.graph = instance->SourceGraph();
     sourcePrefab.generatedModelPrefab = instance->generatedReadOnly;
 
     const auto presentation = EDITOR_CONTEXT(prefabInstanceRegistry).GetPresentation(p_target);

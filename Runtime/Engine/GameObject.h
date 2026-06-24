@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -108,7 +109,11 @@ public:
     FUNCTION()
     void SetLayer(int p_layer)
     {
-        m_layer = p_layer < 0 ? 0 : (p_layer > 31 ? 31 : p_layer);
+        const int clampedLayer = p_layer < 0 ? 0 : (p_layer > 31 ? 31 : p_layer);
+        if (m_layer == clampedLayer)
+            return;
+        m_layer = clampedLayer;
+        MarkRenderStateChanged();
     }
 
     FUNCTION()
@@ -199,6 +204,9 @@ public:
     void SetSleeping(bool p_sleeping) { m_sleeping = p_sleeping; }
     void SetEditorTransient(bool transient) { m_editorTransient = transient; }
     bool IsEditorTransient() const { return m_editorTransient; }
+    uint64_t GetRenderStateRevision() const { return m_renderStateRevision; }
+    bool HasAwaked() const { return m_awaked; }
+    bool HasStarted() const { return m_started; }
     void SetSourceObjectKey(std::string sourceObjectKey) { m_sourceObjectKey = std::move(sourceObjectKey); }
     const std::string& GetSourceObjectKey() const { return m_sourceObjectKey; }
     void SetLargeSceneHLODMetadata(std::string metadataJson) { m_largeSceneHLODMetadataJson = std::move(metadataJson); }
@@ -275,6 +283,7 @@ private:
 
     void RecursiveActiveUpdate();
     void RecursiveWasActiveUpdate();
+    void MarkRenderStateChanged() { ++m_renderStateRevision; }
 
 public:
     /* Some events that are triggered when an action occur on the actor instance */
@@ -303,6 +312,7 @@ protected:
     bool m_started = false;
     bool m_wasActive = false;
     bool m_editorTransient = false;
+    uint64_t m_renderStateRevision = 1u;
     std::string m_sourceObjectKey;
     std::string m_largeSceneHLODMetadataJson;
     /* Parenting system stuff */

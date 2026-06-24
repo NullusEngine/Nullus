@@ -141,6 +141,10 @@ namespace NLS::Core::ResourceManagement
 		virtual void DestroyResource(T* p_resource) = 0;
 		virtual void DestroyResourceForPath(const std::string& p_path, T* p_resource);
 		virtual void ReloadResource(T* p_resource, const std::string& p_path) = 0;
+		virtual void OnResourceRegistered(const std::string& p_path, T* p_resource) {}
+		virtual void OnResourceUnregistered(const std::string& p_path, T* p_resource) {}
+		virtual void OnResourceMoved(const std::string& p_previousPath, const std::string& p_newPath, T* p_resource) {}
+		virtual void OnAllResourcesUnregistered() {}
 		static std::string GetRealPath(const std::string& p_path);
 		static const std::string& GetProjectAssetsPath();
 		static const std::string& GetEngineAssetsPath();

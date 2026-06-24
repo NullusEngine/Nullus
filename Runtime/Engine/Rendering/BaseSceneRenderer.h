@@ -5,6 +5,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -132,6 +133,7 @@ namespace NLS::Engine::Rendering
 			const Drawable& drawable,
 			Render::Resources::MaterialPipelineStateOverrides pipelineOverrides,
 			Render::Settings::EComparaisonAlgorithm depthCompareOverride,
+			std::string_view lightMode,
 			PreparedRecordedDraw& outDraw);
 		const SceneOcclusionFrameInput& GetLastHZBOcclusionFrameInput() const;
 		bool HasPendingHZBOcclusionObservationFrame() const;

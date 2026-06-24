@@ -83,7 +83,7 @@ After the editor UI opens, only assets reported by the file watcher, copy/move/d
 - **SC-006**: Source-contract tests prove generated model renderer resource resolution checks material cache state without forcing material loads on the editor thread.
 - **SC-007**: Source-contract tests prove legacy `"File"` drag targets cannot instantiate or synchronously preview model assets through Scene View, Hierarchy, or Asset View.
 - **SC-008**: Unit tests prove a model package prewarmed through a relative `Library/...` key is reused by later absolute `.nmodel` requests without adding an absolute cache entry or replacing the package/mesh alias pointers.
-- **SC-009**: Source-contract tests prove renderer resource resolution does not mark the main model package ready when prewarm fails, and startup material prewarm checks material, shader, and texture services before loading `.nmat` artifacts.
+- **SC-009**: Source-contract tests prove renderer resource resolution does not mark the main model package ready when prewarm fails, and startup material prewarm checks material, shader, and texture services before loading `.mat` artifacts.
 
 ## Assumptions
 

@@ -46,6 +46,7 @@ Tools/Tool/
 
 # Local scratch projects and generated logs
 TestProject/
+Library/
 
 # Local AI workflow scratch
 .codex/

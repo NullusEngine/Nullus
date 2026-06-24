@@ -2,10 +2,7 @@
 #include <Utils/PathParser.h>
 #include <Utils/SizeConverter.h>
 
-#include <fstream>
 #include <optional>
-
-#include <Json/json.hpp>
 
 #include <UI/GUIDrawer.h>
 #include <ServiceLocator.h>
@@ -26,8 +23,8 @@
 #include "Panels/AssetProperties.h"
 #include "Panels/AssetBrowser.h"
 #include "Panels/AssetView.h"
+#include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/AssetMeta.h"
-#include "Assets/EditorAssetManifestJson.h"
 #include "Assets/AssetImporterFacade.h"
 #include "Assets/EditorAssetPath.h"
 #include "Core/EditorActions.h"
@@ -135,21 +132,7 @@ std::optional<AssetPropertiesSubAssetInfo> ReadAssetPropertiesSubAssetInfo(
     if (!meta.has_value() || !meta->id.IsValid())
         return std::nullopt;
 
-    const auto manifestPath =
-        projectRoot /
-        "Library" /
-        "Artifacts" /
-        meta->id.ToString() /
-        "manifest.json";
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input)
-        return std::nullopt;
-
-    auto root = nlohmann::json::parse(input, nullptr, false);
-    if (root.is_discarded())
-        return std::nullopt;
-
-    const auto manifest = NLS::Editor::Assets::ParseArtifactManifestJson(root, true);
+    const auto manifest = NLS::Editor::Assets::LoadArtifactManifestFromProjectArtifactDB(projectRoot, meta->id);
     if (!manifest.has_value())
         return std::nullopt;
 

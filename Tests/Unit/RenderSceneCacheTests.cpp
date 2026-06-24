@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "Guid.h"
+#include "Assets/ArtifactManifest.h"
+#include "Assets/NativeArtifactContainer.h"
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
@@ -20,6 +22,8 @@
 #include "Jobs/JobSystem.h"
 #include "Math/Matrix4.h"
 #include "Rendering/Assets/MeshArtifact.h"
+#include "Rendering/Assets/ShaderArtifact.h"
+#include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Data/Frustum.h"
 #include "Rendering/Data/DrawableInstanceCount.h"
@@ -37,6 +41,7 @@
 #include "Rendering/SceneHLOD.h"
 #include "Rendering/SceneVisibilityPipeline.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
+#include "Rendering/ShaderLab/ShaderLabTypes.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PPtr.h"
 #include "Components/MeshFilter.h"
@@ -203,7 +208,7 @@ namespace
         RenderableFixture()
         {
             EnsureRenderSceneTestDriver();
-            shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+            shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
             material.SetShader(shader);
             mesh = CreateSingleMesh();
             auto& actor = scene.CreateGameObject("RetainedSceneActor");
@@ -247,7 +252,7 @@ namespace
             const bool mixSurfaceModes = false)
         {
             EnsureRenderSceneTestDriver();
-            shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+            shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
             material.SetShader(shader);
             decalMaterial.SetShader(shader);
             decalMaterial.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Decal);
@@ -325,7 +330,7 @@ namespace
         QueueSortFixture()
         {
             EnsureRenderSceneTestDriver();
-            shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+            shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
             opaqueMaterialA.SetShader(shader);
             opaqueMaterialB.SetShader(shader);
             decalMaterial.SetShader(shader);
@@ -515,21 +520,141 @@ namespace
         output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     }
 
+    std::filesystem::path BuiltinMeshArtifactPath(
+        const std::filesystem::path& engineAssetsRoot,
+        const std::string& virtualSourcePath)
+    {
+        return engineAssetsRoot /
+            "Library" /
+            "BuiltinArtifacts" /
+            "Models" /
+            NLS::Core::Assets::BuildArtifactStorageFileName("BuiltinMeshArtifact:" + virtualSourcePath);
+    }
+
+    void WriteBytes(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
+    {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    void WriteMaterialArtifact(const std::filesystem::path& artifactPath)
+    {
+        NLS::Core::Assets::NativeArtifactMetadata metadata;
+        metadata.artifactType = NLS::Core::Assets::ArtifactType::Material;
+        metadata.schemaName = "material";
+        metadata.schemaVersion = 1u;
+
+        const std::string payload = "name=PendingMaterial\n";
+        const std::vector<uint8_t> bytes(payload.begin(), payload.end());
+        WriteBytes(artifactPath, NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), bytes));
+    }
+
+    void WriteTextureArtifact(const std::filesystem::path& artifactPath)
+    {
+        NLS::Render::Assets::TextureArtifactData texture;
+        texture.width = 1u;
+        texture.height = 1u;
+        texture.format = NLS::Render::RHI::TextureFormat::RGBA8;
+        texture.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+        texture.mips.push_back({0u, 1u, 1u, 4u, 4u, {255u, 255u, 255u, 255u}});
+
+        WriteBytes(artifactPath, NLS::Render::Assets::SerializeTextureArtifact(texture));
+    }
+
     void CopyTextFile(const std::filesystem::path& source, const std::filesystem::path& destination)
     {
         std::filesystem::create_directories(destination.parent_path());
         std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing);
     }
 
-    void CopyFallbackShaderAssets(const std::filesystem::path& engineAssetsRoot)
+    void RegisterImportedShaderLabArtifact(
+        const std::filesystem::path& projectRoot,
+        NLS::Core::ResourceManagement::ShaderManager& shaderManager,
+        const std::string& sourcePath,
+        const std::string& subAssetKey,
+        const std::string& fileName)
     {
-        const auto sourceRoot = std::filesystem::path(NLS_ROOT_DIR) / "App" / "Assets" / "Engine" / "Shaders";
-        const auto destinationRoot = engineAssetsRoot / "Shaders";
+        NLS::Render::Assets::ShaderArtifact artifact;
+        artifact.sourcePath = sourcePath;
+        artifact.subAssetKey = subAssetKey;
+        artifact.shaderLabPassState = NLS::Render::ShaderLab::ShaderLabPassState{};
+        artifact.stages.push_back({
+            NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+            NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+            "VSMain",
+            "vs_6_0",
+            {
+                NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                { 0x44u, 0x58u, 0x49u, 0x4cu, 0x56u, 0x53u },
+                {},
+                {},
+                "standard-pbr-forward-vs-cache",
+                "StandardPBR.vs.dxil"
+            }
+        });
+        artifact.stages.push_back({
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+            "PSMain",
+            "ps_6_0",
+            {
+                NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                { 0x44u, 0x58u, 0x49u, 0x4cu, 0x50u, 0x53u },
+                {},
+                {},
+                "standard-pbr-forward-ps-cache",
+                "StandardPBR.ps.dxil"
+            }
+        });
 
-        CopyTextFile(sourceRoot / "Lambert.hlsl", destinationRoot / "Lambert.hlsl");
-        CopyTextFile(sourceRoot / "Standard.hlsl", destinationRoot / "Standard.hlsl");
-        CopyTextFile(sourceRoot / "CommonTypes.hlsli", destinationRoot / "CommonTypes.hlsli");
-        CopyTextFile(sourceRoot / "LightGridCommon.hlsli", destinationRoot / "LightGridCommon.hlsli");
+        const auto artifactPath =
+            projectRoot /
+            "Library" /
+            "Artifacts" /
+            "33333333444445558666777777777777" /
+            fileName;
+        WriteBytes(artifactPath, NLS::Render::Assets::SerializeShaderArtifact(artifact));
+
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(artifactPath.string());
+        ASSERT_NE(shader, nullptr);
+        shaderManager.RegisterResource(artifactPath.generic_string(), shader);
+    }
+
+    void RegisterImportedFallbackShaderArtifact(
+        const std::filesystem::path& projectRoot,
+        NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+    {
+        RegisterImportedShaderLabArtifact(
+            projectRoot,
+            shaderManager,
+            "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+            "shader:StandardPBR/Forward#0",
+            "efb9b670c9b9f8ccf96ba7d887d80c19d3884bf71a87f8c3a02c97c6dc8dd55b");
+    }
+
+    void RegisterImportedNonDefaultShaderLabArtifact(
+        const std::filesystem::path& projectRoot,
+        NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+    {
+        RegisterImportedShaderLabArtifact(
+            projectRoot,
+            shaderManager,
+            "Assets/Project/Shaders/OnlyForPicking.shader",
+            "shader:OnlyForPicking/Picking#0",
+            "3a6a3e42e1d842508a0167200da19f4dce088e622f8346ca6bf5f7b449223bd0");
+    }
+
+    void RegisterImportedForwardPreviewShaderLabArtifact(
+        const std::filesystem::path& projectRoot,
+        NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+    {
+        RegisterImportedShaderLabArtifact(
+            projectRoot,
+            shaderManager,
+            "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+            "shader:StandardPBR/ForwardPreview#1",
+            "0a6a3e42e1d842508a0167200da19f4dce088e622f8346ca6bf5f7b449223bd1");
     }
 }
 
@@ -839,8 +964,8 @@ TEST(RenderSceneCacheTests, SynchronizeRetriesDeferredMeshAndMaterialReferencesA
 
     const auto meshGuid = NLS::Guid::Parse("11111111-2222-4333-8444-555555555555");
     const auto materialGuid = NLS::Guid::Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
-    const auto meshPath = std::string("Library/Artifacts/Hero/body.nmesh");
-    const auto materialPath = std::string("Library/Artifacts/Hero/body.nmat");
+    const auto meshPath = std::string("Library/Artifacts/Hero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
+    const auto materialPath = std::string("Library/Artifacts/Hero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
     const auto meshReference = ObjectIdentifier::Asset(
         AssetId(meshGuid),
         MakeLocalIdentifierInFile(meshGuid, "mesh:body"),
@@ -871,7 +996,7 @@ TEST(RenderSceneCacheTests, SynchronizeRetriesDeferredMeshAndMaterialReferencesA
 
     auto* mesh = CreateSingleMesh();
     ASSERT_NE(mesh, nullptr);
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     auto* material = new NLS::Render::Resources::Material();
     material->SetShader(shader);
@@ -908,8 +1033,8 @@ TEST(RenderSceneCacheTests, SynchronizeDoesNotReloadPreviouslyMissingDeferredRef
 
     const auto meshGuid = NLS::Guid::Parse("22222222-3333-4444-8555-666666666666");
     const auto materialGuid = NLS::Guid::Parse("bbbbbbbb-cccc-4ddd-8eee-ffffffffffff");
-    const auto meshPath = std::string("Library/Artifacts/Missing/body.nmesh");
-    const auto materialPath = std::string("Library/Artifacts/Missing/body.nmat");
+    const auto meshPath = std::string("Library/Artifacts/Missing/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
+    const auto materialPath = std::string("Library/Artifacts/Missing/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
     const auto meshReference = ObjectIdentifier::Asset(
         AssetId(meshGuid),
         MakeLocalIdentifierInFile(meshGuid, "mesh:body"),
@@ -949,7 +1074,7 @@ TEST(RenderSceneCacheTests, SynchronizeDoesNotReloadPreviouslyMissingDeferredRef
 
     auto* mesh = CreateSingleMesh();
     ASSERT_NE(mesh, nullptr);
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     auto* material = new NLS::Render::Resources::Material();
     material->SetShader(shader);
@@ -974,7 +1099,7 @@ TEST(RenderSceneCacheTests, SynchronizeDrawsDirectMeshReferenceWithoutModelResou
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -1016,8 +1141,7 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsLoadedPrimitiveCubeWithColdDefault
     const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
     const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
     WriteCubeMeshArtifact(
-        root.Path() / "EngineAssets" / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh");
-    CopyFallbackShaderAssets(root.Path() / "EngineAssets");
+        BuiltinMeshArtifactPath(root.Path() / "EngineAssets", "Models/Cube.fbx"));
 
     NLS::Core::ResourceManagement::MeshManager meshManager;
     NLS::Core::ResourceManagement::MaterialManager materialManager;
@@ -1029,12 +1153,9 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsLoadedPrimitiveCubeWithColdDefault
         projectAssetsRoot,
         engineAssetsRoot);
 
+    RegisterImportedFallbackShaderArtifact(root.Path() / "Project", shaderManager);
     NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
-    EXPECT_TRUE(
-        shaderManager.IsResourceRegistered(":Shaders\\Lambert.hlsl") ||
-        shaderManager.IsResourceRegistered(":Shaders/Lambert.hlsl") ||
-        shaderManager.IsResourceRegistered(":Shaders\\Standard.hlsl") ||
-        shaderManager.IsResourceRegistered(":Shaders/Standard.hlsl"));
+    EXPECT_FALSE(shaderManager.GetResources().empty());
 
     NLS::Engine::SceneSystem::Scene scene;
     auto& actor = scene.CreateGameObject("Loaded Primitive Cube");
@@ -1073,6 +1194,130 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsLoadedPrimitiveCubeWithColdDefault
     EXPECT_TRUE(drawables.opaques.front().second.material->IsValid());
 }
 
+TEST(RenderSceneCacheTests, SceneRendererDoesNotUseArbitraryShaderLabArtifactAsDefaultMaterialFallback)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    auto& driver = EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_loaded_primitive_cube_no_default_shader_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    WriteCubeMeshArtifact(
+        BuiltinMeshArtifactPath(root.Path() / "EngineAssets", "Models/Cube.fbx"));
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    const ScopedRenderSceneResourceManagers resourceManagers(
+        meshManager,
+        materialManager,
+        shaderManager,
+        projectAssetsRoot,
+        engineAssetsRoot);
+
+    RegisterImportedNonDefaultShaderLabArtifact(root.Path() / "Project", shaderManager);
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("Loaded Primitive Cube");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    const auto meshGuid = NLS::Guid::Parse("33333333-4444-4555-8666-777777777777");
+    meshFilter->SetMeshReference(MakeRenderScenePPtr<NLS::Render::Resources::Mesh>(
+        NLS::Engine::Serialize::ObjectIdentifier::Asset(
+            NLS::Engine::Serialize::AssetId(meshGuid),
+            NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshGuid, "mesh:Cube"),
+            "builtin:Primitive/Cube")));
+    meshRenderer->SetMaterialReferences({});
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+
+    EXPECT_TRUE(drawables.opaques.empty());
+}
+
+TEST(RenderSceneCacheTests, SceneRendererUsesOnlyExactStandardPbrForwardArtifactAsFallback)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    auto& driver = EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_loaded_primitive_cube_exact_default_shader_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    WriteCubeMeshArtifact(
+        BuiltinMeshArtifactPath(root.Path() / "EngineAssets", "Models/Cube.fbx"));
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    const ScopedRenderSceneResourceManagers resourceManagers(
+        meshManager,
+        materialManager,
+        shaderManager,
+        projectAssetsRoot,
+        engineAssetsRoot);
+
+    RegisterImportedForwardPreviewShaderLabArtifact(root.Path() / "Project", shaderManager);
+    RegisterImportedFallbackShaderArtifact(root.Path() / "Project", shaderManager);
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("Loaded Primitive Cube");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    const auto meshGuid = NLS::Guid::Parse("33333333-4444-4555-8666-777777777777");
+    meshFilter->SetMeshReference(MakeRenderScenePPtr<NLS::Render::Resources::Mesh>(
+        NLS::Engine::Serialize::ObjectIdentifier::Asset(
+            NLS::Engine::Serialize::AssetId(meshGuid),
+            NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshGuid, "mesh:Cube"),
+            "builtin:Primitive/Cube")));
+    meshRenderer->SetMaterialReferences({});
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+
+    ASSERT_EQ(drawables.opaques.size(), 1u);
+    ASSERT_NE(drawables.opaques.front().second.material, nullptr);
+    ASSERT_NE(drawables.opaques.front().second.material->GetShader(), nullptr);
+    EXPECT_EQ(
+        drawables.opaques.front().second.material->GetShader()->GetImportedArtifactSubAssetKey(),
+        "shader:StandardPBR/Forward#0");
+}
+
 TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)
 {
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
@@ -1081,15 +1326,15 @@ TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)
     NLS::Core::ResourceManagement::MaterialManager materialManager;
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     auto* usedMaterial = new NLS::Render::Resources::Material();
     auto* unusedMaterial = new NLS::Render::Resources::Material();
     usedMaterial->SetShader(shader);
     unusedMaterial->SetShader(shader);
 
-    const auto usedPath = std::string("Library/Artifacts/HotPath/used.nmat");
-    const auto unusedPath = std::string("Library/Artifacts/HotPath/unused-high-slot.nmat");
+    const auto usedPath = std::string("Library/Artifacts/HotPath/56e3516af0658948400310dcb9266e24f19000c93d95470a205df88062fcb2b9");
+    const auto unusedPath = std::string("Library/Artifacts/HotPath/71af9c5b3b34a1a2ab603d8f9d551fecab5809c48c5ce9a3ab27b326c6662efa");
     const_cast<std::string&>(usedMaterial->path) = usedPath;
     const_cast<std::string&>(unusedMaterial->path) = unusedPath;
     materialManager.RegisterResource(usedPath, usedMaterial);
@@ -1136,14 +1381,14 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilRe
     NLS::Core::ResourceManagement::MaterialManager materialManager;
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
     defaultMaterial.SetShader(shader);
     ASSERT_TRUE(defaultMaterial.IsValid());
 
-    const auto materialPath = std::string("Library/Artifacts/Preview/body.nmat");
+    const auto materialPath = std::string("Library/Artifacts/Preview/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
     auto* mesh = CreateSingleMesh(0u);
     NLS::Engine::SceneSystem::Scene scene;
     auto& actor = scene.CreateGameObject("MaterialPathPending");
@@ -1188,15 +1433,15 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTextu
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
     defaultMaterial.SetShader(shader);
     ASSERT_TRUE(defaultMaterial.IsValid());
 
-    const auto materialPath = std::string("Library/Artifacts/Preview/textured-body.nmat");
-    const auto texturePath = std::string("Library/Artifacts/Preview/textures/body-diffuse.ntex");
+    const auto materialPath = std::string("Library/Artifacts/Preview/5a7b08f376165e7a24bca5d6717735939d1a03d386d31f76adac4e723db8b863");
+    const auto texturePath = std::string("Library/Artifacts/Preview/textures/a55ac3737664a81088f904ab71979adda6090a6fae2b5bcf829cae2cbba29c37");
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
     const_cast<std::string&>(material.path) = materialPath;
@@ -1247,15 +1492,15 @@ TEST(RenderSceneCacheTests, ExistingSceneExplicitMaterialPathRemainsVisibleWhile
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
     defaultMaterial.SetShader(shader);
     ASSERT_TRUE(defaultMaterial.IsValid());
 
-    const auto materialPath = std::string("Library/Artifacts/Existing/textured-body.nmat");
-    const auto texturePath = std::string("Library/Artifacts/Existing/textures/body-diffuse.ntex");
+    const auto materialPath = std::string("Library/Artifacts/Existing/5a7b08f376165e7a24bca5d6717735939d1a03d386d31f76adac4e723db8b863");
+    const auto texturePath = std::string("Library/Artifacts/Existing/textures/a55ac3737664a81088f904ab71979adda6090a6fae2b5bcf829cae2cbba29c37");
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
     const_cast<std::string&>(material.path) = materialPath;
@@ -1298,15 +1543,15 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBefor
     NLS::Core::ResourceManagement::TextureManager textureManager;
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
     defaultMaterial.SetShader(shader);
     ASSERT_TRUE(defaultMaterial.IsValid());
 
-    const auto materialPath = std::string("Library/Artifacts/Preview/textured-cached-body.nmat");
-    const auto texturePath = std::string("Library/Artifacts/Preview/textures/cached-body-diffuse.ntex");
+    const auto materialPath = std::string("Library/Artifacts/Preview/0c44be14dbdba8fbe4d726025cef9ade7d746f4deca0b6e540432b19191431cd");
+    const auto texturePath = std::string("Library/Artifacts/Preview/textures/e7c47c17b703b2a444d73ae9c06978515fdc721130cc112034cc10a16ebe9185");
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
     const_cast<std::string&>(material.path) = materialPath;
@@ -1366,15 +1611,15 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathAcceptsEquivalentCachedDeclaredT
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
     defaultMaterial.SetShader(shader);
     ASSERT_TRUE(defaultMaterial.IsValid());
 
-    const auto materialPath = std::string("Library/Artifacts/Preview/textured-equivalent-body.nmat");
-    const auto texturePath = std::string("Library/Artifacts/Preview/textures/equivalent-body-diffuse.ntex");
+    const auto materialPath = std::string("Library/Artifacts/Preview/14e2231dbb294e9a4c2eee8ee1fd38020fbcf5d08eb69af2c2691123d65d1837");
+    const auto texturePath = std::string("Library/Artifacts/Preview/textures/48cc145633ba31931db6c0d8f531d5abba0d4c24cdba065a88ae5620e691daa3");
     const auto absoluteTexturePath = NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
 
     NLS::Render::Resources::Material material;
@@ -1437,8 +1682,8 @@ TEST(RenderSceneCacheTests, ResourceManagersReturnEquivalentCachedArtifactsForAs
     NLS::Core::ResourceManagement::MaterialManager materialManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
 
-    const auto materialPath = std::string("Library/Artifacts/Hero/materials/body.nmat");
-    const auto texturePath = std::string("Library/Artifacts/Hero/textures/body.ntex");
+    const auto materialPath = std::string("Library/Artifacts/Hero/000000000000d101");
+    const auto texturePath = std::string("Library/Artifacts/Hero/000000000000d102");
     const auto absoluteMaterialPath =
         NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(materialPath);
     const auto absoluteTexturePath =
@@ -1469,6 +1714,42 @@ TEST(RenderSceneCacheTests, ResourceManagersReturnEquivalentCachedArtifactsForAs
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
 }
 
+TEST(RenderSceneCacheTests, MaterialManagerMoveResourceDropsOldEquivalentArtifactPath)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_material_move_equivalent_artifact_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+
+    const auto oldPath = std::string("Library/Artifacts/Hero/000000000000a001");
+    const auto newPath = std::string("Library/Artifacts/Hero/000000000000a002");
+    const auto absoluteOldPath =
+        NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(oldPath);
+    const auto absoluteNewPath =
+        NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(newPath);
+
+    auto* material = new NLS::Render::Resources::Material();
+    material->path = oldPath;
+    materialManager.RegisterResource(oldPath, material);
+
+    ASSERT_EQ(materialManager.FindRegisteredMaterialByEquivalentArtifactPath(absoluteOldPath), material);
+    ASSERT_TRUE(materialManager.MoveResource(oldPath, newPath));
+
+    EXPECT_EQ(material->path, newPath);
+    EXPECT_EQ(materialManager.FindRegisteredMaterialByEquivalentArtifactPath(absoluteOldPath), nullptr);
+    EXPECT_EQ(materialManager.FindRegisteredMaterialByEquivalentArtifactPath(absoluteNewPath), material);
+
+    materialManager.UnloadResources();
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+}
+
 TEST(RenderSceneCacheTests, ResourceManagersTrackEquivalentPendingAsyncArtifactRequests)
 {
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
@@ -1485,12 +1766,14 @@ TEST(RenderSceneCacheTests, ResourceManagersTrackEquivalentPendingAsyncArtifactR
     NLS::Core::ResourceManagement::MaterialManager materialManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
 
-    const auto materialPath = std::string("Library/Artifacts/Hero/materials/pending.nmat");
-    const auto texturePath = std::string("Library/Artifacts/Hero/textures/pending.ntex");
+    const auto materialPath = std::string("Library/Artifacts/Hero/000000000000d001");
+    const auto texturePath = std::string("Library/Artifacts/Hero/000000000000d002");
     const auto absoluteMaterialPath =
         NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(materialPath);
     const auto absoluteTexturePath =
         NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
+    WriteMaterialArtifact(absoluteMaterialPath);
+    WriteTextureArtifact(absoluteTexturePath);
 
     materialManager.RequestAsyncArtifact(absoluteMaterialPath, true);
     textureManager.RequestAsyncArtifact(absoluteTexturePath, true);
@@ -1534,7 +1817,7 @@ TEST(RenderSceneCacheTests, MissingMaterialPathStillUsesDefaultMaterial)
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
@@ -2056,8 +2339,8 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsExistingAndPreviewPrefabInstancesS
 
     const auto meshGuid = NLS::Guid::Parse("24242424-2424-4424-8424-242424242424");
     const auto materialGuid = NLS::Guid::Parse("35353535-3535-4535-8535-353535353535");
-    const auto meshPath = std::string("Library/Artifacts/Hero/shared/body.nmesh");
-    const auto materialPath = std::string("Library/Artifacts/Hero/shared/body.nmat");
+    const auto meshPath = std::string("Library/Artifacts/Hero/shared/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
+    const auto materialPath = std::string("Library/Artifacts/Hero/shared/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
     const auto meshReference = ObjectIdentifier::Asset(
         AssetId(meshGuid),
         MakeLocalIdentifierInFile(meshGuid, "mesh:body"),
@@ -2067,7 +2350,7 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsExistingAndPreviewPrefabInstancesS
         MakeLocalIdentifierInFile(materialGuid, "material:body"),
         materialPath);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     auto* existingMesh = CreateSingleMesh(0u);
@@ -2165,9 +2448,9 @@ TEST(RenderSceneCacheTests, AdditivePreviewSceneSkipsTexturedModelUntilMaterialT
 
     const auto meshGuid = NLS::Guid::Parse("25252525-2525-4525-8525-252525252525");
     const auto materialGuid = NLS::Guid::Parse("36363636-3636-4636-8636-363636363636");
-    const auto meshPath = std::string("Library/Artifacts/Hero/preview/body.nmesh");
-    const auto materialPath = std::string("Library/Artifacts/Hero/preview/body.nmat");
-    const auto texturePath = std::string("Library/Artifacts/Hero/preview/body-basecolor.ntex");
+    const auto meshPath = std::string("Library/Artifacts/Hero/preview/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
+    const auto materialPath = std::string("Library/Artifacts/Hero/preview/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
+    const auto texturePath = std::string("Library/Artifacts/Hero/preview/86e6c89ab4ea41e95f16e80c3e267f36ba9a256daf79cb4d867ba2e0fdf555cf");
     const auto meshReference = ObjectIdentifier::Asset(
         AssetId(meshGuid),
         MakeLocalIdentifierInFile(meshGuid, "mesh:body"),
@@ -2177,7 +2460,7 @@ TEST(RenderSceneCacheTests, AdditivePreviewSceneSkipsTexturedModelUntilMaterialT
         MakeLocalIdentifierInFile(materialGuid, "material:body"),
         materialPath);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     auto* existingMesh = CreateSingleMesh(0u);
@@ -2627,7 +2910,7 @@ TEST(RenderSceneCacheTests, NonIndexedObjectDataDrawsDoNotConsumeGlobalObjectDat
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
     QueueSortFixture fixture;
-    auto* legacyShader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Unlit.hlsl");
+    auto* legacyShader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Unlit.hlsl");
     ASSERT_NE(legacyShader, nullptr);
     ASSERT_FALSE(NLS::Render::Resources::ShaderSupportsIndexedObjectData(*legacyShader));
 

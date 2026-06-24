@@ -364,7 +364,11 @@ bool IsWarmPreimportableAsset(
     if (!mainAsset.has_value() || mainAsset->artifactPath.empty())
         return false;
 
-    const auto artifact = NLS::Render::Assets::LoadShaderArtifact(mainAsset->artifactPath);
+    const auto physicalArtifactPath = database.ResolveArtifactPathAtPath(assetPath, mainAsset->subAssetKey);
+    if (physicalArtifactPath.empty())
+        return false;
+
+    const auto artifact = NLS::Render::Assets::LoadShaderArtifact(physicalArtifactPath);
     return artifact.has_value() &&
         NLS::Render::Assets::HasUsableShaderArtifactStage(
             *artifact,

@@ -35,6 +35,7 @@ namespace NLS::Core::ResourceManagement
 
 			T* registeredResource = nullptr;
 			bool destroyNewResource = false;
+			bool insertedNewResource = false;
 			{
 				std::lock_guard lock(m_resourcesMutex);
 				if (auto resource = m_resources.find(p_path); resource != m_resources.end())
@@ -59,8 +60,11 @@ namespace NLS::Core::ResourceManagement
 					{
 						m_resources[p_path] = newResource;
 						registeredResource = newResource;
+						insertedNewResource = true;
 					}
 				}
+				if (insertedNewResource)
+					OnResourceRegistered(p_path, registeredResource);
 			}
 
 			if (destroyNewResource)
@@ -81,6 +85,7 @@ namespace NLS::Core::ResourceManagement
 				resource = found->second;
 				m_resources.erase(found);
 				m_lifetimeManagedResources.erase(ResourceLifetimeRegistry::NormalizeResourcePath(p_path));
+				OnResourceUnregistered(p_path, resource);
 			}
 		}
 
@@ -95,11 +100,13 @@ namespace NLS::Core::ResourceManagement
 		const auto previous = m_resources.find(p_previousPath);
 		if (previous != m_resources.end() && m_resources.find(p_newPath) == m_resources.end())
 		{
-			m_resources[p_newPath] = previous->second;
+			auto* resource = previous->second;
+			m_resources[p_newPath] = resource;
 			m_resources.erase(previous);
 			const auto previousNormalizedPath = ResourceLifetimeRegistry::NormalizeResourcePath(p_previousPath);
 			if (m_lifetimeManagedResources.erase(previousNormalizedPath) > 0u)
 				m_lifetimeManagedResources.insert(ResourceLifetimeRegistry::NormalizeResourcePath(p_newPath));
+			OnResourceMoved(p_previousPath, p_newPath, resource);
 			return true;
 		}
 
@@ -131,6 +138,7 @@ namespace NLS::Core::ResourceManagement
 			resources = std::move(m_resources);
 			m_resources.clear();
 			m_lifetimeManagedResources.clear();
+			OnAllResourcesUnregistered();
 		}
 
 		for (auto& [key, value] : resources)
@@ -148,6 +156,9 @@ namespace NLS::Core::ResourceManagement
 
 			m_resources[p_path] = p_instance;
 			m_lifetimeManagedResources.erase(ResourceLifetimeRegistry::NormalizeResourcePath(p_path));
+			if (previousResource != nullptr)
+				OnResourceUnregistered(p_path, previousResource);
+			OnResourceRegistered(p_path, p_instance);
 		}
 
 		if (previousResource)
@@ -238,8 +249,11 @@ namespace NLS::Core::ResourceManagement
 				{
 					if (auto registered = m_resources.find(registeredPath); registered != m_resources.end())
 					{
-						resourcesToDestroy.emplace_back(registered->first, registered->second);
+						auto key = registered->first;
+						auto* resource = registered->second;
+						resourcesToDestroy.emplace_back(key, resource);
 						m_resources.erase(registered);
+						OnResourceUnregistered(key, resource);
 					}
 					m_lifetimeManagedResources.erase(ResourceLifetimeRegistry::NormalizeResourcePath(registeredPath));
 				}
@@ -257,6 +271,7 @@ namespace NLS::Core::ResourceManagement
 						{
 							m_resources.emplace(registeredPath, resource);
 							m_lifetimeManagedResources.insert(ResourceLifetimeRegistry::NormalizeResourcePath(registeredPath));
+							OnResourceRegistered(registeredPath, resource);
 						}
 						else if (registered->second != resource)
 						{
@@ -307,7 +322,12 @@ namespace NLS::Core::ResourceManagement
 	inline void AResourceManager<T>::UnregisterResource(const std::string & p_path)
 	{
 		std::lock_guard lock(m_resourcesMutex);
-		m_resources.erase(p_path);
+		if (auto found = m_resources.find(p_path); found != m_resources.end())
+		{
+			auto* resource = found->second;
+			m_resources.erase(found);
+			OnResourceUnregistered(p_path, resource);
+		}
 		m_lifetimeManagedResources.erase(ResourceLifetimeRegistry::NormalizeResourcePath(p_path));
 	}
 

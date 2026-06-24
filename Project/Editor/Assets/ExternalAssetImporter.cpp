@@ -1460,41 +1460,42 @@ std::filesystem::path RelativePathFor(const NLS::Render::Assets::GeneratedSceneS
     switch (subAsset.type)
     {
     case ImportedSceneSubAssetType::Mesh:
-        return std::filesystem::path("meshes") / (EncodeArtifactFileName(subAsset.key) + ".nmesh");
+        return std::filesystem::path("meshes") / EncodeArtifactFileName(subAsset.key);
     case ImportedSceneSubAssetType::Material:
-        return std::filesystem::path("materials") / (EncodeArtifactFileName(subAsset.key) + ".nmat");
+        return std::filesystem::path("materials") / EncodeArtifactFileName(subAsset.key);
     case ImportedSceneSubAssetType::Texture:
-        return std::filesystem::path("textures") / (EncodeArtifactFileName(subAsset.key) + ".ntex");
+        return std::filesystem::path("textures") / EncodeArtifactFileName(subAsset.key);
     case ImportedSceneSubAssetType::Skeleton:
-        return std::filesystem::path("skeletons") / (EncodeArtifactFileName(subAsset.key) + ".nskel");
+        return std::filesystem::path("skeletons") / EncodeArtifactFileName(subAsset.key);
     case ImportedSceneSubAssetType::Skin:
-        return std::filesystem::path("skins") / (EncodeArtifactFileName(subAsset.key) + ".nskin");
+        return std::filesystem::path("skins") / EncodeArtifactFileName(subAsset.key);
     case ImportedSceneSubAssetType::AnimationClip:
-        return std::filesystem::path("animations") / (EncodeArtifactFileName(subAsset.key) + ".nanim");
+        return std::filesystem::path("animations") / EncodeArtifactFileName(subAsset.key);
     case ImportedSceneSubAssetType::MorphTarget:
-        return std::filesystem::path("morphs") / (EncodeArtifactFileName(subAsset.key) + ".nmorph");
+        return std::filesystem::path("morphs") / EncodeArtifactFileName(subAsset.key);
     case ImportedSceneSubAssetType::Prefab:
-        return "prefab.nprefab";
+        return "prefab";
     default:
-        return std::filesystem::path("assets") / (EncodeArtifactFileName(subAsset.key) + ".nasset");
+        return std::filesystem::path("assets") / EncodeArtifactFileName(subAsset.key);
     }
 }
 
 std::unordered_map<std::string, std::filesystem::path> BuildTextureArtifactPathMap(
-    const std::vector<NLS::Render::Assets::GeneratedSceneSubAsset>& subAssets,
+    const std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
+    const NLS::Core::Assets::ArtifactWriteRequest& writeRequest,
     const std::filesystem::path& committedRoot,
     const std::filesystem::path& projectRoot)
 {
     std::unordered_map<std::string, std::filesystem::path> paths;
-    for (const auto& subAsset : subAssets)
+    for (const auto& payload : payloads)
     {
-        if (subAsset.type != NLS::Render::Assets::ImportedSceneSubAssetType::Texture ||
-            subAsset.sourceKey.empty())
+        if (payload.artifactType != NLS::Core::Assets::ArtifactType::Texture ||
+            payload.subAssetKey.empty())
         {
             continue;
         }
 
-        auto artifactPath = (committedRoot / RelativePathFor(subAsset)).lexically_normal();
+        auto artifactPath = (committedRoot / NLS::Core::Assets::BuildContentAddressedArtifactRelativePath(writeRequest, payload)).lexically_normal();
         if (!projectRoot.empty())
         {
             const auto projectRelative = artifactPath.lexically_relative(projectRoot.lexically_normal());
@@ -1502,9 +1503,11 @@ std::unordered_map<std::string, std::filesystem::path> BuildTextureArtifactPathM
                 artifactPath = projectRelative;
         }
 
-        paths.emplace(
-            subAsset.sourceKey,
-            artifactPath);
+        constexpr std::string_view kTexturePrefix = "texture:";
+        const auto textureKey = payload.subAssetKey.rfind(kTexturePrefix.data(), 0u) == 0u
+            ? payload.subAssetKey.substr(kTexturePrefix.size())
+            : payload.subAssetKey;
+        paths.emplace(textureKey, artifactPath);
     }
     return paths;
 }
@@ -2184,7 +2187,8 @@ void RecordTextureSlotColorSpace(
 
 NLS::Core::Assets::ArtifactManifest MakeProvisionalManifest(
     const ExternalModelImportRequest& request,
-    const std::vector<NLS::Core::Assets::ArtifactPayload>& payloads)
+    const std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
+    const NLS::Core::Assets::ArtifactWriteRequest& writeRequest)
 {
     NLS::Core::Assets::ArtifactManifest manifest;
     manifest.sourceAssetId = request.meta.id;
@@ -2201,7 +2205,7 @@ NLS::Core::Assets::ArtifactManifest MakeProvisionalManifest(
             payload.artifactType,
             payload.loaderId,
             request.targetPlatform,
-            (request.committedRoot / payload.relativePath).string(),
+            (request.committedRoot / NLS::Core::Assets::BuildContentAddressedArtifactRelativePath(writeRequest, payload)).string(),
             "provisional"
         });
     }
@@ -2756,6 +2760,28 @@ void AppendConvertedMaterialPayloads(
         std::make_move_iterator(materialPayloads.end()));
 }
 
+void CollectMaterialTextureColorSpaces(
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::string& extension,
+    std::unordered_map<std::string, bool> sourceTextureAlphaEvidence,
+    std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace>& textureColorSpaces)
+{
+    const auto sourceModel = MaterialSourceForExtension(extension);
+    const NLS::Render::Assets::MaterialConversionContext context {
+        {},
+        {},
+        {},
+        scene.importSettings.ignoreFbxTexturedNeutralDiffuseTint,
+        std::move(sourceTextureAlphaEvidence)
+    };
+    for (const auto& material : scene.materials)
+    {
+        const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(scene, material, sourceModel, context);
+        for (const auto& slot : converted.textureSlots)
+            RecordTextureSlotColorSpace(textureColorSpaces, slot);
+    }
+}
+
 const NLS::Core::Assets::IArtifactWriteCancellation* GetImportCancellation(
     const ExternalModelImportRequest& request,
     std::optional<ImportCancellationTokenHandle>& token)
@@ -2839,25 +2865,22 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         }
         ReportProgress(request, ImportPhase::IntermediateConversion, 0.34, "Loaded texture payloads");
     }
+    const auto decalBaseColorAlphaEvidence = needsEarlyTexturePayloads
+        ? BuildFbxDecalBaseColorAlphaEvidence(scene, texturePayloads, request.sourcePath)
+        : std::unordered_map<std::string, bool> {};
     std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace> textureColorSpaces;
     {
-        NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::ConvertMaterials");
-        AppendConvertedMaterialPayloads(
+        NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::CollectMaterialTextureUsage");
+        CollectMaterialTextureColorSpaces(
             scene,
             extension,
-            request.textureResourcePathPrefix,
-            request.materialShaderResourcePath,
-            BuildTextureArtifactPathMap(subAssets, request.committedRoot, request.projectRoot),
-            needsEarlyTexturePayloads
-                ? BuildFbxDecalBaseColorAlphaEvidence(scene, texturePayloads, request.sourcePath)
-                : std::unordered_map<std::string, bool> {},
-            payloads,
+            decalBaseColorAlphaEvidence,
             textureColorSpaces);
     }
-    timingStats.payloadCount = payloads.size();
     if (extension != ".obj" && extension != ".fbx")
     {
         ReportProgress(request, ImportPhase::IntermediateConversion, 0.4, "Building native mesh cache");
+        if (sourceMeshes.empty())
         {
             NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::LoadSourceMeshes");
             sourceMeshes = LoadSourceMeshData(
@@ -2958,8 +2981,53 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     }
     timingStats.payloadCount = payloads.size();
 
+    NLS::Core::Assets::ArtifactWriteRequest writeRequest;
+    writeRequest.sourceAssetId = request.meta.id;
+    writeRequest.importerId = request.meta.importerId;
+    writeRequest.importerVersion = request.meta.importerVersion;
+    writeRequest.targetPlatform = request.targetPlatform;
+    writeRequest.primarySubAssetKey = "prefab:" + request.sceneKey;
+    writeRequest.artifacts = payloads;
+    writeRequest.dependencies = scene.dependencies;
+    auto externalSourceDependencies = CollectExternalSourceFileDependencies(request, scene);
+    CollectParserExternalFileDependencies(request, externalSourceDependencies, parserExternalDependencies);
+    CollectObjMaterialFileDependencies(request, externalSourceDependencies);
+    for (auto& dependency : externalSourceDependencies)
+        AddUniqueDependency(writeRequest.dependencies, std::move(dependency));
+    AddTextureBuildIdentityDependencies(writeRequest.dependencies, writeRequest.artifacts);
+    writeRequest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::ImporterVersion,
+        request.meta.importerId,
+        std::to_string(request.meta.importerVersion)
+    });
+    writeRequest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+        kExternalTextureBuildPipelineDependencyName,
+        std::to_string(kExternalTexturePostprocessorVersion)
+    });
+    writeRequest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::BuildTarget,
+        request.targetPlatform,
+        request.targetPlatform
+    });
+
+    {
+        NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::ConvertFinalMaterials");
+        AppendConvertedMaterialPayloads(
+            scene,
+            extension,
+            request.textureResourcePathPrefix,
+            request.materialShaderResourcePath,
+            BuildTextureArtifactPathMap(payloads, writeRequest, request.committedRoot, request.projectRoot),
+            decalBaseColorAlphaEvidence,
+            payloads,
+            textureColorSpaces);
+    }
+    timingStats.payloadCount = payloads.size();
+    writeRequest.artifacts = payloads;
+
     ReportProgress(request, ImportPhase::Postprocess, 0.72, "Building generated prefab graph");
-    auto provisionalManifest = MakeProvisionalManifest(request, payloads);
+    auto provisionalManifest = MakeProvisionalManifest(request, payloads, writeRequest);
     NLS::Engine::Assets::PrefabImportResult prefab;
     {
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::BuildPrefab");
@@ -3003,35 +3071,8 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     timingStats.payloadCount = payloads.size();
 
     ReportProgress(request, ImportPhase::ArtifactWrite, 0.85, "Writing imported artifacts");
-    NLS::Core::Assets::ArtifactWriteRequest writeRequest;
-    writeRequest.sourceAssetId = request.meta.id;
-    writeRequest.importerId = request.meta.importerId;
-    writeRequest.importerVersion = request.meta.importerVersion;
-    writeRequest.targetPlatform = request.targetPlatform;
     writeRequest.primarySubAssetKey = provisionalManifest.primarySubAssetKey;
     writeRequest.artifacts = std::move(payloads);
-    writeRequest.dependencies = scene.dependencies;
-    auto externalSourceDependencies = CollectExternalSourceFileDependencies(request, scene);
-    CollectParserExternalFileDependencies(request, externalSourceDependencies, parserExternalDependencies);
-    CollectObjMaterialFileDependencies(request, externalSourceDependencies);
-    for (auto& dependency : externalSourceDependencies)
-        AddUniqueDependency(writeRequest.dependencies, std::move(dependency));
-    AddTextureBuildIdentityDependencies(writeRequest.dependencies, writeRequest.artifacts);
-    writeRequest.dependencies.push_back({
-        NLS::Core::Assets::AssetDependencyKind::ImporterVersion,
-        request.meta.importerId,
-        std::to_string(request.meta.importerVersion)
-    });
-    writeRequest.dependencies.push_back({
-        NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
-        kExternalTextureBuildPipelineDependencyName,
-        std::to_string(kExternalTexturePostprocessorVersion)
-    });
-    writeRequest.dependencies.push_back({
-        NLS::Core::Assets::AssetDependencyKind::BuildTarget,
-        request.targetPlatform,
-        request.targetPlatform
-    });
     timingStats.dependencyCount = writeRequest.dependencies.size();
 
     NLS::Core::Assets::ArtifactWriter writer(request.stagingRoot, request.committedRoot);

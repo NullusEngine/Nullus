@@ -9,12 +9,14 @@
 #include <sstream>
 #include <utility>
 
-#include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/MaterialSerialization.h"
 
 namespace NLS::Render::Assets
 {
 namespace
 {
+constexpr std::string_view kUnboundShaderReference = "?";
+
 std::string ToLower(std::string value)
 {
     std::transform(
@@ -145,6 +147,67 @@ bool ShouldIgnoreFbxTexturedNeutralDiffuseTint(
     return context.ignoreFbxTexturedNeutralDiffuseTint && IsNeutralRgbFactor(diffuse.values);
 }
 
+bool MaterialIdentitySuggestsDecal(
+    const std::string_view displayName,
+    const std::string_view sourceSubAsset)
+{
+    const auto containsDecal = [](const std::string_view text)
+    {
+        constexpr std::string_view kDecal = "decal";
+        std::string token;
+        for (const char c : text)
+        {
+            if (std::isalpha(static_cast<unsigned char>(c)))
+            {
+                token.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+                continue;
+            }
+
+            if (token == kDecal)
+                return true;
+            token.clear();
+        }
+
+        if (token == kDecal)
+            return true;
+
+        for (size_t index = 0u; index + kDecal.size() <= text.size(); ++index)
+        {
+            bool matches = true;
+            for (size_t offset = 0u; offset < kDecal.size(); ++offset)
+            {
+                if (static_cast<char>(std::tolower(static_cast<unsigned char>(text[index + offset]))) != kDecal[offset])
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (!matches)
+                continue;
+            const bool startsCamelWord =
+                std::isupper(static_cast<unsigned char>(text[index])) &&
+                index > 0u &&
+                std::isalpha(static_cast<unsigned char>(text[index - 1u])) &&
+                (std::islower(static_cast<unsigned char>(text[index - 1u])) ||
+                    (index + 1u < text.size() &&
+                        std::isupper(static_cast<unsigned char>(text[index - 1u])) &&
+                        std::islower(static_cast<unsigned char>(text[index + 1u]))));
+            const bool startsToken = index == 0u ||
+                !std::isalpha(static_cast<unsigned char>(text[index - 1u])) ||
+                startsCamelWord;
+            const auto after = index + kDecal.size();
+            const bool endsToken = after == text.size() ||
+                !std::isalpha(static_cast<unsigned char>(text[after])) ||
+                std::isupper(static_cast<unsigned char>(text[after]));
+            if (startsToken && endsToken)
+                return true;
+        }
+        return false;
+    };
+
+    return containsDecal(displayName) || containsDecal(sourceSubAsset);
+}
+
 bool ShouldInferFbxBaseColorDecalAlpha(
     const ConvertedMaterialArtifact& material,
     const MaterialSourceModel sourceModel,
@@ -163,7 +226,7 @@ bool ShouldInferFbxBaseColorDecalAlpha(
         material.alphaMode == MaterialAlphaMode::Opaque &&
         baseColorHasAlphaEvidence &&
         FindTextureSlot(material, "Opacity") == nullptr &&
-        NLS::Render::Resources::MaterialIdentitySuggestsDecal(material.displayName, material.subAssetKey);
+        MaterialIdentitySuggestsDecal(material.displayName, material.subAssetKey);
 }
 
 void AddDiagnostic(
@@ -298,23 +361,23 @@ std::string AlphaModeName(const MaterialAlphaMode mode)
     }
 }
 
-NLS::Render::Resources::MaterialSurfaceMode SurfaceModeForAlphaMode(const MaterialAlphaMode mode)
+std::string SurfaceModeForAlphaMode(const MaterialAlphaMode mode)
 {
     switch (mode)
     {
-    case MaterialAlphaMode::Blend: return NLS::Render::Resources::MaterialSurfaceMode::Transparent;
+    case MaterialAlphaMode::Blend: return "Transparent";
     case MaterialAlphaMode::Mask:
     case MaterialAlphaMode::Opaque:
-    default: return NLS::Render::Resources::MaterialSurfaceMode::Opaque;
+    default: return "Opaque";
     }
 }
 
-NLS::Render::Resources::MaterialSurfaceMode SurfaceModeForMaterial(const ConvertedMaterialArtifact& material)
+std::string SurfaceModeForMaterial(const ConvertedMaterialArtifact& material)
 {
     if (material.alphaMode == MaterialAlphaMode::Blend &&
-        NLS::Render::Resources::MaterialIdentitySuggestsDecal(material.displayName, material.subAssetKey))
+        MaterialIdentitySuggestsDecal(material.displayName, material.subAssetKey))
     {
-        return NLS::Render::Resources::MaterialSurfaceMode::Decal;
+        return "Decal";
     }
 
     return SurfaceModeForAlphaMode(material.alphaMode);
@@ -323,24 +386,6 @@ NLS::Render::Resources::MaterialSurfaceMode SurfaceModeForMaterial(const Convert
 std::string ColorSpaceName(const MaterialTextureColorSpace colorSpace)
 {
     return colorSpace == MaterialTextureColorSpace::SRgb ? "sRGB" : "Linear";
-}
-
-std::string EscapeXml(const std::string& value)
-{
-    std::string result;
-    result.reserve(value.size());
-    for (const char c : value)
-    {
-        switch (c)
-        {
-        case '&': result += "&amp;"; break;
-        case '<': result += "&lt;"; break;
-        case '>': result += "&gt;"; break;
-        case '"': result += "&quot;"; break;
-        default: result.push_back(c); break;
-        }
-    }
-    return result;
 }
 
 std::string FormatDouble(const double value)
@@ -428,47 +473,10 @@ std::string TextureUniformPath(
     return textureSlot->textureResourcePath;
 }
 
-void WriteUniform(
-    std::ostringstream& stream,
-    const std::string& name,
-    const std::string& type,
-    const std::string& value)
-{
-    stream << "  <uniform name=\"" << EscapeXml(name)
-        << "\" type=\"" << EscapeXml(type)
-        << "\" value=\"" << EscapeXml(value)
-        << "\"/>\n";
-}
-
-void WriteTextureUniform(
-    std::ostringstream& stream,
-    const ConvertedMaterialArtifact& material,
-    const std::string& name,
-    const std::string& slot)
-{
-    if (FindTextureSlot(material, slot))
-        WriteUniform(stream, name, "sampler2D", TextureUniformPath(material, slot));
-}
-
-void WriteTextureUniformWithFallback(
-    std::ostringstream& stream,
-    const ConvertedMaterialArtifact& material,
-    const std::string& name,
-    const std::string& preferredSlot,
-    const std::string& fallbackSlot)
-{
-    if (FindTextureSlot(material, preferredSlot))
-    {
-        WriteUniform(stream, name, "sampler2D", TextureUniformPath(material, preferredSlot));
-        return;
-    }
-    WriteTextureUniform(stream, material, name, fallbackSlot);
-}
-
 std::string ResolveMaterialShaderResourcePath(const MaterialConversionContext& context)
 {
     return context.shaderResourcePath.empty()
-        ? std::string(":Shaders/StandardPBR.hlsl")
+        ? std::string(kUnboundShaderReference)
         : context.shaderResourcePath;
 }
 
@@ -477,117 +485,153 @@ std::string SerializeMaterial(
     const MaterialConversionContext& context)
 {
     std::ostringstream stream;
-    stream << "<root>\n";
-    stream << "  <shader>" << EscapeXml(ResolveMaterialShaderResourcePath(context)) << "</shader>\n";
-    stream << "  <name>" << EscapeXml(material.displayName) << "</name>\n";
-    stream << "  <sourceSubAsset>" << EscapeXml(material.subAssetKey) << "</sourceSubAsset>\n";
-    stream << "  <workflow>" << EscapeXml(material.workflow) << "</workflow>\n";
-    stream << "  <alphaMode>" << AlphaModeName(material.alphaMode) << "</alphaMode>\n";
-    stream << "  <alphaCutoff>" << FormatDouble(material.alphaCutoff) << "</alphaCutoff>\n";
-    stream << "  <surfaceMode>"
-        << NLS::Render::Resources::MaterialSurfaceModeName(SurfaceModeForMaterial(material))
-        << "</surfaceMode>\n";
-    stream << "  <blendable>" << (material.alphaMode == MaterialAlphaMode::Blend ? "true" : "false") << "</blendable>\n";
-    // Imported model winding can differ across glTF/FBX/OBJ conversion paths while the
-    // asset pipeline is resolving engine-space orientation, so generated model materials
-    // stay double-sided by default to keep dropped assets visible.
-    stream << "  <backfaceCulling>false</backfaceCulling>\n";
-    stream << "  <frontfaceCulling>false</frontfaceCulling>\n";
-    stream << "  <depthTest>true</depthTest>\n";
-    stream << "  <depthWriting>" << (material.alphaMode == MaterialAlphaMode::Blend ? "false" : "true") << "</depthWriting>\n";
-    stream << "  <colorWriting>true</colorWriting>\n";
-    stream << "  <gpuInstances>1</gpuInstances>\n";
+    stream << "shaderLabMaterialVersion=1\n";
+    stream << "shader=" << NLS::Render::Resources::EscapeMaterialField(ResolveMaterialShaderResourcePath(context)) << "\n";
+    stream << "name=" << NLS::Render::Resources::EscapeMaterialField(material.displayName) << "\n";
+    stream << "sourceSubAsset=" << NLS::Render::Resources::EscapeMaterialField(material.subAssetKey) << "\n";
+    stream << "workflow=" << NLS::Render::Resources::EscapeMaterialField(material.workflow) << "\n";
+    stream << "surfaceMode=" << SurfaceModeForMaterial(material) << "\n";
+    stream << "alphaMode=" << AlphaModeName(material.alphaMode) << "\n";
+    stream << "doubleSided=" << (material.doubleSided ? "true" : "false") << "\n";
+    stream << "depthWrite=" << (material.alphaMode == MaterialAlphaMode::Blend ? "false" : "true") << "\n";
+    stream << "renderQueueOverride=-1\n";
 
     auto baseColor = GetVectorFactor(material, "BaseColor", {1.0, 1.0, 1.0, 1.0});
     if (baseColor.size() < 4u)
         baseColor.resize(4u, 1.0);
     baseColor[3] = GetScalarFactor(material, "Alpha", baseColor[3]);
 
-    WriteUniform(stream, "u_Albedo", "vec4", FormatVec4(baseColor));
-    WriteUniform(stream, "u_Metallic", "float", FormatDouble(GetScalarFactor(material, "Metallic", 0.0)));
-    WriteUniform(stream, "u_Roughness", "float", FormatDouble(GetScalarFactor(material, "Roughness", 1.0)));
-    WriteUniform(stream, "u_AmbientOcclusion", "float", FormatDouble(GetScalarFactor(material, "OcclusionStrength", 1.0)));
-    WriteUniform(stream, "u_Emissive", "vec4", FormatVec4(ToVec4(GetVectorFactor(material, "Emissive", {0.0, 0.0, 0.0, 1.0}), {0.0, 0.0, 0.0, 1.0})));
-    WriteUniform(stream, "u_Specular", "vec4", FormatVec4(ToVec4(GetVectorFactor(material, "Specular", {0.0, 0.0, 0.0, 1.0}), {0.0, 0.0, 0.0, 1.0})));
-    WriteUniform(stream, "u_EnableNormalMapping", "float", FormatDouble(FindTextureSlot(material, "Normal") ? 1.0 : 0.0));
-    WriteTextureUniform(stream, material, "u_AlbedoMap", "BaseColor");
-    WriteTextureUniformWithFallback(stream, material, "u_MetallicMap", "Metallic", "MetallicRoughness");
-    WriteTextureUniformWithFallback(stream, material, "u_RoughnessMap", "Roughness", "MetallicRoughness");
-    WriteTextureUniform(stream, material, "u_AmbientOcclusionMap", "Occlusion");
-    WriteTextureUniform(stream, material, "u_NormalMap", "Normal");
-    WriteTextureUniform(stream, material, "u_OpacityMap", "Opacity");
-    WriteTextureUniform(stream, material, "u_EmissiveMap", "Emissive");
-    WriteTextureUniform(stream, material, "u_SpecularMap", "Specular");
+    stream << "property _BaseColor Color " << FormatVec4(baseColor) << "\n";
+    stream << "property _Metallic Float " << FormatDouble(GetScalarFactor(material, "Metallic", 0.0)) << "\n";
+    stream << "property _Roughness Float " << FormatDouble(GetScalarFactor(material, "Roughness", 1.0)) << "\n";
+    stream << "property _AmbientOcclusion Float " << FormatDouble(GetScalarFactor(material, "OcclusionStrength", 1.0)) << "\n";
+    stream << "property _EmissiveColor Color "
+        << FormatVec4(ToVec4(GetVectorFactor(material, "Emissive", {0.0, 0.0, 0.0, 1.0}), {0.0, 0.0, 0.0, 1.0})) << "\n";
+    stream << "property _SpecularColor Color "
+        << FormatVec4(ToVec4(GetVectorFactor(material, "Specular", {0.0, 0.0, 0.0, 1.0}), {0.0, 0.0, 0.0, 1.0})) << "\n";
+    stream << "property _NormalScale Float " << FormatDouble(GetScalarFactor(material, "NormalScale", 1.0)) << "\n";
+    stream << "property _Cutoff Float " << FormatDouble(material.alphaCutoff) << "\n";
+
+    const auto writeTextureProperty = [&stream, &material](const std::string& name, const std::string& slot)
+    {
+        if (const auto path = TextureUniformPath(material, slot); !path.empty())
+            stream << "property " << name << " Texture2D " << NLS::Render::Resources::EscapeMaterialField(path) << "\n";
+    };
+    const auto writeTexturePropertyWithFallback =
+        [&stream, &material](const std::string& name, const std::string& preferredSlot, const std::string& fallbackSlot)
+    {
+        if (const auto path = TextureUniformPath(material, preferredSlot); !path.empty())
+        {
+            stream << "property " << name << " Texture2D " << NLS::Render::Resources::EscapeMaterialField(path) << "\n";
+            return;
+        }
+        if (const auto path = TextureUniformPath(material, fallbackSlot); !path.empty())
+            stream << "property " << name << " Texture2D " << NLS::Render::Resources::EscapeMaterialField(path) << "\n";
+    };
+
+    writeTextureProperty("_BaseMap", "BaseColor");
+    writeTexturePropertyWithFallback("_MetallicMap", "Metallic", "MetallicRoughness");
+    writeTexturePropertyWithFallback("_RoughnessMap", "Roughness", "MetallicRoughness");
+    writeTextureProperty("_OcclusionMap", "Occlusion");
+    writeTextureProperty("_NormalMap", "Normal");
+    writeTextureProperty("_OpacityMap", "Opacity");
+    writeTextureProperty("_EmissiveMap", "Emissive");
+    writeTextureProperty("_SpecularMap", "Specular");
+
+    if (material.alphaMode == MaterialAlphaMode::Mask)
+        stream << "keyword _ALPHATEST_ON\n";
+    if (FindTextureSlot(material, "Normal") != nullptr)
+        stream << "keyword _NORMALMAP\n";
+
+    auto writeTextureSlotOverride = [&stream](const ConvertedMaterialTextureSlot& slot, const std::string& shaderPropertyName)
+    {
+        stream << "textureSlot " << shaderPropertyName
+            << " texture=" << NLS::Render::Resources::EscapeMaterialField(slot.textureKey)
+            << " resourcePath=" << NLS::Render::Resources::EscapeMaterialField(slot.textureResourcePath)
+            << " colorSpace=" << ColorSpaceName(slot.colorSpace)
+            << " wrapS=" << slot.sampler.wrapS
+            << " wrapT=" << slot.sampler.wrapT
+            << " minFilter=" << slot.sampler.minFilter
+            << " magFilter=" << slot.sampler.magFilter
+            << "\n";
+    };
+    auto writeTextureSlotOverrideForSourceSlot = [&](const std::string& sourceSlot, const std::string& shaderPropertyName)
+    {
+        if (const auto* slot = FindTextureSlot(material, sourceSlot))
+            writeTextureSlotOverride(*slot, shaderPropertyName);
+    };
+
+    writeTextureSlotOverrideForSourceSlot("BaseColor", "_BaseMap");
+    writeTextureSlotOverrideForSourceSlot("Metallic", "_MetallicMap");
+    writeTextureSlotOverrideForSourceSlot("Roughness", "_RoughnessMap");
+    writeTextureSlotOverrideForSourceSlot("MetallicRoughness", "_MetallicMap");
+    writeTextureSlotOverrideForSourceSlot("MetallicRoughness", "_RoughnessMap");
+    writeTextureSlotOverrideForSourceSlot("Occlusion", "_OcclusionMap");
+    writeTextureSlotOverrideForSourceSlot("Normal", "_NormalMap");
+    writeTextureSlotOverrideForSourceSlot("Opacity", "_OpacityMap");
+    writeTextureSlotOverrideForSourceSlot("Emissive", "_EmissiveMap");
+    writeTextureSlotOverrideForSourceSlot("Specular", "_SpecularMap");
 
     for (const auto& slot : material.textureSlots)
     {
-        stream << "  <textureSlot name=\"" << EscapeXml(slot.slot)
-            << "\" texture=\"" << EscapeXml(slot.textureKey)
-            << "\" resourcePath=\"" << EscapeXml(slot.textureResourcePath)
-            << "\" colorSpace=\"" << ColorSpaceName(slot.colorSpace)
-            << "\" wrapS=\"" << EscapeXml(slot.sampler.wrapS)
-            << "\" wrapT=\"" << EscapeXml(slot.sampler.wrapT)
-            << "\" minFilter=\"" << EscapeXml(slot.sampler.minFilter)
-            << "\" magFilter=\"" << EscapeXml(slot.sampler.magFilter)
-            << "\"/>\n";
+        const bool mappedToShaderProperty =
+            slot.slot == "BaseColor" ||
+            slot.slot == "Metallic" ||
+            slot.slot == "Roughness" ||
+            slot.slot == "MetallicRoughness" ||
+            slot.slot == "Occlusion" ||
+            slot.slot == "Normal" ||
+            slot.slot == "Opacity" ||
+            slot.slot == "Emissive" ||
+            slot.slot == "Specular";
+        if (!mappedToShaderProperty)
+            writeTextureSlotOverride(slot, slot.slot);
     }
     for (const auto& factor : material.factors)
     {
-        stream << "  <factor name=\"" << EscapeXml(factor.name) << "\"";
+        stream << "factor " << factor.name << " ";
         if (factor.hasScalar)
         {
-            stream << " value=\"" << FormatDouble(factor.scalar) << "\"";
+            stream << FormatDouble(factor.scalar);
         }
         else
         {
-            stream << " value=\"";
             for (size_t index = 0u; index < factor.values.size(); ++index)
             {
                 if (index > 0u)
                     stream << ' ';
                 stream << FormatDouble(factor.values[index]);
             }
-            stream << "\"";
         }
-        stream << "/>\n";
+        stream << "\n";
     }
-    stream << "</root>\n";
     return stream.str();
 }
 
-char HexDigit(const unsigned char value)
+std::string MakeMaterialArtifactHashName(const ConvertedMaterialArtifact& material)
 {
-    return value < 10u
-        ? static_cast<char>('0' + value)
-        : static_cast<char>('A' + (value - 10u));
-}
+    constexpr uint64_t offset = 1469598103934665603ull;
+    constexpr uint64_t prime = 1099511628211ull;
 
-bool IsSafeArtifactFileNameCharacter(const unsigned char character)
-{
-    return std::isalnum(character) || character == '_' || character == '-' || character == '.';
-}
-
-std::string EncodeArtifactFileName(const std::string& value)
-{
-    if (value.empty())
-        return "material";
-
-    std::string encoded;
-    encoded.reserve(value.size());
-    for (const auto character : value)
+    uint64_t hash = offset;
+    const auto append = [&hash](const std::string_view value)
     {
-        const auto byte = static_cast<unsigned char>(character);
-        if (IsSafeArtifactFileNameCharacter(byte))
+        for (const auto character : value)
         {
-            encoded.push_back(character);
-            continue;
+            hash ^= static_cast<unsigned char>(character);
+            hash *= prime;
         }
+        hash ^= 0xffu;
+        hash *= prime;
+    };
 
-        encoded.push_back('%');
-        encoded.push_back(HexDigit((byte >> 4u) & 0x0Fu));
-        encoded.push_back(HexDigit(byte & 0x0Fu));
-    }
-    return encoded;
+    append(material.subAssetKey);
+    append(material.displayName);
+    append(material.serializedPayload);
+
+    std::ostringstream stream;
+    stream << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return stream.str();
 }
 
 void ConvertGltf(
@@ -799,7 +843,7 @@ std::vector<NLS::Core::Assets::ArtifactPayload> BuildMaterialArtifactPayloads(
             NLS::Core::Assets::ArtifactType::Material,
             "material",
             material.displayName,
-            "materials/" + EncodeArtifactFileName(material.subAssetKey) + ".nmat",
+            std::filesystem::path("materials") / MakeMaterialArtifactHashName(material),
             std::move(bytes)
         });
     }

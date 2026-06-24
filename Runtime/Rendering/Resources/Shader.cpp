@@ -126,34 +126,44 @@ namespace NLS::Render::Resources
 		: path(p_path)
 		, m_sourceLanguage(p_sourceLanguage)
 		, m_instanceId(NextShaderInstanceId())
+		, m_runtimeData(std::make_shared<RuntimeData>())
 	{
 	}
 
 	Shader::~Shader() = default;
 
-	const UniformInfo* Shader::GetUniformInfo(const std::string& p_name) const
+	std::optional<UniformInfo> Shader::GetUniformInfo(const std::string& p_name) const
 	{
-		const auto found = std::find_if(m_uniforms.begin(), m_uniforms.end(), [&p_name](const UniformInfo& element)
+		const auto data = GetRuntimeData();
+		const auto found = std::find_if(data->uniforms.begin(), data->uniforms.end(), [&p_name](const UniformInfo& element)
 		{
 			return p_name == element.name;
 		});
 
-		return found != m_uniforms.end() ? &*found : nullptr;
+		return found != data->uniforms.end()
+			? std::optional<UniformInfo>(*found)
+			: std::nullopt;
 	}
 
-	const ShaderReflection& Shader::GetReflection() const
+	ShaderReflection Shader::GetReflection() const
 	{
-		return m_reflection;
+		return GetRuntimeData()->reflection;
 	}
 
-	const std::vector<ShaderParameterStruct>& Shader::GetParameterStructs() const
+	std::vector<ShaderParameterStruct> Shader::GetParameterStructs() const
 	{
-		return m_parameterStructs;
+		return GetRuntimeData()->parameterStructs;
+	}
+
+	std::shared_ptr<const ShaderReflection> Shader::GetReflectionSnapshot() const
+	{
+		const auto data = GetRuntimeData();
+		return std::shared_ptr<const ShaderReflection>(data, &data->reflection);
 	}
 
 	bool Shader::HasParameterStructs() const
 	{
-		return !m_parameterStructs.empty();
+		return !GetRuntimeData()->parameterStructs.empty();
 	}
 
 	ShaderCompiler::ShaderSourceLanguage Shader::GetSourceLanguage() const
@@ -161,19 +171,34 @@ namespace NLS::Render::Resources
 		return m_sourceLanguage;
 	}
 
-	const ShaderCompiledArtifact* Shader::FindCompiledArtifact(ShaderCompiler::ShaderStage stage, ShaderCompiler::ShaderTargetPlatform targetPlatform) const
+	std::optional<NLS::Render::ShaderLab::ShaderLabPassState> Shader::GetShaderLabPassState() const
 	{
-		const auto found = std::find_if(m_compiledArtifacts.begin(), m_compiledArtifacts.end(), [stage, targetPlatform](const ShaderCompiledArtifact& artifact)
-		{
-			return artifact.stage == stage && artifact.targetPlatform == targetPlatform;
-		});
+		return GetRuntimeData()->shaderLabPassState;
+	}
 
-		return found != m_compiledArtifacts.end() ? &*found : nullptr;
+	std::string Shader::GetShaderLabLightMode() const
+	{
+		return GetRuntimeData()->shaderLabLightMode;
+	}
+
+	std::string Shader::GetImportedArtifactSourcePath() const
+	{
+		return GetRuntimeData()->importedArtifactSourcePath;
+	}
+
+	std::string Shader::GetImportedArtifactSubAssetKey() const
+	{
+		return GetRuntimeData()->importedArtifactSubAssetKey;
+	}
+
+	std::vector<ShaderCompiledArtifact> Shader::GetCompiledArtifacts() const
+	{
+		return GetRuntimeData()->compiledArtifacts;
 	}
 
 	uint64_t Shader::GetGeneration() const
 	{
-		return m_generation;
+		return GetRuntimeData()->generation;
 	}
 
 	uint64_t Shader::GetInstanceId() const
@@ -183,22 +208,32 @@ namespace NLS::Render::Resources
 
 	std::shared_ptr<RHI::RHIShaderModule> Shader::GetOrCreateExplicitShaderModule(
 		const std::shared_ptr<RHI::RHIDevice>& device,
-		ShaderCompiler::ShaderStage stage) const
+		ShaderCompiler::ShaderStage stage,
+		uint64_t keywordHash) const
 	{
 		if (device == nullptr)
 			return nullptr;
 
 		const auto backend = ResolveDeviceBackendType(device);
-		const auto cacheKey = std::make_tuple(ResolveDeviceCacheIdentity(device), backend, stage, m_generation);
-		if (const auto found = m_explicitShaderModules.find(cacheKey); found != m_explicitShaderModules.end())
-			return found->second;
+		const auto data = GetRuntimeData();
+		const auto cacheKey = std::make_tuple(ResolveDeviceCacheIdentity(device), backend, stage, keywordHash, data->generation);
+		{
+			std::lock_guard lock(m_runtimeMutex);
+			if (const auto found = m_explicitShaderModules.find(cacheKey); found != m_explicitShaderModules.end())
+				return found->second;
+		}
 
 		const auto targetPlatform = ToTargetPlatform(backend);
 		if (targetPlatform == ShaderCompiler::ShaderTargetPlatform::Unknown)
 			return nullptr;
 
-		const auto* artifact = FindCompiledArtifact(stage, targetPlatform);
-		if (artifact == nullptr)
+		const auto artifact = std::find_if(data->compiledArtifacts.begin(), data->compiledArtifacts.end(), [stage, targetPlatform, keywordHash](const ShaderCompiledArtifact& candidate)
+		{
+			return candidate.stage == stage &&
+				candidate.targetPlatform == targetPlatform &&
+				candidate.keywordHash == keywordHash;
+		});
+		if (artifact == data->compiledArtifacts.end())
 			return nullptr;
 
 		RHI::RHIShaderModuleDesc desc;
@@ -211,18 +246,19 @@ namespace NLS::Render::Resources
 			artifact->targetProfile,
 			artifact->entryPoint,
 			artifact->output);
-		desc.debugName = path + ":" + artifact->entryPoint;
+		desc.debugName = path + ":" + artifact->entryPoint + ":" + std::to_string(artifact->keywordHash);
 
 		auto module = device->CreateShaderModule(desc);
+		std::lock_guard lock(m_runtimeMutex);
 		m_explicitShaderModules[cacheKey] = module;
 		return module;
 	}
 
-	void Shader::RebuildUniformInfosFromReflection()
+	std::vector<UniformInfo> Shader::BuildUniformInfosFromReflection(const ShaderReflection& reflection)
 	{
-		m_uniforms.clear();
+		std::vector<UniformInfo> uniforms;
 
-		for (const auto& property : m_reflection.properties)
+		for (const auto& property : reflection.properties)
 		{
 			if (property.kind != ShaderResourceKind::Value && property.kind != ShaderResourceKind::SampledTexture)
 				continue;
@@ -231,56 +267,207 @@ namespace NLS::Render::Resources
 			if (!defaultValue.has_value())
 				continue;
 
-			m_uniforms.push_back({
+			uniforms.push_back({
 				property.type,
 				property.name,
 				property.location,
 				defaultValue
 			});
 		}
+
+		return uniforms;
+	}
+
+	std::shared_ptr<const Shader::RuntimeData> Shader::GetRuntimeData() const
+	{
+		std::lock_guard lock(m_runtimeMutex);
+		return m_runtimeData;
+	}
+
+	Shader::RuntimeDataSnapshot Shader::GetRuntimeDataSnapshot() const
+	{
+		const auto data = GetRuntimeData();
+		return {
+			data->reflection,
+			data->parameterStructs,
+			data->compiledArtifacts,
+			data->importedArtifactSourcePath,
+			data->importedArtifactSubAssetKey,
+			data->shaderLabLightMode,
+			data->shaderLabPassState
+		};
+	}
+
+	void Shader::ReplaceRuntimeData(RuntimeDataSnapshot snapshot)
+	{
+		SetRuntimeData(
+			std::move(snapshot.reflection),
+			std::move(snapshot.parameterStructs),
+			std::move(snapshot.compiledArtifacts),
+			std::move(snapshot.importedArtifactSourcePath),
+			std::move(snapshot.importedArtifactSubAssetKey),
+			std::move(snapshot.shaderLabLightMode),
+			std::move(snapshot.shaderLabPassState));
+	}
+
+	void Shader::SetRuntimeData(
+		ShaderReflection reflection,
+		std::vector<ShaderParameterStruct> parameterStructs,
+		std::vector<ShaderCompiledArtifact> compiledArtifacts,
+		std::string importedArtifactSourcePath,
+		std::string importedArtifactSubAssetKey,
+		std::string shaderLabLightMode,
+		std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState)
+	{
+		auto next = std::make_shared<RuntimeData>();
+		next->reflection = std::move(reflection);
+		next->parameterStructs = std::move(parameterStructs);
+		next->compiledArtifacts = std::move(compiledArtifacts);
+		next->importedArtifactSourcePath = std::move(importedArtifactSourcePath);
+		next->importedArtifactSubAssetKey = std::move(importedArtifactSubAssetKey);
+		next->shaderLabLightMode = std::move(shaderLabLightMode);
+		next->shaderLabPassState = std::move(shaderLabPassState);
+		next->uniforms = BuildUniformInfosFromReflection(next->reflection);
+
+		std::lock_guard lock(m_runtimeMutex);
+		next->generation = m_runtimeData ? m_runtimeData->generation + 1u : 1u;
+		m_runtimeData = std::move(next);
+		m_explicitShaderModules.clear();
 	}
 
 	void Shader::SetReflection(ShaderReflection reflection)
 	{
-		m_reflection = std::move(reflection);
-		++m_generation;
-		m_explicitShaderModules.clear();
-		RebuildUniformInfosFromReflection();
+		auto snapshot = GetRuntimeDataSnapshot();
+		snapshot.reflection = std::move(reflection);
+		ReplaceRuntimeData(std::move(snapshot));
 	}
 
 	void Shader::SetParameterStructs(std::vector<ShaderParameterStruct> parameterStructs)
 	{
-		m_parameterStructs = std::move(parameterStructs);
-		++m_generation;
-		m_explicitShaderModules.clear();
+		auto snapshot = GetRuntimeDataSnapshot();
+		snapshot.parameterStructs = std::move(parameterStructs);
+		ReplaceRuntimeData(std::move(snapshot));
 	}
 
 	void Shader::SetCompiledArtifact(ShaderCompiledArtifact artifact)
 	{
-		const auto found = std::find_if(m_compiledArtifacts.begin(), m_compiledArtifacts.end(), [&artifact](const ShaderCompiledArtifact& existing)
+		auto snapshot = GetRuntimeDataSnapshot();
+		const auto found = std::find_if(snapshot.compiledArtifacts.begin(), snapshot.compiledArtifacts.end(), [&artifact](const ShaderCompiledArtifact& existing)
 		{
-			return existing.stage == artifact.stage && existing.targetPlatform == artifact.targetPlatform;
+			return existing.stage == artifact.stage &&
+				existing.targetPlatform == artifact.targetPlatform &&
+				existing.keywordHash == artifact.keywordHash;
 		});
 
-		if (found != m_compiledArtifacts.end())
+		if (found != snapshot.compiledArtifacts.end())
 			*found = std::move(artifact);
 		else
-			m_compiledArtifacts.push_back(std::move(artifact));
-		++m_generation;
-		m_explicitShaderModules.clear();
+			snapshot.compiledArtifacts.push_back(std::move(artifact));
+		ReplaceRuntimeData(std::move(snapshot));
 	}
 
 	void Shader::ClearCompiledArtifacts()
 	{
-		m_compiledArtifacts.clear();
-		++m_generation;
-		m_explicitShaderModules.clear();
+		auto snapshot = GetRuntimeDataSnapshot();
+		snapshot.compiledArtifacts.clear();
+		ReplaceRuntimeData(std::move(snapshot));
+	}
+
+	void Shader::SetImportedArtifactIdentity(std::string sourcePath, std::string subAssetKey)
+	{
+		auto snapshot = GetRuntimeDataSnapshot();
+		snapshot.importedArtifactSourcePath = std::move(sourcePath);
+		snapshot.importedArtifactSubAssetKey = std::move(subAssetKey);
+		ReplaceRuntimeData(std::move(snapshot));
+	}
+
+	void Shader::SetShaderLabPassState(ShaderLab::ShaderLabPassState state)
+	{
+		auto snapshot = GetRuntimeDataSnapshot();
+		snapshot.shaderLabPassState = std::move(state);
+		ReplaceRuntimeData(std::move(snapshot));
+	}
+
+	void Shader::ClearShaderLabPassState()
+	{
+		auto snapshot = GetRuntimeDataSnapshot();
+		if (!snapshot.shaderLabPassState.has_value())
+			return;
+
+		snapshot.shaderLabPassState.reset();
+		ReplaceRuntimeData(std::move(snapshot));
 	}
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
+	const ShaderCompiledArtifact* Shader::FindCompiledArtifact(
+		ShaderCompiler::ShaderStage stage,
+		ShaderCompiler::ShaderTargetPlatform targetPlatform,
+		uint64_t keywordHash) const
+	{
+		const auto data = GetRuntimeData();
+		const auto found = std::find_if(data->compiledArtifacts.begin(), data->compiledArtifacts.end(), [stage, targetPlatform, keywordHash](const ShaderCompiledArtifact& artifact)
+		{
+			return artifact.stage == stage &&
+				artifact.targetPlatform == targetPlatform &&
+				artifact.keywordHash == keywordHash;
+		});
+
+		if (found != data->compiledArtifacts.end())
+			return &*found;
+
+		return nullptr;
+	}
+
+	Shader* Shader::CreateForTesting(
+		const std::string& path,
+		ShaderCompiler::ShaderSourceLanguage sourceLanguage)
+	{
+		return new Shader(path, sourceLanguage);
+	}
+
+	void Shader::DestroyForTesting(Shader*& shader)
+	{
+		delete shader;
+		shader = nullptr;
+	}
+
+	void Shader::SetShaderLabPassStateForTesting(ShaderLab::ShaderLabPassState state)
+	{
+		SetShaderLabPassState(std::move(state));
+	}
+
+	void Shader::SetImportedShaderLabPassForTesting(
+		std::string sourcePath,
+		std::string subAssetKey,
+		std::string lightMode,
+		ShaderLab::ShaderLabPassState state)
+	{
+		auto snapshot = GetRuntimeDataSnapshot();
+		snapshot.importedArtifactSourcePath = std::move(sourcePath);
+		snapshot.importedArtifactSubAssetKey = std::move(subAssetKey);
+		snapshot.shaderLabLightMode = std::move(lightMode);
+		snapshot.shaderLabPassState = std::move(state);
+		ReplaceRuntimeData(std::move(snapshot));
+	}
+
 	void Shader::SetReflectionForTesting(ShaderReflection reflection)
 	{
 		SetReflection(std::move(reflection));
+	}
+
+	void Shader::SetParameterStructsForTesting(std::vector<ShaderParameterStruct> parameterStructs)
+	{
+		SetParameterStructs(std::move(parameterStructs));
+	}
+
+	void Shader::ReplaceRuntimeDataForTesting(const Shader& source)
+	{
+		ReplaceRuntimeData(source.GetRuntimeDataSnapshot());
+	}
+
+	size_t Shader::GetRetiredRuntimeDataCountForTesting() const
+	{
+		return 0u;
 	}
 #endif
 }

@@ -8,18 +8,221 @@
 #include "Guid.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <fstream>
+#include <system_error>
 #include <unordered_map>
 
 namespace NLS::Editor::Assets
 {
 namespace
 {
+constexpr const char* kProjectStandardPbrShaderPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
+constexpr const char* kProjectShaderLibraryPath = "Assets/Engine/Shaders/NullusShaderLibrary";
+
 struct PreparedPrefabCachePreflightSummary
 {
     size_t attemptedCount = 0u;
     size_t preparedCount = 0u;
 };
+
+bool FilesHaveSameContents(
+    const std::filesystem::path& lhs,
+    const std::filesystem::path& rhs)
+{
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(lhs, error) ||
+        !std::filesystem::is_regular_file(rhs, error))
+    {
+        return false;
+    }
+
+    error.clear();
+    const auto lhsSize = std::filesystem::file_size(lhs, error);
+    if (error)
+        return false;
+    const auto rhsSize = std::filesystem::file_size(rhs, error);
+    if (error || lhsSize != rhsSize)
+        return false;
+
+    std::ifstream lhsInput(lhs, std::ios::binary);
+    std::ifstream rhsInput(rhs, std::ios::binary);
+    if (!lhsInput || !rhsInput)
+        return false;
+
+    std::array<char, 64u * 1024u> lhsBuffer {};
+    std::array<char, 64u * 1024u> rhsBuffer {};
+    while (lhsInput && rhsInput)
+    {
+        lhsInput.read(lhsBuffer.data(), static_cast<std::streamsize>(lhsBuffer.size()));
+        rhsInput.read(rhsBuffer.data(), static_cast<std::streamsize>(rhsBuffer.size()));
+        if (lhsInput.gcount() != rhsInput.gcount())
+            return false;
+        if (!std::equal(lhsBuffer.begin(), lhsBuffer.begin() + lhsInput.gcount(), rhsBuffer.begin()))
+            return false;
+    }
+    return lhsInput.eof() && rhsInput.eof();
+}
+
+bool DirectoriesHaveSameContents(
+    const std::filesystem::path& lhs,
+    const std::filesystem::path& rhs)
+{
+    std::error_code error;
+    if (!std::filesystem::is_directory(lhs, error) ||
+        !std::filesystem::is_directory(rhs, error))
+    {
+        return false;
+    }
+
+    std::vector<std::filesystem::path> lhsFiles;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(lhs, error))
+    {
+        if (error)
+            return false;
+        if (entry.is_regular_file(error))
+            lhsFiles.push_back(entry.path().lexically_relative(lhs));
+    }
+    if (error)
+        return false;
+
+    std::vector<std::filesystem::path> rhsFiles;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(rhs, error))
+    {
+        if (error)
+            return false;
+        if (entry.is_regular_file(error))
+            rhsFiles.push_back(entry.path().lexically_relative(rhs));
+    }
+    if (error)
+        return false;
+
+    std::sort(lhsFiles.begin(), lhsFiles.end());
+    std::sort(rhsFiles.begin(), rhsFiles.end());
+    if (lhsFiles != rhsFiles)
+        return false;
+
+    return std::all_of(
+        lhsFiles.begin(),
+        lhsFiles.end(),
+        [&](const std::filesystem::path& relative)
+        {
+            return FilesHaveSameContents(lhs / relative, rhs / relative);
+        });
+}
+
+bool EnsureProjectStandardPbrShaderSource(const std::filesystem::path& projectRoot)
+{
+    const auto destination = projectRoot / kProjectStandardPbrShaderPath;
+    auto findBundledSource =
+        [&](const std::filesystem::path& relative) -> std::filesystem::path
+    {
+        std::vector<std::filesystem::path> probes;
+#if defined(NLS_ROOT_DIR)
+        probes.push_back(std::filesystem::path(NLS_ROOT_DIR));
+#endif
+        probes.push_back(std::filesystem::current_path());
+        probes.push_back(std::filesystem::absolute(std::filesystem::path(".")));
+        probes.push_back(projectRoot);
+        for (auto probe : probes)
+        {
+            probe = probe.lexically_normal();
+            const auto directCandidate = probe / relative;
+            if (std::filesystem::exists(directCandidate))
+                return directCandidate;
+
+            while (!probe.empty())
+            {
+                const auto candidate = probe / relative;
+                if (std::filesystem::exists(candidate))
+                    return candidate;
+                const auto parent = probe.parent_path();
+                if (parent == probe)
+                    break;
+                probe = parent;
+            }
+        }
+        return {};
+    };
+
+    const auto appAssetsRoot =
+        std::filesystem::path("App") /
+        "Assets" /
+        "Engine" /
+        "Shaders";
+
+    const auto source = findBundledSource(appAssetsRoot / "ShaderLab" / "StandardPBR.shader");
+    if (!std::filesystem::is_regular_file(source))
+        return false;
+
+    bool ok = true;
+    if (!FilesHaveSameContents(source, destination))
+    {
+        std::error_code error;
+        std::filesystem::create_directories(destination.parent_path(), error);
+        if (error)
+            return false;
+
+        std::filesystem::copy_file(
+            source,
+            destination,
+            std::filesystem::copy_options::overwrite_existing,
+            error);
+        ok = ok && !error;
+    }
+
+    const auto libraryDestination = projectRoot / kProjectShaderLibraryPath;
+    const auto librarySource = findBundledSource(appAssetsRoot / "NullusShaderLibrary");
+    if (!std::filesystem::is_directory(librarySource))
+        return false;
+    if (!DirectoriesHaveSameContents(librarySource, libraryDestination))
+    {
+        std::error_code error;
+        if (std::filesystem::exists(libraryDestination, error))
+        {
+            std::filesystem::remove_all(libraryDestination, error);
+            if (error)
+                return false;
+        }
+        std::filesystem::create_directories(libraryDestination.parent_path(), error);
+        if (error)
+            return false;
+
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(librarySource, error))
+        {
+            if (error)
+                return false;
+
+            const auto relative = entry.path().lexically_relative(librarySource);
+            const auto target = libraryDestination / relative;
+            if (entry.is_directory(error))
+            {
+                std::filesystem::create_directories(target, error);
+                if (error)
+                    return false;
+                continue;
+            }
+
+            if (!entry.is_regular_file(error))
+                continue;
+
+            std::filesystem::create_directories(target.parent_path(), error);
+            if (error)
+                return false;
+
+            std::filesystem::copy_file(
+                entry.path(),
+                target,
+                std::filesystem::copy_options::overwrite_existing,
+                error);
+            if (error)
+                return false;
+        }
+    }
+
+    return ok;
+}
 
 void LogStartupAssetPreimportProgress(const ImportProgressEvent& event)
 {
@@ -191,6 +394,50 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         return result;
     }
 
+    if (!EnsureProjectStandardPbrShaderSource(options.projectRoot))
+    {
+        NLS::Core::Assets::AssetDiagnostic diagnostic;
+        diagnostic.severity = NLS::Core::Assets::AssetDiagnosticSeverity::Error;
+        diagnostic.code = "startup-standard-pbr-sync-failed";
+        diagnostic.path = options.projectRoot / kProjectStandardPbrShaderPath;
+        diagnostic.message =
+            "Startup asset preimport could not synchronize the built-in StandardPBR ShaderLab source and library into the project.";
+        result.diagnostics.push_back(std::move(diagnostic));
+        result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
+        return result;
+    }
+    if (!database.Refresh())
+    {
+        result.diagnostics = database.GetDiagnostics();
+        result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
+        return result;
+    }
+
+    size_t internalImportCount = 0u;
+    if (!database.IsArtifactManifestCurrentForAssetPath(kProjectStandardPbrShaderPath))
+    {
+        PublishStartupAssetPreimportProgress(
+            progressSink,
+            ImportPhase::Queued,
+            0.025,
+            "Importing built-in shader dependency",
+            kProjectStandardPbrShaderPath);
+        const auto beforeInternalImportCount = database.GetCompletedImportCount();
+        if (!database.ImportAsset(kProjectStandardPbrShaderPath))
+        {
+            result.diagnostics = database.GetDiagnostics();
+            result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
+            return result;
+        }
+        internalImportCount = database.GetCompletedImportCount() - beforeInternalImportCount;
+        if (!database.Refresh())
+        {
+            result.diagnostics = database.GetDiagnostics();
+            result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
+            return result;
+        }
+    }
+
     PublishStartupAssetPreimportProgress(
         progressSink,
         ImportPhase::Queued,
@@ -215,7 +462,10 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         tracker,
         {AssetPreimportReason::EditorStartup, {}},
         plan);
-    result.importedAssetCount = database.GetCompletedImportCount();
+    result.importedAssetCount =
+        database.GetCompletedImportCount() >= internalImportCount
+            ? database.GetCompletedImportCount() - internalImportCount
+            : 0u;
     if (result.succeeded)
     {
         const auto preflight = PreflightPreparedPrefabCache(

@@ -164,7 +164,7 @@ namespace NLS::Render::RHI
         std::shared_ptr<class RHIPipelineLayout> pipelineLayout;
         std::shared_ptr<class RHIShaderModule> vertexShader;
         std::shared_ptr<class RHIShaderModule> fragmentShader;
-        const NLS::Render::Resources::ShaderReflection* reflection = nullptr;
+        std::shared_ptr<const NLS::Render::Resources::ShaderReflection> reflection;
         std::vector<RHIVertexBufferLayoutDesc> vertexBuffers;
         std::vector<RHIVertexAttributeDesc> vertexAttributes;
         RHIRasterStateDesc rasterState{};

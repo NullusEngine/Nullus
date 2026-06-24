@@ -76,27 +76,27 @@ TEST(ResourceLifetimeRegistryTests, SharedOwnersPreventPrematureUnload)
     registry.Acquire({
         "scene:prefab-a",
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/body.nmesh",
+        "Library/Artifacts/model/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb",
         4096u,
         ResourceLifetimeOwnerKind::SceneInstance});
     registry.Acquire({
         "preview:hover-a",
         ResourceLifetimeResourceType::Mesh,
-        "D:/Project/Library/Artifacts/model/body.nmesh",
+        "D:/Project/Library/Artifacts/model/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb",
         4096u,
         ResourceLifetimeOwnerKind::Preview});
 
     EXPECT_EQ(
         registry.GetActiveOwnerCount(
             ResourceLifetimeResourceType::Mesh,
-            "Library/Artifacts/model/body.nmesh"),
+            "Library/Artifacts/model/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb"),
         2u);
 
     registry.ReleaseOwner("preview:hover-a");
 
     EXPECT_TRUE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/body.nmesh"));
+        "Library/Artifacts/model/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb"));
     EXPECT_TRUE(registry.CollectTrimCandidates({}).empty())
         << "Preview cancellation must not unload resources still owned by a committed scene instance.";
 
@@ -105,15 +105,15 @@ TEST(ResourceLifetimeRegistryTests, SharedOwnersPreventPrematureUnload)
     auto candidates = registry.CollectTrimCandidates({});
     ASSERT_EQ(candidates.size(), 1u);
     EXPECT_EQ(candidates.front().type, ResourceLifetimeResourceType::Mesh);
-    EXPECT_EQ(candidates.front().normalizedPath, "Library/Artifacts/model/body.nmesh");
+    EXPECT_EQ(candidates.front().normalizedPath, "Library/Artifacts/model/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
 }
 
 TEST(ResourceLifetimeRegistryTests, PreviewCancelCleanupDoesNotReleaseScenePrefabOwners)
 {
     ResourceLifetimeRegistry registry;
-    const auto meshPath = std::string("Library/Artifacts/model/shared-body.nmesh");
-    const auto materialPath = std::string("Library/Artifacts/model/shared-body.nmat");
-    const auto texturePath = std::string("Library/Artifacts/model/shared-albedo.ntex");
+    const auto meshPath = std::string("Library/Artifacts/model/6e9957cdfd8a4a7eece5d05a5e0c13bf31a3fd6ada1c812c3e7275fa19845fa3");
+    const auto materialPath = std::string("Library/Artifacts/model/d74462a3ebd891da5457f69c2c7038fcab9c49ecfb0d652a8eb5a09afd4a973e");
+    const auto texturePath = std::string("Library/Artifacts/model/32b3f3157479aaa5a72be21d8d284d774f7147beb972c58686e7d88183dcbb86");
 
     registry.Acquire({
         "scene:prefab-instance",
@@ -172,7 +172,7 @@ TEST(ResourceLifetimeRegistryTests, TrimCandidatesUseDeterministicLruOrderAndBud
     registry.Acquire({
         "owner:old",
         ResourceLifetimeResourceType::Material,
-        "Library/Artifacts/model/old.nmat",
+        "Library/Artifacts/model/5455d7fc6de2c781b754698a90ede764766a27b4b907ce8575fddca5a09b38f4",
         128u,
         ResourceLifetimeOwnerKind::Preview});
     registry.ReleaseOwner("owner:old");
@@ -180,7 +180,7 @@ TEST(ResourceLifetimeRegistryTests, TrimCandidatesUseDeterministicLruOrderAndBud
     registry.Acquire({
         "owner:new",
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/new.ntex",
+        "Library/Artifacts/model/69c7f08caa0b9b433732a96e6c519536ecede6e0fa1ad61d433f07e29e699705",
         256u,
         ResourceLifetimeOwnerKind::Preview});
     registry.ReleaseOwner("owner:new");
@@ -192,7 +192,7 @@ TEST(ResourceLifetimeRegistryTests, TrimCandidatesUseDeterministicLruOrderAndBud
     auto candidates = registry.CollectTrimCandidates(options);
     ASSERT_EQ(candidates.size(), 1u);
     EXPECT_EQ(candidates.front().type, ResourceLifetimeResourceType::Material);
-    EXPECT_EQ(candidates.front().normalizedPath, "Library/Artifacts/model/old.nmat");
+    EXPECT_EQ(candidates.front().normalizedPath, "Library/Artifacts/model/5455d7fc6de2c781b754698a90ede764766a27b4b907ce8575fddca5a09b38f4");
 }
 
 TEST(ResourceLifetimeRegistryTests, ResourceHandleReleasesOwnerReferenceOnResetAndDestruction)
@@ -206,7 +206,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceHandleReleasesOwnerReferenceOnResetA
             ResourceLifetimeAcquireRequest {
                 "preview:handle",
                 ResourceLifetimeResourceType::Mesh,
-                "Library/Artifacts/model/handle.nmesh",
+                "Library/Artifacts/model/5defa610128b256db6e47056b8a71b695ccdc551489b49e53b5fbc222c8b7ff2",
                 sizeof(resource),
                 ResourceLifetimeOwnerKind::Preview },
             [&resource](const ResourceId& id) -> int*
@@ -218,7 +218,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceHandleReleasesOwnerReferenceOnResetA
         EXPECT_EQ(handle.Get(), &resource);
         EXPECT_TRUE(registry.HasActiveOwners(
             ResourceLifetimeResourceType::Mesh,
-            "Library/Artifacts/model/handle.nmesh"));
+            "Library/Artifacts/model/5defa610128b256db6e47056b8a71b695ccdc551489b49e53b5fbc222c8b7ff2"));
 
         auto moved = std::move(handle);
         EXPECT_FALSE(handle);
@@ -226,12 +226,12 @@ TEST(ResourceLifetimeRegistryTests, ResourceHandleReleasesOwnerReferenceOnResetA
         moved.Reset();
         EXPECT_FALSE(registry.HasActiveOwners(
             ResourceLifetimeResourceType::Mesh,
-            "Library/Artifacts/model/handle.nmesh"));
+            "Library/Artifacts/model/5defa610128b256db6e47056b8a71b695ccdc551489b49e53b5fbc222c8b7ff2"));
     }
 
     EXPECT_FALSE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/handle.nmesh"));
+        "Library/Artifacts/model/5defa610128b256db6e47056b8a71b695ccdc551489b49e53b5fbc222c8b7ff2"));
 }
 
 TEST(ResourceLifetimeRegistryTests, ResourceHandleCountsRepeatedSameOwnerAcquires)
@@ -242,7 +242,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceHandleCountsRepeatedSameOwnerAcquire
     ResourceLifetimeAcquireRequest request {
         "scene:shared-handle",
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/shared-handle.nmesh",
+        "Library/Artifacts/model/133afcdbc5e7b0c7758654ea5549fa1fd6f3b53e82738b5be7ba7808524995c5",
         sizeof(resource),
         ResourceLifetimeOwnerKind::SceneInstance };
 
@@ -265,22 +265,22 @@ TEST(ResourceLifetimeRegistryTests, ResourceHandleCountsRepeatedSameOwnerAcquire
     ASSERT_TRUE(second);
     EXPECT_EQ(registry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/shared-handle.nmesh"), 2u);
+        "Library/Artifacts/model/133afcdbc5e7b0c7758654ea5549fa1fd6f3b53e82738b5be7ba7808524995c5"), 2u);
 
     first.Reset();
 
     EXPECT_TRUE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/shared-handle.nmesh"))
+        "Library/Artifacts/model/133afcdbc5e7b0c7758654ea5549fa1fd6f3b53e82738b5be7ba7808524995c5"))
         << "Resetting one handle must not release another live handle with the same owner token and resource.";
     EXPECT_EQ(registry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/shared-handle.nmesh"), 1u);
+        "Library/Artifacts/model/133afcdbc5e7b0c7758654ea5549fa1fd6f3b53e82738b5be7ba7808524995c5"), 1u);
 
     second.Reset();
     EXPECT_FALSE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/shared-handle.nmesh"));
+        "Library/Artifacts/model/133afcdbc5e7b0c7758654ea5549fa1fd6f3b53e82738b5be7ba7808524995c5"));
 }
 
 TEST(ResourceLifetimeRegistryTests, ResourceHandleReturnsNullAfterGenerationInvalidation)
@@ -294,7 +294,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceHandleReturnsNullAfterGenerationInva
         ResourceLifetimeAcquireRequest {
             "scene:stale",
             ResourceLifetimeResourceType::Texture,
-            "Library/Artifacts/model/albedo.ntex",
+            "Library/Artifacts/model/ac576f0c4274114de32a83a9672cf7dbb30e58dc2e655bdceda37e36afbc7ebb",
             sizeof(first),
             ResourceLifetimeOwnerKind::SceneInstance },
         [&first](const ResourceId& id) -> int*
@@ -305,7 +305,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceHandleReturnsNullAfterGenerationInva
 
     registry.InvalidateResource(
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/albedo.ntex");
+        "Library/Artifacts/model/ac576f0c4274114de32a83a9672cf7dbb30e58dc2e655bdceda37e36afbc7ebb");
 
     EXPECT_EQ(stale.Get(), nullptr);
 
@@ -314,7 +314,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceHandleReturnsNullAfterGenerationInva
         ResourceLifetimeAcquireRequest {
             "scene:fresh",
             ResourceLifetimeResourceType::Texture,
-            "Library/Artifacts/model/albedo.ntex",
+            "Library/Artifacts/model/ac576f0c4274114de32a83a9672cf7dbb30e58dc2e655bdceda37e36afbc7ebb",
             sizeof(second),
             ResourceLifetimeOwnerKind::SceneInstance },
         [&second](const ResourceId& id) -> int*
@@ -334,7 +334,7 @@ TEST(ResourceLifetimeRegistryTests, StaleHandleResetDoesNotReleaseFreshGeneratio
     ResourceLifetimeAcquireRequest request {
         "scene:generation-owner",
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/generation.ntex",
+        "Library/Artifacts/model/3e0dd9d60657a5c3bb0100b026a5e71b8fb858bb9f1463eebd004c406222d707",
         sizeof(first),
         ResourceLifetimeOwnerKind::SceneInstance };
 
@@ -349,7 +349,7 @@ TEST(ResourceLifetimeRegistryTests, StaleHandleResetDoesNotReleaseFreshGeneratio
 
     registry.InvalidateResource(
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/generation.ntex");
+        "Library/Artifacts/model/3e0dd9d60657a5c3bb0100b026a5e71b8fb858bb9f1463eebd004c406222d707");
 
     ResourceHandle<int> fresh(
         registry,
@@ -365,17 +365,17 @@ TEST(ResourceLifetimeRegistryTests, StaleHandleResetDoesNotReleaseFreshGeneratio
     EXPECT_EQ(fresh.Get(), &second);
     EXPECT_TRUE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/generation.ntex"))
+        "Library/Artifacts/model/3e0dd9d60657a5c3bb0100b026a5e71b8fb858bb9f1463eebd004c406222d707"))
         << "A stale generation handle reset must not release the current generation owner reference.";
     EXPECT_EQ(registry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/generation.ntex"), 1u);
+        "Library/Artifacts/model/3e0dd9d60657a5c3bb0100b026a5e71b8fb858bb9f1463eebd004c406222d707"), 1u);
 }
 
 TEST(ResourceLifetimeRegistryTests, ConcurrentAcquireReleaseKeepsRegistryConsistent)
 {
     ResourceLifetimeRegistry registry;
-    constexpr auto path = "Library/Artifacts/model/concurrent.nmesh";
+    constexpr auto path = "Library/Artifacts/model/edd6c0d8d1364523a2e272f3714ccf3c8a976a07d23fc25dbc83f9e73a32f9cc";
     constexpr size_t threadCount = 8u;
     constexpr size_t iterations = 1000u;
     std::atomic<bool> failed { false };
@@ -420,19 +420,19 @@ TEST(ResourceLifetimeRegistryTests, ReleaseOwnersByKindOnlyReleasesMatchingOwner
     registry.Acquire({
         "scene:instance-a",
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/shared.nmesh",
+        "Library/Artifacts/model/aa0cad350fe23254542d5a33b2bb6f91e0a7be92e6150de93503ed59cf262574",
         1024u,
         ResourceLifetimeOwnerKind::SceneInstance });
     registry.Acquire({
         "preview:hover-a",
         ResourceLifetimeResourceType::Mesh,
-        "D:/Project/Library/Artifacts/model/shared.nmesh",
+        "D:/Project/Library/Artifacts/model/aa0cad350fe23254542d5a33b2bb6f91e0a7be92e6150de93503ed59cf262574",
         1024u,
         ResourceLifetimeOwnerKind::Preview });
     registry.Acquire({
         "scene:instance-b",
         ResourceLifetimeResourceType::Material,
-        "Library/Artifacts/model/body.nmat",
+        "Library/Artifacts/model/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b",
         512u,
         ResourceLifetimeOwnerKind::SceneInstance });
 
@@ -440,14 +440,14 @@ TEST(ResourceLifetimeRegistryTests, ReleaseOwnersByKindOnlyReleasesMatchingOwner
 
     EXPECT_EQ(registry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/shared.nmesh"), 1u)
+        "Library/Artifacts/model/aa0cad350fe23254542d5a33b2bb6f91e0a7be92e6150de93503ed59cf262574"), 1u)
         << "Scene unload should not release unrelated preview/inspector owners.";
     EXPECT_TRUE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/shared.nmesh"));
+        "Library/Artifacts/model/aa0cad350fe23254542d5a33b2bb6f91e0a7be92e6150de93503ed59cf262574"));
     EXPECT_FALSE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Material,
-        "Library/Artifacts/model/body.nmat"));
+        "Library/Artifacts/model/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b"));
 
     registry.ReleaseOwner("preview:hover-a");
     auto candidates = registry.CollectTrimCandidates({});
@@ -464,7 +464,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceLifetimeTelemetryRecordsAcquireRelea
     auto sceneHandle = manager.AcquireIntHandle(
         registry,
         "scene:telemetry",
-        "Library/Artifacts/model/telemetry.nmesh");
+        "Library/Artifacts/model/9803056882b31abcbfc22526ceda62a6b0dd2eb1bc1d4992ceac5206fb5d2a39");
     ASSERT_TRUE(sceneHandle);
 
     auto telemetry = SnapshotArtifactLoadTelemetry();
@@ -474,7 +474,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceLifetimeTelemetryRecordsAcquireRelea
         [](const ArtifactLoadTelemetryRecord& record)
         {
             return record.stage == ArtifactLoadTelemetryStage::LifetimeAcquire &&
-                record.path == "Library/Artifacts/model/telemetry.nmesh" &&
+                record.path == "Library/Artifacts/model/9803056882b31abcbfc22526ceda62a6b0dd2eb1bc1d4992ceac5206fb5d2a39" &&
                 record.byteCount == sizeof(int);
         }), telemetry.end());
 
@@ -486,7 +486,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceLifetimeTelemetryRecordsAcquireRelea
         [](const ArtifactLoadTelemetryRecord& record)
         {
             return record.stage == ArtifactLoadTelemetryStage::LifetimeTrimSkip &&
-                record.path == "Library/Artifacts/model/telemetry.nmesh" &&
+                record.path == "Library/Artifacts/model/9803056882b31abcbfc22526ceda62a6b0dd2eb1bc1d4992ceac5206fb5d2a39" &&
                 record.byteCount == sizeof(int);
         }), telemetry.end())
         << "Active scene owners should explain why trim skipped a registered resource.";
@@ -499,7 +499,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceLifetimeTelemetryRecordsAcquireRelea
         [](const ArtifactLoadTelemetryRecord& record)
         {
             return record.stage == ArtifactLoadTelemetryStage::LifetimeRelease &&
-                record.path == "Library/Artifacts/model/telemetry.nmesh";
+                record.path == "Library/Artifacts/model/9803056882b31abcbfc22526ceda62a6b0dd2eb1bc1d4992ceac5206fb5d2a39";
         }), telemetry.end());
 
     EXPECT_EQ(manager.TrimMeshes(registry), 1u);
@@ -510,7 +510,7 @@ TEST(ResourceLifetimeRegistryTests, ResourceLifetimeTelemetryRecordsAcquireRelea
         [](const ArtifactLoadTelemetryRecord& record)
         {
             return record.stage == ArtifactLoadTelemetryStage::Eviction &&
-                record.path == "Library/Artifacts/model/telemetry.nmesh";
+                record.path == "Library/Artifacts/model/9803056882b31abcbfc22526ceda62a6b0dd2eb1bc1d4992ceac5206fb5d2a39";
         }), telemetry.end())
         << "Last-owner release plus trim should emit eviction telemetry for resource cleanup investigations.";
 }
@@ -523,29 +523,29 @@ TEST(ResourceLifetimeRegistryTests, ResourceManagerAcquireHandleAndTrimUnusedRes
     auto sceneHandle = manager.AcquireIntHandle(
         registry,
         "scene:manager",
-        "Library/Artifacts/model/managed.nmesh");
+        "Library/Artifacts/model/c38e1d9b45ff63d4b376a7bdf681cae3b6bf830c68d4c7bbdbc6a790f773af71");
     ASSERT_TRUE(sceneHandle);
-    EXPECT_TRUE(manager.IsResourceRegistered("Library/Artifacts/model/managed.nmesh"));
+    EXPECT_TRUE(manager.IsResourceRegistered("Library/Artifacts/model/c38e1d9b45ff63d4b376a7bdf681cae3b6bf830c68d4c7bbdbc6a790f773af71"));
     EXPECT_EQ(manager.TrimMeshes(registry), 0u)
         << "Active scene owners must prevent manager trim from unloading resources.";
 
     sceneHandle.Reset();
     EXPECT_FALSE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/managed.nmesh"));
+        "Library/Artifacts/model/c38e1d9b45ff63d4b376a7bdf681cae3b6bf830c68d4c7bbdbc6a790f773af71"));
 
     EXPECT_EQ(manager.TrimMeshes(registry), 1u);
-    EXPECT_FALSE(manager.IsResourceRegistered("Library/Artifacts/model/managed.nmesh"));
+    EXPECT_FALSE(manager.IsResourceRegistered("Library/Artifacts/model/c38e1d9b45ff63d4b376a7bdf681cae3b6bf830c68d4c7bbdbc6a790f773af71"));
     ASSERT_EQ(manager.destroyedPaths.size(), 1u);
-    EXPECT_EQ(manager.destroyedPaths.front(), "Library/Artifacts/model/managed.nmesh");
+    EXPECT_EQ(manager.destroyedPaths.front(), "Library/Artifacts/model/c38e1d9b45ff63d4b376a7bdf681cae3b6bf830c68d4c7bbdbc6a790f773af71");
 }
 
 TEST(ResourceLifetimeRegistryTests, SceneSwitchRestoreReacquireKeepsPrefabResourcesOutOfTrimCandidates)
 {
     ResourceLifetimeRegistry registry;
 
-    constexpr auto meshPath = "Library/Artifacts/model/restored-body.nmesh";
-    constexpr auto materialPath = "Library/Artifacts/model/restored-body.nmat";
+    constexpr auto meshPath = "Library/Artifacts/model/29d639ea50a97ff01bede2220c6d6b9b1ce5532c6271038b7c91ec364fb182fd";
+    constexpr auto materialPath = "Library/Artifacts/model/7140f56a18562e744086f6917aa3e78f9cd3b099061a4f5906e94cfb66c220ae";
     const auto previousSceneOwner = "scene-prefab:model:default:old-root";
     const auto restoredSceneOwner = "scene-prefab:model:default:new-root";
 
@@ -590,8 +590,8 @@ TEST(ResourceLifetimeRegistryTests, ResourceManagerTrimTreatsAbsoluteLibraryPath
     ResourceLifetimeRegistry registry;
     TestIntResourceManager manager;
 
-    constexpr auto libraryPath = "Library/Artifacts/model/alias.nmesh";
-    constexpr auto absolutePath = "D:/Project/Library/Artifacts/model/alias.nmesh";
+    constexpr auto libraryPath = "Library/Artifacts/model/1eeb57abce03e2891095433e91a70a8afa048837dbda348a933e495e80a20721";
+    constexpr auto absolutePath = "D:/Project/Library/Artifacts/model/1eeb57abce03e2891095433e91a70a8afa048837dbda348a933e495e80a20721";
 
     manager.RegisterResource(absolutePath, new int(42));
     auto handle = manager.AcquireIntHandle(
@@ -613,8 +613,8 @@ TEST(ResourceLifetimeRegistryTests, ResourceManagerTrimUnloadsAllRegisteredAlias
     ResourceLifetimeRegistry registry;
     TestIntResourceManager manager;
 
-    constexpr auto libraryPath = "Library/Artifacts/model/multi-alias.nmesh";
-    constexpr auto absolutePath = "D:/Project/Library/Artifacts/model/multi-alias.nmesh";
+    constexpr auto libraryPath = "Library/Artifacts/model/b5f1cf6d7569468b403012ed460b7906c9b9096cded96ebbfe0397a5703537ff";
+    constexpr auto absolutePath = "D:/Project/Library/Artifacts/model/b5f1cf6d7569468b403012ed460b7906c9b9096cded96ebbfe0397a5703537ff";
 
     manager.RegisterResource(libraryPath, new int(1));
     manager.RegisterResource(absolutePath, new int(2));
@@ -646,12 +646,12 @@ TEST(ResourceLifetimeRegistryTests, RegistryOnlyTrimCandidateDoesNotBlockLaterMa
     registry.Acquire({
         "scene:registry-only",
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/registry-only.nmesh",
+        "Library/Artifacts/model/e0ae57485bebf8eac3fc5f9c87f39dad9da8a26b44146f950f152a563ff97784",
         sizeof(int),
         ResourceLifetimeOwnerKind::SceneInstance });
     registry.ReleaseOwner("scene:registry-only");
 
-    constexpr auto livePath = "Library/Artifacts/model/live-after-empty.nmesh";
+    constexpr auto livePath = "Library/Artifacts/model/6d46f355f8a2e08df250eb8677b8a0b8b8abc9931c3dacc04a441dfe1a5440b9";
     manager.RegisterResource(livePath, new int(5));
     registry.Acquire({
         "scene:live-after-empty",
@@ -681,7 +681,7 @@ TEST(ResourceLifetimeRegistryTests, AcquireDuringPendingEvictionCancelsTrimAndKe
     const auto id = registry.Acquire({
         "scene:evict",
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/evict.nmesh",
+        "Library/Artifacts/model/5ff8ce1be643c37101f92247bf0177f540afaa1e6e6433551a9b43355bd6d300",
         sizeof(int),
         ResourceLifetimeOwnerKind::SceneInstance });
     registry.Release(id, "scene:evict");
@@ -693,7 +693,7 @@ TEST(ResourceLifetimeRegistryTests, AcquireDuringPendingEvictionCancelsTrimAndKe
     const auto reacquired = registry.Acquire({
         "preview:reacquired",
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/evict.nmesh",
+        "Library/Artifacts/model/5ff8ce1be643c37101f92247bf0177f540afaa1e6e6433551a9b43355bd6d300",
         sizeof(int),
         ResourceLifetimeOwnerKind::Preview });
 
@@ -701,7 +701,7 @@ TEST(ResourceLifetimeRegistryTests, AcquireDuringPendingEvictionCancelsTrimAndKe
         << "A scene restore or drag preview owner that arrives before manager destruction must cancel pending eviction instead of becoming invisible.";
     EXPECT_TRUE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/evict.nmesh"));
+        "Library/Artifacts/model/5ff8ce1be643c37101f92247bf0177f540afaa1e6e6433551a9b43355bd6d300"));
 
     EXPECT_FALSE(registry.CompleteEviction(candidates.front().type, candidates.front().normalizedPath))
         << "The manager must restore its resource when eviction loses the race to a new active owner.";
@@ -711,7 +711,7 @@ TEST(ResourceLifetimeRegistryTests, AcquireDuringPendingEvictionCancelsTrimAndKe
     const auto afterCompletedEviction = registry.Acquire({
         "preview:after-completed-evict",
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/evict.nmesh",
+        "Library/Artifacts/model/5ff8ce1be643c37101f92247bf0177f540afaa1e6e6433551a9b43355bd6d300",
         sizeof(int),
         ResourceLifetimeOwnerKind::Preview });
     EXPECT_FALSE(afterCompletedEviction.normalizedPath.empty());
@@ -722,7 +722,7 @@ TEST(ResourceLifetimeRegistryTests, ManagerTrimEvictsZeroOwnerRegisteredResource
 {
     ResourceLifetimeRegistry registry;
     TestIntResourceManager manager;
-    constexpr auto path = "Library/Artifacts/model/raw-bound.nmesh";
+    constexpr auto path = "Library/Artifacts/model/0b9ee065e2bdf525dd5a34e02c0b02925ea9a07c22cdd029d045dc220fe7192c";
     manager.RegisterResource(path, new int(42));
 
     const auto id = registry.Acquire({
@@ -755,15 +755,15 @@ TEST(ResourceLifetimeRegistryTests, RuntimeManagersExposeTypedHandleAndTrimApis)
     auto meshHandle = meshManager.AcquireMeshHandle(
         registry,
         "scene:mesh",
-        "Library/Artifacts/model/body.nmesh");
+        "Library/Artifacts/model/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
     auto materialHandle = materialManager.AcquireMaterialHandle(
         registry,
         "scene:material",
-        "Library/Artifacts/model/body.nmat");
+        "Library/Artifacts/model/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
     auto textureHandle = textureManager.AcquireTextureHandle(
         registry,
         "scene:texture",
-        "Library/Artifacts/model/albedo.ntex");
+        "Library/Artifacts/model/ac576f0c4274114de32a83a9672cf7dbb30e58dc2e655bdceda37e36afbc7ebb");
 
     EXPECT_FALSE(meshHandle)
         << "Typed handles must not create owner leases for missing mesh artifacts.";
@@ -773,13 +773,13 @@ TEST(ResourceLifetimeRegistryTests, RuntimeManagersExposeTypedHandleAndTrimApis)
         << "Typed handles must not create owner leases for missing texture artifacts.";
     EXPECT_EQ(registry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/body.nmesh"), 0u);
+        "Library/Artifacts/model/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb"), 0u);
     EXPECT_EQ(registry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Material,
-        "Library/Artifacts/model/body.nmat"), 0u);
+        "Library/Artifacts/model/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b"), 0u);
     EXPECT_EQ(registry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/albedo.ntex"), 0u);
+        "Library/Artifacts/model/ac576f0c4274114de32a83a9672cf7dbb30e58dc2e655bdceda37e36afbc7ebb"), 0u);
 
     meshHandle.Reset();
     materialHandle.Reset();
@@ -804,13 +804,13 @@ TEST(ResourceLifetimeRegistryTests, DiagnosticSnapshotReportsBaselineOwnerAndTri
     registry.Acquire({
         "scene:prefab",
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/body.nmesh",
+        "Library/Artifacts/model/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb",
         128u,
         ResourceLifetimeOwnerKind::SceneInstance });
     registry.Acquire({
         "preview:hover",
         ResourceLifetimeResourceType::Material,
-        "Library/Artifacts/model/body.nmat",
+        "Library/Artifacts/model/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b",
         64u,
         ResourceLifetimeOwnerKind::Preview });
     registry.ReleaseOwner("preview:hover");

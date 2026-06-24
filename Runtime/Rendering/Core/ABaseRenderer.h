@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -179,11 +180,13 @@ public:
 
     virtual void DrawEntity(
         PipelineState p_pso,
-        const Entities::Drawable& p_drawable);
+        const Entities::Drawable& p_drawable,
+        std::string_view lightMode = "Forward");
     void DrawEntity(
         const Entities::Drawable& p_drawable,
         Resources::MaterialPipelineStateOverrides pipelineOverrides = {},
-        Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS);
+        Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS,
+        std::string_view lightMode = "Forward");
 
     /**
      * Record a draw call using Formal RHI directly to the command buffer.
@@ -194,7 +197,8 @@ public:
     bool RecordDrawExplicit(
         const Entities::Drawable& p_drawable,
         Resources::MaterialPipelineStateOverrides pipelineOverrides = {},
-        Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS);
+        Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS,
+        std::string_view lightMode = "Forward");
     uint64_t GetExplicitUniformBindingSetCreationCount() const;
     uint64_t GetExplicitUniformSnapshotBufferCreationCount() const;
 
@@ -232,9 +236,20 @@ protected:
         const Entities::Drawable& p_drawable,
         PreparedRecordedDraw& outDraw) const;
     virtual bool PrepareRecordedDraw(
+        PipelineState p_pso,
+        const Entities::Drawable& p_drawable,
+        std::string_view lightMode,
+        PreparedRecordedDraw& outDraw) const;
+    virtual bool PrepareRecordedDraw(
         const Entities::Drawable& p_drawable,
         Resources::MaterialPipelineStateOverrides pipelineOverrides,
         Settings::EComparaisonAlgorithm depthCompareOverride,
+        PreparedRecordedDraw& outDraw) const;
+    virtual bool PrepareRecordedDraw(
+        const Entities::Drawable& p_drawable,
+        Resources::MaterialPipelineStateOverrides pipelineOverrides,
+        Settings::EComparaisonAlgorithm depthCompareOverride,
+        std::string_view lightMode,
         PreparedRecordedDraw& outDraw) const;
     virtual void BindPreparedGraphicsPipeline(const PreparedRecordedDraw& preparedDraw) const;
     virtual void BindPreparedMaterialBindingSet(const PreparedRecordedDraw& preparedDraw) const;
@@ -338,6 +353,7 @@ private:
         const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
         Settings::EComparaisonAlgorithm depthCompareOverride,
         const Data::PipelineState& pipelineState,
+        std::string_view lightMode,
         PreparedRecordedDrawStaticBase& outBase) const;
     void EraseStalePreparedRecordedDrawStaticBaseEntries(
         const PreparedRecordedDrawStaticBaseCacheKey& currentKey) const;
@@ -359,7 +375,8 @@ private:
         const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
         Settings::EComparaisonAlgorithm depthCompareOverride,
         const Data::PipelineState& pipelineState,
-        const std::shared_ptr<RHI::RHIBindingSet>& passBindingSet);
+        const std::shared_ptr<RHI::RHIBindingSet>& passBindingSet,
+        const Resources::Shader* effectiveShader);
     static void PopulatePreparedRecordedDrawFromStaticBase(
         PreparedRecordedDraw& outDraw,
         std::shared_ptr<RHI::RHICommandBuffer> commandBuffer,

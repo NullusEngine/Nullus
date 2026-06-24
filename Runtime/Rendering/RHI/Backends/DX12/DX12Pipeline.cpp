@@ -402,7 +402,9 @@ namespace NLS::Render::Backend
 		psoDesc.DSVFormat = hasDepthAttachment
 			? ToD3D12Format(m_desc.renderTargetLayout.depthFormat)
 			: DXGI_FORMAT_UNKNOWN;
-		psoDesc.SampleDesc.Count = 1;
+		psoDesc.SampleDesc.Count = m_desc.renderTargetLayout.sampleCount > 0u
+			? m_desc.renderTargetLayout.sampleCount
+			: 1u;
 		psoDesc.SampleDesc.Quality = 0;
 		psoDesc.NodeMask = 0;
 		const auto cacheKey = NLS::Render::RHI::BuildGraphicsPipelineCacheKey(m_desc);

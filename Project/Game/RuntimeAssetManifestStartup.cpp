@@ -1,12 +1,10 @@
 #include "RuntimeAssetManifestStartup.h"
 
+#include "Assets/ArtifactDatabase.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Guid.h"
 
-#include <Json/json.hpp>
-
 #include <algorithm>
-#include <fstream>
 #include <queue>
 #include <unordered_set>
 
@@ -14,234 +12,70 @@ namespace NLS::Game::RuntimeAssets
 {
 namespace
 {
-    template <typename T>
-    std::optional<T> JsonValue(const nlohmann::json& json, const char* key)
+    constexpr const char* kRuntimeTargetPlatform = "win64";
+
+    std::string LoaderIdForArtifactType(const NLS::Core::Assets::ArtifactType artifactType)
     {
-        const auto found = json.find(key);
-        if (found == json.end() || found->is_null())
-            return std::nullopt;
-
-        try
-        {
-            return found->get<T>();
-        }
-        catch (...)
-        {
-            return std::nullopt;
-        }
-    }
-
-    std::optional<NLS::Core::Assets::AssetId> JsonAssetId(const nlohmann::json& json, const char* key)
-    {
-        const auto value = JsonValue<std::string>(json, key);
-        if (!value.has_value())
-            return std::nullopt;
-
-        const auto parsed = NLS::Guid::TryParse(*value);
-        if (!parsed.has_value())
-            return std::nullopt;
-
-        return NLS::Core::Assets::AssetId(*parsed);
-    }
-
-    std::vector<NLS::Engine::Assets::RuntimeAssetRef> ParseRuntimeAssetRefs(const nlohmann::json& json)
-    {
-        std::vector<NLS::Engine::Assets::RuntimeAssetRef> result;
-        if (!json.is_array())
-            return result;
-
-        for (const auto& item : json)
-        {
-            if (!item.is_object())
-                continue;
-
-            const auto assetId = JsonAssetId(item, "assetId");
-            const auto subAssetKey = JsonValue<std::string>(item, "subAssetKey");
-            if (!assetId.has_value() || !subAssetKey.has_value())
-                continue;
-
-            result.push_back({*assetId, *subAssetKey});
-        }
-        return result;
-    }
-
-    std::optional<NLS::Core::Assets::ArtifactType> JsonArtifactType(const nlohmann::json& json, const char* key)
-    {
-        const auto found = json.find(key);
-        if (found == json.end() || found->is_null())
-            return std::nullopt;
-
-        if (found->is_number_integer())
-            return static_cast<NLS::Core::Assets::ArtifactType>(found->get<int>());
-
-        if (!found->is_string())
-            return std::nullopt;
-
-        const auto value = found->get<std::string>();
         using NLS::Core::Assets::ArtifactType;
-        if (value == "model") return ArtifactType::Model;
-        if (value == "mesh") return ArtifactType::Mesh;
-        if (value == "material") return ArtifactType::Material;
-        if (value == "texture") return ArtifactType::Texture;
-        if (value == "skeleton") return ArtifactType::Skeleton;
-        if (value == "skin") return ArtifactType::Skin;
-        if (value == "animation" || value == "animationClip") return ArtifactType::AnimationClip;
-        if (value == "morph" || value == "morphTarget" || value == "morph-target") return ArtifactType::MorphTarget;
-        if (value == "prefab") return ArtifactType::Prefab;
-        if (value == "scene") return ArtifactType::Scene;
-        if (value == "shader") return ArtifactType::Shader;
-        if (value == "audio") return ArtifactType::Audio;
-        return ArtifactType::Unknown;
-    }
-
-    std::optional<NLS::Engine::Assets::RuntimeAssetManifestEntry> ParseRuntimeAssetEntry(const nlohmann::json& json)
-    {
-        if (!json.is_object())
-            return std::nullopt;
-
-        const auto assetId = JsonAssetId(json, "assetId");
-        const auto subAssetKey = JsonValue<std::string>(json, "subAssetKey");
-        if (!assetId.has_value() || !subAssetKey.has_value())
-            return std::nullopt;
-
-        NLS::Engine::Assets::RuntimeAssetManifestEntry entry;
-        entry.assetId = *assetId;
-        entry.subAssetKey = *subAssetKey;
-        entry.artifactType = JsonArtifactType(json, "artifactType").value_or(NLS::Core::Assets::ArtifactType::Unknown);
-        entry.loaderId = JsonValue<std::string>(json, "loaderId").value_or(std::string {});
-        entry.artifactPath = JsonValue<std::string>(json, "artifactPath").value_or(std::string {});
-        entry.contentHash = JsonValue<std::string>(json, "contentHash").value_or(std::string {});
-
-        const auto dependencies = json.find("dependencies");
-        if (dependencies != json.end())
-            entry.dependencies = ParseRuntimeAssetRefs(*dependencies);
-
-        return entry;
-    }
-
-    std::optional<NLS::Engine::Assets::RuntimePrefabManifestEntry> ParseRuntimePrefabEntry(const nlohmann::json& json)
-    {
-        if (!json.is_object())
-            return std::nullopt;
-
-        const auto prefabJson = json.find("prefab");
-        if (prefabJson == json.end())
-            return std::nullopt;
-
-        const auto prefabRefs = ParseRuntimeAssetRefs(nlohmann::json::array({*prefabJson}));
-        if (prefabRefs.empty())
-            return std::nullopt;
-
-        NLS::Engine::Assets::RuntimePrefabManifestEntry entry;
-        entry.prefab = prefabRefs.front();
-        entry.graphArtifactPath = JsonValue<std::string>(json, "graphArtifactPath").value_or(std::string {});
-
-        const auto dependencies = json.find("dependencies");
-        if (dependencies != json.end())
-            entry.dependencies = ParseRuntimeAssetRefs(*dependencies);
-
-        return entry;
-    }
-
-    std::optional<NLS::Engine::Assets::RuntimeAssetPackEntry> ParseRuntimeAssetPackEntry(const nlohmann::json& json)
-    {
-        if (!json.is_object())
-            return std::nullopt;
-
-        const auto referenceJson = json.find("reference");
-        if (referenceJson == json.end())
-            return std::nullopt;
-
-        const auto references = ParseRuntimeAssetRefs(nlohmann::json::array({*referenceJson}));
-        if (references.empty())
-            return std::nullopt;
-
-        NLS::Engine::Assets::RuntimeAssetPackEntry entry;
-        entry.reference = references.front();
-        entry.artifactType = JsonArtifactType(json, "artifactType").value_or(NLS::Core::Assets::ArtifactType::Unknown);
-        entry.loaderId = JsonValue<std::string>(json, "loaderId").value_or(std::string {});
-        entry.artifactPath = JsonValue<std::string>(json, "artifactPath").value_or(std::string {});
-        entry.contentHash = JsonValue<std::string>(json, "contentHash").value_or(std::string {});
-
-        const auto dependencies = json.find("dependencies");
-        if (dependencies != json.end())
-            entry.dependencies = ParseRuntimeAssetRefs(*dependencies);
-
-        return entry;
-    }
-
-    std::optional<NLS::Engine::Assets::RuntimeAssetPack> ParseRuntimeAssetPack(const nlohmann::json& json)
-    {
-        if (!json.is_object())
-            return std::nullopt;
-
-        NLS::Engine::Assets::RuntimeAssetPack pack;
-        pack.packName = JsonValue<std::string>(json, "packName").value_or(std::string {});
-        pack.packVariant = JsonValue<std::string>(json, "packVariant").value_or(std::string {});
-
-        const auto entries = json.find("entries");
-        if (entries != json.end() && entries->is_array())
+        switch (artifactType)
         {
-            for (const auto& entryJson : *entries)
-            {
-                auto entry = ParseRuntimeAssetPackEntry(entryJson);
-                if (entry.has_value())
-                    pack.entries.push_back(std::move(*entry));
-            }
+        case ArtifactType::Model: return "model";
+        case ArtifactType::Mesh: return "mesh";
+        case ArtifactType::Material: return "material";
+        case ArtifactType::Texture: return "texture";
+        case ArtifactType::Skeleton: return "skeleton";
+        case ArtifactType::Skin: return "skin";
+        case ArtifactType::AnimationClip: return "animationClip";
+        case ArtifactType::MorphTarget: return "morphTarget";
+        case ArtifactType::Prefab: return "prefab";
+        case ArtifactType::Scene: return "scene";
+        case ArtifactType::Shader: return "shader";
+        case ArtifactType::Audio: return "audio";
+        case ArtifactType::Unknown:
+        case ArtifactType::Count:
+        default:
+            return {};
         }
-
-        return pack;
     }
 
-    std::optional<NLS::Engine::Assets::RuntimeAssetManifest> ParseRuntimeAssetManifest(const nlohmann::json& json)
+    bool IsContentHashBoundToArtifactPath(
+        const std::string& artifactPath,
+        const std::string& contentHash)
     {
-        if (!json.is_object())
-            return std::nullopt;
+        if (contentHash.rfind("sha256:", 0u) != 0u)
+            return false;
 
-        NLS::Engine::Assets::RuntimeAssetManifest manifest;
-        manifest.schemaVersion = JsonValue<uint32_t>(json, "schemaVersion").value_or(1u);
-        manifest.targetPlatform = JsonValue<std::string>(json, "targetPlatform").value_or(std::string {});
+        const auto fileName = std::filesystem::path(artifactPath).filename().generic_string();
+        return NLS::Core::Assets::IsArtifactStorageFileName(fileName) &&
+            contentHash == "sha256:" + fileName;
+    }
 
-        if (const auto roots = json.find("roots"); roots != json.end())
-            manifest.roots = ParseRuntimeAssetRefs(*roots);
+    bool IsValidRuntimeArtifactEntry(
+        const NLS::Core::Assets::ArtifactType artifactType,
+        const std::string& loaderId,
+        const std::string& artifactPath,
+        const std::string& contentHash)
+    {
+        const auto expectedLoaderId = LoaderIdForArtifactType(artifactType);
+        return !expectedLoaderId.empty() &&
+            loaderId == expectedLoaderId &&
+            !artifactPath.empty() &&
+            IsContentHashBoundToArtifactPath(artifactPath, contentHash) &&
+            NLS::Core::Assets::IsContentStorageArtifactPath(artifactPath);
+    }
 
-        const auto entries = json.find("entries");
-        if (entries == json.end() || !entries->is_array())
-            return std::nullopt;
-
-        for (const auto& entryJson : *entries)
+    void RegisterRuntimeManifestArtifactAuthorizations(
+        const NLS::Engine::Assets::RuntimeAssetManifest& manifest)
+    {
+        NLS::Core::Assets::ClearRuntimeArtifactAuthorization();
+        for (const auto& entry : manifest.entries)
+            NLS::Core::Assets::RegisterRuntimeAuthorizedArtifactPath(entry.artifactPath);
+        for (const auto& pack : manifest.assetPacks)
         {
-            auto entry = ParseRuntimeAssetEntry(entryJson);
-            if (entry.has_value())
-                manifest.entries.push_back(std::move(*entry));
+            for (const auto& entry : pack.entries)
+                NLS::Core::Assets::RegisterRuntimeAuthorizedArtifactPath(entry.artifactPath);
         }
-
-        if (const auto prefabEntries = json.find("prefabEntries");
-            prefabEntries != json.end() && prefabEntries->is_array())
-        {
-            for (const auto& prefabEntryJson : *prefabEntries)
-            {
-                auto prefabEntry = ParseRuntimePrefabEntry(prefabEntryJson);
-                if (prefabEntry.has_value())
-                    manifest.prefabEntries.push_back(std::move(*prefabEntry));
-            }
-        }
-
-        if (const auto assetPacks = json.find("assetPacks");
-            assetPacks != json.end() && assetPacks->is_array())
-        {
-            for (const auto& assetPackJson : *assetPacks)
-            {
-                auto assetPack = ParseRuntimeAssetPack(assetPackJson);
-                if (assetPack.has_value())
-                    manifest.assetPacks.push_back(std::move(*assetPack));
-            }
-        }
-
-        if (manifest.entries.empty())
-            return std::nullopt;
-
-        return manifest;
+        NLS::Core::Assets::SetRuntimeArtifactAuthorizationEnabled(true);
     }
 
     bool IsMaterialEntry(
@@ -249,6 +83,45 @@ namespace
         const std::string& loaderId)
     {
         return artifactType == NLS::Core::Assets::ArtifactType::Material || loaderId == "material";
+    }
+
+    bool IsRuntimeDependencyKind(const NLS::Core::Assets::AssetDependencyKind kind)
+    {
+        return kind == NLS::Core::Assets::AssetDependencyKind::ImportedArtifact ||
+            kind == NLS::Core::Assets::AssetDependencyKind::PrefabBase ||
+            kind == NLS::Core::Assets::AssetDependencyKind::NestedPrefab;
+    }
+
+    std::optional<NLS::Engine::Assets::RuntimeAssetRef> ToRuntimeDependencyRef(
+        const NLS::Core::Assets::AssetDependencyRecord& dependency)
+    {
+        if (!IsRuntimeDependencyKind(dependency.kind))
+            return std::nullopt;
+
+        const auto parsedGuid = NLS::Guid::TryParse(dependency.value);
+        if (!parsedGuid.has_value() || dependency.hashOrVersion.empty())
+            return std::nullopt;
+
+        return NLS::Engine::Assets::RuntimeAssetRef {
+            NLS::Core::Assets::AssetId(*parsedGuid),
+            dependency.hashOrVersion
+        };
+    }
+
+    std::vector<NLS::Engine::Assets::RuntimeAssetRef> BuildRuntimeDependencies(
+        const NLS::Core::Assets::ArtifactManifest& manifest)
+    {
+        std::vector<NLS::Engine::Assets::RuntimeAssetRef> dependencies;
+        for (const auto& dependency : manifest.dependencies)
+        {
+            auto reference = ToRuntimeDependencyRef(dependency);
+            if (reference.has_value() &&
+                std::find(dependencies.begin(), dependencies.end(), *reference) == dependencies.end())
+            {
+                dependencies.push_back(*reference);
+            }
+        }
+        return dependencies;
     }
 
     bool ContainsPackSelection(
@@ -292,35 +165,111 @@ namespace
 
         return roots;
     }
+
+    NLS::Engine::Assets::RuntimeAssetManifestEntry MakeRuntimeEntry(
+        const NLS::Core::Assets::ArtifactDatabaseRecord& record,
+        std::vector<NLS::Engine::Assets::RuntimeAssetRef> dependencies)
+    {
+        return {
+            record.sourceAssetId,
+            record.subAssetKey,
+            record.artifactType,
+            record.loaderId,
+            record.artifactPath,
+            record.contentHash,
+            std::move(dependencies)
+        };
+    }
 }
 
-std::filesystem::path ResolveRuntimeAssetManifestPathForProjectSettings(
+std::filesystem::path ResolveRuntimeArtifactDatabasePathForProjectSettings(
     const std::filesystem::path& projectSettingsPath)
 {
     if (!projectSettingsPath.empty())
     {
         const auto projectRoot = projectSettingsPath.parent_path();
         if (!projectRoot.empty())
-            return projectRoot / "Library" / "RuntimeAssetManifest.json";
+            return projectRoot / "Library" / "ArtifactDB";
     }
 
-    return std::filesystem::current_path() / "Data" / "RuntimeAssetManifest.json";
+    return std::filesystem::current_path() / "Data" / "ArtifactDB";
 }
 
 std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> LoadRuntimeAssetDatabaseForProjectSettings(
     const std::filesystem::path& projectSettingsPath)
 {
-    const auto manifestPath = ResolveRuntimeAssetManifestPathForProjectSettings(projectSettingsPath);
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input)
+    NLS::Core::Assets::ClearRuntimeArtifactAuthorization();
+    NLS::Core::Assets::SetRuntimeArtifactAuthorizationEnabled(false);
+
+    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
+    if (!artifactDatabase.Load(ResolveRuntimeArtifactDatabasePathForProjectSettings(projectSettingsPath)))
         return std::nullopt;
 
-    const auto json = nlohmann::json::parse(input, nullptr, false);
-    auto manifest = ParseRuntimeAssetManifest(json);
-    if (!manifest.has_value())
+    NLS::Engine::Assets::RuntimeAssetManifest manifest;
+    manifest.schemaVersion = 1u;
+
+    const auto stats = artifactDatabase.GetStats();
+    if (stats.totalRecords == 0u)
         return std::nullopt;
 
-    return NLS::Engine::Assets::RuntimeAssetDatabase(std::move(*manifest));
+    std::vector<const NLS::Core::Assets::ArtifactDatabaseRecord*> records;
+    records.reserve(stats.totalRecords);
+    bool hasInvalidRecord = false;
+    std::string targetPlatform;
+    artifactDatabase.VisitRecords([&](const NLS::Core::Assets::ArtifactDatabaseRecord& record)
+    {
+        if (record.status != NLS::Core::Assets::ArtifactRecordStatus::UpToDate)
+            return;
+        if (record.targetPlatform.empty())
+        {
+            hasInvalidRecord = true;
+            return;
+        }
+        if (targetPlatform.empty())
+            targetPlatform = record.targetPlatform;
+        else if (targetPlatform != record.targetPlatform)
+        {
+            hasInvalidRecord = true;
+            return;
+        }
+        if (record.targetPlatform != kRuntimeTargetPlatform)
+        {
+            hasInvalidRecord = true;
+            return;
+        }
+        if (!IsValidRuntimeArtifactEntry(
+            record.artifactType,
+            record.loaderId,
+            record.artifactPath,
+            record.contentHash))
+        {
+            hasInvalidRecord = true;
+            return;
+        }
+        records.push_back(&record);
+    });
+
+    if (hasInvalidRecord || records.empty())
+        return std::nullopt;
+
+    for (const auto* record : records)
+    {
+        if (record == nullptr)
+            return std::nullopt;
+
+        if (manifest.targetPlatform.empty())
+            manifest.targetPlatform = record->targetPlatform;
+        const auto sourceManifest = artifactDatabase.BuildManifestForSource(record->sourceAssetId, record->targetPlatform);
+        if (!sourceManifest.has_value())
+            return std::nullopt;
+
+        manifest.entries.push_back(MakeRuntimeEntry(*record, BuildRuntimeDependencies(*sourceManifest)));
+        if (record->primarySubAssetKey == record->subAssetKey)
+            AddUniqueReference(manifest.roots, {record->sourceAssetId, record->subAssetKey});
+    }
+
+    RegisterRuntimeManifestArtifactAuthorizations(manifest);
+    return NLS::Engine::Assets::RuntimeAssetDatabase(std::move(manifest));
 }
 
 size_t PrewarmRuntimeMaterialAssets(

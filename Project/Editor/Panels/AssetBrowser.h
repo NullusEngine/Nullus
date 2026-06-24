@@ -101,12 +101,12 @@ namespace NLS::Editor::Panels
 			CreateStandardShader,
 			CreateStandardPBRShader,
 			CreateUnlitShader,
-			CreateLambertShader,
+			CreateUnlitTextureShader,
 			CreateEmptyMaterial,
 			CreateStandardMaterial,
 			CreateStandardPBRMaterial,
 			CreateUnlitMaterial,
-			CreateLambertMaterial
+			CreateDefaultSurfaceMaterial
 		};
 
 		struct ProjectBrowserTextDialogState

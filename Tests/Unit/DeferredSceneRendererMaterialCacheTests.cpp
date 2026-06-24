@@ -356,7 +356,7 @@ namespace
                 {},
                 {},
                 "test-vertex",
-                "test.nshader"
+                "test.shader"
             }
         });
         artifact.stages.push_back({
@@ -370,13 +370,13 @@ namespace
                 {},
                 {},
                 "test-pixel",
-                "test.nshader"
+                "test.shader"
             }
         });
 
         const auto root = std::filesystem::temp_directory_path() /
             ("nullus_deferred_shader_" + NLS::Guid::New().ToString());
-        const auto path = root / "shader.nshader";
+        const auto path = root / "2d3bb8c6242a8a5cb5d8892ddf9bb18b5a7344f3f8a3791f946d7c217337b5e1";
         std::filesystem::create_directories(path.parent_path());
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
         const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
@@ -998,8 +998,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesGBufferMaterialForStableMate
 
     NLS::Render::Resources::Material firstMaterial(shader);
     NLS::Render::Resources::Material secondMaterial(shader);
-    firstMaterial.path = "App/Assets/Test/SharedDeferredMaterial.nmat";
-    secondMaterial.path = "App/Assets/Test/SharedDeferredMaterial.nmat";
+    firstMaterial.path = "App/Assets/Test/SharedDeferredMaterial.mat";
+    secondMaterial.path = "App/Assets/Test/SharedDeferredMaterial.mat";
 
     SyncOneDeferredCacheMaterial(renderer, firstMaterial);
     SyncOneDeferredCacheMaterial(renderer, secondMaterial);
@@ -1033,8 +1033,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, StableMaterialAssetPathDoesNotShar
 
     NLS::Render::Resources::Material firstMaterial(shader);
     NLS::Render::Resources::Material secondMaterial(shader);
-    firstMaterial.path = "App/Assets/Test/SharedDeferredMaterial.nmat";
-    secondMaterial.path = "App/Assets/Test/SharedDeferredMaterial.nmat";
+    firstMaterial.path = "App/Assets/Test/SharedDeferredMaterial.mat";
+    secondMaterial.path = "App/Assets/Test/SharedDeferredMaterial.mat";
     firstMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", firstTexture);
     secondMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", secondTexture);
 
@@ -1266,6 +1266,59 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesFrameLocalGBufferMaterialRes
     NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, GBufferDrawableUsesSourceMaterialWhenShaderLabGBufferPassExists)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    auto* fallbackShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(fallbackShader, nullptr);
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, fallbackShader);
+
+    auto* forwardShader = NLS::Render::Resources::Shader::CreateForTesting("Assets/Shaders/Multi.shader");
+    auto* gbufferShader = NLS::Render::Resources::Shader::CreateForTesting("Assets/Shaders/Multi.shader");
+    ASSERT_NE(forwardShader, nullptr);
+    ASSERT_NE(gbufferShader, nullptr);
+    forwardShader->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/Forward#0",
+        "Forward",
+        NLS::Render::ShaderLab::ShaderLabPassState{});
+    gbufferShader->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/GBuffer#1",
+        "GBuffer",
+        NLS::Render::ShaderLab::ShaderLabPassState{});
+
+    NLS::Render::Resources::Material source(forwardShader);
+    source.SetShaderLabSourcePath("Assets/Shaders/Multi.shader");
+    source.RegisterShaderLabPassShader(forwardShader);
+    source.RegisterShaderLabPassShader(gbufferShader);
+
+    auto& selected = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveGBufferDrawableMaterialForTesting(
+        renderer,
+        source);
+
+    EXPECT_EQ(&selected, &source)
+        << "Deferred GBuffer rendering must let source ShaderLab materials select their own GBuffer pass.";
+    EXPECT_EQ(source.ResolveShaderForLightMode("GBuffer"), gbufferShader);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).size(), 0u);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
+    NLS::Render::Resources::Shader::DestroyForTesting(gbufferShader);
+    NLS::Render::Resources::Shader::DestroyForTesting(forwardShader);
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(fallbackShader));
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, ResyncsSharedRuntimeVariantWhenSourceMaterialIdentityChanges)

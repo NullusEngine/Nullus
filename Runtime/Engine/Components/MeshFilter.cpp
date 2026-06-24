@@ -6,6 +6,7 @@
 #include "Debug/Logger.h"
 #include "GameObject.h"
 #include "PrimitiveFactory.h"
+#include "Rendering/Assets/MeshArtifact.h"
 #include "Serialize/ObjectReferenceResolver.h"
 
 #include <algorithm>
@@ -33,21 +34,11 @@ bool MeshArtifactPathExists(const std::string& path)
     if (path.empty())
         return false;
 
-    auto extension = std::filesystem::path(path).extension().string();
-    std::transform(
-        extension.begin(),
-        extension.end(),
-        extension.begin(),
-        [](const unsigned char character)
-        {
-            return static_cast<char>(std::tolower(character));
-        });
-    if (extension != ".nmesh")
-        return false;
-
     std::error_code error;
     const auto resolvedPath = Core::ResourceManagement::MeshManager::ResolveResourcePath(path);
-    return !resolvedPath.empty() && std::filesystem::is_regular_file(resolvedPath, error);
+    return !resolvedPath.empty() &&
+        std::filesystem::is_regular_file(resolvedPath, error) &&
+        NLS::Render::Assets::ReadMeshArtifactHeaderPreview(resolvedPath, 64u * 1024u).has_value();
 }
 
 Render::Resources::Mesh* TryLoadCanonicalPrimitiveMesh(

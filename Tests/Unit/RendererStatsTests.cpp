@@ -352,6 +352,16 @@ namespace
             return outDraw.instanceCount > 0u;
         }
 
+        bool PrepareRecordedDraw(
+            PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable,
+            std::string_view lightMode,
+            PreparedRecordedDraw& outDraw) const override
+        {
+            (void) lightMode;
+            return PrepareRecordedDraw(pipelineState, drawable, outDraw);
+        }
+
         void BindPreparedGraphicsPipeline(const PreparedRecordedDraw&) const override {}
         void BindPreparedMaterialBindingSet(const PreparedRecordedDraw&) const override {}
         void SubmitPreparedDraw(const PreparedRecordedDraw&) const override {}

@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "Utils/PathParser.h"
 #include <cctype>
 #include <filesystem>
@@ -99,11 +99,11 @@ NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std:
 	if (ext == "fbx" || ext == "obj" || ext == "gltf" || ext == "glb")			return EFileType::MODEL;
 	else if (ext == "png" || ext == "jpeg" || ext == "jpg" || ext == "tga" ||
 		ext == "bmp" || ext == "dds")											return EFileType::TEXTURE;
-	else if (ext == "glsl" || ext == "hlsl" || ext == "shader")					return EFileType::SHADER;
-	else if (ext == "mat" || ext == "nmat")										return EFileType::MATERIAL;
+	else if (ext == "shader")													return EFileType::SHADER;
+	else if (ext == "mat")														return EFileType::MATERIAL;
 	else if (ext == "wav" || ext == "mp3" || ext == "ogg")						return EFileType::SOUND;
-	else if (ext == "scene" || ext == "nscene")									return EFileType::SCENE;
-	else if (ext == "prefab" || ext == "nprefab")								return EFileType::PREFAB;
+	else if (ext == "scene")													return EFileType::SCENE;
+	else if (ext == "prefab")													return EFileType::PREFAB;
 	else if (ext == "lua" || ext == "cs" || ext == "py")						return EFileType::SCRIPT;
 	else if (ext == "ttf")														return EFileType::FONT;
 

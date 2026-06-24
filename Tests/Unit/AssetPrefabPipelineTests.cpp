@@ -42,6 +42,12 @@ const NLS::Engine::Serialize::ObjectRecord* FindRecordById(
     return nullptr;
 }
 
+std::string LibraryArtifactPath(const std::string& hash)
+{
+    return (std::filesystem::path("Library") / "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(hash)).generic_string();
+}
+
 NLS::Engine::Serialize::ObjectId MakeGeneratedModelPrefabObjectId(
     const NLS::Render::Assets::ImportedScene& scene,
     const std::string& suffix)
@@ -116,7 +122,7 @@ TEST(AssetPrefabPipelineTests, PrefabArtifactTracksBaseChainResolvedAssetsAndIns
     const auto materialId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("55555555-5555-4555-8555-555555555555"));
     artifact.baseChain.push_back(basePrefabId);
-    artifact.resolvedAssets.push_back({materialId, "Material", "material:Hero", "Library/Artifacts/Hero/material.nmat"});
+    artifact.resolvedAssets.push_back({materialId, "Material", "material:Hero", "Library/Artifacts/Hero/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae"});
 
     const auto sourceObject = NLS::Engine::Serialize::ObjectId(
         NLS::Guid::Parse("66666666-6666-4666-8666-666666666666"));
@@ -130,7 +136,7 @@ TEST(AssetPrefabPipelineTests, PrefabArtifactTracksBaseChainResolvedAssetsAndIns
     EXPECT_EQ(artifact.resolvedAssets.front().assetId, materialId);
     EXPECT_EQ(artifact.resolvedAssets.front().expectedType, "Material");
     EXPECT_EQ(artifact.resolvedAssets.front().subAssetKey, "material:Hero");
-    EXPECT_EQ(artifact.resolvedAssets.front().artifactPath, "Library/Artifacts/Hero/material.nmat");
+    EXPECT_EQ(artifact.resolvedAssets.front().artifactPath, "Library/Artifacts/Hero/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
 
     const auto* mapped = artifact.FindRuntimeObject(sourceObject);
     ASSERT_NE(mapped, nullptr);
@@ -167,6 +173,135 @@ TEST(AssetPrefabPipelineTests, PrefabArtifactValidationUsesObjectGraphDiagnostic
 
     EXPECT_TRUE(foundMissingRoot);
     EXPECT_TRUE(foundInvalidOverride);
+}
+
+TEST(AssetPrefabPipelineTests, FallbackResolvedAssetDoesNotInferArtifactTypeFromLibraryPathExtension)
+{
+    NLS::Engine::Serialize::ObjectGraphDocument graph;
+    graph.format = "Nullus.ObjectGraph.Prefab";
+    graph.version = 1;
+
+    NLS::Engine::Serialize::ObjectRecord record;
+    record.id = NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("extensionless-artifact-type-owner"));
+    record.typeName = "TestComponent";
+    record.debugName = "Test";
+
+    const auto shaderId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic("extensionless-artifact-type-shader"));
+    const auto artifactPath = LibraryArtifactPath("47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
+    record.properties.push_back({
+        "asset",
+        NLS::Engine::Serialize::PropertyValue::ObjectReference(
+            NLS::Engine::Serialize::ObjectIdentifier::Asset(
+                NLS::Engine::Serialize::AssetId(shaderId.GetGuid()),
+                4800000,
+                artifactPath))});
+    graph.objects.push_back(std::move(record));
+
+    const auto resolvedAssets = NLS::Engine::Assets::BuildPrefabResolvedAssetsFromReferences(graph);
+    ASSERT_EQ(resolvedAssets.size(), 1u);
+    EXPECT_EQ(resolvedAssets.front().assetId, shaderId);
+    EXPECT_EQ(resolvedAssets.front().expectedType, "Asset");
+    EXPECT_EQ(resolvedAssets.front().subAssetKey, artifactPath);
+    EXPECT_EQ(resolvedAssets.front().artifactPath, artifactPath);
+}
+
+TEST(AssetPrefabPipelineTests, FallbackResolvedAssetKeepsSubAssetHintOutOfArtifactPath)
+{
+    NLS::Engine::Serialize::ObjectGraphDocument graph;
+    graph.format = "Nullus.ObjectGraph.Prefab";
+    graph.version = 1;
+
+    NLS::Engine::Serialize::ObjectRecord renderer;
+    renderer.id = NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("subasset-hint-owner"));
+    renderer.typeName = "NLS::Engine::Components::MeshRenderer";
+    renderer.debugName = "Renderer";
+
+    const auto materialId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic("subasset-hint-material"));
+    renderer.properties.push_back({
+        "materials",
+        NLS::Engine::Serialize::PropertyValue::Array({
+            NLS::Engine::Serialize::PropertyValue::ObjectReference(
+                NLS::Engine::Serialize::ObjectIdentifier::Asset(
+                    NLS::Engine::Serialize::AssetId(materialId.GetGuid()),
+                    4800000,
+                    "material:Body"))
+        })});
+    graph.objects.push_back(std::move(renderer));
+
+    const auto resolvedAssets = NLS::Engine::Assets::BuildPrefabResolvedAssetsFromReferences(graph);
+    ASSERT_EQ(resolvedAssets.size(), 1u);
+    EXPECT_EQ(resolvedAssets.front().assetId, materialId);
+    EXPECT_EQ(resolvedAssets.front().expectedType, "Material");
+    EXPECT_EQ(resolvedAssets.front().subAssetKey, "material:Body");
+    EXPECT_TRUE(resolvedAssets.front().artifactPath.empty());
+}
+
+TEST(AssetPrefabPipelineTests, FallbackResolvedAssetPreservesContentStorageArtifactPath)
+{
+    NLS::Engine::Serialize::ObjectGraphDocument graph;
+    graph.format = "Nullus.ObjectGraph.Prefab";
+    graph.version = 1;
+
+    NLS::Engine::Serialize::ObjectRecord filter;
+    filter.id = NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("content-artifact-owner"));
+    filter.typeName = "NLS::Engine::Components::MeshFilter";
+    filter.debugName = "MeshFilter";
+
+    const auto meshId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic("content-artifact-mesh"));
+    const std::string artifactPath =
+        LibraryArtifactPath("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    filter.properties.push_back({
+        "mesh",
+        NLS::Engine::Serialize::PropertyValue::ObjectReference(
+            NLS::Engine::Serialize::ObjectIdentifier::Asset(
+                NLS::Engine::Serialize::AssetId(meshId.GetGuid()),
+                4800000,
+                artifactPath))});
+    graph.objects.push_back(std::move(filter));
+
+    const auto resolvedAssets = NLS::Engine::Assets::BuildPrefabResolvedAssetsFromReferences(graph);
+    ASSERT_EQ(resolvedAssets.size(), 1u);
+    EXPECT_EQ(resolvedAssets.front().assetId, meshId);
+    EXPECT_EQ(resolvedAssets.front().expectedType, "Mesh");
+    EXPECT_EQ(resolvedAssets.front().subAssetKey, artifactPath);
+    EXPECT_EQ(resolvedAssets.front().artifactPath, artifactPath);
+}
+
+TEST(AssetPrefabPipelineTests, FallbackResolvedAssetRejectsEscapingContentStorageArtifactPath)
+{
+    NLS::Engine::Serialize::ObjectGraphDocument graph;
+    graph.format = "Nullus.ObjectGraph.Prefab";
+    graph.version = 1;
+
+    const auto meshId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic("escaping-content-artifact-mesh"));
+    const std::string hashName = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    for (const auto& path : {
+        std::string("../") + LibraryArtifactPath(hashName),
+        (std::filesystem::temp_directory_path() / hashName).string()
+    })
+    {
+        NLS::Engine::Serialize::ObjectGraphDocument localGraph = graph;
+        NLS::Engine::Serialize::ObjectRecord filter;
+        filter.id = NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("escaping-content-artifact-owner"));
+        filter.typeName = "NLS::Engine::Components::MeshFilter";
+        filter.debugName = "MeshFilter";
+        filter.properties.push_back({
+            "mesh",
+            NLS::Engine::Serialize::PropertyValue::ObjectReference(
+                NLS::Engine::Serialize::ObjectIdentifier::Asset(
+                    NLS::Engine::Serialize::AssetId(meshId.GetGuid()),
+                    4800000,
+                    path))});
+        localGraph.objects.push_back(std::move(filter));
+
+        const auto resolvedAssets = NLS::Engine::Assets::BuildPrefabResolvedAssetsFromReferences(localGraph);
+        ASSERT_EQ(resolvedAssets.size(), 1u);
+        EXPECT_EQ(resolvedAssets.front().assetId, meshId);
+        EXPECT_EQ(resolvedAssets.front().expectedType, "Mesh");
+        EXPECT_EQ(resolvedAssets.front().subAssetKey, path);
+        EXPECT_TRUE(resolvedAssets.front().artifactPath.empty()) << path;
+    }
 }
 
 TEST(AssetPrefabPipelineTests, ImportsPrefabSourceDocumentAndCapturesBaseDependency)
@@ -273,7 +408,7 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceRebuildsResolvedAssetsFromExter
         NLS::Guid::Parse("11111111-2222-4333-8444-555555555555"));
     const auto meshId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("12121212-1212-4212-8212-121212121212"));
-    const std::string meshArtifactPath = "Library/Artifacts/Hero/mesh.nmesh";
+    const std::string meshArtifactPath = "mesh:mesh/0";
 
     ObjectGraphDocument document;
     document.format = "Nullus.ObjectGraph.Prefab";
@@ -306,7 +441,7 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceRebuildsResolvedAssetsFromExter
     EXPECT_EQ(result.artifact.resolvedAssets.front().assetId, meshId);
     EXPECT_EQ(result.artifact.resolvedAssets.front().expectedType, "Mesh");
     EXPECT_EQ(result.artifact.resolvedAssets.front().subAssetKey, meshArtifactPath);
-    EXPECT_EQ(result.artifact.resolvedAssets.front().artifactPath, meshArtifactPath);
+    EXPECT_TRUE(result.artifact.resolvedAssets.front().artifactPath.empty());
 }
 
 TEST(AssetPrefabPipelineTests, InstantiatesPrefabArtifactWithStableSourceToInstanceMap)
@@ -376,8 +511,8 @@ TEST(AssetPrefabPipelineTests, AmbiguousEmptyAssetReferenceHintDoesNotResolveToF
     NLS::Engine::Assets::PrefabArtifact artifact;
     artifact.assetId = assetId;
     artifact.graph = document;
-    artifact.resolvedAssets.push_back({assetId, "Mesh", "mesh:mesh/0", "Library/Artifacts/Hero/mesh0.nmesh"});
-    artifact.resolvedAssets.push_back({assetId, "Mesh", "mesh:mesh/1", "Library/Artifacts/Hero/mesh1.nmesh"});
+    artifact.resolvedAssets.push_back({assetId, "Mesh", "mesh:mesh/0", "Library/Artifacts/Hero/ea4e3c8fc80d89dfbc263a6c298c1d0efa764f39a42fcca4ea90847841365f92"});
+    artifact.resolvedAssets.push_back({assetId, "Mesh", "mesh:mesh/1", "Library/Artifacts/Hero/bc07797835c36eb2155fbdcdff46c71eb131ff80d3eed53488f4ec7ec9c6ad60"});
 
     NLS::Engine::SceneSystem::Scene scene;
     const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(artifact, scene);
@@ -427,9 +562,9 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceKeepsAmbiguousEmptyAssetReferen
 
     std::vector<NLS::Engine::Assets::PrefabResolvedAsset> existingResolvedAssets;
     existingResolvedAssets.push_back(
-        {meshAssetId, "Mesh", "mesh:mesh/0", "Library/Artifacts/Hero/mesh0.nmesh"});
+        {meshAssetId, "Mesh", "mesh:mesh/0", "Library/Artifacts/Hero/ea4e3c8fc80d89dfbc263a6c298c1d0efa764f39a42fcca4ea90847841365f92"});
     existingResolvedAssets.push_back(
-        {meshAssetId, "Mesh", "mesh:mesh/1", "Library/Artifacts/Hero/mesh1.nmesh"});
+        {meshAssetId, "Mesh", "mesh:mesh/1", "Library/Artifacts/Hero/bc07797835c36eb2155fbdcdff46c71eb131ff80d3eed53488f4ec7ec9c6ad60"});
 
     auto importResult = NLS::Engine::Assets::ImportPrefabArtifact(
         ObjectGraphWriter::Write(document),
@@ -655,7 +790,7 @@ TEST(AssetPrefabPipelineTests, BuildsGeneratedModelPrefabHierarchyWithRendererAs
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Hero/BodyMesh.nmesh",
+        "Library/Artifacts/Hero/6df3bbd26c5f75f55442bdd89bd9cbe1dd2e92b3a92ca5eadedab558aab77af2",
         "mesh-hash"
     });
     manifest.subAssets.push_back({
@@ -664,7 +799,7 @@ TEST(AssetPrefabPipelineTests, BuildsGeneratedModelPrefabHierarchyWithRendererAs
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/Hero/BodyMaterial.nmat",
+        "Library/Artifacts/Hero/44d7db23f1c8b23240a9771c22d8237067b92bea1d377a6dc37bd9a8bae325ae",
         "material-hash"
     });
 
@@ -756,7 +891,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabUsesSceneKeyForSingleParserRo
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Sponza/mesh.nmesh",
+        "Library/Artifacts/Sponza/36eee85124b95361c55a48634e6956a87607d0b6a69bfd04ffcd04f145ffa8d7",
         "mesh-hash"
     });
     manifest.subAssets.push_back({
@@ -765,7 +900,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabUsesSceneKeyForSingleParserRo
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/Sponza/dirt_decal.nmat",
+        "Library/Artifacts/Sponza/11263f783dca8a1eaeb7d290f4dda830529ec0a0276bff5f721e2b80202ad928",
         "material-hash"
     });
 
@@ -871,7 +1006,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationResolvesSubAsset
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Hero/meshes/body.nmesh",
+        "Library/Artifacts/Hero/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb",
         "mesh-hash"
     });
     manifest.subAssets.push_back({
@@ -880,7 +1015,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationResolvesSubAsset
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/Hero/materials/body.nmat",
+        "Library/Artifacts/Hero/materials/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b",
         "material-hash"
     });
 
@@ -901,7 +1036,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationResolvesSubAsset
 
     auto* meshFilter = instance.root->GetComponent<NLS::Engine::Components::MeshFilter>();
     ASSERT_NE(meshFilter, nullptr);
-    EXPECT_EQ(meshFilter->GetModelPath(), "Library/Artifacts/Hero/meshes/body.nmesh");
+    EXPECT_EQ(meshFilter->GetModelPath(), "Library/Artifacts/Hero/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
 
     auto* meshRenderer = instance.root->GetComponent<NLS::Engine::Components::MeshRenderer>();
     ASSERT_NE(meshRenderer, nullptr);
@@ -911,7 +1046,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationResolvesSubAsset
 
     const auto materials = meshRenderer->GetMaterialPaths();
     ASSERT_EQ(materials.size(), 1u);
-    EXPECT_EQ(materials[0], "Library/Artifacts/Hero/materials/body.nmat");
+    EXPECT_EQ(materials[0], "Library/Artifacts/Hero/materials/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
 }
 
 TEST(AssetPrefabPipelineTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
@@ -940,7 +1075,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Sparse/meshes/body.nmesh",
+        "Library/Artifacts/Sparse/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb",
         "mesh-hash"
     });
     manifest.subAssets.push_back({
@@ -949,7 +1084,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/Sparse/materials/visible.nmat",
+        "Library/Artifacts/Sparse/materials/2384ba5f4dd69868ad409a745d029b3352710ff25b0d0391a44b6e32697d5f9f",
         "material-hash"
     });
 
@@ -988,7 +1123,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
     const auto runtimeMaterialPaths = runtimeMeshRenderer->GetMaterialPaths();
     ASSERT_EQ(runtimeMaterialPaths.size(), 2u);
     EXPECT_TRUE(runtimeMaterialPaths[0].empty());
-    EXPECT_EQ(runtimeMaterialPaths[1], "Library/Artifacts/Sparse/materials/visible.nmat");
+    EXPECT_EQ(runtimeMaterialPaths[1], "Library/Artifacts/Sparse/materials/2384ba5f4dd69868ad409a745d029b3352710ff25b0d0391a44b6e32697d5f9f");
 }
 
 TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
@@ -1028,7 +1163,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/HLOD/childA.nmesh",
+        "Library/Artifacts/HLOD/58ba37efcbe39f7c3ed57a6bba7d2583305794be37ad9113fb3113c4cb2a2887",
         "mesh-a-hash"
     });
     manifest.subAssets.push_back({
@@ -1037,7 +1172,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/HLOD/childB.nmesh",
+        "Library/Artifacts/HLOD/93930a1419c0821b340a8c2b67983509cfd03be7fa40a911ee14295d94a3bd12",
         "mesh-b-hash"
     });
     manifest.subAssets.push_back({
@@ -1046,7 +1181,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/HLOD/body.nmat",
+        "Library/Artifacts/HLOD/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b",
         "material-hash"
     });
     manifest.subAssets.push_back({
@@ -1055,7 +1190,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/HLOD/cluster_proxy.nmesh",
+        "Library/Artifacts/HLOD/7db0044a982d2592b1d91c8f16b54d922af06b2e0643dbe3552a02027ec3e8ff",
         "proxy-hash"
     });
 
@@ -1095,7 +1230,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabCreatesInactiveHLODProxyNode)
     ASSERT_NE(proxyObject->GetComponent<NLS::Engine::Components::MeshRenderer>(), nullptr);
     auto* proxyFilter = proxyObject->GetComponent<NLS::Engine::Components::MeshFilter>();
     ASSERT_NE(proxyFilter, nullptr);
-    EXPECT_EQ(proxyFilter->GetModelPath(), "Library/Artifacts/HLOD/cluster_proxy.nmesh");
+    EXPECT_EQ(proxyFilter->GetModelPath(), "Library/Artifacts/HLOD/7db0044a982d2592b1d91c8f16b54d922af06b2e0643dbe3552a02027ec3e8ff");
 }
 
 TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoPrimitiveRenderers)
@@ -1128,7 +1263,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoP
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Multi/meshes/body_primitive_0.nmesh",
+        "Library/Artifacts/Multi/meshes/dfbb52541534973df96223ed3b893b0730a390e524ff176c54cb15009f4d424a",
         "mesh-hash-0"
     });
     manifest.subAssets.push_back({
@@ -1137,7 +1272,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoP
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Multi/meshes/body_primitive_1.nmesh",
+        "Library/Artifacts/Multi/meshes/c2a4c16613ac54d03e2b727948c7e9adc06569346e97749ccddea49d55f0f58b",
         "mesh-hash-1"
     });
     manifest.subAssets.push_back({
@@ -1146,7 +1281,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoP
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/Multi/materials/first.nmat",
+        "Library/Artifacts/Multi/materials/dcae5a38be96376d6b06a1b70d9e3897ddfbe16937de85e3ffa05c78b878b351",
         "material-hash-0"
     });
     manifest.subAssets.push_back({
@@ -1155,7 +1290,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoP
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/Multi/materials/second.nmat",
+        "Library/Artifacts/Multi/materials/47ad399b45bcdda2bfbe6ee59e6a6e36ac148a09e62f7ec47862fae4f8e8c07a",
         "material-hash-1"
     });
 
@@ -1241,7 +1376,7 @@ TEST(AssetPrefabPipelineTests, DeferredAssetResolutionIgnoresLegacyStringMateria
     meshRenderer.typeName = "NLS::Engine::Components::MeshRenderer";
     meshRenderer.debugName = "Legacy Path MeshRenderer";
     meshRenderer.properties.push_back({"materials", PropertyValue::Array({
-        PropertyValue::String("Library/Artifacts/Legacy/material.nmat")
+        PropertyValue::String("Library/Artifacts/Legacy/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae")
     })});
 
     artifact.graph.objects.push_back(std::move(root));
@@ -1286,7 +1421,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationMapsDeepImported
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Deep/meshes/body.nmesh",
+        "Library/Artifacts/Deep/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb",
         "mesh-hash"
     });
     manifest.subAssets.push_back({
@@ -1295,7 +1430,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabInstantiationMapsDeepImported
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/Deep/materials/body.nmat",
+        "Library/Artifacts/Deep/materials/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b",
         "material-hash"
     });
 
@@ -1356,7 +1491,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabValidationAllowsResolvedSubAs
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Hero/meshes/body.nmesh",
+        "Library/Artifacts/Hero/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb",
         "mesh-hash"
     });
     manifest.subAssets.push_back({
@@ -1365,7 +1500,7 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabValidationAllowsResolvedSubAs
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         "editor-windows",
-        "Library/Artifacts/Hero/materials/body.nmat",
+        "Library/Artifacts/Hero/materials/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b",
         "material-hash"
     });
 

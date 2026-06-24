@@ -37,5 +37,8 @@ namespace NLS::Core::ResourceManagement
 		* @param p_path
 		*/
 		virtual void ReloadResource(Shader* p_resource, const std::string& p_path) override;
+
+	protected:
+		void OnResourceUnregistered(const std::string& p_path, Shader* p_resource) override;
 	};
 }

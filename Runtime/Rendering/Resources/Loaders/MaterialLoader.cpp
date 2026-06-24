@@ -2,15 +2,25 @@
 
 #include <array>
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 #include <Debug/Logger.h>
 
 #include "Assets/ArtifactLoadTelemetry.h"
+#include "Assets/ArtifactDatabase.h"
+#include "Assets/ArtifactManifest.h"
+#include "Assets/AssetMeta.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ResourceManagement/TextureManager.h"
@@ -20,6 +30,7 @@
 #include "Math/Vector4.h"
 #include "Math/Matrix4.h"
 #include "Rendering/Resources/TextureCube.h"
+#include "Rendering/Resources/MaterialSerialization.h"
 
 namespace
 {
@@ -45,15 +56,35 @@ namespace
             std::istreambuf_iterator<char>()};
     }
 
-    bool IsGeneratedImportedMaterialArtifactPath(const std::string& path)
+    std::optional<std::string> TryReadNativeMaterialArtifactPayload(const std::vector<uint8_t>& bytes)
     {
-        const auto normalized = std::filesystem::path(path).lexically_normal().generic_string();
-        return normalized.find("/Library/Artifacts/") != std::string::npos &&
-            normalized.find("/materials/") != std::string::npos &&
-            normalized.ends_with(".nmat");
+        const auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
+            bytes,
+            NLS::Core::Assets::ArtifactType::Material,
+            1u);
+        if (!container.has_value() || container->payloadSize == 0u)
+            return std::nullopt;
+
+        return std::string(
+            reinterpret_cast<const char*>(container->payloadData),
+            container->payloadSize);
     }
 
-    std::string ReadMaterialPayloadText(const std::string& path)
+    std::string TryMakePortableContentArtifactFilePath(const std::string& path)
+    {
+        return NLS::Core::Assets::TryMakePortableContentArtifactPath(path);
+    }
+
+    bool IsAuthorizedMaterialArtifactPath(const std::string& path)
+    {
+        const auto portableArtifactPath = TryMakePortableContentArtifactFilePath(path);
+        return !portableArtifactPath.empty() &&
+            NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath);
+    }
+
+    std::string ReadMaterialPayloadText(
+        const std::string& path,
+        const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
     {
         NLS::Core::Assets::RecordArtifactLoadTelemetry({
             NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize});
@@ -62,22 +93,14 @@ namespace
         if (bytes.empty())
             return {};
 
-        if (IsGeneratedImportedMaterialArtifactPath(path))
-        {
-            const auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
-                bytes,
-                NLS::Core::Assets::ArtifactType::Material,
-                1u);
-            if (!container.has_value())
-                return {};
-            if (container->payloadSize == 0u)
-                return {};
-            return std::string(
-                reinterpret_cast<const char*>(container->payloadData),
-                container->payloadSize);
-        }
+        if (!options.allowSourceAssetNativeContainer && !IsAuthorizedMaterialArtifactPath(path))
+            return {};
 
-        return std::string(bytes.begin(), bytes.end());
+        if (auto artifactPayload = TryReadNativeMaterialArtifactPayload(bytes);
+            artifactPayload.has_value())
+            return *artifactPayload;
+
+        return {};
     }
 
     std::string Trim(std::string value)
@@ -88,6 +111,21 @@ namespace
 
         const auto end = value.find_last_not_of(" \t\r\n");
         return value.substr(begin, end - begin + 1);
+    }
+
+    bool StartsWith(const std::string_view value, const std::string_view prefix)
+    {
+        return value.size() >= prefix.size() && value.substr(0u, prefix.size()) == prefix;
+    }
+
+    std::vector<std::string> SplitWhitespace(const std::string& value)
+    {
+        std::vector<std::string> tokens;
+        std::istringstream stream(value);
+        std::string token;
+        while (stream >> token)
+            tokens.push_back(std::move(token));
+        return tokens;
     }
 
     std::string EscapeXml(const std::string& value)
@@ -154,6 +192,20 @@ namespace
         return UnescapeXml(Trim(xml.substr(valueStart, close - valueStart)));
     }
 
+    std::string GetLineValue(const std::string& payload, const std::string& key)
+    {
+        const auto marker = key + "=";
+        std::istringstream stream(payload);
+        std::string line;
+        while (std::getline(stream, line))
+        {
+            line = Trim(line);
+            if (line.rfind(marker, 0u) == 0u)
+                return NLS::Render::Resources::UnescapeMaterialField(line.substr(marker.size()));
+        }
+        return {};
+    }
+
     std::vector<std::string> GetBlocks(const std::string& xml, const std::string& blockName)
     {
         std::vector<std::string> blocks;
@@ -202,6 +254,24 @@ namespace
         return fallback;
     }
 
+    bool TryParseInt(const std::string& value, int& output)
+    {
+        const auto trimmed = Trim(value);
+        const auto* begin = trimmed.data();
+        const auto* end = begin + trimmed.size();
+        const auto result = std::from_chars(begin, end, output);
+        return result.ec == std::errc{} && result.ptr == end;
+    }
+
+    bool TryParseFloat(const std::string& value, float& output)
+    {
+        const auto trimmed = Trim(value);
+        const auto* begin = trimmed.data();
+        const auto* end = begin + trimmed.size();
+        const auto result = std::from_chars(begin, end, output);
+        return result.ec == std::errc{} && result.ptr == end;
+    }
+
     std::string ToLower(std::string value)
     {
         std::transform(
@@ -213,6 +283,247 @@ namespace
                 return static_cast<char>(std::tolower(character));
             });
         return value;
+    }
+
+    bool IsForbiddenMaterialShaderSourceReference(const std::string& shaderPath)
+    {
+        const auto extension = ToLower(std::filesystem::path(shaderPath).extension().generic_string());
+        return extension != ".shader";
+    }
+
+    bool IsShaderLabSourceReference(const std::string& shaderPath)
+    {
+        return ToLower(std::filesystem::path(shaderPath).extension().generic_string()) == ".shader";
+    }
+
+    std::string NormalizePortablePath(std::string path)
+    {
+        std::replace(path.begin(), path.end(), '\\', '/');
+        return std::filesystem::path(path).lexically_normal().generic_string();
+    }
+
+    std::optional<std::filesystem::path> TryResolveProjectRootFromMaterialArtifactPath(const std::string& materialPath)
+    {
+        if (materialPath.empty())
+            return std::nullopt;
+
+        std::filesystem::path normalized = std::filesystem::path(materialPath).lexically_normal();
+        std::vector<std::filesystem::path> parts;
+        for (const auto& part : normalized)
+            parts.push_back(part);
+
+        for (size_t index = 0u; index + 1u < parts.size(); ++index)
+        {
+            if (parts[index].generic_string() != "Library" ||
+                parts[index + 1u].generic_string() != "Artifacts")
+            {
+                continue;
+            }
+
+            std::filesystem::path root;
+            for (size_t rootIndex = 0u; rootIndex < index; ++rootIndex)
+                root /= parts[rootIndex];
+            if (!root.empty())
+                return root;
+            return std::filesystem::current_path();
+        }
+
+        return std::nullopt;
+    }
+
+    std::optional<std::filesystem::path> TryResolveArtifactDatabasePathFromMaterialArtifactPath(
+        const std::string& materialPath)
+    {
+        if (materialPath.empty())
+            return std::nullopt;
+
+        std::filesystem::path normalized = std::filesystem::path(materialPath).lexically_normal();
+        std::vector<std::filesystem::path> parts;
+        for (const auto& part : normalized)
+            parts.push_back(part);
+
+        for (size_t index = 0u; index + 1u < parts.size(); ++index)
+        {
+            const auto first = parts[index].generic_string();
+            const auto second = parts[index + 1u].generic_string();
+            if ((first != "Library" && first != "Data") || second != "Artifacts")
+                continue;
+
+            std::filesystem::path root;
+            for (size_t rootIndex = 0u; rootIndex < index; ++rootIndex)
+                root /= parts[rootIndex];
+            if (root.empty())
+                root = std::filesystem::current_path();
+            return root / parts[index] / "ArtifactDB";
+        }
+
+        return std::nullopt;
+    }
+
+    std::optional<std::filesystem::file_time_type> TryGetArtifactDatabaseWriteTime(
+        const std::filesystem::path& databasePath)
+    {
+        std::error_code error;
+        const auto dataFile = databasePath / "data.mdb";
+        if (std::filesystem::exists(dataFile, error))
+            return std::filesystem::last_write_time(dataFile, error);
+        if (!error)
+            return std::nullopt;
+        return std::nullopt;
+    }
+
+    std::shared_ptr<NLS::Core::Assets::ArtifactDatabase> LoadCachedArtifactDatabase(
+        const std::filesystem::path& databasePath)
+    {
+        struct CacheEntry
+        {
+            std::shared_ptr<NLS::Core::Assets::ArtifactDatabase> database;
+            std::optional<std::filesystem::file_time_type> writeTime;
+        };
+
+        static std::mutex cacheMutex;
+        static std::unordered_map<std::string, CacheEntry> cache;
+
+        const auto normalizedPath = databasePath.lexically_normal();
+        const auto key = normalizedPath.generic_string();
+        const auto writeTime = TryGetArtifactDatabaseWriteTime(normalizedPath);
+
+        std::lock_guard lock(cacheMutex);
+        if (const auto found = cache.find(key);
+            found != cache.end() &&
+            found->second.database != nullptr &&
+            found->second.writeTime == writeTime)
+        {
+            return found->second.database;
+        }
+
+        auto database = std::make_shared<NLS::Core::Assets::ArtifactDatabase>();
+        if (!database->Load(normalizedPath))
+            return nullptr;
+
+        cache[key] = { database, writeTime };
+        return database;
+    }
+
+    std::filesystem::path ResolveArtifactPayloadRootFromDatabasePath(const std::filesystem::path& databasePath)
+    {
+        const auto databaseRoot = databasePath.lexically_normal().parent_path();
+        if (databaseRoot.filename().generic_string() == "Library")
+            return databaseRoot.parent_path();
+        return databaseRoot;
+    }
+
+    std::filesystem::path ResolveSourceAssetRootFromDatabasePath(const std::filesystem::path& databasePath)
+    {
+        const auto databaseRoot = databasePath.lexically_normal().parent_path();
+        if (databaseRoot.filename().generic_string() == "Library")
+            return databaseRoot.parent_path();
+        if (databaseRoot.filename().generic_string() == "Data" && !databaseRoot.parent_path().empty())
+            return databaseRoot.parent_path();
+        return databaseRoot;
+    }
+
+    std::optional<std::filesystem::path> ResolveArtifactDatabasePath(
+        const std::string& materialPath,
+        const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
+    {
+        if (!options.artifactDatabasePath.empty())
+            return options.artifactDatabasePath.lexically_normal();
+        return TryResolveArtifactDatabasePathFromMaterialArtifactPath(materialPath);
+    }
+
+    NLS::Core::Assets::AssetId ResolveShaderLabSourceAssetId(
+        const std::filesystem::path& projectRoot,
+        const std::string& shaderSourcePath)
+    {
+        const auto sourcePath = std::filesystem::path(shaderSourcePath).lexically_normal();
+        const auto absoluteSourcePath = sourcePath.is_absolute()
+            ? sourcePath
+            : (projectRoot / sourcePath).lexically_normal();
+
+        if (const auto meta = NLS::Core::Assets::AssetMeta::Load(
+                NLS::Core::Assets::GetAssetMetaPath(absoluteSourcePath));
+            meta.has_value() && meta->id.IsValid())
+        {
+            return meta->id;
+        }
+
+        return NLS::Core::Assets::AssetId(
+            NLS::Guid::NewDeterministic(NormalizePortablePath(shaderSourcePath)));
+    }
+
+    void RegisterShaderLabPassArtifactsFromArtifactDatabase(
+        Material& material,
+        const std::string& shaderSourcePath,
+        const std::string& materialPath,
+        const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
+    {
+        if (shaderSourcePath.empty() ||
+            !options.loadMissingShaders ||
+            !NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::ShaderManager>())
+        {
+            return;
+        }
+
+        const auto artifactDatabasePath = ResolveArtifactDatabasePath(materialPath, options);
+        if (!artifactDatabasePath.has_value())
+            return;
+
+        const auto database = LoadCachedArtifactDatabase(*artifactDatabasePath);
+        if (database == nullptr)
+            return;
+
+        const auto normalizedSource = NormalizePortablePath(shaderSourcePath);
+        const auto sourceRoot = ResolveSourceAssetRootFromDatabasePath(*artifactDatabasePath);
+        const auto artifactRoot = ResolveArtifactPayloadRootFromDatabasePath(*artifactDatabasePath);
+        const auto sourceAssetId = ResolveShaderLabSourceAssetId(sourceRoot, normalizedSource);
+        auto& shaderManager = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager);
+        auto registerRecord = [&](const NLS::Core::Assets::ArtifactDatabaseRecord* record)
+        {
+            if (record == nullptr ||
+                record->status != NLS::Core::Assets::ArtifactRecordStatus::UpToDate ||
+                record->artifactType != NLS::Core::Assets::ArtifactType::Shader ||
+                record->artifactPath.empty())
+            {
+                return;
+            }
+
+            const auto artifactResourcePath = (artifactRoot / record->artifactPath).lexically_normal().string();
+            auto* passShader = shaderManager.GetResource(artifactResourcePath, true);
+            if (passShader != nullptr)
+                material.RegisterShaderLabPassShader(passShader);
+        };
+
+        size_t registeredRecordCount = 0u;
+        for (const auto* record : database->FindBySource(sourceAssetId))
+        {
+            registerRecord(record);
+            if (record != nullptr)
+                ++registeredRecordCount;
+        }
+        if (registeredRecordCount > 0u)
+            return;
+
+        database->VisitRecords([&](const NLS::Core::Assets::ArtifactDatabaseRecord& record)
+        {
+            if (NormalizePortablePath(record.sourcePath) == normalizedSource)
+                registerRecord(&record);
+        });
+    }
+
+    std::string ResolveMaterialShaderReferenceForSave(Material& material)
+    {
+        if (material.HasExplicitShaderLabSourcePath())
+            return material.GetShaderLabSourcePath();
+
+        if (!material.GetShaderReferencePath().empty())
+            return material.GetShaderReferencePath();
+
+        const auto* shader = material.GetShader();
+        if (shader != nullptr && !shader->path.empty() && !IsForbiddenMaterialShaderSourceReference(shader->path))
+            return shader->path;
+
+        return "?";
     }
 
     std::optional<NLS::Render::RHI::TextureWrap> ParseTextureWrap(const std::string& value)
@@ -241,17 +552,11 @@ namespace
 
     std::string SamplerBindingNameForTextureSlot(const std::string& slotName)
     {
-        return slotName == "BaseColor" ||
-            slotName == "MetallicRoughness" ||
-            slotName == "Metallic" ||
-            slotName == "Roughness" ||
-            slotName == "Occlusion" ||
-            slotName == "Normal" ||
-            slotName == "Opacity" ||
-            slotName == "Emissive" ||
-            slotName == "Specular"
-            ? "u_LinearWrapSampler"
-            : std::string {};
+        if (slotName.empty())
+            return {};
+        if (slotName.front() == '_')
+            return "sampler" + slotName;
+        return "sampler_" + slotName;
     }
 
     void ApplyTextureSlotSamplerOverrides(Material& material, const std::string& xml)
@@ -274,6 +579,96 @@ namespace
                 sampler.magFilter = *filter;
 
             material.SetSamplerOverride(samplerName, sampler);
+        }
+    }
+
+    void ApplyShaderLabTextureSlotSamplerOverrides(Material& material, const std::string& payload)
+    {
+        std::istringstream stream(payload);
+        std::string line;
+        while (std::getline(stream, line))
+        {
+            line = Trim(line);
+            if (!StartsWith(line, "textureSlot "))
+                continue;
+
+            const auto tokens = SplitWhitespace(line);
+            if (tokens.size() < 2u)
+                continue;
+
+            const auto samplerName = SamplerBindingNameForTextureSlot(tokens[1]);
+            if (samplerName.empty())
+                continue;
+
+            const auto attributes = NLS::Render::Resources::ParseMaterialKeyValueTail(
+                line.substr(std::string("textureSlot ").size() + tokens[1].size()));
+            NLS::Render::RHI::SamplerDesc sampler;
+            if (const auto found = attributes.find("wrapS"); found != attributes.end())
+            {
+                if (const auto wrap = ParseTextureWrap(found->second); wrap.has_value())
+                    sampler.wrapU = *wrap;
+            }
+            if (const auto found = attributes.find("wrapT"); found != attributes.end())
+            {
+                if (const auto wrap = ParseTextureWrap(found->second); wrap.has_value())
+                    sampler.wrapV = *wrap;
+            }
+            sampler.wrapW = sampler.wrapV;
+            if (const auto found = attributes.find("minFilter"); found != attributes.end())
+            {
+                if (const auto filter = ParseTextureFilter(found->second); filter.has_value())
+                    sampler.minFilter = *filter;
+            }
+            if (const auto found = attributes.find("magFilter"); found != attributes.end())
+            {
+                if (const auto filter = ParseTextureFilter(found->second); filter.has_value())
+                    sampler.magFilter = *filter;
+            }
+
+            material.SetSamplerOverride(samplerName, sampler);
+        }
+    }
+
+    void ApplyShaderLabSamplerOverrides(Material& material, const std::string& payload)
+    {
+        std::istringstream stream(payload);
+        std::string line;
+        while (std::getline(stream, line))
+        {
+            line = Trim(line);
+            if (!StartsWith(line, "samplerOverride "))
+                continue;
+
+            const auto tokens = SplitWhitespace(line);
+            if (tokens.size() < 2u || tokens[1].empty())
+                continue;
+
+            const auto attributes = NLS::Render::Resources::ParseMaterialKeyValueTail(
+                line.substr(std::string("samplerOverride ").size() + tokens[1].size()));
+            NLS::Render::RHI::SamplerDesc sampler;
+            if (const auto found = attributes.find("wrapS"); found != attributes.end())
+            {
+                if (const auto wrap = ParseTextureWrap(found->second); wrap.has_value())
+                    sampler.wrapU = *wrap;
+            }
+            if (const auto found = attributes.find("wrapT"); found != attributes.end())
+            {
+                if (const auto wrap = ParseTextureWrap(found->second); wrap.has_value())
+                    sampler.wrapV = *wrap;
+            }
+            sampler.wrapW = sampler.wrapV;
+            if (const auto found = attributes.find("minFilter"); found != attributes.end())
+            {
+                if (const auto filter = ParseTextureFilter(found->second); filter.has_value())
+                    sampler.minFilter = *filter;
+            }
+            if (const auto found = attributes.find("magFilter"); found != attributes.end())
+            {
+                if (const auto filter = ParseTextureFilter(found->second); filter.has_value())
+                    sampler.magFilter = *filter;
+            }
+
+            material.SetSamplerOverride(tokens[1], sampler);
         }
     }
 
@@ -389,11 +784,23 @@ namespace
             material.Set<bool>(uniform.name, ParseBool(value));
             break;
         case UniformType::UNIFORM_INT:
-            material.Set<int>(uniform.name, std::stoi(value));
+        {
+            int parsed = 0;
+            if (TryParseInt(value, parsed))
+                material.Set<int>(uniform.name, parsed);
+            else
+                NLS_LOG_ERROR("Failed to load material property '" + uniform.name + "': invalid int value '" + value + "'");
             break;
+        }
         case UniformType::UNIFORM_FLOAT:
-            material.Set<float>(uniform.name, std::stof(value));
+        {
+            float parsed = 0.0f;
+            if (TryParseFloat(value, parsed))
+                material.Set<float>(uniform.name, parsed);
+            else
+                NLS_LOG_ERROR("Failed to load material property '" + uniform.name + "': invalid float value '" + value + "'");
             break;
+        }
         case UniformType::UNIFORM_FLOAT_VEC2:
         {
             std::array<float, 2> parsed{};
@@ -449,96 +856,212 @@ namespace
         }
     }
 
-    bool ApplySerializedMaterial(
+    std::optional<UniformType> ShaderLabPropertyTypeToUniformType(const std::string& type)
+    {
+        const auto lowered = ToLower(type);
+        if (lowered == "float" || lowered == "range")
+            return UniformType::UNIFORM_FLOAT;
+        if (lowered == "int")
+            return UniformType::UNIFORM_INT;
+        if (lowered == "vector" || lowered == "color")
+            return UniformType::UNIFORM_FLOAT_VEC4;
+        if (lowered == "texture2d")
+            return UniformType::UNIFORM_SAMPLER_2D;
+        if (lowered == "texturecube")
+            return UniformType::UNIFORM_SAMPLER_CUBE;
+        return std::nullopt;
+    }
+
+    std::string TextureWrapName(const NLS::Render::RHI::TextureWrap value)
+    {
+        using NLS::Render::RHI::TextureWrap;
+        switch (value)
+        {
+        case TextureWrap::ClampToEdge: return "ClampToEdge";
+        case TextureWrap::MirrorRepeat: return "MirrorRepeat";
+        case TextureWrap::ClampToBorder: return "ClampToBorder";
+        case TextureWrap::Repeat: return "Repeat";
+        }
+        return "Repeat";
+    }
+
+    std::string TextureFilterName(const NLS::Render::RHI::TextureFilter value)
+    {
+        using NLS::Render::RHI::TextureFilter;
+        switch (value)
+        {
+        case TextureFilter::Nearest: return "Nearest";
+        case TextureFilter::Linear: return "Linear";
+        }
+        return "Linear";
+    }
+
+    std::string UniformTypeToShaderLabPropertyType(
+        const UniformType type,
+        const std::string& shaderLabPropertyName)
+    {
+        switch (type)
+        {
+        case UniformType::UNIFORM_BOOL: return "Int";
+        case UniformType::UNIFORM_INT: return "Int";
+        case UniformType::UNIFORM_FLOAT: return "Float";
+        case UniformType::UNIFORM_FLOAT_VEC2:
+        case UniformType::UNIFORM_FLOAT_VEC3:
+            return "Vector";
+        case UniformType::UNIFORM_FLOAT_VEC4:
+            return shaderLabPropertyName.find("Color") != std::string::npos
+                ? "Color"
+                : "Vector";
+        case UniformType::UNIFORM_FLOAT_MAT4: return "Matrix";
+        case UniformType::UNIFORM_SAMPLER_2D: return "Texture2D";
+        case UniformType::UNIFORM_SAMPLER_CUBE: return "TextureCube";
+        default: return {};
+        }
+    }
+
+    void ApplyShaderLabPropertyValue(
         Material& material,
-        const std::string& xml,
+        const std::string& propertyName,
+        const std::string& propertyType,
+        const std::string& value,
         const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
     {
-        const auto blendable = GetTagValue(xml, "blendable");
-        const bool resolvedBlendable = !blendable.empty()
-            ? ParseBool(blendable, material.IsBlendable())
-            : material.IsBlendable();
-        const auto surfaceMode = GetTagValue(xml, "surfaceMode");
-        std::optional<MaterialSurfaceMode> resolvedSurfaceMode;
-        if (!surfaceMode.empty())
+        const auto fallbackType = ShaderLabPropertyTypeToUniformType(propertyType);
+        if (!fallbackType.has_value())
+            return;
+
+        UniformInfo syntheticUniform;
+        syntheticUniform.name = propertyName;
+        syntheticUniform.type = *fallbackType;
+
+        const auto* shader = material.GetShader();
+        const auto reflectedUniform = shader != nullptr
+            ? shader->GetUniformInfo(propertyName)
+            : std::optional<UniformInfo> {};
+
+        ApplyUniformValue(
+            material,
+            reflectedUniform.has_value() ? *reflectedUniform : syntheticUniform,
+            value,
+            options);
+    }
+
+    bool ApplyShaderLabSerializedMaterial(
+        Material& material,
+        const std::string& payload,
+        const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
+    {
+        if (GetLineValue(payload, "shaderLabMaterialVersion") != "1")
+            return false;
+
+        const auto shaderPath = GetLineValue(payload, "shader");
+        auto* shader = static_cast<NLS::Render::Resources::Shader*>(nullptr);
+        if (!shaderPath.empty() && shaderPath != "?")
         {
-            resolvedSurfaceMode = NLS::Render::Resources::ParseMaterialSurfaceMode(surfaceMode);
-            if (!resolvedSurfaceMode.has_value())
+            if (IsForbiddenMaterialShaderSourceReference(shaderPath))
             {
-                NLS_LOG_ERROR("Failed to load material: invalid surfaceMode '" + surfaceMode + "'");
+                NLS_LOG_ERROR(
+                    "Failed to load ShaderLab material: shader reference '" + shaderPath +
+                    "' is not an authoritative ShaderLab .shader source asset.");
                 return false;
+            }
+
+            if (IsShaderLabSourceReference(shaderPath))
+            {
+                material.SetShaderLabSourcePath(shaderPath);
+            }
+            else
+            {
+                shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).GetResource(
+                    shaderPath,
+                    options.loadMissingShaders);
             }
         }
 
-        const auto shaderPath = GetTagValue(xml, "shader");
-        auto* shader = shaderPath.empty() || shaderPath == "?"
-            ? nullptr
-            : NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).GetResource(
-                shaderPath,
-                options.loadMissingShaders);
-
         material.ClearSamplerOverrides();
+        for (const auto& keyword : material.GetShaderLabKeywordNames())
+            material.DisableKeyword(keyword);
         material.SetShader(shader);
-
-        if (resolvedSurfaceMode.has_value())
+        if (shader != nullptr && !shaderPath.empty() && shaderPath != "?" && !IsShaderLabSourceReference(shaderPath))
+            material.SetShaderReferencePath(shaderPath);
+        if (!shaderPath.empty() && shaderPath != "?" && IsShaderLabSourceReference(shaderPath))
         {
-            material.SetSurfaceMode(*resolvedSurfaceMode);
-        }
-        else
-        {
-            const auto serializedName = GetTagValue(xml, "name");
-            const auto serializedSourceSubAsset = GetTagValue(xml, "sourceSubAsset");
-            const bool legacyDecal =
-                resolvedBlendable &&
-                NLS::Render::Resources::MaterialIdentitySuggestsDecal(
-                    !serializedName.empty() ? serializedName : serializedSourceSubAsset,
-                    {});
-            material.SetSurfaceMode(
-                legacyDecal
-                    ? MaterialSurfaceMode::Decal
-                    : (resolvedBlendable ? MaterialSurfaceMode::Transparent : MaterialSurfaceMode::Opaque));
+            material.SetShaderLabSourcePath(shaderPath);
+            RegisterShaderLabPassArtifactsFromArtifactDatabase(material, shaderPath, material.path.empty() ? std::string{} : material.path, options);
         }
 
-        const auto backfaceCulling = GetTagValue(xml, "backfaceCulling");
-        if (!backfaceCulling.empty())
-            material.SetBackfaceCulling(ParseBool(backfaceCulling, material.HasBackfaceCulling()));
-
-        const auto frontfaceCulling = GetTagValue(xml, "frontfaceCulling");
-        if (!frontfaceCulling.empty())
-            material.SetFrontfaceCulling(ParseBool(frontfaceCulling, material.HasFrontfaceCulling()));
-
-        const auto depthTest = GetTagValue(xml, "depthTest");
-        if (!depthTest.empty())
-            material.SetDepthTest(ParseBool(depthTest, material.HasDepthTest()));
-
-        const auto depthWriting = GetTagValue(xml, "depthWriting");
-        if (!depthWriting.empty())
-            material.SetDepthWriting(ParseBool(depthWriting, material.HasDepthWriting()));
-
-        const auto colorWriting = GetTagValue(xml, "colorWriting");
-        if (!colorWriting.empty())
-            material.SetColorWriting(ParseBool(colorWriting, material.HasColorWriting()));
-
-        const auto gpuInstances = GetTagValue(xml, "gpuInstances");
-        if (!gpuInstances.empty())
-            material.SetGPUInstances(std::stoi(gpuInstances));
-
-        if (!shader)
-            return true;
-
-        for (const auto& block : GetBlocks(xml, "uniform"))
+        const auto surfaceMode = GetLineValue(payload, "surfaceMode");
+        if (!surfaceMode.empty())
         {
-            const auto uniformName = GetAttributeValue(block, "name");
-            const auto uniformValue = GetAttributeValue(block, "value");
-            if (uniformName.empty())
+            const auto parsed = NLS::Render::Resources::ParseMaterialSurfaceMode(surfaceMode);
+            if (!parsed.has_value())
+            {
+                NLS_LOG_ERROR("Failed to load ShaderLab material: invalid surfaceMode '" + surfaceMode + "'");
+                return false;
+            }
+            material.SetSurfaceMode(*parsed);
+        }
+
+        if (const auto doubleSided = GetLineValue(payload, "doubleSided"); !doubleSided.empty())
+        {
+            const bool isDoubleSided = ParseBool(doubleSided);
+            material.SetBackfaceCulling(!isDoubleSided);
+            material.SetFrontfaceCulling(false);
+        }
+        if (const auto depthWrite = GetLineValue(payload, "depthWrite"); !depthWrite.empty())
+            material.SetDepthWriting(ParseBool(depthWrite, material.HasDepthWriting()));
+
+        std::istringstream stream(payload);
+        std::string line;
+        while (std::getline(stream, line))
+        {
+            line = Trim(line);
+            if (StartsWith(line, "keyword "))
+            {
+                auto tokens = SplitWhitespace(line);
+                if (tokens.size() >= 2u)
+                    material.EnableKeyword(tokens[1]);
+                continue;
+            }
+            if (!StartsWith(line, "property "))
                 continue;
 
-            if (const auto* uniformInfo = shader->GetUniformInfo(uniformName))
-                ApplyUniformValue(material, *uniformInfo, uniformValue, options);
+            auto tokens = SplitWhitespace(line);
+            if (tokens.size() < 4u)
+                continue;
+
+            const auto propertyOffset = line.find(tokens[1], std::string("property ").size());
+            if (propertyOffset == std::string::npos)
+                continue;
+            const auto typeOffset = line.find(tokens[2], propertyOffset + tokens[1].size());
+            if (typeOffset == std::string::npos)
+                continue;
+            const auto valueStart = typeOffset + tokens[2].size();
+            ApplyShaderLabPropertyValue(
+                material,
+                tokens[1],
+                tokens[2],
+                NLS::Render::Resources::UnescapeMaterialField(Trim(line.substr(valueStart))),
+                options);
         }
 
-        ApplyTextureSlotSamplerOverrides(material, xml);
+        ApplyShaderLabTextureSlotSamplerOverrides(material, payload);
+        ApplyShaderLabSamplerOverrides(material, payload);
         return true;
+    }
+
+    bool ApplySerializedMaterial(
+        Material& material,
+        const std::string& payload,
+        const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
+    {
+        if (GetLineValue(payload, "shaderLabMaterialVersion") != "1")
+        {
+            NLS_LOG_ERROR("Failed to load material: legacy XML material payloads are not supported");
+            return false;
+        }
+
+        return ApplyShaderLabSerializedMaterial(material, payload, options);
     }
 
 }
@@ -552,7 +1075,7 @@ Material* MaterialLoader::Create(const std::string& p_path)
 
 Material* MaterialLoader::Create(const std::string& p_path, const LoadOptions& options)
 {
-    const auto xml = ReadSerializedPayload(p_path);
+    const auto xml = ReadMaterialPayloadText(p_path, options);
     if (xml.empty())
     {
         NLS_LOG_ERROR("Failed to load material: " + p_path);
@@ -571,23 +1094,19 @@ Material* MaterialLoader::CreateFromSerializedPayload(
         return nullptr;
 
     auto* material = new Material();
+    material->path = p_path;
     if (!ApplySerializedMaterial(*material, p_xml, options))
     {
         delete material;
         return nullptr;
     }
     material->path = p_path;
-    if (IsGeneratedImportedMaterialArtifactPath(p_path))
-    {
-        material->SetBackfaceCulling(false);
-        material->SetFrontfaceCulling(false);
-    }
     return material;
 }
 
 std::string MaterialLoader::ReadSerializedPayload(const std::string& p_path)
 {
-    return ReadMaterialPayloadText(p_path);
+    return ReadMaterialPayloadText(p_path, {});
 }
 
 void MaterialLoader::Reload(Material& p_material, const std::string& p_path)
@@ -597,51 +1116,50 @@ void MaterialLoader::Reload(Material& p_material, const std::string& p_path)
 
 void MaterialLoader::Reload(Material& p_material, const std::string& p_path, const LoadOptions& options)
 {
-    const auto xml = ReadSerializedPayload(p_path);
+    const auto xml = ReadMaterialPayloadText(p_path, options);
     if (xml.empty())
     {
         NLS_LOG_ERROR("Failed to reload material: " + p_path);
         return;
     }
 
+    p_material.path = p_path;
     if (!ApplySerializedMaterial(p_material, xml, options))
         return;
-    if (IsGeneratedImportedMaterialArtifactPath(p_path))
-    {
-        p_material.SetBackfaceCulling(false);
-        p_material.SetFrontfaceCulling(false);
-    }
 }
 
 void MaterialLoader::Save(Material& p_material, const std::string& p_path)
 {
-    std::ofstream output(p_path, std::ios::trunc);
-    if (!output)
+    std::ostringstream output;
+    output << "shaderLabMaterialVersion=1\n";
+    const auto shaderReference = ResolveMaterialShaderReferenceForSave(p_material);
+    output << "shader=" << NLS::Render::Resources::EscapeMaterialField(shaderReference) << "\n";
+    output << "surfaceMode=" << MaterialSurfaceModeName(p_material.GetSurfaceMode()) << "\n";
+    output << "alphaMode=" << (p_material.IsBlendable() ? "Blend" : "Opaque") << "\n";
+    output << "doubleSided=" << ((!p_material.HasBackfaceCulling() && !p_material.HasFrontfaceCulling()) ? "true" : "false") << "\n";
+    output << "depthWrite=" << (p_material.HasDepthWriting() ? "true" : "false") << "\n";
+    for (const auto& keyword : p_material.GetShaderLabKeywordNames())
+        output << "keyword " << keyword << "\n";
+    for (const auto& [name, sampler] : p_material.GetSamplerOverrides())
     {
-        NLS_LOG_ERROR("Failed to save material: " + p_path);
-        return;
+        output << "samplerOverride " << name
+            << " wrapS=" << TextureWrapName(sampler.wrapU)
+            << " wrapT=" << TextureWrapName(sampler.wrapV)
+            << " minFilter=" << TextureFilterName(sampler.minFilter)
+            << " magFilter=" << TextureFilterName(sampler.magFilter)
+            << "\n";
     }
-
-    output << "<root>\n";
-    output << "  <shader>" << EscapeXml(p_material.GetShader() ? p_material.GetShader()->path : "?") << "</shader>\n";
-    output << "  <surfaceMode>" << MaterialSurfaceModeName(p_material.GetSurfaceMode()) << "</surfaceMode>\n";
-    output << "  <blendable>" << (p_material.IsBlendable() ? "true" : "false") << "</blendable>\n";
-    output << "  <backfaceCulling>" << (p_material.HasBackfaceCulling() ? "true" : "false") << "</backfaceCulling>\n";
-    output << "  <frontfaceCulling>" << (p_material.HasFrontfaceCulling() ? "true" : "false") << "</frontfaceCulling>\n";
-    output << "  <depthTest>" << (p_material.HasDepthTest() ? "true" : "false") << "</depthTest>\n";
-    output << "  <depthWriting>" << (p_material.HasDepthWriting() ? "true" : "false") << "</depthWriting>\n";
-    output << "  <colorWriting>" << (p_material.HasColorWriting() ? "true" : "false") << "</colorWriting>\n";
-    output << "  <gpuInstances>" << p_material.GetGPUInstances() << "</gpuInstances>\n";
 
     if (auto* shader = p_material.GetShader())
     {
+        std::map<std::string, bool> savedProperties;
         for (const auto& [name, value] : p_material.GetUniformsData())
         {
-            const auto* uniformInfo = shader->GetUniformInfo(name);
-            if (!uniformInfo || !value.has_value())
+            const auto uniformInfo = shader->GetUniformInfo(name);
+            if (!uniformInfo.has_value() || !value.has_value())
                 continue;
 
-            const auto type = UniformTypeToString(uniformInfo->type);
+            const auto type = UniformTypeToShaderLabPropertyType(uniformInfo->type, name);
             if (type.empty())
                 continue;
 
@@ -649,12 +1167,53 @@ void MaterialLoader::Save(Material& p_material, const std::string& p_path)
             if (uniformInfo->type == UniformType::UNIFORM_SAMPLER_2D && serializedValue.empty())
                 serializedValue = p_material.GetTextureResourcePath(name);
 
-            output << "  <uniform name=\"" << EscapeXml(name) << "\" type=\"" << type
-                << "\" value=\"" << EscapeXml(serializedValue) << "\"/>\n";
+            output << "property " << name << ' ' << type << ' ' <<
+                (uniformInfo->type == UniformType::UNIFORM_SAMPLER_2D ||
+                 uniformInfo->type == UniformType::UNIFORM_SAMPLER_CUBE
+                    ? NLS::Render::Resources::EscapeMaterialField(serializedValue)
+                    : serializedValue)
+                << "\n";
+            savedProperties[name] = true;
+        }
+
+        for (const auto& [name, path] : p_material.GetTextureResourcePaths())
+        {
+            if (savedProperties.find(name) != savedProperties.end())
+                continue;
+
+            const auto uniformInfo = shader->GetUniformInfo(name);
+            if (!uniformInfo.has_value() ||
+                (uniformInfo->type != UniformType::UNIFORM_SAMPLER_2D &&
+                 uniformInfo->type != UniformType::UNIFORM_SAMPLER_CUBE))
+            {
+                continue;
+            }
+
+            const auto type = UniformTypeToShaderLabPropertyType(uniformInfo->type, name);
+            if (type.empty())
+                continue;
+
+            output << "property " << name << ' ' << type << ' ' <<
+                NLS::Render::Resources::EscapeMaterialField(path) << "\n";
         }
     }
 
-    output << "</root>\n";
+    const auto text = output.str();
+    const std::vector<uint8_t> payload(text.begin(), text.end());
+    NLS::Core::Assets::NativeArtifactMetadata metadata;
+    metadata.artifactType = NLS::Core::Assets::ArtifactType::Material;
+    metadata.schemaName = "material";
+    metadata.schemaVersion = 1u;
+    const auto bytes = NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload);
+
+    std::filesystem::create_directories(std::filesystem::path(p_path).parent_path());
+    std::ofstream file(p_path, std::ios::binary | std::ios::trunc);
+    if (!file)
+    {
+        NLS_LOG_ERROR("Failed to save material: " + p_path);
+        return;
+    }
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
 bool MaterialLoader::Destroy(Material*& p_material)

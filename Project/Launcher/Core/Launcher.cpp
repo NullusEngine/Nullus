@@ -1276,7 +1276,7 @@ void Launcher::SetupContext()
     m_uiManager->EnableEditorLayoutSave(false);
     m_uiManager->EnableDocking(false);
 
-    m_brandTextureResource = NLS::Render::Resources::Loaders::TextureLoader::Create(
+    m_brandTextureResource = NLS::Render::Resources::Loaders::TextureLoader::CreateFromImageFile(
         brandIconPath,
         NLS::Render::Settings::ETextureFilteringMode::LINEAR,
         NLS::Render::Settings::ETextureFilteringMode::LINEAR,

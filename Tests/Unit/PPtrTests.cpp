@@ -161,7 +161,7 @@ TEST(PPtrTests, PersistentManagerMapsInstanceIDToObjectIdentifier)
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")),
         4300000,
-        "Library/Artifacts/Hero/material.nmat");
+        "Library/Artifacts/Hero/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
 
     const auto instanceID = persistentManager.ObjectIdentifierToInstanceID(identifier);
     ASSERT_NE(instanceID, NLS::Engine::Serialize::InstanceID_None);
@@ -186,11 +186,11 @@ TEST(PPtrTests, PersistentManagerTreatsAssetPathAsHintNotIdentity)
     const auto stalePath = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")),
         4300000,
-        "Library/Artifacts/Stale/material.nmat");
+        "Library/Artifacts/Stale/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
     const auto currentPath = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")),
         4300000,
-        "Library/Artifacts/Current/material.nmat");
+        "Library/Artifacts/Current/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
 
     const auto instanceID = persistentManager.ObjectIdentifierToInstanceID(stalePath);
 
@@ -198,7 +198,7 @@ TEST(PPtrTests, PersistentManagerTreatsAssetPathAsHintNotIdentity)
 
     NLS::Engine::Serialize::ObjectIdentifier roundTripped;
     ASSERT_TRUE(persistentManager.InstanceIDToObjectIdentifier(instanceID, roundTripped));
-    EXPECT_EQ(roundTripped.filePath, "Library/Artifacts/Current/material.nmat");
+    EXPECT_EQ(roundTripped.filePath, "Library/Artifacts/Current/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
 }
 
 TEST(PPtrTests, PersistentManagerLocalSerializedIdentifierRoundTripsExternalAssetIdentity)
@@ -209,7 +209,7 @@ TEST(PPtrTests, PersistentManagerLocalSerializedIdentifierRoundTripsExternalAsse
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("99999999-aaaa-4bbb-8ccc-dddddddddddd")),
         2100000,
-        "Library/Artifacts/External/material.nmat");
+        "Library/Artifacts/External/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
 
     const auto instanceID = persistentManager.ObjectIdentifierToInstanceID(identifier);
     ASSERT_NE(instanceID, NLS::Engine::Serialize::InstanceID_None);
@@ -324,7 +324,7 @@ TEST(PPtrTests, BindingLoadedObjectIdentifierMakesExistingPPtrDereferenceObject)
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("33333333-3333-4333-8333-333333333333")),
         2100000,
-        "Library/Artifacts/Hero/materials/body.nmat");
+        "Library/Artifacts/Hero/materials/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
 
     NLS::Engine::Serialize::PPtr<NLS::Render::Resources::Material> reference(
         persistentManager.ObjectIdentifierToInstanceID(identifier));
@@ -370,7 +370,7 @@ TEST(PPtrTests, ResolvedObjectReferenceHelperBindsLoadedObjectWithoutChangingPer
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("55555555-5555-4555-8555-555555555555")),
         2100000,
-        "Library/Artifacts/Stale/material.nmat");
+        "Library/Artifacts/Stale/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
     auto reference = NLS::Engine::Serialize::PPtr<NLS::Render::Resources::Material>(
         persistentManager.ObjectIdentifierToInstanceID(identifier));
 

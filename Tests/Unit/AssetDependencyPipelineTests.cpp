@@ -136,7 +136,7 @@ TEST(AssetDependencyPipelineTests, ResolverKeepsPreviousSuccessfulArtifactAfterF
         ArtifactType::Prefab,
         "prefab",
         "editor-windows",
-        "Library/Artifacts/Hero/prefab.nprefab",
+        "Library/Artifacts/Hero/5d4b4d6c2b6c4a6c9b91d90753df2a8d",
         "sha256:ok"
     });
 
@@ -152,7 +152,7 @@ TEST(AssetDependencyPipelineTests, ResolverKeepsPreviousSuccessfulArtifactAfterF
     const auto* retained = resolver.GetCommittedManifest(model);
     ASSERT_NE(retained, nullptr);
     ASSERT_NE(retained->FindPrimaryArtifact(), nullptr);
-    EXPECT_EQ(retained->FindPrimaryArtifact()->artifactPath, "Library/Artifacts/Hero/prefab.nprefab");
+    EXPECT_EQ(retained->FindPrimaryArtifact()->artifactPath, "Library/Artifacts/Hero/5d4b4d6c2b6c4a6c9b91d90753df2a8d");
     ASSERT_NE(resolver.GetDiagnostics(model), nullptr);
     EXPECT_TRUE(resolver.GetDiagnostics(model)->HasErrors());
 }

@@ -45,30 +45,6 @@ namespace
         return NormalizeMaterialArtifactPath(lhs) == NormalizeMaterialArtifactPath(rhs);
     }
 
-    RenderMaterial* FindCachedMaterialByEquivalentPath(
-        Core::ResourceManagement::MaterialManager& materialManager,
-        const std::string& path)
-    {
-        if (auto* material = materialManager.GetResource(path, false))
-            return material;
-
-        const auto target = NormalizeMaterialArtifactPath(path);
-        if (target.empty())
-            return nullptr;
-
-        for (const auto& [resourcePath, material] : materialManager.GetResources())
-        {
-            if (material == nullptr)
-                continue;
-
-            if (NormalizeMaterialArtifactPath(resourcePath) == target ||
-                NormalizeMaterialArtifactPath(material->path) == target)
-            {
-                return material;
-            }
-        }
-        return nullptr;
-    }
 }
 
 MeshRenderer::MeshRenderer()
@@ -268,7 +244,7 @@ MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
         return m_materials[p_index];
 
     auto& materialManager = NLS_SERVICE(Core::ResourceManagement::MaterialManager);
-    auto* material = FindCachedMaterialByEquivalentPath(materialManager, path);
+    auto* material = materialManager.FindRegisteredMaterialByEquivalentArtifactPath(path);
 
     if (material)
     {

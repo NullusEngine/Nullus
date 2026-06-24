@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 
 #include "Rendering/Core/ABaseRenderer.h"
 #include "Rendering/Core/ARenderPass.h"
@@ -34,20 +35,29 @@ public:
 
     virtual void DrawEntity(
         PipelineState p_pso,
-        const Entities::Drawable& p_drawable
+        const Entities::Drawable& p_drawable,
+        std::string_view lightMode = "Forward"
     ) override;
     void DrawEntity(
         const Entities::Drawable& p_drawable,
         Resources::MaterialPipelineStateOverrides pipelineOverrides = {},
-        Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS);
+        Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS,
+        std::string_view lightMode = "Forward");
     bool CaptureRecordedDrawCommand(
         PipelineState p_pso,
         const Entities::Drawable& p_drawable,
+        Context::RecordedDrawCommandInput& outDraw,
+        std::string_view lightMode = "Forward");
+    bool CaptureRecordedDrawCommand(
+        const Entities::Drawable& p_drawable,
+        Resources::MaterialPipelineStateOverrides pipelineOverrides,
+        Settings::EComparaisonAlgorithm depthCompareOverride,
         Context::RecordedDrawCommandInput& outDraw);
     bool CaptureRecordedDrawCommand(
         const Entities::Drawable& p_drawable,
         Resources::MaterialPipelineStateOverrides pipelineOverrides,
         Settings::EComparaisonAlgorithm depthCompareOverride,
+        std::string_view lightMode,
         Context::RecordedDrawCommandInput& outDraw);
     void ExecutePass(Core::ARenderPass& pass);
     void ExecutePass(Core::ARenderPass& pass, PipelineState pso);

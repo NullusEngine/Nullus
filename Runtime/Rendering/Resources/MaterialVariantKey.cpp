@@ -46,6 +46,32 @@ namespace NLS::Render::Resources
                 : std::string("unset");
         }
 
+        void AppendOptionalCompare(
+            std::string& key,
+            std::string_view name,
+            const std::optional<NLS::Render::Settings::EComparaisonAlgorithm>& value)
+        {
+            key += "|";
+            key += name;
+            key += ":";
+            key += value.has_value()
+                ? std::to_string(static_cast<uint32_t>(*value))
+                : std::string("unset");
+        }
+
+        void AppendOptionalTextureFormat(
+            std::string& key,
+            std::string_view name,
+            const std::optional<NLS::Render::RHI::TextureFormat>& value)
+        {
+            key += "|";
+            key += name;
+            key += ":";
+            key += value.has_value()
+                ? std::to_string(static_cast<uint32_t>(*value))
+                : std::string("unset");
+        }
+
         void AppendOptionalColorFormats(
             std::string& key,
             const bool hasOverride,
@@ -135,7 +161,10 @@ namespace NLS::Render::Resources
             AppendOptionalBool(key, "overrideCulling", overrides.culling);
             AppendOptionalBool(key, "overrideStencilTest", overrides.stencilTest);
             AppendOptionalUInt(key, "overrideStencilWrite", overrides.stencilWriteMask);
+            AppendOptionalUInt(key, "overrideSampleCount", overrides.sampleCount);
+            AppendOptionalCompare(key, "overrideDepthCompare", overrides.depthCompare);
             AppendOptionalCullFace(key, "overrideCullFace", overrides.cullFace);
+            AppendOptionalTextureFormat(key, "overrideDepthFormat", overrides.depthFormat);
             AppendOptionalColorFormats(
                 key,
                 overrides.HasColorFormatsOverride(),
@@ -146,6 +175,21 @@ namespace NLS::Render::Resources
                 overrides.GetRenderTargetBlendStates());
             return key;
         }
+
+        void AppendShaderLabKeywords(std::string& key, const Material& material)
+        {
+            const auto keywords = material.GetShaderLabKeywordNames();
+            if (keywords.empty())
+                return;
+
+            key += "|keywords:";
+            for (size_t index = 0u; index < keywords.size(); ++index)
+            {
+                if (index > 0u)
+                    key += ",";
+                key += keywords[index];
+            }
+        }
     }
 
     MaterialVariantIdentity BuildMaterialVariantIdentity(const Material& material)
@@ -154,6 +198,7 @@ namespace NLS::Render::Resources
         if (!material.path.empty())
         {
             identity.stableKey = "path:" + material.path;
+            AppendShaderLabKeywords(identity.stableKey, material);
             return identity;
         }
 
@@ -168,6 +213,7 @@ namespace NLS::Render::Resources
         identity.stableKey += MaterialSurfaceModeName(material.GetSurfaceMode());
         AppendBool(identity.stableKey, "backCull", material.HasBackfaceCulling());
         AppendBool(identity.stableKey, "frontCull", material.HasFrontfaceCulling());
+        AppendShaderLabKeywords(identity.stableKey, material);
         return identity;
     }
 

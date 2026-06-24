@@ -277,6 +277,16 @@ namespace
             return m_pipeline != nullptr && m_materialBindingSet != nullptr && m_mesh != nullptr;
         }
 
+        bool PrepareRecordedDraw(
+            PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable,
+            std::string_view lightMode,
+            PreparedRecordedDraw& outDraw) const override
+        {
+            (void) lightMode;
+            return PrepareRecordedDraw(pipelineState, drawable, outDraw);
+        }
+
     private:
         std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> m_pipeline;
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_materialBindingSet;
@@ -641,7 +651,7 @@ namespace
                 }
             });
 
-            const auto shaderArtifactPath = m_tempRoot / "RHIImGuiOverlay.nshader";
+            const auto shaderArtifactPath = m_tempRoot / "e1ac067b4307ee69c2cae08bf3e7715d98799884c16e12156b66224707eecae9";
             const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
             std::ofstream output(shaderArtifactPath, std::ios::binary | std::ios::trunc);
             output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));

@@ -14,7 +14,7 @@ namespace NLS::Core::ResourceManagement
 
 namespace NLS::Game::RuntimeAssets
 {
-    std::filesystem::path ResolveRuntimeAssetManifestPathForProjectSettings(
+    std::filesystem::path ResolveRuntimeArtifactDatabasePathForProjectSettings(
         const std::filesystem::path& projectSettingsPath);
 
     std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> LoadRuntimeAssetDatabaseForProjectSettings(

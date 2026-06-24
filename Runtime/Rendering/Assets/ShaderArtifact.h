@@ -3,6 +3,7 @@
 #include "Rendering/RenderDef.h"
 #include "Rendering/Resources/ShaderReflection.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
+#include "Rendering/ShaderLab/ShaderLabTypes.h"
 
 #include <filesystem>
 #include <optional>
@@ -19,6 +20,7 @@ struct ShaderArtifactStage
     std::string entryPoint;
     std::string targetProfile;
     ShaderCompiler::ShaderCompilationOutput output;
+    uint64_t keywordHash = 0u;
 };
 
 struct ShaderArtifact
@@ -27,6 +29,8 @@ struct ShaderArtifact
     std::string subAssetKey;
     std::string targetPlatform = "editor";
     Resources::ShaderReflection reflection;
+    std::string shaderLabLightMode;
+    std::optional<ShaderLab::ShaderLabPassState> shaderLabPassState;
     std::vector<ShaderArtifactStage> stages;
 };
 

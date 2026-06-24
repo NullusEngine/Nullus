@@ -32,8 +32,10 @@ namespace
 
         void DrawEntity(
             NLS::Render::Data::PipelineState pipelineState,
-            const NLS::Render::Entities::Drawable& drawable) override
+            const NLS::Render::Entities::Drawable& drawable,
+            std::string_view lightMode) override
         {
+            (void) lightMode;
             recordedDraws.push_back({
                 pipelineState,
                 drawable.primitiveMode,

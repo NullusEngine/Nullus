@@ -168,43 +168,6 @@ void CreateValidationOcclusionStack(
         std::to_string(createdCount));
 }
 
-void RenameFileReplacingDestination(const std::filesystem::path& source, const std::filesystem::path& destination)
-{
-    std::error_code error;
-    if (std::filesystem::exists(destination))
-        std::filesystem::remove(destination, error);
-
-    std::filesystem::rename(source, destination, error);
-    if (error)
-    {
-        std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, error);
-        if (!error)
-            std::filesystem::remove(source, error);
-    }
-}
-
-void MigrateLegacyMaterialAssets(Editor::Core::EditorActions& editorActions, const std::string& projectAssetsPath)
-{
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(projectAssetsPath))
-    {
-        if (!entry.is_regular_file() || entry.path().extension() != ".ovmat")
-            continue;
-
-        const auto sourcePath = entry.path();
-        const auto targetPath = sourcePath.parent_path() / (sourcePath.stem().string() + ".mat");
-
-        RenameFileReplacingDestination(sourcePath, targetPath);
-
-        const auto sourceMeta = sourcePath.string() + ".meta";
-        const auto targetMeta = targetPath.string() + ".meta";
-        if (std::filesystem::exists(sourceMeta))
-            RenameFileReplacingDestination(sourceMeta, targetMeta);
-
-        editorActions.PropagateFileRename(sourcePath.string(), targetPath.string());
-        NLS_LOG_INFO("Migrated legacy material asset: " + sourcePath.string() + " -> " + targetPath.string());
-    }
-}
-
 void PublishReflectionDiagnosticsToLog()
 {
     const auto diagnostics = NLS::meta::ReflectionDiagnostics::Snapshot();
@@ -260,13 +223,6 @@ Editor::Core::Editor::Editor(Context& p_context)
     PublishReflectionDiagnosticsToLog();
     RegisterShortcutContexts();
     RegisterDefaultShortcuts();
-    m_editorActions.DelayAction([this]
-    {
-        NLS_LOG_INFO("[Startup] Deferred legacy material migration begin");
-        MigrateLegacyMaterialAssets(m_editorActions, m_context.projectAssetsPath);
-        NLS_LOG_INFO("[Startup] Deferred legacy material migration end");
-    }, 1);
-
     m_sceneSourcePathChangedListener = m_context.sceneManager.CurrentSceneSourcePathChangedEvent += [this](const std::string& p_scenePath)
     {
         RememberLastOpenedScene(p_scenePath);

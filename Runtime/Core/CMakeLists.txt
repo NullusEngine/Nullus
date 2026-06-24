@@ -4,6 +4,7 @@ nls_add_runtime_target(
   LIBS
     NLS_Base
     NLS_Platform
+    lmdb
   )
 
 target_compile_definitions(NLS_Core PUBLIC

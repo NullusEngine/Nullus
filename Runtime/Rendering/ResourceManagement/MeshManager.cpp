@@ -6,6 +6,8 @@
 #include <fstream>
 #include <optional>
 
+#include <Guid.h>
+#include "Assets/ArtifactManifest.h"
 #include <Filesystem/IniFile.h>
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
@@ -67,7 +69,7 @@ bool IsSourceModelExtension(const std::filesystem::path& path)
 
 bool IsMeshArtifactPath(const std::filesystem::path& path)
 {
-    return ToLower(path.extension().string()) == ".nmesh";
+    return NLS::Render::Assets::ReadMeshArtifactHeaderPreview(path, 64u * 1024u).has_value();
 }
 
 std::string NormalizeResolvedArtifactPath(std::string path)
@@ -77,6 +79,14 @@ std::string NormalizeResolvedArtifactPath(std::string path)
 
     std::replace(path.begin(), path.end(), '\\', '/');
     return std::filesystem::path(path).lexically_normal().generic_string();
+}
+
+bool IsAuthorizedContentArtifactPath(const std::string& path)
+{
+    const auto portableArtifactPath =
+        NLS::Core::Assets::TryMakePortableContentArtifactPath(path);
+    return portableArtifactPath.empty() ||
+        NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath);
 }
 
 std::filesystem::path NormalizeVirtualBuiltinPath(const std::string& path)
@@ -209,7 +219,9 @@ std::string ResolveBuiltinMeshArtifactPath(const std::string& path)
     if (!IsSourceModelExtension(relativePath))
         return {};
 
-    relativePath.replace_extension(".nmesh");
+    const auto hashedFileName = NLS::Core::Assets::BuildArtifactStorageFileName(
+        "BuiltinMeshArtifact:" + relativePath.generic_string());
+    relativePath = relativePath.parent_path() / hashedFileName;
     std::error_code error;
     const auto projectAssetsPath = NLS::Core::ResourceManagement::MeshManager::ProjectAssetsRoot();
     std::filesystem::path projectCachePath;
@@ -289,6 +301,9 @@ const std::string& MeshManager::ProjectAssetsRoot()
 MeshManager::Mesh* MeshManager::CreateResource(const std::string& path)
 {
     const auto realPath = ResolveArtifactResourcePath(path);
+    if (!IsAuthorizedContentArtifactPath(path) || !IsAuthorizedContentArtifactPath(realPath))
+        return nullptr;
+
     if (!IsMeshArtifactPath(realPath))
         return nullptr;
 
@@ -310,6 +325,9 @@ MeshManager::Mesh* MeshManager::PrewarmArtifact(const std::string& path)
         return cached;
 
     const auto realPath = ResolveArtifactResourcePath(path);
+    if (!IsAuthorizedContentArtifactPath(path) || !IsAuthorizedContentArtifactPath(realPath))
+        return nullptr;
+
     if (auto* cached = FindCachedMeshByEquivalentArtifactPath(*this, realPath))
         return cached;
 
@@ -350,6 +368,9 @@ void MeshManager::ReloadResource(Mesh* resource, const std::string& path)
         return;
 
     const auto realPath = ResolveArtifactResourcePath(path);
+    if (!IsAuthorizedContentArtifactPath(path) || !IsAuthorizedContentArtifactPath(realPath))
+        return;
+
     if (!IsMeshArtifactPath(realPath))
         return;
 

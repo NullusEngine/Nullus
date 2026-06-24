@@ -332,7 +332,7 @@ namespace NLS::Render::Resources
 				constantBuffer.bindingSpace,
 				constantBuffer.bindingIndex,
 				1u,
-				ToShaderStageMask(constantBuffer.stage),
+				constantBuffer.stageMask,
 				0u);
 		}
 
@@ -351,7 +351,7 @@ namespace NLS::Render::Resources
 				property.bindingSpace,
 				property.bindingIndex,
 				property.arraySize > 0 ? static_cast<uint32_t>(property.arraySize) : 1u,
-				ToShaderStageMask(property.stage),
+				property.stageMask,
 				ResolveResourceElementStride(bindingType, property.byteSize));
 		}
 
@@ -411,7 +411,7 @@ namespace NLS::Render::Resources
 				constantBuffer.bindingSpace,
 				constantBuffer.bindingIndex,
 				1u,
-				ToShaderStageMask(constantBuffer.stage),
+				constantBuffer.stageMask,
 				0u));
 		}
 
@@ -428,7 +428,7 @@ namespace NLS::Render::Resources
 				property.bindingSpace,
 				property.bindingIndex,
 				property.arraySize > 0 ? static_cast<uint32_t>(property.arraySize) : 1u,
-				ToShaderStageMask(property.stage),
+				property.stageMask,
 				ResolveResourceElementStride(bindingType, property.byteSize)));
 		}
 

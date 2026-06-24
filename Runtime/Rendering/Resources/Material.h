@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <type_traits>
 #include <vector>
 
@@ -25,6 +26,8 @@
 #include "Rendering/Settings/EComparaisonAlgorithm.h"
 #include "Rendering/Settings/ECullFace.h"
 #include "Rendering/Settings/EPrimitiveMode.h"
+#include "Rendering/ShaderLab/ShaderLabTypes.h"
+#include "Rendering/ShaderLab/ShaderLabVariant.h"
 #include "Resources/Material.generated.h"
 #include "RenderDef.h"
 
@@ -64,8 +67,11 @@ struct MaterialPipelineStateOverrides
 {
     static constexpr size_t kInlineColorFormatCapacity = 4u, kInlineRenderTargetBlendStateCapacity = 4u;
     std::optional<bool> depthWrite, colorWrite, blending, depthTest, hasDepthAttachment, culling, stencilTest;
-    std::optional<uint32_t> stencilWriteMask;
+    std::optional<bool> alphaToCoverage, independentBlend;
+    std::optional<uint32_t> stencilWriteMask, sampleCount;
+    std::optional<Settings::EComparaisonAlgorithm> depthCompare;
     std::optional<Settings::ECullFace> cullFace;
+    std::optional<RHI::TextureFormat> depthFormat;
     std::optional<std::vector<RHI::TextureFormat>> colorFormats;
     std::optional<std::vector<RHI::RHIRenderTargetBlendStateDesc>> renderTargetBlendStates;
     std::array<RHI::TextureFormat, kInlineColorFormatCapacity> inlineColorFormats {};
@@ -143,8 +149,13 @@ struct MaterialPipelineStateOverrides
             lhs.hasDepthAttachment == rhs.hasDepthAttachment &&
             lhs.culling == rhs.culling &&
             lhs.stencilTest == rhs.stencilTest &&
+            lhs.alphaToCoverage == rhs.alphaToCoverage &&
+            lhs.independentBlend == rhs.independentBlend &&
             lhs.stencilWriteMask == rhs.stencilWriteMask &&
+            lhs.sampleCount == rhs.sampleCount &&
+            lhs.depthCompare == rhs.depthCompare &&
             lhs.cullFace == rhs.cullFace &&
+            lhs.depthFormat == rhs.depthFormat &&
             lhs.HasColorFormatsOverride() == rhs.HasColorFormatsOverride() &&
             lhs.GetColorFormats().size() == rhs.GetColorFormats().size() &&
             std::equal(
@@ -166,6 +177,9 @@ struct MaterialPipelineStateOverrides
 
     NLS_RENDER_API size_t GetHash() const;
 };
+
+NLS_RENDER_API MaterialPipelineStateOverrides BuildMaterialPipelineStateOverrides(
+    const NLS::Render::ShaderLab::ShaderLabPassState& state);
 
 enum class MaterialBindingDiagnosticSeverity : uint8_t
 {
@@ -214,6 +228,7 @@ public:
 
     void RebuildBindingLayout();
     void RebuildBindingSet() const;
+    void RebuildBindingSet(const Shader* effectiveShader) const;
 
     /**
      * Set a shader uniform value
@@ -235,6 +250,15 @@ public:
      */
     Shader*& GetShader();
     const Shader* GetShader() const;
+    Shader* ResolveShaderForLightMode(std::string_view lightMode) const;
+    void SetShaderLabSourcePath(std::string sourcePath);
+    const std::string& GetShaderLabSourcePath() const;
+    bool HasExplicitShaderLabSourcePath() const;
+    void SetShaderReferencePath(std::string shaderPath);
+    const std::string& GetShaderReferencePath() const;
+    void RegisterShaderLabPassShader(Shader* shader);
+    void ClearShaderReferences(const Shader* shader);
+    static void ClearShaderReferencesFromLiveMaterials(const Shader* shader);
 
     /**
      * Returns true if the material has a shader attached
@@ -290,6 +314,11 @@ public:
      * @param p_instances
      */
     void SetGPUInstances(int p_instances);
+    void EnableKeyword(std::string keyword);
+    void DisableKeyword(std::string_view keyword);
+    bool IsKeywordEnabled(std::string_view keyword) const;
+    std::vector<std::string> GetShaderLabKeywordNames() const;
+    const NLS::Render::ShaderLab::ShaderLabKeywordSet& GetShaderLabKeywords() const;
 
     /**
      * Returns true if the material is blendable
@@ -352,19 +381,33 @@ public:
         MaterialPipelineStateOverrides overrides = {},
         bool* hasPipelineLayout = nullptr,
         bool* hasVertexShader = nullptr,
-        bool* hasFragmentShader = nullptr) const;
+        bool* hasFragmentShader = nullptr,
+        const Shader* effectiveShader = nullptr) const;
     MaterialRuntimeState& GetRuntimeState() const;
     void ResetRuntimeState() const;
     void EnsureShaderGenerationCacheCurrent() const;
     void InvalidateExplicitBindingSetCache() const;
     std::shared_ptr<RHI::RHIBindingSet> GetRecordedBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    std::shared_ptr<RHI::RHIBindingSet> GetRecordedBindingSet(
+        const std::shared_ptr<RHI::RHIDevice>& device,
+        const Shader* effectiveShader) const;
     const MaterialResourceSet& GetBindingSet() const;
     const std::shared_ptr<RHI::RHIBindingLayout>& GetExplicitBindingLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const std::shared_ptr<RHI::RHIBindingLayout>& GetExplicitBindingLayout(
+        const std::shared_ptr<RHI::RHIDevice>& device,
+        const Shader* effectiveShader) const;
     const std::shared_ptr<RHI::RHIBindingSet>& GetExplicitBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const std::shared_ptr<RHI::RHIBindingSet>& GetExplicitBindingSet(
+        const std::shared_ptr<RHI::RHIDevice>& device,
+        const Shader* effectiveShader) const;
     const std::shared_ptr<RHI::RHIPipelineLayout>& GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const std::shared_ptr<RHI::RHIPipelineLayout>& GetExplicitPipelineLayout(
+        const std::shared_ptr<RHI::RHIDevice>& device,
+        const Shader* effectiveShader) const;
     const std::vector<MaterialBindingDiagnostic>& GetLastExplicitBindingDiagnostics() const;
     bool HasExplicitBindingErrors() const;
     bool RequiresPassDescriptorSet() const;
+    bool RequiresPassDescriptorSet(const Shader* effectiveShader) const;
     void SetRawParameter(const std::string& name, std::any value);
     void MarkParametersDirty();
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -378,6 +421,7 @@ public:
     void ClearSamplerOverride(const std::string& name);
     void ClearSamplerOverrides();
     const RHI::SamplerDesc* GetSamplerOverride(const std::string& name) const;
+    const std::map<std::string, RHI::SamplerDesc>& GetSamplerOverrides() const;
     uint64_t GetInstanceId() const;
     uint64_t GetParameterRevision() const;
     uint64_t GetRenderStateRevision() const;
@@ -388,13 +432,18 @@ public:
     std::string path;
 
 protected:
-    const ShaderPropertyDesc* FindMaterialProperty(const std::string& key) const;
+    std::optional<ShaderPropertyDesc> FindMaterialProperty(const std::string& key) const;
     bool EnsureMaterialParameterExists(const std::string& key);
 
     Shader* m_shader = nullptr;
+    std::string m_shaderLabSourcePath;
+    bool m_shaderLabSourcePathExplicit = false;
+    std::string m_shaderReferencePath;
+    std::unordered_map<std::string, Shader*> m_shaderLabPassShadersByLightMode;
     MaterialParameterBlock m_parameterBlock;
     std::map<std::string, std::string> m_textureResourcePaths;
     std::map<std::string, RHI::SamplerDesc> m_samplerOverrides;
+    NLS::Render::ShaderLab::ShaderLabKeywordSet m_shaderLabKeywords;
     MaterialLayout m_materialLayout;
     ResourceBindingLayout m_bindingLayout;
     mutable std::unique_ptr<MaterialRuntimeState> m_runtimeState;

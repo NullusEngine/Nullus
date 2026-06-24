@@ -70,6 +70,8 @@ namespace NLS::Render::ShaderCompiler
 		const ShaderCompilationInput& input,
 		std::string_view sourceDependencyFingerprint,
 		const ShaderCompilerToolchainIdentity& toolchain);
+	NLS_RENDER_API ShaderCompilerToolchainIdentity GetCurrentShaderCompilerToolchainIdentity();
+	NLS_RENDER_API std::string BuildShaderCompilerToolchainDependencyFingerprint();
 
 	NLS_RENDER_API ShaderArtifactStagingPlan BuildShaderArtifactStagingPlan(
 		std::string_view finalPath,

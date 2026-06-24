@@ -7,6 +7,7 @@
 #include "Rendering/Settings/EComparaisonAlgorithm.h"
 #include "RenderDef.h"
 
+#include <memory>
 #include <vector>
 
 namespace NLS::Render::Resources
@@ -62,7 +63,7 @@ namespace NLS::Render::RHI
 	struct NLS_RENDER_API GraphicsPipelineDesc
 	{
 		std::vector<ShaderStageDesc> shaderStages;
-		const NLS::Render::Resources::ShaderReflection* reflection = nullptr;
+		std::shared_ptr<const NLS::Render::Resources::ShaderReflection> reflection;
 		PipelineLayoutDesc layout;
 		AttachmentLayoutDesc attachmentLayout;
 		RasterStateDesc rasterState;

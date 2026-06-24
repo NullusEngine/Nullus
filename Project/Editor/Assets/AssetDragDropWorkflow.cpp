@@ -308,8 +308,14 @@ AssetDragDropResult AssetDragDropWorkflow::CreateMaterialFromTextureAndAssign(
     materialAsset.artifactType = NLS::Core::Assets::ArtifactType::Material;
     materialAsset.loaderId = "material";
     materialAsset.serializedPayload =
-        "baseColorTexture=" + request.payload.assetId.ToString() + "#" +
-        (request.payload.subAssetKey.empty() ? std::string("texture:Main") : request.payload.subAssetKey);
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n"
+        "alphaMode=Opaque\n"
+        "doubleSided=true\n"
+        "depthWrite=true\n"
+        "property _BaseMap Texture2D " + request.payload.assetId.ToString() + "#" +
+        (request.payload.subAssetKey.empty() ? std::string("texture:Main") : request.payload.subAssetKey) + "\n";
     if (!request.assetDatabase->CreateAsset(materialAsset, materialPath))
     {
         AddDiagnostic(

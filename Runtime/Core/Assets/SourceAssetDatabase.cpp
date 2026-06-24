@@ -415,8 +415,15 @@ bool SourceAssetDatabase::RegisterSourceAsset(
     auto meta = loadedMeta.value_or(AssetMeta::CreateForAsset(absolutePath));
 
     const auto inferredType = InferAssetType(absolutePath);
-    if (meta.assetType == AssetType::Unknown)
+    if (inferredType != AssetType::Unknown && meta.assetType != inferredType)
+    {
         meta.assetType = inferredType;
+        meta.importerId = InferImporterId(meta.assetType);
+    }
+    else if (meta.assetType == AssetType::Unknown)
+    {
+        meta.assetType = inferredType;
+    }
     if (meta.importerId.empty() || meta.importerId == "unknown")
         meta.importerId = InferImporterId(meta.assetType);
     meta.importerVersion = std::max(meta.importerVersion, GetCurrentImporterVersion(meta.assetType));

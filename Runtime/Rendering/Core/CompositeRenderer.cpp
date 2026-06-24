@@ -214,7 +214,8 @@ void CompositeRenderer::OnThreadedFramePublishFailed()
 
 void CompositeRenderer::DrawEntity(
     PipelineState p_pso,
-    const Entities::Drawable& p_drawable
+    const Entities::Drawable& p_drawable,
+    std::string_view lightMode
 )
 {
     NLS_PROFILE_SCOPE();
@@ -243,7 +244,7 @@ void CompositeRenderer::DrawEntity(
     }
 
     PreparedRecordedDraw preparedDraw;
-    if (!PrepareRecordedDraw(p_pso, p_drawable, preparedDraw))
+    if (!PrepareRecordedDraw(p_pso, p_drawable, lightMode, preparedDraw))
     {
         recordRenderPreparationCounters();
         return;
@@ -282,7 +283,8 @@ void CompositeRenderer::DrawEntity(
 void CompositeRenderer::DrawEntity(
     const Entities::Drawable& p_drawable,
     Resources::MaterialPipelineStateOverrides pipelineOverrides,
-    Settings::EComparaisonAlgorithm depthCompareOverride)
+    Settings::EComparaisonAlgorithm depthCompareOverride,
+    std::string_view lightMode)
 {
     NLS_PROFILE_SCOPE();
     if (!m_compositeFrameActive)
@@ -311,7 +313,7 @@ void CompositeRenderer::DrawEntity(
     }
 
     PreparedRecordedDraw preparedDraw;
-    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, preparedDraw))
+    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, lightMode, preparedDraw))
     {
         recordRenderPreparationCounters();
         return;
@@ -350,7 +352,8 @@ void CompositeRenderer::DrawEntity(
 bool CompositeRenderer::CaptureRecordedDrawCommand(
     PipelineState p_pso,
     const Entities::Drawable& p_drawable,
-    Context::RecordedDrawCommandInput& outDraw)
+    Context::RecordedDrawCommandInput& outDraw,
+    std::string_view lightMode)
 {
     if (!m_compositeFrameActive)
         return false;
@@ -389,7 +392,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
     }
 
     PreparedRecordedDraw preparedDraw;
-    if (!PrepareRecordedDraw(p_pso, p_drawable, preparedDraw))
+    if (!PrepareRecordedDraw(p_pso, p_drawable, lightMode, preparedDraw))
         return false;
 
     if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)
@@ -411,6 +414,21 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
     const Entities::Drawable& p_drawable,
     Resources::MaterialPipelineStateOverrides pipelineOverrides,
     Settings::EComparaisonAlgorithm depthCompareOverride,
+    Context::RecordedDrawCommandInput& outDraw)
+{
+    return CaptureRecordedDrawCommand(
+        p_drawable,
+        std::move(pipelineOverrides),
+        depthCompareOverride,
+        "Forward",
+        outDraw);
+}
+
+bool CompositeRenderer::CaptureRecordedDrawCommand(
+    const Entities::Drawable& p_drawable,
+    Resources::MaterialPipelineStateOverrides pipelineOverrides,
+    Settings::EComparaisonAlgorithm depthCompareOverride,
+    std::string_view lightMode,
     Context::RecordedDrawCommandInput& outDraw)
 {
     if (!m_compositeFrameActive)
@@ -451,7 +469,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
     }
 
     PreparedRecordedDraw preparedDraw;
-    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, preparedDraw))
+    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, lightMode, preparedDraw))
         return false;
 
     if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)

@@ -35,7 +35,7 @@ Native mesh payloads must use the same source-local mesh key space as `ImportedS
 
 Converted material payloads must include every texture/factor channel the importer exposes. glTF materials map PBR metallic-roughness fields directly. FBX/OBJ parser materials map diffuse/base color, normal/bump, opacity, shininess, roughness, metallic, occlusion, emissive, specular, and double-sided channels when available. Independent metallic and roughness texture slots must be preserved separately, with packed metallic-roughness used only as a fallback when a source format exposes that packed texture.
 
-Startup prewarm may load generated `.nmat` artifacts with sampler textures intentionally deferred. The editor renderer resource-resolution queue must repair declared sampler uniforms before binding those materials for generated model instances, and deferred prewarm must not report missing-texture warnings unless a real texture load was requested and failed.
+Startup prewarm may load generated `.mat` artifacts with sampler textures intentionally deferred. The editor renderer resource-resolution queue must repair declared sampler uniforms before binding those materials for generated model instances, and deferred prewarm must not report missing-texture warnings unless a real texture load was requested and failed.
 
 Each artifact manifest entry must include:
 

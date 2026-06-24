@@ -2,8 +2,8 @@
 
 #include "Assets/AssetMeta.h"
 #include "Assets/AssetImporterFacade.h"
+#include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/ArtifactLoadTelemetry.h"
-#include "Assets/EditorAssetManifestJson.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/ExternalAssetImporter.h"
 #include "Assets/ImportedPrefabRendererDependencyTemplates.h"
@@ -819,25 +819,18 @@ std::optional<std::filesystem::path> TryRemapImportedArtifactPathToCurrentRoot(
     if (absoluteArtifactPath.empty() || artifactRoot.empty())
         return std::nullopt;
 
-    const auto sourceAssetId = artifactRoot.filename();
-    if (sourceAssetId.empty())
-        return std::nullopt;
-
     std::vector<std::filesystem::path> parts;
     for (const auto& part : absoluteArtifactPath.lexically_normal())
         parts.push_back(part);
 
     for (size_t index = 0u; index + 1u < parts.size(); ++index)
     {
-        if (parts[index + 1u] != sourceAssetId)
-            continue;
-
         const auto artifactDirectory = parts[index].generic_string();
         if (artifactDirectory != "Artifacts" && artifactDirectory != "ArtifactStaging")
             continue;
 
         std::filesystem::path relative;
-        for (size_t relativeIndex = index + 2u; relativeIndex < parts.size(); ++relativeIndex)
+        for (size_t relativeIndex = index + 1u; relativeIndex < parts.size(); ++relativeIndex)
             relative /= parts[relativeIndex];
         if (relative.empty())
             return std::nullopt;
@@ -925,8 +918,7 @@ std::string BuildRendererArtifactStamp(
 }
 
 std::string BuildManifestContentStamp(
-    const NLS::Core::Assets::ArtifactManifest& manifest,
-    const std::filesystem::path& manifestPath)
+    const NLS::Core::Assets::ArtifactManifest& manifest)
 {
     std::vector<std::string> stamps;
     stamps.push_back("source=" + manifest.sourceAssetId.ToString());
@@ -964,7 +956,7 @@ std::string BuildManifestContentStamp(
     }
     std::sort(stamps.begin(), stamps.end());
 
-    std::string combined = "manifestFile@" + FileStamp(manifestPath);
+    std::string combined = "artifactdb";
     for (const auto& stamp : stamps)
     {
         combined.push_back(';');
@@ -1008,13 +1000,12 @@ UnifiedPrefabLoadKey BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
     PrefabSourceIdentity source,
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::ImportedArtifact& prefabArtifact,
-    const std::filesystem::path& manifestPath,
     const std::filesystem::path& prefabPath,
     std::string rendererArtifactStamp)
 {
     UnifiedPrefabLoadKey key;
     key.source = std::move(source);
-    key.stamps.manifestStamp = BuildManifestContentStamp(manifest, manifestPath);
+    key.stamps.manifestStamp = BuildManifestContentStamp(manifest);
     key.stamps.prefabArtifactStamp = BuildPrefabArtifactContentStamp(prefabArtifact, prefabPath);
     key.stamps.rendererArtifactStamp = std::move(rendererArtifactStamp);
     key.manifestStamp = key.stamps.manifestStamp;
@@ -1029,19 +1020,15 @@ UnifiedPrefabLoadKey BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
 }
 
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadFastManifest(
-    const std::filesystem::path& manifestPath)
+    const std::filesystem::path& projectRoot,
+    const NLS::Core::Assets::AssetId sourceAssetId)
 {
     NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
     telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::ManifestValidation;
-    telemetry.path = manifestPath.generic_string();
+    telemetry.path = GetProjectArtifactDatabasePath(projectRoot).generic_string();
     NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
 
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input)
-        return std::nullopt;
-
-    const auto root = nlohmann::json::parse(input, nullptr, false);
-    return ParseArtifactManifestJson(root, true);
+    return LoadArtifactManifestFromProjectArtifactDB(projectRoot, sourceAssetId);
 }
 
 std::vector<uint8_t> ReadAllBytes(const std::filesystem::path& path)
@@ -1246,9 +1233,8 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         currentMeta.importerVersion,
         NLS::Core::Assets::GetCurrentImporterVersion(currentMeta.assetType));
 
-    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
-    const auto manifestPath = artifactRoot / "manifest.json";
-    auto manifest = LoadFastManifest(manifestPath);
+    const auto artifactRoot = projectRoot / "Library" / "Artifacts";
+    auto manifest = LoadFastManifest(projectRoot, currentMeta.id);
     if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
         return result;
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
@@ -1300,7 +1286,6 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
             assetType),
         *manifest,
         *prefabArtifact,
-        manifestPath,
         prefabPath,
         IncludeRendererArtifactStamp(loadMode)
             ? BuildRendererArtifactStamp(*manifest, projectRoot, artifactRoot)
@@ -1503,8 +1488,8 @@ bool IsImportedPrefabArtifactCurrentForPayload(
         currentMeta.importerVersion,
         NLS::Core::Assets::GetCurrentImporterVersion(currentMeta.assetType));
 
-    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
-    const auto manifest = LoadFastManifest(artifactRoot / "manifest.json");
+    const auto artifactRoot = projectRoot / "Library" / "Artifacts";
+    const auto manifest = LoadFastManifest(projectRoot, currentMeta.id);
     if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
         return false;
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
@@ -1639,9 +1624,8 @@ std::optional<UnifiedPrefabLoadKey> EditorAssetDragDropBridge::BuildUnifiedPrefa
         currentMeta.id,
         currentMeta.assetType);
 
-    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
-    const auto manifestPath = artifactRoot / "manifest.json";
-    auto manifest = LoadFastManifest(manifestPath);
+    const auto artifactRoot = projectRoot / "Library" / "Artifacts";
+    auto manifest = LoadFastManifest(projectRoot, currentMeta.id);
     if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
         return std::nullopt;
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
@@ -1666,7 +1650,6 @@ std::optional<UnifiedPrefabLoadKey> EditorAssetDragDropBridge::BuildUnifiedPrefa
         std::move(source),
         *manifest,
         *prefabArtifact,
-        manifestPath,
         prefabPath,
         IncludeRendererArtifactStamp(loadMode)
             ? BuildRendererArtifactStamp(*manifest, projectRoot, artifactRoot)

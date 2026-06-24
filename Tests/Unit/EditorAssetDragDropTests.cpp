@@ -12,6 +12,8 @@
 
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/AssetDatabaseFacade.h"
+#include "Assets/ArtifactDatabase.h"
+#include "Assets/ArtifactManifest.h"
 #include "Assets/AssetImporterSettings.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/ArtifactLoadTelemetry.h"
@@ -49,6 +51,14 @@ using NLS::Engine::Assets::PrefabArtifact;
 AssetId Id(const char* guid)
 {
     return AssetId(NLS::Guid::Parse(guid));
+}
+
+std::string TestArtifactPath(std::string_view key)
+{
+    const auto fileName = NLS::Core::Assets::BuildArtifactStorageFileName(key);
+    return (std::filesystem::path("Library") /
+        "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(fileName)).generic_string();
 }
 
 bool HasDiagnosticCode(
@@ -496,13 +506,18 @@ TEST(EditorAssetDragDropTests, PreviewPrefabArtifactFreshnessInvalidatesWhenMani
     ASSERT_NE(previewPrefab, nullptr);
     EXPECT_TRUE(bridge.IsPreviewPrefabArtifactCurrent(payload, *previewPrefab, false));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/FreshnessHero.gltf");
-    {
-        std::ofstream output(artifactRoot / "manifest.json", std::ios::binary | std::ios::app);
-        ASSERT_TRUE(output.good());
-        output << '\n';
-    }
+    const auto artifactDatabasePath = root / "Library" / "ArtifactDB";
+    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
+    ASSERT_TRUE(artifactDatabase.Load(artifactDatabasePath));
+    const auto sourceAssetId = NLS::Editor::Assets::GetEditorAssetDragPayloadAssetId(payload);
+    auto manifest = artifactDatabase.BuildManifestForSource(sourceAssetId);
+    ASSERT_TRUE(manifest.has_value());
+    ++manifest->importerVersion;
+    artifactDatabase.UpsertManifest(
+        *manifest,
+        NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload),
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(artifactDatabase.Save(artifactDatabasePath));
 
     EXPECT_FALSE(bridge.IsPreviewPrefabArtifactCurrent(payload, *previewPrefab, false))
         << "Scene View release must reject a drag-start preview artifact if the importer manifest changed before mouse-up.";
@@ -895,8 +910,8 @@ TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewReleaseDoesNotLeaveStale
 
 TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewCachesRendererPathsAfterCreation)
 {
-    const std::string meshPath = "Library/Artifacts/Preview/CachedRendererPaths/body.nmesh";
-    const std::string materialPath = "Library/Artifacts/Preview/CachedRendererPaths/body.nmat";
+    const std::string meshPath = "Library/Artifacts/db/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
+    const std::string materialPath = "Library/Artifacts/8c/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b";
     auto prefab = MakeRenderablePrefabArtifact(
         "CachedPreviewRendererPaths",
         Id("c2240303-0303-4303-8303-030303030303"),
@@ -943,8 +958,8 @@ TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewCachesRendererPathsAfter
 
 TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewPendingSceneInstanceExposesRendererToRenderPath)
 {
-    const std::string meshPath = "Library/Artifacts/Preview/PrivateScene/body.nmesh";
-    const std::string materialPath = "Library/Artifacts/Preview/PrivateScene/body.nmat";
+    const std::string meshPath = "Library/Artifacts/db/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
+    const std::string materialPath = "Library/Artifacts/8c/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b";
     auto prefab = MakeRenderablePrefabArtifact(
         "PreviewPrivateSceneHero",
         Id("c2240707-0707-4707-8707-070707070707"),
@@ -983,7 +998,7 @@ TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewHandoffPreservesLoadedTr
         load->accepted = true;
         load->transientMesh = transientMesh;
     }
-    request.meshLoadsByPath.emplace("Library/Artifacts/Preview/Handoff/body.nmesh", load);
+    request.meshLoadsByPath.emplace("Library/Artifacts/db/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb", load);
 
     auto handoff = NLS::Editor::Core::CollectPrefabInstancePreviewResourceHandoff(std::move(request));
 
@@ -1028,19 +1043,19 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesSceneOwnedRendererRe
     lifetimeRegistry.Acquire({
         ownerToken,
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/deletion-body.nmesh",
+        "Library/Artifacts/38/388753bf0a69f98f9eb55be4743739aebac51132e803ed8fa09e73277b66440b",
         4096u,
         ResourceLifetimeOwnerKind::SceneInstance});
     lifetimeRegistry.Acquire({
         ownerToken,
         ResourceLifetimeResourceType::Material,
-        "Library/Artifacts/model/deletion-body.nmat",
+        "Library/Artifacts/89/898b86a8b0cf97b90b30da7330a3d7895085a850c6a3ec307404486ecdc3df34",
         1024u,
         ResourceLifetimeOwnerKind::SceneInstance});
     lifetimeRegistry.Acquire({
         ownerToken,
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/deletion-albedo.ntex",
+        "Library/Artifacts/d9/d93ea27c49984550717f63add7c04e8e7fa068c55968e9b66f86ee0ea2169af9",
         8192u,
         ResourceLifetimeOwnerKind::SceneInstance});
 
@@ -1054,13 +1069,13 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesSceneOwnedRendererRe
     EXPECT_EQ(prefabRegistry.FindRootInstance(*result.instance->instanceRoot), nullptr);
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/deletion-body.nmesh"), 0u);
+        "Library/Artifacts/38/388753bf0a69f98f9eb55be4743739aebac51132e803ed8fa09e73277b66440b"), 0u);
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Material,
-        "Library/Artifacts/model/deletion-body.nmat"), 0u);
+        "Library/Artifacts/89/898b86a8b0cf97b90b30da7330a3d7895085a850c6a3ec307404486ecdc3df34"), 0u);
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Texture,
-        "Library/Artifacts/model/deletion-albedo.ntex"), 0u);
+        "Library/Artifacts/d9/d93ea27c49984550717f63add7c04e8e7fa068c55968e9b66f86ee0ea2169af9"), 0u);
     EXPECT_EQ(lifetimeRegistry.CollectTrimCandidates({}).size(), 3u)
         << "After a prefab instance is deleted, instance-owned renderer resources must become trim-eligible.";
 }
@@ -1071,8 +1086,8 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupKeepsSharedResourcesAliveFor
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
 
-    const std::string meshPath = "Library/Artifacts/model/shared-delete-body.nmesh";
-    const std::string materialPath = "Library/Artifacts/model/shared-delete-body.nmat";
+    const std::string meshPath = "Library/Artifacts/6a/6a99837bfd1e500c2f54239136128afebd181bf77b9be0e8c3fe04f6def269fa";
+    const std::string materialPath = "Library/Artifacts/15/158ec6acd7c687274f8f1cba616f3e5314ec400719a17b0532d237a9e9694a5f";
     auto prefab = MakeRenderablePrefabArtifact(
         "SharedDeleteHero",
         Id("c2250505-0505-4505-8505-050505050505"),
@@ -1170,8 +1185,8 @@ TEST(EditorAssetDragDropTests, InstantiatedImportedPrefabInstancesPreserveResolv
 
     constexpr auto* meshSubAssetKey = "mesh:body";
     constexpr auto* materialSubAssetKey = "material:body";
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/body.nmesh";
-    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/body.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b001");
+    const auto materialArtifactPath = TestArtifactPath("material:b002");
 
     NLS::Engine::GameObject root("ResolvedLifetimeHero", "Prefab");
     auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
@@ -1253,8 +1268,8 @@ TEST(EditorAssetDragDropTests, PrefabResolvedAssetOwnerAcquireDeduplicatesPreser
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
 
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/duplicate-preserved-body.nmesh";
-    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/duplicate-preserved-body.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b011");
+    const auto materialArtifactPath = TestArtifactPath("material:b012");
     const auto meshAssetId = Id("c2240b13-0b13-4b13-8b13-0b130b130b13");
     const auto materialAssetId = Id("c2240b23-0b23-4b23-8b23-0b230b230b23");
 
@@ -1283,8 +1298,8 @@ TEST(EditorAssetDragDropTests, TrimRefreshKeepsSiblingImportedPrefabArtifactOwne
 
     constexpr auto* meshSubAssetKey = "mesh:shared-body";
     constexpr auto* materialSubAssetKey = "material:shared-body";
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/shared-body.nmesh";
-    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/shared-body.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b021");
+    const auto materialArtifactPath = TestArtifactPath("material:b022");
 
     NLS::Engine::GameObject root("SharedResolvedLifetimeHero", "Prefab");
     auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
@@ -1392,8 +1407,8 @@ TEST(EditorAssetDragDropTests, TrimRefreshDoesNotReleaseLegacyPrefabOwnerWithout
 
     constexpr auto* meshSubAssetKey = "mesh:legacy-body";
     constexpr auto* materialSubAssetKey = "material:legacy-body";
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/legacy-body.nmesh";
-    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/legacy-body.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b031");
+    const auto materialArtifactPath = TestArtifactPath("material:b032");
 
     NLS::Engine::GameObject root("LegacyResolvedLifetimeHero", "Prefab");
     auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
@@ -1442,8 +1457,8 @@ TEST(EditorAssetDragDropTests, TrimRefreshRejectsSubAssetKeysAsAuthoritativeReso
 
     constexpr auto* meshSubAssetKey = "mesh:stale-body";
     constexpr auto* materialSubAssetKey = "material:stale-body";
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/stale-body.nmesh";
-    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/stale-body.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b041");
+    const auto materialArtifactPath = TestArtifactPath("material:b042");
 
     NLS::Editor::Assets::PrefabInstanceRecord staleInstance;
     staleInstance.preservedResolvedAssets = {
@@ -1525,8 +1540,8 @@ TEST(EditorAssetDragDropTests, TrimRefreshRecoversGeneratedPrefabOwnersFromLiveA
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
 
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/live-recovered-body.nmesh";
-    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/live-recovered-body.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b051");
+    const auto materialArtifactPath = TestArtifactPath("material:b052");
 
     NLS::Engine::GameObject root("LiveRecoveredPrefab", "Prefab");
     auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
@@ -1567,7 +1582,7 @@ TEST(EditorAssetDragDropTests, TrimRefreshRecoversGeneratedPrefabOwnersFromLiveA
 
     EXPECT_EQ(refresh.rebuiltOwnerCount, 1u);
     EXPECT_FALSE(refresh.hasDeferredGeneratedInstances)
-        << "A generated prefab with stale preserved metadata but live .nmesh/.nmat renderer paths is safe to trim after owner recovery.";
+        << "A generated prefab with stale preserved metadata but live artifact blob renderer paths is safe to trim after owner recovery.";
     EXPECT_FALSE(NLS::Editor::Core::ShouldDeferImportedResourceTrimForPrefabInstances(registry));
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshArtifactPath), 1u);
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialArtifactPath), 1u);
@@ -1581,8 +1596,8 @@ TEST(EditorAssetDragDropTests, TrimRefreshMergesPreservedAndLiveArtifactOwnersFo
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
 
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/partial-preserved-body.nmesh";
-    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/partial-preserved-body.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b061");
+    const auto materialArtifactPath = TestArtifactPath("material:b062");
 
     NLS::Engine::GameObject root("PartialPreservedPrefab", "Prefab");
     auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
@@ -1641,8 +1656,8 @@ TEST(EditorAssetDragDropTests, TrimRefreshDefersAndPreservesOldOwnersWhenGenerat
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
 
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/partial-live-body.nmesh";
-    constexpr auto* materialArtifactPath = "Library/Artifacts/imported-prefab/partial-live-body.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b071");
+    const auto materialArtifactPath = TestArtifactPath("material:b072");
 
     NLS::Engine::GameObject root("PartialLivePrefab", "Prefab");
     auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
@@ -1694,9 +1709,9 @@ TEST(EditorAssetDragDropTests, TrimRefreshDefersWhenGeneratedPrefabHasUnresolved
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
 
-    constexpr auto* meshArtifactPath = "Library/Artifacts/imported-prefab/same-type-partial-body.nmesh";
-    constexpr auto* firstMaterialArtifactPath = "Library/Artifacts/imported-prefab/same-type-partial-a.nmat";
-    constexpr auto* secondMaterialArtifactPath = "Library/Artifacts/imported-prefab/same-type-partial-b.nmat";
+    const auto meshArtifactPath = TestArtifactPath("mesh:b081");
+    const auto firstMaterialArtifactPath = TestArtifactPath("material:b082");
+    const auto secondMaterialArtifactPath = TestArtifactPath("material:b083");
     constexpr auto* secondMaterialSubAssetKey = "material:same-type-partial-b";
 
     NLS::Engine::GameObject root("SameTypePartialPrefab", "Prefab");
@@ -1769,8 +1784,8 @@ TEST(EditorAssetDragDropTests, DeletingOneOfTwoSamePrefabInstancesLeavesSiblingV
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
 
-    const std::string meshPath = "Library/Artifacts/model/sibling-visible-body.nmesh";
-    const std::string materialPath = "Library/Artifacts/model/sibling-visible-body.nmat";
+    const std::string meshPath = "Library/Artifacts/bb/bb7619ad05298b72a931c2828511fb3fbba497990f02559a28f52c379dc20c5b";
+    const std::string materialPath = "Library/Artifacts/84/847baee87a75f0b1b23025b44c9a393fd44ded045f88472bcace811a34feebca";
     auto prefab = MakeRenderablePrefabArtifact(
         "SiblingVisibleHero",
         Id("c2250909-0909-4909-8909-090909090909"),
@@ -1853,10 +1868,10 @@ TEST(EditorAssetDragDropTests, MarkDestroyEventCleanupKeepsSiblingPrefabInstance
     using NLS::Core::ResourceManagement::ResourceLifetimeRegistry;
     using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
 
-    const std::string rootMeshPath = "Library/Artifacts/model/event-delete-root.nmesh";
-    const std::string childMeshPath = "Library/Artifacts/model/event-delete-child.nmesh";
-    const std::string rootMaterialPath = "Library/Artifacts/model/event-delete-root.nmat";
-    const std::string childMaterialPath = "Library/Artifacts/model/event-delete-child.nmat";
+    const std::string rootMeshPath = "Library/Artifacts/75/753ca2cb82c807e2ed9f0edfa5ea8570d00fdfc7275803db1342d010f36fd08a";
+    const std::string childMeshPath = "Library/Artifacts/11/111f421cbcd0db7c2ff80deddeee408ea3a7086c913d7a727197a7a9da3de46e";
+    const std::string rootMaterialPath = "Library/Artifacts/69/69046cc23a038e167a4bda318a961a5c9f999874c2d81981497412730f4edb9a";
+    const std::string childMaterialPath = "Library/Artifacts/d1/d16e4d13474653d357eee504224b1ed3741e4903f0f83c06723f6b8bfcc17d8e";
 
     NLS::Engine::GameObject root("EventDeleteHero", "Prefab");
     auto* rootMeshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
@@ -2020,8 +2035,8 @@ TEST(EditorAssetDragDropTests, MarkDestroyEventCleanupKeepsSiblingPrefabInstance
 
 TEST(EditorAssetDragDropTests, RepeatedPrefabDropsCreateDistinctInstanceCorrespondenceIds)
 {
-    const std::string meshPath = "Library/Artifacts/model/distinct-instance-body.nmesh";
-    const std::string materialPath = "Library/Artifacts/model/distinct-instance-body.nmat";
+    const std::string meshPath = "Library/Artifacts/61/615163ab16dcb343d84c732a81af22bfa1eb723730fc6e33ceb9e9b0d03c7ae4";
+    const std::string materialPath = "Library/Artifacts/fb/fb41ae9d32fa428ecd683bd8d7fe37596daac1cb232ae5814da99c65ca29aa5e";
     auto prefab = MakeRenderablePrefabArtifact(
         "DistinctInstanceIdHero",
         Id("c2250707-0707-4707-8707-070707070707"),
@@ -2101,7 +2116,7 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesNestedPrefabRootsUnd
     lifetimeRegistry.Acquire({
         ownerToken,
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/nested-deletion-body.nmesh",
+        "Library/Artifacts/f4/f4ecd92dfc33c7355c091d5b62052282e4a247a586159afdabf06bd39da2036b",
         4096u,
         ResourceLifetimeOwnerKind::SceneInstance});
 
@@ -2115,7 +2130,7 @@ TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesNestedPrefabRootsUnd
     EXPECT_EQ(prefabRegistry.FindRootInstance(*result.instance->instanceRoot), nullptr);
     EXPECT_EQ(lifetimeRegistry.GetActiveOwnerCount(
         ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/nested-deletion-body.nmesh"), 0u);
+        "Library/Artifacts/f4/f4ecd92dfc33c7355c091d5b62052282e4a247a586159afdabf06bd39da2036b"), 0u);
 }
 
 TEST(EditorAssetDragDropTests, RepeatedGeneratedModelDropFastBindsThroughUnifiedHotCache)

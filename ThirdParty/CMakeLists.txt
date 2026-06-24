@@ -9,6 +9,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/DirectXTex/CMakeLists.txt")
     add_subdirectory(DirectXTex)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/LMDB/CMakeLists.txt" AND NOT TARGET lmdb)
+    add_subdirectory(LMDB)
+endif()
+
 function(nls_create_fbx_sdk_unavailable_target reason)
     if(TARGET Autodesk::FbxSdk)
         return()

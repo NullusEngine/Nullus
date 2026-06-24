@@ -13,6 +13,7 @@
 #include <spirv_cross_util.hpp>
 #include <spirv_glsl.hpp>
 
+#include "Assets/ArtifactManifest.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
 
@@ -136,6 +137,175 @@ std::optional<ShaderCompiler::ShaderTargetPlatform> ParseTarget(const std::strin
         return ShaderCompiler::ShaderTargetPlatform::GLSL;
     if (lowered == "unknown")
         return ShaderCompiler::ShaderTargetPlatform::Unknown;
+    return std::nullopt;
+}
+
+uint32_t ToStageMaskValue(const ShaderCompiler::ShaderStage stage)
+{
+    switch (stage)
+    {
+    case ShaderCompiler::ShaderStage::Vertex:
+        return static_cast<uint32_t>(RHI::ShaderStageMask::Vertex);
+    case ShaderCompiler::ShaderStage::Compute:
+        return static_cast<uint32_t>(RHI::ShaderStageMask::Compute);
+    case ShaderCompiler::ShaderStage::Pixel:
+    default:
+        return static_cast<uint32_t>(RHI::ShaderStageMask::Fragment);
+    }
+}
+
+std::optional<ShaderLab::ShaderLabCullMode> ParseShaderLabCullMode(const std::string& value)
+{
+    const auto lowered = ToLower(value);
+    if (lowered == "off")
+        return ShaderLab::ShaderLabCullMode::Off;
+    if (lowered == "front")
+        return ShaderLab::ShaderLabCullMode::Front;
+    if (lowered == "back")
+        return ShaderLab::ShaderLabCullMode::Back;
+    return std::nullopt;
+}
+
+const char* ToString(const Settings::EComparaisonAlgorithm compare)
+{
+    switch (compare)
+    {
+    case Settings::EComparaisonAlgorithm::NEVER: return "Never";
+    case Settings::EComparaisonAlgorithm::LESS: return "Less";
+    case Settings::EComparaisonAlgorithm::EQUAL: return "Equal";
+    case Settings::EComparaisonAlgorithm::LESS_EQUAL: return "LessEqual";
+    case Settings::EComparaisonAlgorithm::GREATER: return "Greater";
+    case Settings::EComparaisonAlgorithm::NOTEQUAL: return "NotEqual";
+    case Settings::EComparaisonAlgorithm::GREATER_EQUAL: return "GreaterEqual";
+    case Settings::EComparaisonAlgorithm::ALWAYS: return "Always";
+    default: return "Less";
+    }
+}
+
+std::optional<Settings::EComparaisonAlgorithm> ParseCompareOp(const std::string& value)
+{
+    const auto lowered = ToLower(value);
+    if (lowered == "never")
+        return Settings::EComparaisonAlgorithm::NEVER;
+    if (lowered == "less")
+        return Settings::EComparaisonAlgorithm::LESS;
+    if (lowered == "equal")
+        return Settings::EComparaisonAlgorithm::EQUAL;
+    if (lowered == "lessequal" || lowered == "less-equal")
+        return Settings::EComparaisonAlgorithm::LESS_EQUAL;
+    if (lowered == "greater")
+        return Settings::EComparaisonAlgorithm::GREATER;
+    if (lowered == "notequal" || lowered == "not-equal")
+        return Settings::EComparaisonAlgorithm::NOTEQUAL;
+    if (lowered == "greaterequal" || lowered == "greater-equal")
+        return Settings::EComparaisonAlgorithm::GREATER_EQUAL;
+    if (lowered == "always")
+        return Settings::EComparaisonAlgorithm::ALWAYS;
+    return std::nullopt;
+}
+
+const char* ToString(const RHI::RHIBlendFactor factor)
+{
+    switch (factor)
+    {
+    case RHI::RHIBlendFactor::Zero: return "Zero";
+    case RHI::RHIBlendFactor::One: return "One";
+    case RHI::RHIBlendFactor::SrcColor: return "SrcColor";
+    case RHI::RHIBlendFactor::InvSrcColor: return "InvSrcColor";
+    case RHI::RHIBlendFactor::SrcAlpha: return "SrcAlpha";
+    case RHI::RHIBlendFactor::InvSrcAlpha: return "InvSrcAlpha";
+    case RHI::RHIBlendFactor::DstAlpha: return "DstAlpha";
+    case RHI::RHIBlendFactor::InvDstAlpha: return "InvDstAlpha";
+    case RHI::RHIBlendFactor::DstColor: return "DstColor";
+    case RHI::RHIBlendFactor::InvDstColor: return "InvDstColor";
+    default: return "One";
+    }
+}
+
+std::optional<RHI::RHIBlendFactor> ParseBlendFactor(const std::string& value)
+{
+    const auto lowered = ToLower(value);
+    if (lowered == "zero")
+        return RHI::RHIBlendFactor::Zero;
+    if (lowered == "one")
+        return RHI::RHIBlendFactor::One;
+    if (lowered == "srccolor" || lowered == "src-color")
+        return RHI::RHIBlendFactor::SrcColor;
+    if (lowered == "invsrccolor" || lowered == "inv-src-color")
+        return RHI::RHIBlendFactor::InvSrcColor;
+    if (lowered == "srcalpha" || lowered == "src-alpha")
+        return RHI::RHIBlendFactor::SrcAlpha;
+    if (lowered == "invsrcalpha" || lowered == "inv-src-alpha")
+        return RHI::RHIBlendFactor::InvSrcAlpha;
+    if (lowered == "dstalpha" || lowered == "dst-alpha")
+        return RHI::RHIBlendFactor::DstAlpha;
+    if (lowered == "invdstalpha" || lowered == "inv-dst-alpha")
+        return RHI::RHIBlendFactor::InvDstAlpha;
+    if (lowered == "dstcolor" || lowered == "dst-color")
+        return RHI::RHIBlendFactor::DstColor;
+    if (lowered == "invdstcolor" || lowered == "inv-dst-color")
+        return RHI::RHIBlendFactor::InvDstColor;
+    return std::nullopt;
+}
+
+const char* ToString(const RHI::RHIBlendOp op)
+{
+    switch (op)
+    {
+    case RHI::RHIBlendOp::Add: return "Add";
+    case RHI::RHIBlendOp::Subtract: return "Subtract";
+    case RHI::RHIBlendOp::ReverseSubtract: return "ReverseSubtract";
+    case RHI::RHIBlendOp::Min: return "Min";
+    case RHI::RHIBlendOp::Max: return "Max";
+    default: return "Add";
+    }
+}
+
+std::optional<RHI::RHIBlendOp> ParseBlendOp(const std::string& value)
+{
+    const auto lowered = ToLower(value);
+    if (lowered == "add")
+        return RHI::RHIBlendOp::Add;
+    if (lowered == "subtract")
+        return RHI::RHIBlendOp::Subtract;
+    if (lowered == "reversesubtract" || lowered == "reverse-subtract")
+        return RHI::RHIBlendOp::ReverseSubtract;
+    if (lowered == "min")
+        return RHI::RHIBlendOp::Min;
+    if (lowered == "max")
+        return RHI::RHIBlendOp::Max;
+    return std::nullopt;
+}
+
+const char* ToString(const RHI::RHIColorWriteMask mask)
+{
+    switch (mask)
+    {
+    case RHI::RHIColorWriteMask::None: return "None";
+    case RHI::RHIColorWriteMask::Red: return "Red";
+    case RHI::RHIColorWriteMask::Green: return "Green";
+    case RHI::RHIColorWriteMask::Blue: return "Blue";
+    case RHI::RHIColorWriteMask::Alpha: return "Alpha";
+    case RHI::RHIColorWriteMask::All: return "All";
+    default: return "All";
+    }
+}
+
+std::optional<RHI::RHIColorWriteMask> ParseColorWriteMask(const std::string& value)
+{
+    const auto lowered = ToLower(value);
+    if (lowered == "none")
+        return RHI::RHIColorWriteMask::None;
+    if (lowered == "red")
+        return RHI::RHIColorWriteMask::Red;
+    if (lowered == "green")
+        return RHI::RHIColorWriteMask::Green;
+    if (lowered == "blue")
+        return RHI::RHIColorWriteMask::Blue;
+    if (lowered == "alpha")
+        return RHI::RHIColorWriteMask::Alpha;
+    if (lowered == "all")
+        return RHI::RHIColorWriteMask::All;
     return std::nullopt;
 }
 
@@ -455,6 +625,7 @@ void SerializeReflection(std::string& text, const Resources::ShaderReflection& r
         text += "CBUFFER_BEGIN\n";
         AppendLine(text, "NAME", buffer.name);
         AppendLine(text, "STAGE", ToString(buffer.stage));
+        AppendLine(text, "STAGE_MASK", std::to_string(static_cast<uint32_t>(buffer.stageMask)));
         AppendLine(text, "SPACE", std::to_string(buffer.bindingSpace));
         AppendLine(text, "BINDING", std::to_string(buffer.bindingIndex));
         AppendLine(text, "BYTE_SIZE", std::to_string(buffer.byteSize));
@@ -478,6 +649,7 @@ void SerializeReflection(std::string& text, const Resources::ShaderReflection& r
         AppendLine(text, "TYPE", ToString(property.type));
         AppendLine(text, "KIND", ToString(property.kind));
         AppendLine(text, "STAGE", ToString(property.stage));
+        AppendLine(text, "STAGE_MASK", std::to_string(static_cast<uint32_t>(property.stageMask)));
         AppendLine(text, "SPACE", std::to_string(property.bindingSpace));
         AppendLine(text, "BINDING", std::to_string(property.bindingIndex));
         AppendLine(text, "LOCATION", std::to_string(property.location));
@@ -487,6 +659,32 @@ void SerializeReflection(std::string& text, const Resources::ShaderReflection& r
         AppendLine(text, "PARENT_CBUFFER", property.parentConstantBuffer);
         text += "PROPERTY_END\n";
     }
+}
+
+void SerializeShaderLabPassState(std::string& text, const ShaderLab::ShaderLabPassState& state)
+{
+    text += "SHADERLAB_PASS_STATE_BEGIN\n";
+    AppendLine(text, "CULL", ShaderLab::ToString(state.cullMode));
+    AppendLine(text, "DEPTH_WRITE", state.depthWrite ? "true" : "false");
+    AppendLine(text, "DEPTH_COMPARE", ToString(state.depthCompare));
+    AppendLine(text, "BLEND_ENABLED", state.blend.enabled ? "true" : "false");
+    AppendLine(text, "BLEND_COLOR_WRITE", state.blend.colorWrite ? "true" : "false");
+    AppendLine(text, "ALPHA_TO_COVERAGE", state.blend.alphaToCoverageEnable ? "true" : "false");
+    AppendLine(text, "INDEPENDENT_BLEND", state.blend.independentBlendEnable ? "true" : "false");
+    for (const auto& target : state.blend.renderTargets)
+    {
+        text += "BLEND_TARGET_BEGIN\n";
+        AppendLine(text, "BLEND_ENABLE", target.blendEnable ? "true" : "false");
+        AppendLine(text, "SRC_COLOR", ToString(target.srcColor));
+        AppendLine(text, "DST_COLOR", ToString(target.dstColor));
+        AppendLine(text, "COLOR_OP", ToString(target.colorOp));
+        AppendLine(text, "SRC_ALPHA", ToString(target.srcAlpha));
+        AppendLine(text, "DST_ALPHA", ToString(target.dstAlpha));
+        AppendLine(text, "ALPHA_OP", ToString(target.alphaOp));
+        AppendLine(text, "COLOR_WRITE_MASK", ToString(target.colorWriteMask));
+        text += "BLEND_TARGET_END\n";
+    }
+    text += "SHADERLAB_PASS_STATE_END\n";
 }
 
 bool ApplyStageField(ShaderArtifactStage& stage, const std::string& key, const std::string& value)
@@ -512,6 +710,13 @@ bool ApplyStageField(ShaderArtifactStage& stage, const std::string& key, const s
     else if (key == "PROFILE")
     {
         stage.targetProfile = value;
+    }
+    else if (key == "KEYWORD_HASH")
+    {
+        const auto parsed = ParseNumber<uint64_t>(value);
+        if (!parsed.has_value())
+            return false;
+        stage.keywordHash = *parsed;
     }
     else if (key == "STATUS")
     {
@@ -561,6 +766,15 @@ bool ApplyConstantBufferField(Resources::ShaderConstantBufferDesc& buffer, const
         if (!parsed.has_value())
             return false;
         buffer.stage = *parsed;
+        if (buffer.stageMask == RHI::ShaderStageMask::Vertex)
+            buffer.stageMask = static_cast<RHI::ShaderStageMask>(ToStageMaskValue(buffer.stage));
+    }
+    else if (key == "STAGE_MASK")
+    {
+        const auto parsed = ParseNumber<uint32_t>(value);
+        if (!parsed.has_value())
+            return false;
+        buffer.stageMask = static_cast<RHI::ShaderStageMask>(*parsed);
     }
     else if (key == "SPACE")
     {
@@ -645,6 +859,15 @@ bool ApplyPropertyField(Resources::ShaderPropertyDesc& property, const std::stri
         if (!parsed.has_value())
             return false;
         property.stage = *parsed;
+        if (property.stageMask == RHI::ShaderStageMask::Vertex)
+            property.stageMask = static_cast<RHI::ShaderStageMask>(ToStageMaskValue(property.stage));
+    }
+    else if (key == "STAGE_MASK")
+    {
+        const auto parsed = ParseNumber<uint32_t>(value);
+        if (!parsed.has_value())
+            return false;
+        property.stageMask = static_cast<RHI::ShaderStageMask>(*parsed);
     }
     else if (key == "SPACE")
     {
@@ -692,6 +915,103 @@ bool ApplyPropertyField(Resources::ShaderPropertyDesc& property, const std::stri
         property.parentConstantBuffer = value;
     return true;
 }
+
+bool ApplyShaderLabPassStateField(ShaderLab::ShaderLabPassState& state, const std::string& key, const std::string& value)
+{
+    if (key == "CULL")
+    {
+        const auto parsed = ParseShaderLabCullMode(value);
+        if (!parsed.has_value())
+            return false;
+        state.cullMode = *parsed;
+    }
+    else if (key == "DEPTH_WRITE")
+    {
+        state.depthWrite = value == "true" || value == "1";
+    }
+    else if (key == "DEPTH_COMPARE")
+    {
+        const auto parsed = ParseCompareOp(value);
+        if (!parsed.has_value())
+            return false;
+        state.depthCompare = *parsed;
+    }
+    else if (key == "BLEND_ENABLED")
+    {
+        state.blend.enabled = value == "true" || value == "1";
+    }
+    else if (key == "BLEND_COLOR_WRITE")
+    {
+        state.blend.colorWrite = value == "true" || value == "1";
+    }
+    else if (key == "ALPHA_TO_COVERAGE")
+    {
+        state.blend.alphaToCoverageEnable = value == "true" || value == "1";
+    }
+    else if (key == "INDEPENDENT_BLEND")
+    {
+        state.blend.independentBlendEnable = value == "true" || value == "1";
+    }
+    return true;
+}
+
+bool ApplyBlendTargetField(RHI::RHIRenderTargetBlendStateDesc& target, const std::string& key, const std::string& value)
+{
+    if (key == "BLEND_ENABLE")
+    {
+        target.blendEnable = value == "true" || value == "1";
+    }
+    else if (key == "SRC_COLOR")
+    {
+        const auto parsed = ParseBlendFactor(value);
+        if (!parsed.has_value())
+            return false;
+        target.srcColor = *parsed;
+    }
+    else if (key == "DST_COLOR")
+    {
+        const auto parsed = ParseBlendFactor(value);
+        if (!parsed.has_value())
+            return false;
+        target.dstColor = *parsed;
+    }
+    else if (key == "COLOR_OP")
+    {
+        const auto parsed = ParseBlendOp(value);
+        if (!parsed.has_value())
+            return false;
+        target.colorOp = *parsed;
+    }
+    else if (key == "SRC_ALPHA")
+    {
+        const auto parsed = ParseBlendFactor(value);
+        if (!parsed.has_value())
+            return false;
+        target.srcAlpha = *parsed;
+    }
+    else if (key == "DST_ALPHA")
+    {
+        const auto parsed = ParseBlendFactor(value);
+        if (!parsed.has_value())
+            return false;
+        target.dstAlpha = *parsed;
+    }
+    else if (key == "ALPHA_OP")
+    {
+        const auto parsed = ParseBlendOp(value);
+        if (!parsed.has_value())
+            return false;
+        target.alphaOp = *parsed;
+    }
+    else if (key == "COLOR_WRITE_MASK")
+    {
+        const auto parsed = ParseColorWriteMask(value);
+        if (!parsed.has_value())
+            return false;
+        target.colorWriteMask = *parsed;
+    }
+    return true;
+}
 }
 
 std::vector<uint8_t> SerializeShaderArtifact(const ShaderArtifact& artifact)
@@ -701,6 +1021,10 @@ std::vector<uint8_t> SerializeShaderArtifact(const ShaderArtifact& artifact)
     AppendLine(text, "SOURCE", artifact.sourcePath);
     AppendLine(text, "SUB_ASSET", artifact.subAssetKey);
     AppendLine(text, "TARGET_PLATFORM", artifact.targetPlatform);
+    if (!artifact.shaderLabLightMode.empty())
+        AppendLine(text, "SHADERLAB_LIGHT_MODE", artifact.shaderLabLightMode);
+    if (artifact.shaderLabPassState.has_value())
+        SerializeShaderLabPassState(text, *artifact.shaderLabPassState);
     SerializeReflection(text, artifact.reflection);
 
     for (const auto& stage : artifact.stages)
@@ -710,6 +1034,7 @@ std::vector<uint8_t> SerializeShaderArtifact(const ShaderArtifact& artifact)
         AppendLine(text, "TARGET", ToString(stage.targetPlatform));
         AppendLine(text, "ENTRY", stage.entryPoint);
         AppendLine(text, "PROFILE", stage.targetProfile);
+        AppendLine(text, "KEYWORD_HASH", std::to_string(stage.keywordHash));
         AppendLine(text, "STATUS", ToString(stage.output.status));
         AppendLine(text, "CACHE_KEY", stage.output.cacheKey);
         AppendLine(text, "ARTIFACT_PATH", stage.output.artifactPath);
@@ -742,10 +1067,14 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
     bool inConstantBuffer = false;
     bool inConstantBufferMember = false;
     bool inProperty = false;
+    bool inShaderLabPassState = false;
+    bool inBlendTarget = false;
     ShaderArtifactStage currentStage;
     Resources::ShaderConstantBufferDesc currentConstantBuffer;
     Resources::ShaderCBufferMemberDesc currentConstantBufferMember;
     Resources::ShaderPropertyDesc currentProperty;
+    ShaderLab::ShaderLabPassState currentShaderLabPassState;
+    RHI::RHIRenderTargetBlendStateDesc currentBlendTarget;
 
     std::stringstream stream {std::string(text)};
     std::string line;
@@ -759,7 +1088,7 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
 
         if (line == "STAGE_BEGIN")
         {
-            if (inStage || inConstantBuffer || inConstantBufferMember || inProperty)
+            if (inStage || inConstantBuffer || inConstantBufferMember || inProperty || inShaderLabPassState || inBlendTarget)
                 return std::nullopt;
             inStage = true;
             currentStage = {};
@@ -778,7 +1107,7 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
 
         if (line == "CBUFFER_BEGIN")
         {
-            if (inStage || inConstantBuffer || inConstantBufferMember || inProperty)
+            if (inStage || inConstantBuffer || inConstantBufferMember || inProperty || inShaderLabPassState || inBlendTarget)
                 return std::nullopt;
             inConstantBuffer = true;
             currentConstantBuffer = {};
@@ -816,7 +1145,7 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
 
         if (line == "PROPERTY_BEGIN")
         {
-            if (inStage || inConstantBuffer || inConstantBufferMember || inProperty)
+            if (inStage || inConstantBuffer || inConstantBufferMember || inProperty || inShaderLabPassState || inBlendTarget)
                 return std::nullopt;
             inProperty = true;
             currentProperty = {};
@@ -830,6 +1159,44 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
             artifact.reflection.properties.push_back(std::move(currentProperty));
             currentProperty = {};
             inProperty = false;
+            continue;
+        }
+
+        if (line == "SHADERLAB_PASS_STATE_BEGIN")
+        {
+            if (inStage || inConstantBuffer || inConstantBufferMember || inProperty || inShaderLabPassState || inBlendTarget)
+                return std::nullopt;
+            inShaderLabPassState = true;
+            currentShaderLabPassState = {};
+            continue;
+        }
+
+        if (line == "SHADERLAB_PASS_STATE_END")
+        {
+            if (!inShaderLabPassState || inBlendTarget)
+                return std::nullopt;
+            artifact.shaderLabPassState = std::move(currentShaderLabPassState);
+            currentShaderLabPassState = {};
+            inShaderLabPassState = false;
+            continue;
+        }
+
+        if (line == "BLEND_TARGET_BEGIN")
+        {
+            if (!inShaderLabPassState || inBlendTarget)
+                return std::nullopt;
+            inBlendTarget = true;
+            currentBlendTarget = {};
+            continue;
+        }
+
+        if (line == "BLEND_TARGET_END")
+        {
+            if (!inBlendTarget)
+                return std::nullopt;
+            currentShaderLabPassState.blend.renderTargets.push_back(currentBlendTarget);
+            currentBlendTarget = {};
+            inBlendTarget = false;
             continue;
         }
 
@@ -873,12 +1240,28 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
             continue;
         }
 
+        if (inBlendTarget)
+        {
+            if (!ApplyBlendTargetField(currentBlendTarget, key, value))
+                return std::nullopt;
+            continue;
+        }
+
+        if (inShaderLabPassState)
+        {
+            if (!ApplyShaderLabPassStateField(currentShaderLabPassState, key, value))
+                return std::nullopt;
+            continue;
+        }
+
         if (key == "SOURCE")
             artifact.sourcePath = value;
         else if (key == "SUB_ASSET")
             artifact.subAssetKey = value;
         else if (key == "TARGET_PLATFORM")
             artifact.targetPlatform = value;
+        else if (key == "SHADERLAB_LIGHT_MODE")
+            artifact.shaderLabLightMode = value;
     }
 
     if (!sawHeader ||
@@ -886,6 +1269,8 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(std::string_view text)
         inConstantBuffer ||
         inConstantBufferMember ||
         inProperty ||
+        inShaderLabPassState ||
+        inBlendTarget ||
         artifact.sourcePath.empty() ||
         artifact.subAssetKey.empty())
     {
@@ -910,6 +1295,14 @@ std::optional<ShaderArtifact> DeserializeShaderArtifact(const std::vector<uint8_
 
 std::optional<ShaderArtifact> LoadShaderArtifact(const std::filesystem::path& path)
 {
+    const auto portableArtifactPath =
+        NLS::Core::Assets::TryMakePortableContentArtifactPath(path.generic_string());
+    if (!portableArtifactPath.empty() &&
+        !NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath))
+    {
+        return std::nullopt;
+    }
+
     std::ifstream input(path, std::ios::binary);
     if (!input)
         return std::nullopt;
@@ -972,7 +1365,8 @@ void AppendGlslShaderArtifactStages(ShaderArtifact& artifact)
             [&glslStage](const ShaderArtifactStage& existing)
             {
                 return existing.stage == glslStage.stage &&
-                    existing.targetPlatform == glslStage.targetPlatform;
+                    existing.targetPlatform == glslStage.targetPlatform &&
+                    existing.keywordHash == glslStage.keywordHash;
             });
         if (!exists)
             artifact.stages.push_back(std::move(glslStage));

@@ -1,9 +1,9 @@
 #include "Assets/AssetThumbnailService.h"
 
 #include "Assets/AssetMeta.h"
+#include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/EditorThumbnailPreviewRenderer.h"
-#include "Assets/EditorAssetManifestJson.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Image.h"
@@ -695,7 +695,7 @@ std::filesystem::path ResolveThumbnailArtifactPath(const AssetThumbnailRequest& 
 
     const auto rawPath = std::filesystem::path(request.artifactPath).lexically_normal();
     const auto sourceArtifactRoot = NLS::Core::Assets::NormalizeAssetPath(
-        request.projectRoot / "Library" / "Artifacts" / request.assetId.ToString());
+        request.projectRoot / "Library" / "Artifacts");
     if (sourceArtifactRoot.empty())
         return {};
 
@@ -731,7 +731,7 @@ bool IsMissingThumbnailArtifactPath(const AssetThumbnailRequest& request)
         return false;
 
     const auto sourceArtifactRoot = NLS::Core::Assets::NormalizeAssetPath(
-        request.projectRoot / "Library" / "Artifacts" / request.assetId.ToString());
+        request.projectRoot / "Library" / "Artifacts");
     if (sourceArtifactRoot.empty())
         return false;
 
@@ -803,19 +803,16 @@ void AddArtifactFreshnessInputs(
     AssetThumbnailRequest& request,
     const AssetBrowserItem& item)
 {
-    const bool usesArtifactManifest =
+    const bool usesArtifactDatabase =
         item.kind == AssetBrowserItemKind::GeneratedSubAsset ||
         item.type == AssetBrowserItemType::Model ||
         item.type == AssetBrowserItemType::Prefab;
-    if (usesArtifactManifest)
+    if (usesArtifactDatabase)
     {
-        const auto manifestPath =
-            request.projectRoot /
-            "Library" /
-            "Artifacts" /
-            request.assetId.ToString() /
-            "manifest.json";
-        request.freshnessInputs.push_back({"artifact-manifest", FileStamp(manifestPath)});
+        request.freshnessInputs.push_back({
+            "artifact-db",
+            FileStamp(GetProjectArtifactDatabasePath(request.projectRoot))
+        });
     }
 
     if (item.artifactPath.empty())
@@ -839,16 +836,8 @@ bool IsFileFreshnessInputStillCurrent(
     }
     if (input.name == "artifact-file")
         return input.stamp == FileStamp(ResolveThumbnailArtifactPath(request));
-    if (input.name == "artifact-manifest")
-    {
-        const auto manifestPath =
-            request.projectRoot /
-            "Library" /
-            "Artifacts" /
-            request.assetId.ToString() /
-            "manifest.json";
-        return input.stamp == FileStamp(manifestPath);
-    }
+    if (input.name == "artifact-db")
+        return input.stamp == FileStamp(GetProjectArtifactDatabasePath(request.projectRoot));
     return true;
 }
 
@@ -1138,44 +1127,6 @@ std::optional<std::filesystem::path> ResolveArtifactPathForPreview(
     return resolved;
 }
 
-std::optional<std::filesystem::path> ResolveSourceMaterialPathForPreview(
-    const AssetThumbnailRequest& request,
-    const std::string& artifactPath)
-{
-    if (artifactPath.empty())
-        return std::nullopt;
-
-    const auto rawPath = std::filesystem::path(artifactPath).lexically_normal();
-    if (rawPath.extension() != ".mat")
-        return std::nullopt;
-
-    const auto assetsRoot = NLS::Core::Assets::NormalizeAssetPath(request.projectRoot / "Assets");
-    if (assetsRoot.empty())
-        return std::nullopt;
-
-    const auto candidate = rawPath.is_absolute()
-        ? rawPath
-        : request.projectRoot / rawPath;
-    const auto normalized = NLS::Core::Assets::NormalizeAssetPath(candidate);
-    if (normalized.empty() ||
-        !IsPhysicalRegularFileInsideEditorAssetRoot(normalized, assetsRoot))
-    {
-        return std::nullopt;
-    }
-    return normalized;
-}
-
-std::optional<std::filesystem::path> ResolveSourceMaterialPathForPreview(
-    const AssetThumbnailRequest& request)
-{
-    if (auto resolved = ResolveSourceMaterialPathForPreview(request, request.artifactPath);
-        resolved.has_value())
-    {
-        return resolved;
-    }
-    return ResolveSourceMaterialPathForPreview(request, request.sourceAssetPath);
-}
-
 bool IsGpuPreviewClearFrame(
     const std::vector<uint8_t>& rgbaPixels,
     const uint32_t width,
@@ -1208,11 +1159,7 @@ bool PreviewArtifactPathResolvesForRequest(
     const AssetThumbnailRequest& request,
     const std::string& artifactPath)
 {
-    if (ResolveArtifactPathForPreview(request, artifactPath).has_value())
-        return true;
-
-    return request.kind == AssetThumbnailKind::MaterialSphere &&
-        ResolveSourceMaterialPathForPreview(request, artifactPath).has_value();
+    return ResolveArtifactPathForPreview(request, artifactPath).has_value();
 }
 
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadThumbnailArtifactManifest(
@@ -1221,21 +1168,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> LoadThumbnailArtifactManifest
     if (!request.assetId.IsValid())
         return std::nullopt;
 
-    const auto manifestPath =
-        request.projectRoot /
-        "Library" /
-        "Artifacts" /
-        request.assetId.ToString() /
-        "manifest.json";
-
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input)
-        return std::nullopt;
-
-    auto root = nlohmann::json::parse(input, nullptr, false);
-    if (root.is_discarded())
-        return std::nullopt;
-    return ParseArtifactManifestJson(root, true);
+    return LoadArtifactManifestFromProjectArtifactDB(request.projectRoot, request.assetId);
 }
 
 std::string GpuPreviewArtifactPathInvalidDiagnostic(const AssetThumbnailKind kind)
@@ -1259,12 +1192,13 @@ std::optional<std::string> ValidateGpuPreviewRequestArtifactPaths(const AssetThu
         return std::nullopt;
 
     if (!request.artifactPath.empty() &&
-        !ResolveArtifactPathForPreview(request, request.artifactPath).has_value() &&
-        !(request.kind == AssetThumbnailKind::MaterialSphere &&
-            ResolveSourceMaterialPathForPreview(request, request.artifactPath).has_value()))
+        !ResolveArtifactPathForPreview(request, request.artifactPath).has_value())
     {
         return GpuPreviewArtifactPathInvalidDiagnostic(request.kind);
     }
+
+    if (request.kind == AssetThumbnailKind::MaterialSphere && request.artifactPath.empty())
+        return "thumbnail-material-artifact-missing";
 
     const auto manifest = LoadThumbnailArtifactManifest(request);
     if (!manifest.has_value())
@@ -1379,6 +1313,16 @@ const NLS::Core::Assets::ImportedArtifact* FindThumbnailArtifactForItem(
 bool HasExtension(const std::filesystem::path& path, const char* extension)
 {
     return ToLowerAscii(path.extension().generic_string()) == extension;
+}
+
+bool IsNativeMeshArtifactPath(const std::filesystem::path& path)
+{
+    return NLS::Render::Assets::ReadMeshArtifactHeaderPreview(path, 64u * 1024u).has_value();
+}
+
+bool IsNativeTextureArtifactPath(const std::filesystem::path& path)
+{
+    return NLS::Render::Assets::ReadTextureArtifactHeaderPreview(path, 64u * 1024u).has_value();
 }
 
 bool IsRgba8TextureArtifactMipUsable(const NLS::Render::Assets::TextureArtifactData& artifact)
@@ -1500,7 +1444,7 @@ std::vector<std::filesystem::path> ResolveMeshArtifactPaths(
     std::vector<std::filesystem::path> paths;
     const auto directMeshPath = ResolveArtifactPathForPreview(request, request.artifactPath);
     const bool directPathIsMesh =
-        directMeshPath.has_value() && HasExtension(*directMeshPath, ".nmesh");
+        directMeshPath.has_value() && IsNativeMeshArtifactPath(*directMeshPath);
 
     const auto manifest = LoadThumbnailArtifactManifest(request);
     if (!manifest.has_value())
@@ -1985,7 +1929,7 @@ std::optional<std::filesystem::path> ResolveTexturePathFromMaterialPayload(
         return std::nullopt;
 
     auto texturePath = std::filesystem::path(textureReference->resourcePath).lexically_normal();
-    if (!HasExtension(texturePath, ".ntex") &&
+    if (texturePath.has_extension() &&
         !IsTextureThumbnailSourceExtension(texturePath))
     {
         return ResolveMaterialSourceTextureDependency(
@@ -2008,7 +1952,6 @@ std::optional<std::filesystem::path> ResolveTexturePathFromMaterialPayload(
                 request.projectRoot /
                 "Library" /
                 "Artifacts" /
-                request.assetId.ToString() /
                 texturePath);
         }
     }
@@ -2023,9 +1966,9 @@ std::optional<std::filesystem::path> ResolveTexturePathFromMaterialPayload(
             continue;
 
         const bool libraryArtifact =
-            HasExtension(normalized, ".ntex") &&
             !artifactRoot.empty() &&
-            IsPhysicalRegularFileInsideEditorAssetRoot(normalized, artifactRoot);
+            IsPhysicalRegularFileInsideEditorAssetRoot(normalized, artifactRoot) &&
+            IsNativeTextureArtifactPath(normalized);
         const auto editorAssetPath = ToEditorAssetPath(assetRoots, normalized);
         const bool sourceTexture =
             IsTextureThumbnailSourceExtension(normalized) &&
@@ -2062,7 +2005,7 @@ std::optional<std::filesystem::path> ResolveTextureSamplePathFromMaterialPayload
     if (!texturePath.has_value())
         return std::nullopt;
 
-    if (!HasExtension(*texturePath, ".ntex"))
+    if (!IsNativeTextureArtifactPath(*texturePath))
         return texturePath;
 
     const auto artifact = NLS::Render::Assets::LoadTextureArtifact(*texturePath);
@@ -2086,7 +2029,7 @@ DownsampledThumbnail RenderTexturePathThumbnail(
     const std::filesystem::path& texturePath,
     const uint32_t requestedSize)
 {
-    if (HasExtension(texturePath, ".ntex"))
+    if (IsNativeTextureArtifactPath(texturePath))
     {
         const auto artifact = NLS::Render::Assets::LoadTextureArtifact(texturePath);
         if (!artifact.has_value() ||
@@ -2148,7 +2091,7 @@ std::optional<ThumbnailTextureSampleData> LoadTextureSampleData(
     const uint32_t requestedSize)
 {
     ThumbnailTextureSampleData data;
-    if (HasExtension(texturePath, ".ntex"))
+    if (IsNativeTextureArtifactPath(texturePath))
     {
         const auto artifact = NLS::Render::Assets::LoadTextureArtifact(texturePath);
         if (!artifact.has_value() ||
@@ -2245,7 +2188,7 @@ MaterialPreviewStyle BuildMaterialPreviewStyle(
         texturePath.has_value())
     {
         style.albedoTexture = LoadTextureSampleData(*texturePath, requestedSize);
-        if (style.albedoTexture.has_value() && !HasExtension(*texturePath, ".ntex"))
+        if (style.albedoTexture.has_value() && !IsNativeTextureArtifactPath(*texturePath))
             style.albedoTexture->flipV = ShouldFlipMaterialSourceTextureVertically(request);
     }
     return style;
@@ -2301,30 +2244,11 @@ std::vector<MaterialPreviewArtifact> ResolveMaterialArtifactPaths(
             paths.push_back({*resolved, request.subAssetKey});
             return paths;
         }
-        if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request, request.artifactPath);
-            sourceMaterial.has_value())
-        {
-            paths.push_back({*sourceMaterial, request.subAssetKey});
-            return paths;
-        }
-        if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request);
-            sourceMaterial.has_value())
-        {
-            paths.push_back({*sourceMaterial, request.subAssetKey});
-            return paths;
-        }
     }
 
     const auto manifest = LoadThumbnailArtifactManifest(request);
     if (!manifest.has_value())
-    {
-        if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request);
-            sourceMaterial.has_value())
-        {
-            paths.push_back({*sourceMaterial, request.subAssetKey});
-        }
         return paths;
-    }
 
     for (const auto& artifact : manifest->subAssets)
     {
@@ -2335,19 +2259,6 @@ std::vector<MaterialPreviewArtifact> ResolveMaterialArtifactPaths(
             resolved.has_value())
         {
             paths.push_back({*resolved, artifact.subAssetKey});
-        }
-        else if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request, artifact.artifactPath);
-            sourceMaterial.has_value())
-        {
-            paths.push_back({*sourceMaterial, artifact.subAssetKey});
-        }
-    }
-    if (paths.empty())
-    {
-        if (auto sourceMaterial = ResolveSourceMaterialPathForPreview(request);
-            sourceMaterial.has_value())
-        {
-            paths.push_back({*sourceMaterial, request.subAssetKey});
         }
     }
     return paths;
@@ -2992,10 +2903,6 @@ AssetThumbnailServiceResult GenerateModelThumbnail(
     const auto meshPaths = ResolveMeshArtifactPaths(request);
     if (meshPaths.empty())
         return GenerateMeshBackedThumbnail(request, "thumbnail-model-mesh-artifact-missing", cancelToken);
-    if (meshPaths.size() > 1u || !HasExtension(meshPaths.front(), ".nmesh"))
-    {
-        return GenerateMeshSetThumbnail(request, meshPaths, "thumbnail-model-mesh-artifact-missing", cancelToken);
-    }
     return GenerateMeshSetThumbnail(request, meshPaths, "thumbnail-model-mesh-artifact-missing", cancelToken);
 }
 

@@ -5,8 +5,15 @@
 TEST(PathParserTests, TreatsNativeMaterialArtifactsAsMaterialFiles)
 {
     EXPECT_EQ(
-        NLS::Utils::PathParser::GetFileType("Assets/Materials/Hero.nmat"),
+        NLS::Utils::PathParser::GetFileType("Assets/Materials/Hero.mat"),
         NLS::Utils::PathParser::EFileType::MATERIAL);
+}
+
+TEST(PathParserTests, TreatsShaderLabAssetsAsShaderFiles)
+{
+    EXPECT_EQ(
+        NLS::Utils::PathParser::GetFileType("Assets/Shaders/ShaderLab/Hero.shader"),
+        NLS::Utils::PathParser::EFileType::SHADER);
 }
 
 TEST(PathParserTests, ClassifiesAssetBrowserProjectExtensionsConsistently)
@@ -27,11 +34,11 @@ TEST(PathParserTests, ClassifiesAssetBrowserProjectExtensionsConsistently)
         {"Assets/Textures/Hero.bmp", FileType::TEXTURE},
         {"Assets/Textures/Hero.dds", FileType::TEXTURE},
         {"Assets/Shaders/Hero.shader", FileType::SHADER},
-        {"Assets/Scenes/Hero.nscene", FileType::SCENE},
+        {"Assets/Scenes/Hero.scene", FileType::SCENE},
         {"Assets/Scenes/Hero.objectgraph.json", FileType::SCENE},
         {"Assets/Scripts/Hero.cs", FileType::SCRIPT},
         {"Assets/Scripts/Hero.py", FileType::SCRIPT},
-        {"Assets/Materials/Hero.nmat", FileType::MATERIAL}
+        {"Assets/Materials/Hero.mat", FileType::MATERIAL}
     };
 
     for (const auto& testCase : cases)

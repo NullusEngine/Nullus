@@ -52,10 +52,11 @@
 #include "Panels/SceneView.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetDatabaseFacade.h"
+#include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/EditorThumbnailPreviewRenderer.h"
-#include "Assets/EditorAssetManifestJson.h"
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/EditorAssetPath.h"
+#include "Assets/ArtifactManifest.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/AssetImporterFacade.h"
 #include "Assets/EditorAssetDatabase.h"
@@ -581,28 +582,21 @@ std::string AssetBrowserFileStamp(const std::filesystem::path& path)
 }
 
 bool ManifestDependencyStampsAreCurrent(
-	const nlohmann::json& manifest,
+	const NLS::Core::Assets::ArtifactManifest& manifest,
 	const std::string& projectAssetsFolder,
 	const std::string& absolutePath)
 {
 	const auto meta = NLS::Core::Assets::AssetMeta::Load(
 		NLS::Core::Assets::GetAssetMetaPath(absolutePath));
-	const auto importerId = NLS::Editor::Assets::JsonString(manifest, "importerId");
-	const auto importerVersion = NLS::Editor::Assets::JsonUInt(manifest, "importerVersion");
-	const auto targetPlatform = NLS::Editor::Assets::JsonString(manifest, "targetPlatform");
 	if (!meta.has_value() ||
-		!importerId.has_value() ||
-		!importerVersion.has_value() ||
-		!targetPlatform.has_value() ||
-		*importerId != meta->importerId ||
-		*importerVersion != meta->importerVersion ||
-		*targetPlatform != "editor")
+		manifest.importerId != meta->importerId ||
+		manifest.importerVersion != meta->importerVersion ||
+		manifest.targetPlatform != "editor")
 	{
 		return false;
 	}
 
-	const auto dependencies = manifest.find("dependencies");
-	if (dependencies == manifest.end() || !dependencies->is_array())
+	if (manifest.dependencies.empty())
 		return false;
 
 	const auto assetPath = NLS::Editor::Assets::NormalizeEditorAssetPath(
@@ -614,35 +608,26 @@ bool ManifestDependencyStampsAreCurrent(
 
 	bool checkedAsset = false;
 	bool checkedMeta = false;
-	for (const auto& dependency : *dependencies)
+	for (const auto& dependency : manifest.dependencies)
 	{
-		if (!dependency.is_object())
-			continue;
-
-		const auto kind = NLS::Editor::Assets::JsonStringOrDefault(dependency, "kind");
-		const auto valueText = NLS::Editor::Assets::JsonStringOrDefault(dependency, "value");
-		const auto stamp = NLS::Editor::Assets::JsonStringOrDefault(dependency, "hashOrVersion");
-		if (!kind.has_value() || !valueText.has_value() || !stamp.has_value())
-			return false;
-
-		const auto value = NLS::Editor::Assets::NormalizeEditorAssetPath(*valueText);
-		if (*kind == "source-file-hash")
+		const auto value = NLS::Editor::Assets::NormalizeEditorAssetPath(dependency.value);
+		if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::SourceFileHash)
 		{
 			if (value == assetPath)
 				checkedAsset = true;
 
 			const auto dependencyPath = NLS::Editor::Assets::ResolveEditorManifestDependencyPath(projectRoot, value);
-			if (!dependencyPath.has_value() || *stamp != AssetBrowserFileStamp(*dependencyPath))
+			if (!dependencyPath.has_value() || dependency.hashOrVersion != AssetBrowserFileStamp(*dependencyPath))
 				return false;
 			continue;
 		}
-		if (*kind == "path-to-guid-mapping")
+		if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping)
 		{
 			if (value == metaPath)
 				checkedMeta = true;
 
 			const auto dependencyPath = NLS::Editor::Assets::ResolveEditorManifestDependencyPath(projectRoot, value);
-			if (!dependencyPath.has_value() || *stamp != AssetBrowserFileStamp(*dependencyPath))
+			if (!dependencyPath.has_value() || dependency.hashOrVersion != AssetBrowserFileStamp(*dependencyPath))
 				return false;
 			continue;
 		}
@@ -653,13 +638,14 @@ bool ManifestDependencyStampsAreCurrent(
 
 std::filesystem::path ResolveArtifactPathForManifest(
 	const std::filesystem::path& projectRoot,
-	const nlohmann::json& subAsset)
+	const NLS::Core::Assets::ImportedArtifact& subAsset)
 {
-	const auto artifactPathText = NLS::Editor::Assets::JsonStringOrDefault(subAsset, "artifactPath");
-	if (!artifactPathText.has_value() || artifactPathText->empty())
+	if (subAsset.artifactPath.empty())
+		return {};
+	if (!NLS::Core::Assets::IsContentStorageArtifactPath(subAsset.artifactPath))
 		return {};
 
-	const auto artifactPath = std::filesystem::path(*artifactPathText);
+	const auto artifactPath = std::filesystem::path(subAsset.artifactPath);
 	std::vector<std::filesystem::path> candidates;
 	if (artifactPath.is_absolute())
 	{
@@ -711,52 +697,41 @@ std::filesystem::path ResolveArtifactPathForManifest(
 
 std::optional<std::string> SelectManifestPrefabSubAssetKeyForDragPayload(
 	const std::filesystem::path& projectRoot,
-	const nlohmann::json& manifest)
+	const NLS::Core::Assets::ArtifactManifest& manifest)
 {
-	const auto subAssets = manifest.find("subAssets");
-	if (subAssets == manifest.end() || !subAssets->is_array())
+	if (manifest.subAssets.empty())
 		return std::nullopt;
 
-	auto isUsablePrefabSubAsset = [&](const nlohmann::json& subAsset, const std::string* expectedKey)
+	auto isUsablePrefabSubAsset = [&](const NLS::Core::Assets::ImportedArtifact& subAsset, const std::string* expectedKey)
 	{
-		if (!subAsset.is_object())
+		if (subAsset.subAssetKey.empty())
+			return false;
+		if (expectedKey != nullptr && subAsset.subAssetKey != *expectedKey)
 			return false;
 
-		const auto subAssetKeyText = NLS::Editor::Assets::JsonString(subAsset, "subAssetKey");
-		if (!subAssetKeyText.has_value() || subAssetKeyText->empty())
+		if (subAsset.artifactType != NLS::Core::Assets::ArtifactType::Prefab)
 			return false;
-		if (expectedKey != nullptr && *subAssetKeyText != *expectedKey)
-			return false;
-
-		const auto artifactTypeText = NLS::Editor::Assets::JsonStringOrDefault(subAsset, "artifactType");
-		if (!artifactTypeText.has_value() ||
-			(*artifactTypeText != "Prefab" && *artifactTypeText != "prefab"))
-		{
-			return false;
-		}
 
 		const auto resolvedArtifactPath = ResolveArtifactPathForManifest(projectRoot, subAsset);
 		return !resolvedArtifactPath.empty() && std::filesystem::is_regular_file(resolvedArtifactPath);
 	};
 
-	const auto primarySubAssetKey = NLS::Editor::Assets::JsonString(manifest, "primarySubAssetKey");
-	if (primarySubAssetKey.has_value() && !primarySubAssetKey->empty())
+	if (!manifest.primarySubAssetKey.empty())
 	{
-		for (const auto& subAsset : *subAssets)
+		for (const auto& subAsset : manifest.subAssets)
 		{
-			if (isUsablePrefabSubAsset(subAsset, &*primarySubAssetKey))
-				return primarySubAssetKey;
+			if (isUsablePrefabSubAsset(subAsset, &manifest.primarySubAssetKey))
+				return manifest.primarySubAssetKey;
 		}
 	}
 
-	for (const auto& subAsset : *subAssets)
+	for (const auto& subAsset : manifest.subAssets)
 	{
 		if (!isUsablePrefabSubAsset(subAsset, nullptr))
 			continue;
 
-		const auto subAssetKeyText = NLS::Editor::Assets::JsonString(subAsset, "subAssetKey");
-		if (subAssetKeyText.has_value() && !subAssetKeyText->empty())
-			return subAssetKeyText;
+		if (!subAsset.subAssetKey.empty())
+			return subAsset.subAssetKey;
 	}
 
 	return std::nullopt;
@@ -997,102 +972,64 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 		artifactType = NLS::Core::Assets::ArtifactType::Shader;
 	}
 
-	const auto manifestPath =
-		ProjectRootFromAssetsFolder(projectAssetsFolder) / "Library" / "Artifacts" / meta->id.ToString() / "manifest.json";
-	if (std::filesystem::exists(manifestPath))
+	const auto projectRoot = ProjectRootFromAssetsFolder(projectAssetsFolder);
+	const auto manifest = NLS::Editor::Assets::LoadArtifactManifestFromProjectArtifactDB(projectRoot, meta->id);
+	if (manifest.has_value())
 	{
-		std::ifstream input(manifestPath, std::ios::binary);
-		const auto manifest = nlohmann::json::parse(input, nullptr, false);
-		if (manifest.is_object())
+		const auto currentManifest = ManifestDependencyStampsAreCurrent(
+			*manifest,
+			projectAssetsFolder,
+			absolutePath);
+		if (fileType == Utils::PathParser::EFileType::PREFAB ||
+			fileType == Utils::PathParser::EFileType::MATERIAL ||
+			fileType == Utils::PathParser::EFileType::TEXTURE ||
+			fileType == Utils::PathParser::EFileType::SHADER)
 		{
-			const auto currentManifest = ManifestDependencyStampsAreCurrent(
-				manifest,
-				projectAssetsFolder,
-				absolutePath);
-			if (fileType == Utils::PathParser::EFileType::PREFAB ||
-				fileType == Utils::PathParser::EFileType::MATERIAL ||
-				fileType == Utils::PathParser::EFileType::TEXTURE ||
-				fileType == Utils::PathParser::EFileType::SHADER)
+			if (!manifest->primarySubAssetKey.empty())
+				subAssetKey = manifest->primarySubAssetKey;
+		}
+		else if (fileType == Utils::PathParser::EFileType::MODEL)
+		{
+			if (auto manifestPrefabKey = SelectManifestPrefabSubAssetKeyForDragPayload(projectRoot, *manifest);
+				manifestPrefabKey.has_value())
 			{
-				auto manifestPrimaryKey = JsonString(manifest, "primarySubAssetKey");
-				if (manifestPrimaryKey.has_value() && !manifestPrimaryKey->empty())
-					subAssetKey = std::move(*manifestPrimaryKey);
+				subAssetKey = std::move(*manifestPrefabKey);
 			}
-			else if (fileType == Utils::PathParser::EFileType::MODEL)
+		}
+
+		for (const auto& subAsset : manifest->subAssets)
+		{
+			if (subAsset.subAssetKey != subAssetKey)
+				continue;
+
+			const auto resolvedArtifactPath = ResolveArtifactPathForManifest(projectRoot, subAsset);
+			if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
+				continue;
+
+			artifactType = subAsset.artifactType;
+			imported = currentManifest && artifactType != NLS::Core::Assets::ArtifactType::Unknown;
+			previewPrefabReady =
+				imported &&
+				artifactType == NLS::Core::Assets::ArtifactType::Prefab;
+			break;
+		}
+
+		if (previewPrefabReady && fileType == Utils::PathParser::EFileType::MODEL)
+		{
+			for (const auto& subAsset : manifest->subAssets)
 			{
-				if (auto manifestPrefabKey = SelectManifestPrefabSubAssetKeyForDragPayload(
-					ProjectRootFromAssetsFolder(projectAssetsFolder),
-					manifest);
-					manifestPrefabKey.has_value())
+				const bool rendererDependency =
+					subAsset.artifactType == NLS::Core::Assets::ArtifactType::Mesh ||
+					subAsset.artifactType == NLS::Core::Assets::ArtifactType::Material ||
+					subAsset.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+				if (!rendererDependency)
+					continue;
+
+				const auto resolvedArtifactPath = ResolveArtifactPathForManifest(projectRoot, subAsset);
+				if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
 				{
-					subAssetKey = std::move(*manifestPrefabKey);
-				}
-			}
-
-			if (const auto subAssets = manifest.find("subAssets");
-				subAssets != manifest.end() && subAssets->is_array())
-			{
-				for (const auto& subAsset : *subAssets)
-				{
-					const auto subAssetKeyText = JsonString(subAsset, "subAssetKey");
-					if (!subAsset.is_object() ||
-						!subAssetKeyText.has_value() ||
-						*subAssetKeyText != subAssetKey)
-					{
-						continue;
-					}
-
-					const auto resolvedArtifactPath =
-						ResolveArtifactPathForManifest(ProjectRootFromAssetsFolder(projectAssetsFolder), subAsset);
-					if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
-						continue;
-
-					const auto artifactTypeText = JsonStringOrDefault(subAsset, "artifactType");
-					if (!artifactTypeText.has_value())
-						continue;
-					if (artifactTypeText == "Prefab" || artifactTypeText == "prefab")
-						artifactType = NLS::Core::Assets::ArtifactType::Prefab;
-					else if (artifactTypeText == "Material" || artifactTypeText == "material")
-						artifactType = NLS::Core::Assets::ArtifactType::Material;
-					else if (artifactTypeText == "Texture" || artifactTypeText == "texture")
-						artifactType = NLS::Core::Assets::ArtifactType::Texture;
-					else if (artifactTypeText == "Mesh" || artifactTypeText == "mesh")
-						artifactType = NLS::Core::Assets::ArtifactType::Mesh;
-					else if (artifactTypeText == "Model" || artifactTypeText == "model")
-						artifactType = NLS::Core::Assets::ArtifactType::Model;
-					imported = currentManifest && artifactType != NLS::Core::Assets::ArtifactType::Unknown;
-					previewPrefabReady =
-						imported &&
-						artifactType == NLS::Core::Assets::ArtifactType::Prefab;
+					previewPrefabReady = false;
 					break;
-				}
-
-				if (previewPrefabReady && fileType == Utils::PathParser::EFileType::MODEL)
-				{
-					for (const auto& subAsset : *subAssets)
-					{
-						const auto artifactTypeText = JsonStringOrDefault(subAsset, "artifactType");
-						if (!artifactTypeText.has_value())
-							continue;
-
-						const bool rendererDependency =
-							artifactTypeText == "Mesh" ||
-							artifactTypeText == "mesh" ||
-							artifactTypeText == "Material" ||
-							artifactTypeText == "material" ||
-							artifactTypeText == "Texture" ||
-							artifactTypeText == "texture";
-						if (!rendererDependency)
-							continue;
-
-						const auto resolvedArtifactPath =
-							ResolveArtifactPathForManifest(ProjectRootFromAssetsFolder(projectAssetsFolder), subAsset);
-						if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
-						{
-							previewPrefabReady = false;
-							break;
-						}
-					}
 				}
 			}
 		}
@@ -1279,13 +1216,13 @@ public:
 			auto& createStandardShaderMenu = createShaderMenu.CreateWidget<MenuList>("Standard template");
 			auto& createStandardPBRShaderMenu = createShaderMenu.CreateWidget<MenuList>("Standard PBR template");
 			auto& createUnlitShaderMenu = createShaderMenu.CreateWidget<MenuList>("Unlit template");
-			auto& createLambertShaderMenu = createShaderMenu.CreateWidget<MenuList>("Lambert template");
+			auto& createUnlitTextureShaderMenu = createShaderMenu.CreateWidget<MenuList>("Unlit Texture template");
 
 			auto& createEmptyMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Empty");
 			auto& createStandardMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Standard");
 			auto& createStandardPBRMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Standard PBR");
 			auto& createUnlitMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Unlit");
-			auto& createLambertMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Lambert");
+			auto& createDefaultSurfaceMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Default Surface");
 
 			auto& createFolder = createFolderMenu.CreateWidget<InputText>("");
 			auto& createScene = createSceneMenu.CreateWidget<InputText>("");
@@ -1294,24 +1231,24 @@ public:
 			auto& createStandardMaterial = createStandardMaterialMenu.CreateWidget<InputText>("");
 			auto& createStandardPBRMaterial = createStandardPBRMaterialMenu.CreateWidget<InputText>("");
 			auto& createUnlitMaterial = createUnlitMaterialMenu.CreateWidget<InputText>("");
-			auto& createLambertMaterial = createLambertMaterialMenu.CreateWidget<InputText>("");
+			auto& createDefaultSurfaceMaterial = createDefaultSurfaceMaterialMenu.CreateWidget<InputText>("");
 
 			auto& createStandardShader = createStandardShaderMenu.CreateWidget<InputText>("");
 			auto& createStandardPBRShader = createStandardPBRShaderMenu.CreateWidget<InputText>("");
 			auto& createUnlitShader = createUnlitShaderMenu.CreateWidget<InputText>("");
-			auto& createLambertShader = createLambertShaderMenu.CreateWidget<InputText>("");
+			auto& createUnlitTextureShader = createUnlitTextureShaderMenu.CreateWidget<InputText>("");
 
 			createFolderMenu.ClickedEvent += [&createFolder] { createFolder.content = ""; };
 			createSceneMenu.ClickedEvent += [&createScene] { createScene.content = ""; };
 			createStandardShaderMenu.ClickedEvent += [&createStandardShader] { createStandardShader.content = ""; };
 			createStandardPBRShaderMenu.ClickedEvent += [&createStandardPBRShader] { createStandardPBRShader.content = ""; };
 			createUnlitShaderMenu.ClickedEvent += [&createUnlitShader] { createUnlitShader.content = ""; };
-			createLambertShaderMenu.ClickedEvent += [&createLambertShader] { createLambertShader.content = ""; };
+			createUnlitTextureShaderMenu.ClickedEvent += [&createUnlitTextureShader] { createUnlitTextureShader.content = ""; };
 			createEmptyMaterialMenu.ClickedEvent += [&createEmptyMaterial] { createEmptyMaterial.content = ""; };
 			createStandardMaterialMenu.ClickedEvent += [&createStandardMaterial] { createStandardMaterial.content = ""; };
 			createStandardPBRMaterialMenu.ClickedEvent += [&createStandardPBRMaterial] { createStandardPBRMaterial.content = ""; };
 			createUnlitMaterialMenu.ClickedEvent += [&createUnlitMaterial] { createUnlitMaterial.content = ""; };
-			createLambertMaterialMenu.ClickedEvent += [&createLambertMaterial] { createLambertMaterial.content = ""; };
+			createDefaultSurfaceMaterialMenu.ClickedEvent += [&createDefaultSurfaceMaterial] { createDefaultSurfaceMaterial.content = ""; };
 
 			createFolder.EnterPressedEvent += [this](std::string newFolderName)
 			{
@@ -1361,12 +1298,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".hlsl";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Standard.hlsl", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -1378,12 +1315,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + Utils::PathParser::Separator() + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".hlsl";
+					finalPath = filePath + Utils::PathParser::Separator() + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders/Standard.hlsl", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders/ShaderLab/StandardPBR.shader", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -1395,29 +1332,29 @@ public:
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".hlsl";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Unlit.hlsl", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitColor.shader", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
 
-			createLambertShader.EnterPressedEvent += [this](std::string newShaderName)
+			createUnlitTextureShader.EnterPressedEvent += [this](std::string newShaderName)
 			{
 				size_t fails = 0;
 				std::string finalPath;
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".hlsl";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Lambert.hlsl", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitTexture.shader", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -1437,7 +1374,12 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"<root><shader>?</shader></root>"))
+						"shaderLabMaterialVersion=1\n"
+						"shader=?\n"
+						"surfaceMode=Opaque\n"
+						"alphaMode=Opaque\n"
+						"doubleSided=true\n"
+						"depthWrite=true\n"))
 				{
 					Close();
 					return;
@@ -1471,7 +1413,12 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"<root><shader>:Shaders\\Standard.hlsl</shader></root>"))
+						"shaderLabMaterialVersion=1\n"
+						"shader=?\n"
+						"surfaceMode=Opaque\n"
+						"alphaMode=Opaque\n"
+						"doubleSided=true\n"
+						"depthWrite=true\n"))
 				{
 					Close();
 					return;
@@ -1505,7 +1452,12 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"<root><shader>:Shaders\\Standard.hlsl</shader></root>"))
+						"shaderLabMaterialVersion=1\n"
+						"shader=?\n"
+						"surfaceMode=Opaque\n"
+						"alphaMode=Opaque\n"
+						"doubleSided=true\n"
+						"depthWrite=true\n"))
 				{
 					Close();
 					return;
@@ -1540,7 +1492,12 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"<root><shader>:Shaders\\Unlit.hlsl</shader></root>"))
+						"shaderLabMaterialVersion=1\n"
+						"shader=?\n"
+						"surfaceMode=Opaque\n"
+						"alphaMode=Opaque\n"
+						"doubleSided=true\n"
+						"depthWrite=true\n"))
 				{
 					Close();
 					return;
@@ -1559,7 +1516,7 @@ public:
 				Close();
 			};
 
-			createLambertMaterial.EnterPressedEvent += [this](std::string materialName)
+			createDefaultSurfaceMaterial.EnterPressedEvent += [this](std::string materialName)
 			{
 				size_t fails = 0;
 				std::string finalPath;
@@ -1574,7 +1531,12 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"<root><shader>:Shaders\\Lambert.hlsl</shader></root>"))
+						"shaderLabMaterialVersion=1\n"
+						"shader=?\n"
+						"surfaceMode=Opaque\n"
+						"alphaMode=Opaque\n"
+						"doubleSided=true\n"
+						"depthWrite=true\n"))
 				{
 					Close();
 					return;
@@ -3064,9 +3026,9 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	}
 	case ProjectBrowserTextDialogKind::CreateStandardShader:
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".hlsl");
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
 		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Standard.hlsl",
+			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader",
 			finalPath,
 			std::filesystem::copy_options::overwrite_existing);
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
@@ -3074,9 +3036,9 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	}
 	case ProjectBrowserTextDialogKind::CreateStandardPBRShader:
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".hlsl");
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
 		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Standard.hlsl",
+			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader",
 			finalPath,
 			std::filesystem::copy_options::overwrite_existing);
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
@@ -3084,42 +3046,66 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	}
 	case ProjectBrowserTextDialogKind::CreateUnlitShader:
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".hlsl");
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
 		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Unlit.hlsl",
+			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitColor.shader",
 			finalPath,
 			std::filesystem::copy_options::overwrite_existing);
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
 		break;
 	}
-	case ProjectBrowserTextDialogKind::CreateLambertShader:
+	case ProjectBrowserTextDialogKind::CreateUnlitTextureShader:
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".hlsl");
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
 		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Lambert.hlsl",
+			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitTexture.shader",
 			finalPath,
 			std::filesystem::copy_options::overwrite_existing);
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
 		break;
 	}
 	case ProjectBrowserTextDialogKind::CreateEmptyMaterial:
-		if (!createMaterialAsset("<root><shader>?</shader></root>"))
+		if (!createMaterialAsset(
+				"shaderLabMaterialVersion=1\n"
+				"shader=?\n"
+				"surfaceMode=Opaque\n"
+				"alphaMode=Opaque\n"
+				"doubleSided=true\n"
+				"depthWrite=true\n"))
 			return false;
 		shouldPreimportCreatedAsset = false;
 		break;
 	case ProjectBrowserTextDialogKind::CreateStandardMaterial:
 	case ProjectBrowserTextDialogKind::CreateStandardPBRMaterial:
-		if (!createMaterialAsset("<root><shader>:Shaders\\Standard.hlsl</shader></root>"))
+		if (!createMaterialAsset(
+				"shaderLabMaterialVersion=1\n"
+				"shader=?\n"
+				"surfaceMode=Opaque\n"
+				"alphaMode=Opaque\n"
+				"doubleSided=true\n"
+				"depthWrite=true\n"))
 			return false;
 		shouldPreimportCreatedAsset = false;
 		break;
 	case ProjectBrowserTextDialogKind::CreateUnlitMaterial:
-		if (!createMaterialAsset("<root><shader>:Shaders\\Unlit.hlsl</shader></root>"))
+		if (!createMaterialAsset(
+				"shaderLabMaterialVersion=1\n"
+				"shader=?\n"
+				"surfaceMode=Opaque\n"
+				"alphaMode=Opaque\n"
+				"doubleSided=true\n"
+				"depthWrite=true\n"))
 			return false;
 		shouldPreimportCreatedAsset = false;
 		break;
-	case ProjectBrowserTextDialogKind::CreateLambertMaterial:
-		if (!createMaterialAsset("<root><shader>:Shaders\\Lambert.hlsl</shader></root>"))
+	case ProjectBrowserTextDialogKind::CreateDefaultSurfaceMaterial:
+		if (!createMaterialAsset(
+				"shaderLabMaterialVersion=1\n"
+				"shader=?\n"
+				"surfaceMode=Opaque\n"
+				"alphaMode=Opaque\n"
+				"doubleSided=true\n"
+				"depthWrite=true\n"))
 			return false;
 		shouldPreimportCreatedAsset = false;
 		break;
@@ -3225,8 +3211,8 @@ void Editor::Panels::AssetBrowser::DrawProjectCurrentFolderContextMenu(
 				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateStandardPBRShader, "Create Standard PBR Shader", absoluteFolder, projectRelativeFolder, {}, "New Shader");
 			if (ImGui::MenuItem("Unlit template"))
 				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateUnlitShader, "Create Unlit Shader", absoluteFolder, projectRelativeFolder, {}, "New Shader");
-			if (ImGui::MenuItem("Lambert template"))
-				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateLambertShader, "Create Lambert Shader", absoluteFolder, projectRelativeFolder, {}, "New Shader");
+			if (ImGui::MenuItem("Unlit Texture template"))
+				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateUnlitTextureShader, "Create Unlit Texture Shader", absoluteFolder, projectRelativeFolder, {}, "New Shader");
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Material"))
@@ -3239,8 +3225,8 @@ void Editor::Panels::AssetBrowser::DrawProjectCurrentFolderContextMenu(
 				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateStandardPBRMaterial, "Create Standard PBR Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
 			if (ImGui::MenuItem("Unlit"))
 				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateUnlitMaterial, "Create Unlit Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
-			if (ImGui::MenuItem("Lambert"))
-				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateLambertMaterial, "Create Lambert Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
+			if (ImGui::MenuItem("Default Surface"))
+				RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateDefaultSurfaceMaterial, "Create Default Surface Material", absoluteFolder, projectRelativeFolder, {}, "New Material");
 			ImGui::EndMenu();
 		}
 		ImGui::EndMenu();

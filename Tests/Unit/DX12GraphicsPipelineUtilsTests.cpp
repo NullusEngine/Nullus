@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 
 #if defined(_WIN32)
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
 #include "Rendering/RHI/Backends/DX12/DX12GraphicsPipelineUtils.h"
 
 TEST(DX12GraphicsPipelineUtilsTests, BuildsOwnedInputLayoutFromVertexAttributesAndBindings)
@@ -123,5 +127,21 @@ TEST(DX12GraphicsPipelineUtilsTests, BuildsRasterizerStateWithMsaaFlag)
     const auto rasterizerState = NLS::Render::RHI::DX12::BuildDX12RasterizerState(desc);
 
     EXPECT_TRUE(rasterizerState.MultisampleEnable);
+}
+
+TEST(DX12GraphicsPipelineUtilsTests, NativeGraphicsPipelineUsesRenderTargetLayoutSampleCount)
+{
+    const std::filesystem::path pipelinePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Pipeline.cpp";
+    std::ifstream stream(pipelinePath, std::ios::binary);
+    ASSERT_TRUE(stream) << pipelinePath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string source = sourceBuffer.str();
+
+    EXPECT_NE(source.find("psoDesc.SampleDesc.Count = m_desc.renderTargetLayout.sampleCount"), std::string::npos);
+    EXPECT_NE(source.find("? m_desc.renderTargetLayout.sampleCount"), std::string::npos);
+    EXPECT_EQ(source.find("psoDesc.SampleDesc.Count = 1;"), std::string::npos);
 }
 #endif

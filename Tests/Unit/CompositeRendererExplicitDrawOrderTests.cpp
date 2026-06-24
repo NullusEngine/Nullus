@@ -100,6 +100,16 @@ namespace
             return true;
         }
 
+        bool PrepareRecordedDraw(
+            PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable,
+            std::string_view lightMode,
+            PreparedRecordedDraw& outDraw) const override
+        {
+            (void) lightMode;
+            return PrepareRecordedDraw(pipelineState, drawable, outDraw);
+        }
+
         void BindPreparedGraphicsPipeline(const PreparedRecordedDraw&) const override
         {
             m_events.push_back("pipeline");
@@ -197,6 +207,16 @@ namespace
             outDraw.mesh = m_mesh;
             outDraw.instanceCount = 1u;
             return true;
+        }
+
+        bool PrepareRecordedDraw(
+            PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable,
+            std::string_view lightMode,
+            PreparedRecordedDraw& outDraw) const override
+        {
+            (void) lightMode;
+            return PrepareRecordedDraw(pipelineState, drawable, outDraw);
         }
 
     private:

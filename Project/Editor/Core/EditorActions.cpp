@@ -4851,10 +4851,10 @@ bool Editor::Core::EditorActions::ImportAsset(const std::string& p_initialDestin
 
     std::string modelFormats = "*.fbx;*.obj;*.gltf;*.glb;";
     std::string textureFormats = "*.png;*.jpeg;*.jpg;*.tga";
-    std::string shaderFormats = "*.hlsl;";
+    std::string shaderFormats = "*.shader;";
     std::string soundFormats = "*.mp3;*.ogg;*.wav;";
 
-    OpenFileDialog selectAssetDialog("Select an asset to import", "", {"Any supported format", modelFormats + textureFormats + shaderFormats + soundFormats, "Model (.fbx, .obj, .gltf, .glb)", modelFormats, "Texture (.png, .jpeg, .jpg, .tga)", textureFormats, "Shader (.hlsl)", shaderFormats, "Sound (.mp3, .ogg, .wav)", soundFormats});
+    OpenFileDialog selectAssetDialog("Select an asset to import", "", {"Any supported format", modelFormats + textureFormats + shaderFormats + soundFormats, "Model (.fbx, .obj, .gltf, .glb)", modelFormats, "Texture (.png, .jpeg, .jpg, .tga)", textureFormats, "Shader (.shader)", shaderFormats, "Sound (.mp3, .ogg, .wav)", soundFormats});
 
     if (!selectAssetDialog.Result().empty())
     {
@@ -4888,10 +4888,10 @@ bool Editor::Core::EditorActions::ImportAssetAtLocation(const std::string& p_des
 
     std::string modelFormats = "*.fbx;*.obj;*.gltf;*.glb;";
     std::string textureFormats = "*.png;*.jpeg;*.jpg;*.tga;";
-    std::string shaderFormats = "*.hlsl;";
+    std::string shaderFormats = "*.shader;";
     std::string soundFormats = "*.mp3;*.ogg;*.wav;";
 
-    OpenFileDialog selectAssetDialog("Select an asset to import", "", {"Any supported format", modelFormats + textureFormats + shaderFormats + soundFormats, "Model (.fbx, .obj, .gltf, .glb)", modelFormats, "Texture (.png, .jpeg, .jpg, .tga)", textureFormats, "Shader (.hlsl)", shaderFormats, "Sound (.mp3, .ogg, .wav)", soundFormats});
+    OpenFileDialog selectAssetDialog("Select an asset to import", "", {"Any supported format", modelFormats + textureFormats + shaderFormats + soundFormats, "Model (.fbx, .obj, .gltf, .glb)", modelFormats, "Texture (.png, .jpeg, .jpg, .tga)", textureFormats, "Shader (.shader)", shaderFormats, "Sound (.mp3, .ogg, .wav)", soundFormats});
 
     if (!selectAssetDialog.Result().empty())
     {

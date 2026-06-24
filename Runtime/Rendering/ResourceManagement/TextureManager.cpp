@@ -1,9 +1,11 @@
 #include "Core/ResourceManagement/TextureManager.h"
 #include <Debug/Logger.h>
+#include "Assets/ArtifactManifest.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Settings/DriverSettings.h"
 
+#include "Assets/NativeArtifactContainer.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 
@@ -15,6 +17,7 @@
 #include <cctype>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <mutex>
 #include <memory>
@@ -83,16 +86,11 @@ std::tuple<ETextureFilteringMode, ETextureFilteringMode, bool> GetTextureMetadat
 
 bool IsTextureArtifactPath(const std::string& path)
 {
-	auto extension = std::filesystem::path(path).extension().string();
-	std::transform(
-		extension.begin(),
-		extension.end(),
-		extension.begin(),
-		[](const unsigned char character)
-		{
-			return static_cast<char>(std::tolower(character));
-		});
-	return extension == ".ntex";
+	return NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+		path,
+		NLS::Core::Assets::ArtifactType::Texture,
+		4u,
+		0u).has_value();
 }
 
 std::optional<std::filesystem::file_time_type> TryGetLastWriteTime(const std::string& path)
@@ -237,6 +235,14 @@ void EraseCancelledTextureArtifactByEquivalentPath(
 
 Texture2D* TextureManager::CreateResource(const std::string& path)
 {
+	const auto portablePath = std::filesystem::path(path).generic_string();
+	const auto portableArtifactPath = NLS::Core::Assets::TryMakePortableContentArtifactPath(portablePath);
+	if (!portableArtifactPath.empty() &&
+		!NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath))
+	{
+		return nullptr;
+	}
+
 	std::string realPath = GetRealPath(path);
 
 	auto [min, mag, mipmap] = GetTextureMetadata(realPath);

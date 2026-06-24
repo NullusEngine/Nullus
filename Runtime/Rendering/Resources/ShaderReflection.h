@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/Resources/UniformType.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
 #include "RenderDef.h"
@@ -37,6 +38,7 @@ namespace NLS::Render::Resources
 		uint32_t bindingIndex = 0;
 		uint32_t byteSize = 0;
 		std::vector<ShaderCBufferMemberDesc> members;
+		RHI::ShaderStageMask stageMask = RHI::ShaderStageMask::Vertex;
 	};
 
 	struct NLS_RENDER_API ShaderPropertyDesc
@@ -52,6 +54,7 @@ namespace NLS::Render::Resources
 		uint32_t byteOffset = 0;
 		uint32_t byteSize = 0;
 		std::string parentConstantBuffer;
+		RHI::ShaderStageMask stageMask = RHI::ShaderStageMask::Vertex;
 	};
 
 	struct NLS_RENDER_API ShaderReflection

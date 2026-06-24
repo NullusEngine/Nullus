@@ -1,5 +1,6 @@
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Assets/TextureMipGenerator.h"
+#include "Assets/ArtifactManifest.h"
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/NativeArtifactContainer.h"
 
@@ -881,6 +882,14 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
     const std::filesystem::path& path,
     const std::atomic_bool* cancellationFlag)
 {
+    const auto portableArtifactPath =
+        NLS::Core::Assets::TryMakePortableContentArtifactPath(path.generic_string());
+    if (!portableArtifactPath.empty() &&
+        !NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath))
+    {
+        return std::nullopt;
+    }
+
     NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
     telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead;
     telemetry.path = path.generic_string();

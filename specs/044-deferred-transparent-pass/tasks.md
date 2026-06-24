@@ -33,7 +33,7 @@
   - `NLS_Render` Debug passed after typed pass-input resolver, schema SSoT wrapper, and validator cleanup (`build_deferred_decal_render_after_review_tidy.local.log`).
   - `NLS_Engine` Debug passed after the same changes (`build_deferred_decal_engine_after_review_tidy.local.log`).
   - `NullusUnitTests` Debug compiled the affected test translation units (`FrameGraphSceneTargetsTests.cpp`, `RenderSceneCacheTests.cpp`) and reached link, but remains blocked by unrelated prefab/editor unresolved symbols: `BuildSceneLoadPrefabResourceResolutionOptions` and `PrefabInstanceRegistry::MarkAssetMissing` (`build_deferred_decal_unit_after_review_tidy.local.log`).
-- [x] T015a Add focused material identity regression tests for glTF `dirt_decal` / `DirtDecal` import, legacy `.nmat` decal inference, and ordinary blend material transparency preservation (`Tests/Unit/AssetMaterialConversionTests.cpp`).
+- [x] T015a Add focused material identity regression tests for glTF `dirt_decal` / `DirtDecal` import, legacy `.mat` decal inference, and ordinary blend material transparency preservation (`Tests/Unit/AssetMaterialConversionTests.cpp`).
 - [x] T015b Re-run RenderDoc analysis on `Editor_frame3600.rdc` and confirm the new failure shape is missing `DeferredDecal` despite a post-lighting `DeferredTransparent` pass.
 - [x] T015c Re-run relevant rendering/engine builds after material identity inference.
   - `NLS_Render` Debug passed (`cmake --build Build/windows --target NLS_Render --config Debug -- /m:1`).

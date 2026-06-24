@@ -315,6 +315,25 @@ std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
     };
 }
 
+std::filesystem::path ResolveTestArtifactPath(
+    const std::filesystem::path& root,
+    const std::string& artifactPath)
+{
+    const auto path = std::filesystem::path(artifactPath);
+    if (path.is_absolute())
+        return path.lexically_normal();
+    if (path == "Library" || path.generic_string().rfind("Library/", 0u) == 0u)
+        return (root / path).lexically_normal();
+    return (root / path).lexically_normal();
+}
+
+std::vector<uint8_t> ReadArtifactFile(
+    const std::filesystem::path& root,
+    const NLS::Core::Assets::ImportedArtifact& artifact)
+{
+    return ReadBinaryFile(ResolveTestArtifactPath(root, artifact.artifactPath));
+}
+
 std::string ReadArtifactPayloadText(
     const std::filesystem::path& path,
     const NLS::Core::Assets::ArtifactType artifactType,
@@ -326,6 +345,18 @@ std::string ReadArtifactPayloadText(
         return {};
 
     return std::string(container->payload.begin(), container->payload.end());
+}
+
+std::string ReadArtifactPayloadText(
+    const std::filesystem::path& root,
+    const NLS::Core::Assets::ImportedArtifact& artifact,
+    const NLS::Core::Assets::ArtifactType artifactType,
+    const uint32_t schemaVersion)
+{
+    return ReadArtifactPayloadText(
+        ResolveTestArtifactPath(root, artifact.artifactPath),
+        artifactType,
+        schemaVersion);
 }
 
 const NLS::Core::Assets::ImportedArtifact* FindFirstArtifactOfType(
@@ -376,6 +407,18 @@ std::vector<uint8_t> ReadArtifactPayloadBytes(
         return {};
 
     return container->payload;
+}
+
+std::vector<uint8_t> ReadArtifactPayloadBytes(
+    const std::filesystem::path& root,
+    const NLS::Core::Assets::ImportedArtifact& artifact,
+    const NLS::Core::Assets::ArtifactType artifactType,
+    const uint32_t schemaVersion)
+{
+    return ReadArtifactPayloadBytes(
+        ResolveTestArtifactPath(root, artifact.artifactPath),
+        artifactType,
+        schemaVersion);
 }
 
 void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
@@ -756,13 +799,13 @@ TEST(AssetImportPipelineTests, ArtifactManifestSelectsPrimaryArtifactAndFindsSub
     prefab.subAssetKey = "prefab:HeroScene";
     prefab.artifactType = NLS::Core::Assets::ArtifactType::Prefab;
     prefab.loaderId = "prefab";
-    prefab.artifactPath = "Library/Artifacts/Hero/prefab.nprefab";
+    prefab.artifactPath = "Library/Artifacts/Hero/5d4b4d6c2b6c4a6c9b91d90753df2a8d";
 
     NLS::Core::Assets::ImportedArtifact mesh;
     mesh.subAssetKey = "mesh:Body";
     mesh.artifactType = NLS::Core::Assets::ArtifactType::Mesh;
     mesh.loaderId = "mesh";
-    mesh.artifactPath = "Library/Artifacts/Hero/body.nmesh";
+    mesh.artifactPath = "Library/Artifacts/Hero/7e0aaf65f74245f291bdf6a0c3f6c4e8";
 
     manifest.primarySubAssetKey = prefab.subAssetKey;
     manifest.subAssets.push_back(prefab);
@@ -792,7 +835,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_artifact_db_" + NLS::Guid::New().ToString());
-    const auto databasePath = root / "Library" / "ArtifactDB" / "index.tsv";
+    const auto databasePath = root / "Library" / "ArtifactDB";
 
     const auto sourceId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("11111111-1111-4111-8111-111111111111"));
@@ -809,7 +852,8 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
         NLS::Core::Assets::ArtifactType::Prefab,
         "prefab",
         "editor-windows",
-        "Library/Artifacts/Hero/prefab.nprefab",
+        (std::filesystem::path("Library") / "Artifacts" /
+            NLS::Core::Assets::BuildArtifactStorageRelativePath(std::string(64u, '1'))).generic_string(),
         "sha256:prefab"
     });
     manifest.subAssets.push_back({
@@ -818,7 +862,8 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
         NLS::Core::Assets::ArtifactType::Mesh,
         "mesh",
         "editor-windows",
-        "Library/Artifacts/Hero/body.nmesh",
+        (std::filesystem::path("Library") / "Artifacts" /
+            NLS::Core::Assets::BuildArtifactStorageRelativePath(std::string(64u, '2'))).generic_string(),
         "sha256:mesh"
     });
     manifest.dependencies.push_back({
@@ -836,6 +881,10 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
     database.MarkStatus(sourceId, NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
 
     ASSERT_TRUE(database.Save(databasePath));
+    EXPECT_TRUE(std::filesystem::is_directory(databasePath));
+    EXPECT_TRUE(std::filesystem::exists(databasePath / "data.mdb"));
+    EXPECT_TRUE(std::filesystem::exists(databasePath / "lock.mdb"));
+    EXPECT_FALSE(std::filesystem::exists(databasePath / "index.tsv"));
 
     NLS::Core::Assets::ArtifactDatabase loaded;
     ASSERT_TRUE(loaded.Load(databasePath));
@@ -843,7 +892,8 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
     const auto* mesh = loaded.Find(sourceId, "mesh:Body", "editor-windows");
     ASSERT_NE(mesh, nullptr);
     EXPECT_EQ(mesh->sourcePath, "Assets/Models/Hero.gltf");
-    EXPECT_EQ(mesh->artifactPath, "Library/Artifacts/Hero/body.nmesh");
+    EXPECT_EQ(mesh->artifactPath, (std::filesystem::path("Library") / "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(std::string(64u, '2'))).generic_string());
     EXPECT_EQ(mesh->loaderId, "mesh");
     EXPECT_EQ(mesh->status, NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
     EXPECT_EQ(mesh->importerVersion, CurrentModelSceneImporterVersion());
@@ -855,6 +905,237 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
 
     loaded.RemoveSource(sourceId);
     EXPECT_TRUE(loaded.FindBySource(sourceId).empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ArtifactDatabaseRejectsArtifactPayloadPathsWithSourceExtensions)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto sourceId = AssetId(NLS::Guid::Parse("12121212-1212-4212-8212-121212121212"));
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = sourceId;
+    manifest.importerId = "scene-model";
+    manifest.importerVersion = CurrentModelSceneImporterVersion();
+    manifest.targetPlatform = "editor-windows";
+    manifest.primarySubAssetKey = "prefab:Hero";
+    manifest.subAssets.push_back({
+        sourceId,
+        "prefab:Hero",
+        ArtifactType::Prefab,
+        "prefab",
+        "editor-windows",
+        "Library/Artifacts/Hero/prefab.prefab",
+        "sha256:prefab"
+    });
+    manifest.subAssets.push_back({
+        sourceId,
+        "material:Body",
+        ArtifactType::Material,
+        "material",
+        "editor-windows",
+        "Library/Artifacts/Hero/body.mat",
+        "sha256:material"
+    });
+    manifest.subAssets.push_back({
+        sourceId,
+        "shader:Body",
+        ArtifactType::Shader,
+        "shader",
+        "editor-windows",
+        "Library/Artifacts/Hero/body.shader",
+        "sha256:shader"
+    });
+
+    ArtifactDatabase database;
+    database.UpsertManifest(manifest, "Assets/Models/Hero.gltf", ArtifactRecordStatus::UpToDate);
+
+    EXPECT_EQ(database.Find(sourceId, "prefab:Hero", "editor-windows"), nullptr);
+    EXPECT_EQ(database.Find(sourceId, "material:Body", "editor-windows"), nullptr);
+    EXPECT_EQ(database.Find(sourceId, "shader:Body", "editor-windows"), nullptr);
+    EXPECT_TRUE(database.FindBySource(sourceId).empty());
+    EXPECT_EQ(database.GetStats().totalRecords, 0u);
+}
+
+TEST(AssetImportPipelineTests, ArtifactDatabaseRejectsExtensionlessSemanticPayloadNames)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto sourceId = AssetId(NLS::Guid::Parse("18181818-1818-4818-8818-181818181818"));
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = sourceId;
+    manifest.importerId = "shaderlab";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "editor-windows";
+    manifest.primarySubAssetKey = "material:Hero";
+    manifest.subAssets.push_back({
+        sourceId,
+        "material:Hero",
+        ArtifactType::Material,
+        "material",
+        "editor-windows",
+        "Library/Artifacts/Hero/material",
+        "fnv1a64:123"
+    });
+
+    ArtifactDatabase database;
+    database.UpsertManifest(manifest, "Assets/Materials/Hero.mat", ArtifactRecordStatus::UpToDate);
+
+    EXPECT_EQ(database.Find(sourceId, "material:Hero", "editor-windows"), nullptr);
+    EXPECT_TRUE(database.FindBySource(sourceId).empty());
+    EXPECT_EQ(database.GetStats().totalRecords, 0u)
+        << "Artifact payload filenames are content hashes only; type names live in ArtifactDB/importer/container metadata.";
+}
+
+TEST(AssetImportPipelineTests, ArtifactDatabaseUsesMetadataNotBlobExtensionToDistinguishAssetKinds)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto materialId = AssetId(NLS::Guid::Parse("19191919-1919-4919-8919-191919191919"));
+    const auto shaderId = AssetId(NLS::Guid::Parse("20202020-2020-4020-8020-202020202020"));
+    const std::string sharedBlobPath =
+        (std::filesystem::path("Library") / "Artifacts" /
+            BuildArtifactStorageRelativePath(BuildArtifactStorageFileName("identical native container bytes"))).generic_string();
+
+    ArtifactManifest materialManifest;
+    materialManifest.sourceAssetId = materialId;
+    materialManifest.importerId = "material";
+    materialManifest.importerVersion = 1u;
+    materialManifest.targetPlatform = "editor";
+    materialManifest.primarySubAssetKey = "material:Hero";
+    materialManifest.subAssets.push_back({
+        materialId,
+        "material:Hero",
+        ArtifactType::Material,
+        "material",
+        "editor",
+        sharedBlobPath,
+        "sha256:shared"
+    });
+
+    ArtifactManifest shaderManifest;
+    shaderManifest.sourceAssetId = shaderId;
+    shaderManifest.importerId = "shader";
+    shaderManifest.importerVersion = 1u;
+    shaderManifest.targetPlatform = "editor";
+    shaderManifest.primarySubAssetKey = "shader:Hero";
+    shaderManifest.subAssets.push_back({
+        shaderId,
+        "shader:Hero",
+        ArtifactType::Shader,
+        "shader",
+        "editor",
+        sharedBlobPath,
+        "sha256:shared"
+    });
+
+    ArtifactDatabase database;
+    database.UpsertManifest(materialManifest, "Assets/Materials/Hero.mat", ArtifactRecordStatus::UpToDate);
+    database.UpsertManifest(shaderManifest, "Assets/Shaders/Hero.shader", ArtifactRecordStatus::UpToDate);
+
+    const auto* material = database.Find(materialId, "material:Hero", "editor");
+    const auto* shader = database.Find(shaderId, "shader:Hero", "editor");
+    ASSERT_NE(material, nullptr);
+    ASSERT_NE(shader, nullptr);
+
+    EXPECT_EQ(material->artifactPath, sharedBlobPath);
+    EXPECT_EQ(shader->artifactPath, sharedBlobPath);
+    EXPECT_FALSE(std::filesystem::path(sharedBlobPath).filename().has_extension());
+    EXPECT_EQ(material->artifactType, ArtifactType::Material);
+    EXPECT_EQ(material->loaderId, "material");
+    EXPECT_EQ(material->sourcePath, "Assets/Materials/Hero.mat");
+    EXPECT_EQ(material->importerId, "material");
+    EXPECT_EQ(shader->artifactType, ArtifactType::Shader);
+    EXPECT_EQ(shader->loaderId, "shader");
+    EXPECT_EQ(shader->sourcePath, "Assets/Shaders/Hero.shader");
+    EXPECT_EQ(shader->importerId, "shader");
+    EXPECT_EQ(database.GetStats().totalRecords, 2u);
+}
+
+TEST(AssetImportPipelineTests, ArtifactDatabaseLoadDropsArtifactPayloadPathsWithSourceExtensions)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeImportTestRoot();
+    const auto databasePath = root / "Library" / "ArtifactDB";
+
+    const auto sourceId = AssetId(NLS::Guid::Parse("34343434-3434-4434-8434-343434343434"));
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = sourceId;
+    manifest.importerId = "material";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "editor-windows";
+    manifest.primarySubAssetKey = "material:Hero";
+    manifest.subAssets.push_back({
+        sourceId,
+        "material:Hero",
+        ArtifactType::Material,
+        "material",
+        "editor-windows",
+        "Library/Artifacts/Hero/body.mat",
+        "sha256:material",
+        "Hero Material"
+    });
+
+    ArtifactDatabase writer;
+    writer.UpsertManifest(manifest, "Assets/Materials/Hero.mat", ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(writer.Save(databasePath));
+
+    ArtifactDatabase database;
+    ASSERT_TRUE(database.Load(databasePath));
+
+    EXPECT_EQ(database.Find(sourceId, "material:Hero", "editor-windows"), nullptr);
+    EXPECT_TRUE(database.FindBySource(sourceId).empty());
+    EXPECT_EQ(database.GetStats().totalRecords, 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ArtifactDatabaseGrowsLmdbMapForLargeProjects)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeImportTestRoot();
+    const auto databasePath = root / "Library" / "ArtifactDB";
+
+    const auto sourceId = AssetId(NLS::Guid::Parse("45454545-4545-4545-8545-454545454545"));
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = sourceId;
+    manifest.importerId = "material";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "editor-windows";
+    manifest.primarySubAssetKey = "material:Large0000";
+
+    constexpr size_t kRecordCount = 1200u;
+    const std::string largeDisplayName(64u * 1024u, 'x');
+    manifest.subAssets.reserve(kRecordCount);
+    for (size_t index = 0u; index < kRecordCount; ++index)
+    {
+        const auto subAssetKey = "material:Large" + std::to_string(index);
+        manifest.subAssets.push_back({
+            sourceId,
+            subAssetKey,
+            ArtifactType::Material,
+            "material",
+            "editor-windows",
+            (std::filesystem::path("Library") / "Artifacts" /
+                BuildArtifactStorageRelativePath(BuildArtifactStorageFileName(subAssetKey))).generic_string(),
+            "sha256:" + subAssetKey,
+            largeDisplayName
+        });
+    }
+
+    ArtifactDatabase writer;
+    writer.UpsertManifest(manifest, "Assets/Materials/Large.mat", ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(writer.Save(databasePath));
+
+    ArtifactDatabase loaded;
+    ASSERT_TRUE(loaded.Load(databasePath));
+    EXPECT_EQ(loaded.GetStats().totalRecords, kRecordCount);
+    EXPECT_NE(loaded.Find(sourceId, "material:Large1199", "editor-windows"), nullptr);
 
     std::filesystem::remove_all(root);
 }
@@ -881,7 +1162,9 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseUpsertsUpdateIndexIncrementally)
             ArtifactType::Mesh,
             "mesh",
             "editor",
-            "Library/Artifacts/" + sourceId.ToString() + "/body.nmesh",
+            (std::filesystem::path("Library") / "Artifacts" /
+                NLS::Core::Assets::BuildArtifactStorageRelativePath(
+                    NLS::Core::Assets::BuildArtifactStorageFileName("mesh:Body:" + std::to_string(index)))).generic_string(),
             "sha256:" + std::to_string(index)
         });
 
@@ -914,14 +1197,14 @@ TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAto
         "prefab:Hero",
         ArtifactType::Prefab,
         "prefab",
-        "Hero/prefab.nprefab",
+        "Hero/prefab",
         std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'}
     });
     request.artifacts.push_back({
         "mesh:HeroBody",
         ArtifactType::Mesh,
         "mesh",
-        "Hero/body.nmesh",
+        "Hero/body",
         std::vector<uint8_t>{'m', 'e', 's', 'h'}
     });
 
@@ -940,7 +1223,9 @@ TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAto
     ASSERT_NE(prefab, nullptr);
     EXPECT_EQ(prefab->artifactType, ArtifactType::Prefab);
     EXPECT_EQ(prefab->loaderId, "prefab");
-    const auto prefabBytes = ReadBinaryFile(prefab->artifactPath);
+    EXPECT_FALSE(std::filesystem::path(prefab->artifactPath).filename().has_extension());
+    EXPECT_EQ(prefab->artifactPath.find("/prefab"), std::string::npos);
+    const auto prefabBytes = ReadArtifactFile(commitRoot, *prefab);
     const auto prefabContainer = ReadNativeArtifactContainer(prefabBytes, ArtifactType::Prefab, 1u);
     ASSERT_TRUE(prefabContainer.has_value());
     EXPECT_EQ(prefabContainer->metadata.sourceAssetId, request.sourceAssetId);
@@ -952,11 +1237,66 @@ TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAto
 
     const auto* mesh = result.manifest.FindSubAsset("mesh:HeroBody");
     ASSERT_NE(mesh, nullptr);
-    const auto meshBytes = ReadBinaryFile(mesh->artifactPath);
+    EXPECT_FALSE(std::filesystem::path(mesh->artifactPath).filename().has_extension());
+    EXPECT_FALSE(std::filesystem::path(mesh->artifactPath).filename().has_extension());
+    const auto meshBytes = ReadArtifactFile(commitRoot, *mesh);
     const auto meshContainer = ReadNativeArtifactContainer(meshBytes, ArtifactType::Mesh, 3u);
     ASSERT_TRUE(meshContainer.has_value());
     EXPECT_EQ(std::string(meshContainer->payload.begin(), meshContainer->payload.end()), "mesh");
-    EXPECT_FALSE(std::filesystem::exists(stagingRoot / "Hero" / "prefab.nprefab"));
+    EXPECT_FALSE(std::filesystem::exists(stagingRoot / "Hero" / "prefab"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ArtifactWriterFileNameDependsOnStoredContentNotRequestedPath)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeImportTestRoot();
+    const auto payload = std::vector<uint8_t>{'s', 'a', 'm', 'e'};
+    const auto makeRequest = [&](const char* relativePath, uint32_t importerVersion)
+    {
+        ArtifactWriteRequest request;
+        request.sourceAssetId = AssetId(NLS::Guid::Parse("56565656-5656-4656-8656-565656565656"));
+        request.importerId = "test-importer";
+        request.importerVersion = importerVersion;
+        request.targetPlatform = "editor";
+        request.primarySubAssetKey = "material:Body";
+        request.artifacts.push_back({
+            "material:Body",
+            ArtifactType::Material,
+            "material",
+            "Body",
+            relativePath,
+            payload
+        });
+        return request;
+    };
+
+    const auto firstRequest = makeRequest("materials/body", 1u);
+    const auto movedRequest = makeRequest("renamed/folder/body", 1u);
+    const auto changedMetadataRequest = makeRequest("materials/body", 2u);
+
+    ArtifactWriter writer(root / "Staging", root / "Committed");
+    const auto firstResult = writer.WriteAndCommit(firstRequest, nullptr);
+    ASSERT_TRUE(firstResult.committed);
+    ASSERT_EQ(firstResult.manifest.subAssets.size(), 1u);
+
+    const auto movedResult = writer.WriteAndCommit(movedRequest, nullptr);
+    ASSERT_TRUE(movedResult.committed);
+    ASSERT_EQ(movedResult.manifest.subAssets.size(), 1u);
+
+    const auto changedMetadataResult = writer.WriteAndCommit(changedMetadataRequest, nullptr);
+    ASSERT_TRUE(changedMetadataResult.committed);
+    ASSERT_EQ(changedMetadataResult.manifest.subAssets.size(), 1u);
+
+    const auto firstFileName = std::filesystem::path(firstResult.manifest.subAssets.front().artifactPath).filename();
+    const auto movedFileName = std::filesystem::path(movedResult.manifest.subAssets.front().artifactPath).filename();
+    const auto changedMetadataFileName =
+        std::filesystem::path(changedMetadataResult.manifest.subAssets.front().artifactPath).filename();
+    EXPECT_EQ(firstFileName, movedFileName);
+    EXPECT_NE(firstFileName, changedMetadataFileName);
+    EXPECT_FALSE(firstFileName.has_extension());
 
     std::filesystem::remove_all(root);
 }
@@ -1053,7 +1393,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterKeepsPreviousManifestWhenStagedPayl
         "prefab:Previous",
         ArtifactType::Prefab,
         "prefab",
-        (root / "Committed" / "Previous" / "prefab.nprefab").string(),
+        (root / "Committed" / "Previous" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d").string(),
         "previous"
     });
 
@@ -1066,7 +1406,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterKeepsPreviousManifestWhenStagedPayl
         "prefab:Broken",
         ArtifactType::Prefab,
         "prefab",
-        "../escape.nprefab",
+        "../escape.prefab",
         std::vector<uint8_t>{'b', 'a', 'd'}
     });
 
@@ -1079,7 +1419,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterKeepsPreviousManifestWhenStagedPayl
     EXPECT_EQ(result.manifest.primarySubAssetKey, previous.primarySubAssetKey);
     ASSERT_EQ(result.manifest.subAssets.size(), 1u);
     EXPECT_EQ(result.manifest.subAssets[0].subAssetKey, "prefab:Previous");
-    EXPECT_FALSE(std::filesystem::exists(root / "escape.nprefab"));
+    EXPECT_FALSE(std::filesystem::exists(root / "5bae15e32d00d540ec65f9406d425a4033b591ab4bea5f2a0f9c1b95cc861fc1"));
 
     std::filesystem::remove_all(root);
 }
@@ -1100,7 +1440,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsWindowsRootedPayloadPaths)
         "prefab:Broken",
         ArtifactType::Prefab,
         "prefab",
-        "C:escape.nprefab",
+        "C:/escaped/prefab",
         std::vector<uint8_t>{'b', 'a', 'd'}
     });
 
@@ -1123,8 +1463,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterPreservesCommittedFilesWhenCommitFa
     const auto stagingRoot = root / "Staging";
     const auto commitRoot = root / "Committed";
 
-    WriteTextFile(commitRoot / "Hero" / "prefab.nprefab", "old-prefab");
-    std::filesystem::create_directories(commitRoot / "Hero" / "bad.nmesh");
+    WriteTextFile(commitRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d", "old-prefab");
 
     ArtifactManifest previous;
     previous.sourceAssetId = AssetId(NLS::Guid::Parse("abababab-abab-4aba-8bab-abababababab"));
@@ -1134,7 +1473,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterPreservesCommittedFilesWhenCommitFa
         "prefab:Previous",
         ArtifactType::Prefab,
         "prefab",
-        (commitRoot / "Hero" / "prefab.nprefab").string(),
+        (commitRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d").string(),
         "previous"
     });
 
@@ -1147,16 +1486,18 @@ TEST(AssetImportPipelineTests, ArtifactWriterPreservesCommittedFilesWhenCommitFa
         "prefab:Hero",
         ArtifactType::Prefab,
         "prefab",
-        "Hero/prefab.nprefab",
+        "Hero/prefab",
         std::vector<uint8_t>{'n', 'e', 'w'}
     });
     request.artifacts.push_back({
         "mesh:Bad",
         ArtifactType::Mesh,
         "mesh",
-        "Hero/bad.nmesh",
+        "Hero/bad",
         std::vector<uint8_t>{'b', 'a', 'd'}
     });
+    std::filesystem::create_directories(
+        commitRoot / BuildContentAddressedArtifactRelativePath(request, request.artifacts.back()));
 
     ArtifactWriter writer(stagingRoot, commitRoot);
     const auto result = writer.WriteAndCommit(request, &previous);
@@ -1165,7 +1506,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterPreservesCommittedFilesWhenCommitFa
     ASSERT_EQ(result.diagnostics.size(), 1u);
     EXPECT_EQ(result.diagnostics[0].code, "artifact-commit-failed");
     EXPECT_EQ(result.manifest.primarySubAssetKey, previous.primarySubAssetKey);
-    EXPECT_EQ(ReadTextFile(commitRoot / "Hero" / "prefab.nprefab"), "old-prefab");
+    EXPECT_EQ(ReadTextFile(commitRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d"), "old-prefab");
 
     std::filesystem::remove_all(root);
 }
@@ -1178,8 +1519,8 @@ TEST(AssetImportPipelineTests, ArtifactWriterRollsBackCommittedFilesWhenCancelle
     const auto stagingRoot = root / "Staging";
     const auto commitRoot = root / "Committed";
 
-    WriteTextFile(commitRoot / "Hero" / "prefab.nprefab", "old-prefab");
-    WriteTextFile(commitRoot / "Hero" / "body.nmesh", "old-mesh");
+    WriteTextFile(commitRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d", "old-prefab");
+    WriteTextFile(commitRoot / "Hero" / "7e0aaf65f74245f291bdf6a0c3f6c4e8", "old-mesh");
 
     ArtifactManifest previous;
     previous.sourceAssetId = AssetId(NLS::Guid::Parse("acacacac-acac-4aca-8cac-acacacacacac"));
@@ -1189,7 +1530,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRollsBackCommittedFilesWhenCancelle
         "prefab:Previous",
         ArtifactType::Prefab,
         "prefab",
-        (commitRoot / "Hero" / "prefab.nprefab").string(),
+        (commitRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d").string(),
         "previous"
     });
 
@@ -1202,14 +1543,14 @@ TEST(AssetImportPipelineTests, ArtifactWriterRollsBackCommittedFilesWhenCancelle
         "prefab:Hero",
         ArtifactType::Prefab,
         "prefab",
-        "Hero/prefab.nprefab",
+        "Hero/prefab",
         std::vector<uint8_t>{'n', 'e', 'w'}
     });
     request.artifacts.push_back({
         "mesh:Body",
         ArtifactType::Mesh,
         "mesh",
-        "Hero/body.nmesh",
+        "Hero/body",
         std::vector<uint8_t>{'n', 'e', 'w', '-', 'm', 'e', 's', 'h'}
     });
 
@@ -1221,8 +1562,8 @@ TEST(AssetImportPipelineTests, ArtifactWriterRollsBackCommittedFilesWhenCancelle
     ASSERT_EQ(result.diagnostics.size(), 1u);
     EXPECT_EQ(result.diagnostics[0].code, "artifact-write-cancelled");
     EXPECT_EQ(result.manifest.primarySubAssetKey, previous.primarySubAssetKey);
-    EXPECT_EQ(ReadTextFile(commitRoot / "Hero" / "prefab.nprefab"), "old-prefab");
-    EXPECT_EQ(ReadTextFile(commitRoot / "Hero" / "body.nmesh"), "old-mesh");
+    EXPECT_EQ(ReadTextFile(commitRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d"), "old-prefab");
+    EXPECT_EQ(ReadTextFile(commitRoot / "Hero" / "7e0aaf65f74245f291bdf6a0c3f6c4e8"), "old-mesh");
     EXPECT_FALSE(std::filesystem::exists(stagingRoot));
 
     std::filesystem::remove_all(root);
@@ -1234,7 +1575,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsUnsafeRootsBeforeDeletingCom
 
     const auto root = MakeImportTestRoot();
     const auto committedRoot = root / "Committed";
-    WriteTextFile(committedRoot / "Hero" / "prefab.nprefab", "committed");
+    WriteTextFile(committedRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d", "committed");
 
     ArtifactWriteRequest request;
     request.sourceAssetId = AssetId(NLS::Guid::Parse("adadadad-adad-4ada-8dad-adadadadadad"));
@@ -1245,7 +1586,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsUnsafeRootsBeforeDeletingCom
         "prefab:Hero",
         ArtifactType::Prefab,
         "prefab",
-        "Hero/prefab.nprefab",
+        "Hero/prefab",
         std::vector<uint8_t>{'n', 'e', 'w'}
     });
 
@@ -1255,7 +1596,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsUnsafeRootsBeforeDeletingCom
     EXPECT_FALSE(result.committed);
     ASSERT_EQ(result.diagnostics.size(), 1u);
     EXPECT_EQ(result.diagnostics[0].code, "artifact-root-unsafe");
-    EXPECT_EQ(ReadTextFile(committedRoot / "Hero" / "prefab.nprefab"), "committed");
+    EXPECT_EQ(ReadTextFile(committedRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d"), "committed");
 
     std::filesystem::remove_all(root);
 }
@@ -1267,7 +1608,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsRollbackRootThatWouldDeleteC
     const auto root = MakeImportTestRoot();
     const auto stagingRoot = root / "Artifacts";
     const auto committedRoot = root / "Artifacts.rollback";
-    WriteTextFile(committedRoot / "Hero" / "prefab.nprefab", "committed");
+    WriteTextFile(committedRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d", "committed");
 
     ArtifactWriteRequest request;
     request.sourceAssetId = AssetId(NLS::Guid::Parse("aeaeaeae-aeae-4aea-8eae-aeaeaeaeaeae"));
@@ -1278,7 +1619,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsRollbackRootThatWouldDeleteC
         "prefab:Hero",
         ArtifactType::Prefab,
         "prefab",
-        "Hero/prefab.nprefab",
+        "Hero/prefab",
         std::vector<uint8_t>{'n', 'e', 'w'}
     });
 
@@ -1288,7 +1629,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsRollbackRootThatWouldDeleteC
     EXPECT_FALSE(result.committed);
     ASSERT_EQ(result.diagnostics.size(), 1u);
     EXPECT_EQ(result.diagnostics[0].code, "artifact-root-unsafe");
-    EXPECT_EQ(ReadTextFile(committedRoot / "Hero" / "prefab.nprefab"), "committed");
+    EXPECT_EQ(ReadTextFile(committedRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d"), "committed");
 
     std::filesystem::remove_all(root);
 }
@@ -2589,7 +2930,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMes
     const auto* rightMesh = result.manifest.FindSubAsset("mesh:mesh/1");
     ASSERT_NE(rightMesh, nullptr);
 
-    const auto leftArtifact = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(leftMesh->artifactPath));
+    const auto leftArtifact = NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *leftMesh));
     ASSERT_TRUE(leftArtifact.has_value());
     ASSERT_EQ(leftArtifact->vertices.size(), 3u);
     EXPECT_FLOAT_EQ(leftArtifact->vertices[0].position[0], 0.0f);
@@ -2599,7 +2940,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMes
     EXPECT_FLOAT_EQ(leftArtifact->vertices[1].texCoords[0], 1.0f);
     EXPECT_FLOAT_EQ(leftArtifact->vertices[2].texCoords[1], 1.0f);
 
-    const auto rightArtifact = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(rightMesh->artifactPath));
+    const auto rightArtifact = NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *rightMesh));
     ASSERT_TRUE(rightArtifact.has_value());
     ASSERT_EQ(rightArtifact->vertices.size(), 3u);
     EXPECT_FLOAT_EQ(rightArtifact->vertices[0].position[0], 10.0f);
@@ -2610,7 +2951,8 @@ TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMes
     const auto* prefabArtifact = result.manifest.FindSubAsset("prefab:OutOfOrder");
     ASSERT_NE(prefabArtifact, nullptr);
     const auto prefabPayload = ReadArtifactPayloadText(
-        prefabArtifact->artifactPath,
+        root,
+        *prefabArtifact,
         NLS::Core::Assets::ArtifactType::Prefab,
         1u);
     const auto prefabGraph = NLS::Engine::Serialize::ObjectGraphReader::Read(prefabPayload);
@@ -2697,24 +3039,25 @@ f 1/1/1 2/2/1 3/3/1
     ASSERT_NE(materialArtifact, nullptr);
 
     const auto payload = ReadArtifactPayloadText(
-        materialArtifact->artifactPath,
+        root,
+        *materialArtifact,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
     const auto* diffuseTextureArtifact = result.manifest.FindSubAsset("texture:parser/texture/0");
     ASSERT_NE(diffuseTextureArtifact, nullptr);
     const auto textureArtifactPath = std::filesystem::path(diffuseTextureArtifact->artifactPath)
         .lexically_normal();
-    const auto textureResourcePath = textureArtifactPath.lexically_relative(root).generic_string();
-    EXPECT_NE(payload.find("u_AlbedoMap"), std::string::npos);
+    const auto textureResourcePath = textureArtifactPath.generic_string();
+    const auto physicalTexturePath = ResolveTestArtifactPath(root, diffuseTextureArtifact->artifactPath).generic_string();
+    EXPECT_NE(payload.find("_BaseMap"), std::string::npos);
     EXPECT_NE(payload.find(textureResourcePath), std::string::npos);
-    EXPECT_EQ(payload.find(textureArtifactPath.generic_string()), std::string::npos);
-    EXPECT_NE(payload.find(".ntex"), std::string::npos);
+    EXPECT_EQ(payload.find(physicalTexturePath), std::string::npos);
+    EXPECT_FALSE(textureArtifactPath.filename().has_extension());
     EXPECT_EQ(payload.find("Assets/Textures/HeroDiffuse.png"), std::string::npos);
-    EXPECT_NE(payload.find("u_NormalMap"), std::string::npos);
-    EXPECT_NE(payload.find(".ntex"), std::string::npos);
-    EXPECT_NE(payload.find("u_EnableNormalMapping\" type=\"float\" value=\"1.000000\""), std::string::npos);
+    EXPECT_NE(payload.find("_NormalMap"), std::string::npos);
+    EXPECT_NE(payload.find("keyword _NORMALMAP"), std::string::npos);
     EXPECT_NE(
-        payload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.800000 0.700000 0.600000 0.650000\"/>"),
+        payload.find("property _BaseColor Color 0.800000 0.700000 0.600000 0.650000"),
         std::string::npos);
 
     std::filesystem::remove_all(root);
@@ -2776,7 +3119,8 @@ f 1/1/1 2/2/1 3/3/1
     EXPECT_EQ(textureArtifact->loaderId, "texture");
 
     const auto payload = ReadArtifactPayloadBytes(
-        textureArtifact->artifactPath,
+        root,
+        *textureArtifact,
         NLS::Core::Assets::ArtifactType::Texture,
         4u);
     ASSERT_GE(payload.size(), 4u);
@@ -2790,7 +3134,7 @@ f 1/1/1 2/2/1 3/3/1
     EXPECT_EQ(payloadText.find("NULLUS_IMPORTED_SCENE_ARTIFACT=1"), std::string::npos);
 
     const auto nativeTexture = NLS::Render::Assets::DeserializeTextureArtifact(
-        ReadBinaryFile(textureArtifact->artifactPath));
+        ReadArtifactFile(root, *textureArtifact));
     ASSERT_TRUE(nativeTexture.has_value());
 #if NLS_HAS_DIRECTXTEX
     EXPECT_EQ(nativeTexture->format, NLS::Render::RHI::TextureFormat::BC1);
@@ -2883,7 +3227,7 @@ f 1/1/1 2/2/1 3/3/1
     EXPECT_EQ(textureArtifact->targetPlatform, "editor");
 
     const auto nativeTexture = NLS::Render::Assets::DeserializeTextureArtifact(
-        ReadBinaryFile(textureArtifact->artifactPath));
+        ReadArtifactFile(root, *textureArtifact));
     ASSERT_TRUE(nativeTexture.has_value());
 #if defined(_WIN32)
     EXPECT_EQ(nativeTexture->targetPlatform, "win64-dx12");
@@ -3672,7 +4016,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportUsesMetaModelImporterSettings)
 
     const auto* meshArtifact = result.manifest.FindSubAsset("mesh:mesh/0");
     ASSERT_NE(meshArtifact, nullptr);
-    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(meshArtifact->artifactPath));
+    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *meshArtifact));
     ASSERT_TRUE(mesh.has_value());
     ASSERT_FALSE(mesh->vertices.empty());
     for (const auto& vertex : mesh->vertices)
@@ -3715,7 +4059,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportPreservesPreviousArtifactsWhen
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
 
     const auto committedRoot = root / "Library" / "Artifacts" / meta.id.ToString();
-    WriteTextFile(committedRoot / "old" / "prefab.nprefab", "previous");
+    WriteTextFile(committedRoot / "old" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d", "previous");
 
     NLS::Core::Assets::ArtifactManifest previousManifest;
     previousManifest.sourceAssetId = meta.id;
@@ -3729,7 +4073,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportPreservesPreviousArtifactsWhen
         NLS::Core::Assets::ArtifactType::Prefab,
         "prefab",
         "editor",
-        (committedRoot / "old" / "prefab.nprefab").string(),
+        (committedRoot / "old" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d").string(),
         "previous"
     });
 
@@ -3758,7 +4102,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportPreservesPreviousArtifactsWhen
     ASSERT_FALSE(result.diagnostics.empty());
     EXPECT_TRUE(ContainsDiagnosticCode(result.diagnostics, "artifact-write-cancelled"));
     EXPECT_EQ(result.manifest.primarySubAssetKey, "prefab:Previous");
-    EXPECT_EQ(ReadTextFile(committedRoot / "old" / "prefab.nprefab"), "previous");
+    EXPECT_EQ(ReadTextFile(committedRoot / "old" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d"), "previous");
     EXPECT_FALSE(std::filesystem::exists(root / "Staging"));
 
     std::filesystem::remove_all(root);
@@ -3835,7 +4179,7 @@ TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsPreserveEncodedR
         const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
         ASSERT_NE(textureArtifact, nullptr);
         const auto texture = NLS::Render::Assets::DeserializeTextureArtifact(
-            ReadBinaryFile(textureArtifact->artifactPath));
+            ReadArtifactFile(root, *textureArtifact));
         ASSERT_TRUE(texture.has_value());
         EXPECT_EQ(texture->width, 2u);
         EXPECT_EQ(texture->height, 2u);
@@ -3921,7 +4265,7 @@ f 1/1/1 2/2/1 3/3/1
     const auto* textureArtifact = result.manifest.FindSubAsset("texture:parser/texture/0");
     ASSERT_NE(textureArtifact, nullptr);
     const auto texture = NLS::Render::Assets::DeserializeTextureArtifact(
-        ReadBinaryFile(textureArtifact->artifactPath));
+        ReadArtifactFile(root, *textureArtifact));
     ASSERT_TRUE(texture.has_value());
     ASSERT_FALSE(texture->mips.empty());
     const auto& baseMip = texture->mips.front();
@@ -4007,8 +4351,8 @@ TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsUseMaterialSlotC
     ASSERT_NE(baseColorArtifact, nullptr);
     ASSERT_NE(normalArtifact, nullptr);
 
-    const auto baseColor = NLS::Render::Assets::DeserializeTextureArtifact(ReadBinaryFile(baseColorArtifact->artifactPath));
-    const auto normal = NLS::Render::Assets::DeserializeTextureArtifact(ReadBinaryFile(normalArtifact->artifactPath));
+    const auto baseColor = NLS::Render::Assets::DeserializeTextureArtifact(ReadArtifactFile(root, *baseColorArtifact));
+    const auto normal = NLS::Render::Assets::DeserializeTextureArtifact(ReadArtifactFile(root, *normalArtifact));
     ASSERT_TRUE(baseColor.has_value());
     ASSERT_TRUE(normal.has_value());
     EXPECT_EQ(baseColor->colorSpace, NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
@@ -4139,7 +4483,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportKeepsOversizedReferencedTextur
     const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
     ASSERT_NE(textureArtifact, nullptr);
     const auto texture = NLS::Render::Assets::DeserializeTextureArtifact(
-        ReadBinaryFile(textureArtifact->artifactPath));
+        ReadArtifactFile(root, *textureArtifact));
     ASSERT_TRUE(texture.has_value());
     EXPECT_EQ(texture->width, 2049u);
     EXPECT_EQ(texture->height, 1u);
@@ -4282,7 +4626,7 @@ TEST(AssetImportPipelineTests, ExternalGltfNormalTexturesUseNormalMipIntent)
 
     const auto* normalArtifact = result.manifest.FindSubAsset("texture:image/0");
     ASSERT_NE(normalArtifact, nullptr);
-    const auto normal = NLS::Render::Assets::DeserializeTextureArtifact(ReadBinaryFile(normalArtifact->artifactPath));
+    const auto normal = NLS::Render::Assets::DeserializeTextureArtifact(ReadArtifactFile(root, *normalArtifact));
     ASSERT_TRUE(normal.has_value());
 #if NLS_HAS_DIRECTXTEX
     EXPECT_EQ(normal->format, NLS::Render::RHI::TextureFormat::BC5);
@@ -4365,18 +4709,23 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeTexture
     ASSERT_TRUE(result.imported);
     const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
     ASSERT_NE(textureArtifact, nullptr);
-    const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
+    const auto texturePayload = ReadArtifactFile(root, *textureArtifact);
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
     EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(texturePayload).has_value());
 
     const auto* materialArtifact = result.manifest.FindSubAsset("material:material/0");
     ASSERT_NE(materialArtifact, nullptr);
     const auto materialPayload = ReadArtifactPayloadText(
-        materialArtifact->artifactPath,
+        root,
+        *materialArtifact,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
+    const auto textureResourcePath = std::filesystem::path(textureArtifact->artifactPath)
+        .lexically_relative(root)
+        .generic_string();
     EXPECT_NE(materialPayload.find("Library/Artifacts/"), std::string::npos);
-    EXPECT_NE(materialPayload.find(".ntex"), std::string::npos);
+    EXPECT_NE(materialPayload.find(textureResourcePath), std::string::npos);
+    EXPECT_FALSE(std::filesystem::path(textureArtifact->artifactPath).filename().has_extension());
     EXPECT_EQ(materialPayload.find("Model/main_sponza/textures/HeroBaseColor.png"), std::string::npos);
 
     std::filesystem::remove_all(root);
@@ -4442,7 +4791,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedTextureUr
     ASSERT_TRUE(result.imported);
     const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
     ASSERT_NE(textureArtifact, nullptr);
-    const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
+    const auto texturePayload = ReadArtifactFile(root, *textureArtifact);
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
     EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(texturePayload).has_value());
 
@@ -4510,7 +4859,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesBackslashTextureUrisOn
     ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
     const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
     ASSERT_NE(textureArtifact, nullptr);
-    const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
+    const auto texturePayload = ReadArtifactFile(root, *textureArtifact);
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
     EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(texturePayload).has_value());
 }
@@ -4576,18 +4925,23 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBacksla
     ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
     const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
     ASSERT_NE(textureArtifact, nullptr);
-    const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
+    const auto texturePayload = ReadArtifactFile(root, *textureArtifact);
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
     EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(texturePayload).has_value());
 
     const auto* materialArtifact = result.manifest.FindSubAsset("material:material/0");
     ASSERT_NE(materialArtifact, nullptr);
     const auto materialPayload = ReadArtifactPayloadText(
-        materialArtifact->artifactPath,
+        root,
+        *materialArtifact,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
+    const auto textureResourcePath = std::filesystem::path(textureArtifact->artifactPath)
+        .lexically_relative(root)
+        .generic_string();
     EXPECT_NE(materialPayload.find("Library/Artifacts/"), std::string::npos);
-    EXPECT_NE(materialPayload.find(".ntex"), std::string::npos);
+    EXPECT_NE(materialPayload.find(textureResourcePath), std::string::npos);
+    EXPECT_FALSE(std::filesystem::path(textureArtifact->artifactPath).filename().has_extension());
     EXPECT_EQ(materialPayload.find("Model/main_sponza/textures/HeroBaseColor.png"), std::string::npos);
     EXPECT_EQ(materialPayload.find("Model\\main_sponza\\textures\\HeroBaseColor.png"), std::string::npos);
 }
@@ -4671,7 +5025,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBufferU
     ASSERT_TRUE(result.imported);
     const auto* meshArtifact = result.manifest.FindSubAsset("mesh:mesh/0");
     ASSERT_NE(meshArtifact, nullptr);
-    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(meshArtifact->artifactPath));
+    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *meshArtifact));
     ASSERT_TRUE(mesh.has_value());
     ASSERT_EQ(mesh->vertices.size(), 3u);
     ASSERT_EQ(mesh->indices.size(), 3u);
@@ -4768,7 +5122,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExportsGltfMultiPrimitiveMeshe
     const auto* firstPrimitiveArtifact = result.manifest.FindSubAsset("mesh:mesh/0/primitive/0");
     ASSERT_NE(firstPrimitiveArtifact, nullptr);
     const auto firstPrimitive =
-        NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(firstPrimitiveArtifact->artifactPath));
+        NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *firstPrimitiveArtifact));
     ASSERT_TRUE(firstPrimitive.has_value());
     ASSERT_EQ(firstPrimitive->vertices.size(), 3u);
     EXPECT_EQ(firstPrimitive->materialIndex, 0u);
@@ -4777,7 +5131,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExportsGltfMultiPrimitiveMeshe
     const auto* secondPrimitiveArtifact = result.manifest.FindSubAsset("mesh:mesh/0/primitive/1");
     ASSERT_NE(secondPrimitiveArtifact, nullptr);
     const auto secondPrimitive =
-        NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(secondPrimitiveArtifact->artifactPath));
+        NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *secondPrimitiveArtifact));
     ASSERT_TRUE(secondPrimitive.has_value());
     ASSERT_EQ(secondPrimitive->vertices.size(), 3u);
     EXPECT_EQ(secondPrimitive->materialIndex, 1u);
@@ -4785,7 +5139,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExportsGltfMultiPrimitiveMeshe
 
     const auto* secondMeshArtifact = result.manifest.FindSubAsset("mesh:mesh/1");
     ASSERT_NE(secondMeshArtifact, nullptr);
-    const auto secondMesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(secondMeshArtifact->artifactPath));
+    const auto secondMesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *secondMeshArtifact));
     ASSERT_TRUE(secondMesh.has_value());
     ASSERT_EQ(secondMesh->vertices.size(), 3u);
     EXPECT_EQ(secondMesh->materialIndex, 0u);
@@ -4892,7 +5246,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedBufferUri
     ASSERT_TRUE(result.imported);
     const auto* meshArtifact = result.manifest.FindSubAsset("mesh:mesh/0");
     ASSERT_NE(meshArtifact, nullptr);
-    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(meshArtifact->artifactPath));
+    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *meshArtifact));
     ASSERT_TRUE(mesh.has_value());
     ASSERT_EQ(mesh->vertices.size(), 3u);
     EXPECT_FLOAT_EQ(mesh->vertices[1].position[0], 1.0f);
@@ -5200,7 +5554,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitAssimpFbxBuildsArtifac
 
     const auto* meshArtifact = result.manifest.FindSubAsset("mesh:parser/mesh/0");
     ASSERT_NE(meshArtifact, nullptr);
-    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(meshArtifact->artifactPath));
+    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *meshArtifact));
     ASSERT_TRUE(mesh.has_value());
     EXPECT_FALSE(mesh->vertices.empty());
     EXPECT_FALSE(mesh->indices.empty());
@@ -5211,7 +5565,8 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitAssimpFbxBuildsArtifac
     const auto* prefabArtifact = result.manifest.FindSubAsset("prefab:AssimpCube");
     ASSERT_NE(prefabArtifact, nullptr);
     const auto prefabPayload = ReadArtifactPayloadText(
-        prefabArtifact->artifactPath,
+        root,
+        *prefabArtifact,
         NLS::Core::Assets::ArtifactType::Prefab,
         1u);
     const auto prefabGraph = NLS::Engine::Serialize::ObjectGraphReader::Read(prefabPayload);
@@ -5336,11 +5691,12 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxNeutralDiffusePolicyAffectsMater
         NLS::Core::Assets::ArtifactType::Material);
     ASSERT_NE(defaultMaterial, nullptr);
     const auto defaultPayload = ReadArtifactPayloadText(
-        defaultMaterial->artifactPath,
+        root,
+        *defaultMaterial,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
     EXPECT_NE(
-        defaultPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"1.000000 1.000000 1.000000 1.000000\"/>"),
+        defaultPayload.find("property _BaseColor Color 1.000000 1.000000 1.000000 1.000000"),
         std::string::npos);
     EXPECT_EQ(defaultPayload.find("0.500000 0.500000 0.500000 1.000000"), std::string::npos);
 
@@ -5354,11 +5710,12 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxNeutralDiffusePolicyAffectsMater
         NLS::Core::Assets::ArtifactType::Material);
     ASSERT_NE(preservedMaterial, nullptr);
     const auto preservedPayload = ReadArtifactPayloadText(
-        preservedMaterial->artifactPath,
+        root,
+        *preservedMaterial,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
     EXPECT_NE(
-        preservedPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.500000 0.500000 0.500000 1.000000\"/>"),
+        preservedPayload.find("property _BaseColor Color 0.500000 0.500000 0.500000 1.000000"),
         std::string::npos);
     EXPECT_NE(defaultMaterial->contentHash, preservedMaterial->contentHash)
         << "Changing FBX neutral-diffuse compatibility policy must change generated material identity.";
@@ -5442,14 +5799,15 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxBaseColorAlphaDecalImportsAsDeca
         NLS::Core::Assets::ArtifactType::Material);
     ASSERT_NE(transparentMaterial, nullptr);
     const auto transparentPayload = ReadArtifactPayloadText(
-        transparentMaterial->artifactPath,
+        root,
+        *transparentMaterial,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
-    EXPECT_NE(transparentPayload.find("<name>dirt_decal</name>"), std::string::npos);
-    EXPECT_NE(transparentPayload.find("<alphaMode>Blend</alphaMode>"), std::string::npos);
-    EXPECT_NE(transparentPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
-    EXPECT_NE(transparentPayload.find("<depthWriting>false</depthWriting>"), std::string::npos);
-    EXPECT_EQ(transparentPayload.find("u_OpacityMap"), std::string::npos)
+    EXPECT_NE(transparentPayload.find("name=dirt_decal"), std::string::npos);
+    EXPECT_NE(transparentPayload.find("alphaMode=Blend"), std::string::npos);
+    EXPECT_NE(transparentPayload.find("surfaceMode=Decal"), std::string::npos);
+    EXPECT_NE(transparentPayload.find("depthWrite=false"), std::string::npos);
+    EXPECT_EQ(transparentPayload.find("_OpacityMap"), std::string::npos)
         << "This regression must be covered by base-color alpha evidence, not the explicit opacity slot path.";
 
     const auto opaqueResult = importDecal(
@@ -5462,13 +5820,14 @@ TEST(AssetImportPipelineTests, ExternalAssimpFbxBaseColorAlphaDecalImportsAsDeca
         NLS::Core::Assets::ArtifactType::Material);
     ASSERT_NE(opaqueMaterial, nullptr);
     const auto opaquePayload = ReadArtifactPayloadText(
-        opaqueMaterial->artifactPath,
+        root,
+        *opaqueMaterial,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
-    EXPECT_NE(opaquePayload.find("<name>dirt_decal</name>"), std::string::npos);
-    EXPECT_NE(opaquePayload.find("<alphaMode>Opaque</alphaMode>"), std::string::npos);
-    EXPECT_NE(opaquePayload.find("<surfaceMode>Opaque</surfaceMode>"), std::string::npos);
-    EXPECT_EQ(opaquePayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_NE(opaquePayload.find("name=dirt_decal"), std::string::npos);
+    EXPECT_NE(opaquePayload.find("alphaMode=Opaque"), std::string::npos);
+    EXPECT_NE(opaquePayload.find("surfaceMode=Opaque"), std::string::npos);
+    EXPECT_EQ(opaquePayload.find("surfaceMode=Decal"), std::string::npos);
 
     std::filesystem::remove_all(root);
 }
@@ -5661,8 +6020,8 @@ TEST(AssetImportPipelineTests, ArtifactLoadTelemetrySummarizesStageBaselineForPr
         ~ScopedArtifactTelemetryClear() { ClearArtifactLoadTelemetry(); }
     } telemetryScope;
 
-    constexpr auto prefabPath = "Library/Artifacts/model/prefab.nprefab";
-    constexpr auto sceneLoadPath = "Library/Artifacts/scene/prefab.nprefab";
+    constexpr auto prefabPath = "Library/Artifacts/model/5d4b4d6c2b6c4a6c9b91d90753df2a8d";
+    constexpr auto sceneLoadPath = "Library/Artifacts/scene/0b2fe6f9f8a0418bbdb2266023d8fd5f";
 
     RecordArtifactLoadTelemetry({
         ArtifactLoadTelemetryStage::PrefabGraphLoad,

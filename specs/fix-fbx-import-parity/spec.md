@@ -213,7 +213,7 @@ Artists importing 3ds Max FBX assets through the Assimp fallback should get the 
 ### Key Entities
 
 - **Imported Scene Material**: Parser-exposed material channel data from FBX/glTF/OBJ import.
-- **Generated Material Artifact**: Serialized `.nmat` payload consumed by runtime material loaders and shaders.
+- **Generated Material Artifact**: Serialized `.mat` payload consumed by runtime material loaders and shaders.
 - **Unified Prefab Load Key**: Runtime cache identity built from source asset identity, manifest, prefab artifact, and renderer artifact stamps.
 
 ## Success Criteria

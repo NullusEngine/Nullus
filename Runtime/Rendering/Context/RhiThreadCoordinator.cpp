@@ -14,6 +14,7 @@
 #include <Debug/Assertion.h>
 #include <Debug/Logger.h>
 
+#include "Profiling/PerformanceStageStats.h"
 #include "Profiling/Profiler.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverInternal.h"
@@ -5804,6 +5805,10 @@ namespace NLS::Render::Context
             return result;
 
         auto completedResult = result;
+        NLS::Base::Profiling::PerformanceStageScope waitScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
+            "WaitPreviewFence",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
         const auto completionStatus = result.completion->Wait();
         completedResult.message = completionStatus.message;
         if (completionStatus.Succeeded())
@@ -5842,6 +5847,10 @@ namespace NLS::Render::Context
             return result;
 
         auto completedResult = result;
+        NLS::Base::Profiling::PerformanceStageScope waitScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
+            "WaitPreviewFence",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
         const auto completionStatus = result.completion->Wait();
         completedResult.message = completionStatus.message;
         if (completionStatus.Succeeded())
@@ -5948,6 +5957,45 @@ namespace NLS::Render::Context
             result,
             "RhiThreadCoordinator::BeginReadPixels");
         return result;
+    }
+
+    Render::RHI::RHIReadbackResult RhiThreadCoordinator::PollReadbackCompletion(
+        const Driver& driver,
+        const Render::RHI::RHIReadbackResult& readback)
+    {
+        NLS_PROFILE_SCOPE();
+        if (driver.m_impl == nullptr)
+            return {
+                Render::RHI::RHIReadbackStatusCode::BackendFailure,
+                "driver implementation is unavailable"
+            };
+        if (!readback.Succeeded() || readback.completion == nullptr)
+            return readback;
+
+        auto completedResult = readback;
+        const auto completionStatus = readback.completion->Poll();
+        completedResult.message = completionStatus.message;
+        if (completionStatus.code == Render::RHI::RHICompletionStatusCode::Pending)
+            return completedResult;
+
+        completedResult.completion = nullptr;
+        if (completionStatus.Succeeded())
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::Success;
+        }
+        else if (completionStatus.code == Render::RHI::RHICompletionStatusCode::DeviceLost)
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::DeviceLost;
+            MarkReadbackDeviceLostIfNeeded(
+                *driver.m_impl,
+                completedResult,
+                "RhiThreadCoordinator::PollReadbackCompletion");
+        }
+        else
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+        }
+        return completedResult;
     }
 
     bool RhiThreadCoordinator::PrepareUIRender(Driver& driver)

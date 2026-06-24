@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -18,6 +19,9 @@
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ServiceLocator.h"
 #include "GameObject.h"
+#include "Color.h"
+#include "Profiling/PerformanceStageStats.h"
+#include "Rect.h"
 #include "Reflection/Field.h"
 #include "Rendering/ExternalReflection.h"
 #include "Rendering/Resources/Material.h"
@@ -28,6 +32,8 @@
 #include "Serialize/ObjectGraphWriter.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PrefabDocument.h"
+#include "Vector2.h"
+#include "Vector4.h"
 
 namespace NLS::Engine::Serialize
 {
@@ -55,7 +61,10 @@ namespace NLS::Engine::Serialize
         MissingAssetPolicy missingAssetPolicy = MissingAssetPolicy::Preserve;
         InvalidReferencePolicy invalidReferencePolicy = InvalidReferencePolicy::Fail;
         bool deferAssetReferenceResolution = false;
+        bool synchronousAssetReferencePrewarm = false;
         bool suppressGameObjectCreatedEvents = false;
+        bool deferActivation = false;
+        bool rebuildRuntimeCachesAfterLoad = true;
     };
 
     struct DocumentAnalysisResult
@@ -150,6 +159,7 @@ namespace NLS::Engine::Serialize
             auto scene = std::make_unique<SceneSystem::Scene>();
             InstanceContext context;
             context.document = &document;
+            BuildObjectRecordIndex(context, document);
 
             const auto* gameObjects = FindProperty(*sceneRecord, "gameObjects");
             if (!gameObjects || gameObjects->value.GetKind() != PropertyValue::Kind::Array)
@@ -164,7 +174,7 @@ namespace NLS::Engine::Serialize
                 if (!objectId.has_value())
                     continue;
 
-                const auto* record = FindRecord(document, *objectId);
+                const auto* record = FindRecord(context, *objectId);
                 if (!record ||
                     !IsInstantiableRecordState(record->state) ||
                     !RecordTypeMatches<GameObject>(*record))
@@ -238,18 +248,42 @@ namespace NLS::Engine::Serialize
             SceneSystem::Scene& scene,
             const LoadPolicy& policy)
         {
-            auto graph = prefab.graph;
-            ApplyOverrides(graph);
+            if (!prefab.graph.overrides.empty())
+            {
+                auto graph = prefab.graph;
+                ApplyOverrides(graph);
+                return InstantiatePrefabGraph(graph, scene, policy);
+            }
+
+            return InstantiatePrefabGraph(prefab.graph, scene, policy);
+        }
+
+        static PrefabInstantiationResult InstantiatePrefabGraph(
+            const ObjectGraphDocument& graph,
+            SceneSystem::Scene& scene,
+            const LoadPolicy& policy)
+        {
+            namespace Profiling = NLS::Base::Profiling;
 
             PrefabInstantiationResult result;
-            AnalyzeObjectTypes(graph, policy, result.diagnostics);
-            AnalyzeReflectedObjectReferenceShapes(graph, policy, result.diagnostics);
-            AnalyzeAssetReferences(graph, policy, result.diagnostics);
+            {
+                Profiling::PerformanceStageScope resolveScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "ResolveDependencies",
+                    Profiling::PerformanceStageThread::Main);
+                AnalyzeObjectTypes(graph, policy, result.diagnostics);
+                AnalyzeReflectedObjectReferenceShapes(graph, policy, result.diagnostics);
+                AnalyzeAssetReferences(graph, policy, result.diagnostics);
+                resolveScope.AddCounter("objectCount", graph.objects.size());
+            }
             if (result.diagnostics.HasErrors())
                 return result;
 
             InstanceContext context;
             context.document = &graph;
+            BuildObjectRecordIndex(context, graph);
+            const auto instantiableObjectCount = CountInstantiableGameObjectRecords(graph);
+            const auto componentRecordCount = CountComponentRecords(graph);
             const auto instanceSeed = NLS::Guid::New().ToString();
             auto makeInstanceObjectId = [&instanceSeed](const ObjectId& sourceObject)
             {
@@ -257,54 +291,214 @@ namespace NLS::Engine::Serialize
                     "Prefab.Instance:" + instanceSeed + ":" + sourceObject.GetGuid().ToString()));
             };
 
-            for (const auto& object : graph.objects)
             {
-                if (!IsInstantiableRecordState(object.state))
-                    continue;
+                Profiling::PerformanceStageScope allocateScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "AllocateInstanceObjects",
+                    Profiling::PerformanceStageThread::Main);
+                context.gameObjects.reserve(instantiableObjectCount);
+                result.sourceToInstance.reserve(instantiableObjectCount + componentRecordCount);
+                result.sourceByInstanceObject.reserve(instantiableObjectCount);
+                for (const auto& object : graph.objects)
+                {
+                    if (!IsInstantiableRecordState(object.state))
+                        continue;
 
-                if (!RecordTypeMatches<GameObject>(object))
-                    continue;
+                    if (!RecordTypeMatches<GameObject>(object))
+                        continue;
 
-                auto* gameObject = CreateGameObject(object, policy);
-                if (!gameObject)
-                    continue;
+                    auto* gameObject = CreateGameObject(object, policy);
+                    if (!gameObject)
+                        continue;
 
-                result.sourceToInstance.emplace(object.id, makeInstanceObjectId(object.id));
-                result.sourceByInstanceObject.emplace(gameObject, object.id);
-                context.gameObjects.emplace(object.id, gameObject);
+                    result.sourceToInstance.emplace(object.id, makeInstanceObjectId(object.id));
+                    result.sourceByInstanceObject.emplace(gameObject, object.id);
+                    context.gameObjects.emplace(object.id, gameObject);
+                }
+                allocateScope.AddCounter("objectCount", context.gameObjects.size());
+                allocateScope.AddCounter("reservedObjectCount", instantiableObjectCount);
             }
 
-            for (const auto& object : graph.objects)
             {
-                if (!IsInstantiableRecordState(object.state))
-                    continue;
+                Profiling::PerformanceStageScope restoreGameObjectsScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "RestoreGameObjectState",
+                Profiling::PerformanceStageThread::Main);
+                size_t restoredGameObjectCount = 0u;
+                size_t directGameObjectPropertyCount = 0u;
+                for (const auto& object : graph.objects)
+                {
+                    if (!IsInstantiableRecordState(object.state))
+                        continue;
 
-                if (!RecordTypeMatches<GameObject>(object))
-                    continue;
+                    if (!RecordTypeMatches<GameObject>(object))
+                        continue;
 
-                auto* gameObject = FindGameObject(context, object.id);
-                if (!gameObject)
-                    continue;
+                    auto* gameObject = FindGameObject(context, object.id);
+                    if (!gameObject)
+                        continue;
 
-                ApplyGameObjectState(*gameObject, object);
-                InstantiateComponents(graph, object, *gameObject, context, policy);
-                RegisterComponentMappings(object, result, graph, makeInstanceObjectId);
+                    directGameObjectPropertyCount += ApplyGameObjectState(*gameObject, object);
+                    ++restoredGameObjectCount;
+                }
+                restoreGameObjectsScope.AddCounter("restoredGameObjectCount", restoredGameObjectCount);
+                restoreGameObjectsScope.AddCounter("directGameObjectPropertyCount", directGameObjectPropertyCount);
             }
 
-            for (const auto& object : graph.objects)
             {
-                if (!IsInstantiableRecordState(object.state))
-                    continue;
+                Profiling::PerformanceStageScope createComponentsScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "CreateComponents",
+                    Profiling::PerformanceStageThread::Main);
+                context.components.reserve(componentRecordCount);
+                context.componentBindings.reserve(componentRecordCount);
+                const auto indexedLookupStart = context.indexedRecordLookupCount;
+                const auto linearLookupStart = context.linearRecordLookupCount;
+                size_t createdComponentCount = 0u;
+                for (const auto& object : graph.objects)
+                {
+                    if (!IsInstantiableRecordState(object.state))
+                        continue;
 
-                if (RecordTypeMatches<GameObject>(object))
-                    ResolveParent(context, object);
+                    if (!RecordTypeMatches<GameObject>(object))
+                        continue;
+
+                    auto* gameObject = FindGameObject(context, object.id);
+                    if (!gameObject)
+                        continue;
+
+                    createdComponentCount += CreateComponents(graph, object, *gameObject, context);
+                }
+                createComponentsScope.AddCounter("createdComponentCount", createdComponentCount);
+                createComponentsScope.AddCounter("componentRecordCount", componentRecordCount);
+                createComponentsScope.AddCounter(
+                    "indexedRecordLookupCount",
+                    context.indexedRecordLookupCount - indexedLookupStart);
+                createComponentsScope.AddCounter(
+                    "linearRecordLookupCount",
+                    context.linearRecordLookupCount - linearLookupStart);
+            }
+
+            {
+                Profiling::PerformanceStageScope deserializeScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "DeserializeComponents",
+                    Profiling::PerformanceStageThread::Main);
+                const auto indexedLookupStart = context.indexedRecordLookupCount;
+                const auto linearLookupStart = context.linearRecordLookupCount;
+                size_t restoredGameObjectCount = 0u;
+                size_t componentCount = 0u;
+                for (const auto& object : graph.objects)
+                {
+                    if (!IsInstantiableRecordState(object.state))
+                        continue;
+
+                    if (!RecordTypeMatches<GameObject>(object))
+                        continue;
+                    componentCount += PopulateComponents(object, context, policy);
+                    RegisterComponentMappings(object, result, context, makeInstanceObjectId);
+                    ++restoredGameObjectCount;
+                }
+                deserializeScope.AddCounter("componentCount", componentCount);
+                deserializeScope.AddCounter("restoredGameObjectCount", restoredGameObjectCount);
+                deserializeScope.AddCounter("restoredComponentCount", componentCount);
+                deserializeScope.AddCounter(
+                    "indexedRecordLookupCount",
+                    context.indexedRecordLookupCount - indexedLookupStart);
+                deserializeScope.AddCounter(
+                    "linearRecordLookupCount",
+                    context.linearRecordLookupCount - linearLookupStart);
+            }
+
+            {
+                Profiling::PerformanceStageScope bindScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "BindExternalAssetReferences",
+                    Profiling::PerformanceStageThread::Main);
+                const auto bindingCounts = BindExternalAssetReferences(context, policy);
+                bindScope.AddCounter("componentCount", context.componentBindings.size());
+                bindScope.AddCounter("candidateComponentCount", bindingCounts.candidateComponentCount);
+                bindScope.AddCounter("scannedComponentCount", bindingCounts.scannedComponentCount);
+                bindScope.AddCounter("assetReferenceBindingCount", bindingCounts.propertyCount);
+                bindScope.AddCounter("assetReferenceElementBindingCount", bindingCounts.elementCount);
+                bindScope.AddCounter("meshReferenceCacheHitCount", context.meshReferenceCacheHitCount);
+                bindScope.AddCounter("meshReferenceCacheMissCount", context.meshReferenceCacheMissCount);
+                bindScope.AddCounter("materialReferenceCacheHitCount", context.materialReferenceCacheHitCount);
+                bindScope.AddCounter("materialReferenceCacheMissCount", context.materialReferenceCacheMissCount);
+                bindScope.AddCounter("meshResourceLookupCount", context.meshResourceLookupCount);
+                bindScope.AddCounter("materialResourceLookupCount", context.materialResourceLookupCount);
+            }
+
+            {
+                Profiling::PerformanceStageScope fixupScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "FixupInternalReferences",
+                    Profiling::PerformanceStageThread::Main);
+                size_t parentFixupCount = 0u;
+                for (const auto& object : graph.objects)
+                {
+                    if (!IsInstantiableRecordState(object.state))
+                        continue;
+
+                    if (RecordTypeMatches<GameObject>(object))
+                    {
+                        if (ResolveParent(context, object))
+                            ++parentFixupCount;
+                    }
+                }
+                fixupScope.AddCounter("parentFixupCount", parentFixupCount);
             }
 
             result.root = FindGameObject(context, graph.root);
             if (result.root)
-                scene.AddGameObject(result.root);
+            {
+                Profiling::PerformanceStageScope registerScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "RegisterRenderers",
+                    Profiling::PerformanceStageThread::Main);
+                size_t rendererCount = 0u;
+                for (const auto& [objectId, gameObject] : context.gameObjects)
+                {
+                    (void)objectId;
+                    if (gameObject != nullptr && gameObject->GetComponent<Components::MeshRenderer>() != nullptr)
+                        ++rendererCount;
+                }
+                registerScope.AddCounter("rendererCount", rendererCount);
+                registerScope.AddCounter("objectCount", context.gameObjects.size());
+                registerScope.AddCounter("componentCount", context.componentBindings.size());
+                scene.AddGameObject(
+                    result.root,
+                    policy.deferActivation
+                        ? SceneSystem::Scene::AddGameObjectActivation::Deferred
+                        : SceneSystem::Scene::AddGameObjectActivation::Immediate);
+            }
 
-            scene.RebuildRuntimeCachesAfterLoad();
+            {
+                Profiling::PerformanceStageScope registerPhysicsScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "RegisterPhysics",
+                    Profiling::PerformanceStageThread::Main);
+            }
+
+            {
+                Profiling::PerformanceStageScope registerScriptsScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "RegisterScripts",
+                    Profiling::PerformanceStageThread::Main);
+            }
+
+            if (policy.rebuildRuntimeCachesAfterLoad)
+                scene.RebuildRuntimeCachesAfterLoad();
+            {
+                Profiling::PerformanceStageScope lifecycleScope(
+                    Profiling::PerformanceStageDomain::Prefab,
+                    "InvokeLifecycle",
+                    Profiling::PerformanceStageThread::Main);
+                size_t activatedObjectCount = 0u;
+                if (policy.deferActivation && scene.IsPlaying() && result.root != nullptr)
+                    activatedObjectCount = scene.ActivateGameObjectForPlay(result.root);
+                lifecycleScope.AddCounter("activatedObjectCount", activatedObjectCount);
+            }
             return result;
         }
 
@@ -354,13 +548,60 @@ namespace NLS::Engine::Serialize
         struct InstanceContext
         {
             const ObjectGraphDocument* document = nullptr;
+            std::unordered_map<ObjectId, const ObjectRecord*> objectRecordsById;
             std::unordered_map<ObjectId, GameObject*> gameObjects;
             std::unordered_map<ObjectId, Components::Component*> components;
+            std::vector<std::pair<Components::Component*, const ObjectRecord*>> componentBindings;
+            std::vector<size_t> assetReferenceBindingIndices;
             std::unordered_map<std::string, Core::ResourceManagement::MeshManager::Mesh*> meshResourcesByNormalizedPath;
             std::unordered_map<std::string, Core::ResourceManagement::MaterialManager::Material*> materialResourcesByNormalizedPath;
+            std::unordered_map<std::string, Core::ResourceManagement::MeshManager::Mesh*> meshResourcesByResolvedReferencePath;
+            std::unordered_map<std::string, Core::ResourceManagement::MaterialManager::Material*> materialResourcesByResolvedReferencePath;
+            size_t indexedRecordLookupCount = 0u;
+            size_t linearRecordLookupCount = 0u;
+            size_t meshReferenceCacheHitCount = 0u;
+            size_t meshReferenceCacheMissCount = 0u;
+            size_t materialReferenceCacheHitCount = 0u;
+            size_t materialReferenceCacheMissCount = 0u;
+            size_t meshResourceLookupCount = 0u;
+            size_t materialResourceLookupCount = 0u;
             bool meshResourcePathIndexBuilt = false;
             bool materialResourcePathIndexBuilt = false;
         };
+
+        static void BuildObjectRecordIndex(InstanceContext& context, const ObjectGraphDocument& document)
+        {
+            context.objectRecordsById.clear();
+            context.objectRecordsById.reserve(document.objects.size());
+            for (const auto& object : document.objects)
+                context.objectRecordsById.emplace(object.id, &object);
+        }
+
+        static size_t CountInstantiableGameObjectRecords(const ObjectGraphDocument& document)
+        {
+            size_t count = 0u;
+            for (const auto& object : document.objects)
+            {
+                if (IsInstantiableRecordState(object.state) && RecordTypeMatches<GameObject>(object))
+                    ++count;
+            }
+            return count;
+        }
+
+        static size_t CountComponentRecords(const ObjectGraphDocument& document)
+        {
+            size_t count = 0u;
+            for (const auto& object : document.objects)
+            {
+                if (!IsInstantiableRecordState(object.state))
+                    continue;
+
+                const auto type = NLS::meta::Type::GetFromName(object.typeName);
+                if (type.IsValid() && type.DerivesFrom(NLS_TYPEOF(Components::Component)))
+                    ++count;
+            }
+            return count;
+        }
 
         static const ObjectRecord* FindRecord(const ObjectGraphDocument& document, const ObjectId& id)
         {
@@ -370,6 +611,19 @@ namespace NLS::Engine::Serialize
                     return &object;
             }
             return nullptr;
+        }
+
+        static const ObjectRecord* FindRecord(InstanceContext& context, const ObjectId& id)
+        {
+            const auto found = context.objectRecordsById.find(id);
+            if (found != context.objectRecordsById.end())
+            {
+                ++context.indexedRecordLookupCount;
+                return found->second;
+            }
+
+            ++context.linearRecordLookupCount;
+            return context.document != nullptr ? FindRecord(*context.document, id) : nullptr;
         }
 
         static const ObjectRecord* FindRecord(
@@ -438,6 +692,25 @@ namespace NLS::Engine::Serialize
             return property->value.GetString();
         }
 
+        static std::optional<bool> ReadBool(const ObjectRecord& record, const char* name)
+        {
+            const auto* property = FindProperty(record, name);
+            if (!property || property->value.GetKind() != PropertyValue::Kind::Bool)
+                return std::nullopt;
+            return property->value.GetBool();
+        }
+
+        static std::optional<int> ReadInt(const ObjectRecord& record, const char* name)
+        {
+            const auto* property = FindProperty(record, name);
+            if (!property || property->value.GetKind() != PropertyValue::Kind::Integer)
+                return std::nullopt;
+            const auto value = property->value.GetInteger();
+            if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max())
+                return std::nullopt;
+            return static_cast<int>(value);
+        }
+
         static bool IsGameObjectGraphProperty(const std::string& name)
         {
             return name == "parent" ||
@@ -447,9 +720,25 @@ namespace NLS::Engine::Serialize
                 name == "largeSceneHLOD";
         }
 
+        static bool IsGameObjectDirectOrGraphProperty(const std::string& name)
+        {
+            return IsGameObjectGraphProperty(name) ||
+                name == "name" ||
+                name == "tag" ||
+                name == "active" ||
+                name == "layer";
+        }
+
         static bool IsNoGraphProperty(const std::string&)
         {
             return false;
+        }
+
+        static bool IsBatchedTransformProperty(const std::string& name)
+        {
+            return name == "localPosition" ||
+                name == "localRotation" ||
+                name == "localScale";
         }
 
         template<typename ComponentType>
@@ -474,6 +763,21 @@ namespace NLS::Engine::Serialize
             return false;
         }
 
+        static bool IsExternalAssetReferenceBindingProperty(const ObjectRecord& record, const PropertyRecord& property)
+        {
+            return IsDeferredAssetProperty(record, property.name);
+        }
+
+        static bool HasExternalAssetReferenceBindingProperty(const ObjectRecord& record)
+        {
+            for (const auto& property : record.properties)
+            {
+                if (IsExternalAssetReferenceBindingProperty(record, property))
+                    return true;
+            }
+            return false;
+        }
+
         static GameObject* CreateGameObject(const ObjectRecord& record, const LoadPolicy& policy)
         {
             const auto name = ReadString(record, "name").value_or(record.debugName);
@@ -489,18 +793,91 @@ namespace NLS::Engine::Serialize
             return found != context.gameObjects.end() ? found->second : nullptr;
         }
 
-        static void ApplyGameObjectState(GameObject& gameObject, const ObjectRecord& record)
+        static size_t ApplyGameObjectState(GameObject& gameObject, const ObjectRecord& record)
         {
-            ApplyReflectedFields(gameObject, record, IsGameObjectGraphProperty);
-            if (const auto sourceObjectKey = ReadString(record, "sourceObjectKey"); sourceObjectKey.has_value())
-                gameObject.SetSourceObjectKey(*sourceObjectKey);
+            size_t directPropertyCount = 0u;
+            if (CanApplyDirectGameObjectState(record))
+            {
+                ApplyDirectGameObjectState(gameObject, record, directPropertyCount);
+                ApplyReflectedFields(gameObject, record, IsGameObjectDirectOrGraphProperty);
+            }
             else
+            {
+                ApplyReflectedFields(gameObject, record, IsGameObjectGraphProperty);
+            }
+            if (const auto sourceObjectKey = ReadString(record, "sourceObjectKey"); sourceObjectKey.has_value())
+            {
+                gameObject.SetSourceObjectKey(*sourceObjectKey);
+                ++directPropertyCount;
+            }
+            else
+            {
                 gameObject.SetSourceObjectKey({});
+            }
 
             if (const auto* hlodMetadata = FindProperty(record, "largeSceneHLOD"))
+            {
                 gameObject.SetLargeSceneHLODMetadata(ObjectGraphWriter::WriteValueForRuntimeMetadata(hlodMetadata->value).dump());
+                ++directPropertyCount;
+            }
             else
+            {
                 gameObject.SetLargeSceneHLODMetadata({});
+            }
+            return directPropertyCount;
+        }
+
+        static bool CanApplyDirectGameObjectState(const ObjectRecord& record)
+        {
+            for (const auto& property : record.properties)
+            {
+                if ((property.name == "name" || property.name == "tag") &&
+                    property.value.GetKind() != PropertyValue::Kind::String)
+                {
+                    return false;
+                }
+
+                if (property.name == "active" && property.value.GetKind() != PropertyValue::Kind::Bool)
+                    return false;
+
+                if (property.name == "layer")
+                {
+                    const auto value = ReadInt(record, "layer");
+                    if (!value.has_value())
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        static void ApplyDirectGameObjectState(
+            GameObject& gameObject,
+            const ObjectRecord& record,
+            size_t& directPropertyCount)
+        {
+            if (const auto name = ReadString(record, "name"); name.has_value())
+            {
+                gameObject.SetName(*name);
+                ++directPropertyCount;
+            }
+
+            if (const auto tag = ReadString(record, "tag"); tag.has_value())
+            {
+                gameObject.SetTag(*tag);
+                ++directPropertyCount;
+            }
+
+            if (const auto active = ReadBool(record, "active"); active.has_value())
+            {
+                gameObject.SetActive(*active);
+                ++directPropertyCount;
+            }
+
+            if (const auto layer = ReadInt(record, "layer"); layer.has_value())
+            {
+                gameObject.SetLayer(*layer);
+                ++directPropertyCount;
+            }
         }
 
         static void InstantiateComponents(
@@ -510,10 +887,23 @@ namespace NLS::Engine::Serialize
             InstanceContext& context,
             const LoadPolicy& policy = {})
         {
+            const auto bindingStart = context.componentBindings.size();
+            CreateComponents(document, gameObjectRecord, gameObject, context);
+            PopulateComponents(gameObjectRecord, context, policy);
+            BindExternalAssetReferences(context, policy, bindingStart, context.componentBindings.size());
+        }
+
+        static size_t CreateComponents(
+            const ObjectGraphDocument& document,
+            const ObjectRecord& gameObjectRecord,
+            GameObject& gameObject,
+            InstanceContext& context)
+        {
             const auto* components = FindProperty(gameObjectRecord, "components");
             if (!components || components->value.GetKind() != PropertyValue::Kind::Array)
-                return;
+                return 0u;
 
+            size_t createdComponentCount = 0u;
             for (size_t index = 0; index < components->value.GetArray().size(); ++index)
             {
                 const auto& reference = components->value.GetArray()[index];
@@ -521,7 +911,7 @@ namespace NLS::Engine::Serialize
                 if (!componentId.has_value())
                     continue;
 
-                const auto* componentRecord = FindRecord(document, *componentId);
+                const auto* componentRecord = FindRecord(context, *componentId);
                 if (!componentRecord)
                     continue;
 
@@ -530,9 +920,46 @@ namespace NLS::Engine::Serialize
                     continue;
 
                 context.components.emplace(componentRecord->id, component);
-                ApplyComponentState(*component, *componentRecord, context, policy);
+                if (HasExternalAssetReferenceBindingProperty(*componentRecord))
+                    context.assetReferenceBindingIndices.push_back(context.componentBindings.size());
+                context.componentBindings.emplace_back(component, componentRecord);
                 gameObject.MoveComponent(component, index);
+                ++createdComponentCount;
             }
+            return createdComponentCount;
+        }
+
+        static size_t PopulateComponents(
+            const ObjectRecord& gameObjectRecord,
+            InstanceContext& context,
+            const LoadPolicy& policy = {})
+        {
+            const auto* components = FindProperty(gameObjectRecord, "components");
+            if (!components || components->value.GetKind() != PropertyValue::Kind::Array)
+                return 0u;
+
+            size_t restoredComponentCount = 0u;
+            for (const auto& reference : components->value.GetArray())
+            {
+                if (context.document == nullptr)
+                    continue;
+
+                const auto componentId = ResolveObjectId(*context.document, reference);
+                if (!componentId.has_value())
+                    continue;
+
+                const auto component = context.components.find(*componentId);
+                if (component == context.components.end() || component->second == nullptr)
+                    continue;
+
+                const auto* componentRecord = FindRecord(context, *componentId);
+                if (!componentRecord)
+                    continue;
+
+                ApplyComponentState(*component->second, *componentRecord, policy);
+                ++restoredComponentCount;
+            }
+            return restoredComponentCount;
         }
 
         static Components::Component* EnsureComponent(GameObject& gameObject, const ObjectRecord& record, size_t index)
@@ -562,12 +989,113 @@ namespace NLS::Engine::Serialize
         static void ApplyComponentState(
             Components::Component& component,
             const ObjectRecord& record,
-            InstanceContext& context,
             const LoadPolicy& policy = {})
         {
-            if (policy.deferAssetReferenceResolution)
-                ApplyDeferredAssetReferenceHints(component, record, context);
-            ApplyReflectedFields(component, record, IsNoGraphProperty, &policy, &context);
+            if (RecordTypeMatchesComponent<Components::TransformComponent>(record) &&
+                TryApplyBatchedTransformState(component, record))
+            {
+                ApplyReflectedFields(component, record, IsBatchedTransformProperty, &policy, nullptr);
+                return;
+            }
+
+            ApplyReflectedFields(component, record, IsNoGraphProperty, &policy, nullptr);
+        }
+
+        static bool TryApplyBatchedTransformState(
+            Components::Component& component,
+            const ObjectRecord& record)
+        {
+            const auto* positionProperty = FindProperty(record, "localPosition");
+            const auto* rotationProperty = FindProperty(record, "localRotation");
+            const auto* scaleProperty = FindProperty(record, "localScale");
+            if (positionProperty == nullptr || rotationProperty == nullptr || scaleProperty == nullptr)
+                return false;
+
+            const auto position = TryReadVector3(positionProperty->value);
+            const auto rotation = TryReadQuaternion(rotationProperty->value);
+            const auto scale = TryReadVector3(scaleProperty->value);
+            if (!position.has_value() || !rotation.has_value() || !scale.has_value())
+                return false;
+
+            static_cast<Components::TransformComponent&>(component).SetLocalTransform(
+                *position,
+                *rotation,
+                *scale);
+            return true;
+        }
+
+        struct ExternalAssetBindingCounts
+        {
+            size_t propertyCount = 0u;
+            size_t elementCount = 0u;
+            size_t candidateComponentCount = 0u;
+            size_t scannedComponentCount = 0u;
+        };
+
+        static ExternalAssetBindingCounts BindExternalAssetReferences(InstanceContext& context, const LoadPolicy& policy)
+        {
+            return BindExternalAssetReferences(context, policy, 0u, context.componentBindings.size());
+        }
+
+        static ExternalAssetBindingCounts BindExternalAssetReferences(
+            InstanceContext& context,
+            const LoadPolicy& policy,
+            size_t firstBindingIndex,
+            size_t lastBindingIndex)
+        {
+            ExternalAssetBindingCounts bindingCounts;
+            lastBindingIndex = std::min(lastBindingIndex, context.componentBindings.size());
+            for (const auto bindingIndex : context.assetReferenceBindingIndices)
+            {
+                if (bindingIndex < firstBindingIndex || bindingIndex >= lastBindingIndex)
+                    continue;
+
+                ++bindingCounts.candidateComponentCount;
+                const auto& [component, record] = context.componentBindings[bindingIndex];
+                if (component == nullptr || record == nullptr)
+                    continue;
+
+                ++bindingCounts.scannedComponentCount;
+                if (policy.deferAssetReferenceResolution)
+                    ApplyDeferredAssetReferenceHints(*component, *record, context);
+
+                for (const auto& property : record->properties)
+                {
+                    if (!IsExternalAssetReferenceBindingProperty(*record, property))
+                        continue;
+
+                    ++bindingCounts.propertyCount;
+                    bindingCounts.elementCount += CountExternalAssetReferenceElements(property.value);
+                    if (!policy.deferAssetReferenceResolution)
+                        ResolveRuntimeAssetReference(*component, *record, property, context);
+                }
+            }
+            return bindingCounts;
+        }
+
+        static size_t CountExternalAssetReferenceElements(const PropertyValue& value)
+        {
+            switch (value.GetKind())
+            {
+            case PropertyValue::Kind::ObjectReference:
+                return value.GetObjectReference().guid.IsValid() ? 1u : 0u;
+            case PropertyValue::Kind::Array:
+            {
+                size_t count = 0u;
+                for (const auto& item : value.GetArray())
+                    count += CountExternalAssetReferenceElements(item);
+                return count;
+            }
+            case PropertyValue::Kind::Object:
+            {
+                size_t count = 0u;
+                for (const auto& property : value.GetObject())
+                    count += CountExternalAssetReferenceElements(property.second);
+                return count;
+            }
+            default:
+                return 0u;
+            }
         }
 
         static void ApplyReflectedFields(
@@ -582,12 +1110,20 @@ namespace NLS::Engine::Serialize
             if (!type.IsValid())
                 return;
 
+            ReflectionApplyTelemetry telemetry;
+            const auto collectTelemetry = NLS::Base::Profiling::PerformanceStageScope::GetActiveStats() != nullptr;
+
             for (const auto& property : record.properties)
             {
                 if (isGraphProperty && isGraphProperty(property.name))
                     continue;
 
+                const auto fieldLookupStart = collectTelemetry ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
                 const auto field = type.GetField(property.name);
+                if (collectTelemetry)
+                    telemetry.fieldLookupDuration += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - fieldLookupStart);
+                ++telemetry.fieldLookupCount;
                 if (!field.IsValid() || field.IsReadOnly())
                     continue;
 
@@ -619,10 +1155,282 @@ namespace NLS::Engine::Serialize
                         "\" must use a Unity-style object reference shape.");
                 }
 
+                const auto directStart = collectTelemetry ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
+                const auto directApplied = TryApplyDirectPropertyValue(instance, field, property.value);
+                if (collectTelemetry)
+                    telemetry.directApplyDuration += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - directStart);
+                if (directApplied)
+                {
+                    ++telemetry.directApplyCount;
+                    continue;
+                }
+
+                const auto convertStart = collectTelemetry ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
                 const auto json = ConvertPropertyValue(property.value);
+                if (collectTelemetry)
+                    telemetry.convertDuration += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - convertStart);
+                ++telemetry.convertCount;
+
+                const auto deserializeStart = collectTelemetry ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
                 auto value = field.GetType().DeserializeJson(NLS::Json(json));
+                if (collectTelemetry)
+                    telemetry.deserializeDuration += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - deserializeStart);
+                ++telemetry.deserializeCount;
+
+                const auto setStart = collectTelemetry ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
                 field.SetValue(instance, value);
+                if (collectTelemetry)
+                    telemetry.setDuration += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - setStart);
+                ++telemetry.setCount;
             }
+
+            if (collectTelemetry)
+                RecordReflectionApplyTelemetry(telemetry);
+        }
+
+        struct ReflectionApplyTelemetry
+        {
+            std::chrono::microseconds fieldLookupDuration{0};
+            std::chrono::microseconds directApplyDuration{0};
+            std::chrono::microseconds convertDuration{0};
+            std::chrono::microseconds deserializeDuration{0};
+            std::chrono::microseconds setDuration{0};
+            uint64_t fieldLookupCount = 0u;
+            uint64_t directApplyCount = 0u;
+            uint64_t convertCount = 0u;
+            uint64_t deserializeCount = 0u;
+            uint64_t setCount = 0u;
+        };
+
+        static void RecordReflectionApplyTelemetry(const ReflectionApplyTelemetry& telemetry)
+        {
+            auto* stats = NLS::Base::Profiling::PerformanceStageScope::GetActiveStats();
+            if (stats == nullptr)
+                return;
+
+            RecordReflectionSubstage(*stats, "ReflectFieldLookup", telemetry.fieldLookupDuration, telemetry.fieldLookupCount);
+            RecordReflectionSubstage(*stats, "ApplyDirectPropertyValue", telemetry.directApplyDuration, telemetry.directApplyCount);
+            RecordReflectionSubstage(*stats, "ConvertPropertyValue", telemetry.convertDuration, telemetry.convertCount);
+            RecordReflectionSubstage(*stats, "DeserializePropertyValue", telemetry.deserializeDuration, telemetry.deserializeCount);
+            RecordReflectionSubstage(*stats, "SetReflectedField", telemetry.setDuration, telemetry.setCount);
+        }
+
+        static bool TryApplyDirectPropertyValue(
+            NLS::meta::Variant& instance,
+            const NLS::meta::Field& field,
+            const PropertyValue& value)
+        {
+            const auto fieldType = field.GetType();
+            if (fieldType == NLS_TYPEOF(bool) && value.GetKind() == PropertyValue::Kind::Bool)
+            {
+                const auto directValue = value.GetBool();
+                return field.SetValue(instance, NLS::meta::Variant(directValue));
+            }
+
+            if (fieldType == NLS_TYPEOF(int) && value.GetKind() == PropertyValue::Kind::Integer)
+            {
+                const auto directValue = static_cast<int>(value.GetInteger());
+                return field.SetValue(instance, NLS::meta::Variant(directValue));
+            }
+
+            if (fieldType == NLS_TYPEOF(float) &&
+                (value.GetKind() == PropertyValue::Kind::Number || value.GetKind() == PropertyValue::Kind::Integer))
+            {
+                const auto directValue = value.GetKind() == PropertyValue::Kind::Number
+                    ? static_cast<float>(value.GetNumber())
+                    : static_cast<float>(value.GetInteger());
+                return field.SetValue(instance, NLS::meta::Variant(directValue));
+            }
+
+            if (fieldType == NLS_TYPEOF(double) &&
+                (value.GetKind() == PropertyValue::Kind::Number || value.GetKind() == PropertyValue::Kind::Integer))
+            {
+                const auto directValue = value.GetKind() == PropertyValue::Kind::Number
+                    ? value.GetNumber()
+                    : static_cast<double>(value.GetInteger());
+                return field.SetValue(instance, NLS::meta::Variant(directValue));
+            }
+
+            if (fieldType == NLS_TYPEOF(std::string) && value.GetKind() == PropertyValue::Kind::String)
+            {
+                const auto directValue = value.GetString();
+                return field.SetValue(instance, NLS::meta::Variant(directValue));
+            }
+
+            if (fieldType == NLS_TYPEOF(Maths::Vector2))
+            {
+                if (auto directValue = TryReadVector2(value); directValue.has_value())
+                    return field.SetValue(instance, NLS::meta::Variant(*directValue));
+                return false;
+            }
+
+            if (fieldType == NLS_TYPEOF(Maths::Vector3))
+            {
+                if (auto directValue = TryReadVector3(value); directValue.has_value())
+                    return field.SetValue(instance, NLS::meta::Variant(*directValue));
+                return false;
+            }
+
+            if (fieldType == NLS_TYPEOF(Maths::Vector4))
+            {
+                if (auto directValue = TryReadVector4(value); directValue.has_value())
+                    return field.SetValue(instance, NLS::meta::Variant(*directValue));
+                return false;
+            }
+
+            if (fieldType == NLS_TYPEOF(Maths::Quaternion))
+            {
+                if (auto directValue = TryReadQuaternion(value); directValue.has_value())
+                    return field.SetValue(instance, NLS::meta::Variant(*directValue));
+                return false;
+            }
+
+            if (fieldType == NLS_TYPEOF(Maths::Color))
+            {
+                if (auto directValue = TryReadColor(value); directValue.has_value())
+                    return field.SetValue(instance, NLS::meta::Variant(*directValue));
+                return false;
+            }
+
+            if (fieldType == NLS_TYPEOF(Maths::Rect))
+            {
+                if (auto directValue = TryReadRect(value); directValue.has_value())
+                    return field.SetValue(instance, NLS::meta::Variant(*directValue));
+                return false;
+            }
+
+            return false;
+        }
+
+        static std::optional<float> TryReadFloatProperty(
+            const PropertyValue::ObjectValue& object,
+            const std::string_view name)
+        {
+            const auto found = std::find_if(
+                object.begin(),
+                object.end(),
+                [name](const auto& property)
+                {
+                    return property.first == name;
+                });
+            if (found == object.end())
+                return std::nullopt;
+
+            const auto& value = found->second;
+            if (value.GetKind() == PropertyValue::Kind::Number)
+                return static_cast<float>(value.GetNumber());
+            if (value.GetKind() == PropertyValue::Kind::Integer)
+                return static_cast<float>(value.GetInteger());
+            return std::nullopt;
+        }
+
+        static std::optional<Maths::Vector2> TryReadVector2(const PropertyValue& value)
+        {
+            if (value.GetKind() != PropertyValue::Kind::Object)
+                return std::nullopt;
+
+            const auto& object = value.GetObject();
+            const auto x = TryReadFloatProperty(object, "x");
+            const auto y = TryReadFloatProperty(object, "y");
+            if (!x.has_value() || !y.has_value())
+                return std::nullopt;
+            return Maths::Vector2(*x, *y);
+        }
+
+        static std::optional<Maths::Vector3> TryReadVector3(const PropertyValue& value)
+        {
+            if (value.GetKind() != PropertyValue::Kind::Object)
+                return std::nullopt;
+
+            const auto& object = value.GetObject();
+            const auto x = TryReadFloatProperty(object, "x");
+            const auto y = TryReadFloatProperty(object, "y");
+            const auto z = TryReadFloatProperty(object, "z");
+            if (!x.has_value() || !y.has_value() || !z.has_value())
+                return std::nullopt;
+            return Maths::Vector3(*x, *y, *z);
+        }
+
+        static std::optional<Maths::Vector4> TryReadVector4(const PropertyValue& value)
+        {
+            if (value.GetKind() != PropertyValue::Kind::Object)
+                return std::nullopt;
+
+            const auto& object = value.GetObject();
+            const auto x = TryReadFloatProperty(object, "x");
+            const auto y = TryReadFloatProperty(object, "y");
+            const auto z = TryReadFloatProperty(object, "z");
+            const auto w = TryReadFloatProperty(object, "w");
+            if (!x.has_value() || !y.has_value() || !z.has_value() || !w.has_value())
+                return std::nullopt;
+            return Maths::Vector4(*x, *y, *z, *w);
+        }
+
+        static std::optional<Maths::Quaternion> TryReadQuaternion(const PropertyValue& value)
+        {
+            if (value.GetKind() != PropertyValue::Kind::Object)
+                return std::nullopt;
+
+            const auto& object = value.GetObject();
+            const auto x = TryReadFloatProperty(object, "x");
+            const auto y = TryReadFloatProperty(object, "y");
+            const auto z = TryReadFloatProperty(object, "z");
+            const auto w = TryReadFloatProperty(object, "w");
+            if (!x.has_value() || !y.has_value() || !z.has_value() || !w.has_value())
+                return std::nullopt;
+            return Maths::Quaternion(*x, *y, *z, *w);
+        }
+
+        static std::optional<Maths::Color> TryReadColor(const PropertyValue& value)
+        {
+            if (value.GetKind() != PropertyValue::Kind::Object)
+                return std::nullopt;
+
+            const auto& object = value.GetObject();
+            const auto r = TryReadFloatProperty(object, "r");
+            const auto g = TryReadFloatProperty(object, "g");
+            const auto b = TryReadFloatProperty(object, "b");
+            const auto a = TryReadFloatProperty(object, "a");
+            if (!r.has_value() || !g.has_value() || !b.has_value() || !a.has_value())
+                return std::nullopt;
+            return Maths::Color(*r, *g, *b, *a);
+        }
+
+        static std::optional<Maths::Rect> TryReadRect(const PropertyValue& value)
+        {
+            if (value.GetKind() != PropertyValue::Kind::Object)
+                return std::nullopt;
+
+            const auto& object = value.GetObject();
+            const auto x = TryReadFloatProperty(object, "x");
+            const auto y = TryReadFloatProperty(object, "y");
+            const auto width = TryReadFloatProperty(object, "width");
+            const auto height = TryReadFloatProperty(object, "height");
+            if (!x.has_value() || !y.has_value() || !width.has_value() || !height.has_value())
+                return std::nullopt;
+            return Maths::Rect(*x, *y, *width, *height);
+        }
+
+        static void RecordReflectionSubstage(
+            NLS::Base::Profiling::PerformanceStageStats& stats,
+            const char* stageName,
+            std::chrono::microseconds duration,
+            uint64_t propertyCount)
+        {
+            if (propertyCount == 0u)
+                return;
+
+            NLS::Base::Profiling::PerformanceStageSample sample;
+            sample.domain = NLS::Base::Profiling::PerformanceStageDomain::Prefab;
+            sample.stageName = stageName;
+            sample.thread = NLS::Base::Profiling::PerformanceStageThread::Main;
+            sample.duration = duration;
+            sample.counters.emplace("propertyCount", propertyCount);
+            stats.Record(sample);
         }
 
         enum class UnityObjectReferenceApplyResult
@@ -723,29 +1531,33 @@ namespace NLS::Engine::Serialize
             }
         }
 
-        static void ResolveParent(const InstanceContext& context, const ObjectRecord& record)
+        static bool ResolveParent(const InstanceContext& context, const ObjectRecord& record)
         {
             auto* child = FindGameObject(context, record.id);
             if (!child)
-                return;
+                return false;
 
             const auto* parentProperty = FindProperty(record, "parent");
             if (!parentProperty || parentProperty->value.GetKind() != PropertyValue::Kind::ObjectReference)
-                return;
+                return false;
 
             const auto parentId = context.document != nullptr
                 ? context.document->ResolveObjectReference(parentProperty->value.GetObjectReference())
                 : std::optional<ObjectId> {};
             auto* parent = parentId.has_value() ? FindGameObject(context, *parentId) : nullptr;
             if (parent)
+            {
                 child->SetParent(*parent);
+                return true;
+            }
+            return false;
         }
 
         template<typename MakeInstanceObjectId>
         static void RegisterComponentMappings(
             const ObjectRecord& gameObjectRecord,
             PrefabInstantiationResult& result,
-            const ObjectGraphDocument& graph,
+            InstanceContext& context,
             const MakeInstanceObjectId& makeInstanceObjectId)
         {
             const auto* components = FindProperty(gameObjectRecord, "components");
@@ -754,15 +1566,17 @@ namespace NLS::Engine::Serialize
 
             for (const auto& reference : components->value.GetArray())
             {
-                const auto componentId = ResolveObjectId(graph, reference);
+                if (context.document == nullptr)
+                    continue;
+
+                const auto componentId = ResolveObjectId(*context.document, reference);
                 if (!componentId.has_value())
                     continue;
 
-                const auto* componentRecord = FindRecord(graph, *componentId);
-                if (!componentRecord)
+                if (!context.components.contains(*componentId))
                     continue;
 
-                result.sourceToInstance.emplace(componentRecord->id, makeInstanceObjectId(componentRecord->id));
+                result.sourceToInstance.emplace(*componentId, makeInstanceObjectId(*componentId));
             }
         }
 
@@ -1042,15 +1856,31 @@ namespace NLS::Engine::Serialize
             const std::string& path,
             InstanceContext& context)
         {
+            const auto cacheKey = NormalizeResourceCacheLookupKey(path);
+            if (!cacheKey.empty())
+            {
+                const auto cachedReference = context.meshResourcesByResolvedReferencePath.find(cacheKey);
+                if (cachedReference != context.meshResourcesByResolvedReferencePath.end())
+                {
+                    ++context.meshReferenceCacheHitCount;
+                    return cachedReference->second;
+                }
+            }
+
+            ++context.meshReferenceCacheMissCount;
+            ++context.meshResourceLookupCount;
             const auto candidates = BuildEquivalentResourcePathCandidates(
                 path,
                 Core::ResourceManagement::MeshManager::ResolveResourcePath(path),
                 Core::ResourceManagement::MeshManager::ProjectAssetsRoot());
-            return FindCachedResourceByEquivalentPath(
+            auto* resource = FindCachedResourceByEquivalentPath(
                 meshManager,
                 candidates,
                 context.meshResourcesByNormalizedPath,
                 context.meshResourcePathIndexBuilt);
+            if (!cacheKey.empty())
+                context.meshResourcesByResolvedReferencePath.emplace(cacheKey, resource);
+            return resource;
         }
 
         static Core::ResourceManagement::MaterialManager::Material* FindCachedMaterialResource(
@@ -1058,15 +1888,31 @@ namespace NLS::Engine::Serialize
             const std::string& path,
             InstanceContext& context)
         {
+            const auto cacheKey = NormalizeResourceCacheLookupKey(path);
+            if (!cacheKey.empty())
+            {
+                const auto cachedReference = context.materialResourcesByResolvedReferencePath.find(cacheKey);
+                if (cachedReference != context.materialResourcesByResolvedReferencePath.end())
+                {
+                    ++context.materialReferenceCacheHitCount;
+                    return cachedReference->second;
+                }
+            }
+
+            ++context.materialReferenceCacheMissCount;
+            ++context.materialResourceLookupCount;
             const auto candidates = BuildEquivalentResourcePathCandidates(
                 path,
                 Core::ResourceManagement::MaterialManager::ResolveResourcePath(path),
                 Core::ResourceManagement::MeshManager::ProjectAssetsRoot());
-            return FindCachedResourceByEquivalentPath(
+            auto* resource = FindCachedResourceByEquivalentPath(
                 materialManager,
                 candidates,
                 context.materialResourcesByNormalizedPath,
                 context.materialResourcePathIndexBuilt);
+            if (!cacheKey.empty())
+                context.materialResourcesByResolvedReferencePath.emplace(cacheKey, resource);
+            return resource;
         }
 
         static std::string ToProjectRelativeResourcePath(

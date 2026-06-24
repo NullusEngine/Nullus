@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include "Matrix4.h"
 #include "Matrix3.h"
 #include "Vector3.h"
@@ -60,6 +61,11 @@ public:
      */
     FUNCTION()
     void SetLocalScale(struct Maths::Vector3 p_newScale);
+
+    void SetLocalTransform(
+        struct Maths::Vector3 p_newPosition,
+        Maths::Quaternion p_newRotation,
+        struct Maths::Vector3 p_newScale);
 
 
     /**
@@ -146,6 +152,7 @@ public:
      * Return the FTransform attached to the CTransform
      */
     Maths::Transform& GetTransform();
+    uint64_t GetRenderRevision() const;
 
     /**
      * Return the transform world forward
@@ -179,6 +186,9 @@ public:
 
 
 private:
+    void MarkRenderTransformChanged();
+
     Maths::Transform m_transform;
+    uint64_t m_renderRevision = 1u;
 };
 } // namespace NLS::Engine::Components

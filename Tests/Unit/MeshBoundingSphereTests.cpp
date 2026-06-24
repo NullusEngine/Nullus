@@ -392,6 +392,37 @@ TEST(MeshArtifactTests, RejectsTruncatedVersionTwoBoundingSpherePayload)
     EXPECT_FALSE(NLS::Render::Assets::DeserializeMeshArtifact(truncated).has_value());
 }
 
+TEST(MeshArtifactTests, PreviewSampleReadsReferencedVerticesOutsideInitialVertexWindow)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_mesh_preview_sample_" + NLS::Guid::New().ToString());
+    const auto artifactPath = root / "Library" / "Artifacts" / "Hero" / "body.nmesh";
+    std::filesystem::create_directories(artifactPath.parent_path());
+
+    std::vector<NLS::Render::Geometry::Vertex> vertices;
+    vertices.reserve(16u);
+    for (uint32_t index = 0u; index < 16u; ++index)
+        vertices.push_back(VertexAt(static_cast<float>(index), 0.0f, 0.0f));
+
+    WriteMeshArtifact(artifactPath, vertices, {10u, 11u, 12u}, 7u);
+
+    const auto sampled = NLS::Render::Assets::LoadMeshArtifactPreviewSample(
+        artifactPath,
+        3u,
+        3u);
+
+    ASSERT_TRUE(sampled.has_value());
+    ASSERT_EQ(sampled->vertices.size(), 3u);
+    EXPECT_EQ(sampled->indices, (std::vector<uint32_t>{0u, 1u, 2u}));
+    EXPECT_FLOAT_EQ(sampled->vertices[0].position[0], 10.0f);
+    EXPECT_FLOAT_EQ(sampled->vertices[1].position[0], 11.0f);
+    EXPECT_FLOAT_EQ(sampled->vertices[2].position[0], 12.0f);
+    EXPECT_EQ(sampled->materialIndex, 7u);
+    EXPECT_TRUE(sampled->hasBoundingSphere);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(MeshManagerTests, ResolvesProjectLibraryMeshArtifactsFromProjectRoot)
 {
     EnsureMeshTestDriver();

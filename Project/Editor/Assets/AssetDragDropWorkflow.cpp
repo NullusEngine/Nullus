@@ -567,7 +567,8 @@ AssetDragDropResult AssetDragDropWorkflow::InstantiatePrefabInHierarchy(
         request.payload.subAssetKey,
         request.sceneAssetId,
         request.deferAssetReferenceResolution,
-        prefab == request.payload.prefab ? nullptr : prefab
+        prefab == request.payload.prefab ? nullptr : prefab,
+        request.synchronousAssetReferencePrewarm
     }, *request.target.scene);
 
     result.status = ConvertStatus(instantiate.status);

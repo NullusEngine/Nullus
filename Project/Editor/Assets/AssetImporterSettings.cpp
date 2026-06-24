@@ -1,11 +1,128 @@
 #include "Assets/AssetImporterSettings.h"
 
+#include "Assets/ModelTextureTextCodec.h"
 #include "Debug/Assertion.h"
 
+#include <algorithm>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace NLS::Editor::Assets
 {
+namespace
+{
+constexpr const char* kModelTextureSettingsVersionKey = "MODEL_TEXTURE_SETTINGS_VERSION";
+constexpr const char* kModelTextureUseExternalTexturesKey = "MODEL_TEXTURE_USE_EXTERNAL_TEXTURES";
+constexpr const char* kModelTextureSearchByNameKey = "MODEL_TEXTURE_SEARCH_BY_NAME";
+constexpr const char* kModelTextureAutoImportMissingKey = "MODEL_TEXTURE_AUTO_IMPORT_MISSING";
+constexpr const char* kModelTextureEmbeddedModeKey = "MODEL_TEXTURE_EMBEDDED_MODE";
+constexpr const char* kModelTextureRemapSettingPrefix = "MODEL_TEXTURE_REMAP.";
+constexpr uint32_t kCurrentModelTextureSettingsVersion = 1u;
+
+std::optional<bool> ParseStrictBool(const std::string& value)
+{
+    if (value == "true" || value == "1")
+        return true;
+    if (value == "false" || value == "0")
+        return false;
+    return std::nullopt;
+}
+
+bool StrictBoolFromSettings(
+    const std::map<std::string, std::string>& settings,
+    const char* key,
+    const bool fallback)
+{
+    const auto found = settings.find(key);
+    if (found == settings.end())
+        return fallback;
+
+    const auto parsed = ParseStrictBool(found->second);
+    return parsed.value_or(fallback);
+}
+
+std::optional<uint32_t> ParseUInt32(std::string_view text)
+{
+    if (text.empty())
+        return std::nullopt;
+
+    uint32_t value = 0u;
+    for (const char character : text)
+    {
+        if (character < '0' || character > '9')
+            return std::nullopt;
+        const uint32_t digit = static_cast<uint32_t>(character - '0');
+        if (value > (std::numeric_limits<uint32_t>::max() - digit) / 10u)
+            return std::nullopt;
+        value = value * 10u + digit;
+    }
+    return value;
+}
+
+std::string ToString(const ModelEmbeddedTextureMode mode)
+{
+    switch (mode)
+    {
+    case ModelEmbeddedTextureMode::ModelSubAsset:
+        return "ModelSubAsset";
+    }
+
+    NLS_ASSERT(false, "Unhandled model embedded texture mode.");
+    return "ModelSubAsset";
+}
+
+ModelEmbeddedTextureMode ModelEmbeddedTextureModeFromString(
+    const std::string& value,
+    const ModelEmbeddedTextureMode fallback)
+{
+    if (value == "ModelSubAsset")
+        return ModelEmbeddedTextureMode::ModelSubAsset;
+    return fallback;
+}
+
+uint64_t Fnv1a64(std::string_view text)
+{
+    uint64_t hash = 14695981039346656037ull;
+    for (const unsigned char byte : text)
+    {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+std::string HashText(std::string_view text)
+{
+    std::ostringstream stream;
+    stream << "fnv1a64:" << std::hex << std::setw(16) << std::setfill('0') << Fnv1a64(text);
+    return stream.str();
+}
+
+bool HasPrefix(const std::string& value, const std::string_view prefix)
+{
+    return value.size() >= prefix.size() && value.compare(0u, prefix.size(), prefix) == 0;
+}
+
+void AddRemapMalformedDiagnostic(
+    NLS::Core::Assets::AssetDiagnostics* diagnostics,
+    const std::string& settingKey)
+{
+    if (diagnostics == nullptr)
+        return;
+
+    diagnostics->push_back({
+        NLS::Core::Assets::AssetDiagnosticSeverity::Warning,
+        "model-texture-remap-malformed",
+        {},
+        {},
+        "Model texture remap setting " + settingKey + " is malformed and was ignored."
+    });
+}
+}
+
 std::string BoolToImporterSettingString(const bool value)
 {
     return value ? "true" : "false";
@@ -96,6 +213,182 @@ std::string StringFromImporterSettings(
 {
     const auto found = settings.find(key);
     return found != settings.end() ? found->second : std::move(fallback);
+}
+
+ModelTextureResolutionSettings LoadModelTextureResolutionSettings(
+    const NLS::Core::Assets::AssetMeta& meta)
+{
+    ModelTextureResolutionSettings result;
+
+    const auto versionFound = meta.settings.find(kModelTextureSettingsVersionKey);
+    if (versionFound != meta.settings.end())
+    {
+        const auto parsedVersion = ParseUInt32(versionFound->second);
+        if (!parsedVersion.has_value() || *parsedVersion != kCurrentModelTextureSettingsVersion)
+            return result;
+        result.settingsVersion = *parsedVersion;
+    }
+
+    result.useExternalTextures = StrictBoolFromSettings(
+        meta.settings,
+        kModelTextureUseExternalTexturesKey,
+        result.useExternalTextures);
+    result.searchByName = StrictBoolFromSettings(
+        meta.settings,
+        kModelTextureSearchByNameKey,
+        result.searchByName);
+    result.autoImportMissingTextureFiles = StrictBoolFromSettings(
+        meta.settings,
+        kModelTextureAutoImportMissingKey,
+        result.autoImportMissingTextureFiles);
+    result.embeddedTextureMode = ModelEmbeddedTextureModeFromString(
+        StringFromImporterSettings(meta.settings, kModelTextureEmbeddedModeKey, ToString(result.embeddedTextureMode)),
+        result.embeddedTextureMode);
+
+    return result;
+}
+
+void StoreModelTextureResolutionSettings(
+    NLS::Core::Assets::AssetMeta& meta,
+    const ModelTextureResolutionSettings& settings)
+{
+    meta.settings[kModelTextureSettingsVersionKey] = std::to_string(kCurrentModelTextureSettingsVersion);
+    meta.settings[kModelTextureUseExternalTexturesKey] =
+        BoolToImporterSettingString(settings.useExternalTextures);
+    meta.settings[kModelTextureSearchByNameKey] =
+        BoolToImporterSettingString(settings.searchByName);
+    meta.settings[kModelTextureAutoImportMissingKey] =
+        BoolToImporterSettingString(settings.autoImportMissingTextureFiles);
+    meta.settings[kModelTextureEmbeddedModeKey] = ToString(settings.embeddedTextureMode);
+}
+
+std::string MakeModelTextureRemapSettingKey(const std::string& stableSourceKey)
+{
+    return std::string(kModelTextureRemapSettingPrefix) + EncodeModelTextureTextField(stableSourceKey);
+}
+
+std::vector<ModelTextureExplicitRemapSetting> LoadModelTextureRemapSettings(
+    const NLS::Core::Assets::AssetMeta& meta,
+    NLS::Core::Assets::AssetDiagnostics* diagnostics)
+{
+    std::vector<ModelTextureExplicitRemapSetting> remaps;
+
+    for (const auto& [key, value] : meta.settings)
+    {
+        if (!HasPrefix(key, kModelTextureRemapSettingPrefix))
+            continue;
+
+        const auto encodedSourceKey = std::string_view(key).substr(std::string_view(kModelTextureRemapSettingPrefix).size());
+        const auto sourceKey = DecodeModelTextureTextField(encodedSourceKey);
+        if (!sourceKey.has_value() || !HasPrefix(*sourceKey, "mtxsrc:v1"))
+        {
+            AddRemapMalformedDiagnostic(diagnostics, key);
+            continue;
+        }
+
+        const auto separator = value.find('#');
+        if (separator == std::string::npos)
+        {
+            AddRemapMalformedDiagnostic(diagnostics, key);
+            continue;
+        }
+
+        const auto secondSeparator = value.find('#', separator + 1u);
+
+        const auto guidText = DecodeModelTextureTextField(std::string_view(value).substr(0u, separator));
+        const auto subAssetKey = DecodeModelTextureTextField(std::string_view(value).substr(
+            separator + 1u,
+            secondSeparator == std::string::npos ? std::string_view::npos : secondSeparator - separator - 1u));
+        const auto editorPath = secondSeparator == std::string::npos
+            ? std::optional<std::string> {}
+            : DecodeModelTextureTextField(std::string_view(value).substr(secondSeparator + 1u));
+        if (!guidText.has_value() || !subAssetKey.has_value() ||
+            (secondSeparator != std::string::npos && !editorPath.has_value()))
+        {
+            AddRemapMalformedDiagnostic(diagnostics, key);
+            continue;
+        }
+
+        const auto guid = NLS::Guid::TryParse(*guidText);
+        if (!guid.has_value() || !guid->IsValid())
+        {
+            AddRemapMalformedDiagnostic(diagnostics, key);
+            continue;
+        }
+
+        ModelTextureExplicitRemapSetting remap;
+        remap.sourceStableKey = *sourceKey;
+        remap.targetAssetId = NLS::Core::Assets::AssetId(*guid);
+        remap.targetSubAssetKey = *subAssetKey;
+        remap.targetEditorPath = editorPath.value_or(std::string {});
+        remaps.push_back(std::move(remap));
+    }
+
+    return remaps;
+}
+
+void StoreModelTextureRemapSetting(
+    NLS::Core::Assets::AssetMeta& meta,
+    const ModelTextureExplicitRemapSetting& remap)
+{
+    if (remap.sourceStableKey.empty() || !remap.targetAssetId.IsValid())
+        return;
+
+    meta.settings[MakeModelTextureRemapSettingKey(remap.sourceStableKey)] =
+        EncodeModelTextureTextField(remap.targetAssetId.ToString()) +
+        "#" +
+        EncodeModelTextureTextField(remap.targetSubAssetKey) +
+        "#" +
+        EncodeModelTextureTextField(remap.targetEditorPath);
+}
+
+void ClearModelTextureRemapSetting(
+    NLS::Core::Assets::AssetMeta& meta,
+    const std::string& stableSourceKey)
+{
+    meta.settings.erase(MakeModelTextureRemapSettingKey(stableSourceKey));
+}
+
+std::string ComputeModelTextureSettingsFingerprint(const NLS::Core::Assets::AssetMeta& meta)
+{
+    const auto settings = LoadModelTextureResolutionSettings(meta);
+    std::vector<std::string> parts {
+        "version=" + std::to_string(settings.settingsVersion),
+        std::string("useExternal=") + BoolToImporterSettingString(settings.useExternalTextures),
+        std::string("searchByName=") + BoolToImporterSettingString(settings.searchByName),
+        std::string("autoImportMissing=") + BoolToImporterSettingString(settings.autoImportMissingTextureFiles),
+        "embeddedMode=" + ToString(settings.embeddedTextureMode)
+    };
+
+    auto remaps = LoadModelTextureRemapSettings(meta);
+    std::sort(
+        remaps.begin(),
+        remaps.end(),
+        [](const ModelTextureExplicitRemapSetting& lhs, const ModelTextureExplicitRemapSetting& rhs)
+        {
+            return lhs.sourceStableKey < rhs.sourceStableKey;
+        });
+
+    for (const auto& remap : remaps)
+    {
+        parts.push_back(
+            "remap=" +
+            EncodeModelTextureTextField(remap.sourceStableKey) +
+            "#" +
+            EncodeModelTextureTextField(remap.targetAssetId.ToString()) +
+            "#" +
+            EncodeModelTextureTextField(remap.targetSubAssetKey) +
+            "#" +
+            EncodeModelTextureTextField(remap.targetEditorPath));
+    }
+
+    std::string joined;
+    for (const auto& part : parts)
+    {
+        joined += part;
+        joined.push_back('\n');
+    }
+    return HashText(joined);
 }
 
 ModelImporterSettings ModelImporterSettingsFromSerialized(

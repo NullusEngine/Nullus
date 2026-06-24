@@ -1272,7 +1272,11 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		}
 	};
 
-	appendSceneDrawables(sceneDescriptor.scene, m_renderScene, sceneDescriptor.includeSkyboxes, false);
+		appendSceneDrawables(
+			sceneDescriptor.scene,
+			m_renderScene,
+			sceneDescriptor.includeSkyboxes,
+			sceneDescriptor.requireExplicitMaterialTextures);
 	for (auto it = m_additiveRenderScenes.begin(); it != m_additiveRenderScenes.end();)
 	{
 		const auto* cachedScene = it->first;

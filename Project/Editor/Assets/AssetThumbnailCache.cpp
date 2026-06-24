@@ -1,5 +1,6 @@
 #include "Assets/AssetThumbnailCache.h"
 
+#include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetPath.h"
 #include "Image.h"
 
@@ -20,6 +21,17 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace NLS::Editor::Assets
 {
 namespace
@@ -38,6 +50,94 @@ std::array<std::mutex, kCacheWriteMutexStripeCount>& CacheWriteMutexStripes()
 std::mutex& CacheWriteMutexForKey(const std::string& cacheKey)
 {
     return CacheWriteMutexStripes()[std::hash<std::string> {}(cacheKey) % kCacheWriteMutexStripeCount];
+}
+
+bool WriteNewFileExclusive(
+    const std::filesystem::path& path,
+    const std::vector<uint8_t>& bytes)
+{
+#ifdef _WIN32
+    HANDLE file = CreateFileW(
+        path.c_str(),
+        GENERIC_WRITE,
+        0u,
+        nullptr,
+        CREATE_NEW,
+        FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+
+    bool success = true;
+    size_t offset = 0u;
+    while (offset < bytes.size())
+    {
+        const auto remaining = bytes.size() - offset;
+        const auto chunkSize = static_cast<DWORD>(
+            std::min<size_t>(remaining, static_cast<size_t>(std::numeric_limits<DWORD>::max())));
+        DWORD written = 0u;
+        if (!WriteFile(file, bytes.data() + offset, chunkSize, &written, nullptr) ||
+            written != chunkSize)
+        {
+            success = false;
+            break;
+        }
+        offset += static_cast<size_t>(written);
+    }
+
+    if (!CloseHandle(file))
+        success = false;
+    return success;
+#else
+    int flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    const int file = open(path.c_str(), flags, 0600);
+    if (file < 0)
+        return false;
+
+    bool success = true;
+    size_t offset = 0u;
+    while (offset < bytes.size())
+    {
+        const auto remaining = bytes.size() - offset;
+        const ssize_t written = write(file, bytes.data() + offset, remaining);
+        if (written < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            success = false;
+            break;
+        }
+        if (written == 0)
+        {
+            success = false;
+            break;
+        }
+        offset += static_cast<size_t>(written);
+    }
+
+    if (close(file) != 0)
+        success = false;
+    return success;
+#endif
+}
+
+bool ReplaceFileWithTemp(
+    const std::filesystem::path& tempPath,
+    const std::filesystem::path& targetPath)
+{
+#ifdef _WIN32
+    return MoveFileExW(
+        tempPath.c_str(),
+        targetPath.c_str(),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    std::error_code error;
+    std::filesystem::rename(tempPath, targetPath, error);
+    return !error;
+#endif
 }
 
 std::filesystem::path NormalizePath(const std::filesystem::path& path)
@@ -181,7 +281,11 @@ std::string BuildAssetThumbnailStablePathKey(const AssetThumbnailRequest& reques
         NormalizeEditorAssetPath(request.artifactPath),
         KindToString(request.kind),
         std::to_string(request.requestedSize),
-        request.settingsFingerprint
+        request.previewRendererVersion,
+        request.settingsFingerprint,
+        request.dependencyStamp,
+        request.colorSpaceMode,
+        request.hdrMode
     });
 }
 
@@ -255,6 +359,72 @@ std::optional<nlohmann::json> LoadMetadata(const std::filesystem::path& path)
     if (!root.is_object())
         return std::nullopt;
     return root;
+}
+
+uint64_t FileSizeOrZero(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    return error ? 0ull : static_cast<uint64_t>(size);
+}
+
+struct DiskCachePruneEntry
+{
+    std::filesystem::path metadataPath;
+    std::filesystem::path imagePath;
+    uint64_t byteSize = 0u;
+    std::filesystem::file_time_type lastWriteTime {};
+};
+
+std::filesystem::path ResolvePruneImagePath(
+    const std::filesystem::path& metadataPath,
+    const nlohmann::json& metadata)
+{
+    const auto cacheKey = metadata.value("cacheKey", std::string {});
+    if (!cacheKey.empty())
+        return NormalizePath(metadataPath.parent_path() / (cacheKey + ".png"));
+
+    auto imagePath = metadataPath;
+    imagePath.replace_extension(".png");
+    return NormalizePath(imagePath);
+}
+
+std::optional<DiskCachePruneEntry> BuildPruneEntry(
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& metadataPath)
+{
+    if (!IsCacheCandidateContained(projectRoot, metadataPath))
+        return std::nullopt;
+
+    const auto metadata = LoadMetadata(metadataPath);
+    if (!metadata.has_value())
+        return std::nullopt;
+
+    const auto imagePath = ResolvePruneImagePath(metadataPath, *metadata);
+    if (!IsCacheCandidateContained(projectRoot, imagePath))
+        return std::nullopt;
+
+    std::error_code error;
+    DiskCachePruneEntry entry;
+    entry.metadataPath = NormalizePath(metadataPath);
+    entry.imagePath = imagePath;
+    entry.byteSize = FileSizeOrZero(entry.metadataPath) + FileSizeOrZero(entry.imagePath);
+    entry.lastWriteTime = std::filesystem::last_write_time(entry.metadataPath, error);
+    if (error)
+        entry.lastWriteTime = std::filesystem::file_time_type::min();
+    return entry;
+}
+
+void RemovePruneEntryFiles(
+    const std::filesystem::path& projectRoot,
+    const DiskCachePruneEntry& entry)
+{
+    std::error_code error;
+    if (IsCacheCandidateContained(projectRoot, entry.imagePath))
+        std::filesystem::remove(entry.imagePath, error);
+    error.clear();
+    if (IsCacheCandidateContained(projectRoot, entry.metadataPath))
+        std::filesystem::remove(entry.metadataPath, error);
 }
 
 bool ReadFilePrefix(const std::filesystem::path& path, std::vector<uint8_t>& bytes, const size_t size)
@@ -371,6 +541,258 @@ bool CachedImageMatchesMetadata(
     const auto actualHash = HashFileForStorage(imagePath);
     return actualHash.has_value() && *actualHash == expectedHash;
 }
+
+std::string FileStampForFreshness(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error)
+        return "missing";
+
+    error.clear();
+    const auto writeTime = std::filesystem::last_write_time(path, error);
+    if (error)
+        return "missing";
+
+    return std::to_string(size) + ":" +
+        std::to_string(static_cast<std::intmax_t>(writeTime.time_since_epoch().count()));
+}
+
+std::optional<std::filesystem::path> ResolveMetadataArtifactPath(
+    const std::filesystem::path& projectRoot,
+    const std::string& assetId,
+    const std::string& artifactPath)
+{
+    if (projectRoot.empty() || assetId.empty() || artifactPath.empty())
+        return std::nullopt;
+
+    const auto normalizedProjectRoot = NormalizePath(projectRoot);
+    const auto artifactRoot = NormalizePath(normalizedProjectRoot / "Library" / "Artifacts" / assetId);
+    auto candidate = NormalizePath(std::filesystem::path(artifactPath));
+    if (candidate.is_relative())
+        candidate = NormalizePath(normalizedProjectRoot / candidate);
+
+    if (!IsPathInside(candidate, artifactRoot) || !IsPhysicallyInside(candidate, artifactRoot))
+        return std::nullopt;
+    return candidate;
+}
+
+std::optional<std::string> CurrentMetadataFreshnessStamp(
+    const AssetThumbnailRequest& request,
+    const nlohmann::json& metadata,
+    const std::string& name)
+{
+    const auto assetId = metadata.value("assetId", request.assetId.ToString());
+    if (name == "artifact-manifest")
+    {
+        if (assetId.empty())
+            return std::nullopt;
+        return FileStampForFreshness(
+            NormalizePath(request.projectRoot / "Library" / "Artifacts" / assetId / "manifest.json"));
+    }
+
+    if (name == "artifact-file")
+    {
+        const auto artifactPath = metadata.value("artifactPath", std::string {});
+        const auto resolvedArtifactPath =
+            ResolveMetadataArtifactPath(request.projectRoot, assetId, artifactPath);
+        if (!resolvedArtifactPath.has_value())
+            return std::nullopt;
+        return FileStampForFreshness(*resolvedArtifactPath);
+    }
+
+    if (name == "source-file")
+    {
+        const auto sourceAssetPath = metadata.value("sourceAssetPath", std::string {});
+        if (sourceAssetPath.empty())
+            return std::nullopt;
+        auto sourcePath = NormalizePath(std::filesystem::path(sourceAssetPath));
+        if (sourcePath.is_relative())
+            sourcePath = NormalizePath(request.projectRoot / sourcePath);
+        if (!IsPathInside(sourcePath, NormalizePath(request.projectRoot)) ||
+            !IsPhysicallyInside(sourcePath, NormalizePath(request.projectRoot)))
+        {
+            return std::nullopt;
+        }
+        return FileStampForFreshness(sourcePath);
+    }
+
+    if (name == "source-meta")
+    {
+        const auto sourceAssetPath = metadata.value("sourceAssetPath", std::string {});
+        if (sourceAssetPath.empty())
+            return std::nullopt;
+        auto sourcePath = NormalizePath(std::filesystem::path(sourceAssetPath));
+        if (sourcePath.is_relative())
+            sourcePath = NormalizePath(request.projectRoot / sourcePath);
+        const auto projectRoot = NormalizePath(request.projectRoot);
+        if (!IsPathInside(sourcePath, projectRoot) || !IsPhysicallyInside(sourcePath, projectRoot))
+            return std::nullopt;
+        const auto metaPath = NLS::Core::Assets::GetAssetMetaPath(sourcePath);
+        if (!IsPathInside(metaPath, projectRoot) || !IsPhysicallyInside(metaPath, projectRoot))
+            return std::nullopt;
+        return FileStampForFreshness(metaPath);
+    }
+
+    return std::nullopt;
+}
+
+bool MetadataFreshnessInputsAreCurrent(
+    const AssetThumbnailRequest& request,
+    const nlohmann::json& metadata)
+{
+    const auto inputs = metadata.find("freshnessInputs");
+    if (inputs == metadata.end() || !inputs->is_array())
+        return true;
+
+    for (const auto& input : *inputs)
+    {
+        if (!input.is_object())
+            continue;
+
+        const auto name = input.value("name", std::string {});
+        if (name != "artifact-file" &&
+            name != "artifact-manifest" &&
+            name != "source-meta" &&
+            name != "source-file")
+        {
+            continue;
+        }
+
+        const auto expectedStamp = input.value("stamp", std::string {});
+        const auto currentStamp = CurrentMetadataFreshnessStamp(request, metadata, name);
+        if (!currentStamp.has_value() || *currentStamp != expectedStamp)
+            return false;
+    }
+    return true;
+}
+
+bool WriteAssetThumbnailCacheFileForEntry(
+    const std::filesystem::path& projectRoot,
+    const AssetThumbnailCacheEntry& entry,
+    const std::filesystem::path& path,
+    const std::vector<uint8_t>& bytes)
+{
+    const auto normalizedPath = NormalizePath(path);
+    if (normalizedPath != entry.imagePath &&
+        normalizedPath != entry.metadataPath)
+    {
+        return false;
+    }
+
+    auto& writeMutex = CacheWriteMutexForKey(entry.cacheKey);
+    std::lock_guard<std::mutex> writeLock(writeMutex);
+
+    std::error_code error;
+    std::filesystem::create_directories(normalizedPath.parent_path(), error);
+    if (error)
+        return false;
+
+    if (!AreCacheEntryPathsContained(projectRoot, entry) ||
+        !IsCacheCandidateContained(projectRoot, normalizedPath.parent_path()) ||
+        !IsCacheCandidateContained(projectRoot, normalizedPath))
+    {
+        return false;
+    }
+
+    static std::atomic<uint64_t> tempCounter {0u};
+    const auto suffix =
+        std::to_string(
+            static_cast<unsigned long long>(
+                std::chrono::steady_clock::now().time_since_epoch().count())) +
+        "." +
+        std::to_string(std::hash<std::thread::id> {}(std::this_thread::get_id())) +
+        "." +
+        std::to_string(tempCounter.fetch_add(1u, std::memory_order_relaxed));
+    const auto tempPath = NormalizePath(
+        normalizedPath.parent_path() /
+        ("." + normalizedPath.filename().generic_string() + "." + entry.cacheKey + "." + suffix + ".tmp"));
+    if (!IsCacheCandidateContained(projectRoot, tempPath))
+        return false;
+
+    if (!WriteNewFileExclusive(tempPath, bytes))
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+
+    if (!IsCacheCandidateContained(projectRoot, tempPath))
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+
+    if (!ReplaceFileWithTemp(tempPath, normalizedPath))
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+
+    error.clear();
+    const bool wroteRegularFile = std::filesystem::is_regular_file(normalizedPath, error);
+    if (error || !wroteRegularFile || !IsCacheCandidateContained(projectRoot, normalizedPath))
+    {
+        std::filesystem::remove(normalizedPath, error);
+        return false;
+    }
+    return true;
+}
+
+bool WriteAssetThumbnailCacheMetadataForEntry(
+    const AssetThumbnailRequest& metadataRequest,
+    const AssetThumbnailCacheEntry& entry,
+    const AssetThumbnailCacheStatus status,
+    const std::string& diagnostic)
+{
+    nlohmann::json freshness = nlohmann::json::array();
+    for (const auto& input : SortedFreshnessInputs(metadataRequest.freshnessInputs))
+    {
+        freshness.push_back({
+            {"name", input.name},
+            {"stamp", input.stamp}
+        });
+    }
+
+    nlohmann::json metadata {
+        {"cacheKey", entry.cacheKey},
+        {"status", AssetThumbnailCacheStatusStorageToken(status)},
+        {"assetId", metadataRequest.assetId.ToString()},
+        {"sourceAssetPath", NormalizeEditorAssetPath(metadataRequest.sourceAssetPath)},
+        {"subAssetKey", metadataRequest.subAssetKey},
+        {"artifactPath", NormalizeEditorAssetPath(metadataRequest.artifactPath)},
+        {"thumbnailKind", KindToString(metadataRequest.kind)},
+        {"requestedSize", metadataRequest.requestedSize},
+        {"previewRendererVersion", metadataRequest.previewRendererVersion},
+        {"settingsFingerprint", metadataRequest.settingsFingerprint},
+        {"dependencyStamp", metadataRequest.dependencyStamp},
+        {"colorSpaceMode", metadataRequest.colorSpaceMode},
+        {"hdrMode", metadataRequest.hdrMode},
+        {"freshnessInputs", freshness},
+        {"diagnostic", diagnostic}
+    };
+
+    if (status == AssetThumbnailCacheStatus::Fresh)
+    {
+        if (!HasValidPngCacheHeader(entry.imagePath, metadataRequest.requestedSize))
+            return false;
+
+        std::error_code error;
+        const auto imageSize = std::filesystem::file_size(entry.imagePath, error);
+        const auto imageHash = error ? std::optional<std::string> {} : HashFileForStorage(entry.imagePath);
+        if (error || !imageHash.has_value())
+            return false;
+
+        metadata["imageSize"] = imageSize;
+        metadata["imageHash"] = *imageHash;
+    }
+
+    const auto text = metadata.dump(2);
+    return WriteAssetThumbnailCacheFileForEntry(
+        metadataRequest.projectRoot,
+        entry,
+        entry.metadataPath,
+        std::vector<uint8_t>(text.begin(), text.end()));
+}
 }
 
 std::string BuildAssetThumbnailCacheKey(const AssetThumbnailRequest& request)
@@ -382,7 +804,11 @@ std::string BuildAssetThumbnailCacheKey(const AssetThumbnailRequest& request)
         NormalizeEditorAssetPath(request.artifactPath),
         KindToString(request.kind),
         std::to_string(request.requestedSize),
-        request.settingsFingerprint
+        request.previewRendererVersion,
+        request.settingsFingerprint,
+        request.dependencyStamp,
+        request.colorSpaceMode,
+        request.hdrMode
     };
 
     for (const auto& input : SortedFreshnessInputs(request.freshnessInputs))
@@ -496,6 +922,15 @@ AssetThumbnailCacheEvaluation EvaluateAssetThumbnailCache(
     result.status = AssetThumbnailCacheStatusFromStorageToken(metadata->value("status", std::string {}))
         .value_or(AssetThumbnailCacheStatus::Missing);
     result.diagnostic = metadata->value("diagnostic", std::string {});
+    if ((result.status == AssetThumbnailCacheStatus::Fresh ||
+            result.status == AssetThumbnailCacheStatus::Failed) &&
+        !MetadataFreshnessInputsAreCurrent(request, *metadata))
+    {
+        result.status = AssetThumbnailCacheStatus::Stale;
+        result.diagnostic = "thumbnail-cache-freshness-stale";
+        return result;
+    }
+
     if (result.status == AssetThumbnailCacheStatus::Failed)
         return result;
 
@@ -533,50 +968,18 @@ bool WriteAssetThumbnailCacheMetadata(
     const auto entry = ResolveAssetThumbnailCacheEntry(request);
     if (!entry.has_value())
         return false;
+    return WriteAssetThumbnailCacheMetadataForEntry(request, *entry, status, diagnostic);
+}
 
-    nlohmann::json freshness = nlohmann::json::array();
-    for (const auto& input : SortedFreshnessInputs(request.freshnessInputs))
-    {
-        freshness.push_back({
-            {"name", input.name},
-            {"stamp", input.stamp}
-        });
-    }
-
-    nlohmann::json metadata {
-        {"cacheKey", entry->cacheKey},
-        {"status", AssetThumbnailCacheStatusStorageToken(status)},
-        {"assetId", request.assetId.ToString()},
-        {"sourceAssetPath", NormalizeEditorAssetPath(request.sourceAssetPath)},
-        {"subAssetKey", request.subAssetKey},
-        {"artifactPath", NormalizeEditorAssetPath(request.artifactPath)},
-        {"thumbnailKind", KindToString(request.kind)},
-        {"requestedSize", request.requestedSize},
-        {"settingsFingerprint", request.settingsFingerprint},
-        {"freshnessInputs", freshness},
-        {"diagnostic", diagnostic}
-    };
-
-    if (status == AssetThumbnailCacheStatus::Fresh)
-    {
-        if (!HasValidPngCacheHeader(entry->imagePath, request.requestedSize))
-            return false;
-
-        std::error_code error;
-        const auto imageSize = std::filesystem::file_size(entry->imagePath, error);
-        const auto imageHash = error ? std::optional<std::string> {} : HashFileForStorage(entry->imagePath);
-        if (error || !imageHash.has_value())
-            return false;
-
-        metadata["imageSize"] = imageSize;
-        metadata["imageHash"] = *imageHash;
-    }
-
-    const auto text = metadata.dump(2);
-    return WriteAssetThumbnailCacheFile(
-        request,
-        entry->metadataPath,
-        std::vector<uint8_t>(text.begin(), text.end()));
+bool WriteAssetThumbnailCacheMetadata(
+    const AssetThumbnailRequest& metadataRequest,
+    const AssetThumbnailCacheEntry& entry,
+    const AssetThumbnailCacheStatus status,
+    const std::string& diagnostic)
+{
+    if (!AreCacheEntryPathsContained(metadataRequest.projectRoot, entry))
+        return false;
+    return WriteAssetThumbnailCacheMetadataForEntry(metadataRequest, entry, status, diagnostic);
 }
 
 bool WriteAssetThumbnailCacheFile(
@@ -587,95 +990,81 @@ bool WriteAssetThumbnailCacheFile(
     const auto entry = ResolveAssetThumbnailCacheEntry(request);
     if (!entry.has_value())
         return false;
+    return WriteAssetThumbnailCacheFileForEntry(request.projectRoot, *entry, path, bytes);
+}
 
-    const auto normalizedPath = NormalizePath(path);
-    if (normalizedPath != entry->imagePath &&
-        normalizedPath != entry->metadataPath)
-    {
-        return false;
-    }
+AssetThumbnailDiskCachePruneResult PruneAssetThumbnailDiskCache(
+    const std::filesystem::path& projectRoot,
+    const AssetThumbnailDiskCachePruneOptions& options)
+{
+    AssetThumbnailDiskCachePruneResult result;
+    if (projectRoot.empty())
+        return result;
 
-    auto& writeMutex = CacheWriteMutexForKey(entry->cacheKey);
-    std::lock_guard<std::mutex> writeLock(writeMutex);
+    const auto root = CacheRoot(projectRoot);
+    if (!IsCacheRootPhysicallyInsideProject(projectRoot))
+        return result;
 
     std::error_code error;
-    std::filesystem::create_directories(normalizedPath.parent_path(), error);
-    if (error)
-        return false;
+    if (!std::filesystem::exists(root, error) || error)
+        return result;
 
-    if (!AreCacheEntryPathsContained(request.projectRoot, *entry) ||
-        !IsCacheCandidateContained(request.projectRoot, normalizedPath.parent_path()) ||
-        !IsCacheCandidateContained(request.projectRoot, normalizedPath))
-    {
-        return false;
-    }
-
-    static std::atomic<uint64_t> tempCounter {0u};
-    const auto suffix =
-        std::to_string(
-            static_cast<unsigned long long>(
-                std::chrono::steady_clock::now().time_since_epoch().count())) +
-        "." +
-        std::to_string(std::hash<std::thread::id> {}(std::this_thread::get_id())) +
-        "." +
-        std::to_string(tempCounter.fetch_add(1u, std::memory_order_relaxed));
-    const auto tempPath = NormalizePath(
-        normalizedPath.parent_path() /
-        ("." + normalizedPath.filename().generic_string() + "." + entry->cacheKey + "." + suffix + ".tmp"));
-    if (!IsCacheCandidateContained(request.projectRoot, tempPath))
-        return false;
-
-    {
-        std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
-        if (!output)
-            return false;
-        if (!bytes.empty())
-        {
-            output.write(
-                reinterpret_cast<const char*>(bytes.data()),
-                static_cast<std::streamsize>(bytes.size()));
-        }
-        if (!output)
-            return false;
-    }
-
-    if (!IsCacheCandidateContained(request.projectRoot, tempPath))
-    {
-        std::filesystem::remove(tempPath, error);
-        return false;
-    }
-
-    error.clear();
-    if (std::filesystem::exists(normalizedPath, error))
+    std::vector<DiskCachePruneEntry> entries;
+    for (std::filesystem::recursive_directory_iterator iterator(root, error), end; iterator != end; iterator.increment(error))
     {
         if (error)
         {
-            std::filesystem::remove(tempPath, error);
-            return false;
+            error.clear();
+            continue;
         }
-        std::filesystem::remove(normalizedPath, error);
-        if (error)
+
+        const auto& path = iterator->path();
+        if (!iterator->is_regular_file(error) || error || path.extension() != ".json")
         {
-            std::filesystem::remove(tempPath, error);
-            return false;
+            error.clear();
+            continue;
         }
+
+        auto entry = BuildPruneEntry(projectRoot, path);
+        if (!entry.has_value())
+            continue;
+        entries.push_back(std::move(*entry));
     }
 
-    error.clear();
-    std::filesystem::rename(tempPath, normalizedPath, error);
-    if (error)
+    std::sort(
+        entries.begin(),
+        entries.end(),
+        [](const DiskCachePruneEntry& left, const DiskCachePruneEntry& right)
+        {
+            if (left.lastWriteTime != right.lastWriteTime)
+                return left.lastWriteTime > right.lastWriteTime;
+            return left.metadataPath.generic_string() > right.metadataPath.generic_string();
+        });
+
+    result.scannedEntries = entries.size();
+
+    uint64_t retainedBytes = 0u;
+    size_t retainedEntries = 0u;
+    for (const auto& entry : entries)
     {
-        std::filesystem::remove(tempPath, error);
-        return false;
+        const bool withinEntryBudget = retainedEntries < options.maxEntries;
+        const bool withinByteBudget =
+            options.maxBytes == UINT64_MAX ||
+            retainedBytes + entry.byteSize <= options.maxBytes;
+        if (withinEntryBudget && withinByteBudget)
+        {
+            ++retainedEntries;
+            retainedBytes += entry.byteSize;
+            continue;
+        }
+
+        RemovePruneEntryFiles(projectRoot, entry);
+        ++result.removedEntries;
+        result.removedBytes += entry.byteSize;
     }
 
-    error.clear();
-    const bool wroteRegularFile = std::filesystem::is_regular_file(normalizedPath, error);
-    if (error || !wroteRegularFile || !IsCacheCandidateContained(request.projectRoot, normalizedPath))
-    {
-        std::filesystem::remove(normalizedPath, error);
-        return false;
-    }
-    return true;
+    result.remainingEntries = retainedEntries;
+    result.remainingBytes = retainedBytes;
+    return result;
 }
 }

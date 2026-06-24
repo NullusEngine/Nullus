@@ -158,6 +158,7 @@ void GameObject::SetActive(bool p_active)
 	{
 		RecursiveWasActiveUpdate();
 		m_active = p_active;
+        MarkRenderStateChanged();
 		RecursiveActiveUpdate();
 	}
 }
@@ -202,6 +203,7 @@ void GameObject::MarkAsDestroy()
         return;
 
     m_destroyed = true;
+    MarkRenderStateChanged();
     MarkedDestroyEvent.Invoke(*this);
 
     for (auto child : m_children)
@@ -259,6 +261,7 @@ void GameObject::DetachFromParent()
     m_parent = nullptr;
 
     m_transform->RemoveParent();
+    MarkRenderStateChanged();
 }
 
 void GameObject::SetParent(GameObject& p_parent)
@@ -268,6 +271,7 @@ void GameObject::SetParent(GameObject& p_parent)
     /* Define the given parent as the new parent */
     m_parent = &p_parent;
     m_transform->SetParent(*p_parent.m_transform);
+    MarkRenderStateChanged();
 
     /* Store the actor in the parent children list */
     if (std::find(p_parent.m_children.begin(), p_parent.m_children.end(), this) == p_parent.m_children.end())

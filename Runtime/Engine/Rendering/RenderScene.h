@@ -29,6 +29,7 @@ namespace NLS::Engine
 
 namespace NLS::Engine::Components
 {
+	class MeshFilter;
 	class MeshRenderer;
 }
 
@@ -48,6 +49,7 @@ namespace NLS::Engine::Rendering
 	struct LargeSceneSettings;
 	struct HLODClusterRecord;
 	struct LODGroupRecord;
+	struct RenderSceneDeclaredTextureLookupCache;
 	struct RepresentationResidencySnapshot;
 	struct SceneCullReasonDebugSnapshot;
 	struct SceneOcclusionState;
@@ -164,6 +166,10 @@ namespace NLS::Engine::Rendering
 		uint64_t syncSweepTouchedSlotCount = 0u;
 		uint64_t boundsDirtyPrimitiveCount = 0u;
 		uint64_t primitiveSlotReuseCount = 0u;
+		uint64_t declaredTextureLookupCount = 0u;
+		uint64_t declaredTextureCacheHitCount = 0u;
+		uint64_t declaredTextureCacheMissCount = 0u;
+		uint64_t declaredTextureResourceScanCount = 0u;
 		uint64_t syncTimeNs = 0u;
 	};
 
@@ -336,6 +342,30 @@ namespace NLS::Engine::Rendering
 			[[nodiscard]] bool operator!=(const CachedCommandInputStamp& other) const { return !(*this == other); }
 		};
 
+		struct PrimitiveInputStamp
+		{
+				Engine::GameObject* owner = nullptr;
+				Components::MeshFilter* meshFilter = nullptr;
+				NLS::Render::Resources::Mesh* mesh = nullptr;
+				Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
+				uint32_t layer = 0u;
+				uint64_t ownerRenderRevision = 0u;
+				uint64_t transformRenderRevision = 0u;
+				uint64_t meshFilterRenderRevision = 0u;
+				uint64_t meshRendererRenderRevision = 0u;
+				uint64_t meshContentRevision = 0u;
+				uint64_t materialInstanceId = 0u;
+				uint64_t materialParameterRevision = 0u;
+				uint64_t materialRenderStateRevision = 0u;
+				bool explicitMaterialTexturesResolved = true;
+				bool requireExplicitMaterialTextures = false;
+				bool ownerAlive = false;
+				bool ownerActive = false;
+
+			[[nodiscard]] bool operator==(const PrimitiveInputStamp& other) const;
+			[[nodiscard]] bool operator!=(const PrimitiveInputStamp& other) const { return !(*this == other); }
+		};
+
 		struct CachedCommandSlot
 		{
 			CachedCommandInputStamp stamp;
@@ -349,7 +379,9 @@ namespace NLS::Engine::Rendering
 			Components::MeshRenderer* meshRenderer = nullptr;
 			NLS::InstanceID meshRendererInstanceId = NLS::InstanceID_None;
 			Engine::GameObject* owner = nullptr;
+			Components::MeshFilter* meshFilter = nullptr;
 			NLS::Render::Resources::Mesh* mesh = nullptr;
+			PrimitiveInputStamp lastInputStamp;
 			std::vector<CachedCommandSlot> cachedCommands;
 			NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
 			NLS::Render::Geometry::Bounds modelBounds;
@@ -379,7 +411,15 @@ namespace NLS::Engine::Rendering
 		void SynchronizePrimitive(
 			RenderPrimitive& primitive,
 			const RenderSceneSyncOptions& options,
-			RenderSceneSyncStats& stats);
+			RenderSceneSyncStats& stats,
+			RenderSceneDeclaredTextureLookupCache& declaredTextureCache);
+		[[nodiscard]] PrimitiveInputStamp BuildPrimitiveInputStamp(
+			Components::MeshRenderer& meshRenderer,
+			const RenderPrimitive& primitive,
+			const RenderSceneSyncOptions& options) const;
+		[[nodiscard]] bool CanReuseSynchronizedPrimitive(
+			const RenderPrimitive& primitive,
+			const PrimitiveInputStamp& stamp) const;
 		void MarkPrimitiveDirtyForSnapshot(const RenderPrimitive& primitive);
 		void RemoveMissingPrimitives(
 			const std::unordered_map<Components::MeshRenderer*, NLS::InstanceID>& liveMeshRenderers,
@@ -387,7 +427,9 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::Material* ResolveMaterialForMesh(
 			RenderPrimitive& primitive,
 			NLS::Render::Resources::Mesh& mesh,
-			const RenderSceneSyncOptions& options) const;
+			const RenderSceneSyncOptions& options,
+			RenderSceneSyncStats& stats,
+			RenderSceneDeclaredTextureLookupCache& declaredTextureCache) const;
 		CachedCommandInputStamp BuildCommandInputStamp(
 			const RenderPrimitive& primitive,
 			NLS::Render::Resources::Mesh& mesh,

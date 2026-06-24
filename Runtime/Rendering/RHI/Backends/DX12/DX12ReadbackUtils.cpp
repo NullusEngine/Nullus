@@ -189,6 +189,7 @@ namespace NLS::Render::RHI::DX12
         uint64_t readbackCapacity = 0u;
         uint64_t nextFenceValue = 0u;
         bool readbackQuarantined = false;
+        std::mutex beginMutex;
         std::shared_ptr<std::atomic_bool> readbackInFlight = std::make_shared<std::atomic_bool>(false);
 
         ~Impl()
@@ -206,9 +207,11 @@ namespace NLS::Render::RHI::DX12
         struct DX12ReadbackPendingCopy
         {
             Microsoft::WRL::ComPtr<ID3D12Device> device;
+            std::shared_ptr<RHITexture> sourceTexture;
             Microsoft::WRL::ComPtr<ID3D12Resource> readbackResource;
+            Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
             Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-            HANDLE fenceEvent = nullptr;
             std::shared_ptr<std::atomic_bool> inFlightFlag;
             uint64_t fenceValue = 0u;
             DX12ReadbackLayout layout{};
@@ -224,12 +227,26 @@ namespace NLS::Render::RHI::DX12
             Microsoft::WRL::ComPtr<ID3D12Device> device;
             std::shared_ptr<RHIBuffer> sourceBuffer;
             Microsoft::WRL::ComPtr<ID3D12Resource> readbackResource;
+            Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
             Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-            HANDLE fenceEvent = nullptr;
             std::shared_ptr<std::atomic_bool> inFlightFlag;
             uint64_t fenceValue = 0u;
             uint64_t readbackSize = 0u;
             void* data = nullptr;
+        };
+
+        struct DX12AbandonedReadbackRetirement
+        {
+            Microsoft::WRL::ComPtr<ID3D12Device> device;
+            std::shared_ptr<RHITexture> sourceTexture;
+            std::shared_ptr<RHIBuffer> sourceBuffer;
+            Microsoft::WRL::ComPtr<ID3D12Resource> readbackResource;
+            Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+            Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+            std::shared_ptr<std::atomic_bool> inFlightFlag;
+            uint64_t fenceValue = 0u;
         };
 
         struct DX12ReadbackQuarantinedSubmission
@@ -244,6 +261,82 @@ namespace NLS::Render::RHI::DX12
             HRESULT deviceStatus = S_OK;
         };
 
+        std::mutex& DX12AbandonedReadbackRetirementMutex()
+        {
+            static std::mutex mutex;
+            return mutex;
+        }
+
+        std::vector<DX12AbandonedReadbackRetirement>& DX12AbandonedReadbackRetirements()
+        {
+            static std::vector<DX12AbandonedReadbackRetirement> retirements;
+            return retirements;
+        }
+
+        bool IsDX12AbandonedReadbackRetired(const DX12AbandonedReadbackRetirement& retirement)
+        {
+            if (retirement.fence == nullptr)
+                return true;
+            if (retirement.fence->GetCompletedValue() >= retirement.fenceValue)
+                return true;
+            const HRESULT deviceStatus = retirement.device != nullptr
+                ? retirement.device->GetDeviceRemovedReason()
+                : S_OK;
+            return FAILED(deviceStatus);
+        }
+
+        void RetireCompletedDX12AbandonedReadbacks()
+        {
+            std::lock_guard<std::mutex> lock(DX12AbandonedReadbackRetirementMutex());
+            auto& retirements = DX12AbandonedReadbackRetirements();
+            auto write = retirements.begin();
+            for (auto read = retirements.begin(); read != retirements.end(); ++read)
+            {
+                if (IsDX12AbandonedReadbackRetired(*read))
+                {
+                    if (read->inFlightFlag != nullptr)
+                        read->inFlightFlag->store(false);
+                    continue;
+                }
+                if (write != read)
+                    *write = std::move(*read);
+                ++write;
+            }
+            retirements.erase(write, retirements.end());
+        }
+
+        void RetireAbandonedDX12Readback(DX12ReadbackPendingCopy pendingCopy)
+        {
+            DX12AbandonedReadbackRetirement retirement;
+            retirement.device = std::move(pendingCopy.device);
+            retirement.sourceTexture = std::move(pendingCopy.sourceTexture);
+            retirement.readbackResource = std::move(pendingCopy.readbackResource);
+            retirement.commandAllocator = std::move(pendingCopy.commandAllocator);
+            retirement.commandList = std::move(pendingCopy.commandList);
+            retirement.fence = std::move(pendingCopy.fence);
+            retirement.inFlightFlag = std::move(pendingCopy.inFlightFlag);
+            retirement.fenceValue = pendingCopy.fenceValue;
+
+            std::lock_guard<std::mutex> lock(DX12AbandonedReadbackRetirementMutex());
+            DX12AbandonedReadbackRetirements().push_back(std::move(retirement));
+        }
+
+        void RetireAbandonedDX12Readback(DX12BufferReadbackPendingCopy pendingCopy)
+        {
+            DX12AbandonedReadbackRetirement retirement;
+            retirement.device = std::move(pendingCopy.device);
+            retirement.sourceBuffer = std::move(pendingCopy.sourceBuffer);
+            retirement.readbackResource = std::move(pendingCopy.readbackResource);
+            retirement.commandAllocator = std::move(pendingCopy.commandAllocator);
+            retirement.commandList = std::move(pendingCopy.commandList);
+            retirement.fence = std::move(pendingCopy.fence);
+            retirement.inFlightFlag = std::move(pendingCopy.inFlightFlag);
+            retirement.fenceValue = pendingCopy.fenceValue;
+
+            std::lock_guard<std::mutex> lock(DX12AbandonedReadbackRetirementMutex());
+            DX12AbandonedReadbackRetirements().push_back(std::move(retirement));
+        }
+
         std::mutex& DX12ReadbackQuarantineMutex()
         {
             static std::mutex mutex;
@@ -255,6 +348,37 @@ namespace NLS::Render::RHI::DX12
             static std::vector<DX12ReadbackQuarantinedSubmission> submissions;
             return submissions;
         }
+
+        class DX12ReadbackInFlightClaim
+        {
+        public:
+            explicit DX12ReadbackInFlightClaim(const std::shared_ptr<std::atomic_bool>& flag)
+                : m_flag(flag)
+            {
+                if (m_flag == nullptr)
+                    return;
+                bool expected = false;
+                m_claimed = m_flag->compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+            }
+
+            ~DX12ReadbackInFlightClaim()
+            {
+                if (m_claimed && !m_released && m_flag != nullptr)
+                    m_flag->store(false, std::memory_order_release);
+            }
+
+            [[nodiscard]] bool Claimed() const { return m_claimed; }
+
+            void ReleaseToCompletionToken()
+            {
+                m_released = true;
+            }
+
+        private:
+            std::shared_ptr<std::atomic_bool> m_flag;
+            bool m_claimed = false;
+            bool m_released = false;
+        };
 
         void QuarantineDX12ReadbackSubmissionAfterExecute(
             ID3D12Device* device,
@@ -357,6 +481,12 @@ namespace NLS::Render::RHI::DX12
             {
             }
 
+            ~DX12ReadbackCompletionToken() override
+            {
+                if (!m_status.IsComplete() && m_pendingCopy.fence != nullptr)
+                    RetireAbandonedDX12Readback(std::move(m_pendingCopy));
+            }
+
             std::string_view GetDebugName() const override { return "DX12ReadbackCompletionToken"; }
 
             bool IsComplete() override
@@ -366,11 +496,18 @@ namespace NLS::Render::RHI::DX12
 
             RHICompletionStatus Poll() override
             {
+                RetireCompletedDX12AbandonedReadbacks();
                 if (m_status.IsComplete())
                     return m_status;
                 if (m_pendingCopy.fence == nullptr ||
                     m_pendingCopy.fence->GetCompletedValue() < m_pendingCopy.fenceValue)
                 {
+                    const HRESULT deviceStatus = m_pendingCopy.device != nullptr
+                        ? m_pendingCopy.device->GetDeviceRemovedReason()
+                        : S_OK;
+                    if (FAILED(deviceStatus))
+                        return CompleteWithDeviceStatusFailure(
+                            "ReadPixels device was removed before readback fence completion");
                     return { RHICompletionStatusCode::Pending, {} };
                 }
                 return FinalizeCompletedCopy();
@@ -378,6 +515,7 @@ namespace NLS::Render::RHI::DX12
 
             RHICompletionStatus Wait(uint64_t timeoutNanoseconds = 0) override
             {
+                RetireCompletedDX12AbandonedReadbacks();
                 if (m_status.IsComplete())
                     return m_status;
                 if (m_pendingCopy.fence == nullptr || m_pendingCopy.readbackResource == nullptr)
@@ -385,21 +523,14 @@ namespace NLS::Render::RHI::DX12
 
                 if (m_pendingCopy.fence->GetCompletedValue() < m_pendingCopy.fenceValue)
                 {
-                    HANDLE eventHandle = m_pendingCopy.fenceEvent;
-                    HANDLE ownedEvent = nullptr;
-                    if (eventHandle == nullptr)
-                    {
-                        ownedEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-                        eventHandle = ownedEvent;
-                    }
+                    HANDLE eventHandle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
                     if (eventHandle == nullptr)
                         return CompleteWithFailure("ReadPixels failed to create fence event");
 
                     HRESULT hr = m_pendingCopy.fence->SetEventOnCompletion(m_pendingCopy.fenceValue, eventHandle);
                     if (FAILED(hr))
                     {
-                        if (ownedEvent != nullptr)
-                            CloseHandle(ownedEvent);
+                        CloseHandle(eventHandle);
                         return CompleteWithDeviceStatusFailure(
                             "ReadPixels failed to set fence completion event hr=" +
                             std::to_string(static_cast<long>(hr)));
@@ -407,8 +538,7 @@ namespace NLS::Render::RHI::DX12
 
                     const DWORD waitMs = ConvertDX12WaitTimeoutNanosecondsToMilliseconds(timeoutNanoseconds);
                     const DWORD waitResult = WaitForSingleObject(eventHandle, waitMs);
-                    if (ownedEvent != nullptr)
-                        CloseHandle(ownedEvent);
+                    CloseHandle(eventHandle);
                     if (waitResult == WAIT_TIMEOUT)
                         return { RHICompletionStatusCode::Pending, "ReadPixels completion wait timed out" };
                     if (waitResult != WAIT_OBJECT_0)
@@ -494,6 +624,12 @@ namespace NLS::Render::RHI::DX12
             {
             }
 
+            ~DX12BufferReadbackCompletionToken() override
+            {
+                if (!m_status.IsComplete() && m_pendingCopy.fence != nullptr)
+                    RetireAbandonedDX12Readback(std::move(m_pendingCopy));
+            }
+
             std::string_view GetDebugName() const override { return "DX12BufferReadbackCompletionToken"; }
 
             bool IsComplete() override
@@ -503,6 +639,7 @@ namespace NLS::Render::RHI::DX12
 
             RHICompletionStatus Poll() override
             {
+                RetireCompletedDX12AbandonedReadbacks();
                 if (m_status.IsComplete())
                     return m_status;
                 if (m_pendingCopy.fence == nullptr ||
@@ -521,6 +658,7 @@ namespace NLS::Render::RHI::DX12
 
             RHICompletionStatus Wait(uint64_t timeoutNanoseconds = 0) override
             {
+                RetireCompletedDX12AbandonedReadbacks();
                 if (m_status.IsComplete())
                     return m_status;
                 if (m_pendingCopy.fence == nullptr || m_pendingCopy.readbackResource == nullptr)
@@ -528,21 +666,14 @@ namespace NLS::Render::RHI::DX12
 
                 if (m_pendingCopy.fence->GetCompletedValue() < m_pendingCopy.fenceValue)
                 {
-                    HANDLE eventHandle = m_pendingCopy.fenceEvent;
-                    HANDLE ownedEvent = nullptr;
-                    if (eventHandle == nullptr)
-                    {
-                        ownedEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-                        eventHandle = ownedEvent;
-                    }
+                    HANDLE eventHandle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
                     if (eventHandle == nullptr)
                         return CompleteWithFailure("BeginReadBuffer failed to create fence event");
 
                     const HRESULT hr = m_pendingCopy.fence->SetEventOnCompletion(m_pendingCopy.fenceValue, eventHandle);
                     if (FAILED(hr))
                     {
-                        if (ownedEvent != nullptr)
-                            CloseHandle(ownedEvent);
+                        CloseHandle(eventHandle);
                         return CompleteWithDeviceStatusFailure(
                             "BeginReadBuffer failed to set fence completion event hr=" +
                             std::to_string(static_cast<long>(hr)));
@@ -550,8 +681,7 @@ namespace NLS::Render::RHI::DX12
 
                     const DWORD waitMs = ConvertDX12WaitTimeoutNanosecondsToMilliseconds(timeoutNanoseconds);
                     const DWORD waitResult = WaitForSingleObject(eventHandle, waitMs);
-                    if (ownedEvent != nullptr)
-                        CloseHandle(ownedEvent);
+                    CloseHandle(eventHandle);
                     if (waitResult == WAIT_TIMEOUT)
                         return { RHICompletionStatusCode::Pending, "BeginReadBuffer completion wait timed out" };
                     if (waitResult != WAIT_OBJECT_0)
@@ -690,6 +820,7 @@ namespace NLS::Render::RHI::DX12
         NLS::Render::Settings::EPixelDataType type,
         void* data)
     {
+        RetireCompletedDX12AbandonedReadbacks();
         (void)type;
 
         if (device == nullptr)
@@ -731,6 +862,7 @@ namespace NLS::Render::RHI::DX12
 
         if (m_impl == nullptr)
             m_impl = std::make_shared<Impl>();
+        std::unique_lock<std::mutex> beginLock(m_impl->beginMutex);
         if (m_impl->readbackQuarantined)
         {
             return {
@@ -738,7 +870,8 @@ namespace NLS::Render::RHI::DX12
                 "ReadPixels context is quarantined after a submitted readback failed to signal its fence"
             };
         }
-        if (m_impl->readbackInFlight != nullptr && m_impl->readbackInFlight->load())
+        DX12ReadbackInFlightClaim inFlightClaim(m_impl->readbackInFlight);
+        if (!inFlightClaim.Claimed())
         {
             return {
                 DX12ReadbackStatusCode::BackendFailure,
@@ -919,9 +1052,11 @@ namespace NLS::Render::RHI::DX12
 
         DX12ReadbackPendingCopy pendingCopy;
         pendingCopy.device = device;
+        pendingCopy.sourceTexture = texture;
         pendingCopy.readbackResource = m_impl->readbackResource;
+        pendingCopy.commandAllocator = m_impl->commandAllocator;
+        pendingCopy.commandList = m_impl->commandList;
         pendingCopy.fence = m_impl->fence;
-        pendingCopy.fenceEvent = m_impl->fenceEvent;
         pendingCopy.inFlightFlag = m_impl->readbackInFlight;
         pendingCopy.fenceValue = fenceValue;
         pendingCopy.layout = readbackLayout;
@@ -930,8 +1065,7 @@ namespace NLS::Render::RHI::DX12
         pendingCopy.width = width;
         pendingCopy.height = height;
         pendingCopy.data = data;
-        if (m_impl->readbackInFlight != nullptr)
-            m_impl->readbackInFlight->store(true);
+        inFlightClaim.ReleaseToCompletionToken();
 
         auto completion = std::make_shared<DX12ReadbackCompletionToken>(std::move(pendingCopy));
         if (FAILED(executeDeviceStatus))
@@ -955,6 +1089,7 @@ namespace NLS::Render::RHI::DX12
         ID3D12CommandQueue* graphicsQueue,
         const RHIBufferReadbackDesc& desc)
     {
+        RetireCompletedDX12AbandonedReadbacks();
         if (device == nullptr)
             return { DX12ReadbackStatusCode::InvalidArgument, "BeginReadBuffer DX12 device is null" };
         if (graphicsQueue == nullptr)
@@ -982,6 +1117,7 @@ namespace NLS::Render::RHI::DX12
 
         if (m_impl == nullptr)
             m_impl = std::make_shared<Impl>();
+        std::unique_lock<std::mutex> beginLock(m_impl->beginMutex);
         if (m_impl->readbackQuarantined)
         {
             return {
@@ -989,7 +1125,8 @@ namespace NLS::Render::RHI::DX12
                 "BeginReadBuffer context is quarantined after a submitted readback failed to signal its fence"
             };
         }
-        if (m_impl->readbackInFlight != nullptr && m_impl->readbackInFlight->load())
+        DX12ReadbackInFlightClaim inFlightClaim(m_impl->readbackInFlight);
+        if (!inFlightClaim.Claimed())
         {
             return {
                 DX12ReadbackStatusCode::BackendFailure,
@@ -1177,14 +1314,14 @@ namespace NLS::Render::RHI::DX12
         pendingCopy.device = device;
         pendingCopy.sourceBuffer = desc.source;
         pendingCopy.readbackResource = m_impl->readbackResource;
+        pendingCopy.commandAllocator = m_impl->commandAllocator;
+        pendingCopy.commandList = m_impl->commandList;
         pendingCopy.fence = m_impl->fence;
-        pendingCopy.fenceEvent = m_impl->fenceEvent;
         pendingCopy.inFlightFlag = m_impl->readbackInFlight;
         pendingCopy.fenceValue = fenceValue;
         pendingCopy.readbackSize = desc.size;
         pendingCopy.data = desc.data;
-        if (m_impl->readbackInFlight != nullptr)
-            m_impl->readbackInFlight->store(true);
+        inFlightClaim.ReleaseToCompletionToken();
 
         auto completion = std::make_shared<DX12BufferReadbackCompletionToken>(std::move(pendingCopy));
         if (FAILED(executeDeviceStatus))

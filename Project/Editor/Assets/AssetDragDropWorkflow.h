@@ -89,6 +89,7 @@ struct AssetDragDropRequest
     PrefabInstanceRegistry* prefabInstanceRegistry = nullptr;
     NLS::Core::Assets::AssetId destinationAssetId;
     bool deferAssetReferenceResolution = false;
+    bool synchronousAssetReferencePrewarm = false;
 };
 
 struct AssetDragDropDiagnostic

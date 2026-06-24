@@ -183,6 +183,11 @@ std::vector<const ArtifactDatabaseRecord*> ArtifactDatabase::FindBySource(const 
     return result;
 }
 
+const std::vector<ArtifactDatabaseRecord>& ArtifactDatabase::GetRecords() const
+{
+    return m_records;
+}
+
 ArtifactDatabaseStats ArtifactDatabase::GetStats() const
 {
     ArtifactDatabaseStats stats;

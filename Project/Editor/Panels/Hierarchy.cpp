@@ -1,5 +1,8 @@
 #include "Panels/Hierarchy.h"
 #include "Core/EditorActions.h"
+#include "Core/RecentBackgroundWorkGate.h"
+#include "Assets/AssetDragDropWorkflow.h"
+#include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/EditorAssetPathUtils.h"
 
@@ -21,15 +24,107 @@
 #include "Utils/GameObjectCreationMenu.h"
 #include "UI/Widgets/InputFields/InputText.h"
 
+#include <filesystem>
+#include <functional>
+#include <mutex>
+
 using namespace NLS;
 
 namespace
 {
+constexpr size_t kHierarchyImportedPrefabPreloadGateCapacity = 256u;
+constexpr auto kHierarchyImportedPrefabPreloadGateTtl = std::chrono::seconds(3);
+
+std::mutex& HierarchyImportedPrefabPreloadMutex()
+{
+	static std::mutex mutex;
+	return mutex;
+}
+
+NLS::Editor::Core::RecentBackgroundWorkGate& HierarchyImportedPrefabPreloadGate()
+{
+	static NLS::Editor::Core::RecentBackgroundWorkGate gate(
+		kHierarchyImportedPrefabPreloadGateCapacity,
+		kHierarchyImportedPrefabPreloadGateTtl);
+	return gate;
+}
+
+std::string BuildHierarchyImportedPrefabPreloadKey(
+	const NLS::Editor::Assets::EditorAssetDragPayload& payload)
+{
+	return NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload) + "|" +
+		NLS::Editor::Assets::GetEditorAssetDragPayloadGuid(payload) + "|" +
+		NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(payload);
+}
+
+bool IsHierarchyImportedPrefabPreloadInFlight(
+	const NLS::Editor::Assets::EditorAssetDragPayload& payload)
+{
+	const auto key = BuildHierarchyImportedPrefabPreloadKey(payload);
+	if (key.empty())
+		return false;
+	std::lock_guard lock(HierarchyImportedPrefabPreloadMutex());
+	return HierarchyImportedPrefabPreloadGate().IsInFlight(key);
+}
+
+bool ScheduleHierarchyImportedPrefabPreloadOnce(
+	const NLS::Editor::Assets::EditorAssetDragPayload& payload)
+{
+	const auto key = BuildHierarchyImportedPrefabPreloadKey(payload);
+	if (key.empty())
+		return false;
+	{
+		std::lock_guard lock(HierarchyImportedPrefabPreloadMutex());
+		if (!HierarchyImportedPrefabPreloadGate().TryBegin(
+				key,
+				NLS::Editor::Core::RecentBackgroundWorkGate::Clock::now()))
+			return false;
+	}
+
+	const bool scheduled = NLS::Editor::Assets::SchedulePreviewPrefabHotCachePreload(
+		payload,
+		std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)),
+		[key](std::function<void()> task)
+		{
+			return EDITOR_EXEC(TrackOpportunisticBackgroundTask(
+				[task = std::move(task), key]
+				{
+					auto completion = HierarchyImportedPrefabPreloadGate().CompleteOnScopeExit(key);
+					if (task)
+						task();
+				}));
+			});
+	if (!scheduled)
+	{
+		HierarchyImportedPrefabPreloadGate().End(key);
+	}
+	return scheduled;
+}
+
 void DropAssetIntoHierarchy(
 	const NLS::Editor::Assets::EditorAssetDragPayload& payload,
 	Engine::GameObject* parent)
 {
-	EDITOR_EXEC(CreateGameObjectFromAsset(payload, true, parent));
+	auto* scene = EDITOR_CONTEXT(sceneManager).GetCurrentScene();
+	if (scene == nullptr)
+	{
+		NLS_LOG_WARNING("Skipped prefab drop because there is no active scene.");
+		return;
+	}
+
+	NLS::Editor::Assets::EditorAssetDragDropBridge bridge(
+		std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)));
+	std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab;
+	if (!IsHierarchyImportedPrefabPreloadInFlight(payload))
+		prefab = bridge.TryGetCachedPreviewPrefabArtifactShared(payload);
+	if (!prefab)
+	{
+		(void)ScheduleHierarchyImportedPrefabPreloadOnce(payload);
+		(void)EDITOR_EXEC(CreateGameObjectFromAssetBlocking(payload, true, parent));
+		return;
+	}
+
+	(void)EDITOR_EXEC(CreateGameObjectFromImportedPrefabArtifact(payload, prefab, true, parent));
 }
 
 void DropModelFileIntoHierarchy(

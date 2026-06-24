@@ -212,6 +212,9 @@ namespace NLS::Render::Context
             Settings::EPixelDataFormat format,
             Settings::EPixelDataType type,
             void* data);
+        static RHI::RHIReadbackResult PollReadbackCompletion(
+            const Driver& driver,
+            const RHI::RHIReadbackResult& readback);
 
         static void Clear(
             Driver& driver,

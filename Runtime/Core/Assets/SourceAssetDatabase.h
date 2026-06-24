@@ -36,6 +36,11 @@ public:
     bool ScanRoot(const std::filesystem::path& root, bool readOnly = false);
     bool ScanRoots(std::span<const std::filesystem::path> roots, bool readOnly = false);
     bool ScanRoots(std::span<const SourceAssetRoot> roots);
+    bool RegisterSourceAsset(
+        const std::filesystem::path& root,
+        const std::filesystem::path& assetPath,
+        bool readOnly = false,
+        std::span<const SourceAssetRoot> mountedRoots = {});
 
     const std::vector<SourceAssetRecord>& GetRecords() const;
     const AssetDiagnostics& GetDiagnostics() const;
@@ -56,7 +61,7 @@ private:
         AssetId assetId,
         std::filesystem::path path,
         std::string message);
-    bool RegisterSourceAsset(
+    bool RegisterSourceAssetEntry(
         const std::filesystem::path& root,
         const std::filesystem::directory_entry& entry,
         bool readOnly,

@@ -812,11 +812,12 @@ TEST(PrefabUtilityFacadeTests, LiveRootReconnectAppliesPrefabSceneLocalTransform
     auto* restored = restoredRegistry.FindInstance(*liveRoot);
     ASSERT_NE(restored, nullptr);
     EXPECT_FALSE(restored->localPatches.empty());
-    const auto* restoredSourceRoot = FindObjectRecord(restored->sourceGraph, restored->sourceGraph.root);
+    const auto& restoredSourceGraph = restored->SourceGraph();
+    const auto* restoredSourceRoot = FindObjectRecord(restoredSourceGraph, restoredSourceGraph.root);
     ASSERT_NE(restoredSourceRoot, nullptr);
     const auto restoredSourceComponents = ReadOwnedReferences(*restoredSourceRoot, "components");
     ASSERT_FALSE(restoredSourceComponents.empty());
-    const auto* restoredSourceTransform = FindObjectRecord(restored->sourceGraph, restoredSourceComponents.front());
+    const auto* restoredSourceTransform = FindObjectRecord(restoredSourceGraph, restoredSourceComponents.front());
     ASSERT_NE(restoredSourceTransform, nullptr);
     const auto* sourcePosition = FindProperty(*restoredSourceTransform, "localPosition");
     ASSERT_NE(sourcePosition, nullptr);
@@ -1983,6 +1984,63 @@ TEST(PrefabUtilityFacadeTests, SceneRestoreCanUseSharedPrefabResolverWithoutCopy
     ASSERT_NE(secondRoot, nullptr);
     EXPECT_NE(restoredRegistry.FindInstance(*firstRoot), nullptr);
     EXPECT_NE(restoredRegistry.FindInstance(*secondRoot), nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, StrippedSceneRestoreStoresSharedSourcePrefabForRepeatedLargePrefabInstances)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = std::make_shared<PrefabArtifact>(
+        MakePrefabArtifact("SharedLargeRestorePrefab", Id("f4484848-4848-4448-8448-484848484848")));
+    prefab->generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    for (int i = 0; i < 3; ++i)
+    {
+        auto instance = facade.InstantiatePrefab({
+            nullptr,
+            prefab->assetId,
+            "prefab:SharedLargeRestorePrefab",
+            Id("f4494949-4949-4449-8449-494949494949"),
+            false,
+            prefab.get()
+        }, sourceScene);
+        ASSERT_EQ(instance.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(instance);
+        ASSERT_TRUE(instance.instance.has_value());
+        ASSERT_NE(instance.instance->instanceRoot, nullptr);
+        instance.instance->instanceRoot->SetName("SharedLargeRestorePrefab_" + std::to_string(i));
+        sourceRegistry.Register(*instance.instance);
+    }
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 3u);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f44a4a4a-4a4a-444a-844a-4a4a4a4a4a4a"),
+        restoredRegistry,
+        [&](AssetId assetId, const std::string& subAssetKey)
+            -> std::shared_ptr<const PrefabArtifact>
+        {
+            if (assetId == prefab->assetId && subAssetKey == "prefab:SharedLargeRestorePrefab")
+                return prefab;
+            return nullptr;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(restore);
+    ASSERT_EQ(restoredRegistry.GetInstances().size(), 3u);
+    for (const auto& restored : restoredRegistry.GetInstances())
+    {
+        EXPECT_EQ(restored.SharedSourcePrefab(), prefab.get());
+        EXPECT_EQ(restored.SourceGraph().root, prefab->graph.root);
+        EXPECT_TRUE(restored.sourceGraph.objects.empty());
+    }
 }
 
 TEST(PrefabUtilityFacadeTests, AnnotatesNestedPrefabInstancesUnderSceneParents)

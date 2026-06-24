@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Assets/AssetMeta.h"
+#include "Assets/AssetDiagnostics.h"
 #include "Rendering/Assets/ImportedScene.h"
 
 #include <cstdint>
@@ -64,6 +66,28 @@ struct TextureImporterSettings
     std::vector<TexturePlatformOverride> platformOverrides;
 };
 
+enum class ModelEmbeddedTextureMode
+{
+    ModelSubAsset
+};
+
+struct ModelTextureResolutionSettings
+{
+    uint32_t settingsVersion = 1u;
+    bool useExternalTextures = true;
+    bool searchByName = true;
+    bool autoImportMissingTextureFiles = true;
+    ModelEmbeddedTextureMode embeddedTextureMode = ModelEmbeddedTextureMode::ModelSubAsset;
+};
+
+struct ModelTextureExplicitRemapSetting
+{
+    std::string sourceStableKey;
+    NLS::Core::Assets::AssetId targetAssetId;
+    std::string targetSubAssetKey;
+    std::string targetEditorPath;
+};
+
 std::string BoolToImporterSettingString(bool value);
 std::string FbxReaderSelectionToImporterSettingString(FbxReaderSelection value);
 FbxReaderSelection FbxReaderSelectionFromImporterSettingString(
@@ -85,6 +109,22 @@ std::string StringFromImporterSettings(
     const std::map<std::string, std::string>& settings,
     const char* key,
     std::string fallback = {});
+ModelTextureResolutionSettings LoadModelTextureResolutionSettings(
+    const NLS::Core::Assets::AssetMeta& meta);
+void StoreModelTextureResolutionSettings(
+    NLS::Core::Assets::AssetMeta& meta,
+    const ModelTextureResolutionSettings& settings);
+std::string MakeModelTextureRemapSettingKey(const std::string& stableSourceKey);
+std::vector<ModelTextureExplicitRemapSetting> LoadModelTextureRemapSettings(
+    const NLS::Core::Assets::AssetMeta& meta,
+    NLS::Core::Assets::AssetDiagnostics* diagnostics = nullptr);
+void StoreModelTextureRemapSetting(
+    NLS::Core::Assets::AssetMeta& meta,
+    const ModelTextureExplicitRemapSetting& remap);
+void ClearModelTextureRemapSetting(
+    NLS::Core::Assets::AssetMeta& meta,
+    const std::string& stableSourceKey);
+std::string ComputeModelTextureSettingsFingerprint(const NLS::Core::Assets::AssetMeta& meta);
 ModelImporterSettings ModelImporterSettingsFromSerialized(
     const std::map<std::string, std::string>& settings);
 NLS::Render::Assets::SceneImportSettings ToSceneImportSettings(const ModelImporterSettings& settings);

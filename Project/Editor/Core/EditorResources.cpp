@@ -243,16 +243,8 @@ Editor::Core::EditorResources::EditorResources(
         m_textures["editor.icon.asset.mesh"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
-        std::vector<uint64_t> raw = ICON_SHADER;
-        m_textures["editor.icon.asset.shader"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
         std::vector<uint64_t> raw = ICON_MATERIAL;
         m_textures["editor.icon.asset.material"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
-    }
-    {
-        std::vector<uint64_t> raw = ICON_SCENE;
-        m_textures["editor.icon.asset.scene"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 16, 16, firstFilterEditor, secondFilterEditor, false);
     }
     {
         std::vector<uint64_t> raw = ICON_SOUND;

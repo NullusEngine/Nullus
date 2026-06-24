@@ -89,11 +89,17 @@ MeshFilter::~MeshFilter() = default;
 
 void MeshFilter::NotifyMeshChanged()
 {
+    ++m_renderRevision;
     if (m_owner)
     {
         if (auto meshRenderer = m_owner->GetComponent<MeshRenderer>())
             meshRenderer->UpdateMaterialList();
     }
+}
+
+uint64_t MeshFilter::GetRenderRevision() const
+{
+    return m_renderRevision;
 }
 
 void MeshFilter::SetMesh(Render::Resources::Mesh* p_mesh)

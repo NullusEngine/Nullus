@@ -103,6 +103,7 @@ struct PrefabInstanceRecord
     bool unpacked = false;
     NLS::Engine::GameObject* instanceRoot = nullptr;
     NLS::Engine::Serialize::ObjectGraphDocument sourceGraph;
+    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> sharedSourcePrefab;
     std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectId> sourceToInstance;
     std::unordered_map<const NLS::Engine::GameObject*, NLS::Engine::Serialize::ObjectId> sourceByInstanceObject;
     std::vector<NLS::Engine::Serialize::PatchOperation> localPatches;
@@ -112,6 +113,10 @@ struct PrefabInstanceRecord
     std::vector<NLS::Engine::Serialize::ObjectIdentifier> preservedAssetReferences;
     std::vector<NLS::Engine::Assets::PrefabResolvedAsset> preservedResolvedAssets;
     std::vector<PrefabInstanceRecord> nestedInstances;
+
+    const NLS::Engine::Serialize::ObjectGraphDocument& SourceGraph() const;
+    const NLS::Engine::Assets::PrefabArtifact* SharedSourcePrefab() const;
+    void UseSharedSourcePrefab(std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab);
 };
 
 enum class PrefabHierarchyState
@@ -194,6 +199,7 @@ struct InstantiatePrefabRequest
     NLS::Core::Assets::AssetId sceneAssetId;
     bool deferAssetReferenceResolution = false;
     const NLS::Engine::Assets::PrefabArtifact* constPrefab = nullptr;
+    bool synchronousAssetReferencePrewarm = false;
 };
 
 struct PrefabEditorOperationResult

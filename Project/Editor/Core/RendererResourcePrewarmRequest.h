@@ -64,6 +64,9 @@ namespace NLS::Editor::Core
         RendererResourcePrewarmRequest prewarm;
     };
 
+    void PromotePrefabInstancePreviewResourceHandoffForCommit(
+        const PrefabInstancePreviewResourceHandoff& handoff);
+
     inline PrefabInstancePreviewResourceHandoff CollectPrefabInstancePreviewResourceHandoff(
         RendererResourcePrewarmRequest& request)
     {

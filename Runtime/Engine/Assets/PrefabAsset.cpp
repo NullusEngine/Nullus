@@ -3,6 +3,7 @@
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ServiceLocator.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Serialize/ObjectGraphInstantiator.h"
 #include "Serialize/ObjectGraphReader.h"
 #include "Serialize/PrefabDocument.h"
@@ -482,7 +483,9 @@ Serialize::ObjectGraphDocument BuildRuntimeResolvedGraph(const PrefabArtifact& a
     return graph;
 }
 
-void PrewarmPrefabMeshArtifacts(const PrefabArtifact& artifact)
+void PrewarmPrefabMeshArtifacts(
+    const PrefabArtifact& artifact,
+    NLS::Base::Profiling::PerformanceStageScope* uploadScope)
 {
     if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MeshManager>())
         return;
@@ -491,11 +494,17 @@ void PrewarmPrefabMeshArtifacts(const PrefabArtifact& artifact)
     for (const auto& resolved : artifact.resolvedAssets)
     {
         if (resolved.expectedType == "Mesh" && !resolved.artifactPath.empty())
+        {
             meshManager.PrewarmArtifact(resolved.artifactPath);
+            if (uploadScope != nullptr)
+                uploadScope->AddCounter("synchronousResourceLoadCount");
+        }
     }
 }
 
-void PrewarmPrefabMaterialArtifacts(const PrefabArtifact& artifact)
+void PrewarmPrefabMaterialArtifacts(
+    const PrefabArtifact& artifact,
+    NLS::Base::Profiling::PerformanceStageScope* uploadScope)
 {
     if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
         return;
@@ -504,7 +513,11 @@ void PrewarmPrefabMaterialArtifacts(const PrefabArtifact& artifact)
     for (const auto& resolved : artifact.resolvedAssets)
     {
         if (resolved.expectedType == "Material" && !resolved.artifactPath.empty())
-            materialManager.LoadArtifactWithoutTextures(resolved.artifactPath);
+        {
+            materialManager.PrewarmArtifactWithDependencies(resolved.artifactPath);
+            if (uploadScope != nullptr)
+                uploadScope->AddCounter("synchronousResourceLoadCount");
+        }
     }
 }
 
@@ -624,6 +637,11 @@ PrefabImportResult ImportPrefabArtifact(
     NLS::Core::Assets::AssetId assetId,
     std::vector<PrefabResolvedAsset> resolvedAssets)
 {
+    NLS::Base::Profiling::PerformanceStageScope parseScope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "ParsePreparedPrefab",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
+
     PrefabImportResult result;
     result.artifact.assetId = assetId;
     result.artifact.resolvedAssets = std::move(resolvedAssets);
@@ -640,7 +658,14 @@ PrefabImportResult ImportPrefabArtifact(
     }
 
     result.artifact.graph = *document;
-    RefreshPrefabResolvedAssetsFromReferences(result.artifact);
+    {
+        NLS::Base::Profiling::PerformanceStageScope resolveScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "ResolveDependencies",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        RefreshPrefabResolvedAssetsFromReferences(result.artifact);
+        resolveScope.AddCounter("dependencyCount", result.artifact.resolvedAssets.size());
+    }
     if (document->basePrefab.has_value())
     {
         result.artifact.baseChain.push_back(
@@ -684,20 +709,51 @@ PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     SceneSystem::Scene& scene,
     const Serialize::LoadPolicy& policy)
 {
+    NLS::Base::Profiling::PerformanceStageScope totalScope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "TotalInstantiate",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
+    totalScope.AddCounter("objectCount", artifact.graph.objects.size());
+    totalScope.AddCounter("dependencyCount", artifact.resolvedAssets.size());
+
     PrefabArtifactInstantiationResult result;
     result.diagnostics = artifact.Validate();
     if (result.diagnostics.HasErrors())
         return result;
 
-    if (!policy.deferAssetReferenceResolution)
+    if (policy.synchronousAssetReferencePrewarm && !policy.deferAssetReferenceResolution)
     {
-        PrewarmPrefabMeshArtifacts(artifact);
-        PrewarmPrefabMaterialArtifacts(artifact);
+        NLS::Base::Profiling::PerformanceStageScope waitScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "WaitForResources",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        NLS::Base::Profiling::PerformanceStageScope uploadScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "UploadGpuResources",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        uploadScope.AddCounter("dependencyCount", artifact.resolvedAssets.size());
+        PrewarmPrefabMeshArtifacts(artifact, &uploadScope);
+        PrewarmPrefabMaterialArtifacts(artifact, &uploadScope);
     }
 
+    const bool needsRuntimeResolvedGraph = !artifact.resolvedAssets.empty();
+    const bool needsPrefabDocument = needsRuntimeResolvedGraph || !artifact.graph.overrides.empty();
     Serialize::PrefabDocument document;
-    document.graph = BuildRuntimeResolvedGraph(artifact);
-    const auto instantiated = Serialize::ObjectGraphInstantiator::InstantiatePrefab(document, scene, policy);
+    {
+        NLS::Base::Profiling::PerformanceStageScope resolveScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "ResolveExternalReferences",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        if (needsRuntimeResolvedGraph)
+            document.graph = BuildRuntimeResolvedGraph(artifact);
+        else if (needsPrefabDocument)
+            document.graph = artifact.graph;
+        resolveScope.AddCounter("dependencyCount", artifact.resolvedAssets.size());
+        resolveScope.AddCounter("runtimeResolvedGraphCopyCount", needsRuntimeResolvedGraph ? 1u : 0u);
+    }
+    const auto instantiated = needsPrefabDocument
+        ? Serialize::ObjectGraphInstantiator::InstantiatePrefab(document, scene, policy)
+        : Serialize::ObjectGraphInstantiator::InstantiatePrefabGraph(artifact.graph, scene, policy);
     for (const auto& diagnostic : instantiated.diagnostics.GetItems())
         result.diagnostics.Add(diagnostic);
     if (result.diagnostics.HasErrors())

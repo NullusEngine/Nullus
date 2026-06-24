@@ -23,6 +23,12 @@ namespace NLS::Engine::SceneSystem
 	{
     public:
 		GENERATED_BODY()
+        enum class AddGameObjectActivation
+        {
+            Immediate,
+            Deferred
+        };
+
 		/**
 		* Contains a set of vectors of components that are sorted. It allows fast
 		* manipulation of components without parsing the whole scene
@@ -88,7 +94,10 @@ namespace NLS::Engine::SceneSystem
 
 			GameObject& CreateEditorTransientGameObject(const std::string& p_name, const std::string& p_tag = "");
 
-			bool AddGameObject(GameObject* gameObject);
+			bool AddGameObject(
+                GameObject* gameObject,
+                AddGameObjectActivation activation = AddGameObjectActivation::Immediate);
+            size_t ActivateGameObjectForPlay(GameObject* gameObject);
 
 		/**
 		* Destroy and GameObject and return true on success
@@ -159,10 +168,13 @@ namespace NLS::Engine::SceneSystem
 
 		void RebuildRuntimeCachesAfterLoad()
 		{
-			RebuildFastAccessComponents();
+			if (!m_fastAccessComponentsValid)
+				RebuildFastAccessComponents();
 		}
 
 	private:
+		class ScopedFastAccessRebuildDeferral;
+
         void CollectGameObjectSubtree(GameObject& p_GameObject, std::vector<GameObject*>& p_outGameObjects, std::unordered_set<GameObject*>& p_visitedGameObjects);
         void RemoveGameObjectsFromSceneList(const std::unordered_set<GameObject*>& p_GameObjects);
         void NotifyGameObjectDestroyed(GameObject& p_GameObject);
@@ -170,11 +182,16 @@ namespace NLS::Engine::SceneSystem
         void DestroyGameObjectSubtree(GameObject& p_GameObject);
         void DestroyCollectedGameObjects(std::vector<GameObject*>& p_GameObjects);
 		void RebuildFastAccessComponents();
+		void RequestFastAccessComponentsRebuild();
+		void BeginFastAccessRebuildDeferral();
+		void EndFastAccessRebuildDeferral();
 		bool m_isPlaying = false;
 		std::vector<GameObject*> m_gameobject;
 
 		FastAccessComponents m_fastAccessComponents;
 		bool m_fastAccessComponentsValid = false;
+		bool m_fastAccessRebuildPending = false;
+		uint32_t m_fastAccessRebuildDeferralDepth = 0u;
 		uint64_t m_fastAccessComponentsRevision = 0u;
 		uint64_t m_renderContentRevision = 0u;
 	};

@@ -12,6 +12,7 @@
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/ExternalAssetImporter.h"
+#include "Assets/ModelTextureReferenceResolver.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Core/ServiceLocator.h"
 #include "Components/MeshFilter.h"
@@ -178,6 +179,15 @@ void WriteManifestArtifactFiles(
 {
     for (const auto& artifact : manifest.subAssets)
         WriteTextFile(root / artifact.artifactPath, artifact.subAssetKey);
+}
+
+void AddCurrentExternalTextureBuildPipelineDependency(NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    manifest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+        NLS::Editor::Assets::kExternalTextureBuildPipelineDependencyName,
+        std::to_string(NLS::Editor::Assets::kExternalTexturePostprocessorVersion)
+    });
 }
 
 std::string ArtifactTypeToken(const NLS::Core::Assets::ArtifactType type)
@@ -1811,6 +1821,308 @@ f 1/1/1 2/2/1 3/3/1
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsStaleModelTextureNameSearchCandidateSet)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto textureId = ParseAssetId("81818181-8181-4181-8181-818181818181");
+    const auto modelId = ParseAssetId("82828282-8282-4282-8282-828282828282");
+    WriteBinaryFile(root / "Assets" / "Textures" / "SharedWood.png", TinyPng());
+    auto textureMeta = AssetMeta::CreateForAsset(root / "Assets" / "Textures" / "SharedWood.png");
+    textureMeta.id = textureId;
+    textureMeta.assetType = AssetType::Texture;
+    ASSERT_TRUE(textureMeta.Save(root / "Assets" / "Textures" / "SharedWood.png.meta"));
+
+    WriteTextFile(
+        root / "Assets" / "Models" / "NameSearchHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+    auto modelMeta = AssetMeta::CreateForAsset(root / "Assets" / "Models" / "NameSearchHero.gltf");
+    modelMeta.id = modelId;
+    modelMeta.assetType = AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = GetCurrentImporterVersion(AssetType::ModelScene);
+    ASSERT_TRUE(modelMeta.Save(root / "Assets" / "Models" / "NameSearchHero.gltf.meta"));
+
+    ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureId;
+    textureManifest.importerId = "texture";
+    textureManifest.importerVersion = GetCurrentImporterVersion(AssetType::Texture);
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back({
+        textureId,
+        "texture:main",
+        ArtifactType::Texture,
+        "texture",
+        "editor",
+        "Library/Artifacts/" + textureId.ToString() + "/texture.ntex",
+        "hash:shared-wood",
+        "SharedWood"
+    });
+    WritePersistedArtifactManifest(root, textureManifest);
+    WriteTextFile(root / "Library" / "Artifacts" / textureId.ToString() / "texture.ntex", "texture");
+
+    std::vector<ModelTextureAssetCandidate> candidates;
+    candidates.push_back({
+        textureId,
+        "texture:main",
+        "Assets/Textures/SharedWood.png",
+        "Library/Artifacts/" + textureId.ToString() + "/texture.ntex",
+        "SharedWood",
+        AssetType::Texture,
+        true,
+        0u,
+        "hash:shared-wood",
+        "SharedWood"
+    });
+
+    ArtifactManifest modelManifest;
+    modelManifest.sourceAssetId = modelId;
+    modelManifest.importerId = modelMeta.importerId;
+    modelManifest.importerVersion = modelMeta.importerVersion;
+    modelManifest.targetPlatform = "editor";
+    modelManifest.primarySubAssetKey = "prefab:NameSearchHero";
+    modelManifest.subAssets.push_back(MakeArtifact(
+        modelId,
+        "prefab:NameSearchHero",
+        ArtifactType::Prefab,
+        "prefab",
+        "Library/Artifacts/" + modelId.ToString() + "/prefab.nprefab"));
+    AddCurrentSourceDependencies(root, modelManifest, "Assets/Models/NameSearchHero.gltf");
+    AddCurrentExternalTextureBuildPipelineDependency(modelManifest);
+    modelManifest.dependencies.push_back({
+        AssetDependencyKind::PathToGuidMapping,
+        MakeModelTextureMappingDependencyValue("SharedWood", "name-search"),
+        BuildModelTextureMappingFingerprint(candidates)
+    });
+    WritePersistedArtifactManifest(root, modelManifest);
+    WriteTextFile(root / "Library" / "Artifacts" / modelId.ToString() / "prefab.nprefab", "prefab");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/NameSearchHero.gltf"));
+
+    WriteBinaryFile(root / "Assets" / "Textures" / "sharedwood.png", TinyPng());
+    auto secondTextureMeta = AssetMeta::CreateForAsset(root / "Assets" / "Textures" / "sharedwood.png");
+    secondTextureMeta.id = ParseAssetId("83838383-8383-4383-8383-838383838383");
+    secondTextureMeta.assetType = AssetType::Texture;
+    ASSERT_TRUE(secondTextureMeta.Save(root / "Assets" / "Textures" / "sharedwood.png.meta"));
+
+    ArtifactManifest secondTextureManifest;
+    secondTextureManifest.sourceAssetId = secondTextureMeta.id;
+    secondTextureManifest.importerId = "texture";
+    secondTextureManifest.importerVersion = GetCurrentImporterVersion(AssetType::Texture);
+    secondTextureManifest.targetPlatform = "editor";
+    secondTextureManifest.primarySubAssetKey = "texture:main";
+    secondTextureManifest.subAssets.push_back({
+        secondTextureMeta.id,
+        "texture:main",
+        ArtifactType::Texture,
+        "texture",
+        "editor",
+        "Library/Artifacts/" + secondTextureMeta.id.ToString() + "/texture.ntex",
+        "hash:shared-wood-2",
+        "sharedwood"
+    });
+    WritePersistedArtifactManifest(root, secondTextureManifest);
+    WriteTextFile(root / "Library" / "Artifacts" / secondTextureMeta.id.ToString() / "texture.ntex", "texture");
+
+    ASSERT_TRUE(database.Refresh());
+    EXPECT_FALSE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/NameSearchHero.gltf"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentMatchesNameSearchCandidatesCaseInsensitively)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto textureId = ParseAssetId("84848484-8484-4484-8484-848484848484");
+    const auto modelId = ParseAssetId("85858585-8585-4585-8585-858585858585");
+
+    WriteBinaryFile(root / "Assets" / "Textures" / "SharedWood.png", TinyPng());
+    auto textureMeta = AssetMeta::CreateForAsset(root / "Assets" / "Textures" / "SharedWood.png");
+    textureMeta.id = textureId;
+    textureMeta.assetType = AssetType::Texture;
+    ASSERT_TRUE(textureMeta.Save(root / "Assets" / "Textures" / "SharedWood.png.meta"));
+
+    WriteTextFile(root / "Assets" / "Models" / "NameSearchCaseHero.gltf", R"({
+        "asset": { "version": "2.0" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "nodes": [{ "name": "Root", "mesh": 0 }]
+    })");
+    auto modelMeta = AssetMeta::CreateForAsset(root / "Assets" / "Models" / "NameSearchCaseHero.gltf");
+    modelMeta.id = modelId;
+    modelMeta.assetType = AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = GetCurrentImporterVersion(AssetType::ModelScene);
+    ASSERT_TRUE(modelMeta.Save(root / "Assets" / "Models" / "NameSearchCaseHero.gltf.meta"));
+
+    ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureId;
+    textureManifest.importerId = "texture";
+    textureManifest.importerVersion = GetCurrentImporterVersion(AssetType::Texture);
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back({
+        textureId,
+        "texture:main",
+        ArtifactType::Texture,
+        "texture",
+        "editor",
+        "Library/Artifacts/" + textureId.ToString() + "/texture.ntex",
+        "hash:shared-wood",
+        "SharedWood"
+    });
+    WritePersistedArtifactManifest(root, textureManifest);
+    WriteTextFile(root / "Library" / "Artifacts" / textureId.ToString() / "texture.ntex", "texture");
+
+    ArtifactManifest modelManifest;
+    modelManifest.sourceAssetId = modelId;
+    modelManifest.importerId = modelMeta.importerId;
+    modelManifest.importerVersion = modelMeta.importerVersion;
+    modelManifest.targetPlatform = "editor";
+    modelManifest.primarySubAssetKey = "prefab:NameSearchCaseHero";
+    modelManifest.subAssets.push_back(MakeArtifact(
+        modelId,
+        "prefab:NameSearchCaseHero",
+        ArtifactType::Prefab,
+        "prefab",
+        "Library/Artifacts/" + modelId.ToString() + "/prefab.nprefab"));
+    AddCurrentSourceDependencies(root, modelManifest, "Assets/Models/NameSearchCaseHero.gltf");
+    AddCurrentExternalTextureBuildPipelineDependency(modelManifest);
+    modelManifest.dependencies.push_back({
+        AssetDependencyKind::PathToGuidMapping,
+        MakeModelTextureMappingDependencyValue("SHAREDWOOD", "name-search"),
+        BuildModelTextureMappingFingerprint({
+            {
+                textureId,
+                "texture:main",
+                "Assets/Textures/SharedWood.png",
+                "Library/Artifacts/" + textureId.ToString() + "/texture.ntex",
+                "SharedWood",
+                AssetType::Texture,
+                true,
+                0u,
+                "hash:shared-wood",
+                "SharedWood"
+            }
+        })
+    });
+    WritePersistedArtifactManifest(root, modelManifest);
+    WriteTextFile(root / "Library" / "Artifacts" / modelId.ToString() / "prefab.nprefab", "prefab");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/NameSearchCaseHero.gltf"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentKeepsUnimportedTextureMappingCandidates)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto textureId = ParseAssetId("86868686-8686-4686-8686-868686868686");
+    const auto modelId = ParseAssetId("87878787-8787-4787-8787-878787878787");
+
+    WriteBinaryFile(root / "Assets" / "Textures" / "MissingArtifactAlbedo.png", TinyPng());
+    auto textureMeta = AssetMeta::CreateForAsset(root / "Assets" / "Textures" / "MissingArtifactAlbedo.png");
+    textureMeta.id = textureId;
+    textureMeta.assetType = AssetType::Texture;
+    textureMeta.importerId = "texture";
+    textureMeta.importerVersion = GetCurrentImporterVersion(AssetType::Texture);
+    ASSERT_TRUE(textureMeta.Save(root / "Assets" / "Textures" / "MissingArtifactAlbedo.png.meta"));
+
+    WriteTextFile(root / "Assets" / "Models" / "MissingArtifactHero.gltf", R"({
+        "asset": { "version": "2.0" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "nodes": [{ "name": "Root", "mesh": 0 }]
+    })");
+    auto modelMeta = AssetMeta::CreateForAsset(root / "Assets" / "Models" / "MissingArtifactHero.gltf");
+    modelMeta.id = modelId;
+    modelMeta.assetType = AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = GetCurrentImporterVersion(AssetType::ModelScene);
+    ASSERT_TRUE(modelMeta.Save(root / "Assets" / "Models" / "MissingArtifactHero.gltf.meta"));
+
+    ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureId;
+    textureManifest.importerId = "texture";
+    textureManifest.importerVersion = GetCurrentImporterVersion(AssetType::Texture);
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    WritePersistedArtifactManifest(root, textureManifest);
+
+    ArtifactManifest modelManifest;
+    modelManifest.sourceAssetId = modelId;
+    modelManifest.importerId = modelMeta.importerId;
+    modelManifest.importerVersion = modelMeta.importerVersion;
+    modelManifest.targetPlatform = "editor";
+    modelManifest.primarySubAssetKey = "prefab:MissingArtifactHero";
+    modelManifest.subAssets.push_back(MakeArtifact(
+        modelId,
+        "prefab:MissingArtifactHero",
+        ArtifactType::Prefab,
+        "prefab",
+        "Library/Artifacts/" + modelId.ToString() + "/prefab.nprefab"));
+    AddCurrentSourceDependencies(root, modelManifest, "Assets/Models/MissingArtifactHero.gltf");
+    AddCurrentExternalTextureBuildPipelineDependency(modelManifest);
+    modelManifest.dependencies.push_back({
+        AssetDependencyKind::PathToGuidMapping,
+        MakeModelTextureMappingDependencyValue("Assets/Textures/MissingArtifactAlbedo.png", "source-path"),
+        BuildModelTextureMappingFingerprint({
+            {
+                textureId,
+                {},
+                "Assets/Textures/MissingArtifactAlbedo.png",
+                {},
+                "MissingArtifactAlbedo",
+                AssetType::Texture,
+                false,
+                0u
+            }
+        })
+    });
+    WritePersistedArtifactManifest(root, modelManifest);
+    WriteTextFile(root / "Library" / "Artifacts" / modelId.ToString() / "prefab.nprefab", "prefab");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/MissingArtifactHero.gltf"));
+
+    textureManifest.subAssets.push_back({
+        textureId,
+        "texture:main",
+        ArtifactType::Texture,
+        "texture",
+        "editor",
+        "Library/Artifacts/" + textureId.ToString() + "/texture.ntex",
+        "hash:now-imported",
+        "MissingArtifactAlbedo"
+    });
+    WritePersistedArtifactManifest(root, textureManifest);
+    WriteTextFile(root / "Library" / "Artifacts" / textureId.ToString() / "texture.ntex", "texture");
+
+    ASSERT_TRUE(database.Refresh());
+    EXPECT_FALSE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/MissingArtifactHero.gltf"));
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetDatabaseFacadeTests, ImportedModelManifestRecordsExternalSourceDependencies)
 {
     using namespace NLS::Editor::Assets;
@@ -2243,20 +2555,25 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesNativeTextureArtifactsAndCe
     ArtifactDatabase artifactDatabase;
     ASSERT_TRUE(artifactDatabase.Load(root / "Library" / "ArtifactDB" / "index.tsv"));
     const auto sourceId = ParseAssetId(database.AssetPathToGUID("Assets/Models/Textured.gltf"));
-    const auto* textureRecord = artifactDatabase.Find(sourceId, "texture:image/0", "win64-dx12");
+    const auto textureAssetId = ParseAssetId(database.AssetPathToGUID("Assets/Textures/HeroBaseColor.png"));
+    const auto* textureRecord = artifactDatabase.Find(textureAssetId, "texture:main", "win64-dx12");
     if (textureRecord == nullptr)
-        textureRecord = artifactDatabase.Find(sourceId, "texture:image/0", "editor");
+        textureRecord = artifactDatabase.Find(textureAssetId, "texture:main", "editor");
     ASSERT_NE(textureRecord, nullptr);
     EXPECT_EQ(textureRecord->artifactType, ArtifactType::Texture);
     EXPECT_EQ(textureRecord->loaderId, "texture");
     EXPECT_FALSE(std::filesystem::path(textureRecord->artifactPath).is_absolute());
-    EXPECT_EQ(textureRecord->artifactPath.find("Library/Artifacts/" + sourceId.ToString() + "/"), 0u)
+    EXPECT_EQ(textureRecord->artifactPath.find("Library/Artifacts/" + textureAssetId.ToString() + "/"), 0u)
         << textureRecord->artifactPath;
 
     const auto texturePath = root / textureRecord->artifactPath;
     EXPECT_TRUE(std::filesystem::exists(texturePath));
 
-    const auto textureSubAsset = database.LoadSubAssetAtPath("Assets/Models/Textured.gltf", "texture:image/0");
+    const auto textureManifest = database.GetArtifactManifestForAssetPath("Assets/Textures/HeroBaseColor.png");
+    ASSERT_TRUE(textureManifest.has_value());
+    ASSERT_NE(textureManifest->FindSubAsset("texture:main"), nullptr);
+
+    const auto textureSubAsset = database.LoadSubAssetAtPath("Assets/Textures/HeroBaseColor.png", "texture:main");
     ASSERT_TRUE(textureSubAsset.has_value());
     EXPECT_EQ(textureSubAsset->artifactType, ArtifactType::Texture);
     EXPECT_TRUE(std::filesystem::equivalent(textureSubAsset->artifactPath, texturePath));
@@ -2679,11 +2996,7 @@ TEST(AssetDatabaseFacadeTests, AssetBrowserExposesImportedModelReferenceableSubA
     manifest.subAssets.push_back(makeSafeArtifact("animation:Idle", ArtifactType::AnimationClip, "animation"));
     WriteManifestArtifactFiles(root, manifest);
     AddCurrentSourceDependencies(root, manifest, "Assets/Models/Hero.gltf");
-    manifest.dependencies.push_back({
-        AssetDependencyKind::PostprocessorVersion,
-        kExternalTextureBuildPipelineDependencyName,
-        std::to_string(kExternalTexturePostprocessorVersion)
-    });
+    AddCurrentExternalTextureBuildPipelineDependency(manifest);
     database.AddArtifactManifest(manifest);
 
     const auto entries = BuildAssetBrowserSubAssetEntries(database, "Assets/Models/Hero.gltf");
@@ -3422,6 +3735,66 @@ TEST(AssetDatabaseFacadeTests, LoadsPersistedPrefabArtifactByAssetIdWhenSourcePa
     ASSERT_TRUE(prefab.has_value());
     EXPECT_EQ(prefab->assetId, prefabId);
     EXPECT_FALSE(prefab->generatedModelPrefab);
+    EXPECT_FALSE(prefab->Validate().HasErrors());
+    EXPECT_EQ(prefab->graph.root.GetGuid(), created.artifact->graph.root.GetGuid());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, LoadsPersistedPrefabArtifactByAssetIdWithRelativeArtifactPath)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto prefabId = ParseAssetId("e7171717-1717-4717-8717-171717171717");
+    const std::string subAssetKey = "prefab:RelativeArtifact";
+    NLS::Engine::GameObject gameObject("RelativeArtifact", "Prefab");
+    const auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &gameObject,
+        {},
+        prefabId,
+        "Assets/Prefabs/RelativeArtifact.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_FALSE(created.prefabSourceText.empty());
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = prefabId;
+    manifest.importerId = "prefab";
+    manifest.importerVersion = GetCurrentImporterVersion(AssetType::Prefab);
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = subAssetKey;
+    manifest.subAssets.push_back(MakeArtifact(
+        prefabId,
+        subAssetKey,
+        ArtifactType::Prefab,
+        "prefab",
+        "prefab.nprefab"));
+    WritePersistedArtifactManifest(root, manifest);
+
+    NativeArtifactMetadata metadata;
+    metadata.artifactType = ArtifactType::Prefab;
+    metadata.schemaName = "prefab-artifact";
+    metadata.schemaVersion = 1u;
+    metadata.sourceAssetId = prefabId;
+    metadata.subAssetKey = subAssetKey;
+    metadata.importerId = "prefab";
+    metadata.importerVersion = GetCurrentImporterVersion(AssetType::Prefab);
+    metadata.targetPlatform = "editor";
+    WriteBinaryFile(
+        root / "Library" / "Artifacts" / prefabId.ToString() / "prefab.nprefab",
+        WriteNativeArtifactContainer(
+            std::move(metadata),
+            std::vector<uint8_t>(created.prefabSourceText.begin(), created.prefabSourceText.end())));
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.GUIDToAssetPath(prefabId.ToString()).empty());
+
+    auto prefab = database.LoadPrefabArtifactByAssetId(prefabId, subAssetKey);
+    ASSERT_TRUE(prefab.has_value());
+    EXPECT_EQ(prefab->assetId, prefabId);
     EXPECT_FALSE(prefab->Validate().HasErrors());
     EXPECT_EQ(prefab->graph.root.GetGuid(), created.artifact->graph.root.GetGuid());
 

@@ -84,6 +84,7 @@ namespace NLS::Engine::Rendering
 			Material* overrideMaterial;
 			std::vector<SceneSystem::Scene*> additiveScenes;
 			bool includeSkyboxes = true;
+			bool requireExplicitMaterialTextures = false;
 		};
 
 		using SnapshotRenderScenePackageBuildMode = Render::Context::SnapshotRenderScenePackageBuildMode;

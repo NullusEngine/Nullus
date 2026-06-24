@@ -513,6 +513,31 @@ TEST(FrameGraphSceneTargetsTests, FramebufferResizeRetainsPreviousExplicitResour
     EXPECT_NE(outputBuffer.GetExplicitDepthStencilTextureHandle(), previousDepthTexture.lock());
 }
 
+TEST(FrameGraphSceneTargetsTests, FramebufferSameSizeResizeReusesExplicitResources)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+    const auto colorTexture = outputBuffer.GetExplicitTextureHandle();
+    const auto depthTexture = outputBuffer.GetExplicitDepthStencilTextureHandle();
+    const auto colorView = outputBuffer.GetOrCreateExplicitColorView("SceneColorView");
+    const auto depthView = outputBuffer.GetOrCreateExplicitDepthStencilView("SceneDepthView");
+
+    outputBuffer.Resize(320u, 180u);
+
+    EXPECT_EQ(outputBuffer.GetExplicitTextureHandle(), colorTexture);
+    EXPECT_EQ(outputBuffer.GetExplicitDepthStencilTextureHandle(), depthTexture);
+    EXPECT_EQ(outputBuffer.GetOrCreateExplicitColorView("SceneColorView"), colorView);
+    EXPECT_EQ(outputBuffer.GetOrCreateExplicitDepthStencilView("SceneDepthView"), depthView);
+}
+
 TEST(FrameGraphSceneTargetsTests, FramebufferClearValueRebuildRetainsPreviousExplicitResourcesTemporarily)
 {
     NLS::Render::Settings::DriverSettings settings;

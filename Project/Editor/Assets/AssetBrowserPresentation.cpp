@@ -3,6 +3,7 @@
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/NativeArtifactContainer.h"
+#include "Profiling/Profiler.h"
 
 #include <algorithm>
 #include <cctype>
@@ -51,6 +52,64 @@ bool AssetTypeCanHaveGeneratedSubAssets(const AssetBrowserItemType type)
 {
     return type == AssetBrowserItemType::Model ||
            type == AssetBrowserItemType::Prefab;
+}
+
+NLS::Core::Assets::ArtifactType DefaultDragArtifactTypeForSourceAssetType(
+    const AssetBrowserItemType type)
+{
+    using NLS::Core::Assets::ArtifactType;
+    switch (type)
+    {
+    case AssetBrowserItemType::Model:
+    case AssetBrowserItemType::Prefab:
+        return ArtifactType::Prefab;
+    case AssetBrowserItemType::Material:
+        return ArtifactType::Material;
+    case AssetBrowserItemType::Texture:
+        return ArtifactType::Texture;
+    case AssetBrowserItemType::Shader:
+        return ArtifactType::Shader;
+    case AssetBrowserItemType::All:
+    case AssetBrowserItemType::Folder:
+    case AssetBrowserItemType::Mesh:
+    case AssetBrowserItemType::Scene:
+    case AssetBrowserItemType::Script:
+    case AssetBrowserItemType::Other:
+    case AssetBrowserItemType::Count:
+        return ArtifactType::Unknown;
+    }
+    return ArtifactType::Unknown;
+}
+
+std::string DefaultDragSubAssetKeyForSourceAsset(
+    const AssetBrowserItemType type,
+    const std::string& resourcePath)
+{
+    const auto stem = std::filesystem::path(resourcePath).stem().generic_string();
+    if (stem.empty())
+        return {};
+
+    switch (type)
+    {
+    case AssetBrowserItemType::Model:
+    case AssetBrowserItemType::Prefab:
+        return "prefab:" + stem;
+    case AssetBrowserItemType::Material:
+        return "material:" + stem;
+    case AssetBrowserItemType::Texture:
+        return "texture:" + stem;
+    case AssetBrowserItemType::Shader:
+        return "shader:" + stem;
+    case AssetBrowserItemType::All:
+    case AssetBrowserItemType::Folder:
+    case AssetBrowserItemType::Mesh:
+    case AssetBrowserItemType::Scene:
+    case AssetBrowserItemType::Script:
+    case AssetBrowserItemType::Other:
+    case AssetBrowserItemType::Count:
+        return {};
+    }
+    return {};
 }
 
 std::string MakeSubAssetDisplayName(const std::string& p_subAssetKey)
@@ -770,7 +829,8 @@ std::vector<AssetBrowserItem> BuildGeneratedSubAssetItems(
     std::vector<AssetBrowserItem> generatedItems;
     if (database == nullptr ||
         sourceItem.kind != AssetBrowserItemKind::SourceAsset ||
-        sourceItem.sourceAssetPath.empty())
+        sourceItem.sourceAssetPath.empty() ||
+        !AssetBrowserSourceAssetCanHaveGeneratedSubAssets(sourceItem.sourceAssetPath))
     {
         return generatedItems;
     }
@@ -1035,6 +1095,16 @@ const char* AssetBrowserFallbackIconId(const AssetBrowserItemType type)
     return "editor.icon.asset.default";
 }
 
+std::string_view ResolveAssetBrowserDisplayFallbackIconId(
+    const AssetBrowserItemType type,
+    const std::string_view thumbnailFallbackIcon)
+{
+    constexpr std::string_view defaultAssetIcon = "editor.icon.asset.default";
+    if (thumbnailFallbackIcon.empty() || thumbnailFallbackIcon == defaultAssetIcon)
+        return AssetBrowserFallbackIconId(type);
+    return thumbnailFallbackIcon;
+}
+
 AssetBrowserContentViewMode ResolveAssetBrowserContentViewMode(const float thumbnailSize)
 {
     return thumbnailSize <= 64.0f
@@ -1087,6 +1157,7 @@ std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
     const std::unordered_set<std::string>& expandedSourceAssets,
     const std::unordered_map<std::string, size_t>& generatedSubAssetCountHints)
 {
+    NLS_PROFILE_NAMED_SCOPE("AssetBrowserPresentation::BuildDisplayItems");
     struct SubAssetRange
     {
         size_t begin = 0u;
@@ -1156,6 +1227,98 @@ std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
     return displayItems;
 }
 
+std::vector<AssetBrowserDisplayItem> BuildProgressiveAssetBrowserDisplayItems(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    const std::unordered_map<std::string, size_t>& generatedSubAssetRevealCounts,
+    const size_t maxGeneratedSubAssetPlaceholdersPerSource)
+{
+    NLS_PROFILE_NAMED_SCOPE("AssetBrowserPresentation::BuildProgressiveDisplayItems");
+    std::vector<AssetBrowserDisplayItem> progressiveItems;
+    progressiveItems.reserve(displayItems.size());
+    std::string currentExpandedSourcePath;
+    size_t currentChildCount = 0u;
+    size_t currentRevealCount = 0u;
+    size_t emittedChildCount = 0u;
+
+    auto appendMissingChildPlaceholders = [&]()
+    {
+        if (currentExpandedSourcePath.empty() || currentChildCount <= emittedChildCount)
+            return;
+        const auto placeholderCount = (std::min)(
+            currentChildCount - emittedChildCount,
+            maxGeneratedSubAssetPlaceholdersPerSource);
+        for (size_t placeholderIndex = 0u; placeholderIndex < placeholderCount; ++placeholderIndex)
+        {
+            AssetBrowserDisplayItem placeholder;
+            placeholder.subAsset = true;
+            placeholder.loadingPlaceholder = true;
+            progressiveItems.push_back(std::move(placeholder));
+        }
+    };
+
+    for (const auto& displayItem : displayItems)
+    {
+        if (!displayItem.subAsset)
+        {
+            appendMissingChildPlaceholders();
+            progressiveItems.push_back(displayItem);
+            currentExpandedSourcePath.clear();
+            currentChildCount = 0u;
+            currentRevealCount = 0u;
+            emittedChildCount = 0u;
+            if (displayItem.expanded && displayItem.childCount > 0u)
+            {
+                currentExpandedSourcePath = displayItem.item.sourceAssetPath.empty()
+                    ? displayItem.item.projectRelativePath
+                    : displayItem.item.sourceAssetPath;
+                currentChildCount = displayItem.childCount;
+                if (const auto found = generatedSubAssetRevealCounts.find(currentExpandedSourcePath);
+                    found != generatedSubAssetRevealCounts.end())
+                {
+                    currentRevealCount = (std::min)(found->second, currentChildCount);
+                }
+            }
+            continue;
+        }
+
+        if (currentExpandedSourcePath.empty())
+            continue;
+        if (emittedChildCount >= currentRevealCount)
+            continue;
+
+        progressiveItems.push_back(displayItem);
+        ++emittedChildCount;
+    }
+
+    appendMissingChildPlaceholders();
+
+    return progressiveItems;
+}
+
+std::optional<AssetBrowserDisplayItemRange> ResolveAssetBrowserExpandedSubAssetRange(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    const size_t sourceDisplayIndex)
+{
+    if (sourceDisplayIndex >= displayItems.size())
+        return std::nullopt;
+
+    const auto& sourceItem = displayItems[sourceDisplayIndex];
+    if (sourceItem.subAsset || !sourceItem.expanded || sourceItem.childCount == 0u)
+        return std::nullopt;
+
+    AssetBrowserDisplayItemRange range;
+    range.begin = sourceDisplayIndex + 1u;
+    while (range.begin + range.count < displayItems.size() &&
+        displayItems[range.begin + range.count].subAsset)
+    {
+        ++range.count;
+    }
+
+    if (range.count == 0u)
+        return std::nullopt;
+    return range;
+}
+
 AssetBrowserRefreshPlan BuildAssetBrowserRefreshPlan(const AssetBrowserRefreshReason reason)
 {
     const auto index = static_cast<size_t>(reason);
@@ -1168,6 +1331,26 @@ AssetBrowserRefreshPlan BuildAssetBrowserRefreshPlan(const AssetBrowserRefreshRe
             return descriptor.plan;
     }
     return {};
+}
+
+void EnqueueAssetBrowserExternalDroppedFiles(
+    AssetBrowserExternalDroppedFileQueue& queue,
+    AssetBrowserExternalDroppedFileBatch paths)
+{
+    if (!paths.empty())
+        queue.push_back(std::move(paths));
+}
+
+std::optional<AssetBrowserExternalDroppedFileBatch> ConsumeAssetBrowserExternalDroppedFiles(
+    AssetBrowserExternalDroppedFileQueue& queue,
+    const bool currentFolderHovered)
+{
+    if (!currentFolderHovered || queue.empty())
+        return std::nullopt;
+
+    auto paths = std::move(queue.front());
+    queue.pop_front();
+    return paths;
 }
 
 AssetDatabaseRefreshSchedulingDecision PlanAssetDatabaseRefreshScheduling(
@@ -1271,6 +1454,13 @@ AssetBrowserItemType AssetBrowserItemTypeFromPathParserFileType(
     return AssetBrowserItemType::Other;
 }
 
+bool AssetBrowserSourceAssetCanHaveGeneratedSubAssets(const std::string& sourceAssetPath)
+{
+    return AssetTypeCanHaveGeneratedSubAssets(
+        AssetBrowserItemTypeFromPathParserFileType(
+            NLS::Utils::PathParser::GetFileType(sourceAssetPath)));
+}
+
 const std::array<AssetBrowserItemType, kAssetBrowserItemTypeCount>& AssetBrowserItemTypeFilterOptions()
 {
     static const std::array<AssetBrowserItemType, kAssetBrowserItemTypeCount> options = []
@@ -1311,6 +1501,37 @@ std::string BuildAssetBrowserThumbnailGenerationScopeKey(
     return stream.str();
 }
 
+std::string BuildAssetBrowserThumbnailItemKey(
+    const AssetBrowserItem& item,
+    const uint32_t requestedSize)
+{
+    auto appendIdentity = [&item, requestedSize](std::string& key)
+    {
+        key += "#";
+        key += std::to_string(requestedSize);
+        key += "|kind=";
+        key += std::to_string(static_cast<int>(item.kind));
+        key += "|type=";
+        key += std::to_string(static_cast<int>(item.type));
+        key += "|artifact=";
+        key += std::to_string(static_cast<int>(item.artifactType));
+    };
+
+    if (item.kind == AssetBrowserItemKind::GeneratedSubAsset && !item.subAssetKey.empty())
+    {
+        std::string key = item.sourceAssetPath.empty()
+            ? item.projectRelativePath
+            : item.sourceAssetPath;
+        key += "::";
+        key += item.subAssetKey;
+        appendIdentity(key);
+        return key;
+    }
+    std::string key = item.projectRelativePath;
+    appendIdentity(key);
+    return key;
+}
+
 AssetBrowserThumbnailGenerationScopeDecision EvaluateAssetBrowserThumbnailGenerationScope(
     const std::string& previousScopeKey,
     const uint32_t previousRequestedSize,
@@ -1330,6 +1551,77 @@ AssetBrowserThumbnailGenerationScopeDecision EvaluateAssetBrowserThumbnailGenera
     return decision;
 }
 
+AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
+    const AssetBrowserHeavyGpuThumbnailPumpInput& input)
+{
+    AssetBrowserHeavyGpuThumbnailPumpDecision decision;
+    if (!input.allowHeavyGpuPreview ||
+        !input.hasQueuedWork ||
+        input.hasInFlightWork ||
+        !input.hasPreviewRenderer ||
+        input.interactive)
+    {
+        return decision;
+    }
+
+    decision.shouldPump =
+        input.nowSeconds >= input.deferredUntilSeconds &&
+        input.nowSeconds >= input.nextAllowedSeconds;
+    return decision;
+}
+
+AssetBrowserLightGpuThumbnailPumpDecision PlanAssetBrowserLightGpuThumbnailPump(
+    const AssetBrowserLightGpuThumbnailPumpInput& input)
+{
+    AssetBrowserLightGpuThumbnailPumpDecision decision;
+    if (!input.allowGpuPreviewStart ||
+        !input.hasQueuedWork ||
+        !input.hasPreviewRenderer ||
+        input.interactive)
+    {
+        return decision;
+    }
+
+    decision.shouldPump = input.nowSeconds >= input.nextAllowedSeconds;
+    return decision;
+}
+
+AssetBrowserThumbnailPumpDecision PlanAssetBrowserThumbnailPump(
+    const AssetBrowserThumbnailPumpInput& input)
+{
+    AssetBrowserThumbnailPumpDecision decision;
+    if (!input.hasQueuedWork)
+        return decision;
+
+    if (!input.interactive)
+    {
+        decision.shouldStartBackgroundWork = true;
+        return decision;
+    }
+
+    decision.shouldStartBackgroundWork =
+        !input.hasInFlightWork &&
+        input.interactiveStartsThisFrame < input.maxInteractiveStartsPerFrame;
+    return decision;
+}
+
+AssetBrowserCachedThumbnailTexturePumpDecision PlanAssetBrowserCachedThumbnailTexturePump(
+    const AssetBrowserCachedThumbnailTexturePumpInput& input)
+{
+    AssetBrowserCachedThumbnailTexturePumpDecision decision;
+    if (input.queuedTextureLoads == 0u && input.inFlightDecodes == 0u)
+        return decision;
+
+    if (!input.interactive)
+    {
+        decision.shouldPump = true;
+        return decision;
+    }
+
+    decision.shouldPump = input.interactiveStartsThisFrame < input.maxInteractiveStartsPerFrame;
+    return decision;
+}
+
 AssetBrowserFolderNode BuildProjectAssetFolderTree(const std::filesystem::path& projectRootOrAssetsRoot)
 {
     return BuildProjectAssetFolderTree(projectRootOrAssetsRoot, {});
@@ -1339,6 +1631,7 @@ AssetBrowserFolderNode BuildProjectAssetFolderTree(
     const std::filesystem::path& projectRootOrAssetsRoot,
     const AssetBrowserFolderTreeBuildOptions& options)
 {
+    NLS_PROFILE_NAMED_SCOPE("AssetBrowserPresentation::BuildProjectAssetFolderTree");
     const auto assetsRoot = ResolveAssetsRoot(projectRootOrAssetsRoot);
     std::error_code error;
     if (!std::filesystem::is_directory(assetsRoot, error) ||
@@ -1376,6 +1669,7 @@ std::vector<AssetBrowserItem> BuildCurrentFolderAssetItems(
     const AssetDatabaseFacade* database,
     const AssetBrowserBuildOptions options)
 {
+    NLS_PROFILE_NAMED_SCOPE("AssetBrowserPresentation::BuildCurrentFolderAssetItems");
     const auto assetsRoot = ResolveAssetsRoot(projectRootOrAssetsRoot);
     const auto selectedPath = AbsolutePathForProjectRelative(assetsRoot, selectedFolder);
     std::vector<AssetBrowserItem> items;
@@ -1617,6 +1911,7 @@ std::vector<AssetBrowserItem> SelectAssetBrowserThumbnailGenerationItems(
     const std::vector<AssetBrowserItem>& visibleItems,
     const bool visibleItemsKnown)
 {
+    (void)currentFolderItems;
     if (!visibleItemsKnown)
         return {};
 
@@ -1631,26 +1926,8 @@ std::vector<AssetBrowserItem> SelectAssetBrowserThumbnailGenerationItems(
             items.push_back(item);
     };
 
-    std::unordered_set<std::string> expandedSources;
     for (const auto& visible : visibleItems)
-    {
         addItem(visible);
-        if (visible.kind == AssetBrowserItemKind::GeneratedSubAsset && !visible.sourceAssetPath.empty())
-            expandedSources.insert(visible.sourceAssetPath);
-    }
-
-    if (expandedSources.empty())
-        return items;
-
-    for (const auto& item : currentFolderItems)
-    {
-        if (item.kind != AssetBrowserItemKind::GeneratedSubAsset ||
-            expandedSources.find(item.sourceAssetPath) == expandedSources.end())
-        {
-            continue;
-        }
-        addItem(item);
-    }
     return items;
 }
 
@@ -1802,33 +2079,44 @@ std::optional<EditorAssetDragPayload> MakeAssetBrowserItemDragPayload(
     const AssetDatabaseFacade* database)
 {
     if (item.kind == AssetBrowserItemKind::Folder ||
-        item.kind != AssetBrowserItemKind::GeneratedSubAsset ||
         item.dragResourcePath.empty() ||
         !item.assetId.IsValid())
     {
         return std::nullopt;
     }
 
-    if (!CanStoreEditorAssetDragPayload(item.dragResourcePath, item.assetId, item.subAssetKey))
-        return std::nullopt;
-
     if (database != nullptr &&
+        item.kind == AssetBrowserItemKind::GeneratedSubAsset &&
         !database->IsArtifactManifestCurrentForAssetPath(item.dragResourcePath))
     {
         return std::nullopt;
     }
 
+    auto subAssetKey = item.subAssetKey;
+    auto artifactType = item.artifactType;
+    if (item.kind == AssetBrowserItemKind::SourceAsset)
+    {
+        if (subAssetKey.empty())
+            subAssetKey = DefaultDragSubAssetKeyForSourceAsset(item.type, item.dragResourcePath);
+        if (artifactType == NLS::Core::Assets::ArtifactType::Unknown)
+            artifactType = DefaultDragArtifactTypeForSourceAssetType(item.type);
+    }
+    if (subAssetKey.empty() || artifactType == NLS::Core::Assets::ArtifactType::Unknown)
+        return std::nullopt;
+    if (!CanStoreEditorAssetDragPayload(item.dragResourcePath, item.assetId, subAssetKey))
+        return std::nullopt;
+
     const bool generatedModelPrefab =
         item.kind == AssetBrowserItemKind::GeneratedSubAsset &&
-        item.artifactType == NLS::Core::Assets::ArtifactType::Prefab;
+        artifactType == NLS::Core::Assets::ArtifactType::Prefab;
     const bool imported = item.kind == AssetBrowserItemKind::GeneratedSubAsset ||
         !item.subAssetKey.empty();
     const bool previewPrefabReady = generatedModelPrefab;
     return MakeEditorAssetDragPayload(
         item.dragResourcePath,
         item.assetId,
-        item.subAssetKey,
-        item.artifactType,
+        subAssetKey,
+        artifactType,
         generatedModelPrefab,
         imported,
         previewPrefabReady,
@@ -1932,7 +2220,7 @@ std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntriesFromSna
     const std::vector<ObjectReferencePickerAssetSnapshot>& snapshots)
 {
     std::vector<ObjectReferencePickerEntry> entries;
-    for (const auto& snapshot : snapshots)
+    auto appendSnapshotEntries = [&entries](const ObjectReferencePickerAssetSnapshot& snapshot)
     {
         for (const auto& subAsset : snapshot.subAssets)
         {
@@ -1964,7 +2252,10 @@ std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntriesFromSna
                     true)
             });
         }
-    }
+    };
+
+    for (const auto& snapshot : snapshots)
+        appendSnapshotEntries(snapshot);
 
     std::stable_sort(
         entries.begin(),
@@ -1988,8 +2279,59 @@ std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntriesFromSna
 std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntries(
     const AssetDatabaseFacade& database)
 {
-    return BuildObjectReferencePickerEntriesFromSnapshots(
-        database.GetFreshObjectReferencePickerAssetSnapshots());
+    std::vector<ObjectReferencePickerEntry> entries;
+    database.ForEachFreshObjectReferencePickerAssetSnapshot(
+        [&entries](const ObjectReferencePickerAssetSnapshot& snapshot)
+        {
+            for (const auto& subAsset : snapshot.subAssets)
+            {
+                if (!IsInspectorReferenceableSubAsset(subAsset.artifactType) ||
+                    subAsset.subAssetKey.empty())
+                {
+                    continue;
+                }
+
+                if (!CanStoreEditorAssetDragPayload(
+                        snapshot.sourceAssetPath,
+                        snapshot.assetId,
+                        subAsset.subAssetKey))
+                {
+                    continue;
+                }
+
+                entries.push_back({
+                    snapshot.sourceAssetPath + " / " +
+                    (!subAsset.displayName.empty() ? subAsset.displayName : subAsset.subAssetKey),
+                    MakeEditorAssetDragPayload(
+                        snapshot.sourceAssetPath,
+                        snapshot.assetId,
+                        subAsset.subAssetKey,
+                        subAsset.artifactType,
+                        false,
+                        true,
+                        false,
+                        true)
+                });
+            }
+        });
+
+    std::stable_sort(
+        entries.begin(),
+        entries.end(),
+        [](const ObjectReferencePickerEntry& p_left, const ObjectReferencePickerEntry& p_right)
+        {
+            return p_left.displayName < p_right.displayName;
+        });
+    entries.erase(
+        std::unique(
+            entries.begin(),
+            entries.end(),
+            [](const ObjectReferencePickerEntry& p_left, const ObjectReferencePickerEntry& p_right)
+            {
+                return p_left.displayName == p_right.displayName;
+            }),
+        entries.end());
+    return entries;
 }
 
 AssetWatcherStartupReport BuildAssetWatcherStartupReport(

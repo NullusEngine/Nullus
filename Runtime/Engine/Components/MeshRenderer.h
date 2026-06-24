@@ -117,12 +117,14 @@ namespace NLS::Engine::Components
         void SetUserMatrixValues(const NLS::Array<float>& p_values);
 
         const MaterialList& GetMaterials() const;
+        uint64_t GetRenderRevision() const;
         Material* ResolveMaterialAtIndex(uint8_t p_index);
         const MaterialList& ResolveMaterials();
 
 
 
 	private:
+        void MarkRenderStateChanged();
         size_t GetExpectedMaterialSlotCount();
         Material* ResolveMaterialSlot(size_t p_index);
 
@@ -135,5 +137,6 @@ namespace NLS::Engine::Components
         Render::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
 		EFrustumBehaviour m_frustumBehaviour = EFrustumBehaviour::CULL_MODEL;
         bool m_transientRenderingSuppressed = false;
+        uint64_t m_renderRevision = 1u;
 	};
 }

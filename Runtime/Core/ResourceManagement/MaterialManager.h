@@ -5,6 +5,9 @@
 #include "Core/ResourceManagement/AResourceManager.h"
 #include "CoreDef.h"
 #include "Resources/Material.h"
+
+#include <unordered_set>
+
 namespace NLS::Core::ResourceManagement
 {
 	/**
@@ -12,10 +15,12 @@ namespace NLS::Core::ResourceManagement
 	*/
 class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Render::Resources::Material>
 	{
-	public:
+    public:
         using Material = Render::Resources::Material;
 
-		const char* GetResourceTypeName() const override { return "Material"; }
+        ~MaterialManager();
+
+			const char* GetResourceTypeName() const override { return "Material"; }
 
 		/**
 		* Create the resource identified by the given path
@@ -74,5 +79,13 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
         bool IsAsyncArtifactLoadPending(const std::string& p_path) const;
         bool IsAsyncArtifactLoadFailed(const std::string& p_path) const;
         void PumpAsyncLoads(size_t p_maxCompletions = 1u);
+        void PumpAsyncLoadsForPaths(const std::unordered_set<std::string>& p_paths, size_t p_maxCompletions = 1u);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        static void ClearAsyncArtifactRequestStateForTesting();
+        static bool WaitForAsyncArtifactWorkersForTesting(uint32_t timeoutMilliseconds = 5000u);
+        static size_t GetPendingAsyncArtifactRequestCountForTesting();
+        static size_t GetTotalAsyncArtifactRequestCountForTesting();
+        static size_t GetFailedAsyncArtifactRequestCountForTesting();
+#endif
 	};
 }

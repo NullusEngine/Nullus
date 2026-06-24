@@ -255,6 +255,90 @@ TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncReadbackFinalizesAndAllowsNext
     EXPECT_TRUE(second.Succeeded()) << second.message;
 }
 
+TEST(DX12ReadbackUtilsTests, DroppingAsyncReadbackCompletionKeepsResourcesUntilFenceRetires)
+{
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+    {
+        GTEST_SKIP() << "DX12 device unavailable on this test machine";
+    }
+
+    const std::array<uint8_t, 4> sourcePixel{ 16u, 32u, 48u, 255u };
+    NLS::Render::RHI::RHITextureDesc textureDesc{};
+    textureDesc.extent = { 1u, 1u, 1u };
+    textureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    textureDesc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+    textureDesc.debugName = "ReadbackAbandonedTexture";
+
+    NLS::Render::RHI::RHITextureUploadDesc uploadDesc{};
+    uploadDesc.data = sourcePixel.data();
+    uploadDesc.dataSize = sourcePixel.size();
+    uploadDesc.extent = textureDesc.extent;
+    uploadDesc.debugName = "ReadbackAbandonedTextureUpload";
+
+    auto texture = NLS::Render::Backend::CreateNativeDX12Texture(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        textureDesc,
+        uploadDesc);
+    ASSERT_NE(texture, nullptr);
+    std::weak_ptr<NLS::Render::RHI::RHITexture> weakTexture = texture;
+
+    std::array<uint8_t, 4> abandonedReadback{};
+    {
+        NLS::Render::RHI::DX12::DX12ReadbackContext context;
+        auto first = context.Begin(
+            resources.device.Get(),
+            resources.graphicsQueue.Get(),
+            texture,
+            0u,
+            0u,
+            1u,
+            1u,
+            NLS::Render::Settings::EPixelDataFormat::RGBA,
+            NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+            abandonedReadback.data());
+        ASSERT_TRUE(first.Succeeded()) << first.message;
+        ASSERT_NE(first.completion, nullptr);
+
+        first.completion.reset();
+        texture.reset();
+        EXPECT_NE(weakTexture.lock(), nullptr);
+    }
+    EXPECT_NE(weakTexture.lock(), nullptr);
+
+    auto secondTexture = NLS::Render::Backend::CreateNativeDX12Texture(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        textureDesc,
+        uploadDesc);
+    ASSERT_NE(secondTexture, nullptr);
+
+    std::array<uint8_t, 4> secondReadback{};
+    NLS::Render::RHI::DX12::DX12ReadbackResult second;
+    NLS::Render::RHI::DX12::DX12ReadbackContext secondContext;
+    for (int attempt = 0; attempt < 100; ++attempt)
+    {
+        second = secondContext.Begin(
+            resources.device.Get(),
+            resources.graphicsQueue.Get(),
+            secondTexture,
+            0u,
+            0u,
+            1u,
+            1u,
+            NLS::Render::Settings::EPixelDataFormat::RGBA,
+            NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+            secondReadback.data());
+        if (second.Succeeded())
+            break;
+        Sleep(1);
+    }
+
+    EXPECT_TRUE(second.Succeeded()) << second.message;
+    EXPECT_EQ(weakTexture.lock(), nullptr);
+}
+
 TEST(DX12ReadbackUtilsTests, SourceContainsDedicatedBufferReadbackPath)
 {
     const auto sourcePath =
@@ -288,6 +372,28 @@ TEST(DX12ReadbackUtilsTests, BufferReadbackSourceStateAndLifetimeAreExplicit)
     EXPECT_NE(source.find("std::shared_ptr<RHIBuffer> sourceBuffer"), std::string::npos);
     EXPECT_NE(source.find("pendingCopy.sourceBuffer = desc.source"), std::string::npos);
     EXPECT_NE(source.find("submission.sourceBuffer = sourceBuffer"), std::string::npos);
+}
+
+TEST(DX12ReadbackUtilsTests, AsyncReadbackContextSerializesBeginMutationAndClaimsInflightEarly)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12ReadbackUtils.cpp";
+    std::ifstream input(sourcePath);
+    const std::string source{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("std::mutex beginMutex"), std::string::npos);
+    EXPECT_NE(source.find("compare_exchange_strong"), std::string::npos);
+    const auto begin = source.find("DX12ReadbackResult DX12ReadbackContext::Begin(");
+    ASSERT_NE(begin, std::string::npos);
+    const auto execute = source.find("ExecuteCommandLists", begin);
+    ASSERT_NE(execute, std::string::npos);
+    const auto beginBodyBeforeExecute = source.substr(begin, execute - begin);
+    EXPECT_NE(beginBodyBeforeExecute.find("std::unique_lock<std::mutex> beginLock"), std::string::npos);
+    EXPECT_NE(beginBodyBeforeExecute.find("DX12ReadbackInFlightClaim"), std::string::npos);
 }
 
 TEST(DX12ReadbackUtilsTests, BufferReadbackWaitsOnProducerSemaphoresBeforeCopySubmission)

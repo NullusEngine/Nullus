@@ -1,14 +1,12 @@
 #include "Assets/ArtifactWriter.h"
 #include "Assets/NativeArtifactContainer.h"
 
+#include <algorithm>
 #include <fstream>
 namespace NLS::Core::Assets
 {
 namespace
 {
-constexpr uint64_t kArtifactContentHashOffset = 1469598103934665603ull;
-constexpr uint64_t kArtifactContentHashPrime = 1099511628211ull;
-
 struct CommitPlan
 {
     std::filesystem::path sourcePath;
@@ -17,6 +15,11 @@ struct CommitPlan
     bool destinationBackedUp = false;
     bool destinationMayContainReplacement = false;
     bool replacementMoved = false;
+};
+
+struct StagedArtifact
+{
+    std::filesystem::path relativePath;
 };
 
 bool IsSafeRelativePath(const std::filesystem::path& path)
@@ -88,19 +91,9 @@ void AddError(
     });
 }
 
-uint64_t AppendArtifactContentHashByte(uint64_t hash, const uint8_t byte)
-{
-    hash ^= byte;
-    hash *= kArtifactContentHashPrime;
-    return hash;
-}
-
 std::string ComputeArtifactContentHash(const std::vector<uint8_t>& content)
 {
-    uint64_t hash = kArtifactContentHashOffset;
-    for (const auto byte : content)
-        hash = AppendArtifactContentHashByte(hash, byte);
-    return "fnv1a64:" + std::to_string(hash);
+    return "sha256:" + BuildArtifactStorageFileName(content.data(), content.size());
 }
 
 const char* SchemaNameForArtifactType(const ArtifactType artifactType)
@@ -184,6 +177,29 @@ std::vector<uint8_t> BuildStoredArtifactPayload(
     return WriteNativeArtifactContainer(std::move(metadata), rawPayload);
 }
 
+std::filesystem::path BuildContentAddressedArtifactRelativePathFromStoredPayload(
+    const std::vector<uint8_t>& storedPayload)
+{
+    return BuildArtifactStorageRelativePath(BuildArtifactStorageFileName(storedPayload.data(), storedPayload.size()));
+}
+
+std::filesystem::path BuildPortableArtifactPath(
+    const std::filesystem::path& committedRoot,
+    const std::filesystem::path& finalRelativePath)
+{
+    const auto normalizedRoot = committedRoot.lexically_normal();
+    const auto rootIt = std::find(normalizedRoot.begin(), normalizedRoot.end(), std::filesystem::path("Library"));
+    if (rootIt != normalizedRoot.end())
+    {
+        std::filesystem::path portable;
+        for (auto it = rootIt; it != normalizedRoot.end(); ++it)
+            portable /= *it;
+        portable /= finalRelativePath;
+        return portable.lexically_normal();
+    }
+    return finalRelativePath.lexically_normal();
+}
+
 void MoveOrCopyFile(
     const std::filesystem::path& from,
     const std::filesystem::path& to,
@@ -239,6 +255,16 @@ ArtifactWriter::ArtifactWriter(std::filesystem::path stagingRoot, std::filesyste
     : m_stagingRoot(std::move(stagingRoot))
     , m_committedRoot(std::move(committedRoot))
 {
+}
+
+std::filesystem::path BuildContentAddressedArtifactRelativePath(
+    const ArtifactWriteRequest& request,
+    const ArtifactPayload& artifact)
+{
+    const auto storedPayload = BuildStoredArtifactPayload(request, artifact);
+    if (storedPayload.empty())
+        return {};
+    return BuildContentAddressedArtifactRelativePathFromStoredPayload(storedPayload);
 }
 
 ArtifactWriteResult ArtifactWriter::WriteAndCommit(
@@ -309,6 +335,8 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
     nextManifest.primarySubAssetKey = request.primarySubAssetKey;
     nextManifest.dependencies = request.dependencies;
 
+    std::vector<StagedArtifact> stagedArtifacts;
+    stagedArtifacts.reserve(request.artifacts.size());
     for (const auto& artifact : request.artifacts)
     {
         if (cancelIfRequested())
@@ -330,24 +358,37 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
             return result;
         }
 
-        const auto stagedPath = stagingRoot / artifact.relativePath;
-        std::filesystem::create_directories(stagedPath.parent_path(), error);
-        if (error)
-        {
-            AddError(result, request.sourceAssetId, stagedPath, "artifact-directory-create-failed", error.message());
-            std::filesystem::remove_all(stagingRoot, error);
-            return result;
-        }
-
         const auto storedPayload = BuildStoredArtifactPayload(request, artifact);
         if (storedPayload.empty())
         {
             AddError(
                 result,
                 request.sourceAssetId,
-                stagedPath,
+                artifact.relativePath,
                 "artifact-container-write-failed",
                 "Artifact payload could not be serialized into a native artifact container.");
+            std::filesystem::remove_all(stagingRoot, error);
+            return result;
+        }
+
+        const auto finalRelativePath = BuildContentAddressedArtifactRelativePathFromStoredPayload(storedPayload);
+        if (!IsSafeRelativePath(finalRelativePath))
+        {
+            AddError(
+                result,
+                request.sourceAssetId,
+                finalRelativePath,
+                "artifact-path-escape",
+                "Artifact payload path must stay below the committed artifact root.");
+            std::filesystem::remove_all(stagingRoot, error);
+            return result;
+        }
+
+        const auto stagedPath = stagingRoot / finalRelativePath;
+        std::filesystem::create_directories(stagedPath.parent_path(), error);
+        if (error)
+        {
+            AddError(result, request.sourceAssetId, stagedPath, "artifact-directory-create-failed", error.message());
             std::filesystem::remove_all(stagingRoot, error);
             return result;
         }
@@ -383,10 +424,11 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
         imported.artifactType = artifact.artifactType;
         imported.loaderId = artifact.loaderId;
         imported.targetPlatform = request.targetPlatform;
-        imported.artifactPath = (committedRoot / artifact.relativePath).string();
+        imported.artifactPath = BuildPortableArtifactPath(committedRoot, finalRelativePath).generic_string();
         imported.contentHash = ComputeArtifactContentHash(storedPayload);
         imported.displayName = artifact.displayName;
         nextManifest.subAssets.push_back(std::move(imported));
+        stagedArtifacts.push_back({ finalRelativePath });
     }
 
     std::filesystem::create_directories(committedRoot, error);
@@ -398,8 +440,8 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
     }
 
     std::vector<CommitPlan> commitPlans;
-    commitPlans.reserve(request.artifacts.size());
-    for (const auto& artifact : request.artifacts)
+    commitPlans.reserve(stagedArtifacts.size());
+    for (const auto& artifact : stagedArtifacts)
     {
         const auto sourcePath = stagingRoot / artifact.relativePath;
         const auto destinationPath = committedRoot / artifact.relativePath;

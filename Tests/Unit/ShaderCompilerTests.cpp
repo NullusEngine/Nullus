@@ -296,6 +296,24 @@ namespace
         }
     };
 
+    class ScopedCurrentPath final
+    {
+    public:
+        explicit ScopedCurrentPath(const std::filesystem::path& path)
+            : m_previous(std::filesystem::current_path())
+        {
+            std::filesystem::current_path(path);
+        }
+
+        ~ScopedCurrentPath()
+        {
+            std::filesystem::current_path(m_previous);
+        }
+
+    private:
+        std::filesystem::path m_previous;
+    };
+
     NLS::Render::ShaderCompiler::ShaderCompilationInput MakeShaderInput(
         NLS::Render::ShaderCompiler::ShaderStage stage,
         std::string entryPoint)
@@ -1210,7 +1228,7 @@ TEST(ShaderCompilerTests, ShaderLoaderCreateRoutesConfiguredEngineShaderCacheToP
         << "}\n";
     shaderFile.close();
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
         engineShader.string(),
         projectAssets);
 
@@ -1239,7 +1257,7 @@ TEST(ShaderCompilerTests, ShaderLoaderCreateRoutesConfiguredEngineShaderCacheToP
     std::filesystem::remove_all(root);
 }
 
-TEST(ShaderCompilerTests, ShaderLoaderCreateWithoutActiveDriverCompilesCrossBackendArtifacts)
+TEST(ShaderCompilerTests, ShaderLoaderCreateWithoutActiveDriverRejectsProjectHlslSource)
 {
     NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
 
@@ -1264,32 +1282,100 @@ TEST(ShaderCompilerTests, ShaderLoaderCreateWithoutActiveDriverCompilesCrossBack
     auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
         shaderPath.string(),
         projectAssets);
-    ASSERT_NE(shader, nullptr);
+    EXPECT_EQ(shader, nullptr);
+    std::filesystem::remove_all(root);
+}
 
-    const auto* dxilVertex = shader->FindCompiledArtifact(
-        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
-        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL);
-    if (dxilVertex == nullptr)
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsProjectSourcePath)
+{
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_builtin_rejects_project_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = root / "Project" / "Assets" / "Shaders" / "ProjectSource.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
+        shaderPath.string(),
+        projectAssets);
+
+    EXPECT_EQ(shader, nullptr);
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsBareRelativeShaderAliasPath)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_builtin_alias_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = root / "Shaders" / "Skybox.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(root / "Project" / "Assets");
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    NLS::Render::Resources::Shader* shader = nullptr;
     {
-        NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
-        std::filesystem::remove_all(root);
-        GTEST_SKIP() << "DXC is unavailable for no-driver shader loader artifact coverage.";
+        const ScopedCurrentPath scopedPath(root);
+        shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
+            "Shaders/Skybox.hlsl",
+            projectAssets);
     }
 
-    EXPECT_NE(shader->FindCompiledArtifact(
-        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
-        NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV), nullptr);
-    EXPECT_NE(shader->FindCompiledArtifact(
-        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
-        NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL), nullptr);
-    EXPECT_NE(shader->FindCompiledArtifact(
-        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
-        NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV), nullptr);
-    EXPECT_NE(shader->FindCompiledArtifact(
-        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
-        NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL), nullptr);
+    EXPECT_EQ(shader, nullptr);
+    std::filesystem::remove_all(root);
+}
 
-    NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsPathContainingEngineShaderSubstring)
+{
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_builtin_substring_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = root / "Project" / "Assets" / "Foo" / "App" / "Assets" / "Engine" / "Shaders" / "Evil.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
+        shaderPath.string(),
+        projectAssets);
+
+    EXPECT_EQ(shader, nullptr);
     std::filesystem::remove_all(root);
 }
 

@@ -10,17 +10,9 @@
 
 namespace NLS::Render::Resources
 {
-namespace Detail
-{
-inline bool ShaderStageRequiresVertexObjectData(const NLS::Render::ShaderCompiler::ShaderStage stage)
-{
-    return stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex;
-}
-}
-
 inline bool ShaderSupportsIndexedObjectData(const Shader& shader)
 {
-    const auto& parameterStructs = shader.GetParameterStructs();
+    const auto parameterStructs = shader.GetParameterStructs();
     for (const auto& parameterStruct : parameterStructs)
     {
         if (parameterStruct.groupKind != ShaderParameterGroupKind::Object ||
@@ -47,7 +39,8 @@ inline bool ShaderSupportsIndexedObjectData(const Shader& shader)
     if (!parameterStructs.empty())
         return false;
 
-    for (const auto& property : shader.GetReflection().properties)
+    const auto reflection = shader.GetReflectionSnapshot();
+    for (const auto& property : reflection->properties)
     {
         if (property.name == "ObjectData" &&
             property.kind == ShaderResourceKind::StructuredBuffer &&
@@ -55,7 +48,7 @@ inline bool ShaderSupportsIndexedObjectData(const Shader& shader)
             property.bindingIndex == 0u &&
             property.arraySize == 1 &&
             property.byteSize == sizeof(NLS::Maths::Matrix4) &&
-            Detail::ShaderStageRequiresVertexObjectData(property.stage))
+            NLS::Render::RHI::HasShaderStage(property.stageMask, NLS::Render::RHI::ShaderStageMask::Vertex))
         {
             return true;
         }

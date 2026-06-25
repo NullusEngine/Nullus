@@ -1,5 +1,6 @@
 #include "Engine/Assets/PrefabAsset.h"
 
+#include "Assets/ArtifactManifest.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ServiceLocator.h"
@@ -18,6 +19,12 @@ namespace NLS::Engine::Assets
 {
 namespace
 {
+struct PrefabAssetReference
+{
+    Serialize::ObjectIdentifier reference;
+    std::string expectedType;
+};
+
 void AddDiagnostic(
     Serialize::SerializationDiagnosticList& diagnostics,
     Serialize::SerializationDiagnosticCode code,
@@ -116,45 +123,60 @@ void ValidateResolvedAssetReferences(
 
 void CollectAssetReferencesFromValue(
     const Serialize::PropertyValue& value,
-    std::vector<Serialize::ObjectIdentifier>& references)
+    std::vector<PrefabAssetReference>& references,
+    const std::string& expectedType)
 {
     switch (value.GetKind())
     {
     case Serialize::PropertyValue::Kind::ObjectReference:
         if (value.GetObjectReference().guid.IsValid())
-            references.push_back(value.GetObjectReference());
+            references.push_back({value.GetObjectReference(), expectedType});
         break;
     case Serialize::PropertyValue::Kind::Array:
         for (const auto& item : value.GetArray())
-            CollectAssetReferencesFromValue(item, references);
+            CollectAssetReferencesFromValue(item, references, expectedType);
         break;
     case Serialize::PropertyValue::Kind::Object:
         for (const auto& property : value.GetObject())
-            CollectAssetReferencesFromValue(property.second, references);
+            CollectAssetReferencesFromValue(property.second, references, expectedType);
         break;
     default:
         break;
     }
 }
 
-bool EndsWith(std::string_view value, std::string_view suffix)
+bool TypeNameHasSuffix(const std::string& typeName, const std::string_view suffix)
 {
-    return value.size() >= suffix.size() &&
-        value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return typeName.size() >= suffix.size() &&
+        typeName.compare(typeName.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-std::string InferResolvedAssetType(const Serialize::ObjectIdentifier& reference)
+std::string InferResolvedAssetTypeFromPropertyContext(
+    const Serialize::ObjectRecord& object,
+    const std::string& propertyName)
 {
-    const auto& path = reference.filePath;
-    if (path.rfind("mesh:", 0) == 0 || EndsWith(path, ".nmesh"))
+    if (TypeNameHasSuffix(object.typeName, "MeshFilter") && propertyName == "mesh")
         return "Mesh";
-    if (path.rfind("material:", 0) == 0 || EndsWith(path, ".nmat"))
+    if (TypeNameHasSuffix(object.typeName, "MeshRenderer") && propertyName == "materials")
         return "Material";
-    if (path.rfind("texture:", 0) == 0 || EndsWith(path, ".ntex"))
+    return {};
+}
+
+std::string InferResolvedAssetType(const PrefabAssetReference& assetReference)
+{
+    if (!assetReference.expectedType.empty())
+        return assetReference.expectedType;
+
+    const auto& path = assetReference.reference.filePath;
+    if (path.rfind("mesh:", 0) == 0)
+        return "Mesh";
+    if (path.rfind("material:", 0) == 0)
+        return "Material";
+    if (path.rfind("texture:", 0) == 0)
         return "Texture";
-    if (path.rfind("shader:", 0) == 0 || EndsWith(path, ".hlsl") || EndsWith(path, ".shader"))
+    if (path.rfind("shader:", 0) == 0)
         return "Shader";
-    if (path.rfind("prefab:", 0) == 0 || EndsWith(path, ".prefab"))
+    if (path.rfind("prefab:", 0) == 0)
         return "Prefab";
     return "Asset";
 }
@@ -216,13 +238,15 @@ std::optional<PrefabResolvedAsset> FindExistingResolvedAssetForReference(
     return *found;
 }
 
-PrefabResolvedAsset BuildFallbackResolvedAsset(const Serialize::ObjectIdentifier& reference)
+PrefabResolvedAsset BuildFallbackResolvedAsset(const PrefabAssetReference& assetReference)
 {
     PrefabResolvedAsset resolved;
+    const auto& reference = assetReference.reference;
     resolved.assetId = NLS::Core::Assets::AssetId(reference.guid);
-    resolved.expectedType = InferResolvedAssetType(reference);
+    resolved.expectedType = InferResolvedAssetType(assetReference);
     resolved.subAssetKey = reference.filePath;
-    resolved.artifactPath = reference.filePath;
+    if (NLS::Core::Assets::IsContentStorageArtifactPath(reference.filePath))
+        resolved.artifactPath = reference.filePath;
     return resolved;
 }
 
@@ -586,11 +610,38 @@ Serialize::SerializationDiagnosticList PrefabArtifact::Validate() const
 std::vector<Serialize::ObjectIdentifier> CollectPrefabAssetReferences(
     const Serialize::ObjectGraphDocument& graph)
 {
-    std::vector<Serialize::ObjectIdentifier> references;
+    std::vector<PrefabAssetReference> assetReferences;
     for (const auto& object : graph.objects)
     {
         for (const auto& property : object.properties)
-            CollectAssetReferencesFromValue(property.value, references);
+        {
+            CollectAssetReferencesFromValue(
+                property.value,
+                assetReferences,
+                InferResolvedAssetTypeFromPropertyContext(object, property.name));
+        }
+    }
+
+    std::vector<Serialize::ObjectIdentifier> references;
+    references.reserve(assetReferences.size());
+    for (auto& assetReference : assetReferences)
+        references.push_back(std::move(assetReference.reference));
+    return references;
+}
+
+std::vector<PrefabAssetReference> CollectPrefabAssetReferenceRecords(
+    const Serialize::ObjectGraphDocument& graph)
+{
+    std::vector<PrefabAssetReference> references;
+    for (const auto& object : graph.objects)
+    {
+        for (const auto& property : object.properties)
+        {
+            CollectAssetReferencesFromValue(
+                property.value,
+                references,
+                InferResolvedAssetTypeFromPropertyContext(object, property.name));
+        }
     }
     return references;
 }
@@ -606,12 +657,13 @@ std::vector<PrefabResolvedAsset> BuildPrefabResolvedAssetsFromReferences(
     const std::vector<PrefabResolvedAsset>& existingResolvedAssets)
 {
     std::vector<PrefabResolvedAsset> resolvedAssets;
-    for (const auto& reference : CollectPrefabAssetReferences(graph))
+    for (const auto& assetReference : CollectPrefabAssetReferenceRecords(graph))
     {
+        const auto& reference = assetReference.reference;
         auto resolved = FindExistingResolvedAssetForReference(existingResolvedAssets, reference);
         auto resolvedAsset = resolved.has_value()
             ? std::move(*resolved)
-            : BuildFallbackResolvedAsset(reference);
+            : BuildFallbackResolvedAsset(assetReference);
         if (!ContainsResolvedAssetReference(resolvedAssets, resolvedAsset))
             resolvedAssets.push_back(std::move(resolvedAsset));
     }

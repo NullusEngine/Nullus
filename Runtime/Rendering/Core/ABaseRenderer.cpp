@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <fstream>
 #include <filesystem>
@@ -38,7 +39,60 @@ namespace
         return { color.x, color.y, color.z, 1.0f };
     }
 
-    Resources::MaterialPipelineStateOverrides BuildMaterialPipelineStateOverrides(
+    struct AttachmentPipelineState
+    {
+        std::optional<RHI::TextureFormat> colorFormat;
+        std::optional<RHI::TextureFormat> depthFormat;
+        std::optional<uint32_t> colorSampleCount;
+        std::optional<uint32_t> depthSampleCount;
+        bool hasDepthAttachment = false;
+    };
+
+    AttachmentPipelineState ResolveAttachmentPipelineState(const Data::FrameDescriptor& frameDescriptor)
+    {
+        AttachmentPipelineState state;
+        auto* outputFramebuffer = NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(frameDescriptor);
+        const auto colorView = frameDescriptor.outputColorView;
+        const auto colorTexture =
+            colorView != nullptr
+                ? colorView->GetTexture()
+                : frameDescriptor.outputColorTexture != nullptr
+                    ? frameDescriptor.outputColorTexture
+                    : outputFramebuffer != nullptr
+                        ? outputFramebuffer->GetExplicitTextureHandle()
+                        : nullptr;
+        const auto depthView = frameDescriptor.outputDepthStencilView;
+        const auto depthTexture =
+            depthView != nullptr
+                ? depthView->GetTexture()
+                : frameDescriptor.outputDepthStencilTexture != nullptr
+                    ? frameDescriptor.outputDepthStencilTexture
+                    : outputFramebuffer != nullptr
+                        ? outputFramebuffer->GetExplicitDepthStencilTextureHandle()
+                        : nullptr;
+
+        if (colorView != nullptr)
+            state.colorFormat = colorView->GetDesc().format;
+        else if (colorTexture != nullptr)
+            state.colorFormat = colorTexture->GetDesc().format;
+        if (colorTexture != nullptr)
+            state.colorSampleCount = std::max(1u, colorTexture->GetDesc().sampleCount);
+
+        if (depthView != nullptr)
+            state.depthFormat = depthView->GetDesc().format;
+        else if (depthTexture != nullptr)
+            state.depthFormat = depthTexture->GetDesc().format;
+        if (depthTexture != nullptr)
+            state.depthSampleCount = std::max(1u, depthTexture->GetDesc().sampleCount);
+
+        state.hasDepthAttachment =
+            depthTexture != nullptr ||
+            outputFramebuffer != nullptr ||
+            NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
+        return state;
+    }
+
+    std::optional<Resources::MaterialPipelineStateOverrides> BuildMaterialPipelineStateOverrides(
         const Data::PipelineState& pipelineState,
         const Resources::Material& material,
         const Data::FrameDescriptor& frameDescriptor)
@@ -55,9 +109,33 @@ namespace
         if (pipelineState.depthTest != material.HasDepthTest())
             overrides.depthTest = pipelineState.depthTest;
 
-        overrides.hasDepthAttachment =
-            NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(frameDescriptor) != nullptr ||
-            NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
+        const auto attachmentState = ResolveAttachmentPipelineState(frameDescriptor);
+        if (attachmentState.colorSampleCount.has_value() &&
+            attachmentState.depthSampleCount.has_value() &&
+            *attachmentState.colorSampleCount != *attachmentState.depthSampleCount)
+        {
+            return std::nullopt;
+        }
+
+        if (attachmentState.colorFormat.has_value())
+        {
+            const std::array<RHI::TextureFormat, 1u> colorFormats { *attachmentState.colorFormat };
+            overrides.SetColorFormats(colorFormats);
+        }
+
+        if (attachmentState.colorSampleCount.has_value())
+            overrides.sampleCount = *attachmentState.colorSampleCount;
+
+        if (attachmentState.depthFormat.has_value())
+        {
+            overrides.hasDepthAttachment = true;
+            overrides.depthFormat = *attachmentState.depthFormat;
+            overrides.sampleCount = attachmentState.depthSampleCount.value_or(overrides.sampleCount.value_or(1u));
+        }
+        else
+        {
+            overrides.hasDepthAttachment = attachmentState.hasDepthAttachment;
+        }
 
         const bool materialCullingEnabled = material.HasBackfaceCulling() || material.HasFrontfaceCulling();
         const auto materialCullFace = material.HasBackfaceCulling() && material.HasFrontfaceCulling()
@@ -71,6 +149,43 @@ namespace
             overrides.cullFace = pipelineState.cullFace;
 
         return overrides;
+    }
+
+    bool ApplyAttachmentPipelineStateOverrides(
+        const Data::FrameDescriptor& frameDescriptor,
+        Resources::MaterialPipelineStateOverrides& overrides)
+    {
+        const auto attachmentState = ResolveAttachmentPipelineState(frameDescriptor);
+        if (attachmentState.colorSampleCount.has_value() &&
+            attachmentState.depthSampleCount.has_value() &&
+            *attachmentState.colorSampleCount != *attachmentState.depthSampleCount)
+        {
+            return false;
+        }
+
+        if (!overrides.HasColorFormatsOverride() && attachmentState.colorFormat.has_value())
+        {
+            const std::array<RHI::TextureFormat, 1u> colorFormats { *attachmentState.colorFormat };
+            overrides.SetColorFormats(colorFormats);
+        }
+
+        if (!overrides.sampleCount.has_value() && attachmentState.colorSampleCount.has_value())
+            overrides.sampleCount = *attachmentState.colorSampleCount;
+
+        if (!overrides.depthFormat.has_value() && attachmentState.depthFormat.has_value())
+            overrides.depthFormat = *attachmentState.depthFormat;
+
+        if (!overrides.hasDepthAttachment.has_value())
+            overrides.hasDepthAttachment = attachmentState.depthFormat.has_value() || attachmentState.hasDepthAttachment;
+
+        if (attachmentState.depthFormat.has_value())
+        {
+            overrides.hasDepthAttachment = true;
+            if (!overrides.sampleCount.has_value())
+                overrides.sampleCount = attachmentState.depthSampleCount.value_or(1u);
+        }
+
+        return true;
     }
 
     template<typename TValue>
@@ -1012,6 +1127,15 @@ bool ABaseRenderer::PrepareRecordedDraw(
     const Entities::Drawable& p_drawable,
     PreparedRecordedDraw& outDraw) const
 {
+    return PrepareRecordedDraw(p_pso, p_drawable, "Forward", outDraw);
+}
+
+bool ABaseRenderer::PrepareRecordedDraw(
+    PipelineState p_pso,
+    const Entities::Drawable& p_drawable,
+    std::string_view lightMode,
+    PreparedRecordedDraw& outDraw) const
+{
     auto material = p_drawable.material;
     if (material == nullptr)
     {
@@ -1020,6 +1144,11 @@ bool ABaseRenderer::PrepareRecordedDraw(
     }
 
     const auto pipelineOverrides = BuildMaterialPipelineStateOverrides(p_pso, *material, m_frameDescriptor);
+    if (!pipelineOverrides.has_value())
+    {
+        LogRecordedDrawPreparationState(m_driver, "pso", "attachment_sample_count_mismatch", p_drawable);
+        return false;
+    }
 
     auto mesh = p_drawable.mesh;
     if (mesh == nullptr)
@@ -1040,9 +1169,10 @@ bool ABaseRenderer::PrepareRecordedDraw(
     if (!ResolvePreparedRecordedDrawStaticBase(
         "pso",
         p_drawable,
-        pipelineOverrides,
+        *pipelineOverrides,
         Settings::EComparaisonAlgorithm::LESS,
         p_pso,
+        lightMode,
         staticBase))
     {
         return false;
@@ -1149,7 +1279,8 @@ ABaseRenderer::PreparedRecordedDrawStaticBaseCacheKey ABaseRenderer::BuildPrepar
     const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
     const Settings::EComparaisonAlgorithm depthCompareOverride,
     const Data::PipelineState& pipelineState,
-    const std::shared_ptr<RHI::RHIBindingSet>& passBindingSet)
+    const std::shared_ptr<RHI::RHIBindingSet>& passBindingSet,
+    const Resources::Shader* effectiveShader)
 {
     PreparedRecordedDrawStaticBaseCacheKey key;
     key.deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
@@ -1160,7 +1291,7 @@ ABaseRenderer::PreparedRecordedDrawStaticBaseCacheKey ABaseRenderer::BuildPrepar
         key.materialParameterRevision = drawable.material->GetParameterRevision();
         key.materialRenderStateRevision = drawable.material->GetRenderStateRevision();
         key.materialBindingRevision = drawable.material->GetBindingRevision();
-        const auto* shader = drawable.material->GetShader();
+        const auto* shader = effectiveShader != nullptr ? effectiveShader : drawable.material->GetShader();
         key.materialShaderInstanceId = shader != nullptr ? shader->GetInstanceId() : 0u;
         key.materialShaderGeneration = shader != nullptr ? shader->GetGeneration() : 0u;
     }
@@ -1329,6 +1460,7 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
     const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
     const Settings::EComparaisonAlgorithm depthCompareOverride,
     const Data::PipelineState& pipelineState,
+    const std::string_view lightMode,
     PreparedRecordedDrawStaticBase& outBase) const
 {
     auto* material = drawable.material;
@@ -1338,14 +1470,23 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
 
     InvalidateExplicitDeviceDependentCachesIfNeeded();
     auto device = GetExplicitDevice();
-    const auto passBindingSet = material->RequiresPassDescriptorSet() ? m_activePreparedPassBindingSet : nullptr;
+    const auto* effectiveShader = lightMode.empty()
+        ? material->GetShader()
+        : material->ResolveShaderForLightMode(lightMode);
+    if (effectiveShader == nullptr)
+    {
+        LogRecordedDrawPreparationState(m_driver, preparationPath, "shaderlab_lightmode_missing", drawable);
+        return false;
+    }
+    const auto passBindingSet = material->RequiresPassDescriptorSet(effectiveShader) ? m_activePreparedPassBindingSet : nullptr;
     const auto key = BuildPreparedRecordedDrawStaticBaseCacheKey(
         drawable,
         device,
         pipelineOverrides,
         depthCompareOverride,
         pipelineState,
-        passBindingSet);
+        passBindingSet,
+        effectiveShader);
     if (const auto found = m_preparedRecordedDrawStaticBaseCache.find(key);
         found != m_preparedRecordedDrawStaticBaseCache.end())
     {
@@ -1356,14 +1497,15 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
         return true;
     }
 
-    auto bindingSet = material->GetRecordedBindingSet(device);
+    auto bindingSet = material->GetRecordedBindingSet(device, effectiveShader);
     const auto finalKey = BuildPreparedRecordedDrawStaticBaseCacheKey(
         drawable,
         device,
         pipelineOverrides,
         depthCompareOverride,
         pipelineState,
-        passBindingSet);
+        passBindingSet,
+        effectiveShader);
     if (finalKey != key)
     {
         if (const auto found = m_preparedRecordedDrawStaticBaseCache.find(finalKey);
@@ -1390,7 +1532,8 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
         pipelineOverrides,
         &hasPipelineLayout,
         &hasVertexShader,
-        &hasFragmentShader);
+        &hasFragmentShader,
+        effectiveShader);
 
     if (pipeline == nullptr || bindingSet == nullptr || rhiMesh == nullptr)
     {
@@ -1433,6 +1576,21 @@ bool ABaseRenderer::PrepareRecordedDraw(
     Settings::EComparaisonAlgorithm depthCompareOverride,
     PreparedRecordedDraw& outDraw) const
 {
+    return PrepareRecordedDraw(
+        p_drawable,
+        std::move(pipelineOverrides),
+        depthCompareOverride,
+        "Forward",
+        outDraw);
+}
+
+bool ABaseRenderer::PrepareRecordedDraw(
+    const Entities::Drawable& p_drawable,
+    Resources::MaterialPipelineStateOverrides pipelineOverrides,
+    Settings::EComparaisonAlgorithm depthCompareOverride,
+    std::string_view lightMode,
+    PreparedRecordedDraw& outDraw) const
+{
     auto material = p_drawable.material;
     auto mesh = p_drawable.mesh;
 
@@ -1456,6 +1614,12 @@ bool ABaseRenderer::PrepareRecordedDraw(
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     auto effectivePipelineState = CreatePipelineState();
     effectivePipelineState.depthFunc = depthCompareOverride;
+    if (!ApplyAttachmentPipelineStateOverrides(m_frameDescriptor, pipelineOverrides))
+    {
+        LogRecordedDrawPreparationState(m_driver, "overrides", "attachment_sample_count_mismatch", p_drawable);
+        return false;
+    }
+
     if (!pipelineOverrides.hasDepthAttachment.has_value())
     {
         pipelineOverrides.hasDepthAttachment =
@@ -1469,6 +1633,7 @@ bool ABaseRenderer::PrepareRecordedDraw(
         pipelineOverrides,
         depthCompareOverride,
         effectivePipelineState,
+        lightMode,
         staticBase))
     {
         return false;
@@ -1603,11 +1768,12 @@ RendererStats* ABaseRenderer::GetMutableRendererStats() const
 
 void ABaseRenderer::DrawEntity(
     PipelineState p_pso,
-    const Entities::Drawable& p_drawable
+    const Entities::Drawable& p_drawable,
+    std::string_view lightMode
 )
 {
     PreparedRecordedDraw preparedDraw;
-    if (!PrepareRecordedDraw(p_pso, p_drawable, preparedDraw))
+    if (!PrepareRecordedDraw(p_pso, p_drawable, lightMode, preparedDraw))
         return;
 
     BindPreparedGraphicsPipeline(preparedDraw);
@@ -1618,7 +1784,8 @@ void ABaseRenderer::DrawEntity(
 void ABaseRenderer::DrawEntity(
     const Entities::Drawable& p_drawable,
     Resources::MaterialPipelineStateOverrides pipelineOverrides,
-    Settings::EComparaisonAlgorithm depthCompareOverride)
+    Settings::EComparaisonAlgorithm depthCompareOverride,
+    std::string_view lightMode)
 {
     auto material = p_drawable.material;
     auto mesh = p_drawable.mesh;
@@ -1630,7 +1797,7 @@ void ABaseRenderer::DrawEntity(
     }
 
     PreparedRecordedDraw preparedDraw;
-    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, preparedDraw))
+    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, lightMode, preparedDraw))
         return;
 
     BindPreparedGraphicsPipeline(preparedDraw);

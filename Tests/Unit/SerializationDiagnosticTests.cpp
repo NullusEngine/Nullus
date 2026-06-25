@@ -149,7 +149,7 @@ TEST(SerializationDiagnosticTests, RuntimeManifestMissReportsMissingObjectRefere
     meshFilter.properties.push_back({"mesh", PropertyValue::ObjectReference(ObjectIdentifier::Asset(
         assetId,
         MakeLocalIdentifierInFile(assetGuid, "mesh:Missing"),
-        "Library/Artifacts/Stale/wrong.nmesh"))});
+        "Library/Artifacts/Stale/810e1589298eb04e0ac7e97825f72bbc40830ac4e68fee7ac9e101bcbf91226a"))});
 
     document.objects.push_back(std::move(scene));
     document.objects.push_back(std::move(meshFilter));
@@ -160,7 +160,7 @@ TEST(SerializationDiagnosticTests, RuntimeManifestMissReportsMissingObjectRefere
         "mesh:Existing",
         NLS::Core::Assets::ArtifactType::Mesh,
         "Nullus.Mesh",
-        "Library/Artifacts/Hero/meshes/existing.nmesh",
+        "Library/Artifacts/Hero/meshes/4067e1eedc9fa569187268ab2e5a0d73f20ab6a3d9e04aa05b288cbd2524e13a",
         "sha256:existing",
         {}
     });
@@ -194,7 +194,7 @@ TEST(SerializationDiagnosticTests, RuntimeManifestMissReportsMissingBasePrefabRe
     document.basePrefab = ObjectIdentifier::Asset(
         prefabId,
         MakeLocalIdentifierInFile(prefabGuid, "prefab:Missing"),
-        "Library/Artifacts/Stale/wrong.nprefab");
+        "Library/Artifacts/Stale/ad7189f52d1b009817ada49470ab67b27a324e90eb750ce87396ee704ea90539");
 
     ObjectRecord scene;
     scene.id = sceneId;
@@ -209,7 +209,7 @@ TEST(SerializationDiagnosticTests, RuntimeManifestMissReportsMissingBasePrefabRe
         "prefab:Existing",
         NLS::Core::Assets::ArtifactType::Prefab,
         "Nullus.Prefab",
-        "Library/Artifacts/Hero/prefab.nprefab",
+        "Library/Artifacts/Hero/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772",
         "sha256:existing",
         {}
     });

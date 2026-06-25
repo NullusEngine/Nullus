@@ -21,7 +21,7 @@
 - `.prefab` classifies as prefab source assets with importer `prefab`.
 - `.png`, `.jpeg`, `.jpg`, and `.tga` classify as texture source assets with importer `texture`.
 - `.hlsl` classifies as shader source assets with importer `shader`.
-- `.mat` and `.nmat` classify as material source assets with importer `material`.
+- `.mat` and `.mat` classify as material source assets with importer `material`.
 - `.scene` and `.objectgraph.json` classify as scene source assets with importer `scene`.
 - Source paths are normalized before indexing and must not escape the mounted root.
 - Project roots can repair missing or invalid metadata; read-only roots report diagnostics instead of writing sidecars.

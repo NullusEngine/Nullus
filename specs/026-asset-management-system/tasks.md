@@ -467,7 +467,7 @@
 **Independent Test**: Importing a model with external textures writes material artifacts that point to runtime-loadable texture paths, model import publishes parse/convert/write/commit progress, stale native mesh caches are invalidated by importer versioning, and the asset browser does not synchronously load texture previews while building the file tree.
 
 - [x] T234 [US2] Add material conversion coverage proving glTF image URIs serialize as runtime resource paths instead of internal `image/N` keys in `Tests/Unit/AssetMaterialConversionTests.cpp`.
-- [x] T235 [US2] Resolve imported material texture references relative to the source model folder and write them into `.nmat` uniforms in `Runtime/Rendering/Assets/MaterialConversion.cpp` and `Project/Editor/Assets/ExternalAssetImporter.cpp`.
+- [x] T235 [US2] Resolve imported material texture references relative to the source model folder and write them into `.mat` uniforms in `Runtime/Rendering/Assets/MaterialConversion.cpp` and `Project/Editor/Assets/ExternalAssetImporter.cpp`.
 - [x] T236 [US2] Bump the model-scene importer version so old placeholder `.nmesh` artifact caches are automatically invalidated on refresh in `Runtime/Core/Assets/AssetMeta.cpp` and `Runtime/Core/Assets/SourceAssetDatabase.cpp`.
 - [x] T237 [US6] Thread import progress events through `AssetDatabaseFacade` and the external model importer so source parse, conversion, mesh cache build, prefab build, artifact write, and commit are visible in `Project/Editor/Assets/*`.
 - [x] T238 [US6] Draw an import progress status bar in the Asset Browser using the shared editor import tracker in `Project/Editor/Panels/AssetBrowser.cpp`.
@@ -485,10 +485,10 @@
 
 **Goal**: Add durable central indexes for imported artifact records and shader compile records so editor startup, dependency checks, cache inspection, and future incremental import scheduling do not need to scan every per-asset artifact folder.
 
-**Independent Test**: Artifact database tests prove source/sub-asset/status lookup survives save/load; asset facade import tests prove successful model imports update `Library/ArtifactDB/index.tsv`; shader cache tests prove compile success/failure diagnostics persist to `Library/ShaderCache/ShaderCache.tsv`.
+**Independent Test**: Artifact database tests prove source/sub-asset/status lookup survives LMDB save/load in `Library/ArtifactDB`; asset facade import tests prove successful model imports update that database; shader cache tests prove compile success/failure diagnostics persist to `Library/ShaderCache/ShaderCache.tsv`.
 
 - [x] T244 [US2] Define and test `ArtifactDatabase` central source/sub-asset/status index persistence in `Runtime/Core/Assets/ArtifactDatabase.*` and `Tests/Unit/AssetImportPipelineTests.cpp`.
-- [x] T245 [US2] Write successful asset manifests into `Library/ArtifactDB/index.tsv` from the shared `AssetDatabaseFacade::AddArtifactManifest` path, using project-relative artifact paths for stable cache records.
+- [x] T245 [US2] Write successful asset manifests into the project `Library/ArtifactDB` LMDB from the shared `AssetDatabaseFacade::AddArtifactManifest` path, using project-relative content-addressed artifact paths for stable cache records.
 - [x] T246 [US6] Define and test `ShaderCacheDatabase` persistence for successful bytecode artifacts and failed diagnostics in `Runtime/Rendering/ShaderCompiler/ShaderCacheDatabase.*` and `Tests/Unit/ShaderCompilerTests.cpp`.
 - [x] T247 [US6] Add configurable shader cache DB persistence to `ShaderCompiler` and route `ShaderLoader` project shader compiles into `Library/ShaderCache/ShaderCache.tsv`.
 - [x] T248 [US6] Add same-process concurrent write protection for central artifact and shader cache DB writes so batch imports/compiles preserve every source and stage record.
@@ -518,13 +518,13 @@
 
 **Goal**: Treat `.hlsl` files as first-class source assets whose compiled variants are imported before editor hot paths use them.
 
-**Independent Test**: Asset database tests import `.hlsl` files and verify `.nshader` artifacts, `manifest.json`, `ArtifactDB/index.tsv`, startup preimport planning, and artifact-loader resolution without requiring runtime source compilation.
+**Independent Test**: Asset database tests import `.hlsl` files and verify `.shader` source handling, extensionless content-addressed artifact payloads, `Library/ArtifactDB` LMDB records, startup preimport planning, and artifact-loader resolution without requiring runtime source compilation.
 
 - [ ] T258A [US6] Add failing tests proving `AssetDatabaseFacade::ImportAsset` imports `.hlsl` into GUID-keyed `Library/Artifacts` shader artifacts and central `ArtifactDB`.
-- [ ] T258B [US6] Implement shader artifact payload serialization/deserialization for `.nshader` stage records under the rendering shader loader boundary.
+- [ ] T258B [US6] Implement shader artifact payload serialization/deserialization for `.shader` stage records under the rendering shader loader boundary.
 - [ ] T258C [US6] Implement `.hlsl` import in `AssetDatabaseFacade::RefreshSingle`, including source/meta/importer/build-target dependencies and atomic artifact manifest commit.
 - [ ] T258D [US6] Extend startup/file-change preimport scheduling to include shader source assets and skip unchanged shader manifests.
-- [ ] T258E [US6] Extend `ShaderLoader` to load `.nshader` artifacts directly and preserve legacy `.hlsl` source compilation as a fallback.
+- [ ] T258E [US6] Extend `ShaderLoader` to load `.shader` artifacts directly and preserve legacy `.hlsl` source compilation as a fallback.
 - [ ] T258F [US6] Add material shader-reference coverage for artifact-handle loading while preserving legacy `:Shaders/*.hlsl` payload compatibility.
 
 ---
@@ -538,7 +538,7 @@
 - [x] T259 [US2] Replace placeholder `model.nmodel` metadata with a native model package/index containing mesh chunk records, material binding records, local bounds, artifact content hashes, and offsets or paths for every runtime-loadable mesh payload.
 - [x] T260 [US2] Add a model-level runtime loader/cache that loads or memory-maps `model.nmodel`, creates shared `Model`/`Mesh` runtime resources for the source main asset, and registers submesh aliases so existing prefab mesh references can reuse the same loaded objects.
 - [x] T261 [US3] Update generated model prefab construction to reference the main model package for drag/runtime realization while preserving stable mesh and material sub-asset identities for inspection, overrides, and dependency tracking.
-- [ ] T262 [US6] Prewarm imported model runtime cache opportunistically after import completion, asset selection, or editor idle, with progress/cancellation routed through the global import progress popup. Startup blocking preimport now warms `.nmodel`, mesh aliases, and `.nmat` artifacts before the UI opens; import-completion, selection, and idle-triggered prewarm remain follow-up work.
+- [ ] T262 [US6] Prewarm imported model runtime cache opportunistically after import completion, asset selection, or editor idle, with progress/cancellation routed through the global import progress popup. Startup blocking preimport now warms `.nmodel`, mesh aliases, and `.mat` artifacts before the UI opens; import-completion, selection, and idle-triggered prewarm remain follow-up work.
 - [x] T263 [US2] Keep generated model drops immediately visible while native resources stream in: generated prefab instances must bind a non-blocking fallback material first, preserve real material path hints, and replace slots only when real materials are already cached or loaded by the asset-resolution queue.
 - [x] T264 [US3] Add Scene View validation/readback and focused performance tests proving a warm imported model drop does not synchronously parse source files or schedule one background load per mesh sub-asset.
 - [ ] T265 [US2] Add cache invalidation coverage proving model package changes, mesh artifact hash changes, material changes, and source reimport update or evict loaded main model resources without leaving stale scene instances.
@@ -582,18 +582,18 @@
 
 **Goal**: Ensure imported model artifacts are self-contained and faithful enough for Unity-style warm drag/drop: converted materials must include parser-exposed texture/factor channels, native mesh artifacts must preserve the source mesh identity used by stable sub-asset keys, and stale white-material caches must be invalidated.
 
-**Independent Test**: Focused material/import tests prove FBX/OBJ parser material channels become `.nmat` uniforms, glTF native mesh artifacts keep UVs and source mesh ordering, and importer descriptors share the current model importer version.
+**Independent Test**: Focused material/import tests prove FBX/OBJ parser material channels become `.mat` uniforms, glTF native mesh artifacts keep UVs and source mesh ordering, and importer descriptors share the current model importer version.
 
 - [x] T281 [US2] Extend the Assimp parser detailed scene provider so FBX/OBJ imports expose diffuse/base color, normal/bump, opacity, shininess, roughness, metallic, occlusion, emissive, specular, and double-sided material channels with texture URIs in `Runtime/Rendering/Resources/Parsers/AssimpParser.*`.
-- [x] T282 [US2] Convert parser-exposed FBX/OBJ material channels into `.nmat` texture uniforms and factors, including independent metallic and roughness texture slots with packed metallic-roughness fallback, in `Runtime/Rendering/Assets/MaterialConversion.cpp`.
+- [x] T282 [US2] Convert parser-exposed FBX/OBJ material channels into `.mat` texture uniforms and factors, including independent metallic and roughness texture slots with packed metallic-roughness fallback, in `Runtime/Rendering/Assets/MaterialConversion.cpp`.
 - [x] T283 [US2] Add explicit source mesh identity to native parser mesh data and use source keys instead of traversal vector indices when writing `.nmesh` artifacts in `Runtime/Rendering/Resources/Parsers/IModelParser.h`, `Runtime/Rendering/Resources/Parsers/AssimpParser.cpp`, and `Project/Editor/Assets/ExternalAssetImporter.cpp`.
 - [x] T284 [US2] Write glTF/GLB native mesh artifacts from glTF accessor/buffer data keyed by original mesh index, preserving positions, indices, UVs, normals, tangents, and multi-primitive merges without relying on Assimp traversal order in `Project/Editor/Assets/ExternalAssetImporter.cpp`.
 - [x] T285 [US2] Bump the model importer version and align default scene importer descriptors so old placeholder or white-material artifacts are marked stale and regenerated in `Runtime/Core/Assets/AssetMeta.cpp` and `Runtime/Rendering/Assets/SceneImportPipeline.cpp`.
-- [x] T286 [US2] Add regression coverage for parser material texture channels, serialized `.nmat` texture uniforms, source mesh key/payload alignment, glTF UV preservation, multi-primitive native mesh merging, and importer descriptor version alignment in `Tests/Unit/AssetImportPipelineTests.cpp` and `Tests/Unit/AssetMaterialConversionTests.cpp`.
-- [x] T287 [US2] Store imported texture sub-assets as `.ntex` payload artifacts carrying source or embedded image bytes, URI, MIME, bufferView, embedded flag, and byte length metadata in `Project/Editor/Assets/ExternalAssetImporter.cpp`.
-- [x] T288 [US2] Resolve converted `.nmat` sampler uniforms to committed `.ntex` artifact paths instead of source image paths, and teach `TextureLoader` to decode `.ntex` payloads through the normal `TextureManager` path in `Runtime/Rendering/Assets/MaterialConversion.*`, `Runtime/Rendering/Resources/Loaders/TextureLoader.cpp`, and `Runtime/Base/Image.*`.
+- [x] T286 [US2] Add regression coverage for parser material texture channels, serialized `.mat` texture uniforms, source mesh key/payload alignment, glTF UV preservation, multi-primitive native mesh merging, and importer descriptor version alignment in `Tests/Unit/AssetImportPipelineTests.cpp` and `Tests/Unit/AssetMaterialConversionTests.cpp`.
+- [x] T287 [US2] Store imported texture sub-assets as extensionless content-addressed payload artifacts carrying source or embedded image bytes, URI, MIME, bufferView, embedded flag, and byte length metadata in `Project/Editor/Assets/ExternalAssetImporter.cpp`.
+- [x] T288 [US2] Resolve converted `.mat` sampler uniforms to committed texture artifact paths instead of source image paths, and teach `TextureLoader` to decode imported texture payloads through the normal `TextureManager` path in `Runtime/Rendering/Assets/MaterialConversion.*`, `Runtime/Rendering/Resources/Loaders/TextureLoader.cpp`, and `Runtime/Base/Image.*`.
 - [x] T289 [US6] Repair prewarmed generated model materials whose declared sampler uniforms were intentionally left unloaded during startup prewarm, while keeping deferred texture loading free of false failure warnings in `Project/Editor/Core/EditorActions.cpp` and `Runtime/Rendering/Resources/Loaders/MaterialLoader.cpp`.
-- [x] T290 [US2] Add regression coverage proving imported texture artifacts carry real bytes, converted materials reference `.ntex` artifacts, `.ntex` loads as a runtime texture, deferred material prewarm does not warn, and loaded material sampler uniforms bind real `Texture2D` resources in `Tests/Unit/AssetImportPipelineTests.cpp` and `Tests/Unit/AssetMaterialConversionTests.cpp`.
+- [x] T290 [US2] Add regression coverage proving imported texture artifacts carry real bytes, converted materials reference committed texture artifact payloads, those payloads load as runtime textures, deferred material prewarm does not warn, and loaded material sampler uniforms bind real `Texture2D` resources in `Tests/Unit/AssetImportPipelineTests.cpp` and `Tests/Unit/AssetMaterialConversionTests.cpp`.
 
 ## Dependencies & Execution Order
 
@@ -610,4 +610,4 @@
 - Phase 28 builds on Phase 24, Phase 26, and Phase 27: native mesh payloads, central artifact lookup, and working connected generated prefab drops must exist before the main model package becomes the primary drag/runtime loading path.
 - Phase 29 can proceed before the full native model package: it changes the editor drag/drop contract so source import and renderer payload decoding are kept off the drop callback immediately, while Phase 28 continues the deeper warm-cache optimization.
 - Phase 30 builds directly on Phase 29: imported asset handles stay non-blocking, and background preimport is what normally converts cold model/prefab source files into warm handles before drag/drop.
-- Phase 31 tightens the artifact payload fidelity required by Phases 28-30: startup preimport and warm drag/drop can only skip source parsing safely when `.nmodel`, `.nmesh`, and `.nmat` payloads are keyed to the same source-local identities.
+- Phase 31 tightens the artifact payload fidelity required by Phases 28-30: startup preimport and warm drag/drop can only skip source parsing safely when `.nmodel`, `.nmesh`, and `.mat` payloads are keyed to the same source-local identities.

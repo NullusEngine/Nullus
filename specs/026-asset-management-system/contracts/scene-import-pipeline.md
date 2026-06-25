@@ -23,7 +23,7 @@ Required payload kinds:
 
 - `mesh`: runtime mesh data, vertex streams, index buffers, material slots, bounds, and source primitive mapping.
 - `material`: converted Nullus material data, shader model, factors, texture slots, sampler state, alpha mode, and fallback values. Generated model material sampler uniforms must point at committed imported texture artifacts when a corresponding texture sub-asset exists, not at the original source image path.
-- `texture`: `.ntex` imported texture artifact with URI, MIME type, bufferView identity, embedded flag, byte length metadata, and the original source/embedded encoded image bytes after `PAYLOAD_BEGIN`. `.ntex` must be runtime-loadable by the texture resource loader.
+- `texture`: extensionless imported texture artifact payload with URI, MIME type, bufferView identity, embedded flag, byte length metadata, and the original source/embedded encoded image bytes after `PAYLOAD_BEGIN`. Texture payloads must be runtime-loadable by the texture resource loader and identified by ArtifactDB metadata rather than by a filename extension.
 - `model`: model-level hierarchy, node transforms, mesh/material bindings, skin bindings, animation bindings, and default prefab reference.
 - `skeleton`: joint hierarchy, inverse bind data, bind pose metadata, and source node mapping.
 - `skin`: mesh-to-skeleton binding, joint remap, and weight/index stream references.
@@ -35,7 +35,7 @@ Native mesh payloads must use the same source-local mesh key space as `ImportedS
 
 Converted material payloads must include every texture/factor channel the importer exposes. glTF materials map PBR metallic-roughness fields directly. FBX/OBJ parser materials map diffuse/base color, normal/bump, opacity, shininess, roughness, metallic, occlusion, emissive, specular, and double-sided channels when available. Independent metallic and roughness texture slots must be preserved separately, with packed metallic-roughness used only as a fallback when a source format exposes that packed texture.
 
-Startup prewarm may load generated `.nmat` artifacts with sampler textures intentionally deferred. The editor renderer resource-resolution queue must repair declared sampler uniforms before binding those materials for generated model instances, and deferred prewarm must not report missing-texture warnings unless a real texture load was requested and failed.
+Startup prewarm may load generated `.mat` artifacts with sampler textures intentionally deferred. The editor renderer resource-resolution queue must repair declared sampler uniforms before binding those materials for generated model instances, and deferred prewarm must not report missing-texture warnings unless a real texture load was requested and failed.
 
 Each artifact manifest entry must include:
 

@@ -99,7 +99,7 @@ namespace NLS::Engine::Rendering
 			{
 				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
-				if (CaptureThreadedPreparedDraw(drawable, decalOverrides, GetForwardDecalDepthCompare(), preparedDraw))
+				if (CaptureThreadedPreparedDraw(drawable, decalOverrides, GetForwardDecalDepthCompare(), "Forward", preparedDraw))
 					QueueThreadedRecordedDraw(preparedDraw);
 			}
 
@@ -117,7 +117,7 @@ namespace NLS::Engine::Rendering
 			{
 				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
-				if (CaptureThreadedPreparedDraw(drawable, transparentOverrides, opaquePso.depthFunc, preparedDraw))
+				if (CaptureThreadedPreparedDraw(drawable, transparentOverrides, opaquePso.depthFunc, "Forward", preparedDraw))
 					QueueThreadedRecordedDraw(preparedDraw);
 			}
 
@@ -290,7 +290,7 @@ namespace NLS::Engine::Rendering
 			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
 				continue;
-			DrawEntity(drawable, decalOverrides, GetForwardDecalDepthCompare());
+			DrawEntity(drawable, decalOverrides, GetForwardDecalDepthCompare(), "Forward");
 		}
 	}
 
@@ -307,7 +307,7 @@ namespace NLS::Engine::Rendering
 			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
 				continue;
-			DrawEntity(drawable, transparentOverrides, pso.depthFunc);
+			DrawEntity(drawable, transparentOverrides, pso.depthFunc, "Forward");
 		}
 	}
 }

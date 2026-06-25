@@ -100,12 +100,12 @@ private:
         CreateStandardShader,
         CreateStandardPBRShader,
         CreateUnlitShader,
-        CreateLambertShader,
+        CreateUnlitTextureShader,
         CreateEmptyMaterial,
         CreateStandardMaterial,
         CreateStandardPBRMaterial,
         CreateUnlitMaterial,
-        CreateLambertMaterial
+        CreateDefaultSurfaceMaterial
     };
 
     struct ProjectBrowserTextDialogState

@@ -124,13 +124,13 @@ namespace
                 {},
                 {},
                 "test-compute",
-                "test-compute.nshader"
+                "test-compute.shader"
             }
         });
 
         const auto root = std::filesystem::temp_directory_path() /
             ("nullus_compute_shader_" + NLS::Guid::New().ToString());
-        const auto path = root / "shader.nshader";
+        const auto path = root / "15debd90c0c3b528ccbf6b82e43e45d4e0e3328e401b9e5c721f4085138711b3";
         std::filesystem::create_directories(path.parent_path());
         const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -193,7 +193,7 @@ namespace
                 {},
                 {},
                 "test-vertex",
-                "test-graphics.nshader"
+                "test-graphics.shader"
             }
         });
         artifact.stages.push_back({
@@ -207,13 +207,13 @@ namespace
                 {},
                 {},
                 "test-pixel",
-                "test-graphics.nshader"
+                "test-graphics.shader"
             }
         });
 
         const auto root = std::filesystem::temp_directory_path() /
             ("nullus_graphics_shader_" + NLS::Guid::New().ToString());
-        const auto path = root / "shader.nshader";
+        const auto path = root / "15debd90c0c3b528ccbf6b82e43e45d4e0e3328e401b9e5c721f4085138711b3";
         std::filesystem::create_directories(path.parent_path());
         const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -236,7 +236,7 @@ namespace
 
         const auto root = std::filesystem::temp_directory_path() /
             ("nullus_reflection_shader_" + NLS::Guid::New().ToString());
-        const auto path = root / "shader.nshader";
+        const auto path = root / "15debd90c0c3b528ccbf6b82e43e45d4e0e3328e401b9e5c721f4085138711b3";
         std::filesystem::create_directories(path.parent_path());
         const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -275,6 +275,49 @@ namespace
             NLS::Render::RHI::BindingPointMap::kFrameBindingSpace,
             0u,
             sizeof(NLS::Maths::Matrix4),
+            {}
+        });
+        return reflection;
+    }
+
+    NLS::Render::Resources::ShaderReflection MakeMaterialColorReflection(const std::string& propertyName)
+    {
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.constantBuffers.push_back({
+            propertyName + "Constants",
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            0u,
+            sizeof(NLS::Maths::Vector4),
+            {
+                {propertyName, NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 0u, 16u, 1u}
+            }
+        });
+        reflection.properties.push_back({
+            propertyName,
+            NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4,
+            NLS::Render::Resources::ShaderResourceKind::Value,
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            0u,
+            -1,
+            1,
+            0u,
+            16u,
+            propertyName + "Constants"
+        });
+        return reflection;
+    }
+
+    NLS::Render::Resources::ShaderReflection MakePassConstantOnlyReflection(const std::string& constantBufferName)
+    {
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.constantBuffers.push_back({
+            constantBufferName,
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kPassBindingSpace,
+            0u,
+            sizeof(NLS::Maths::Vector4),
             {}
         });
         return reflection;
@@ -526,6 +569,16 @@ namespace
             return true;
         }
 
+        bool PrepareRecordedDraw(
+            PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable,
+            std::string_view lightMode,
+            PreparedRecordedDraw& outDraw) const override
+        {
+            (void) lightMode;
+            return PrepareRecordedDraw(pipelineState, drawable, outDraw);
+        }
+
         void BindPreparedGraphicsPipeline(const PreparedRecordedDraw&) const override {}
         void BindPreparedMaterialBindingSet(const PreparedRecordedDraw&) const override {}
         void SubmitPreparedDraw(const PreparedRecordedDraw&) const override {}
@@ -572,6 +625,7 @@ namespace
                 drawable,
                 std::move(overrides),
                 depthCompareOverride,
+                "Forward",
                 preparedDraw) &&
                 QueueThreadedRecordedDraw(preparedDraw);
         }
@@ -825,6 +879,16 @@ namespace
             return true;
         }
 
+        bool PrepareRecordedDraw(
+            PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable,
+            std::string_view lightMode,
+            PreparedRecordedDraw& outDraw) const override
+        {
+            (void) lightMode;
+            return PrepareRecordedDraw(pipelineState, drawable, outDraw);
+        }
+
         void BindPreparedGraphicsPipeline(const PreparedRecordedDraw&) const override
         {
             ++m_commandBuffer->bindGraphicsPipelineCalls;
@@ -834,6 +898,32 @@ namespace
 
     private:
         std::shared_ptr<TestCommandBuffer> m_commandBuffer;
+    };
+
+    class PipelineAttachmentOverrideProbeRenderer final : public NLS::Render::Core::CompositeRenderer
+    {
+    public:
+        explicit PipelineAttachmentOverrideProbeRenderer(NLS::Render::Context::Driver& driver)
+            : CompositeRenderer(driver)
+        {
+        }
+
+        bool Prepare(
+            NLS::Render::Data::PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable)
+        {
+            PreparedRecordedDraw draw;
+            return PrepareRecordedDraw(pipelineState, drawable, draw);
+        }
+
+        bool Prepare(
+            NLS::Render::Data::PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable,
+            std::string_view lightMode)
+        {
+            PreparedRecordedDraw draw;
+            return PrepareRecordedDraw(pipelineState, drawable, lightMode, draw);
+        }
     };
 
     class TestPipelineLayout final : public NLS::Render::RHI::RHIPipelineLayout
@@ -1073,11 +1163,11 @@ namespace
 
     NLS::Render::Resources::Shader* CreateMaterialSamplerShader()
     {
-        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
         if (shader == nullptr)
             return nullptr;
 
-        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
+        shader->SetParameterStructsForTesting({});
         NLS::Render::Resources::ShaderReflection reflection;
         reflection.properties.push_back({
             "u_MaterialSampler",
@@ -1092,17 +1182,17 @@ namespace
             0u,
             {}
         });
-        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        shader->SetReflectionForTesting(std::move(reflection));
         return shader;
     }
 
     NLS::Render::Resources::Shader* CreateMaterialTextureShader()
     {
-        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
         if (shader == nullptr)
             return nullptr;
 
-        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
+        shader->SetParameterStructsForTesting({});
         NLS::Render::Resources::ShaderReflection reflection;
         reflection.properties.push_back({
             "u_MaterialTexture",
@@ -1117,17 +1207,17 @@ namespace
             0u,
             {}
         });
-        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        shader->SetReflectionForTesting(std::move(reflection));
         return shader;
     }
 
     NLS::Render::Resources::Shader* CreateMaterialStructuredBufferShader()
     {
-        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
         if (shader == nullptr)
             return nullptr;
 
-        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
+        shader->SetParameterStructsForTesting({});
         NLS::Render::Resources::ShaderReflection reflection;
         reflection.properties.push_back({
             "u_MissingStructuredBuffer",
@@ -1142,17 +1232,52 @@ namespace
             0u,
             {}
         });
-        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        shader->SetReflectionForTesting(std::move(reflection));
+        return shader;
+    }
+
+    NLS::Render::Resources::Shader* CreateMaterialConstantBufferShader()
+    {
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
+        if (shader == nullptr)
+            return nullptr;
+
+        shader->SetParameterStructsForTesting({});
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.constantBuffers.push_back({
+            "MaterialConstants",
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            0u,
+            16u,
+            {
+                {"u_TestColor", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 0u, 16u, 1u}
+            }
+        });
+        reflection.properties.push_back({
+            "u_TestColor",
+            NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4,
+            NLS::Render::Resources::ShaderResourceKind::Value,
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            0u,
+            -1,
+            1,
+            0u,
+            16u,
+            "MaterialConstants"
+        });
+        shader->SetReflectionForTesting(std::move(reflection));
         return shader;
     }
 
     NLS::Render::Resources::Shader* CreateConflictingMaterialBindingShader()
     {
-        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
         if (shader == nullptr)
             return nullptr;
 
-        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
+        shader->SetParameterStructsForTesting({});
         NLS::Render::Resources::ShaderReflection reflection;
         reflection.properties = {
             {
@@ -1182,17 +1307,17 @@ namespace
                 {}
             }
         };
-        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        shader->SetReflectionForTesting(std::move(reflection));
         return shader;
     }
 
     NLS::Render::Resources::Shader* CreateReflectionOnlyObjectDataShader()
     {
-        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
         if (shader == nullptr)
             return nullptr;
 
-        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
+        shader->SetParameterStructsForTesting({});
         NLS::Render::Resources::ShaderReflection reflection;
         reflection.properties.push_back({
             "ObjectData",
@@ -1207,7 +1332,7 @@ namespace
             sizeof(NLS::Maths::Matrix4),
             {}
         });
-        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        shader->SetReflectionForTesting(std::move(reflection));
         return shader;
     }
 
@@ -1653,7 +1778,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderShrinksIdleHighWaterObjectBu
     frameDescriptor.renderHeight = 144u;
     frameDescriptor.camera = &camera;
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -1730,7 +1855,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsSparseExternalObjectI
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -1792,7 +1917,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderAssignsObjectIndexForManualI
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2028,7 +2153,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderUploadsMaterialOwnedGpuInsta
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2106,11 +2231,9 @@ TEST(RendererFrameObjectBindingTests, EngineProviderUsesLegacyObjectConstantsWhe
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
-    auto& parameterStructs =
-        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs());
-    parameterStructs.clear();
+    std::vector<NLS::Render::Resources::ShaderParameterStruct> parameterStructs;
     parameterStructs.push_back(
         NLS::Render::Resources::ShaderParameterStructBuilder("LegacyObjectParameters")
             .SetGroup(NLS::Render::Resources::ShaderParameterGroupKind::Object)
@@ -2120,6 +2243,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderUsesLegacyObjectConstantsWhe
                 sizeof(NLS::Maths::Matrix4),
                 NLS::Render::RHI::ShaderStageMask::Vertex)
             .Build());
+    shader->SetParameterStructsForTesting(std::move(parameterStructs));
 
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2182,7 +2306,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObje
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2242,7 +2366,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObje
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2311,7 +2435,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsInvalidObjectIndexAft
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2385,7 +2509,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderBeforeAl
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2451,7 +2575,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObje
     frameDescriptor.camera = &camera;
     provider.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2879,9 +3003,10 @@ TEST(RendererFrameObjectBindingTests, ReflectionObjectDataRequiresMatrixStrideFo
 
     auto* shader = CreateReflectionOnlyObjectDataShader();
     ASSERT_NE(shader, nullptr);
-    auto& reflection = const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection());
+    auto reflection = shader->GetReflection();
     ASSERT_EQ(reflection.properties.size(), 1u);
     reflection.properties[0].byteSize = sizeof(uint32_t);
+    shader->SetReflectionForTesting(std::move(reflection));
 
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -2940,7 +3065,7 @@ TEST(RendererFrameObjectBindingTests, ImmediateIndexedShaderDrawIsSkippedWhenObj
     frameDescriptor.camera = &camera;
     renderer.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -3089,7 +3214,7 @@ TEST(RendererFrameObjectBindingTests, EngineProviderFailsClosedWhenPreparedThrea
     frameDescriptor.renderHeight = 144u;
     frameDescriptor.camera = &camera;
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -3567,7 +3692,7 @@ TEST(RendererFrameObjectBindingTests, ImmediateIndexedDrawPushesObjectIndexAfter
     frameDescriptor.camera = &camera;
     renderer.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -3623,7 +3748,7 @@ TEST(RendererFrameObjectBindingTests, ImmediateIndexedShaderDrawAssignsObjectInd
     frameDescriptor.camera = &camera;
     renderer.BeginFrame(frameDescriptor);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     NLS::Render::Resources::Material material;
     material.SetShader(shader);
@@ -3881,6 +4006,35 @@ TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetReportsMissingRe
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
+TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetReportsConstantBufferValueCopyFailures)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto* shader = CreateMaterialConstantBufferShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    material.SetRawParameter("u_TestColor", 1.0f);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+
+    const auto& bindingSet = material.GetExplicitBindingSet(explicitDevice);
+
+    ASSERT_NE(bindingSet, nullptr);
+    EXPECT_TRUE(explicitDevice->lastBindingSetDesc.entries.empty());
+    ASSERT_EQ(material.GetLastExplicitBindingDiagnostics().size(), 1u);
+    const auto& diagnostic = material.GetLastExplicitBindingDiagnostics().front();
+    EXPECT_EQ(diagnostic.severity, NLS::Render::Resources::MaterialBindingDiagnosticSeverity::Error);
+    EXPECT_EQ(diagnostic.bindingName, "MaterialConstants");
+    EXPECT_NE(diagnostic.message.find("u_TestColor"), std::string::npos);
+    EXPECT_TRUE(material.HasExplicitBindingErrors());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
 TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetReportsNullSamplerDescriptor)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -3977,11 +4131,11 @@ TEST(RendererFrameObjectBindingTests, EngineGraphicsShadersExposeRendererOwnedPa
 
     for (const auto& shaderPath : shaderPaths)
     {
-        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderPath);
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(shaderPath);
         ASSERT_NE(shader, nullptr) << shaderPath;
         ASSERT_TRUE(shader->HasParameterStructs()) << shaderPath;
 
-        const auto& parameterStructs = shader->GetParameterStructs();
+        const auto parameterStructs = shader->GetParameterStructs();
         ASSERT_EQ(parameterStructs.size(), 4u) << shaderPath;
         EXPECT_EQ(parameterStructs[0].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Frame);
         EXPECT_EQ(parameterStructs[1].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Material);
@@ -4003,7 +4157,7 @@ TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutUsesRendererOwnedSha
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     ASSERT_TRUE(shader->HasParameterStructs());
 
@@ -4149,15 +4303,12 @@ TEST(RendererFrameObjectBindingTests, MaterialRequiresPassDescriptorSetWhenParam
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::ShaderReflection reflectionWithoutPassBindings;
-    const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) =
-        std::move(reflectionWithoutPassBindings);
-    auto& parameterStructs =
-        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs());
-    parameterStructs.clear();
+    shader->SetReflectionForTesting(std::move(reflectionWithoutPassBindings));
+    std::vector<NLS::Render::Resources::ShaderParameterStruct> parameterStructs;
     parameterStructs.push_back(
         NLS::Render::Resources::ShaderParameterStructBuilder("MaterialOnlyParameters")
             .SetGroup(NLS::Render::Resources::ShaderParameterGroupKind::Material)
@@ -4175,12 +4326,119 @@ TEST(RendererFrameObjectBindingTests, MaterialRequiresPassDescriptorSetWhenParam
                 0u,
                 NLS::Render::RHI::ShaderStageMask::Fragment)
             .Build());
+    shader->SetParameterStructsForTesting(std::move(parameterStructs));
 
     NLS::Render::Resources::Material material(shader);
 
     EXPECT_TRUE(material.RequiresPassDescriptorSet());
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingLayoutUsesEffectiveShaderPassReflection)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto* forward = CreateReflectionOnlyImportedShader(
+        "Assets/Shaders/Multi.shader",
+        MakeMaterialColorReflection("_ForwardColor"),
+        "shader:Multi/Forward#0");
+    auto* depth = CreateReflectionOnlyImportedShader(
+        "Assets/Shaders/Multi.shader",
+        MakeMaterialColorReflection("_DepthColor"),
+        "shader:Multi/DepthOnly#1");
+    ASSERT_NE(forward, nullptr);
+    ASSERT_NE(depth, nullptr);
+    forward->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/Forward#0",
+        "Forward",
+        {});
+    depth->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/DepthOnly#1",
+        "DepthOnly",
+        {});
+
+    NLS::Render::Resources::Material material(forward);
+    material.SetShaderLabSourcePath("Assets/Shaders/Multi.shader");
+    material.RegisterShaderLabPassShader(forward);
+    material.RegisterShaderLabPassShader(depth);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+
+    const auto& forwardLayout = material.GetExplicitBindingLayout(explicitDevice, forward);
+    ASSERT_NE(forwardLayout, nullptr);
+    ASSERT_FALSE(forwardLayout->GetDesc().entries.empty());
+    EXPECT_EQ(forwardLayout->GetDesc().entries.front().name, "_ForwardColorConstants");
+
+    const auto& depthLayout = material.GetExplicitBindingLayout(explicitDevice, depth);
+    ASSERT_NE(depthLayout, nullptr);
+    ASSERT_FALSE(depthLayout->GetDesc().entries.empty());
+    EXPECT_EQ(depthLayout->GetDesc().entries.front().name, "_DepthColorConstants")
+        << "Material binding layout must be rebuilt from the LightMode-selected pass shader.";
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(forward));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(depth));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialPassDescriptorSetQueryUsesEffectiveShaderPassReflection)
+{
+    auto* forward = CreateReflectionOnlyImportedShader(
+        "Assets/Shaders/Multi.shader",
+        MakeMaterialColorReflection("_ForwardColor"),
+        "shader:Multi/Forward#0");
+    auto* depth = CreateReflectionOnlyImportedShader(
+        "Assets/Shaders/Multi.shader",
+        MakePassConstantOnlyReflection("DepthPassConstants"),
+        "shader:Multi/DepthOnly#1");
+    ASSERT_NE(forward, nullptr);
+    ASSERT_NE(depth, nullptr);
+
+    NLS::Render::Resources::Material material(forward);
+
+    EXPECT_FALSE(material.RequiresPassDescriptorSet(forward));
+    EXPECT_TRUE(material.RequiresPassDescriptorSet(depth));
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(forward));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(depth));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialClearsShaderLabPassReferencesWhenShaderIsUnregistered)
+{
+    auto* forward = NLS::Render::Resources::Shader::CreateForTesting("Library/Artifacts/12/forwardhash");
+    auto* depth = NLS::Render::Resources::Shader::CreateForTesting("Library/Artifacts/34/depthhash");
+    ASSERT_NE(forward, nullptr);
+    ASSERT_NE(depth, nullptr);
+
+    forward->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/Forward#0",
+        "Forward",
+        {});
+    depth->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/DepthOnly#1",
+        "DepthOnly",
+        {});
+
+    NLS::Render::Resources::Material material(forward);
+    material.SetShaderLabSourcePath("Assets/Shaders/Multi.shader");
+    material.RegisterShaderLabPassShader(forward);
+    material.RegisterShaderLabPassShader(depth);
+    ASSERT_EQ(material.ResolveShaderForLightMode("DepthOnly"), depth);
+
+    material.ClearShaderReferences(depth);
+
+    EXPECT_EQ(material.ResolveShaderForLightMode("DepthOnly"), nullptr);
+    EXPECT_EQ(material.ResolveShaderForLightMode("Forward"), forward);
+
+    NLS::Render::Resources::Shader::DestroyForTesting(forward);
+    NLS::Render::Resources::Shader::DestroyForTesting(depth);
 }
 
 TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutRejectsIndexedObjectDataOnUnsupportedBackend)
@@ -4192,7 +4450,7 @@ TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutRejectsIndexedObject
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
     ASSERT_TRUE(shader->HasParameterStructs());
 
@@ -4243,7 +4501,7 @@ TEST(RendererFrameObjectBindingTests, DeferredLightingPipelineLayoutSkipsEmptyFr
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredLighting.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/DeferredLighting.hlsl");
     ASSERT_NE(shader, nullptr);
     ASSERT_TRUE(shader->HasParameterStructs());
 
@@ -4424,7 +4682,7 @@ TEST(RendererFrameObjectBindingTests, DeferredGBufferPipelineOverridesUseThreeRe
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material material(shader);
@@ -4460,6 +4718,315 @@ TEST(RendererFrameObjectBindingTests, DeferredGBufferPipelineOverridesUseThreeRe
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
+TEST(RendererFrameObjectBindingTests, DeferredGBufferPipelineOverridesOwnDepthAndSampleState)
+{
+    NLS::Render::Resources::Material source;
+    const auto overrides =
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::BuildGBufferMaterialOverridesForTesting(source);
+
+    ASSERT_TRUE(overrides.hasDepthAttachment.has_value());
+    EXPECT_TRUE(*overrides.hasDepthAttachment);
+    ASSERT_TRUE(overrides.depthFormat.has_value());
+    EXPECT_EQ(*overrides.depthFormat, NLS::Render::FrameGraph::kDeferredGBufferDepthFormat);
+    ASSERT_TRUE(overrides.sampleCount.has_value());
+    EXPECT_EQ(*overrides.sampleCount, 1u);
+}
+
+TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesUseOutputViewFormats)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.frameIndex = 71u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    NLS::Render::RHI::RHITextureDesc colorTextureDesc;
+    colorTextureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    colorTextureDesc.sampleCount = 4u;
+    auto colorTexture = std::make_shared<TestTexture>(colorTextureDesc);
+    NLS::Render::RHI::RHITextureViewDesc colorViewDesc;
+    colorViewDesc.format = NLS::Render::RHI::TextureFormat::RGBA16F;
+    auto colorView = std::make_shared<TestTextureView>(colorTexture, colorViewDesc);
+
+    NLS::Render::RHI::RHITextureDesc depthTextureDesc;
+    depthTextureDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    depthTextureDesc.sampleCount = 4u;
+    auto depthTexture = std::make_shared<TestTexture>(depthTextureDesc);
+    NLS::Render::RHI::RHITextureViewDesc depthViewDesc;
+    depthViewDesc.format = NLS::Render::RHI::TextureFormat::Depth32F;
+    auto depthView = std::make_shared<TestTextureView>(depthTexture, depthViewDesc);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputColorView = colorView;
+    frameDescriptor.outputDepthStencilView = depthView;
+
+    PipelineAttachmentOverrideProbeRenderer renderer(driver);
+    renderer.BeginFrame(frameDescriptor);
+
+    auto* shader = CreateTestGraphicsShader("App/Assets/Engine/Shaders/TestGraphics.shader");
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    NLS::Render::Resources::Mesh resourceMesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu);
+
+    NLS::Render::Entities::Drawable drawable;
+    drawable.material = &material;
+    drawable.mesh = &resourceMesh;
+    drawable.instanceCount = 1u;
+
+    ASSERT_TRUE(renderer.Prepare({}, drawable));
+    const auto& desc = explicitDevice->lastGraphicsPipelineDesc;
+    ASSERT_EQ(desc.renderTargetLayout.colorFormats.size(), 1u);
+    EXPECT_EQ(desc.renderTargetLayout.colorFormats[0], NLS::Render::RHI::TextureFormat::RGBA16F);
+    EXPECT_TRUE(desc.renderTargetLayout.hasDepth);
+    EXPECT_EQ(desc.renderTargetLayout.depthFormat, NLS::Render::RHI::TextureFormat::Depth32F);
+    EXPECT_EQ(desc.renderTargetLayout.sampleCount, 4u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    renderer.EndFrame();
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, PipelineStateRecordedDrawCanSelectShaderLabLightModePass)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.frameIndex = 73u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+
+    PipelineAttachmentOverrideProbeRenderer renderer(driver);
+    renderer.BeginFrame(frameDescriptor);
+
+    auto* forward = CreateTestGraphicsShader("Assets/Shaders/Multi.shader");
+    auto* depth = CreateTestGraphicsShader("Assets/Shaders/Multi.shader");
+    ASSERT_NE(forward, nullptr);
+    ASSERT_NE(depth, nullptr);
+
+    NLS::Render::ShaderLab::ShaderLabPassState forwardState;
+    forwardState.cullMode = NLS::Render::ShaderLab::ShaderLabCullMode::Back;
+    forward->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/Forward#0",
+        "Forward",
+        forwardState);
+
+    NLS::Render::ShaderLab::ShaderLabPassState depthState;
+    depthState.cullMode = NLS::Render::ShaderLab::ShaderLabCullMode::Off;
+    depth->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/DepthOnly#1",
+        "DepthOnly",
+        depthState);
+
+    NLS::Render::Resources::Material material(forward);
+    material.SetShaderLabSourcePath("Assets/Shaders/Multi.shader");
+    material.RegisterShaderLabPassShader(forward);
+    material.RegisterShaderLabPassShader(depth);
+    NLS::Render::Resources::Mesh resourceMesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu);
+
+    NLS::Render::Entities::Drawable drawable;
+    drawable.material = &material;
+    drawable.mesh = &resourceMesh;
+    drawable.instanceCount = 1u;
+
+    ASSERT_TRUE(renderer.Prepare({}, drawable, "DepthOnly"));
+    EXPECT_FALSE(explicitDevice->lastGraphicsPipelineDesc.rasterState.cullEnabled);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(forward));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(depth));
+    renderer.EndFrame();
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, PipelineStateRecordedDrawDefaultsShaderLabMaterialsToForwardPass)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.frameIndex = 74u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+
+    PipelineAttachmentOverrideProbeRenderer renderer(driver);
+    renderer.BeginFrame(frameDescriptor);
+
+    auto* forward = CreateTestGraphicsShader("Assets/Shaders/Multi.shader");
+    auto* depth = CreateTestGraphicsShader("Assets/Shaders/Multi.shader");
+    ASSERT_NE(forward, nullptr);
+    ASSERT_NE(depth, nullptr);
+
+    NLS::Render::ShaderLab::ShaderLabPassState forwardState;
+    forwardState.cullMode = NLS::Render::ShaderLab::ShaderLabCullMode::Back;
+    forward->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/Forward#0",
+        "Forward",
+        forwardState);
+
+    NLS::Render::ShaderLab::ShaderLabPassState depthState;
+    depthState.cullMode = NLS::Render::ShaderLab::ShaderLabCullMode::Off;
+    depth->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/Multi.shader",
+        "shader:Multi/DepthOnly#1",
+        "DepthOnly",
+        depthState);
+
+    NLS::Render::Resources::Material material(depth);
+    material.SetShaderLabSourcePath("Assets/Shaders/Multi.shader");
+    material.RegisterShaderLabPassShader(depth);
+    NLS::Render::Resources::Mesh resourceMesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu);
+
+    NLS::Render::Entities::Drawable drawable;
+    drawable.material = &material;
+    drawable.mesh = &resourceMesh;
+    drawable.instanceCount = 1u;
+
+    EXPECT_FALSE(renderer.Prepare({}, drawable))
+        << "Forward rendering must skip ShaderLab materials that have no Forward LightMode pass.";
+    EXPECT_EQ(explicitDevice->graphicsPipelineCreateCalls, 0u);
+
+    material.RegisterShaderLabPassShader(forward);
+    ASSERT_TRUE(renderer.Prepare({}, drawable));
+    EXPECT_TRUE(explicitDevice->lastGraphicsPipelineDesc.rasterState.cullEnabled);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(forward));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(depth));
+    renderer.EndFrame();
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, RecordedPipelineFailsClosedForMixedAttachmentSampleCounts)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.frameIndex = 72u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    NLS::Render::RHI::RHITextureDesc colorTextureDesc;
+    colorTextureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    colorTextureDesc.sampleCount = 1u;
+    auto colorTexture = std::make_shared<TestTexture>(colorTextureDesc);
+    NLS::Render::RHI::RHITextureViewDesc colorViewDesc;
+    colorViewDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    auto colorView = std::make_shared<TestTextureView>(colorTexture, colorViewDesc);
+
+    NLS::Render::RHI::RHITextureDesc depthTextureDesc;
+    depthTextureDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    depthTextureDesc.sampleCount = 4u;
+    auto depthTexture = std::make_shared<TestTexture>(depthTextureDesc);
+    NLS::Render::RHI::RHITextureViewDesc depthViewDesc;
+    depthViewDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    auto depthView = std::make_shared<TestTextureView>(depthTexture, depthViewDesc);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputColorView = colorView;
+    frameDescriptor.outputDepthStencilView = depthView;
+
+    PipelineAttachmentOverrideProbeRenderer renderer(driver);
+    renderer.BeginFrame(frameDescriptor);
+
+    auto* shader = CreateTestGraphicsShader("App/Assets/Engine/Shaders/TestGraphics.shader");
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    NLS::Render::Resources::Mesh resourceMesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu);
+
+    NLS::Render::Entities::Drawable drawable;
+    drawable.material = &material;
+    drawable.mesh = &resourceMesh;
+    drawable.instanceCount = 1u;
+
+    EXPECT_FALSE(renderer.Prepare({}, drawable));
+    EXPECT_EQ(explicitDevice->graphicsPipelineCreateCalls, 0u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    renderer.EndFrame();
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
 TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesCanForceBlending)
 {
 #if !defined(_WIN32)
@@ -4473,7 +5040,7 @@ TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesCanForceBlending)
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material material(shader);
@@ -4516,7 +5083,7 @@ TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesCanUseIndependent
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material material(shader);
@@ -4591,7 +5158,7 @@ TEST(RendererFrameObjectBindingTests, RecordedPipelinePadsPerTargetBlendOverride
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material material(shader);

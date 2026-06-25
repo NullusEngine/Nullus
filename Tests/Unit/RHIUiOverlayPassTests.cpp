@@ -616,7 +616,7 @@ namespace
                 }
             });
 
-            const auto shaderArtifactPath = m_tempRoot / "RHIImGuiOverlay.nshader";
+            const auto shaderArtifactPath = m_tempRoot / "e1ac067b4307ee69c2cae08bf3e7715d98799884c16e12156b66224707eecae9";
             const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
             std::ofstream output(shaderArtifactPath, std::ios::binary | std::ios::trunc);
             output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -1669,14 +1669,14 @@ TEST(RHIUiOverlayPassTests, OverlayRendererBindsGraphicsPipelineBeforePreparedDr
     ASSERT_EQ(device.shaderModuleDescs.size(), 2u);
     EXPECT_EQ(device.shaderModuleDescs[0].stage, NLS::Render::RHI::ShaderStage::Vertex);
     EXPECT_EQ(device.shaderModuleDescs[0].entryPoint, "VSMain");
-    EXPECT_NE(device.shaderModuleDescs[0].debugName.find("RHIImGuiOverlay"), std::string::npos);
+    EXPECT_FALSE(device.shaderModuleDescs[0].debugName.empty());
     EXPECT_EQ(device.shaderModuleDescs[0].shaderToolchainFingerprint.find("DXIL|vs_6_0|VSMain|"), 0u);
     EXPECT_NE(device.shaderModuleDescs[0].shaderToolchainFingerprint.find("RHIImGuiOverlay.vs.dxil"), std::string::npos);
     EXPECT_NE(device.shaderModuleDescs[0].shaderToolchainFingerprint, "RHIImGuiOverlay:placeholder");
     EXPECT_FALSE(device.shaderModuleDescs[0].bytecode.empty());
     EXPECT_EQ(device.shaderModuleDescs[1].stage, NLS::Render::RHI::ShaderStage::Fragment);
     EXPECT_EQ(device.shaderModuleDescs[1].entryPoint, "PSMain");
-    EXPECT_NE(device.shaderModuleDescs[1].debugName.find("RHIImGuiOverlay"), std::string::npos);
+    EXPECT_FALSE(device.shaderModuleDescs[1].debugName.empty());
     EXPECT_EQ(device.shaderModuleDescs[1].shaderToolchainFingerprint.find("DXIL|ps_6_0|PSMain|"), 0u);
     EXPECT_NE(device.shaderModuleDescs[1].shaderToolchainFingerprint.find("RHIImGuiOverlay.ps.dxil"), std::string::npos);
     EXPECT_NE(device.shaderModuleDescs[1].shaderToolchainFingerprint, "RHIImGuiOverlay:placeholder");

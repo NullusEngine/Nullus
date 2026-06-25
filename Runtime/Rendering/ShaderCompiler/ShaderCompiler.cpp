@@ -41,6 +41,18 @@ namespace NLS::Render::ShaderCompiler
 		using ShaderReflection = Resources::ShaderReflection;
 		using ShaderPropertyDesc = Resources::ShaderPropertyDesc;
 		using ShaderConstantBufferDesc = Resources::ShaderConstantBufferDesc;
+
+		RHI::ShaderStageMask ToShaderStageMask(const ShaderStage stage)
+		{
+			switch (stage)
+			{
+			case ShaderStage::Vertex: return RHI::ShaderStageMask::Vertex;
+			case ShaderStage::Compute: return RHI::ShaderStageMask::Compute;
+			case ShaderStage::Pixel:
+			default:
+				return RHI::ShaderStageMask::Fragment;
+			}
+		}
 		using ShaderCBufferMemberDesc = Resources::ShaderCBufferMemberDesc;
 		using ShaderResourceKind = Resources::ShaderResourceKind;
 		using UniformType = Resources::UniformType;
@@ -950,6 +962,7 @@ namespace NLS::Render::ShaderCompiler
 						ShaderConstantBufferDesc buffer;
 						buffer.name = Trim(line.substr(std::string("cbuffer ").size()));
 						buffer.stage = stage;
+						buffer.stageMask = ToShaderStageMask(stage);
 						reflection.constantBuffers.push_back(buffer);
 						constantBufferIndexByName[buffer.name] = reflection.constantBuffers.size() - 1;
 						currentBuffer = &reflection.constantBuffers.back();
@@ -1018,6 +1031,7 @@ namespace NLS::Render::ShaderCompiler
 					property.kind = ParseDxcResourceKind(typeToken, formatToken, dimToken);
 					property.type = ParseResourceUniformType(typeToken, dimToken);
 					property.stage = stage;
+					property.stageMask = ToShaderStageMask(stage);
 					property.bindingIndex = binding->index;
 					property.bindingSpace = binding->space;
 					property.arraySize = static_cast<int32_t>(std::stoul(countToken));
@@ -1050,6 +1064,7 @@ namespace NLS::Render::ShaderCompiler
 					property.type = member.type;
 					property.kind = ShaderResourceKind::Value;
 					property.stage = buffer.stage;
+					property.stageMask = buffer.stageMask;
 					property.bindingSpace = buffer.bindingSpace;
 					property.bindingIndex = buffer.bindingIndex;
 					property.arraySize = static_cast<int32_t>(member.arraySize);
@@ -1325,6 +1340,32 @@ namespace NLS::Render::ShaderCompiler
 			hashInput += '\n';
 		}
 
+		return ToHex(HashStringFNV1a(hashInput));
+	}
+
+	ShaderCompilerToolchainIdentity GetCurrentShaderCompilerToolchainIdentity()
+	{
+		auto dxcPath = FindDxcExecutable();
+		if (dxcPath.has_value())
+			return BuildDxcToolchainIdentity(*dxcPath);
+
+		ShaderCompilerToolchainIdentity identity;
+		identity.compilerPath = "unavailable";
+		identity.compilerVersion = "unavailable";
+		identity.argumentSchemaVersion = kDxcArgumentSchemaVersion;
+		return identity;
+	}
+
+	std::string BuildShaderCompilerToolchainDependencyFingerprint()
+	{
+		const auto identity = GetCurrentShaderCompilerToolchainIdentity();
+		std::string hashInput;
+		hashInput += identity.compilerPath;
+		hashInput += '\n';
+		hashInput += identity.compilerVersion;
+		hashInput += '\n';
+		hashInput += identity.argumentSchemaVersion;
+		hashInput += '\n';
 		return ToHex(HashStringFNV1a(hashInput));
 	}
 

@@ -23,6 +23,8 @@ namespace NLS::Render::Resources::Loaders
 		*/
 		static Shader* Create(const std::string& p_filePath);
 		static Shader* Create(const std::string& p_filePath, const std::string& p_projectAssetsPath);
+		static Shader* CreateBuiltInHlsl(const std::string& p_filePath);
+		static Shader* CreateBuiltInHlsl(const std::string& p_filePath, const std::string& p_projectAssetsPath);
 		static void SetDefaultProjectAssetsPath(const std::string& p_projectAssetsPath);
 
 		static std::string GetCacheDatabasePath(
@@ -36,6 +38,8 @@ namespace NLS::Render::Resources::Loaders
 		*/
 		static void	Recompile(Shader& p_shader, const std::string& p_filePath);
 		static void	Recompile(Shader& p_shader, const std::string& p_filePath, const std::string& p_projectAssetsPath);
+		static void	RecompileBuiltInHlsl(Shader& p_shader, const std::string& p_filePath);
+		static void	RecompileBuiltInHlsl(Shader& p_shader, const std::string& p_filePath, const std::string& p_projectAssetsPath);
 
 		/**
 		* Destroy a shader

@@ -26,6 +26,7 @@ struct PreviewDrawItem
 struct PreviewRenderableSnapshot
 {
     std::vector<PreviewDrawItem> drawItems;
+    size_t expectedDrawItemCount = 0u;
 };
 
 PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(

@@ -15,11 +15,13 @@
 #include "Guid.h"
 #include "GameObject.h"
 #include "Assets/AssetDatabaseFacade.h"
+#include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/ImportProgressTracker.h"
+#include "Assets/NativeArtifactContainer.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Assets/SceneRestorePrefabArtifactLoader.h"
 #include "Components/MeshRenderer.h"
@@ -262,95 +264,169 @@ NLS::Render::Context::Driver& EnsureGameObjectAssetImportTestDriver()
     return *driver;
 }
 
-std::filesystem::path FindPrefabArtifactPath(
-    const std::filesystem::path& artifactRoot,
-    const std::string& prefabSubAssetKey)
+std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestForTest(
+    const std::filesystem::path& projectRoot,
+    const NLS::Core::Assets::AssetId sourceAssetId)
 {
-    const auto manifestPath = artifactRoot / "manifest.json";
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input.good())
-        return {};
-
-    auto manifest = nlohmann::json::parse(input, nullptr, false);
-    if (!manifest.is_object() || !manifest["subAssets"].is_array())
-        return {};
-
-    for (const auto& subAsset : manifest["subAssets"])
-    {
-        if (!subAsset.is_object() ||
-            subAsset.value("subAssetKey", std::string {}) != prefabSubAssetKey)
-        {
-            continue;
-        }
-
-        const auto artifactPathText = subAsset.value("artifactPath", std::string {});
-        if (artifactPathText.empty())
-            return {};
-
-        auto artifactPath = std::filesystem::path(artifactPathText);
-        if (artifactPath.is_relative())
-            artifactPath = artifactRoot / artifactPath;
-        return artifactPath.lexically_normal();
-    }
-
-    return {};
+    NLS::Core::Assets::ArtifactDatabase database;
+    if (!database.Load(projectRoot / "Library" / "ArtifactDB"))
+        return std::nullopt;
+    return database.BuildManifestForSource(sourceAssetId);
 }
 
-std::filesystem::path FindFirstArtifactPathWithExtension(
-    const std::filesystem::path& artifactRoot,
-    const std::string& extension)
+void SaveArtifactManifestForTest(
+    const std::filesystem::path& projectRoot,
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const std::string& sourcePath)
 {
-    const auto manifestPath = artifactRoot / "manifest.json";
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input.good())
+    NLS::Core::Assets::ArtifactDatabase database;
+    const auto databasePath = projectRoot / "Library" / "ArtifactDB";
+    ASSERT_TRUE(database.Load(databasePath));
+    database.UpsertManifest(manifest, sourcePath, NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(databasePath));
+}
+
+void ReplaceArtifactDatabaseFieldForTest(
+    const std::filesystem::path& databasePath,
+    const std::string& matchField,
+    const size_t fieldIndex,
+    const std::string& replacement)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ASSERT_EQ(fieldIndex, 7u);
+    NLS::Core::Assets::ArtifactDatabase database;
+    ASSERT_TRUE(database.Load(databasePath));
+    const auto replaced = database.MutateRecordsForTesting(
+        [&](NLS::Core::Assets::ArtifactDatabaseRecord& record)
+        {
+            if (record.subAssetKey != matchField)
+                return false;
+            record.artifactPath = replacement;
+            return true;
+        });
+    ASSERT_EQ(replaced, 1u);
+    ASSERT_TRUE(database.Save(databasePath));
+#else
+    (void)databasePath;
+    (void)matchField;
+    (void)fieldIndex;
+    (void)replacement;
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inject raw ArtifactDB records.";
+#endif
+}
+
+void FlipArtifactDatabaseContentHashForTest(
+    const std::filesystem::path& databasePath,
+    const std::string& matchField)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Core::Assets::ArtifactDatabase database;
+    ASSERT_TRUE(database.Load(databasePath));
+    const auto replaced = database.MutateRecordsForTesting(
+        [&](NLS::Core::Assets::ArtifactDatabaseRecord& record)
+        {
+            if (record.subAssetKey != matchField || record.contentHash.empty())
+                return false;
+            record.contentHash.back() = record.contentHash.back() == '0' ? '1' : '0';
+            return true;
+        });
+    ASSERT_EQ(replaced, 1u);
+    ASSERT_TRUE(database.Save(databasePath));
+#else
+    (void)databasePath;
+    (void)matchField;
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inject raw ArtifactDB records.";
+#endif
+}
+
+void ReplaceAllArtifactDatabaseArtifactPathsForTest(
+    const std::filesystem::path& databasePath,
+    const std::filesystem::path& replacementRoot)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Core::Assets::ArtifactDatabase database;
+    ASSERT_TRUE(database.Load(databasePath));
+    size_t nextArtifactIndex = 0u;
+    const auto replaced = database.MutateRecordsForTesting(
+        [&](NLS::Core::Assets::ArtifactDatabaseRecord& record)
+        {
+            record.artifactPath =
+                (replacementRoot / ("artifact-" + std::to_string(nextArtifactIndex++))).lexically_normal().string();
+            return true;
+        });
+    ASSERT_GT(replaced, 0u);
+    ASSERT_TRUE(database.Save(databasePath));
+#else
+    (void)databasePath;
+    (void)replacementRoot;
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inject raw ArtifactDB records.";
+#endif
+}
+
+std::filesystem::path ResolveManifestArtifactPathForTest(
+    const std::filesystem::path& projectRoot,
+    const std::string& artifactPathText)
+{
+    if (artifactPathText.empty())
         return {};
 
-    auto manifest = nlohmann::json::parse(input, nullptr, false);
-    if (!manifest.is_object() || !manifest["subAssets"].is_array())
-        return {};
-
-    for (const auto& subAsset : manifest["subAssets"])
-    {
-        if (!subAsset.is_object())
-            continue;
-
-        const auto artifactPathText = subAsset.value("artifactPath", std::string {});
-        if (artifactPathText.empty())
-            continue;
-
-        auto artifactPath = std::filesystem::path(artifactPathText);
-        if (artifactPath.extension() != extension)
-            continue;
-
-        if (artifactPath.is_relative())
-            artifactPath = artifactRoot / artifactPath;
+    const auto artifactPath = std::filesystem::path(artifactPathText);
+    if (artifactPath.is_absolute())
         return artifactPath.lexically_normal();
+
+    const auto generic = artifactPath.generic_string();
+    if (generic == "Library" || generic.rfind("Library/", 0u) == 0u)
+        return (projectRoot / artifactPath).lexically_normal();
+
+    return (projectRoot / artifactPath).lexically_normal();
+}
+
+std::filesystem::path FindPrefabArtifactPath(
+    const std::filesystem::path& projectRoot,
+    const NLS::Core::Assets::AssetId sourceAssetId,
+    const std::string& prefabSubAssetKey)
+{
+    const auto manifest = LoadArtifactManifestForTest(projectRoot, sourceAssetId);
+    if (!manifest.has_value())
+        return {};
+
+    const auto* subAsset = manifest->FindSubAsset(prefabSubAssetKey);
+    if (!subAsset || subAsset->artifactPath.empty())
+        return {};
+
+    return ResolveManifestArtifactPathForTest(projectRoot, subAsset->artifactPath);
+}
+
+std::filesystem::path FindFirstArtifactPathForType(
+    const std::filesystem::path& projectRoot,
+    const NLS::Core::Assets::AssetId sourceAssetId,
+    const NLS::Core::Assets::ArtifactType artifactType)
+{
+    const auto manifest = LoadArtifactManifestForTest(projectRoot, sourceAssetId);
+    if (!manifest.has_value())
+        return {};
+
+    for (const auto& subAsset : manifest->subAssets)
+    {
+        if (subAsset.artifactType != artifactType || subAsset.artifactPath.empty())
+            continue;
+
+        return ResolveManifestArtifactPathForTest(projectRoot, subAsset.artifactPath);
     }
 
     return {};
 }
 
 std::string FindFirstContentHashForArtifactType(
-    const std::filesystem::path& manifestPath,
-    const std::string& artifactType)
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::ArtifactType artifactType)
 {
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input.good())
-        return {};
-
-    auto manifest = nlohmann::json::parse(input, nullptr, false);
-    if (!manifest.is_object() || !manifest["subAssets"].is_array())
-        return {};
-
-    for (const auto& subAsset : manifest["subAssets"])
+    for (const auto& subAsset : manifest.subAssets)
     {
-        if (!subAsset.is_object() ||
-            subAsset.value("artifactType", std::string {}) != artifactType)
-        {
+        if (subAsset.artifactType != artifactType)
             continue;
-        }
 
-        return subAsset.value("contentHash", std::string {});
+        return subAsset.contentHash;
     }
     return {};
 }
@@ -460,34 +536,24 @@ std::filesystem::path FindFirstImportedArtifactPathForSubAssetPrefix(
 }
 
 void FlipFirstContentHashForArtifactType(
-    const std::filesystem::path& manifestPath,
-    const std::string& artifactType)
+    NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::ArtifactType artifactType)
 {
-    std::ifstream input(manifestPath, std::ios::binary);
-    ASSERT_TRUE(input.good());
-    auto manifest = nlohmann::json::parse(input, nullptr, false);
-    ASSERT_TRUE(manifest.is_object());
-    ASSERT_TRUE(manifest["subAssets"].is_array());
-
     bool updated = false;
-    for (auto& subAsset : manifest["subAssets"])
+    for (auto& subAsset : manifest.subAssets)
     {
-        if (!subAsset.is_object() ||
-            subAsset.value("artifactType", std::string {}) != artifactType)
-        {
+        if (subAsset.artifactType != artifactType)
             continue;
-        }
 
-        auto hash = subAsset.value("contentHash", std::string {});
+        auto hash = subAsset.contentHash;
         ASSERT_FALSE(hash.empty());
         hash.back() = hash.back() == '0' ? '1' : '0';
-        subAsset["contentHash"] = std::move(hash);
+        subAsset.contentHash = std::move(hash);
         updated = true;
         break;
     }
 
     ASSERT_TRUE(updated);
-    WriteTextFile(manifestPath, manifest.dump(2));
 }
 
 size_t CountArtifactTelemetryStage(
@@ -606,7 +672,12 @@ TEST(GameObjectAssetImportTests, ImportedModelInstantiatesGeneratedPrefabGameObj
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
     const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting("Assets/Models/ImportedHero.gltf");
-    EXPECT_TRUE(std::filesystem::exists(artifactRoot / "prefab.nprefab"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/ImportedHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+    const auto prefabPath = FindPrefabArtifactPath(root, assetId, "prefab:ImportedHero");
+    ASSERT_FALSE(prefabPath.empty());
+    EXPECT_TRUE(std::filesystem::exists(prefabPath));
 
     std::filesystem::remove_all(root);
 }
@@ -697,7 +768,13 @@ TEST(GameObjectAssetImportTests, ColdRawModelDropSchedulesBackgroundImportAndCom
 
     EXPECT_TRUE(completionCalled.load(std::memory_order_acquire));
     EXPECT_FALSE(tracker.HasRunningJobs());
-    EXPECT_TRUE(std::filesystem::exists(root / "Library" / "Artifacts" / meta.id.ToString()));
+    size_t artifactFileCount = 0u;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root / "Library" / "Artifacts"))
+    {
+        if (entry.is_regular_file() && !entry.path().filename().has_extension())
+            ++artifactFileCount;
+    }
+    EXPECT_GT(artifactFileCount, 0u);
     EXPECT_TRUE(std::filesystem::exists(root / "Library" / "ArtifactDB"));
 
     std::filesystem::remove_all(root);
@@ -1443,11 +1520,9 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewUsesHotCacheAndInva
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/HotCacheHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
-    const auto prefabPath = FindPrefabArtifactPath(artifactRoot, "prefab:HotCacheHero");
-    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
+    const auto manifestPath = root / "Library" / "ArtifactDB";
+    const auto prefabPath = FindPrefabArtifactPath(root, assetId, "prefab:HotCacheHero");
+    const auto meshPath = FindFirstArtifactPathForType(root, assetId, NLS::Core::Assets::ArtifactType::Mesh);
     ASSERT_FALSE(prefabPath.empty());
     ASSERT_TRUE(std::filesystem::is_regular_file(prefabPath));
     const auto prefabArtifactBytes = std::filesystem::file_size(prefabPath);
@@ -1483,11 +1558,7 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewUsesHotCacheAndInva
         static_cast<size_t>(prefabArtifactBytes))
         << "Hot-cache budget telemetry must include the retained prefab artifact payload bytes, not just shallow graph object sizes.";
 
-    {
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::app);
-        ASSERT_TRUE(output.good());
-        output << '\n';
-    }
+    FlipArtifactDatabaseContentHashForTest(manifestPath, "prefab:HotCacheHero");
     NLS::Core::Assets::ClearArtifactLoadTelemetry();
     auto manifestInvalidatedPrefab = bridge.TryLoadPreviewPrefabArtifact(payload);
     ASSERT_TRUE(manifestInvalidatedPrefab.has_value());
@@ -1513,30 +1584,10 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewUsesHotCacheAndInva
     const auto meshInvalidationManifestWriteTime = std::filesystem::last_write_time(manifestPath, error);
     ASSERT_FALSE(error);
     {
-        std::ifstream input(manifestPath, std::ios::binary);
-        ASSERT_TRUE(input.good());
-        auto manifestJson = nlohmann::json::parse(input, nullptr, false);
-        ASSERT_TRUE(manifestJson.is_object());
-        ASSERT_TRUE(manifestJson["subAssets"].is_array());
-        bool updatedMeshContentHash = false;
-        for (auto& subAsset : manifestJson["subAssets"])
-        {
-            if (!subAsset.is_object() ||
-                subAsset.value("artifactPath", std::string {}).find(".nmesh") == std::string::npos)
-            {
-                continue;
-            }
-
-            const auto oldHash = subAsset.value("contentHash", std::string {});
-            ASSERT_FALSE(oldHash.empty());
-            std::string newHash = oldHash;
-            newHash.back() = newHash.back() == '0' ? '1' : '0';
-            subAsset["contentHash"] = newHash;
-            updatedMeshContentHash = true;
-            break;
-        }
-        ASSERT_TRUE(updatedMeshContentHash);
-        WriteTextFile(manifestPath, manifestJson.dump(2));
+        auto manifest = LoadArtifactManifestForTest(root, assetId);
+        ASSERT_TRUE(manifest.has_value());
+        FlipFirstContentHashForArtifactType(*manifest, NLS::Core::Assets::ArtifactType::Mesh);
+        SaveArtifactManifestForTest(root, *manifest, "Assets/Models/HotCacheHero.gltf");
     }
     std::filesystem::last_write_time(manifestPath, meshInvalidationManifestWriteTime, error);
     ASSERT_FALSE(error);
@@ -2070,25 +2121,22 @@ TEST(GameObjectAssetImportTests, UnifiedPrefabLoadKeyInvalidatesManifestPrefabMe
     const auto guid = database.AssetPathToGUID("Assets/Models/InvalidationHero.gltf");
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/InvalidationHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
-    const auto prefabPath = FindPrefabArtifactPath(artifactRoot, "prefab:InvalidationHero");
-    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
-    const auto materialPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmat");
-    const auto texturePath = FindFirstImportedArtifactPathForSubAssetPrefix(
-        root,
-        manifestPath,
-        "texture:",
-        ".ntex");
-    ASSERT_TRUE(std::filesystem::is_regular_file(manifestPath));
+    const auto manifestPath = root / "Library" / "ArtifactDB";
+    auto manifest = LoadArtifactManifestForTest(root, assetId);
+    ASSERT_TRUE(manifest.has_value());
+    const auto prefabPath = FindPrefabArtifactPath(root, assetId, "prefab:InvalidationHero");
+    const auto meshPath = FindFirstArtifactPathForType(root, assetId, NLS::Core::Assets::ArtifactType::Mesh);
+    const auto materialPath = FindFirstArtifactPathForType(root, assetId, NLS::Core::Assets::ArtifactType::Material);
+    const auto texturePath = FindFirstArtifactPathForType(root, assetId, NLS::Core::Assets::ArtifactType::Texture);
+    ASSERT_TRUE(std::filesystem::is_directory(manifestPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(manifestPath / "data.mdb"));
     ASSERT_TRUE(std::filesystem::is_regular_file(prefabPath));
     ASSERT_TRUE(std::filesystem::is_regular_file(meshPath));
     ASSERT_TRUE(std::filesystem::is_regular_file(materialPath));
     ASSERT_TRUE(std::filesystem::is_regular_file(texturePath));
-    ASSERT_FALSE(FindFirstContentHashForArtifactType(manifestPath, "mesh").empty());
-    ASSERT_FALSE(FindFirstContentHashForArtifactType(manifestPath, "material").empty());
-    ASSERT_FALSE(FindFirstImportedArtifactHashForSubAssetPrefix(manifestPath, "texture:").empty());
+    ASSERT_FALSE(FindFirstContentHashForArtifactType(*manifest, NLS::Core::Assets::ArtifactType::Mesh).empty());
+    ASSERT_FALSE(FindFirstContentHashForArtifactType(*manifest, NLS::Core::Assets::ArtifactType::Material).empty());
+    ASSERT_FALSE(FindFirstContentHashForArtifactType(*manifest, NLS::Core::Assets::ArtifactType::Texture).empty());
 
     const auto source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
         root,
@@ -2116,11 +2164,7 @@ TEST(GameObjectAssetImportTests, UnifiedPrefabLoadKeyInvalidatesManifestPrefabMe
     ASSERT_TRUE(baselineDropKey.has_value());
     EXPECT_EQ(baselineSceneKey->runtimeCacheIdentity, baselineDropKey->runtimeCacheIdentity);
 
-    {
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::app);
-        ASSERT_TRUE(output.good());
-        output << '\n';
-    }
+    FlipArtifactDatabaseContentHashForTest(manifestPath, "prefab:InvalidationHero");
     const auto manifestSceneKey = bridge.BuildUnifiedPrefabLoadKey(sceneRequest);
     const auto manifestDropKey = bridge.BuildUnifiedPrefabLoadKey(finalDropRequest);
     ASSERT_TRUE(manifestSceneKey.has_value());
@@ -2140,7 +2184,10 @@ TEST(GameObjectAssetImportTests, UnifiedPrefabLoadKeyInvalidatesManifestPrefabMe
     EXPECT_NE(prefabSceneKey->runtimeCacheIdentity, manifestSceneKey->runtimeCacheIdentity);
     EXPECT_EQ(prefabSceneKey->runtimeCacheIdentity, prefabDropKey->runtimeCacheIdentity);
 
-    FlipFirstContentHashForArtifactType(manifestPath, "mesh");
+    manifest = LoadArtifactManifestForTest(root, assetId);
+    ASSERT_TRUE(manifest.has_value());
+    FlipFirstContentHashForArtifactType(*manifest, NLS::Core::Assets::ArtifactType::Mesh);
+    SaveArtifactManifestForTest(root, *manifest, "Assets/Models/InvalidationHero.gltf");
     const auto meshSceneKey = bridge.BuildUnifiedPrefabLoadKey(sceneRequest);
     const auto meshDropKey = bridge.BuildUnifiedPrefabLoadKey(finalDropRequest);
     ASSERT_TRUE(meshSceneKey.has_value());
@@ -2148,7 +2195,8 @@ TEST(GameObjectAssetImportTests, UnifiedPrefabLoadKeyInvalidatesManifestPrefabMe
     EXPECT_NE(meshSceneKey->runtimeCacheIdentity, prefabSceneKey->runtimeCacheIdentity);
     EXPECT_EQ(meshSceneKey->runtimeCacheIdentity, meshDropKey->runtimeCacheIdentity);
 
-    FlipFirstContentHashForArtifactType(manifestPath, "material");
+    FlipFirstContentHashForArtifactType(*manifest, NLS::Core::Assets::ArtifactType::Material);
+    SaveArtifactManifestForTest(root, *manifest, "Assets/Models/InvalidationHero.gltf");
     const auto materialSceneKey = bridge.BuildUnifiedPrefabLoadKey(sceneRequest);
     const auto materialDropKey = bridge.BuildUnifiedPrefabLoadKey(finalDropRequest);
     ASSERT_TRUE(materialSceneKey.has_value());
@@ -2156,11 +2204,8 @@ TEST(GameObjectAssetImportTests, UnifiedPrefabLoadKeyInvalidatesManifestPrefabMe
     EXPECT_NE(materialSceneKey->runtimeCacheIdentity, meshSceneKey->runtimeCacheIdentity);
     EXPECT_EQ(materialSceneKey->runtimeCacheIdentity, materialDropKey->runtimeCacheIdentity);
 
-    {
-        std::ofstream output(texturePath, std::ios::binary | std::ios::app);
-        ASSERT_TRUE(output.good());
-        output << '\0';
-    }
+    FlipFirstContentHashForArtifactType(*manifest, NLS::Core::Assets::ArtifactType::Texture);
+    SaveArtifactManifestForTest(root, *manifest, "Assets/Models/InvalidationHero.gltf");
     const auto textureSceneKey = bridge.BuildUnifiedPrefabLoadKey(sceneRequest);
     const auto textureDropKey = bridge.BuildUnifiedPrefabLoadKey(finalDropRequest);
     ASSERT_TRUE(textureSceneKey.has_value());
@@ -2241,9 +2286,7 @@ TEST(GameObjectAssetImportTests, SceneRestoreReadyKeyIncludesRendererArtifactFil
     const auto guid = database.AssetPathToGUID("Assets/Models/GraphOnlySceneHero.gltf");
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/GraphOnlySceneHero.gltf");
-    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
+    const auto meshPath = FindFirstArtifactPathForType(root, assetId, NLS::Core::Assets::ArtifactType::Mesh);
     ASSERT_TRUE(std::filesystem::is_regular_file(meshPath));
 
     const auto source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
@@ -2335,9 +2378,7 @@ TEST(GameObjectAssetImportTests, ReadyUnifiedPrefabLoadDoesNotHideMissingRendere
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/HotCacheMissingMeshHero.gltf");
-    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
+    const auto meshPath = FindFirstArtifactPathForType(root, assetId, NLS::Core::Assets::ArtifactType::Mesh);
     ASSERT_FALSE(meshPath.empty());
     ASSERT_TRUE(std::filesystem::is_regular_file(meshPath));
 
@@ -2425,9 +2466,7 @@ TEST(GameObjectAssetImportTests, FinalDropRejectsGraphOnlyCommitWhenRendererDepe
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/PendingRendererDropHero.gltf");
-    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
+    const auto meshPath = FindFirstArtifactPathForType(root, assetId, NLS::Core::Assets::ArtifactType::Mesh);
     ASSERT_FALSE(meshPath.empty());
     ASSERT_TRUE(std::filesystem::is_regular_file(meshPath));
     std::filesystem::remove(meshPath);
@@ -2507,9 +2546,10 @@ TEST(GameObjectAssetImportTests, SceneRestoreRejectsGraphOnlyCommitWhenRendererD
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/PendingRendererSceneHero.gltf");
-    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
+    const auto meshPath = FindFirstArtifactPathForType(
+        root,
+        assetId,
+        NLS::Core::Assets::ArtifactType::Mesh);
     ASSERT_FALSE(meshPath.empty());
     ASSERT_TRUE(std::filesystem::is_regular_file(meshPath));
     std::filesystem::remove(meshPath);
@@ -2586,8 +2626,10 @@ TEST(GameObjectAssetImportTests, SceneRestoreLoaderSynchronouslyReimportsMissing
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(assetPath);
-    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
+    const auto meshPath = FindFirstArtifactPathForType(
+        root,
+        assetId,
+        NLS::Core::Assets::ArtifactType::Mesh);
     ASSERT_FALSE(meshPath.empty());
     ASSERT_TRUE(std::filesystem::is_regular_file(meshPath));
     std::filesystem::remove(meshPath);
@@ -2652,7 +2694,8 @@ TEST(GameObjectAssetImportTests, MeshArtifactPrewarmReusesEquivalentResourceMana
         projectAssetsRoot,
         "App/Assets/Engine/");
 
-    const std::string relativeMeshPath = "Library/Artifacts/CacheHero/body.nmesh";
+    const std::string relativeMeshPath =
+        "Library/Artifacts/11/1111111111111111111111111111111111111111111111111111111111111111";
     const auto absoluteMeshPath = (root / relativeMeshPath).lexically_normal();
 
     NLS::Render::Assets::MeshArtifactData meshArtifact;
@@ -2681,7 +2724,7 @@ TEST(GameObjectAssetImportTests, MeshArtifactPrewarmReusesEquivalentResourceMana
            "resolved assets arrive as equivalent relative or absolute artifact paths.";
     const auto secondRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_EQ(CountArtifactTelemetryStage(secondRecords, ArtifactLoadTelemetryStage::NativeArtifactFileRead), 0u)
-        << "A repeated equivalent mesh artifact prewarm should not cold-read the same .nmesh again.";
+        << "A repeated equivalent mesh artifact prewarm should not cold-read the same mesh artifact again.";
 
     meshManager.UnloadResources();
     NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths({}, {});
@@ -2759,33 +2802,27 @@ TEST(GameObjectAssetImportTests, RepeatedGeneratedModelPreviewReusesManySubmeshR
         "prefab:RuntimeCacheHero");
     ASSERT_TRUE(prefab.has_value());
 
-    std::vector<std::filesystem::path> absoluteMeshPaths;
+    std::vector<std::string> meshArtifactPaths;
     for (const auto& resolved : prefab->resolvedAssets)
     {
-        if (resolved.expectedType == "Mesh" &&
-            std::filesystem::path(resolved.artifactPath).extension() == ".nmesh")
-        {
-            absoluteMeshPaths.push_back(std::filesystem::path(resolved.artifactPath).lexically_normal());
-        }
+        if (resolved.expectedType == "Mesh" && !resolved.artifactPath.empty())
+            meshArtifactPaths.push_back(std::filesystem::path(resolved.artifactPath).lexically_normal().generic_string());
     }
-    ASSERT_GE(absoluteMeshPaths.size(), 4u);
+    ASSERT_GE(meshArtifactPaths.size(), 4u);
 
     NLS::Core::ResourceManagement::MeshManager meshManager;
     NLS::Core::Assets::ClearArtifactLoadTelemetry();
-    for (const auto& meshPath : absoluteMeshPaths)
-        ASSERT_NE(meshManager.PrewarmArtifact(meshPath.string()), nullptr);
+    for (const auto& meshPath : meshArtifactPaths)
+        ASSERT_NE(meshManager.PrewarmArtifact(meshPath), nullptr);
 
     const auto coldRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_GE(
         CountArtifactTelemetryStage(coldRecords, ArtifactLoadTelemetryStage::NativeArtifactFileRead),
-        absoluteMeshPaths.size());
+        meshArtifactPaths.size());
 
     NLS::Core::Assets::ClearArtifactLoadTelemetry();
-    for (const auto& meshPath : absoluteMeshPaths)
-    {
-        const auto projectRelativePath = meshPath.lexically_relative(root.lexically_normal()).generic_string();
-        ASSERT_NE(meshManager.PrewarmArtifact(projectRelativePath), nullptr);
-    }
+    for (const auto& meshPath : meshArtifactPaths)
+        ASSERT_NE(meshManager.PrewarmArtifact(meshPath), nullptr);
 
     const auto warmRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_EQ(
@@ -2883,7 +2920,7 @@ TEST(GameObjectAssetImportTests, GeneratedModelPrefabLoadPersistsPreparedGraphCa
     EXPECT_GE(CountArtifactTelemetryStage(preparedRecords, ArtifactLoadTelemetryStage::CacheHit), 1u);
     EXPECT_EQ(CountArtifactTelemetryStage(preparedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 0u)
         << "After an editor-session memory cache miss, scene restore should reuse the persistent prepared "
-           "prefab graph cache instead of reparsing the .nprefab payload.";
+           "prefab graph cache instead of reparsing the .prefab payload.";
 
     std::filesystem::remove_all(root);
 #endif
@@ -2983,7 +3020,8 @@ TEST(GameObjectAssetImportTests, PreparedGraphCachePersistsRendererDependencyTem
     ASSERT_TRUE(cacheJson.contains("rendererDependencyTemplates"));
     ASSERT_TRUE(cacheJson["rendererDependencyTemplates"].is_array());
     ASSERT_FALSE(cacheJson["rendererDependencyTemplates"].empty());
-    cacheJson["rendererDependencyTemplates"][0]["meshPath"] = "Library/Artifacts/sentinel/template-from-disk.nmesh";
+    cacheJson["rendererDependencyTemplates"][0]["meshPath"] =
+        "Library/Artifacts/11/1111111111111111111111111111111111111111111111111111111111111111";
     {
         std::ofstream cacheOutput(cachePath, std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(cacheOutput.is_open());
@@ -3001,7 +3039,9 @@ TEST(GameObjectAssetImportTests, PreparedGraphCachePersistsRendererDependencyTem
     ASSERT_TRUE(preparedTemplate.has_value());
     ASSERT_EQ(preparedTemplate->size(), coldTemplate->size());
     EXPECT_EQ(preparedTemplate->front().sourceObject, coldTemplate->front().sourceObject);
-    EXPECT_EQ(preparedTemplate->front().meshPath, "Library/Artifacts/sentinel/template-from-disk.nmesh");
+    EXPECT_EQ(
+        preparedTemplate->front().meshPath,
+        "Library/Artifacts/11/1111111111111111111111111111111111111111111111111111111111111111");
     EXPECT_GE(
         CountArtifactTelemetryStage(
             NLS::Core::Assets::SnapshotArtifactLoadTelemetry(),
@@ -3082,7 +3122,7 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewDerivesDefaultPrefa
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewRemapsStaleAbsoluteArtifactPathsToCurrentProject)
+TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewRejectsStaleAbsoluteArtifactPaths)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3127,44 +3167,19 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewRemapsStaleAbsolute
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/RemappedPreviewHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
     {
-        std::ifstream input(manifestPath, std::ios::binary);
-        ASSERT_TRUE(input.good());
-        auto manifest = nlohmann::json::parse(input, nullptr, false);
-        ASSERT_TRUE(manifest.is_object());
-        auto& subAssets = manifest["subAssets"];
-        ASSERT_TRUE(subAssets.is_array());
+        auto manifest = LoadArtifactManifestForTest(root, assetId);
+        ASSERT_TRUE(manifest.has_value());
 
         const auto staleArtifactRoot =
-            root.parent_path() / "StaleProjectCopy" / "Library" / "Artifacts" / assetId.ToString();
-        for (auto& subAsset : subAssets)
-        {
-            ASSERT_TRUE(subAsset.is_object());
-            const auto originalPathText = subAsset.value("artifactPath", std::string {});
-            ASSERT_FALSE(originalPathText.empty());
-            const auto originalPath = std::filesystem::path(originalPathText);
-            std::filesystem::path relativePath;
-            if (originalPath.is_absolute())
-            {
-                std::error_code error;
-                relativePath = std::filesystem::relative(originalPath, artifactRoot, error);
-                ASSERT_FALSE(error);
-            }
-            else
-            {
-                relativePath = originalPath;
-            }
-            ASSERT_FALSE(relativePath.empty());
-            subAsset["artifactPath"] = (staleArtifactRoot / relativePath).lexically_normal().string();
-        }
-
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(output.good());
-        output << manifest.dump(2);
+            root.parent_path() / "StaleProjectCopy" / "Library" / "Artifacts";
+        ReplaceAllArtifactDatabaseArtifactPathsForTest(
+            root / "Library" / "ArtifactDB",
+            staleArtifactRoot);
     }
+    EXPECT_FALSE(LoadArtifactManifestForTest(root, assetId).has_value());
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+    std::filesystem::remove_all(root / "Library" / "PreparedPrefabCache");
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
         "Assets/Models/RemappedPreviewHero.gltf",
@@ -3178,20 +3193,7 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewRemapsStaleAbsolute
     NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
     auto prefab = bridge.TryLoadPreviewPrefabArtifact(payload);
 
-    ASSERT_TRUE(prefab.has_value());
-    bool sawMesh = false;
-    for (const auto& resolved : prefab->resolvedAssets)
-    {
-        if (resolved.expectedType != "Mesh")
-            continue;
-
-        sawMesh = true;
-        const auto resolvedPath = std::filesystem::path(resolved.artifactPath);
-        EXPECT_TRUE(resolvedPath.is_absolute());
-        EXPECT_EQ(resolvedPath.lexically_normal().generic_string().find(artifactRoot.lexically_normal().generic_string()), 0u);
-        EXPECT_TRUE(NLS::Render::Assets::LoadMeshArtifact(resolvedPath).has_value());
-    }
-    EXPECT_TRUE(sawMesh);
+    EXPECT_FALSE(prefab.has_value());
 
     std::filesystem::remove_all(root);
 }
@@ -3240,21 +3242,6 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewAcceptsLegacyManife
     const auto guid = database.AssetPathToGUID("Assets/Models/LegacyPreviewHero.gltf");
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
-
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/LegacyPreviewHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
-    {
-        std::ifstream input(manifestPath, std::ios::binary);
-        ASSERT_TRUE(input.good());
-        auto manifest = nlohmann::json::parse(input, nullptr, false);
-        ASSERT_TRUE(manifest.is_object());
-        ASSERT_TRUE(manifest.erase("targetPlatform") > 0u);
-
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(output.good());
-        output << manifest.dump(2);
-    }
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
         "Assets/Models/LegacyPreviewHero.gltf",
@@ -3326,24 +3313,12 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewRejectsLegacyManife
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/MixedPlatformPreviewHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
     {
-        std::ifstream input(manifestPath, std::ios::binary);
-        ASSERT_TRUE(input.good());
-        auto manifest = nlohmann::json::parse(input, nullptr, false);
-        ASSERT_TRUE(manifest.is_object());
-        ASSERT_TRUE(manifest.erase("targetPlatform") > 0u);
-
-        auto& subAssets = manifest["subAssets"];
-        ASSERT_TRUE(subAssets.is_array());
-        ASSERT_FALSE(subAssets.empty());
-        subAssets.front()["targetPlatform"] = "win64";
-
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(output.good());
-        output << manifest.dump(2);
+        auto manifest = LoadArtifactManifestForTest(root, assetId);
+        ASSERT_TRUE(manifest.has_value());
+        ASSERT_FALSE(manifest->subAssets.empty());
+        manifest->subAssets.front().targetPlatform = "win64";
+        SaveArtifactManifestForTest(root, *manifest, "Assets/Models/MixedPlatformPreviewHero.gltf");
     }
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
@@ -3462,8 +3437,10 @@ TEST(GameObjectAssetImportTests, WarmGeneratedModelHandleInstantiatesWhenArtifac
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    EXPECT_TRUE(std::filesystem::exists(root / "Library" / "Artifacts" / guid / "manifest.json"));
-    EXPECT_TRUE(std::filesystem::exists(root / "Library" / "Artifacts" / guid / "prefab.nprefab"));
+    EXPECT_TRUE(std::filesystem::exists(root / "Library" / "ArtifactDB"));
+    const auto prefabPath = FindPrefabArtifactPath(root, assetId, "prefab:ProjectLibraryHero");
+    ASSERT_FALSE(prefabPath.empty());
+    EXPECT_TRUE(std::filesystem::exists(prefabPath));
     EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Library"));
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
@@ -3721,19 +3698,11 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropReportsPendingWhenImporter
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/StaleImporterMetadataHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
     {
-        std::ifstream input(manifestPath, std::ios::binary);
-        ASSERT_TRUE(input.good());
-        auto manifest = nlohmann::json::parse(input, nullptr, false);
-        ASSERT_TRUE(manifest.is_object());
-        manifest["importerVersion"] = manifest.value("importerVersion", 1u) + 1u;
-
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(output.good());
-        output << manifest.dump(2);
+        auto manifest = LoadArtifactManifestForTest(root, assetId);
+        ASSERT_TRUE(manifest.has_value());
+        ++manifest->importerVersion;
+        SaveArtifactManifestForTest(root, *manifest, "Assets/Models/StaleImporterMetadataHero.gltf");
     }
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
@@ -3757,7 +3726,7 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropReportsPendingWhenImporter
     std::filesystem::remove_all(root);
 }
 
-TEST(GameObjectAssetImportTests, EditorAssetHandleDropTreatsMalformedManifestImporterVersionAsPendingWithoutThrow)
+TEST(GameObjectAssetImportTests, EditorAssetHandleDropTreatsStaleArtifactDatabaseImporterVersionAsPendingWithoutThrow)
 {
     const auto root = MakeGameObjectAssetImportRoot();
     WriteTextFile(
@@ -3776,20 +3745,10 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropTreatsMalformedManifestImp
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/MalformedManifestHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
-    {
-        std::ifstream input(manifestPath, std::ios::binary);
-        ASSERT_TRUE(input.good());
-        auto manifest = nlohmann::json::parse(input, nullptr, false);
-        ASSERT_TRUE(manifest.is_object());
-        manifest["importerVersion"] = "1";
-
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(output.good());
-        output << manifest.dump(2);
-    }
+    auto manifest = LoadArtifactManifestForTest(root, assetId);
+    ASSERT_TRUE(manifest.has_value());
+    ++manifest->importerVersion;
+    SaveArtifactManifestForTest(root, *manifest, "Assets/Models/MalformedManifestHero.gltf");
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
         "Models/MalformedManifestHero.gltf",
@@ -3835,38 +3794,23 @@ TEST(GameObjectAssetImportTests, EditorAssetHandleDropRejectsEscapingPrefabArtif
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/EscapingArtifactHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
-    const auto escapedPrefabPath = outsideRoot / "prefab.nprefab";
+    const auto escapedPrefabPath = outsideRoot /
+        "1111111111111111111111111111111111111111111111111111111111111111";
     {
-        std::ifstream input(manifestPath, std::ios::binary);
-        ASSERT_TRUE(input.good());
-        auto manifest = nlohmann::json::parse(input, nullptr, false);
-        ASSERT_TRUE(manifest.is_object());
-
         std::filesystem::create_directories(outsideRoot);
+        const auto prefabPath = FindPrefabArtifactPath(root, assetId, "prefab:EscapingArtifactHero");
+        ASSERT_FALSE(prefabPath.empty());
         std::filesystem::copy_file(
-            artifactRoot / "prefab.nprefab",
+            prefabPath,
             escapedPrefabPath,
             std::filesystem::copy_options::overwrite_existing);
 
-        auto& subAssets = manifest["subAssets"];
-        ASSERT_TRUE(subAssets.is_array());
-        for (auto& subAsset : subAssets)
-        {
-            if (!subAsset.is_object() ||
-                subAsset.value("subAssetKey", std::string {}) != "prefab:EscapingArtifactHero")
-            {
-                continue;
-            }
-
-            subAsset["artifactPath"] = "../" + outsideRoot.filename().generic_string() + "/prefab.nprefab";
-        }
-
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(output.good());
-        output << manifest.dump(2);
+        ReplaceArtifactDatabaseFieldForTest(
+            root / "Library" / "ArtifactDB",
+            "prefab:EscapingArtifactHero",
+            7u,
+            "../" + outsideRoot.filename().generic_string() +
+                "/1111111111111111111111111111111111111111111111111111111111111111");
     }
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
@@ -4028,23 +3972,15 @@ TEST(GameObjectAssetImportTests, EscapingManifestDependencyHandleDropReportsPend
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/EscapedDependencyHero.gltf");
-    const auto manifestPath = artifactRoot / "manifest.json";
     {
-        std::ifstream input(manifestPath, std::ios::binary);
-        ASSERT_TRUE(input.good());
-        auto manifest = nlohmann::json::parse(input, nullptr, false);
-        ASSERT_TRUE(manifest.is_object());
-        manifest["dependencies"].push_back({
-            {"kind", "source-file-hash"},
-            {"value", "../" + escapedDependency.filename().generic_string()},
-            {"hashOrVersion", TestFileStamp(escapedDependency)}
+        auto manifest = LoadArtifactManifestForTest(root, assetId);
+        ASSERT_TRUE(manifest.has_value());
+        manifest->dependencies.push_back({
+            NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
+            "../" + escapedDependency.filename().generic_string(),
+            TestFileStamp(escapedDependency)
         });
-
-        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(output.good());
-        output << manifest.dump(2);
+        SaveArtifactManifestForTest(root, *manifest, "Assets/Models/EscapedDependencyHero.gltf");
     }
 
     const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
@@ -4145,11 +4081,11 @@ TEST(GameObjectAssetImportTests, ImportedModelDragCreatesOneRootHierarchyWithRen
     ASSERT_NE(looseMeshRenderer, nullptr);
     ASSERT_NE(looseMeshFilter, nullptr);
     EXPECT_NE(looseMeshFilter->GetModelPath().find("Library"), std::string::npos);
-    EXPECT_EQ(std::filesystem::path(looseMeshFilter->GetModelPath()).extension(), ".nmesh");
+    EXPECT_FALSE(std::filesystem::path(looseMeshFilter->GetModelPath()).has_extension());
     EXPECT_TRUE(NLS::Render::Assets::LoadMeshArtifact(looseMeshFilter->GetModelPath()).has_value());
     ASSERT_EQ(looseMeshRenderer->GetMaterialPaths().size(), 1u);
     EXPECT_NE(looseMeshRenderer->GetMaterialPaths()[0].find("Library"), std::string::npos);
-    EXPECT_EQ(std::filesystem::path(looseMeshRenderer->GetMaterialPaths()[0]).extension(), ".nmat");
+    EXPECT_FALSE(std::filesystem::path(looseMeshRenderer->GetMaterialPaths()[0]).has_extension());
 
     ASSERT_EQ(building->GetChildren().size(), 1u);
     auto* column = building->GetChildren()[0];
@@ -4355,17 +4291,15 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsRenderer
         "prefab:ColdHero");
     ASSERT_TRUE(prefab.has_value());
 
-    bool hasExplicitModelPackage = false;
     bool hasMeshArtifact = false;
     for (const auto& resolved : prefab->resolvedAssets)
     {
-        const auto extension = std::filesystem::path(resolved.artifactPath).extension();
-        if (extension == ".nmodel")
-            hasExplicitModelPackage = true;
-        else if (resolved.expectedType == "Mesh" && extension == ".nmesh")
+        if (!resolved.artifactPath.empty())
+            EXPECT_FALSE(std::filesystem::path(resolved.artifactPath).filename().has_extension())
+                << resolved.artifactPath;
+        if (resolved.expectedType == "Mesh" && !resolved.artifactPath.empty())
             hasMeshArtifact = true;
     }
-    EXPECT_FALSE(hasExplicitModelPackage);
     EXPECT_TRUE(hasMeshArtifact);
 
     NLS::Engine::SceneSystem::Scene scene;
@@ -4387,7 +4321,7 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsRenderer
         renderer->GetFrustumBehaviour(),
         NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
     EXPECT_FALSE(meshFilter->GetModelPath().empty());
-    EXPECT_EQ(std::filesystem::path(meshFilter->GetModelPath()).extension(), ".nmesh");
+    EXPECT_FALSE(std::filesystem::path(meshFilter->GetModelPath()).has_extension());
     EXPECT_TRUE(NLS::Render::Assets::LoadMeshArtifact(meshFilter->GetModelPath()).has_value());
     EXPECT_NE(meshFilter->GetMeshReference().Get(), nullptr);
     EXPECT_TRUE(meshManager.IsResourceRegistered(meshFilter->GetModelPath()));
@@ -4676,20 +4610,30 @@ TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithou
     ScopedServiceOverride<NLS::Core::ResourceManagement::MaterialManager> materialManagerService(materialManager);
     ScopedServiceOverride<NLS::Core::ResourceManagement::ShaderManager> shaderManagerService(shaderManager);
 
-    const auto materialPath = std::string("Library/Artifacts/Hover/body.nmat");
+    const auto materialPath =
+        std::string("Library/Artifacts/11/1111111111111111111111111111111111111111111111111111111111111111");
     const auto absoluteMaterialPath =
         NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(materialPath);
-    WriteTextFile(
+    const std::string materialPayload =
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n"
+        "alphaMode=Opaque\n"
+        "doubleSided=true\n"
+        "depthWrite=true\n";
+    NLS::Core::Assets::NativeArtifactMetadata materialMetadata;
+    materialMetadata.artifactType = NLS::Core::Assets::ArtifactType::Material;
+    materialMetadata.schemaName = "material";
+    materialMetadata.schemaVersion = 1u;
+    materialMetadata.sourceAssetId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic("HoverMaterial"));
+    materialMetadata.subAssetKey = "material:Hover";
+    materialMetadata.importerId = "test-material";
+    materialMetadata.importerVersion = 1u;
+    WriteBinaryFile(
         absoluteMaterialPath,
-        "<root>\n"
-        "  <shader>App/Assets/Engine/Shaders/Standard.hlsl</shader>\n"
-        "  <blendable>false</blendable>\n"
-        "  <backfaceCulling>false</backfaceCulling>\n"
-        "  <frontfaceCulling>false</frontfaceCulling>\n"
-        "  <depthTest>true</depthTest>\n"
-        "  <depthWriting>true</depthWriting>\n"
-        "  <colorWriting>true</colorWriting>\n"
-        "</root>\n");
+        NLS::Core::Assets::WriteNativeArtifactContainer(
+            std::move(materialMetadata),
+            std::vector<uint8_t>(materialPayload.begin(), materialPayload.end())));
 
     EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath, true), nullptr);
     EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(materialPath));
@@ -4745,7 +4689,8 @@ TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithou
     NLS::Core::ResourceManagement::TextureManager textureManager;
     ScopedServiceOverride<NLS::Core::ResourceManagement::TextureManager> textureManagerService(textureManager);
 
-    const auto texturePath = std::string("Library/Artifacts/Hover/body.ntex");
+    const auto texturePath =
+        std::string("Library/Artifacts/22/2222222222222222222222222222222222222222222222222222222222222222");
     const auto absoluteTexturePath =
         NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
 

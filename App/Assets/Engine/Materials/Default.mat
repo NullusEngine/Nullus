@@ -1,14 +1,18 @@
-<root>
-  <shader>:Shaders\Lambert.hlsl</shader>
-  <blendable>false</blendable>
-  <backfaceCulling>false</backfaceCulling>
-  <frontfaceCulling>false</frontfaceCulling>
-  <depthTest>true</depthTest>
-  <depthWriting>true</depthWriting>
-  <colorWriting>true</colorWriting>
-  <gpuInstances>1</gpuInstances>
-  <uniform name="u_Diffuse" type="vec4" value="1.000000 1.000000 1.000000 1.000000"/>
-  <uniform name="u_DiffuseMap" type="sampler2D" value=""/>
-  <uniform name="u_TextureTiling" type="vec2" value="1.000000 1.000000"/>
-  <uniform name="u_TextureOffset" type="vec2" value="0.000000 0.000000"/>
-</root>
+shaderLabMaterialVersion=1
+shader=?
+name=Default
+sourceSubAsset=material:Default
+workflow=engine-default
+surfaceMode=Opaque
+alphaMode=Opaque
+doubleSided=true
+depthWrite=true
+renderQueueOverride=-1
+property _BaseColor Color 1.000000 1.000000 1.000000 1.000000
+property _Metallic Float 0.000000
+property _Roughness Float 1.000000
+property _AmbientOcclusion Float 1.000000
+property _EmissiveColor Color 0.000000 0.000000 0.000000 1.000000
+property _SpecularColor Color 0.000000 0.000000 0.000000 1.000000
+property _NormalScale Float 1.000000
+property _Cutoff Float 0.500000

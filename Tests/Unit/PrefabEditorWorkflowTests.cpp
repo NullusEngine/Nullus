@@ -274,8 +274,8 @@ TEST(PrefabEditorWorkflowTests, InstantiatesPrefabAndStoresSceneConnection)
 
 TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesPreviewRootStructure)
 {
-    const std::string meshPath = "Library/Artifacts/PreviewCommitHero/body.nmesh";
-    const std::string materialPath = "Library/Artifacts/PreviewCommitHero/body.nmat";
+    const std::string meshPath = "Library/Artifacts/PreviewCommitHero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
+    const std::string materialPath = "Library/Artifacts/PreviewCommitHero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b";
     const auto meshId = NLS::Engine::Serialize::AssetId(
         NLS::Guid::Parse("83838383-8383-4383-8383-838383838385"));
     const auto materialId = NLS::Engine::Serialize::AssetId(
@@ -349,7 +349,7 @@ TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesPreviewRoo
 
 TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstancePreservesPreviewTransientMesh)
 {
-    const std::string meshPath = "Library/Artifacts/PreviewCommitTransient/body.nmesh";
+    const std::string meshPath = "Library/Artifacts/PreviewCommitTransient/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
     const auto meshId = NLS::Engine::Serialize::AssetId(
         NLS::Guid::Parse("83838383-8383-4383-8383-838383838387"));
 
@@ -463,8 +463,8 @@ TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesDuplicateS
 
 TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesMissingMaterialSlotsWithoutClearingLoadedSlot)
 {
-    const std::string firstMaterialPath = "Library/Artifacts/PreviewCommitPartialMaterials/first.nmat";
-    const std::string secondMaterialPath = "Library/Artifacts/PreviewCommitPartialMaterials/second.nmat";
+    const std::string firstMaterialPath = "Library/Artifacts/PreviewCommitPartialMaterials/dcae5a38be96376d6b06a1b70d9e3897ddfbe16937de85e3ffa05c78b878b351";
+    const std::string secondMaterialPath = "Library/Artifacts/PreviewCommitPartialMaterials/47ad399b45bcdda2bfbe6ee59e6a6e36ac148a09e62f7ec47862fae4f8e8c07a";
     const auto firstMaterialId = NLS::Engine::Serialize::AssetId(
         NLS::Guid::Parse("83838383-8383-4383-8383-83838383838b"));
     const auto secondMaterialId = NLS::Engine::Serialize::AssetId(

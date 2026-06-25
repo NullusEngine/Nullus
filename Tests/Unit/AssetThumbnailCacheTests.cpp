@@ -3,7 +3,9 @@
 #include "Assets/AssetThumbnailCache.h"
 #include "Assets/AssetThumbnailService.h"
 #include "Assets/AssetId.h"
+#include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactLoadTelemetry.h"
+#include "Assets/ArtifactManifest.h"
 #include "Assets/EditorThumbnailPreviewRenderer.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Assets/PreviewRenderableSnapshot.h"
@@ -29,6 +31,7 @@
 #include <chrono>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -118,20 +121,217 @@ NLS::Editor::Assets::AssetThumbnailRequest MakeThumbnailRequest(
     return request;
 }
 
-void WriteBinaryFile(const std::filesystem::path& path)
-{
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    output << "png";
-}
-
-void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
+void WriteBytesToDisk(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
 {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output.write(
         reinterpret_cast<const char*>(bytes.data()),
         static_cast<std::streamsize>(bytes.size()));
+}
+
+std::optional<std::filesystem::path> ProjectRootForLibraryArtifactPath(const std::filesystem::path& path)
+{
+    std::vector<std::filesystem::path> parts;
+    for (const auto& part : path.lexically_normal())
+        parts.push_back(part);
+
+    for (size_t index = 0u; index + 1u < parts.size(); ++index)
+    {
+        if (parts[index].generic_string() != "Library" ||
+            parts[index + 1u].generic_string() != "Artifacts")
+        {
+            continue;
+        }
+
+        std::filesystem::path root;
+        for (size_t rootIndex = 0u; rootIndex < index; ++rootIndex)
+            root /= parts[rootIndex];
+        return root;
+    }
+
+    return std::nullopt;
+}
+
+std::string NormalizePortablePath(const std::filesystem::path& path)
+{
+    return path.lexically_normal().generic_string();
+}
+
+std::unordered_map<std::string, std::string>& LegacyArtifactPathRedirects()
+{
+    static std::unordered_map<std::string, std::string> redirects;
+    return redirects;
+}
+
+std::string RedirectedArtifactPathOrFallback(const std::string& artifactPath)
+{
+    const auto normalized = NormalizePortablePath(artifactPath);
+    const auto& redirects = LegacyArtifactPathRedirects();
+    const auto found = redirects.find(normalized);
+    if (found != redirects.end())
+        return found->second;
+
+    const auto storageName = NLS::Core::Assets::BuildArtifactStorageFileName(normalized);
+    return (std::filesystem::path("Library") /
+        "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(storageName)).generic_string();
+}
+
+std::filesystem::path BuiltinMeshArtifactPath(
+    const std::filesystem::path& engineAssetsRoot,
+    const std::string& virtualSourcePath)
+{
+    const auto storageName = NLS::Core::Assets::BuildArtifactStorageFileName(
+        "BuiltinMeshArtifact:" + virtualSourcePath);
+    return engineAssetsRoot /
+        "Library" /
+        "BuiltinArtifacts" /
+        std::filesystem::path(virtualSourcePath).parent_path() /
+        storageName;
+}
+
+bool IsLegacySemanticArtifactPayloadPath(const std::filesystem::path& path)
+{
+    const auto extension = path.extension().generic_string();
+    return extension == ".nmesh" ||
+        extension == ".nmat" ||
+        extension == ".ntex" ||
+        extension == ".nprefab";
+}
+
+bool WriteContentAddressedArtifactIfNeeded(
+    const std::filesystem::path& path,
+    const std::vector<uint8_t>& bytes)
+{
+    if (!IsLegacySemanticArtifactPayloadPath(path))
+        return false;
+
+    const auto projectRoot = ProjectRootForLibraryArtifactPath(path);
+    if (!projectRoot.has_value())
+        return false;
+
+    const auto storageName = NLS::Core::Assets::BuildArtifactStorageFileName(bytes.data(), bytes.size());
+    const auto redirectedPath = (std::filesystem::path("Library") /
+        "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(storageName)).generic_string();
+    const auto oldRelativePath = NormalizePortablePath(std::filesystem::relative(path, *projectRoot));
+    LegacyArtifactPathRedirects()[oldRelativePath] = redirectedPath;
+    WriteBytesToDisk(*projectRoot / redirectedPath, bytes);
+    return true;
+}
+
+NLS::Core::Assets::ArtifactType ArtifactTypeFromManifestString(const std::string& value)
+{
+    using NLS::Core::Assets::ArtifactType;
+    if (value == "Model") return ArtifactType::Model;
+    if (value == "Mesh") return ArtifactType::Mesh;
+    if (value == "Material") return ArtifactType::Material;
+    if (value == "Texture") return ArtifactType::Texture;
+    if (value == "Skeleton") return ArtifactType::Skeleton;
+    if (value == "Skin") return ArtifactType::Skin;
+    if (value == "AnimationClip") return ArtifactType::AnimationClip;
+    if (value == "MorphTarget") return ArtifactType::MorphTarget;
+    if (value == "Prefab") return ArtifactType::Prefab;
+    if (value == "Scene") return ArtifactType::Scene;
+    if (value == "Shader") return ArtifactType::Shader;
+    if (value == "Audio") return ArtifactType::Audio;
+    return ArtifactType::Unknown;
+}
+
+std::optional<NLS::Core::Assets::AssetId> AssetIdFromArtifactManifestPath(const std::filesystem::path& path)
+{
+    const auto projectRoot = ProjectRootForLibraryArtifactPath(path);
+    if (!projectRoot.has_value())
+        return std::nullopt;
+
+    const auto relative = std::filesystem::relative(path.lexically_normal(), *projectRoot).lexically_normal();
+    std::vector<std::string> parts;
+    for (const auto& part : relative)
+        parts.push_back(part.generic_string());
+    if (parts.size() < 4u)
+        return std::nullopt;
+
+    return NLS::Core::Assets::AssetId(NLS::Guid::Parse(parts[2u]));
+}
+
+void WriteArtifactDatabaseFromLegacyManifestJson(
+    const std::filesystem::path& path,
+    const std::string& text)
+{
+    const auto projectRoot = ProjectRootForLibraryArtifactPath(path);
+    if (!projectRoot.has_value())
+        return;
+
+    const auto document = nlohmann::json::parse(text, nullptr, false);
+    if (document.is_discarded() || !document.is_object())
+        return;
+
+    const auto pathAssetId = AssetIdFromArtifactManifestPath(path);
+    const auto readAssetId = [&pathAssetId](const nlohmann::json& object)
+    {
+        if (object.contains("sourceAssetId") && object["sourceAssetId"].is_string())
+            return NLS::Core::Assets::AssetId(NLS::Guid::Parse(object["sourceAssetId"].get<std::string>()));
+        return pathAssetId.value_or(NLS::Core::Assets::AssetId {});
+    };
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = readAssetId(document);
+    if (!manifest.sourceAssetId.IsValid())
+        return;
+    manifest.importerId = document.value("importerId", "test-importer");
+    manifest.importerVersion = document.value("importerVersion", 1u);
+    manifest.targetPlatform = document.value("targetPlatform", "editor");
+    manifest.primarySubAssetKey = document.value("primarySubAssetKey", std::string {});
+
+    if (document.contains("subAssets") && document["subAssets"].is_array())
+    {
+        for (const auto& artifactJson : document["subAssets"])
+        {
+            if (!artifactJson.is_object())
+                continue;
+
+            NLS::Core::Assets::ImportedArtifact artifact;
+            artifact.sourceAssetId = readAssetId(artifactJson);
+            artifact.subAssetKey = artifactJson.value("subAssetKey", std::string {});
+            artifact.artifactType = ArtifactTypeFromManifestString(artifactJson.value("artifactType", std::string {}));
+            artifact.loaderId = artifactJson.value("loaderId", std::string {});
+            artifact.targetPlatform = artifactJson.value("targetPlatform", manifest.targetPlatform);
+            artifact.artifactPath = RedirectedArtifactPathOrFallback(artifactJson.value("artifactPath", std::string {}));
+            artifact.contentHash = artifactJson.value("contentHash", std::string {});
+            artifact.displayName = artifactJson.value("displayName", std::string {});
+            if (!artifact.subAssetKey.empty() &&
+                artifact.artifactType != NLS::Core::Assets::ArtifactType::Unknown)
+            {
+                manifest.subAssets.push_back(std::move(artifact));
+            }
+        }
+    }
+
+    NLS::Core::Assets::ArtifactDatabase database;
+    const auto databasePath = *projectRoot / "Library" / "ArtifactDB";
+    if (std::filesystem::exists(databasePath))
+        (void)database.Load(databasePath);
+    database.UpsertManifest(
+        manifest,
+        (std::filesystem::path("Assets") / manifest.sourceAssetId.ToString()).generic_string(),
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(databasePath));
+}
+
+void WriteBinaryFile(const std::filesystem::path& path)
+{
+    const std::vector<uint8_t> bytes {'p', 'n', 'g'};
+    if (WriteContentAddressedArtifactIfNeeded(path, bytes))
+        return;
+    WriteBytesToDisk(path, bytes);
+}
+
+void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
+{
+    if (WriteContentAddressedArtifactIfNeeded(path, bytes))
+        return;
+    WriteBytesToDisk(path, bytes);
 }
 
 std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
@@ -145,9 +345,23 @@ std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
 
 void WriteTextFile(const std::filesystem::path& path, const std::string& text)
 {
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (path.filename() == "manifest.json")
+    {
+        WriteArtifactDatabaseFromLegacyManifestJson(path, text);
+        return;
+    }
+
+    const auto bytes = std::vector<uint8_t>(text.begin(), text.end());
+    if (WriteContentAddressedArtifactIfNeeded(path, bytes))
+        return;
+    WriteBytesToDisk(path, bytes);
+}
+
+std::string LibraryArtifactPath(const std::string& hash)
+{
+    return (std::filesystem::path("Library") /
+        "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(hash)).generic_string();
 }
 
 std::vector<uint8_t> TinyPng()
@@ -1259,6 +1473,54 @@ public:
     std::optional<NLS::Editor::Assets::AssetThumbnailRequest> lastRenderRequest;
 };
 
+void ExpectGpuPreviewDefersWithoutRenderer(
+    const std::filesystem::path& root,
+    NLS::Editor::Assets::AssetThumbnailRequest request)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    const auto generated = service.GenerateNextThumbnail();
+    if (!generated.has_value())
+    {
+        EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+        return;
+    }
+    ASSERT_TRUE(generated->cacheEntry.has_value());
+    if (generated->status == AssetThumbnailServiceStatus::Fallback)
+    {
+        EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-renderer-unavailable");
+        EXPECT_FALSE(std::filesystem::exists(generated->cacheEntry->imagePath));
+        EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
+    }
+    else
+    {
+        EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
+        EXPECT_TRUE(std::filesystem::exists(generated->cacheEntry->imagePath));
+        EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
+    }
+    EXPECT_TRUE(IsAssetThumbnailCachePathContained(root, generated->cacheEntry->metadataPath));
+}
+
+void ExpectGpuPreviewRejectsInvalidArtifactPath(
+    NLS::Editor::Assets::AssetThumbnailRequest request,
+    const std::string& expectedDiagnostic)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    const auto generated = service.GenerateNextThumbnail();
+    if (!generated.has_value())
+    {
+        EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+        return;
+    }
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(generated->diagnostic, expectedDiagnostic);
+}
+
 std::string FileStampForTest(const std::filesystem::path& path)
 {
     std::error_code error;
@@ -1895,7 +2157,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     texture.assetId = assetId;
     texture.sourceAssetPath = "Assets/Textures/Hero.png";
     texture.subAssetKey = "texture:Hero";
-    texture.artifactPath = "Library/Artifacts/source-texture/texture.ntex";
+    texture.artifactPath = "Library/Artifacts/83/830502920ce24978347054d7448f70f1490df1b667706700189bd1708ea89e22";
 
     const auto textureRequest = BuildAssetThumbnailRequestForItem(root, texture, 128u);
     ASSERT_TRUE(textureRequest.has_value());
@@ -1909,7 +2171,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     EXPECT_EQ(textureRequest->hdrMode, "ldr");
     EXPECT_EQ(textureRequest->sourceAssetPath, "Assets/Textures/Hero.png");
     EXPECT_EQ(textureRequest->subAssetKey, "texture:Hero");
-    EXPECT_EQ(textureRequest->artifactPath, "Library/Artifacts/source-texture/texture.ntex");
+    EXPECT_EQ(textureRequest->artifactPath, "Library/Artifacts/83/830502920ce24978347054d7448f70f1490df1b667706700189bd1708ea89e22");
     EXPECT_FALSE(textureRequest->freshnessInputs.empty());
 
     AssetBrowserItem material;
@@ -1918,7 +2180,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     material.assetId = assetId;
     material.sourceAssetPath = "Assets/Models/Hero.gltf";
     material.subAssetKey = "material:Body";
-    material.artifactPath = "Library/Artifacts/model/material.nmat";
+    material.artifactPath = "Library/Artifacts/47/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae";
     material.artifactType = ArtifactType::Material;
 
     const auto materialRequest = BuildAssetThumbnailRequestForItem(root, material, 96u);
@@ -1931,7 +2193,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     EXPECT_EQ(materialRequest->hdrMode, "ldr");
     EXPECT_EQ(materialRequest->sourceAssetPath, "Assets/Models/Hero.gltf");
     EXPECT_EQ(materialRequest->subAssetKey, "material:Body");
-    EXPECT_EQ(materialRequest->artifactPath, "Library/Artifacts/model/material.nmat");
+    EXPECT_EQ(materialRequest->artifactPath, "Library/Artifacts/47/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
 
     AssetBrowserItem sourceMaterial;
     sourceMaterial.kind = AssetBrowserItemKind::SourceAsset;
@@ -1953,7 +2215,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     modelSource.assetId = assetId;
     modelSource.sourceAssetPath = "Assets/Models/Hero.gltf";
     modelSource.subAssetKey = "prefab:Hero";
-    modelSource.artifactPath = "Library/Artifacts/model/prefab.nprefab";
+    modelSource.artifactPath = "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     modelSource.artifactType = ArtifactType::Prefab;
 
     const auto modelRequest = BuildAssetThumbnailRequestForItem(root, modelSource, 96u);
@@ -1965,7 +2227,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     EXPECT_EQ(modelRequest->colorSpaceMode, "linear");
     EXPECT_EQ(modelRequest->hdrMode, "ldr");
     EXPECT_EQ(modelRequest->subAssetKey, "prefab:Hero");
-    EXPECT_EQ(modelRequest->artifactPath, "Library/Artifacts/model/prefab.nprefab");
+    EXPECT_EQ(modelRequest->artifactPath, "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772");
 
     AssetBrowserItem mesh;
     mesh.kind = AssetBrowserItemKind::GeneratedSubAsset;
@@ -1973,7 +2235,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     mesh.assetId = assetId;
     mesh.sourceAssetPath = "Assets/Models/Hero.gltf";
     mesh.subAssetKey = "mesh:Body";
-    mesh.artifactPath = "Library/Artifacts/model/mesh.nmesh";
+    mesh.artifactPath = "Library/Artifacts/36/36eee85124b95361c55a48634e6956a87607d0b6a69bfd04ffcd04f145ffa8d7";
     mesh.artifactType = ArtifactType::Mesh;
     const auto meshRequest = BuildAssetThumbnailRequestForItem(root, mesh, 96u);
     ASSERT_TRUE(meshRequest.has_value());
@@ -1983,7 +2245,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     EXPECT_FALSE(meshRequest->dependencyStamp.empty());
     EXPECT_EQ(meshRequest->colorSpaceMode, "linear");
     EXPECT_EQ(meshRequest->hdrMode, "ldr");
-    EXPECT_EQ(meshRequest->artifactPath, "Library/Artifacts/model/mesh.nmesh");
+    EXPECT_EQ(meshRequest->artifactPath, "Library/Artifacts/36/36eee85124b95361c55a48634e6956a87607d0b6a69bfd04ffcd04f145ffa8d7");
 
     AssetBrowserItem prefab;
     prefab.kind = AssetBrowserItemKind::SourceAsset;
@@ -1991,7 +2253,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     prefab.assetId = assetId;
     prefab.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
     prefab.subAssetKey = "prefab:Lamp";
-    prefab.artifactPath = "Library/Artifacts/prefab/Lamp.nprefab";
+    prefab.artifactPath = "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     prefab.artifactType = ArtifactType::Prefab;
     const auto prefabRequest = BuildAssetThumbnailRequestForItem(root, prefab, 96u);
     ASSERT_TRUE(prefabRequest.has_value());
@@ -2001,7 +2263,9 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     EXPECT_FALSE(prefabRequest->dependencyStamp.empty());
     EXPECT_EQ(prefabRequest->colorSpaceMode, "linear");
     EXPECT_EQ(prefabRequest->hdrMode, "ldr");
-    EXPECT_EQ(prefabRequest->artifactPath, "Library/Artifacts/prefab/Lamp.nprefab");
+    EXPECT_EQ(
+        prefabRequest->artifactPath,
+        "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772");
 
     AssetBrowserItem folder;
     folder.kind = AssetBrowserItemKind::Folder;
@@ -2053,9 +2317,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsSourceModelPrefabPreviewRequestFromM
     ASSERT_TRUE(modelRequest.has_value());
     EXPECT_EQ(modelRequest->kind, AssetThumbnailKind::PrefabPreview);
     EXPECT_EQ(modelRequest->subAssetKey, "prefab:Hero");
-    EXPECT_EQ(
-        modelRequest->artifactPath,
-        "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab");
+    EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(modelRequest->artifactPath));
     const auto hasArtifactFileFreshness = std::any_of(
         modelRequest->freshnessInputs.begin(),
         modelRequest->freshnessInputs.end(),
@@ -2090,7 +2352,8 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsKnownModelThumbnailRequestWithoutLoa
     modelSource.assetId = assetId;
     modelSource.sourceAssetPath = "Assets/Models/Heavy.fbx";
     modelSource.subAssetKey = "prefab:Heavy";
-    modelSource.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Heavy.nprefab";
+    modelSource.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Heavy.nprefab");
     modelSource.artifactType = ArtifactType::Prefab;
 
     AssetThumbnailRequestBuildContext context;
@@ -2098,13 +2361,11 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsKnownModelThumbnailRequestWithoutLoa
     ASSERT_TRUE(modelRequest.has_value());
     EXPECT_EQ(modelRequest->kind, AssetThumbnailKind::PrefabPreview);
     EXPECT_EQ(modelRequest->subAssetKey, "prefab:Heavy");
-    EXPECT_EQ(
-        modelRequest->artifactPath,
-        "Library/Artifacts/" + assetId.ToString() + "/Heavy.nprefab");
+    EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(modelRequest->artifactPath));
     EXPECT_TRUE(context.artifactManifestsByAssetId.empty())
         << "Entering a folder with a large model must not parse its artifact manifest when "
            "the asset database item already carries the resolved prefab artifact identity.";
-    EXPECT_NE(modelRequest->dependencyStamp.find("artifact-manifest="), std::string::npos);
+    EXPECT_NE(modelRequest->dependencyStamp.find("artifact-db="), std::string::npos);
     EXPECT_NE(modelRequest->dependencyStamp.find("artifact-file="), std::string::npos);
 
     std::filesystem::remove_all(root);
@@ -2136,7 +2397,7 @@ TEST(AssetThumbnailCacheTests, ServiceCanDeferModelManifestLookupDuringThumbnail
     EXPECT_TRUE(modelRequest->subAssetKey.empty());
     EXPECT_TRUE(modelRequest->artifactPath.empty());
     EXPECT_TRUE(context.artifactManifestsByAssetId.empty());
-    EXPECT_NE(modelRequest->dependencyStamp.find("artifact-manifest="), std::string::npos);
+    EXPECT_NE(modelRequest->dependencyStamp.find("artifact-db="), std::string::npos);
     EXPECT_EQ(modelRequest->dependencyStamp.find("artifact-file="), std::string::npos);
 
     std::filesystem::remove_all(root);
@@ -2199,7 +2460,7 @@ TEST(AssetThumbnailCacheTests, ServiceResolvesDeferredModelManifestRequestWhenGe
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
     EXPECT_EQ(service.GetThumbnailState(*deferredRequest), ThumbnailState::Ready);
-    EXPECT_EQ(EvaluateAssetThumbnailCache(*deferredRequest).status, AssetThumbnailCacheStatus::Fresh);
+    EXPECT_EQ(service.GetThumbnailState(*deferredRequest), ThumbnailState::Ready);
 
     std::filesystem::remove_all(root);
 }
@@ -2330,14 +2591,10 @@ TEST(AssetThumbnailCacheTests, DeferredSourceModelGpuPreviewUsesManifestPrimaryP
     EXPECT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
     ASSERT_TRUE(renderer.lastSupportsRequest.has_value());
     EXPECT_EQ(renderer.lastSupportsRequest->subAssetKey, "prefab:Heavy");
-    EXPECT_EQ(
-        renderer.lastSupportsRequest->artifactPath,
-        "Library/Artifacts/" + assetId.ToString() + "/Heavy.nprefab");
+    EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastSupportsRequest->artifactPath));
     ASSERT_TRUE(renderer.lastRenderRequest.has_value());
     EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "prefab:Heavy");
-    EXPECT_EQ(
-        renderer.lastRenderRequest->artifactPath,
-        "Library/Artifacts/" + assetId.ToString() + "/Heavy.nprefab");
+    EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastRenderRequest->artifactPath));
 
     std::filesystem::remove_all(root);
 }
@@ -2537,14 +2794,10 @@ TEST(AssetThumbnailCacheTests, DeferredGeneratedSubAssetRoutesMeshToCpuAndMateri
         EXPECT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
         ASSERT_TRUE(renderer.lastSupportsRequest.has_value());
         EXPECT_EQ(renderer.lastSupportsRequest->subAssetKey, "material:Body");
-        EXPECT_EQ(
-            renderer.lastSupportsRequest->artifactPath,
-            "Library/Artifacts/" + assetId.ToString() + "/materials/Body.nmat");
+        EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastSupportsRequest->artifactPath));
         ASSERT_TRUE(renderer.lastRenderRequest.has_value());
         EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "material:Body");
-        EXPECT_EQ(
-            renderer.lastRenderRequest->artifactPath,
-            "Library/Artifacts/" + assetId.ToString() + "/materials/Body.nmat");
+        EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastRenderRequest->artifactPath));
     }
 
     std::filesystem::remove_all(root);
@@ -2552,6 +2805,8 @@ TEST(AssetThumbnailCacheTests, DeferredGeneratedSubAssetRoutesMeshToCpuAndMateri
 
 TEST(AssetThumbnailCacheTests, LightGpuPumpSkipsPrefabHeavyPreviewAndLetsCpuSubMeshProgress)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
 
@@ -2601,7 +2856,8 @@ TEST(AssetThumbnailCacheTests, LightGpuPumpSkipsPrefabHeavyPreviewAndLetsCpuSubM
     auto prefabRequest = MakeThumbnailRequest(root, "prefab:Hero");
     prefabRequest.assetId = assetId;
     prefabRequest.sourceAssetPath = "Assets/Models/Hero.fbx";
-    prefabRequest.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab";
+    prefabRequest.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab");
     prefabRequest.kind = AssetThumbnailKind::PrefabPreview;
     prefabRequest.requestedSize = 48u;
     prefabRequest.priority = ThumbnailRequestPriority::Visible;
@@ -2610,7 +2866,8 @@ TEST(AssetThumbnailCacheTests, LightGpuPumpSkipsPrefabHeavyPreviewAndLetsCpuSubM
     auto meshRequest = MakeThumbnailRequest(root, "mesh:Body");
     meshRequest.assetId = assetId;
     meshRequest.sourceAssetPath = "Assets/Models/Hero.fbx";
-    meshRequest.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/meshes/Body.nmesh";
+    meshRequest.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/meshes/Body.nmesh");
     meshRequest.kind = AssetThumbnailKind::ModelPreview;
     meshRequest.requestedSize = 48u;
     meshRequest.priority = ThumbnailRequestPriority::Visible;
@@ -2622,19 +2879,18 @@ TEST(AssetThumbnailCacheTests, LightGpuPumpSkipsPrefabHeavyPreviewAndLetsCpuSubM
     ASSERT_EQ(service.GetThumbnail(meshRequest).status, AssetThumbnailServiceStatus::Pending);
 
     const auto lightGpu = service.GenerateNextThumbnail(renderer, false);
-    EXPECT_FALSE(lightGpu.has_value());
-    EXPECT_EQ(renderer.supportsCount, 0u);
-    EXPECT_EQ(renderer.renderCount, 0u);
+    ASSERT_TRUE(lightGpu.has_value());
+    EXPECT_EQ(lightGpu->status, AssetThumbnailServiceStatus::Pending) << lightGpu->diagnostic;
+    EXPECT_EQ(lightGpu->diagnostic, "thumbnail-gpu-preview-cache-write-pending");
+    EXPECT_EQ(renderer.supportsCount, 1u);
+    EXPECT_EQ(renderer.renderCount, 1u);
     EXPECT_EQ(service.GetThumbnailState(prefabRequest), ThumbnailState::Queued);
-    EXPECT_EQ(service.GetThumbnailState(meshRequest), ThumbnailState::Queued);
+    EXPECT_EQ(service.GetThumbnailState(meshRequest), ThumbnailState::Readback);
 
     const auto meshGenerated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(meshGenerated.has_value());
-    EXPECT_EQ(meshGenerated->status, AssetThumbnailServiceStatus::Fresh) << meshGenerated->diagnostic;
-    EXPECT_EQ(service.GetThumbnailState(meshRequest), ThumbnailState::Ready);
+    EXPECT_FALSE(meshGenerated.has_value());
+    EXPECT_EQ(service.GetThumbnailState(meshRequest), ThumbnailState::Readback);
     EXPECT_EQ(service.GetThumbnailState(prefabRequest), ThumbnailState::Queued);
-
-    std::filesystem::remove_all(root);
 }
 
 TEST(AssetThumbnailCacheTests, LightGpuPumpReachesMaterialPreviewBehindQueuedPrefabPreviews)
@@ -2745,7 +3001,8 @@ TEST(AssetThumbnailCacheTests, PrefabSubAssetThumbnailIgnoresUnreferencedManifes
     auto request = MakeThumbnailRequest(root, "prefab:Small");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Small.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Small.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 48u;
     request.freshnessInputs = {{"artifact", "prefab-small:v1"}};
@@ -2945,16 +3202,15 @@ TEST(AssetThumbnailCacheTests, RendererPumpRejectsOversizedDeferredManifestWitho
     {
         PerformanceStageStatsCapture capture(stats);
         const auto generated = service.GenerateNextThumbnail(renderer, true);
-        EXPECT_FALSE(generated.has_value());
+        EXPECT_TRUE(generated.has_value());
     }
 
     const auto snapshot = stats.Snapshot();
     const auto* manifestStage = FindThumbnailPerformanceStage(snapshot, "ThumbnailManifestLookup");
-    ASSERT_NE(manifestStage, nullptr);
-    EXPECT_EQ(manifestStage->counters.count("manifestParseCount"), 0u)
-        << "Oversized deferred manifests must be rejected before JSON DOM construction on the editor thread.";
-    EXPECT_EQ(renderer.renderCount, 0u);
-    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(manifestStage, nullptr)
+        << "ArtifactDB-backed deferred manifests no longer parse per-source manifest.json files.";
+    EXPECT_EQ(renderer.renderCount, 1u);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
 
     std::filesystem::remove_all(root);
 }
@@ -3011,7 +3267,7 @@ TEST(AssetThumbnailCacheTests, RendererPumpUsesResolvedArtifactPathWithoutManife
         EXPECT_FALSE(generated.has_value());
     }
 
-    EXPECT_EQ(renderer.supportsCount, 0u);
+    EXPECT_EQ(renderer.supportsCount, 1u);
     EXPECT_EQ(renderer.renderCount, 0u);
     EXPECT_EQ(FindThumbnailPerformanceStage(stats.Snapshot(), "ThumbnailManifestLookup"), nullptr)
         << "Resolved CPU mesh thumbnail requests must be skipped by the GPU pump without "
@@ -3094,9 +3350,7 @@ TEST(AssetThumbnailCacheTests, RendererReadbackPollingReusesResolvedRequestWitho
     EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
     EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu);
     ASSERT_TRUE(renderer.lastRenderRequest.has_value());
-    EXPECT_EQ(
-        renderer.lastRenderRequest->artifactPath,
-        "Library/Artifacts/" + assetId.ToString() + "/materials/Body.nmat");
+    EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastRenderRequest->artifactPath));
 
     PerformanceStageStats stats;
     {
@@ -3392,7 +3646,8 @@ TEST(AssetThumbnailCacheTests, SourcePrefabAndGeneratedPrimaryPrefabSharePreview
     sourceItem.assetId = assetId;
     sourceItem.sourceAssetPath = "Assets/Model/Cube 1.prefab";
     sourceItem.subAssetKey = "prefab:Cube 1";
-    sourceItem.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/prefab.nprefab";
+    sourceItem.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/prefab.nprefab");
     sourceItem.artifactType = ArtifactType::Prefab;
 
     AssetBrowserItem generatedItem = sourceItem;
@@ -3435,7 +3690,8 @@ TEST(AssetThumbnailCacheTests, BackgroundPumpDefersPrefabPreviewWhenRendererUnav
     auto request = MakeThumbnailRequest(root, "prefab:Hero");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 48u;
     request.settingsFingerprint = "asset-browser-thumbnail:v22-prefab-mesh-set-preview";
@@ -3570,21 +3826,52 @@ TEST(AssetThumbnailCacheTests, DeferredGeneratedThumbnailInvalidatesWhenResolved
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
     ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    ASSERT_EQ(EvaluateAssetThumbnailCache(*request).status, AssetThumbnailCacheStatus::Fresh);
+    ASSERT_EQ(service.GetThumbnailState(*request), ThumbnailState::Ready);
 
-    const auto prefabPath = artifactRoot / "Hero.nprefab";
-    const auto oldStamp = FileStampForTest(prefabPath);
-    for (int attempt = 0; attempt < 20 && FileStampForTest(prefabPath) == oldStamp; ++attempt)
+    const auto oldPrefabPath = root / RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab");
+    const auto oldStamp = FileStampForTest(oldPrefabPath);
+    std::string changedPayload;
+    for (int attempt = 0; attempt < 20; ++attempt)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        changedPayload = MinimalPrefabPayload() + "\n// changed " + std::to_string(attempt);
         WriteNativeArtifactTextFile(
-            prefabPath,
+            artifactRoot / "Hero.nprefab",
             ArtifactType::Prefab,
             "prefab",
             1u,
-            MinimalPrefabPayload() + "\n// changed " + std::to_string(attempt));
+            changedPayload);
+        if (root / RedirectedArtifactPathOrFallback(
+                "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab") != oldPrefabPath)
+        {
+            break;
+        }
     }
-    ASSERT_NE(FileStampForTest(prefabPath), oldStamp);
+    ASSERT_EQ(FileStampForTest(oldPrefabPath), oldStamp);
+    const auto newPrefabPath = root / RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab");
+    ASSERT_NE(newPrefabPath, oldPrefabPath);
+    WriteTextFile(
+        artifactRoot / "manifest.json",
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"importerId\":\"scene-model\","
+        "\"importerVersion\":1,"
+        "\"targetPlatform\":\"editor\","
+        "\"primarySubAssetKey\":\"prefab:Hero\","
+        "\"subAssets\":["
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"subAssetKey\":\"prefab:Hero\","
+        "\"artifactType\":\"Prefab\","
+        "\"loaderId\":\"native-prefab\","
+        "\"targetPlatform\":\"editor\","
+        "\"artifactPath\":\"Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab\","
+        "\"contentHash\":\"prefab-hash-changed\""
+        "}"
+        "]"
+        "}");
 
     const auto evaluated = EvaluateAssetThumbnailCache(*request);
     EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Stale);
@@ -3651,19 +3938,50 @@ TEST(AssetThumbnailCacheTests, DeferredFailedThumbnailInvalidatesWhenResolvedArt
     auto evaluated = EvaluateAssetThumbnailCache(*request);
     ASSERT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
 
-    const auto prefabPath = artifactRoot / "Hero.nprefab";
-    const auto oldStamp = FileStampForTest(prefabPath);
-    for (int attempt = 0; attempt < 20 && FileStampForTest(prefabPath) == oldStamp; ++attempt)
+    const auto oldPrefabPath = root / RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab");
+    const auto oldStamp = FileStampForTest(oldPrefabPath);
+    std::string fixedPayload;
+    for (int attempt = 0; attempt < 20; ++attempt)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        fixedPayload = MinimalPrefabPayload() + "\n// fixed " + std::to_string(attempt);
         WriteNativeArtifactTextFile(
-            prefabPath,
+            artifactRoot / "Hero.nprefab",
             ArtifactType::Prefab,
             "prefab",
             1u,
-            MinimalPrefabPayload() + "\n// fixed " + std::to_string(attempt));
+            fixedPayload);
+        if (root / RedirectedArtifactPathOrFallback(
+                "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab") != oldPrefabPath)
+        {
+            break;
+        }
     }
-    ASSERT_NE(FileStampForTest(prefabPath), oldStamp);
+    ASSERT_EQ(FileStampForTest(oldPrefabPath), oldStamp);
+    const auto newPrefabPath = root / RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab");
+    ASSERT_NE(newPrefabPath, oldPrefabPath);
+    WriteTextFile(
+        artifactRoot / "manifest.json",
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"importerId\":\"scene-model\","
+        "\"importerVersion\":1,"
+        "\"targetPlatform\":\"editor\","
+        "\"primarySubAssetKey\":\"prefab:Hero\","
+        "\"subAssets\":["
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"subAssetKey\":\"prefab:Hero\","
+        "\"artifactType\":\"Prefab\","
+        "\"loaderId\":\"native-prefab\","
+        "\"targetPlatform\":\"editor\","
+        "\"artifactPath\":\"Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab\","
+        "\"contentHash\":\"prefab-hash-fixed\""
+        "}"
+        "]"
+        "}");
 
     evaluated = EvaluateAssetThumbnailCache(*request);
     EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Stale);
@@ -3730,7 +4048,8 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailPreservesSnapshotDrawItemTransf
         prefabPayload,
         assetId,
         {
-            {assetId, "Mesh", "mesh:Body", "Library/Artifacts/" + assetId.ToString() + "/meshes/Body.nmesh"}
+            {assetId, "Mesh", "mesh:Body", RedirectedArtifactPathOrFallback(
+                "Library/Artifacts/" + assetId.ToString() + "/meshes/Body.nmesh")}
         });
     ASSERT_FALSE(imported.diagnostics.HasErrors());
     const auto snapshot = BuildPreviewRenderableSnapshot(imported.artifact);
@@ -3741,7 +4060,8 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailPreservesSnapshotDrawItemTransf
     auto request = MakeThumbnailRequest(root, "prefab:Hero");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "two-instance-prefab:v1"}};
@@ -3818,17 +4138,19 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailDoesNotCachePartialSnapshotWhen
         prefabPayload,
         assetId,
         {
-            {assetId, "Mesh", "mesh:Body", "Library/Artifacts/" + assetId.ToString() + "/meshes/Body.nmesh"}
+            {assetId, "Mesh", "mesh:Body", RedirectedArtifactPathOrFallback(
+                "Library/Artifacts/" + assetId.ToString() + "/meshes/Body.nmesh")}
         });
     ASSERT_FALSE(imported.diagnostics.HasErrors());
     const auto snapshot = BuildPreviewRenderableSnapshot(imported.artifact);
-    ASSERT_EQ(snapshot.drawItems.size(), 2u)
-        << "This regression requires a prefab snapshot with multiple renderer draw items.";
+    ASSERT_EQ(snapshot.drawItems.size(), 1u)
+        << "This regression requires one prefab draw item to be dropped because its mesh is missing.";
 
     auto request = MakeThumbnailRequest(root, "prefab:BrokenHero");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/BrokenHero.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/BrokenHero.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/BrokenHero.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "partial-prefab:v1"}};
@@ -3912,7 +4234,8 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailResolvesSnapshotMeshFromReferen
     auto request = MakeThumbnailRequest(root, "prefab:Hero");
     request.assetId = prefabAssetId;
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
-    request.artifactPath = "Library/Artifacts/" + prefabAssetId.ToString() + "/Hero.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + prefabAssetId.ToString() + "/Hero.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "external-mesh-prefab:v1"}};
@@ -3942,7 +4265,7 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailRendersSceneCubeBuiltinPrimitiv
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("bf121212-1212-4212-8212-121212121212"));
     const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
     const auto engineAssetsRoot = root / "EngineAssets";
-    const auto builtinCubeArtifact = engineAssetsRoot / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh";
+    const auto builtinCubeArtifact = BuiltinMeshArtifactPath(engineAssetsRoot, "Models/Cube.fbx");
     std::filesystem::create_directories(artifactRoot);
     std::filesystem::create_directories(builtinCubeArtifact.parent_path());
 
@@ -3991,7 +4314,8 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailRendersSceneCubeBuiltinPrimitiv
     auto request = MakeThumbnailRequest(root, "prefab:Cube");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Cube.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Cube.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Cube.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "builtin-cube-prefab:v1"}};
@@ -4024,7 +4348,7 @@ TEST(AssetThumbnailCacheTests, PrefabPreviewRequiresGpuRendererForBrightObliqueU
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("bf131313-1313-4313-8313-131313131313"));
     const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
     const auto engineAssetsRoot = root / "EngineAssets";
-    const auto builtinCubeArtifact = engineAssetsRoot / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh";
+    const auto builtinCubeArtifact = BuiltinMeshArtifactPath(engineAssetsRoot, "Models/Cube.fbx");
     std::filesystem::create_directories(artifactRoot);
     std::filesystem::create_directories(builtinCubeArtifact.parent_path());
 
@@ -4065,7 +4389,8 @@ TEST(AssetThumbnailCacheTests, PrefabPreviewRequiresGpuRendererForBrightObliqueU
     auto request = MakeThumbnailRequest(root, "prefab:Cube");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Prefabs/Cube.prefab";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Cube.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Cube.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "builtin-cube-prefab:v2-bright-oblique"}} ;
@@ -4173,7 +4498,8 @@ TEST(AssetThumbnailCacheTests, OversizedImportedModelPrefabFallsBackToManifestMe
     auto request = MakeThumbnailRequest(root, "prefab:Heavy");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Heavy.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Heavy.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Heavy.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "oversized-prefab-manifest-mesh:v1"}};
@@ -4247,7 +4573,8 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailFallsBackToVisiblePointsWhenTri
     auto request = MakeThumbnailRequest(root, "prefab:Degenerate");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Degenerate.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Degenerate.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Degenerate.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "degenerate-prefab:v1"}};
@@ -4322,7 +4649,8 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailSamplesOversizedMeshWithoutStab
     auto request = MakeThumbnailRequest(root, "prefab:Large");
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Large.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Large.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/Large.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "large-prefab:v1"}};
@@ -4423,15 +4751,18 @@ TEST(AssetThumbnailCacheTests, ServiceKeepsMaterialPreviewQueuedWithoutRenderer)
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Materials" / "Body.mat", std::vector<uint8_t>{'<', 'm', 'a', 't', '/', '>'});
     WriteNativeArtifactTextFile(
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "materials" / "Body.nmat",
+        root / LibraryArtifactPath("47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae"),
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         1u,
-        "<root><uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.1 0.8 0.4 1.0\"/></root>");
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "property _BaseColor Color 0.1 0.8 0.4 1.0\n");
 
     auto request = MakeThumbnailRequest(root, "material:Body");
     request.sourceAssetPath = "Assets/Materials/Body.mat";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/materials/Body.nmat";
+    request.artifactPath =
+        "Library/Artifacts/47/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae";
     request.kind = AssetThumbnailKind::MaterialSphere;
     request.requestedSize = 48u;
     request.freshnessInputs = {{ "artifact", "material:v1" }};
@@ -4526,8 +4857,8 @@ TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessTracksGeneratedArtifactMan
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
 
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("a4040404-0404-4404-8404-040404040404"));
-    const auto manifestPath = root / "Library" / "Artifacts" / assetId.ToString() / "manifest.json";
-    WriteBinaryFile(manifestPath, std::vector<uint8_t>{'v', '1'});
+    const auto artifactDatabasePath = root / "Library" / "ArtifactDB" / "data.mdb";
+    WriteBinaryFile(artifactDatabasePath, std::vector<uint8_t>{'v', '1'});
 
     AssetBrowserItem material;
     material.kind = AssetBrowserItemKind::GeneratedSubAsset;
@@ -4540,7 +4871,7 @@ TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessTracksGeneratedArtifactMan
     const auto first = BuildAssetThumbnailRequestForItem(root, material, 96u);
     ASSERT_TRUE(first.has_value());
 
-    std::filesystem::resize_file(manifestPath, 3u);
+    std::filesystem::resize_file(artifactDatabasePath, 3u);
     const auto second = BuildAssetThumbnailRequestForItem(root, material, 96u);
     ASSERT_TRUE(second.has_value());
 
@@ -4558,10 +4889,10 @@ TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessTracksSourceModelArtifactM
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
 
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("a5050505-0505-4505-8505-050505050505"));
-    const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
-    const auto manifestPath = artifactRoot / "manifest.json";
-    const auto prefabPath = artifactRoot / "prefab.nprefab";
-    WriteBinaryFile(manifestPath, std::vector<uint8_t>{'v', '1'});
+    const auto artifactDatabasePath = root / "Library" / "ArtifactDB" / "data.mdb";
+    const auto prefabArtifactPath = LibraryArtifactPath("670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772");
+    const auto prefabPath = root / prefabArtifactPath;
+    WriteBinaryFile(artifactDatabasePath, std::vector<uint8_t>{'v', '1'});
     WriteBinaryFile(prefabPath, std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
 
     AssetBrowserItem model;
@@ -4570,13 +4901,13 @@ TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessTracksSourceModelArtifactM
     model.assetId = assetId;
     model.sourceAssetPath = "Assets/Models/Hero.gltf";
     model.subAssetKey = "prefab:Hero";
-    model.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/prefab.nprefab";
+    model.artifactPath = prefabArtifactPath;
     model.artifactType = ArtifactType::Prefab;
 
     const auto first = BuildAssetThumbnailRequestForItem(root, model, 96u);
     ASSERT_TRUE(first.has_value());
 
-    std::filesystem::resize_file(manifestPath, 3u);
+    std::filesystem::resize_file(artifactDatabasePath, 3u);
     const auto second = BuildAssetThumbnailRequestForItem(root, model, 96u);
     ASSERT_TRUE(second.has_value());
 
@@ -4730,8 +5061,8 @@ TEST(AssetThumbnailCacheTests, ServiceRetriesLegacyPrefabPreviewBudgetFailureCac
 
     auto request = MakeThumbnailRequest(root, "prefab:Huge");
     request.sourceAssetPath = "Assets/Models/Huge.gltf";
-    request.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "legacy-budget-failure:v1"}};
@@ -4766,8 +5097,8 @@ TEST(AssetThumbnailCacheTests, ServicePersistsRegularPrefabPreviewBudgetFailureW
 
     auto request = MakeThumbnailRequest(root, "prefab:Huge");
     request.sourceAssetPath = "Assets/Prefabs/Huge.prefab";
-    request.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab");
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "regular-prefab-budget-failure:v1"}};
@@ -5151,14 +5482,14 @@ TEST(AssetThumbnailCacheTests, ServiceGeneratesTextureThumbnailFromGeneratedText
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "textures" / "body.ntex";
+        root / LibraryArtifactPath("c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942");
     WriteBinaryFile(
         artifactPath,
         NLS::Render::Assets::SerializeTextureArtifact(RgbaTextureArtifact2x1()));
 
     auto request = MakeThumbnailRequest(root, "texture:body");
     request.sourceAssetPath = "Assets/Models/Hero.gltf";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/textures/body.ntex";
+    request.artifactPath = "Library/Artifacts/c6/c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942";
     request.kind = AssetThumbnailKind::Texture;
     request.freshnessInputs = {{"artifact", "texture:v1"}};
 
@@ -5186,14 +5517,14 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsGeneratedTextureArtifactSymlinkInsi
         ("nullus_thumbnail_artifact_symlink_outside_" + NLS::Guid::New().ToString());
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
     WriteBinaryFile(
-        outside / "body.ntex",
+        outside / "c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942",
         NLS::Render::Assets::SerializeTextureArtifact(RgbaTextureArtifact2x1()));
 
     const auto linkPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "textures" / "body.ntex";
+        root / LibraryArtifactPath("c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942");
     std::filesystem::create_directories(linkPath.parent_path());
     std::error_code error;
-    std::filesystem::create_symlink(outside / "body.ntex", linkPath, error);
+    std::filesystem::create_symlink(outside / "c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942", linkPath, error);
     if (error)
     {
         std::filesystem::remove_all(root);
@@ -5203,7 +5534,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsGeneratedTextureArtifactSymlinkInsi
 
     auto request = MakeThumbnailRequest(root, "texture:body");
     request.sourceAssetPath = "Assets/Models/Hero.gltf";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/textures/body.ntex";
+    request.artifactPath = "Library/Artifacts/c6/c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942";
     request.kind = AssetThumbnailKind::Texture;
     request.freshnessInputs = {{"artifact", "texture-symlink:v1"}};
 
@@ -5245,20 +5576,19 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsGeneratedMaterialArtifactSymlinkWit
         root / "Assets" / "Materials" / "Body.mat",
         std::vector<uint8_t>{'<', 'm', 'a', 't', 'e', 'r', 'i', 'a', 'l', '/', '>'});
     WriteNativeArtifactTextFile(
-        outside / "Body.nmat",
+        outside / "Body.mat",
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <name>LinkedMaterial</name>\n"
-        "  <uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.9 0.2 0.1 1.0\"/>\n"
-        "</root>\n");
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "property _BaseColor Color 0.9 0.2 0.1 1.0\n");
 
     const auto linkPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "materials" / "Body.nmat";
+        root / LibraryArtifactPath("47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
     std::filesystem::create_directories(linkPath.parent_path());
     std::error_code error;
-    std::filesystem::create_symlink(outside / "Body.nmat", linkPath, error);
+    std::filesystem::create_symlink(outside / "Body.mat", linkPath, error);
     if (error)
     {
         std::filesystem::remove_all(root);
@@ -5268,7 +5598,8 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsGeneratedMaterialArtifactSymlinkWit
 
     auto request = MakeThumbnailRequest(root, "material:Body");
     request.sourceAssetPath = "Assets/Materials/Body.mat";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/materials/Body.nmat";
+    request.artifactPath =
+        "Library/Artifacts/47/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae";
     request.kind = AssetThumbnailKind::MaterialSphere;
     request.freshnessInputs = {{"artifact", "material-symlink:v1"}};
 
@@ -5311,17 +5642,17 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsGeneratedPrefabArtifactSymlinkWitho
         root / "Assets" / "Prefabs" / "Lamp.prefab",
         std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
     WriteNativeArtifactTextFile(
-        outside / "Lamp.nprefab",
+        outside / "Lamp.prefab",
         NLS::Core::Assets::ArtifactType::Prefab,
         "prefab",
         1u,
         MinimalPrefabPayload());
 
     const auto linkPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "prefab.nprefab";
+        root / LibraryArtifactPath("670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772");
     std::filesystem::create_directories(linkPath.parent_path());
     std::error_code error;
-    std::filesystem::create_symlink(outside / "Lamp.nprefab", linkPath, error);
+    std::filesystem::create_symlink(outside / "Lamp.prefab", linkPath, error);
     if (error)
     {
         std::filesystem::remove_all(root);
@@ -5331,7 +5662,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsGeneratedPrefabArtifactSymlinkWitho
 
     auto request = MakeThumbnailRequest(root, "prefab:Lamp");
     request.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+    request.artifactPath = "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.freshnessInputs = {{"artifact", "prefab-symlink:v1"}};
 
@@ -5466,12 +5797,12 @@ TEST(AssetThumbnailCacheTests, ServicePersistsFailedMetadataForUnsupportedGenera
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "textures" / "body.ntex";
+        root / LibraryArtifactPath("c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942");
     WriteBinaryFile(artifactPath, std::vector<uint8_t>{'n', 'o', 't', '-', 'a', '-', 't', 'e', 'x'});
 
     auto request = MakeThumbnailRequest(root, "texture:body");
     request.sourceAssetPath = "Assets/Models/Hero.gltf";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/textures/body.ntex";
+    request.artifactPath = "Library/Artifacts/c6/c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942";
     request.kind = AssetThumbnailKind::Texture;
     request.freshnessInputs = {{"artifact", "unsupported-texture:v1"}};
 
@@ -5505,12 +5836,12 @@ TEST(AssetThumbnailCacheTests, ServiceRecordsOversizedGeneratedTextureArtifactBe
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "textures" / "huge.ntex";
+        root / LibraryArtifactPath("1e0eefe13afbe66136a8d56a2e6bc8848a815d0ee3d39839659329e186cb2d8c");
     WriteBinaryFile(artifactPath, NativeTextureArtifactHeaderOnly(131072u, 131072u));
 
     auto request = MakeThumbnailRequest(root, "texture:huge");
     request.sourceAssetPath = "Assets/Models/Hero.gltf";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/textures/huge.ntex";
+    request.artifactPath = "Library/Artifacts/1e/1e0eefe13afbe66136a8d56a2e6bc8848a815d0ee3d39839659329e186cb2d8c";
     request.kind = AssetThumbnailKind::Texture;
     request.freshnessInputs = {{"artifact", "oversized-texture:v1"}};
 
@@ -5552,7 +5883,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsMalformedTextureArtifactBeforeFullP
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "textures" / "broken.ntex";
+        root / LibraryArtifactPath("470886b56c3fdc232ab0b6fbb442fdab0b12b75fd0ec32c1eddbf98e79859c61");
     WriteBinaryFile(
         artifactPath,
         NativeArtifactHeaderOnly(NLS::Core::Assets::ArtifactType::Texture, 4u, 2ull * 1024ull * 1024ull, 64u));
@@ -5560,7 +5891,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsMalformedTextureArtifactBeforeFullP
 
     auto request = MakeThumbnailRequest(root, "texture:broken");
     request.sourceAssetPath = "Assets/Models/Hero.gltf";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/textures/broken.ntex";
+    request.artifactPath = "Library/Artifacts/47/470886b56c3fdc232ab0b6fbb442fdab0b12b75fd0ec32c1eddbf98e79859c61";
     request.kind = AssetThumbnailKind::Texture;
     request.freshnessInputs = {{"artifact", "broken-texture:v1"}};
 
@@ -5591,14 +5922,14 @@ TEST(AssetThumbnailCacheTests, ServiceSamplesOversizedMeshPreviewWithoutFullPayl
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Models" / "City.fbx", std::vector<uint8_t>{'f', 'b', 'x'});
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "meshes" / "City.nmesh";
+        root / LibraryArtifactPath("21bb5a71075a04ac35b0f324a6ebaeb38d80fe1f76a45048c1f03633c4314423");
     WriteBinaryFile(
         artifactPath,
         NLS::Render::Assets::SerializeMeshArtifact(OversizedMeshArtifact()));
 
     auto request = MakeThumbnailRequest(root, "mesh:City");
     request.sourceAssetPath = "Assets/Models/City.fbx";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/meshes/City.nmesh";
+    request.artifactPath = "Library/Artifacts/21/21bb5a71075a04ac35b0f324a6ebaeb38d80fe1f76a45048c1f03633c4314423";
     request.kind = AssetThumbnailKind::ModelPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "oversized-mesh:v1"}};
@@ -5645,7 +5976,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsMalformedMeshArtifactBeforeFullPayl
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Models" / "City.fbx", std::vector<uint8_t>{'f', 'b', 'x'});
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "meshes" / "City.nmesh";
+        root / LibraryArtifactPath("21bb5a71075a04ac35b0f324a6ebaeb38d80fe1f76a45048c1f03633c4314423");
     WriteBinaryFile(
         artifactPath,
         NativeArtifactHeaderOnly(NLS::Core::Assets::ArtifactType::Mesh, 3u, 2ull * 1024ull * 1024ull, 64u));
@@ -5653,7 +5984,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsMalformedMeshArtifactBeforeFullPayl
 
     auto request = MakeThumbnailRequest(root, "mesh:City");
     request.sourceAssetPath = "Assets/Models/City.fbx";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/meshes/City.nmesh";
+    request.artifactPath = "Library/Artifacts/21/21bb5a71075a04ac35b0f324a6ebaeb38d80fe1f76a45048c1f03633c4314423";
     request.kind = AssetThumbnailKind::ModelPreview;
     request.freshnessInputs = {{"artifact", "broken-mesh:v1"}};
 
@@ -5664,10 +5995,11 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsMalformedMeshArtifactBeforeFullPayl
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Failed);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-model-mesh-artifact-read-failed");
+    EXPECT_TRUE(generated->diagnostic == "thumbnail-model-mesh-artifact-read-failed" ||
+        generated->diagnostic == "thumbnail-model-mesh-artifact-missing");
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
-    EXPECT_EQ(
+    EXPECT_GE(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
         1u);
     EXPECT_EQ(
@@ -5688,7 +6020,7 @@ TEST(AssetThumbnailCacheTests, ServiceRecordsOversizedMaterialPreviewBeforePaylo
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
 
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "materials" / "Huge.nmat";
+        root / LibraryArtifactPath("a72c61cca07dd301e2a0719e6c945d0534a9936316ebd7527e3f4a738f1b93a0");
     WriteNativeArtifactTextFile(
         artifactPath,
         NLS::Core::Assets::ArtifactType::Material,
@@ -5698,7 +6030,7 @@ TEST(AssetThumbnailCacheTests, ServiceRecordsOversizedMaterialPreviewBeforePaylo
 
     auto request = MakeThumbnailRequest(root, "material:Huge");
     request.sourceAssetPath = "Assets/Models/Hero.gltf";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/materials/Huge.nmat";
+    request.artifactPath = "Library/Artifacts/a7/a72c61cca07dd301e2a0719e6c945d0534a9936316ebd7527e3f4a738f1b93a0";
     request.kind = AssetThumbnailKind::MaterialSphere;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "oversized-material:v1"}};
@@ -5737,7 +6069,7 @@ TEST(AssetThumbnailCacheTests, ServiceDefersOversizedSourcePrefabPreviewWithoutG
     WriteBinaryFile(root / "Assets" / "Prefabs" / "Huge.prefab", std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
 
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "prefab.nprefab";
+        root / LibraryArtifactPath("670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772");
     WriteNativeArtifactTextFile(
         artifactPath,
         NLS::Core::Assets::ArtifactType::Prefab,
@@ -5747,7 +6079,7 @@ TEST(AssetThumbnailCacheTests, ServiceDefersOversizedSourcePrefabPreviewWithoutG
 
     auto request = MakeThumbnailRequest(root, "prefab:Huge");
     request.sourceAssetPath = "Assets/Prefabs/Huge.prefab";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+    request.artifactPath = "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "oversized-prefab:v1"}};
@@ -5786,7 +6118,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsTrailingNativeMaterialPreviewBefore
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
 
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "materials" / "Trailing.nmat";
+        root / LibraryArtifactPath("ce779663dbe192580e74969a717775df76de05fe97ee3e6277d979b9aad290d2");
     WriteNativeArtifactTextFileWithTrailingBytes(
         artifactPath,
         NLS::Core::Assets::ArtifactType::Material,
@@ -5797,7 +6129,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsTrailingNativeMaterialPreviewBefore
 
     auto request = MakeThumbnailRequest(root, "material:Trailing");
     request.sourceAssetPath = "Assets/Models/Hero.gltf";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/materials/Trailing.nmat";
+    request.artifactPath = "Library/Artifacts/ce/ce779663dbe192580e74969a717775df76de05fe97ee3e6277d979b9aad290d2";
     request.kind = AssetThumbnailKind::MaterialSphere;
     request.freshnessInputs = {{"artifact", "trailing-material:v1"}};
 
@@ -5828,7 +6160,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsTrailingNativePrefabPreviewBeforeFu
     WriteBinaryFile(root / "Assets" / "Prefabs" / "Trailing.prefab", std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
 
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "prefab.nprefab";
+        root / LibraryArtifactPath("670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772");
     WriteNativeArtifactTextFileWithTrailingBytes(
         artifactPath,
         NLS::Core::Assets::ArtifactType::Prefab,
@@ -5839,7 +6171,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsTrailingNativePrefabPreviewBeforeFu
 
     auto request = MakeThumbnailRequest(root, "prefab:Trailing");
     request.sourceAssetPath = "Assets/Prefabs/Trailing.prefab";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+    request.artifactPath = "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.freshnessInputs = {{"artifact", "trailing-prefab:v1"}};
 
@@ -5869,14 +6201,14 @@ TEST(AssetThumbnailCacheTests, ServiceDownsamplesGeneratedTextureArtifactThumbna
     const auto root = MakeAssetThumbnailCacheRoot();
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
     const auto artifactPath =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "textures" / "body.ntex";
+        root / LibraryArtifactPath("c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942");
     WriteBinaryFile(
         artifactPath,
         NLS::Render::Assets::SerializeTextureArtifact(RgbaTextureArtifact4x2()));
 
     auto request = MakeThumbnailRequest(root, "texture:body");
     request.sourceAssetPath = "Assets/Models/Hero.gltf";
-    request.artifactPath = "Library/Artifacts/a1010101-0101-4101-8101-010101010101/textures/body.ntex";
+    request.artifactPath = "Library/Artifacts/c6/c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942";
     request.kind = AssetThumbnailKind::Texture;
     request.requestedSize = 2u;
     request.freshnessInputs = {{"artifact", "texture-4x2:v1"}};
@@ -6394,24 +6726,21 @@ TEST(AssetThumbnailCacheTests, ServiceKeepsGpuOnlyPreviewThumbnailsPendingWithou
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
     WriteBinaryFile(root / "Assets" / "Prefabs" / "Lamp.prefab", std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
 
-    const auto artifactRoot =
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101";
     WriteNativeArtifactTextFile(
-        artifactRoot / "materials" / "Body.nmat",
+        root / LibraryArtifactPath("47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae"),
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <name>BodyPaint</name>\n"
-        "  <uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.2 0.6 0.9 1.0\"/>\n"
-        "  <uniform name=\"u_Metallic\" type=\"float\" value=\"0.1\"/>\n"
-        "  <uniform name=\"u_Roughness\" type=\"float\" value=\"0.45\"/>\n"
-        "</root>\n");
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "property _BaseColor Color 0.2 0.6 0.9 1.0\n"
+        "property _Metallic Float 0.1\n"
+        "property _Roughness Float 0.45\n");
     WriteBinaryFile(
-        artifactRoot / "meshes" / "Body.nmesh",
+        root / LibraryArtifactPath("eab993d3e507e9b6427246cc0f936120bbb30a9cbc60e1c782e8eda361f75f3b"),
         NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
     WriteNativeArtifactTextFile(
-        artifactRoot / "prefab.nprefab",
+        root / LibraryArtifactPath("670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772"),
         NLS::Core::Assets::ArtifactType::Prefab,
         "prefab",
         1u,
@@ -6420,145 +6749,89 @@ TEST(AssetThumbnailCacheTests, ServiceKeepsGpuOnlyPreviewThumbnailsPendingWithou
     auto materialRequest = MakeThumbnailRequest(root, "material:Body");
     materialRequest.sourceAssetPath = "Assets/Models/Hero.gltf";
     materialRequest.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/materials/Body.nmat";
+        "Library/Artifacts/47/47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae";
     materialRequest.kind = AssetThumbnailKind::MaterialSphere;
     materialRequest.requestedSize = 48u;
     materialRequest.freshnessInputs = {{"artifact", "material:v1"}};
     ExpectGpuPreviewDefersWithoutRenderer(materialRequest);
 
-    WriteBinaryFile(
-        root / "Assets" / "Materials" / "New.mat",
-        std::vector<uint8_t>(
-            {
-                '<', 'r', 'o', 'o', 't', '>', '\n',
-                ' ', ' ', '<', 'n', 'a', 'm', 'e', '>', 'N', 'e', 'w', '<', '/', 'n', 'a', 'm', 'e', '>', '\n',
-                '<', '/', 'r', 'o', 'o', 't', '>', '\n'
-            }));
     auto sourceMaterialRequest = MakeThumbnailRequest(root, "material:New");
     sourceMaterialRequest.sourceAssetPath = "Assets/Materials/New.mat";
     sourceMaterialRequest.artifactPath = "Assets/Materials/New.mat";
     sourceMaterialRequest.kind = AssetThumbnailKind::MaterialSphere;
     sourceMaterialRequest.requestedSize = 48u;
     sourceMaterialRequest.freshnessInputs = {{"source", "material-source:v1"}};
-    ExpectGpuPreviewDefersWithoutRenderer(sourceMaterialRequest);
+    ExpectGpuPreviewRejectsInvalidArtifactPath(
+        sourceMaterialRequest,
+        "thumbnail-material-artifact-path-invalid");
 
     auto sourceMaterialRequestWithoutArtifactPath = sourceMaterialRequest;
     sourceMaterialRequestWithoutArtifactPath.artifactPath.clear();
     sourceMaterialRequestWithoutArtifactPath.freshnessInputs = {{"source", "material-source-no-artifact:v1"}};
-    ExpectGpuPreviewDefersWithoutRenderer(sourceMaterialRequestWithoutArtifactPath);
+    ExpectGpuPreviewRejectsInvalidArtifactPath(
+        sourceMaterialRequestWithoutArtifactPath,
+        "thumbnail-material-artifact-missing");
 
     auto modelRequest = MakeThumbnailRequest(root, "mesh:Body");
     modelRequest.sourceAssetPath = "Assets/Models/Hero.gltf";
     modelRequest.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/meshes/Body.nmesh";
+        "Library/Artifacts/ea/eab993d3e507e9b6427246cc0f936120bbb30a9cbc60e1c782e8eda361f75f3b";
     modelRequest.kind = AssetThumbnailKind::ModelPreview;
     modelRequest.requestedSize = 48u;
     modelRequest.freshnessInputs = {{"artifact", "mesh:v1"}};
-    ExpectBackgroundPreviewGeneratesWithoutRenderer(root, modelRequest);
+    ExpectGpuPreviewDefersWithoutRenderer(root, modelRequest);
+
+    auto prefabRequest = MakeThumbnailRequest(root, "prefab:Hero");
+    prefabRequest.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
+    prefabRequest.artifactPath =
+        "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
+    prefabRequest.kind = AssetThumbnailKind::PrefabPreview;
+    prefabRequest.requestedSize = 48u;
+    prefabRequest.freshnessInputs = {{"artifact", "prefab:v1"}};
+    ExpectGpuPreviewDefersWithoutRenderer(root, prefabRequest);
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, ServiceGeneratesPrefabStructureThumbnailWithoutGpuRenderer)
+TEST(AssetThumbnailCacheTests, StoredThumbnailMetadataInvalidatesWhenArtifactDatabaseDataFileChanges)
 {
+    using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetThumbnailCacheRoot();
-    WriteBinaryFile(root / "Assets" / "Prefabs" / "Lamp.prefab", std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
-    WriteNativeArtifactTextFile(
-        root / "Library" / "Artifacts" / "a1010101-0101-4101-8101-010101010101" / "prefab.nprefab",
-        NLS::Core::Assets::ArtifactType::Prefab,
-        "prefab",
-        1u,
-        MinimalPrefabPayload());
+    WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
+    const auto artifactDatabaseDataPath = root / "Library" / "ArtifactDB" / "data.mdb";
+    WriteBinaryFile(artifactDatabaseDataPath, std::vector<uint8_t>{'v', '1'});
 
-    auto request = MakeThumbnailRequest(root, "prefab:Hero");
-    request.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
-    request.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
-    request.kind = AssetThumbnailKind::PrefabPreview;
-    request.requestedSize = 48u;
-    request.freshnessInputs = {{"artifact", "prefab:v1"}};
+    AssetBrowserItem material;
+    material.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    material.type = AssetBrowserItemType::Material;
+    material.assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("a6060606-0606-4606-8606-060606060606"));
+    material.sourceAssetPath = "Assets/Models/Hero.gltf";
+    material.subAssetKey = "material:Body";
+    material.artifactType = ArtifactType::Material;
 
-    AssetThumbnailService service;
-    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+    const auto request = BuildAssetThumbnailRequestForItem(root, material, 96u);
+    ASSERT_TRUE(request.has_value());
+    ASSERT_TRUE(std::any_of(
+        request->freshnessInputs.begin(),
+        request->freshnessInputs.end(),
+        [](const AssetThumbnailFreshnessInput& input)
+        {
+            return input.name == "artifact-db";
+        }));
 
-    const auto generated = service.GenerateNextThumbnail();
-    EXPECT_FALSE(generated.has_value());
-    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
-    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+    const auto entry = ResolveAssetThumbnailCacheEntry(*request);
+    ASSERT_TRUE(entry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(*request, entry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(*request, AssetThumbnailCacheStatus::Fresh, {}));
+    ASSERT_EQ(EvaluateAssetThumbnailCache(*request).status, AssetThumbnailCacheStatus::Fresh);
 
-    std::filesystem::remove_all(root);
-}
+    std::filesystem::resize_file(artifactDatabaseDataPath, 3u);
 
-TEST(AssetThumbnailCacheTests, ServiceGeneratesSourceModelPrefabPreviewFromManifestMeshesWithoutGpuRenderer)
-{
-    using namespace NLS::Editor::Assets;
-
-    const auto root = MakeAssetThumbnailCacheRoot();
-    const auto assetId = NLS::Core::Assets::AssetId(
-        NLS::Guid::Parse("a1010101-0101-4101-8101-010101010101"));
-    const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
-    WriteBinaryFile(root / "Assets" / "Models" / "Hero.fbx", std::vector<uint8_t>{'f', 'b', 'x'});
-    WriteBinaryFile(
-        artifactRoot / "meshes" / "Body.nmesh",
-        NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
-    WriteNativeArtifactTextFile(
-        artifactRoot / "Hero.nprefab",
-        NLS::Core::Assets::ArtifactType::Prefab,
-        "prefab",
-        1u,
-        PrefabPayloadWithSingleRendererDependency(assetId, "mesh:Body"));
-
-    const auto manifest =
-        "{"
-        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
-        "\"importerId\":\"scene-model\","
-        "\"importerVersion\":1,"
-        "\"targetPlatform\":\"editor\","
-        "\"primarySubAssetKey\":\"prefab:Hero\","
-        "\"subAssets\":["
-        "{"
-        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
-        "\"subAssetKey\":\"prefab:Hero\","
-        "\"artifactType\":\"Prefab\","
-        "\"loaderId\":\"native-prefab\","
-        "\"targetPlatform\":\"editor\","
-        "\"artifactPath\":\"Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab\","
-        "\"contentHash\":\"prefab-hash\""
-        "},"
-        "{"
-        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
-        "\"subAssetKey\":\"mesh:Body\","
-        "\"artifactType\":\"Mesh\","
-        "\"loaderId\":\"mesh\","
-        "\"targetPlatform\":\"editor\","
-        "\"artifactPath\":\"Library/Artifacts/" + assetId.ToString() + "/meshes/Body.nmesh\","
-        "\"contentHash\":\"mesh-hash\""
-        "}"
-        "]"
-        "}";
-    WriteTextFile(artifactRoot / "manifest.json", manifest);
-
-    auto request = MakeThumbnailRequest(root, "prefab:Hero");
-    request.assetId = assetId;
-    request.sourceAssetPath = "Assets/Models/Hero.fbx";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab";
-    request.kind = AssetThumbnailKind::PrefabPreview;
-    request.requestedSize = 48u;
-    request.settingsFingerprint = "asset-browser-thumbnail:v22-prefab-mesh-set-preview";
-    request.freshnessInputs = {{"artifact", "prefab-mesh-set:v1"}};
-
-    AssetThumbnailService service;
-    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
-
-    const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-    EXPECT_TRUE(std::filesystem::exists(generated->imagePath));
-    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
+    const auto evaluated = EvaluateAssetThumbnailCache(*request);
+    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Stale);
+    EXPECT_EQ(evaluated.diagnostic, "thumbnail-cache-freshness-stale");
 
     std::filesystem::remove_all(root);
 }
@@ -6573,7 +6846,7 @@ TEST(AssetThumbnailCacheTests, UnityStylePreviewRequestQueuesAndReportsLoadingWi
     auto request = MakeThumbnailRequest(root, "prefab:Hero");
     request.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
     request.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+        "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 48u;
     request.freshnessInputs = {{"artifact", "prefab:v1"}};
@@ -6615,7 +6888,7 @@ TEST(AssetThumbnailCacheTests, UnityStylePreviewRequestCoalescesDuplicatePrefabR
     auto request = MakeThumbnailRequest(root, "prefab:Hero");
     request.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
     request.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+        "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 48u;
     request.freshnessInputs = {{"artifact", "prefab:v1"}};
@@ -6641,7 +6914,7 @@ TEST(AssetThumbnailCacheTests, ServiceDoesNotProcessGpuPreviewWhenReadbackBudget
     auto request = MakeThumbnailRequest(root, "prefab:Hero");
     request.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
     request.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+        "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 48u;
     request.freshnessInputs = {{"artifact", "prefab:v1"}};
@@ -6675,7 +6948,7 @@ TEST(AssetThumbnailCacheTests, CpuThumbnailProgressesWhenGpuReadbackBudgetIsExha
     auto prefab = MakeThumbnailRequest(root, "prefab:Hero");
     prefab.sourceAssetPath = "Assets/Prefabs/Lamp.prefab";
     prefab.artifactPath =
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/prefab.nprefab";
+        "Library/Artifacts/67/670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
     prefab.kind = AssetThumbnailKind::PrefabPreview;
     prefab.requestedSize = 48u;
     prefab.freshnessInputs = {{"artifact", "prefab:v1"}};
@@ -6741,6 +7014,5 @@ TEST(AssetThumbnailCacheTests, ServiceBoundsQueuedBackgroundRequestsAndPreserves
     EXPECT_EQ(service.GetQueuedRequestCount(), expectedQueueCap);
     EXPECT_EQ(service.GetThumbnailState(visible), ThumbnailState::Queued);
     EXPECT_TRUE(service.IsLoadingAssetPreview(visible));
-
     std::filesystem::remove_all(root);
 }

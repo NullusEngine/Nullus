@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 #include "Core/ServiceLocator.h"
+#include "Guid.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -412,4 +416,38 @@ TEST(TextureResourceLifecycleTests, CreateCubeMapReturnsNullWhenSourceImagesCann
         NLS::Render::Resources::Loaders::TextureLoader::CreateCubeMap(filePaths));
 
     EXPECT_EQ(cubeMap, nullptr);
+}
+
+TEST(TextureResourceLifecycleTests, CreateCubeMapRejectsRuntimeSourceImages)
+{
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("nullus_cubemap_source_reject_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    std::vector<std::string> filePaths;
+    filePaths.reserve(6u);
+    for (const char* name : {"px.png", "nx.png", "py.png", "ny.png", "pz.png", "nz.png"})
+    {
+        const auto path = root / name;
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output << "source image bytes";
+        filePaths.push_back(path.string());
+    }
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::unique_ptr<NLS::Render::Resources::TextureCube> cubeMap(
+        NLS::Render::Resources::Loaders::TextureLoader::CreateCubeMap(filePaths));
+
+    EXPECT_EQ(cubeMap, nullptr);
+
+    std::filesystem::remove_all(root);
 }

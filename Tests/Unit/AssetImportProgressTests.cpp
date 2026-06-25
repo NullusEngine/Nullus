@@ -291,7 +291,7 @@ TEST(AssetImportProgressTests, CancellationPreservesPreviousCommittedArtifactAnd
     const auto committedRoot = root / "Committed";
     std::filesystem::create_directories(committedRoot / "Hero");
     {
-        std::ofstream previous(committedRoot / "Hero" / "prefab.nprefab", std::ios::binary | std::ios::trunc);
+        std::ofstream previous(committedRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d", std::ios::binary | std::ios::trunc);
         previous << "previous";
     }
 
@@ -303,7 +303,7 @@ TEST(AssetImportProgressTests, CancellationPreservesPreviousCommittedArtifactAnd
         "prefab:Previous",
         ArtifactType::Prefab,
         "prefab",
-        (committedRoot / "Hero" / "prefab.nprefab").string(),
+        (committedRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d").string(),
         "previous"
     });
 
@@ -316,7 +316,7 @@ TEST(AssetImportProgressTests, CancellationPreservesPreviousCommittedArtifactAnd
         "prefab:Hero",
         ArtifactType::Prefab,
         "prefab",
-        "Hero/prefab.nprefab",
+        "Hero/prefab",
         std::vector<uint8_t>{'n', 'e', 'w'}
     });
 
@@ -334,7 +334,7 @@ TEST(AssetImportProgressTests, CancellationPreservesPreviousCommittedArtifactAnd
     ASSERT_EQ(result.diagnostics.size(), 1u);
     EXPECT_EQ(result.diagnostics.front().code, "artifact-write-cancelled");
     EXPECT_EQ(result.manifest.primarySubAssetKey, "prefab:Previous");
-    EXPECT_EQ(ReadTextFile(committedRoot / "Hero" / "prefab.nprefab"), "previous");
+    EXPECT_EQ(ReadTextFile(committedRoot / "Hero" / "5d4b4d6c2b6c4a6c9b91d90753df2a8d"), "previous");
     EXPECT_FALSE(std::filesystem::exists(stagingRoot));
 
     const auto batch = tracker.GetBatchProgress();
@@ -349,7 +349,6 @@ TEST(AssetImportProgressTests, FailedArtifactCommitReportsFailureAfterRollback)
 
     const auto root = MakeImportProgressRoot();
     const auto committedRoot = root / "Committed";
-    std::filesystem::create_directories(committedRoot / "Hero" / "bad.nmesh");
 
     ArtifactWriteRequest request;
     request.sourceAssetId = Id("d5010101-0101-4101-8101-010101010101");
@@ -360,9 +359,11 @@ TEST(AssetImportProgressTests, FailedArtifactCommitReportsFailureAfterRollback)
         "mesh:Bad",
         ArtifactType::Mesh,
         "mesh",
-        "Hero/bad.nmesh",
+        "Hero/bad",
         std::vector<uint8_t>{'b', 'a', 'd'}
     });
+    const auto blockedPath = committedRoot / BuildContentAddressedArtifactRelativePath(request, request.artifacts.back());
+    std::filesystem::create_directories(blockedPath);
 
     ImportProgressTracker tracker;
     const auto job = tracker.BeginJob(request.sourceAssetId, "Assets/Models/Hero.gltf", "editor", 1u);
@@ -375,7 +376,7 @@ TEST(AssetImportProgressTests, FailedArtifactCommitReportsFailureAfterRollback)
     EXPECT_FALSE(result.committed);
     ASSERT_EQ(result.diagnostics.size(), 1u);
     EXPECT_EQ(result.diagnostics.front().code, "artifact-commit-failed");
-    EXPECT_TRUE(std::filesystem::is_directory(committedRoot / "Hero" / "bad.nmesh"));
+    EXPECT_TRUE(std::filesystem::is_directory(blockedPath));
     const auto events = tracker.GetEvents(job);
     ASSERT_FALSE(events.empty());
     EXPECT_EQ(events.back().terminalStatus, ImportJobTerminalStatus::Failed);

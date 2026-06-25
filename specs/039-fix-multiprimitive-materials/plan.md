@@ -11,7 +11,7 @@ Fix generated model material mismatches by preserving source mesh primitive mate
 
 **Language/Version**: C++20
 **Primary Dependencies**: Existing Nullus asset import, prefab serialization, mesh/material managers
-**Storage**: Native `.nmesh`, `.nmat`, `.nprefab` artifacts
+**Storage**: Native `.nmesh`, `.mat`, `.prefab` artifacts
 **Testing**: `NullusUnitTests` with focused asset import, prefab, renderer contract tests
 **Target Platform**: Editor generated model workflow
 **Project Type**: Desktop engine/editor

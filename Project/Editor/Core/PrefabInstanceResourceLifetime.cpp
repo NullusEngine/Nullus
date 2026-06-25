@@ -1,5 +1,6 @@
 #include "Core/PrefabInstanceResourceLifetime.h"
 
+#include "Assets/ArtifactManifest.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Rendering/Resources/Material.h"
@@ -30,40 +31,15 @@ namespace NLS::Editor::Core
             return std::nullopt;
         }
 
-        std::string LowercaseExtension(const std::string& path)
-        {
-            auto extension = std::filesystem::path(path).extension().string();
-            std::transform(
-                extension.begin(),
-                extension.end(),
-                extension.begin(),
-                [](const unsigned char character)
-                {
-                    return static_cast<char>(std::tolower(character));
-                });
-            return extension;
-        }
-
         bool ResolvedAssetPathMatchesType(
             const NLS::Core::ResourceManagement::ResourceLifetimeResourceType type,
             const std::string& path)
         {
+            (void)type;
             if (path.empty())
                 return false;
 
-            const auto extension = LowercaseExtension(path);
-            using NLS::Core::ResourceManagement::ResourceLifetimeResourceType;
-            switch (type)
-            {
-            case ResourceLifetimeResourceType::Mesh:
-                return extension == ".nmesh";
-            case ResourceLifetimeResourceType::Material:
-                return extension == ".nmat";
-            case ResourceLifetimeResourceType::Texture:
-                return extension == ".ntex";
-            default:
-                return false;
-            }
+            return NLS::Core::Assets::IsContentStorageArtifactPath(path);
         }
 
         struct ResourceOwnerPath

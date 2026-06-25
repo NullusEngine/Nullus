@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,9 @@ public:
     {
         bool loadMissingTextures = true;
         bool loadMissingShaders = true;
+        bool allowSourceAssetNativeContainer = false;
+        std::filesystem::path artifactDatabasePath;
+        std::string targetPlatform = "editor";
     };
 
     /**

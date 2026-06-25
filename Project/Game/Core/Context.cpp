@@ -217,9 +217,9 @@ Game::Context::Context(
 	runtimeAssetDatabase = RuntimeAssets::LoadRuntimeAssetDatabaseForProjectSettings(resolvedProjectPaths.settingsPath);
 	if (runtimeAssetDatabase.has_value())
 	{
-		const auto manifestPath =
-			RuntimeAssets::ResolveRuntimeAssetManifestPathForProjectSettings(resolvedProjectPaths.settingsPath);
-		NLS_LOG_INFO("Game runtime loaded asset manifest: " + manifestPath.string());
+		const auto artifactDatabasePath =
+			RuntimeAssets::ResolveRuntimeArtifactDatabasePathForProjectSettings(resolvedProjectPaths.settingsPath);
+		NLS_LOG_INFO("Game runtime loaded ArtifactDB: " + artifactDatabasePath.string());
 	}
 
 	/* Settings */

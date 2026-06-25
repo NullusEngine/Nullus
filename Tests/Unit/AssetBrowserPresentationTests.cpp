@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/AssetBrowserPresentation.h"
@@ -9,8 +10,6 @@
 #include "Core/EditorResources.h"
 #include "Guid.h"
 #include "Utils/PathParser.h"
-
-#include <Json/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -48,14 +47,11 @@ NLS::Core::Assets::AssetId ParseAssetId(const std::string& guid)
     return NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 }
 
-std::string SafeArtifactPathToken(std::string value)
+std::string StableArtifactBlobFileName(
+    const NLS::Core::Assets::AssetId owner,
+    const std::string& subAssetKey)
 {
-    for (auto& character : value)
-    {
-        if (character == ':' || character == '/' || character == '\\')
-            character = '_';
-    }
-    return value;
+    return NLS::Core::Assets::BuildArtifactStorageFileName(owner.ToString() + ":" + subAssetKey);
 }
 
 std::string Utf8String(const char8_t* value)
@@ -104,10 +100,10 @@ NLS::Core::Assets::ImportedArtifact MakeArtifact(
     std::string loaderId)
 {
     const auto artifactPath =
-        "Library/Artifacts/" +
-        owner.ToString() +
-        "/" +
-        SafeArtifactPathToken(subAssetKey);
+        (std::filesystem::path("Library") /
+            "Artifacts" /
+            NLS::Core::Assets::BuildArtifactStorageRelativePath(StableArtifactBlobFileName(owner, subAssetKey)))
+            .generic_string();
     return {
         owner,
         std::move(subAssetKey),
@@ -186,73 +182,19 @@ void AddCurrentSourceDependencies(
     }
 }
 
-std::string ArtifactTypeToken(const NLS::Core::Assets::ArtifactType type)
-{
-    using NLS::Core::Assets::ArtifactType;
-    switch (type)
-    {
-    case ArtifactType::Model: return "model";
-    case ArtifactType::Mesh: return "mesh";
-    case ArtifactType::Material: return "material";
-    case ArtifactType::Texture: return "texture";
-    case ArtifactType::Shader: return "shader";
-    case ArtifactType::Scene: return "scene";
-    case ArtifactType::Prefab: return "prefab";
-    default: return "unknown";
-    }
-}
-
-std::string DependencyKindToken(const NLS::Core::Assets::AssetDependencyKind kind)
-{
-    using NLS::Core::Assets::AssetDependencyKind;
-    switch (kind)
-    {
-    case AssetDependencyKind::SourceFileHash: return "source-file-hash";
-    case AssetDependencyKind::PathToGuidMapping: return "path-to-guid-mapping";
-    case AssetDependencyKind::ImporterVersion: return "importer-version";
-    case AssetDependencyKind::PostprocessorVersion: return "postprocessor-version";
-    case AssetDependencyKind::BuildTarget: return "build-target";
-    default: return "source-file-hash";
-    }
-}
-
 void WritePersistedArtifactManifest(
     const std::filesystem::path& root,
     const NLS::Core::Assets::ArtifactManifest& manifest)
 {
-    nlohmann::json document;
-    document["schema"] = 1;
-    document["sourceAssetId"] = manifest.sourceAssetId.ToString();
-    document["importerId"] = manifest.importerId;
-    document["importerVersion"] = manifest.importerVersion;
-    document["targetPlatform"] = manifest.targetPlatform;
-    document["primarySubAssetKey"] = manifest.primarySubAssetKey;
-    document["subAssets"] = nlohmann::json::array();
-    for (const auto& artifact : manifest.subAssets)
-    {
-        document["subAssets"].push_back({
-            {"sourceAssetId", artifact.sourceAssetId.ToString()},
-            {"subAssetKey", artifact.subAssetKey},
-            {"artifactType", ArtifactTypeToken(artifact.artifactType)},
-            {"loaderId", artifact.loaderId},
-            {"targetPlatform", artifact.targetPlatform},
-            {"artifactPath", artifact.artifactPath},
-            {"contentHash", artifact.contentHash}
-        });
-    }
-    document["dependencies"] = nlohmann::json::array();
-    for (const auto& dependency : manifest.dependencies)
-    {
-        document["dependencies"].push_back({
-            {"kind", DependencyKindToken(dependency.kind)},
-            {"value", dependency.value},
-            {"hashOrVersion", dependency.hashOrVersion}
-        });
-    }
-
-    WriteTextFile(
-        root / "Library" / "Artifacts" / manifest.sourceAssetId.ToString() / "manifest.json",
-        document.dump(2));
+    NLS::Core::Assets::ArtifactDatabase database;
+    const auto databasePath = root / "Library" / "ArtifactDB";
+    if (std::filesystem::exists(databasePath))
+        (void)database.Load(databasePath);
+    database.UpsertManifest(
+        manifest,
+        (std::filesystem::path("Assets") / manifest.sourceAssetId.ToString()).generic_string(),
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(databasePath));
 }
 
 bool HasFolderChild(
@@ -464,13 +406,13 @@ TEST(AssetBrowserPresentationTests, EditorResourcesUsePrefabFileIconIdForPrefabF
         "editor.icon.asset.prefab");
 }
 
-TEST(AssetBrowserPresentationTests, EditorResourcesUseShaderFileIconIdForHlslFiles)
+TEST(AssetBrowserPresentationTests, EditorResourcesUseShaderFileIconIdForShaderFiles)
 {
     EXPECT_STREQ(
-        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.hlsl"),
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.shader"),
         "editor.icon.asset.shader");
     EXPECT_STREQ(
-        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.HLSL"),
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.SHADER"),
         "editor.icon.asset.shader");
 }
 
@@ -478,9 +420,6 @@ TEST(AssetBrowserPresentationTests, EditorResourcesUseSceneFileIconIdForSceneFil
 {
     EXPECT_STREQ(
         NLS::Editor::Core::EditorResources::GetFileIconId("Hero.scene"),
-        "editor.icon.asset.scene");
-    EXPECT_STREQ(
-        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.nscene"),
         "editor.icon.asset.scene");
 }
 
@@ -492,9 +431,8 @@ TEST(AssetBrowserPresentationTests, OnlyModelAndPrefabSourceAssetsCanExposeGener
     EXPECT_TRUE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Models/Hero.gltf"));
     EXPECT_TRUE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Prefabs/Hero.prefab"));
 
-    EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Shaders/Hero.hlsl"));
     EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Shaders/Hero.shader"));
-    EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Scenes/New Scene.nscene"));
+    EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Scenes/New Scene.scene"));
 }
 
 TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusResources)
@@ -983,9 +921,7 @@ TEST(AssetBrowserPresentationTests, CurrentFolderSourceAssetTypesMatchPathParser
     WriteTextFile(root / "Assets" / "Hero.bmp", "texture");
     WriteTextFile(root / "Assets" / "Hero.dds", "texture");
     WriteTextFile(root / "Assets" / "Hero.shader", "shader");
-    WriteTextFile(root / "Assets" / "Hero.hlsl", "shader");
     WriteTextFile(root / "Assets" / "Hero.scene", "scene");
-    WriteTextFile(root / "Assets" / "Hero.nscene", "scene");
     WriteTextFile(root / "Assets" / "Hero.cs", "script");
     WriteTextFile(root / "Assets" / "Hero.py", "script");
     WriteTextFile(root / "Assets" / "Hero.wav", "sound");
@@ -1004,9 +940,7 @@ TEST(AssetBrowserPresentationTests, CurrentFolderSourceAssetTypesMatchPathParser
         {"Hero.bmp", AssetBrowserItemType::Texture, FileType::TEXTURE},
         {"Hero.dds", AssetBrowserItemType::Texture, FileType::TEXTURE},
         {"Hero.shader", AssetBrowserItemType::Shader, FileType::SHADER},
-        {"Hero.hlsl", AssetBrowserItemType::Shader, FileType::SHADER},
         {"Hero.scene", AssetBrowserItemType::Scene, FileType::SCENE},
-        {"Hero.nscene", AssetBrowserItemType::Scene, FileType::SCENE},
         {"Hero.cs", AssetBrowserItemType::Script, FileType::SCRIPT},
         {"Hero.py", AssetBrowserItemType::Script, FileType::SCRIPT},
         {"Hero.wav", AssetBrowserItemType::Other, FileType::SOUND},
@@ -1040,7 +974,7 @@ TEST(AssetBrowserPresentationTests, BuildsCurrentFolderDirectContentsAndHidesImp
     WriteTextFile(root / "Assets" / "Models" / "Hero.fbx.meta", "meta");
     WriteTextFile(root / "Assets" / "Models" / "Notes.txt", "notes");
     WriteTextFile(root / "Assets" / "Models" / "Nested" / "Hidden.mat", "material");
-    WriteTextFile(root / "Library" / "Artifacts" / "Hidden.nmesh", "mesh");
+    WriteTextFile(root / "Library" / "Artifacts" / "88e2545b80aa4e56f084a0f496c700aaa4791c05ab17958bc9724c3c4809e5a4", "mesh");
 
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
@@ -1060,7 +994,7 @@ TEST(AssetBrowserPresentationTests, BuildsCurrentFolderDirectContentsAndHidesImp
     EXPECT_EQ(FindItem(items, "Hero.fbx")->type, AssetBrowserItemType::Model);
     EXPECT_EQ(FindItem(items, "Hero.fbx.meta"), nullptr);
     EXPECT_EQ(FindItem(items, "Hidden.mat"), nullptr);
-    EXPECT_EQ(FindItem(items, "Hidden.nmesh"), nullptr);
+    EXPECT_EQ(FindItem(items, "88e2545b80aa4e56f084a0f496c700aaa4791c05ab17958bc9724c3c4809e5a4"), nullptr);
 
     std::filesystem::remove_all(root);
 }
@@ -1258,12 +1192,12 @@ TEST(AssetBrowserPresentationTests, ShaderSourceAssetsDoNotExposeGeneratedSubAss
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetBrowserPresentationRoot();
-    WriteTextFile(root / "Assets" / "Shaders" / "HeroSurface.hlsl", "shader");
+    WriteTextFile(root / "Assets" / "Shaders" / "HeroSurface.shader", "shader");
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
 
-    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Shaders/HeroSurface.hlsl"));
+    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Shaders/HeroSurface.shader"));
     ArtifactManifest manifest;
     manifest.sourceAssetId = shaderId;
     manifest.importerId = "shader";
@@ -1272,16 +1206,16 @@ TEST(AssetBrowserPresentationTests, ShaderSourceAssetsDoNotExposeGeneratedSubAss
     manifest.primarySubAssetKey = "shader:HeroSurface";
     manifest.subAssets.push_back(MakeArtifact(shaderId, "shader:HeroSurface", ArtifactType::Shader, "shader"));
     WriteManifestArtifactFiles(root, manifest);
-    AddCurrentSourceDependencies(root, manifest, "Assets/Shaders/HeroSurface.hlsl");
+    AddCurrentSourceDependencies(root, manifest, "Assets/Shaders/HeroSurface.shader");
     database.AddArtifactManifest(manifest);
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
-    options.expandedSourceAssets.insert("Assets/Shaders/HeroSurface.hlsl");
+    options.expandedSourceAssets.insert("Assets/Shaders/HeroSurface.shader");
     const auto items = BuildCurrentFolderAssetItems(root, "Assets/Shaders", &database, options);
 
     ASSERT_EQ(items.size(), 1u);
-    const auto* source = FindItem(items, "HeroSurface.hlsl");
+    const auto* source = FindItem(items, "HeroSurface.shader");
     ASSERT_NE(source, nullptr);
     EXPECT_EQ(source->kind, AssetBrowserItemKind::SourceAsset);
     EXPECT_EQ(source->type, AssetBrowserItemType::Shader);
@@ -1326,7 +1260,7 @@ TEST(AssetBrowserPresentationTests, FiltersCurrentFolderItemsByTypeAndSearchQuer
     WriteTextFile(root / "Assets" / "Materials" / "LampGlass.mat", "material");
     WriteTextFile(root / "Assets" / "Materials" / "LampIcon.png", "texture");
     WriteTextFile(root / "Assets" / "Materials" / "Metal.mat", "material");
-    WriteTextFile(root / "Assets" / "Materials" / "LampShader.hlsl", "shader");
+    WriteTextFile(root / "Assets" / "Materials" / "LampShader.shader", "shader");
 
     AssetBrowserBuildOptions options;
     options.searchQuery = "lamp";
@@ -1343,7 +1277,7 @@ TEST(AssetBrowserPresentationTests, FiltersCurrentFolderItemsByTypeAndSearchQuer
     EXPECT_NE(FindItem(allItems, "LampFolder"), nullptr);
     EXPECT_NE(FindItem(allItems, "LampGlass.mat"), nullptr);
     EXPECT_NE(FindItem(allItems, "LampIcon.png"), nullptr);
-    EXPECT_NE(FindItem(allItems, "LampShader.hlsl"), nullptr);
+    EXPECT_NE(FindItem(allItems, "LampShader.shader"), nullptr);
     EXPECT_EQ(FindItem(allItems, "Metal.mat"), nullptr);
 
     std::filesystem::remove_all(root);
@@ -2794,9 +2728,8 @@ TEST(AssetBrowserPresentationTests, RestartedBrowserBuildsTextureThumbnailReques
     EXPECT_EQ(request->kind, AssetThumbnailKind::Texture);
     EXPECT_EQ(request->assetId, texture->assetId);
     EXPECT_EQ(request->subAssetKey, "texture:main");
-    EXPECT_EQ(
-        request->artifactPath,
-        "Library/Artifacts/" + texture->assetId.ToString() + "/texture_main");
+    EXPECT_TRUE(std::filesystem::path(request->artifactPath).is_absolute());
+    EXPECT_TRUE(std::filesystem::exists(request->artifactPath));
     EXPECT_NE(request->dependencyStamp.find("artifact-file="), std::string::npos);
     EXPECT_TRUE(restartedDatabase.GetObjectReferencePickerAssetSnapshots().empty());
 
@@ -2814,12 +2747,14 @@ TEST(AssetBrowserPresentationTests, ObjectReferencePickerBuildsFromSnapshotRecor
     snapshot.assetId = meshAssetId;
     snapshot.subAssets.push_back({
         "Mesh:Body",
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/meshes/body.nmesh",
+        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/" +
+            StableArtifactBlobFileName(meshAssetId, "Mesh:Body"),
         ArtifactType::Mesh
     });
     snapshot.subAssets.push_back({
         "Texture:Body",
-        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/textures/body.ntex",
+        "Library/Artifacts/a1010101-0101-4101-8101-010101010101/" +
+            StableArtifactBlobFileName(meshAssetId, "Texture:Body"),
         ArtifactType::Texture
     });
     snapshot.subAssets.push_back({

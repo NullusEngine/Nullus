@@ -145,6 +145,7 @@ namespace NLS::Engine::Rendering
 		std::unique_ptr<NLS::Render::Resources::Material> CreateGBufferMaterial() const;
 		NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial);
 		NLS::Render::Resources::Material& ResolveFrameGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial);
+		NLS::Render::Resources::Material& ResolveGBufferDrawableMaterial(NLS::Render::Resources::Material& sourceMaterial);
 		void ClearFrameGBufferMaterialResolveCache();
 		void SyncGBufferMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const;
 		void DrawGBufferOpaques(NLS::Render::Data::PipelineState pso);
@@ -217,6 +218,9 @@ namespace NLS::Engine::Rendering
 		static NLS::Render::Resources::Material& ResolveFrameGBufferMaterial(
 			DeferredSceneRenderer& renderer,
 			NLS::Render::Resources::Material& sourceMaterial);
+		static NLS::Render::Resources::Material& ResolveGBufferDrawableMaterialForTesting(
+			DeferredSceneRenderer& renderer,
+			NLS::Render::Resources::Material& sourceMaterial);
 		static GBufferMaterialCache& GetGBufferMaterialCache(DeferredSceneRenderer& renderer);
 		static const GBufferMaterialCache& GetGBufferMaterialCache(const DeferredSceneRenderer& renderer);
 		static void SetGBufferShader(DeferredSceneRenderer& renderer, NLS::Render::Resources::Shader* shader);
@@ -228,6 +232,8 @@ namespace NLS::Engine::Rendering
 		static uint64_t GetFrameGBufferMaterialResolveHitCount(const DeferredSceneRenderer& renderer);
 		static uint64_t GetFrameGBufferMaterialResolveMissCount(const DeferredSceneRenderer& renderer);
 		static NLS::Render::Resources::MaterialPipelineStateOverrides BuildDeferredDecalMaterialOverridesForTesting(
+			const NLS::Render::Resources::Material& sourceMaterial);
+		static NLS::Render::Resources::MaterialPipelineStateOverrides BuildGBufferMaterialOverridesForTesting(
 			const NLS::Render::Resources::Material& sourceMaterial);
 		static NLS::Render::Settings::EComparaisonAlgorithm GetDeferredDecalDepthCompareForTesting();
 		static bool ShouldSkipThreadedDeferredFramePublishForTesting(

@@ -8,6 +8,7 @@
 #include "Rendering/Assets/MaterialConversion.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,14 @@ ImportedArtifact MakeArtifact(
         std::move(artifactPath),
         "sha256:" + owner.ToString()
     };
+}
+
+std::string MakeTestArtifactPath(const AssetId owner, const std::string& subAssetKey)
+{
+    return (std::filesystem::path("Library") /
+        "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(
+            NLS::Core::Assets::BuildArtifactStorageFileName(owner.ToString() + ":" + subAssetKey))).generic_string();
 }
 
 const SceneRendererMaterialArtifactBinding* FindSceneBinding(
@@ -88,7 +97,7 @@ ArtifactManifest MakeGeneratedModelManifest(
         "prefab:" + scene.sceneKey,
         ArtifactType::Prefab,
         "prefab",
-        "Library/Artifacts/" + scene.sceneKey + "/model.nprefab"));
+        MakeTestArtifactPath(scene.sourceAssetId, "prefab:" + scene.sceneKey)));
 
     for (const auto& mesh : scene.meshes)
     {
@@ -97,7 +106,7 @@ ArtifactManifest MakeGeneratedModelManifest(
             "mesh:" + mesh.sourceKey,
             ArtifactType::Mesh,
             "mesh",
-            "Library/Artifacts/" + scene.sceneKey + "/" + mesh.name + ".nmesh"));
+            MakeTestArtifactPath(scene.sourceAssetId, "mesh:" + mesh.sourceKey)));
     }
 
     for (const auto& materialKey : materialSubAssetKeys)
@@ -107,7 +116,7 @@ ArtifactManifest MakeGeneratedModelManifest(
             materialKey,
             ArtifactType::Material,
             "material",
-            "Library/Artifacts/" + scene.sceneKey + "/" + materialKey + ".nmat"));
+            MakeTestArtifactPath(scene.sourceAssetId, materialKey)));
     }
 
     return manifest;

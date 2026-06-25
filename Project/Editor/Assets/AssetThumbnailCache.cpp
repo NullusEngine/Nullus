@@ -1,5 +1,6 @@
 #include "Assets/AssetThumbnailCache.h"
 
+#include "Assets/ArtifactManifest.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetPath.h"
 #include "Image.h"
@@ -567,7 +568,9 @@ std::optional<std::filesystem::path> ResolveMetadataArtifactPath(
         return std::nullopt;
 
     const auto normalizedProjectRoot = NormalizePath(projectRoot);
-    const auto artifactRoot = NormalizePath(normalizedProjectRoot / "Library" / "Artifacts" / assetId);
+    const auto artifactRoot = NormalizePath(normalizedProjectRoot / "Library" / "Artifacts");
+    if (!NLS::Core::Assets::IsContentStorageArtifactPath(artifactPath))
+        return std::nullopt;
     auto candidate = NormalizePath(std::filesystem::path(artifactPath));
     if (candidate.is_relative())
         candidate = NormalizePath(normalizedProjectRoot / candidate);
@@ -583,12 +586,9 @@ std::optional<std::string> CurrentMetadataFreshnessStamp(
     const std::string& name)
 {
     const auto assetId = metadata.value("assetId", request.assetId.ToString());
-    if (name == "artifact-manifest")
+    if (name == "artifact-db" || name == "artifact-manifest")
     {
-        if (assetId.empty())
-            return std::nullopt;
-        return FileStampForFreshness(
-            NormalizePath(request.projectRoot / "Library" / "Artifacts" / assetId / "manifest.json"));
+        return FileStampForFreshness(NormalizePath(request.projectRoot / "Library" / "ArtifactDB" / "data.mdb"));
     }
 
     if (name == "artifact-file")
@@ -652,6 +652,7 @@ bool MetadataFreshnessInputsAreCurrent(
 
         const auto name = input.value("name", std::string {});
         if (name != "artifact-file" &&
+            name != "artifact-db" &&
             name != "artifact-manifest" &&
             name != "source-meta" &&
             name != "source-file")

@@ -1,5 +1,6 @@
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Geometry/BoundingSphereUtils.h"
+#include "Assets/ArtifactManifest.h"
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/NativeArtifactContainer.h"
 
@@ -546,6 +547,14 @@ std::optional<MeshArtifactData> LoadMeshArtifact(
     const std::filesystem::path& path,
     const std::atomic_bool* cancellationFlag)
 {
+    const auto portableArtifactPath =
+        NLS::Core::Assets::TryMakePortableContentArtifactPath(path.generic_string());
+    if (!portableArtifactPath.empty() &&
+        !NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath))
+    {
+        return std::nullopt;
+    }
+
     NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
     telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead;
     telemetry.path = path.generic_string();

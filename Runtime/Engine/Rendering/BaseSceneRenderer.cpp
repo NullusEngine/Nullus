@@ -1,5 +1,6 @@
 #include <Rendering/Data/LightingDescriptor.h>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <chrono>
 #include <filesystem>
@@ -62,12 +63,33 @@ namespace
 		std::string resourcePath;
 	};
 
-	constexpr const char* kSceneFallbackShaderResourcePaths[] = {
-		":Shaders\\Lambert.hlsl",
-		":Shaders/Lambert.hlsl",
-		":Shaders\\Standard.hlsl",
-		":Shaders/Standard.hlsl"
-	};
+	bool IsDefaultSceneFallbackShader(const NLS::Render::Resources::Shader& shader)
+	{
+		if (!shader.GetShaderLabPassState().has_value())
+			return false;
+
+		auto sourcePath = std::filesystem::path(shader.GetImportedArtifactSourcePath()).generic_string();
+		std::transform(sourcePath.begin(), sourcePath.end(), sourcePath.begin(), [](const unsigned char character)
+		{
+			return static_cast<char>(std::tolower(character));
+		});
+
+		auto subAssetKey = shader.GetImportedArtifactSubAssetKey();
+		std::transform(subAssetKey.begin(), subAssetKey.end(), subAssetKey.begin(), [](const unsigned char character)
+		{
+			return static_cast<char>(std::tolower(character));
+		});
+
+		const bool isStandardPbrSource =
+			sourcePath == "app/assets/engine/shaders/shaderlab/standardpbr.shader" ||
+			sourcePath.ends_with("/app/assets/engine/shaders/shaderlab/standardpbr.shader") ||
+			sourcePath == "assets/engine/shaders/shaderlab/standardpbr.shader" ||
+			sourcePath.ends_with("/assets/engine/shaders/shaderlab/standardpbr.shader");
+		const bool isForwardPass =
+			subAssetKey == "shader:standardpbr/forward" ||
+			subAssetKey.rfind("shader:standardpbr/forward#", 0u) == 0u;
+		return isStandardPbrSource && isForwardPass;
+	}
 
 	LoadedSceneFallbackShader ResolveLoadedSceneFallbackShader()
 	{
@@ -75,9 +97,9 @@ namespace
 			return {};
 
 		auto& shaderManager = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager);
-		for (const char* resourcePath : kSceneFallbackShaderResourcePaths)
+		for (const auto& [resourcePath, shader] : shaderManager.GetResources())
 		{
-			if (auto* shader = shaderManager.GetResource(resourcePath, false))
+			if (shader != nullptr && IsDefaultSceneFallbackShader(*shader))
 				return { shader, resourcePath };
 		}
 
@@ -453,19 +475,13 @@ BaseSceneRenderer::~BaseSceneRenderer() = default;
 
 void BaseSceneRenderer::PreloadSceneFallbackShader(NLS::Core::ResourceManagement::ShaderManager& shaderManager)
 {
-	for (const char* resourcePath : kSceneFallbackShaderResourcePaths)
+	for (const auto& [resourcePath, shader] : shaderManager.GetResources())
 	{
-		if (shaderManager.GetResource(resourcePath, false) != nullptr)
+		if (shader != nullptr && IsDefaultSceneFallbackShader(*shader))
 			return;
 	}
 
-	for (const char* resourcePath : kSceneFallbackShaderResourcePaths)
-	{
-		if (shaderManager.GetResource(resourcePath, true) != nullptr)
-			return;
-	}
-
-	NLS_LOG_WARNING("BaseSceneRenderer failed to preload a scene fallback shader; scene objects without explicit materials may be skipped until a default material or fallback shader is loaded.");
+	NLS_LOG_WARNING("BaseSceneRenderer has no loaded StandardPBR Forward ShaderLab artifact fallback shader; scene objects without explicit materials may be skipped until a default material or imported shader artifact is loaded.");
 }
 
 void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor)
@@ -636,14 +652,6 @@ const std::shared_ptr<LightGridPrepass>& BaseSceneRenderer::GetLightGridPrepass(
 
 BaseSceneRenderer::Material* BaseSceneRenderer::ResolveDefaultSceneMaterial()
 {
-	if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
-	{
-		auto* defaultMaterial = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager)
-			.GetResource(":Materials\\Default.mat", false);
-		if (defaultMaterial != nullptr && defaultMaterial->IsValid())
-			return defaultMaterial;
-	}
-
 	const auto fallbackShader = ResolveLoadedSceneFallbackShader();
 	if (fallbackShader.shader == nullptr)
 		return nullptr;
@@ -800,6 +808,7 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	const Drawable& drawable,
 	Render::Resources::MaterialPipelineStateOverrides pipelineOverrides,
 	Render::Settings::EComparaisonAlgorithm depthCompareOverride,
+	std::string_view lightMode,
 	PreparedRecordedDraw& outDraw)
 {
 	NLS_PROFILE_SCOPE();
@@ -808,7 +817,7 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	if (bindingProvider != nullptr && !bindingProvider->PrepareDraw(effectivePso, drawable))
 		return false;
 
-	if (!PrepareRecordedDraw(drawable, pipelineOverrides, depthCompareOverride, outDraw))
+	if (!PrepareRecordedDraw(drawable, pipelineOverrides, depthCompareOverride, lightMode, outDraw))
 		return false;
 
 	if (outDraw.commandBuffer == nullptr && bindingProvider != nullptr)

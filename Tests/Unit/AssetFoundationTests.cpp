@@ -114,6 +114,34 @@ TEST(AssetFoundationTests, ScanRewritesSemanticallyStaleMeta)
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetFoundationTests, ScanUsesSourceExtensionAsAuthoritativeWhenMetaHasDifferentType)
+{
+    const auto root = MakeAssetTestRoot();
+    const auto shaderPath = root / "Shaders" / "RenamedFromMaterial.shader";
+    const auto stableGuid = NLS::Guid::New();
+    WriteTextFile(shaderPath, R"(Shader "Tests/Renamed" { SubShader { Pass { HLSLPROGRAM ENDHLSL } } })");
+    WriteTextFile(
+        NLS::Core::Assets::GetAssetMetaPath(shaderPath),
+        "GUID=" + stableGuid.ToString() + "\nIMPORTER_ID=material\nASSET_TYPE=material\n");
+
+    NLS::Core::Assets::SourceAssetDatabase database;
+    ASSERT_TRUE(database.ScanRoot(root));
+    ASSERT_EQ(database.GetRecords().size(), 1u);
+
+    const auto& record = database.GetRecords().front();
+    EXPECT_EQ(record.id, NLS::Core::Assets::AssetId(stableGuid));
+    EXPECT_EQ(record.assetType, NLS::Core::Assets::AssetType::Shader);
+    EXPECT_EQ(record.importerId, "shader");
+
+    const auto meta = NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(shaderPath));
+    ASSERT_TRUE(meta.has_value());
+    EXPECT_EQ(meta->id, NLS::Core::Assets::AssetId(stableGuid));
+    EXPECT_EQ(meta->assetType, NLS::Core::Assets::AssetType::Shader);
+    EXPECT_EQ(meta->importerId, "shader");
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetFoundationTests, ScanPreservesExistingMetaSettingsWhenAddingIdentity)
 {
     const auto root = MakeAssetTestRoot();
@@ -177,12 +205,9 @@ TEST(AssetFoundationTests, InferAssetTypesMatchAssetBrowserProjectExtensions)
         {"Textures/Hero.png", AssetType::Texture, "texture"},
         {"Textures/Hero.bmp", AssetType::Texture, "texture"},
         {"Textures/Hero.dds", AssetType::Texture, "texture"},
-        {"Shaders/Hero.hlsl", AssetType::Shader, "shader"},
-        {"Shaders/Hero.glsl", AssetType::Shader, "shader"},
         {"Shaders/Hero.shader", AssetType::Shader, "shader"},
-        {"Materials/Hero.nmat", AssetType::Material, "material"},
+        {"Materials/Hero.mat", AssetType::Material, "material"},
         {"Scenes/Hero.scene", AssetType::Scene, "scene"},
-        {"Scenes/Hero.nscene", AssetType::Scene, "scene"},
         {"Scenes/Hero.objectgraph.json", AssetType::Scene, "scene"},
         {"Scripts/Hero.lua", AssetType::Script, "script"},
         {"Scripts/Hero.cs", AssetType::Script, "script"},
@@ -207,7 +232,7 @@ TEST(AssetFoundationTests, ScanWritesMetaForAssetBrowserProjectExtensions)
 
     const auto root = MakeAssetTestRoot();
     const auto shaderPath = root / "Shaders" / "Hero.shader";
-    const auto scenePath = root / "Scenes" / "Hero.nscene";
+    const auto scenePath = root / "Scenes" / "Hero.scene";
     const auto objectGraphScenePath = root / "Scenes" / "Hero.objectgraph.json";
     const auto bmpPath = root / "Textures" / "Hero.bmp";
     const auto scriptPath = root / "Scripts" / "Hero.cs";

@@ -357,3 +357,91 @@ TEST(ShaderArchitectureAlignmentTests, ShaderLoaderDoesNotOwnEngineShaderFilenam
     EXPECT_TRUE((loaderSourceText.find("DeferredLighting.hlsl") == std::string::npos));
     EXPECT_TRUE((loaderSourceText.find("DeferredGBuffer.hlsl") == std::string::npos));
 }
+
+TEST(ShaderArchitectureAlignmentTests, ShaderLoaderDoesNotDirectCompileShaderLabSources)
+{
+    const std::filesystem::path loaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Resources/Loaders/ShaderLoader.cpp";
+    std::ifstream stream(loaderPath, std::ios::binary);
+    ASSERT_TRUE(stream) << loaderPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string loaderSourceText = sourceBuffer.str();
+
+    EXPECT_NE(loaderSourceText.find("runtime source loading is disabled"), std::string::npos);
+    EXPECT_EQ(loaderSourceText.find("RuntimeShaderLabCompilePath"), std::string::npos);
+    EXPECT_EQ(loaderSourceText.find("RuntimeShaderLab"), std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, SceneRendererDoesNotLoadSourceDefaultMaterial)
+{
+    const std::filesystem::path rendererPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.cpp";
+    std::ifstream stream(rendererPath, std::ios::binary);
+    ASSERT_TRUE(stream) << rendererPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string rendererSourceText = sourceBuffer.str();
+
+    EXPECT_EQ(rendererSourceText.find(":Materials\\\\Default.mat"), std::string::npos);
+    EXPECT_EQ(rendererSourceText.find("Default.mat"), std::string::npos);
+    EXPECT_EQ(rendererSourceText.find("GetResource(\":Materials"), std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, ShaderLabImportReflectionUsesDxilFirstBackendPolicy)
+{
+    const std::filesystem::path importerPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/AssetDatabaseFacade.cpp";
+    std::ifstream stream(importerPath, std::ios::binary);
+    ASSERT_TRUE(stream) << importerPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string importerSourceText = sourceBuffer.str();
+
+    EXPECT_NE(importerSourceText.find("ReflectImportedShaderStagesDxilFirst"), std::string::npos);
+    EXPECT_NE(importerSourceText.find("dxilReflections"), std::string::npos);
+    EXPECT_NE(importerSourceText.find("collectReflectionInputs(NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL)"), std::string::npos);
+    EXPECT_NE(importerSourceText.find("spirvReflections"), std::string::npos);
+    EXPECT_NE(importerSourceText.find("collectReflectionInputs(NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV)"), std::string::npos);
+    EXPECT_NE(importerSourceText.find("TryMergePreferredShaderReflectionOrFallback("), std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, RecordedMaterialPsoUsesFrameOutputAttachmentLayout)
+{
+    const std::filesystem::path rendererPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Core/ABaseRenderer.cpp";
+    std::ifstream stream(rendererPath, std::ios::binary);
+    ASSERT_TRUE(stream) << rendererPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string source = sourceBuffer.str();
+
+    const auto attachmentHelperStart = source.find("ResolveAttachmentPipelineState");
+    ASSERT_NE(attachmentHelperStart, std::string::npos);
+    const auto pipelineHelperStart = source.find("BuildMaterialPipelineStateOverrides", attachmentHelperStart);
+    ASSERT_NE(pipelineHelperStart, std::string::npos);
+    const auto attachmentHelperBody = source.substr(
+        attachmentHelperStart,
+        pipelineHelperStart - attachmentHelperStart);
+
+    EXPECT_NE(attachmentHelperBody.find("outputColorView"), std::string::npos);
+    EXPECT_NE(attachmentHelperBody.find("outputDepthStencilView"), std::string::npos);
+    EXPECT_NE(attachmentHelperBody.find("colorView->GetDesc().format"), std::string::npos);
+    EXPECT_NE(attachmentHelperBody.find("depthView->GetDesc().format"), std::string::npos);
+
+    const auto helperStart = pipelineHelperStart;
+    ASSERT_NE(helperStart, std::string::npos);
+    const auto helperEnd = source.find("template<typename TValue>", helperStart);
+    ASSERT_NE(helperEnd, std::string::npos);
+    const auto helperBody = source.substr(helperStart, helperEnd - helperStart);
+
+    EXPECT_NE(helperBody.find("ResolveAttachmentPipelineState"), std::string::npos);
+    EXPECT_NE(helperBody.find("return std::nullopt"), std::string::npos);
+    EXPECT_NE(helperBody.find("SetColorFormats"), std::string::npos);
+    EXPECT_NE(helperBody.find("sampleCount"), std::string::npos);
+    EXPECT_NE(helperBody.find("depthFormat"), std::string::npos);
+}

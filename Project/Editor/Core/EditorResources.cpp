@@ -8,6 +8,7 @@
 
 #include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
+#include <Guid.h>
 #include <Rendering/Assets/MeshArtifact.h>
 #include <Rendering/Resources/Loaders/ShaderLoader.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
@@ -152,7 +153,10 @@ namespace
             return std::nullopt;
 
         const auto resourcePath =
-            *libraryRoot / "EditorHelperArtifacts" / "Models" / (meshId + ".nmesh");
+            *libraryRoot /
+            "EditorHelperArtifacts" /
+            "Models" /
+            NLS::Guid::NewDeterministic("EditorHelperMeshArtifact:" + meshId).ToString();
         std::error_code error;
         if (std::filesystem::is_regular_file(resourcePath, error))
             return resourcePath;
@@ -212,7 +216,7 @@ Editor::Core::EditorResources::EditorResources(
             return;
         }
 
-        auto* texture = TextureLoader::Create(filePath->string(), firstFilterEditor, secondFilterEditor, false);
+        auto* texture = TextureLoader::CreateFromImageFile(filePath->string(), firstFilterEditor, secondFilterEditor, false);
         if (texture == nullptr)
         {
             NLS_LOG_WARNING(
@@ -447,7 +451,7 @@ NLS::Render::Resources::Shader* Editor::Core::EditorResources::LoadShader(const 
     }
 
     const auto loadStart = Clock::now();
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderPath->string(), m_projectAssetsPath);
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(shaderPath->string(), m_projectAssetsPath);
     if (shader != nullptr)
     {
         m_shaders[p_id] = shader;

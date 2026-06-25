@@ -146,7 +146,7 @@ TEST(EditorLaunchArgsTests, HZBOcclusionValidationStackUsesLargeOccluderAndSmall
 
     const auto functionStart = source.find("void CreateValidationOcclusionStack");
     ASSERT_NE(functionStart, std::string::npos);
-    const auto functionEnd = source.find("void RenameFileReplacingDestination", functionStart);
+    const auto functionEnd = source.find("void PublishReflectionDiagnosticsToLog", functionStart);
     ASSERT_NE(functionEnd, std::string::npos);
     const auto body = source.substr(functionStart, functionEnd - functionStart);
 

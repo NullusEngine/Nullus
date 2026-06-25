@@ -119,6 +119,9 @@ public:
     std::optional<AssetDatabaseRecord> LoadSubAssetAtPath(
         const std::string& assetPath,
         const std::string& subAssetKey) const;
+    std::filesystem::path ResolveArtifactPathAtPath(
+        const std::string& assetPath,
+        const std::string& subAssetKey) const;
     std::optional<NLS::Engine::Assets::PrefabArtifact> LoadPrefabArtifactAtPath(
         const std::string& assetPath,
         const std::string& subAssetKey) const;
@@ -229,8 +232,9 @@ private:
     bool CanSaveArtifactManifestForAssetPath(const std::filesystem::path& absolutePath) const;
     bool SaveArtifactManifestForAssetPath(
         const std::filesystem::path& absolutePath,
-        const NLS::Core::Assets::ArtifactManifest& manifest) const;
-    void SaveArtifactDatabaseManifest(const NLS::Core::Assets::ArtifactManifest& manifest);
+        const NLS::Core::Assets::ArtifactManifest& manifest);
+    bool EnsureStandardPbrShaderLabSourceAvailable();
+    bool SaveArtifactDatabaseManifest(const NLS::Core::Assets::ArtifactManifest& manifest);
     bool FlushArtifactDatabaseCache();
     std::string MakeSubAssetKey(const AssetObjectRecord& asset) const;
     NLS::Core::Assets::ImportedArtifact MakeImportedArtifact(
@@ -261,6 +265,9 @@ private:
         const std::string& assetPath,
         ImportProgressTracker* progressTracker,
         size_t batchTotalAssets = 1u,
+        bool refreshDatabase = true);
+    bool ImportAssetImmediateInternal(
+        const std::string& assetPath,
         bool refreshDatabase = true);
     bool ReimportAsset(
         const std::string& assetPath,

@@ -269,11 +269,11 @@ TEST(PrefabObjectGraphSerializationTests, AssetReferencesInstantiateThroughPathH
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
 
     auto* mesh = new NLS::Render::Resources::Mesh({}, {}, 0u);
-    meshManager.RegisterResource("Artifacts/Hero/body.nmesh", mesh);
+    meshManager.RegisterResource("Artifacts/Hero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb", mesh);
 
     auto* material = new NLS::Render::Resources::Material();
-    const_cast<std::string&>(material->path) = "Artifacts/Hero/body.nmat";
-    materialManager.RegisterResource("Artifacts/Hero/body.nmat", material);
+    const_cast<std::string&>(material->path) = "Artifacts/Hero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b";
+    materialManager.RegisterResource("Artifacts/Hero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b", material);
 
     const auto rootId = ObjectId(NLS::Guid::Parse("10101010-1010-4010-8010-101010101010"));
     const auto meshFilterId = ObjectId(NLS::Guid::Parse("20202020-2020-4020-8020-202020202020"));
@@ -302,7 +302,7 @@ TEST(PrefabObjectGraphSerializationTests, AssetReferencesInstantiateThroughPathH
     meshFilter.properties.push_back({"mesh", PropertyValue::ObjectReference(ObjectIdentifier::Asset(
         assetId,
         MakeLocalIdentifierInFile(assetId.GetGuid(), "mesh:body"),
-        "Artifacts/Hero/body.nmesh"))});
+        "Artifacts/Hero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb"))});
 
     ObjectRecord meshRenderer;
     meshRenderer.id = meshRendererId;
@@ -311,8 +311,8 @@ TEST(PrefabObjectGraphSerializationTests, AssetReferencesInstantiateThroughPathH
     meshRenderer.properties.push_back({"materials", PropertyValue::Array({
         PropertyValue::ObjectReference(ObjectIdentifier::Asset(
             assetId,
-            MakeLocalIdentifierInFile(assetId.GetGuid(), "Artifacts/Hero/body.nmat"),
-            "Artifacts/Hero/body.nmat"))
+            MakeLocalIdentifierInFile(assetId.GetGuid(), "Artifacts/Hero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b"),
+            "Artifacts/Hero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b"))
     })});
 
     prefab.graph.objects.push_back(std::move(root));
@@ -327,7 +327,7 @@ TEST(PrefabObjectGraphSerializationTests, AssetReferencesInstantiateThroughPathH
     ASSERT_NE(loadedMeshFilter, nullptr);
     EXPECT_EQ(loadedMeshFilter->ResolveMesh(), mesh);
     EXPECT_EQ(loadedMeshFilter->GetMeshReference().Get(), mesh);
-    EXPECT_EQ(loadedMeshFilter->GetModelPath(), "Artifacts/Hero/body.nmesh");
+    EXPECT_EQ(loadedMeshFilter->GetModelPath(), "Artifacts/Hero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
     auto* loadedMeshRenderer = result.root->GetComponent<MeshRenderer>();
     ASSERT_NE(loadedMeshRenderer, nullptr);
     EXPECT_EQ(
@@ -335,7 +335,7 @@ TEST(PrefabObjectGraphSerializationTests, AssetReferencesInstantiateThroughPathH
         MeshRenderer::EFrustumBehaviour::CULL_MODEL);
 
     ASSERT_EQ(loadedMeshRenderer->GetMaterialPaths().size(), 1u);
-    EXPECT_EQ(loadedMeshRenderer->GetMaterialPaths()[0], "Artifacts/Hero/body.nmat");
+    EXPECT_EQ(loadedMeshRenderer->GetMaterialPaths()[0], "Artifacts/Hero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b");
 
     meshManager.UnloadResources();
     materialManager.UnloadResources();
@@ -538,7 +538,7 @@ TEST(PrefabObjectGraphSerializationTests, RuntimeAssetDatabaseIdentityOverridesS
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MeshManager>(meshManager);
 
     auto* mesh = new NLS::Render::Resources::Mesh({}, {}, 0u);
-    meshManager.RegisterResource("Library/Artifacts/Hero/meshes/body.nmesh", mesh);
+    meshManager.RegisterResource("Library/Artifacts/Hero/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb", mesh);
 
     const auto sourceAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("51515151-5151-4151-8151-515151515151"));
     constexpr const char* subAssetKey = "mesh:body";
@@ -548,7 +548,7 @@ TEST(PrefabObjectGraphSerializationTests, RuntimeAssetDatabaseIdentityOverridesS
         subAssetKey,
         ArtifactType::Mesh,
         "Nullus.Mesh",
-        "Library/Artifacts/Hero/meshes/body.nmesh",
+        "Library/Artifacts/Hero/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb",
         "sha256:model",
         {}
     });
@@ -583,7 +583,7 @@ TEST(PrefabObjectGraphSerializationTests, RuntimeAssetDatabaseIdentityOverridesS
     meshFilter.properties.push_back({"mesh", PropertyValue::ObjectReference(ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(sourceAssetId.GetGuid()),
         MakeLocalIdentifierInFile(sourceAssetId.GetGuid(), subAssetKey),
-        "Library/Artifacts/Stale/wrong.nmesh"))});
+        "Library/Artifacts/Stale/810e1589298eb04e0ac7e97825f72bbc40830ac4e68fee7ac9e101bcbf91226a"))});
 
     ObjectRecord meshRenderer;
     meshRenderer.id = meshRendererId;
@@ -602,8 +602,8 @@ TEST(PrefabObjectGraphSerializationTests, RuntimeAssetDatabaseIdentityOverridesS
     auto* loadedMeshFilter = result.root->GetComponent<MeshFilter>();
     ASSERT_NE(loadedMeshFilter, nullptr);
     EXPECT_EQ(loadedMeshFilter->ResolveMesh(), mesh);
-    EXPECT_EQ(loadedMeshFilter->GetModelPath(), "Library/Artifacts/Hero/meshes/body.nmesh");
-    EXPECT_EQ(ResolveObjectIdentifier(loadedMeshFilter->GetMeshReference()).filePath, "Library/Artifacts/Hero/meshes/body.nmesh");
+    EXPECT_EQ(loadedMeshFilter->GetModelPath(), "Library/Artifacts/Hero/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
+    EXPECT_EQ(ResolveObjectIdentifier(loadedMeshFilter->GetMeshReference()).filePath, "Library/Artifacts/Hero/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
     EXPECT_EQ(loadedMeshFilter->GetMeshReference().Get(), mesh);
     auto* loadedMeshRenderer = result.root->GetComponent<MeshRenderer>();
     ASSERT_NE(loadedMeshRenderer, nullptr);

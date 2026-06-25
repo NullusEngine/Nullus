@@ -10,6 +10,7 @@
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Guid.h"
+#include "Assets/ArtifactManifest.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Context/Driver.h"
@@ -27,6 +28,17 @@ namespace
         if (!text.empty() && text.back() != '/' && text.back() != '\\')
             text.push_back('/');
         return text;
+    }
+
+    std::filesystem::path BuiltinMeshArtifactPath(
+        const std::filesystem::path& assetRoot,
+        const std::string& virtualSourcePath)
+    {
+        return assetRoot /
+            "Library" /
+            "BuiltinArtifacts" /
+            "Models" /
+            NLS::Core::Assets::BuildArtifactStorageFileName("BuiltinMeshArtifact:" + virtualSourcePath);
     }
 
     NLS::Render::Context::Driver& EnsureMeshTestDriver()
@@ -162,7 +174,7 @@ TEST(MeshBoundingSphereTests, LoadMeshArtifactHonorsCancellationBeforeReading)
 {
     const auto root = std::filesystem::temp_directory_path() / ("nullus_mesh_cancel_" + NLS::Guid::New().ToString());
     std::filesystem::create_directories(root);
-    const auto artifactPath = root / "cancelled.nmesh";
+    const auto artifactPath = root / "d69580ece9e4b3f38afa942912e896a556fb2945c91aa8b25e8a09440cd8d5c2";
 
     const std::vector<NLS::Render::Geometry::Vertex> vertices{
         VertexAt(-1.0f, 0.0f, 0.0f),
@@ -431,7 +443,7 @@ TEST(MeshManagerTests, ResolvesProjectLibraryMeshArtifactsFromProjectRoot)
         ("nullus_project_library_model_artifact_" + NLS::Guid::New().ToString());
     const auto projectAssets = root / "Project" / "Assets";
     const auto engineAssets = root / "EngineAssets";
-    const auto artifactPath = root / "Project" / "Library" / "Artifacts" / "Hero" / "body.nmesh";
+    const auto artifactPath = root / "Project" / "Library" / "Artifacts" / "Hero" / "db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
 
     std::filesystem::create_directories(projectAssets);
     std::filesystem::create_directories(engineAssets);
@@ -454,7 +466,7 @@ TEST(MeshManagerTests, ResolvesProjectLibraryMeshArtifactsFromProjectRoot)
         WithTrailingSlash(engineAssets));
     NLS::Core::ResourceManagement::MeshManager manager;
 
-    auto* mesh = manager["Library/Artifacts/Hero/body.nmesh"];
+    auto* mesh = manager["Library/Artifacts/Hero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb"];
     ASSERT_NE(mesh, nullptr);
     EXPECT_EQ(mesh->GetVertexCount(), 3u);
 
@@ -470,7 +482,7 @@ TEST(MeshManagerTests, PrimitiveAliasLoadsBuiltinMeshArtifactWithoutExposingMode
     const auto projectAssets = root / "Project" / "Assets";
     const auto engineAssets = root / "EngineAssets";
     const auto sourceModelPath = engineAssets / "Models" / "Cube.fbx";
-    const auto artifactPath = engineAssets / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh";
+    const auto artifactPath = BuiltinMeshArtifactPath(engineAssets, "Models/Cube.fbx");
 
     std::filesystem::create_directories(sourceModelPath.parent_path());
     std::filesystem::create_directories(artifactPath.parent_path());
@@ -518,9 +530,10 @@ TEST(MeshManagerTests, MeshArtifactLoadsDoNotReadLegacyModelPackages)
     const auto projectAssets = root / "Project" / "Assets";
     const auto engineAssets = root / "EngineAssets";
     const auto artifactRoot = root / "Project" / "Library" / "Artifacts" / "Hero";
-    const auto bodyPath = artifactRoot / "meshes" / "body.nmesh";
-    const auto roofPath = artifactRoot / "meshes" / "roof.nmesh";
-    const auto packagePath = artifactRoot / "model.nmodel";
+    const auto bodyPath = artifactRoot / "meshes" / "db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
+    const auto roofPath = artifactRoot / "meshes" / "ae885f485f82848c6eb30f0fd29961c7726f140d870c77a4c2a378b86ea38e07";
+    const auto staleModelBlobPath =
+        artifactRoot / "5d4b4d6c2b6c4a6c9b91d90753df2a8d5d4b4d6c2b6c4a6c9b91d90753df2a8d";
 
     std::filesystem::create_directories(projectAssets);
     std::filesystem::create_directories(engineAssets);
@@ -549,8 +562,8 @@ TEST(MeshManagerTests, MeshArtifactLoadsDoNotReadLegacyModelPackages)
     }
 
     {
-        std::ofstream package(packagePath, std::ios::binary | std::ios::trunc);
-        package << "legacy nmodel package must not be read";
+        std::ofstream package(staleModelBlobPath, std::ios::binary | std::ios::trunc);
+        package << "stale model package blob must not be read";
     }
 
     NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(
@@ -558,17 +571,18 @@ TEST(MeshManagerTests, MeshArtifactLoadsDoNotReadLegacyModelPackages)
         WithTrailingSlash(engineAssets));
     NLS::Core::ResourceManagement::MeshManager manager;
 
-    auto* body = manager["Library/Artifacts/Hero/meshes/body.nmesh"];
+    auto* body = manager["Library/Artifacts/Hero/meshes/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb"];
 
     ASSERT_NE(body, nullptr);
     EXPECT_EQ(body->GetVertexCount(), 3u);
-    EXPECT_FALSE(manager.IsResourceRegistered("Library/Artifacts/Hero/model.nmodel"));
-    EXPECT_FALSE(manager.IsResourceRegistered("Library/Artifacts/Hero/meshes/roof.nmesh"));
+    EXPECT_FALSE(manager.IsResourceRegistered(
+        "Library/Artifacts/Hero/5d4b4d6c2b6c4a6c9b91d90753df2a8d5d4b4d6c2b6c4a6c9b91d90753df2a8d"));
+    EXPECT_FALSE(manager.IsResourceRegistered("Library/Artifacts/Hero/meshes/ae885f485f82848c6eb30f0fd29961c7726f140d870c77a4c2a378b86ea38e07"));
 
     std::filesystem::remove_all(root);
 }
 
-TEST(MeshManagerTests, DirectLegacyModelPackageLoadsAreRejected)
+TEST(MeshManagerTests, DirectInvalidModelPackageBlobLoadsAreRejected)
 {
     EnsureMeshTestDriver();
 
@@ -577,14 +591,15 @@ TEST(MeshManagerTests, DirectLegacyModelPackageLoadsAreRejected)
     const auto projectAssets = root / "Project" / "Assets";
     const auto engineAssets = root / "EngineAssets";
     const auto artifactRoot = root / "Project" / "Library" / "Artifacts" / "Hero";
-    const auto packagePath = artifactRoot / "model.nmodel";
+    const auto packagePath =
+        artifactRoot / "5d4b4d6c2b6c4a6c9b91d90753df2a8d5d4b4d6c2b6c4a6c9b91d90753df2a8d";
 
     std::filesystem::create_directories(projectAssets);
     std::filesystem::create_directories(engineAssets);
     std::filesystem::create_directories(packagePath.parent_path());
     {
         std::ofstream package(packagePath, std::ios::binary | std::ios::trunc);
-        package << "legacy nmodel package must not be read";
+        package << "invalid model package blob must not be read";
     }
 
     NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(
@@ -592,10 +607,12 @@ TEST(MeshManagerTests, DirectLegacyModelPackageLoadsAreRejected)
         WithTrailingSlash(engineAssets));
     NLS::Core::ResourceManagement::MeshManager manager;
 
-    auto* package = manager["Library/Artifacts/Hero/model.nmodel"];
+    auto* package = manager[
+        "Library/Artifacts/Hero/5d4b4d6c2b6c4a6c9b91d90753df2a8d5d4b4d6c2b6c4a6c9b91d90753df2a8d"];
 
     EXPECT_EQ(package, nullptr);
-    EXPECT_FALSE(manager.IsResourceRegistered("Library/Artifacts/Hero/model.nmodel"));
+    EXPECT_FALSE(manager.IsResourceRegistered(
+        "Library/Artifacts/Hero/5d4b4d6c2b6c4a6c9b91d90753df2a8d5d4b4d6c2b6c4a6c9b91d90753df2a8d"));
 
     std::filesystem::remove_all(root);
 }
@@ -608,7 +625,7 @@ TEST(MeshManagerTests, ReloadResourceUpdatesLoadedMeshFromArtifact)
         ("nullus_mesh_reload_" + NLS::Guid::New().ToString());
     const auto projectAssets = root / "Project" / "Assets";
     const auto engineAssets = root / "EngineAssets";
-    const auto artifactPath = root / "Project" / "Library" / "Artifacts" / "Hero" / "body.nmesh";
+    const auto artifactPath = root / "Project" / "Library" / "Artifacts" / "Hero" / "db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
     std::filesystem::create_directories(artifactPath.parent_path());
 
     WriteMeshArtifact(
@@ -622,7 +639,7 @@ TEST(MeshManagerTests, ReloadResourceUpdatesLoadedMeshFromArtifact)
         WithTrailingSlash(engineAssets));
     NLS::Core::ResourceManagement::MeshManager manager;
 
-    auto* mesh = manager["Library/Artifacts/Hero/body.nmesh"];
+    auto* mesh = manager["Library/Artifacts/Hero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb"];
     ASSERT_NE(mesh, nullptr);
     EXPECT_EQ(mesh->GetVertexCount(), 3u);
     EXPECT_EQ(mesh->GetMaterialIndex(), 2u);
@@ -638,9 +655,9 @@ TEST(MeshManagerTests, ReloadResourceUpdatesLoadedMeshFromArtifact)
         {0u, 1u, 2u, 0u, 2u, 3u},
         7u);
 
-    manager.AResourceManager::ReloadResource("Library/Artifacts/Hero/body.nmesh");
+    manager.AResourceManager::ReloadResource("Library/Artifacts/Hero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
 
-    ASSERT_EQ(manager.GetResource("Library/Artifacts/Hero/body.nmesh", false), mesh);
+    ASSERT_EQ(manager.GetResource("Library/Artifacts/Hero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb", false), mesh);
     EXPECT_EQ(mesh->GetVertexCount(), 4u);
     EXPECT_EQ(mesh->GetIndexCount(), 6u);
     EXPECT_EQ(mesh->GetMaterialIndex(), 7u);
@@ -658,7 +675,7 @@ TEST(MeshManagerTests, BuiltinSourcePathPrefersPreimportedMeshArtifact)
     const auto projectAssets = root / "ProjectAssets";
     const auto engineAssets = root / "EngineAssets";
     const auto sourceModelPath = engineAssets / "Models" / "Cube.fbx";
-    const auto artifactPath = engineAssets / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh";
+    const auto artifactPath = BuiltinMeshArtifactPath(engineAssets, "Models/Cube.fbx");
 
     std::filesystem::create_directories(sourceModelPath.parent_path());
     std::filesystem::create_directories(artifactPath.parent_path());
@@ -704,8 +721,8 @@ TEST(MeshManagerTests, BuiltinSourcePathPrefersProjectLibraryCacheBeforeBundledA
     const auto projectAssets = root / "Project" / "Assets";
     const auto engineAssets = root / "EngineAssets";
     const auto sourceModelPath = engineAssets / "Models" / "Cube.fbx";
-    const auto projectArtifactPath = root / "Project" / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh";
-    const auto bundledArtifactPath = engineAssets / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh";
+    const auto projectArtifactPath = BuiltinMeshArtifactPath(root / "Project", "Models/Cube.fbx");
+    const auto bundledArtifactPath = BuiltinMeshArtifactPath(engineAssets, "Models/Cube.fbx");
 
     std::filesystem::create_directories(sourceModelPath.parent_path());
     std::filesystem::create_directories(projectArtifactPath.parent_path());
@@ -753,7 +770,7 @@ TEST(MeshManagerTests, BuiltinSourcePathLazilyWritesProjectLibraryArtifactWhenCa
     const auto projectAssets = root / "Project" / "Assets";
     const auto engineAssets = root / "EngineAssets";
     const auto sourceModelPath = engineAssets / "Models" / "Triangle.obj";
-    const auto projectArtifactPath = root / "Project" / "Library" / "BuiltinArtifacts" / "Models" / "Triangle.nmesh";
+    const auto projectArtifactPath = BuiltinMeshArtifactPath(root / "Project", "Models/Triangle.obj");
 
     std::filesystem::create_directories(sourceModelPath.parent_path());
     {
@@ -793,8 +810,8 @@ TEST(MeshManagerTests, BuiltinSourcePathUsesBundledArtifactBeforeLazyGeneration)
     const auto projectAssets = root / "Project" / "Assets";
     const auto engineAssets = root / "EngineAssets";
     const auto sourceModelPath = engineAssets / "Models" / "Triangle.obj";
-    const auto projectArtifactPath = root / "Project" / "Library" / "BuiltinArtifacts" / "Models" / "Triangle.nmesh";
-    const auto bundledArtifactPath = engineAssets / "Library" / "BuiltinArtifacts" / "Models" / "Triangle.nmesh";
+    const auto projectArtifactPath = BuiltinMeshArtifactPath(root / "Project", "Models/Triangle.obj");
+    const auto bundledArtifactPath = BuiltinMeshArtifactPath(engineAssets, "Models/Triangle.obj");
 
     std::filesystem::create_directories(sourceModelPath.parent_path());
     std::filesystem::create_directories(bundledArtifactPath.parent_path());

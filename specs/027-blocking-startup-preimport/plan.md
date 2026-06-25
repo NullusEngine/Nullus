@@ -12,7 +12,7 @@ Generated model drag/drop then instantiates the imported prefab immediately and 
 
 **Language/Version**: C++20
 **Primary Dependencies**: Existing `AssetDatabaseFacade`, `AssetPreimportScheduler`, `ImportProgressTracker`, editor startup progress window
-**Storage**: Existing project `Library/Artifacts/<asset-guid>/manifest.json` artifact cache
+**Storage**: Existing project `Library/ArtifactDB` LMDB plus extensionless content-addressed payloads under `Library/Artifacts/<first-two-hash-chars>/<hash>`
 **Testing**: `NullusUnitTests`, focused gtest filters, Editor target build
 **Target Platform**: Desktop editor; window remains hidden until startup completion on all platforms
 **Project Type**: Native editor/runtime C++ project

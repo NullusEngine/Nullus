@@ -9,7 +9,9 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -18,6 +20,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "Assets/ArtifactManifest.h"
+#include "Assets/NativeArtifactContainer.h"
 
 namespace
 {
@@ -81,16 +86,11 @@ struct TrackedMaterialArtifactPaths
 
 bool IsMaterialArtifactPath(const std::string& path)
 {
-	auto extension = std::filesystem::path(path).extension().string();
-	std::transform(
-		extension.begin(),
-		extension.end(),
-		extension.begin(),
-		[](const unsigned char character)
-		{
-			return static_cast<char>(std::tolower(character));
-		});
-	return extension == ".nmat";
+	return NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+		path,
+		NLS::Core::Assets::ArtifactType::Material,
+		1u,
+		0u).has_value();
 }
 
 std::optional<std::filesystem::file_time_type> TryGetLastWriteTime(const std::string& path)
@@ -152,22 +152,7 @@ Material* FindCachedMaterialByEquivalentArtifactPath(
 	MaterialManager& manager,
 	const std::string& realPath)
 {
-	const auto target = NormalizeResolvedArtifactPath(realPath);
-	if (target.empty())
-		return nullptr;
-
-	for (const auto& [resourcePath, material] : manager.GetResources())
-	{
-		if (material == nullptr)
-			continue;
-
-		if (NormalizeResolvedArtifactPath(MaterialManager::ResolveResourcePath(resourcePath)) == target ||
-			NormalizeResolvedArtifactPath(MaterialManager::ResolveResourcePath(material->path)) == target)
-		{
-			return material;
-		}
-	}
-	return nullptr;
+	return manager.FindRegisteredMaterialByEquivalentArtifactPath(realPath);
 }
 
 auto FindAsyncMaterialRequestByEquivalentArtifactPath(
@@ -656,6 +641,14 @@ Material* MaterialManager::CreateResource(
 	const std::string& path,
 	const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
 {
+	const auto portablePath = std::filesystem::path(path).generic_string();
+	const auto portableArtifactPath = NLS::Core::Assets::TryMakePortableContentArtifactPath(portablePath);
+	if (!portableArtifactPath.empty() &&
+		!NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath))
+	{
+		return nullptr;
+	}
+
 	std::string realPath = ResolveResourcePath(path);
 
 	Material* material = MaterialLoader::Create(realPath, options);
@@ -685,6 +678,97 @@ Material* MaterialManager::PrewarmArtifact(const std::string& path)
 	if (prewarmed)
 		DestroyResource(prewarmed);
 	return nullptr;
+}
+
+Material* MaterialManager::FindRegisteredMaterialByEquivalentArtifactPath(const std::string& path)
+{
+	if (auto* cached = GetResource(path, false))
+		return cached;
+
+	const auto realPath = ResolveResourcePath(path);
+	const auto normalizedPath = NormalizeResolvedArtifactPath(realPath);
+	if (normalizedPath.empty())
+		return nullptr;
+
+	std::lock_guard lock(m_materialPathIndexMutex);
+	const auto found = m_materialPathIndex.find(normalizedPath);
+	return found != m_materialPathIndex.end() ? found->second : nullptr;
+}
+
+void MaterialManager::IndexMaterialPath(const std::string& path, Material* resource)
+{
+	if (resource == nullptr)
+		return;
+
+	const auto normalizedPath = NormalizeResolvedArtifactPath(ResolveResourcePath(path));
+	if (!normalizedPath.empty())
+		m_materialPathIndex[normalizedPath] = resource;
+}
+
+void MaterialManager::RemoveMaterialPathIndexEntries(const std::string& path, Material* resource)
+{
+	const auto normalizedPath = NormalizeResolvedArtifactPath(ResolveResourcePath(path));
+	if (!normalizedPath.empty())
+	{
+		const auto found = m_materialPathIndex.find(normalizedPath);
+		if (found != m_materialPathIndex.end() && found->second == resource)
+			m_materialPathIndex.erase(found);
+	}
+
+	if (resource != nullptr)
+	{
+		const auto normalizedResourcePath = NormalizeResolvedArtifactPath(ResolveResourcePath(resource->path));
+		if (!normalizedResourcePath.empty())
+		{
+			const auto found = m_materialPathIndex.find(normalizedResourcePath);
+			if (found != m_materialPathIndex.end() && found->second == resource)
+				m_materialPathIndex.erase(found);
+		}
+	}
+}
+
+void MaterialManager::RebuildMaterialPathIndex()
+{
+	const auto resources = GetResources();
+	std::lock_guard lock(m_materialPathIndexMutex);
+	m_materialPathIndex.clear();
+	for (const auto& [resourcePath, material] : resources)
+	{
+		IndexMaterialPath(resourcePath, material);
+		if (material != nullptr)
+			IndexMaterialPath(material->path, material);
+	}
+}
+
+void MaterialManager::OnResourceRegistered(const std::string& path, Material* resource)
+{
+	std::lock_guard lock(m_materialPathIndexMutex);
+	IndexMaterialPath(path, resource);
+	if (resource != nullptr)
+		IndexMaterialPath(resource->path, resource);
+}
+
+void MaterialManager::OnResourceUnregistered(const std::string& path, Material* resource)
+{
+	std::lock_guard lock(m_materialPathIndexMutex);
+	RemoveMaterialPathIndexEntries(path, resource);
+}
+
+void MaterialManager::OnResourceMoved(const std::string& previousPath, const std::string& newPath, Material* resource)
+{
+	std::lock_guard lock(m_materialPathIndexMutex);
+	RemoveMaterialPathIndexEntries(previousPath, resource);
+	if (resource != nullptr)
+		resource->path = newPath;
+	IndexMaterialPath(newPath, resource);
+	if (resource != nullptr)
+		IndexMaterialPath(resource->path, resource);
+}
+
+void MaterialManager::OnAllResourcesUnregistered()
+{
+	std::lock_guard lock(m_materialPathIndexMutex);
+	m_materialPathIndex.clear();
 }
 
 Material* MaterialManager::PrewarmArtifactWithDependencies(const std::string& path)
@@ -936,6 +1020,19 @@ void MaterialManager::PumpAsyncLoadsForPaths(
 		return;
 	const auto trackedPaths = BuildTrackedMaterialArtifactPaths(paths);
 	PumpAsyncMaterialArtifactLoads(*this, maxCompletions, &trackedPaths);
+}
+
+void MaterialManager::ClearShaderReferences(const NLS::Render::Resources::Shader* shader)
+{
+	if (shader == nullptr)
+		return;
+
+	for (const auto& [path, material] : GetResources())
+	{
+		(void)path;
+		if (material != nullptr)
+			material->ClearShaderReferences(shader);
+	}
 }
 
 void MaterialManager::DestroyResource(Material* resource)

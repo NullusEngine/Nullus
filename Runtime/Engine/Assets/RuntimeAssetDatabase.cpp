@@ -554,6 +554,9 @@ bool IsRuntimePackagedAssetPath(const std::string& path)
     }
 
     const auto normalized = std::filesystem::path(path).generic_string();
+    if (!NLS::Core::Assets::IsContentStorageArtifactPath(normalized))
+        return false;
+
     if (normalized.find("SourceAssetDatabase") != std::string::npos)
         return false;
 

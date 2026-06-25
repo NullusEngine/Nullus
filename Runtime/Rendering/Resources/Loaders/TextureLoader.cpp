@@ -3,6 +3,7 @@
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
+#include "Assets/NativeArtifactContainer.h"
 
 #include <Debug/Logger.h>
 #include <Image.h>
@@ -28,22 +29,14 @@ std::vector<uint8_t> ReadBinaryFile(const std::string& path)
 	};
 }
 
-std::optional<std::vector<uint8_t>> ExtractImportedTexturePayload(const std::string& path)
+bool IsNativeTextureArtifactFile(const std::string& path)
 {
-	if (std::filesystem::path(path).extension() != ".ntex")
-		return std::nullopt;
-
-	auto bytes = ReadBinaryFile(path);
-	if (bytes.empty())
-		return std::vector<uint8_t> {};
-
-	const std::string marker = "PAYLOAD_BEGIN\n";
-	const auto found = std::search(bytes.begin(), bytes.end(), marker.begin(), marker.end());
-	if (found == bytes.end())
-		return std::vector<uint8_t> {};
-
-	const auto payloadBegin = found + static_cast<std::ptrdiff_t>(marker.size());
-	return std::vector<uint8_t>(payloadBegin, bytes.end());
+	const auto bytes = ReadBinaryFile(path);
+	return !bytes.empty() &&
+		NLS::Core::Assets::ReadNativeArtifactContainerView(
+			bytes,
+			NLS::Core::Assets::ArtifactType::Texture,
+			4u).has_value();
 }
 }
 
@@ -51,7 +44,7 @@ namespace NLS::Render::Resources::Loaders
 {
 Texture2D* TextureLoader::Create(const std::string& p_filepath, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
-	if (std::filesystem::path(p_filepath).extension() == ".ntex")
+	if (IsNativeTextureArtifactFile(p_filepath))
 	{
 		if (auto artifact = NLS::Render::Assets::LoadTextureArtifact(p_filepath))
 		{
@@ -75,20 +68,14 @@ Texture2D* TextureLoader::Create(const std::string& p_filepath, Settings::ETextu
 			return texture;
 		}
 
-		const auto importedTexturePayload = ExtractImportedTexturePayload(p_filepath);
-		if (!importedTexturePayload.has_value() || importedTexturePayload->empty())
-			return nullptr;
-
-		Image image(importedTexturePayload->data(), importedTexturePayload->size(), true);
-		if (image.GetData() == nullptr)
-			return nullptr;
-
-		Texture2D* texture = CreateFromImage(&image, p_firstFilter, p_secondFilter, p_generateMipmap);
-		if (texture)
-			texture->path = p_filepath;
-		return texture;
+		return nullptr;
 	}
 
+	return nullptr;
+}
+
+Texture2D* TextureLoader::CreateFromImageFile(const std::string& p_filepath, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
+{
 	Image image(p_filepath, true);
 	if (image.GetData() == nullptr)
 		return nullptr;
@@ -104,30 +91,8 @@ Texture2D* TextureLoader::Create(const std::string& p_filepath, Settings::ETextu
 
 TextureCube* TextureLoader::CreateCubeMap(const std::vector<std::string>& filePaths)
 {
-	if (filePaths.size() != 6)
-	{
-		return nullptr;
-	}
-
-	std::vector<Image> images;
-	images.reserve(6);
-	for (size_t i = 0; i < 6; ++i)
-	{
-		images.push_back(Image(filePaths[i], false));
-		if (images.back().GetData() == nullptr)
-		{
-			return nullptr;
-		}
-	}
-
-	auto cubeMap = new TextureCube();
-	if (!cubeMap->SetTextureResource({&images[0], &images[1], &images[2], &images[3], &images[4], &images[5]}))
-	{
-		delete cubeMap;
-		return nullptr;
-	}
-
-	return cubeMap;
+	(void)filePaths;
+	return nullptr;
 }
 
 Texture2D* TextureLoader::CreatePixel(uint8_t r, uint8_t g, uint8_t b, uint8_t a)

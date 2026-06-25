@@ -35,6 +35,9 @@ struct ExternalModelImportRequest
 struct ExternalModelAutoImportedDependency
 {
     std::filesystem::path sourcePath;
+    std::filesystem::path metaPath;
+    bool createdMeta = false;
+    std::vector<std::filesystem::path> committedArtifactPaths;
     NLS::Core::Assets::ArtifactManifest manifest;
 };
 

@@ -79,6 +79,10 @@ struct ArtifactWriteResult
     AssetDiagnostics diagnostics;
 };
 
+NLS_CORE_API std::filesystem::path BuildContentAddressedArtifactRelativePath(
+    const ArtifactWriteRequest& request,
+    const ArtifactPayload& artifact);
+
 class NLS_CORE_API ArtifactWriter
 {
 public:

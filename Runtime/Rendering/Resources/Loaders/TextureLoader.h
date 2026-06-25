@@ -40,6 +40,7 @@ namespace NLS::Render::Resources::Loaders
 		* @param p_generateMipmap
 		*/
 		static Texture2D* Create(const std::string& p_filepath, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+		static Texture2D* CreateFromImageFile(const std::string& p_filepath, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
 		static TextureCube* CreateCubeMap(const std::vector<std::string>& filePaths);
 

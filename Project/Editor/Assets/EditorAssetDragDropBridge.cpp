@@ -3,8 +3,8 @@
 #include "Assets/AssetMeta.h"
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/AssetImporterFacade.h"
+#include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/ArtifactLoadTelemetry.h"
-#include "Assets/EditorAssetManifestJson.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/ExternalAssetImporter.h"
 #include "Assets/ImportedPrefabRendererDependencyTemplates.h"
@@ -209,17 +209,11 @@ std::string FileStamp(const std::filesystem::path& path)
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
-std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestFile(
-    const std::filesystem::path& manifestPath)
+std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestForSource(
+    const std::filesystem::path& projectRoot,
+    const NLS::Core::Assets::AssetId sourceAssetId)
 {
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input)
-        return std::nullopt;
-
-    const auto root = nlohmann::json::parse(input, nullptr, false);
-    if (root.is_discarded())
-        return std::nullopt;
-    return ParseArtifactManifestJson(root, true);
+    return LoadArtifactManifestFromProjectArtifactDB(projectRoot, sourceAssetId);
 }
 
 std::string ToLower(std::string value)
@@ -279,7 +273,7 @@ std::string BuildModelTextureMappingDependencyProjectStamp(
     std::string mode;
     (void)ParseModelTextureMappingDependencyValue(dependencyValue, query, mode);
 
-    const auto artifactDatabasePath = projectRoot / "Library" / "ArtifactDB" / "index.tsv";
+    const auto artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot);
     std::string stamp = "artifactDb@" + FileStamp(artifactDatabasePath);
     if (mode == "source-path")
     {
@@ -290,9 +284,7 @@ std::string BuildModelTextureMappingDependencyProjectStamp(
         const auto meta = NLS::Core::Assets::AssetMeta::Load(metaPath);
         if (meta.has_value() && meta->id.IsValid())
         {
-            const auto manifestPath =
-                projectRoot / "Library" / "Artifacts" / meta->id.ToString() / "manifest.json";
-            stamp += "|manifest@" + FileStamp(manifestPath);
+            stamp += "|manifest@" + FileStamp(artifactDatabasePath);
         }
     }
     return stamp;
@@ -411,11 +403,10 @@ std::optional<ModelTextureAssetCandidate> BuildModelTextureMappingCandidateForEd
     candidate.rootIndex = 0u;
     candidate.nameQuery = nameQuery;
 
-    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / meta->id.ToString();
-    const auto manifest = LoadArtifactManifestFile(artifactRoot / "manifest.json");
+    const auto manifest = LoadArtifactManifestForSource(projectRoot, meta->id);
     if (manifest.has_value())
     {
-        const auto textureArtifact = std::find_if(
+        const auto exactTextureArtifact = std::find_if(
             manifest->subAssets.begin(),
             manifest->subAssets.end(),
             [&targetPlatform](const NLS::Core::Assets::ImportedArtifact& artifact)
@@ -423,6 +414,17 @@ std::optional<ModelTextureAssetCandidate> BuildModelTextureMappingCandidateForEd
                 return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture &&
                     artifact.targetPlatform == targetPlatform;
             });
+        auto textureArtifact = exactTextureArtifact;
+        if (textureArtifact == manifest->subAssets.end())
+        {
+            textureArtifact = std::find_if(
+                manifest->subAssets.begin(),
+                manifest->subAssets.end(),
+                [](const NLS::Core::Assets::ImportedArtifact& artifact)
+                {
+                    return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+                });
+        }
         if (textureArtifact != manifest->subAssets.end())
         {
             candidate.subAssetKey = textureArtifact->subAssetKey;
@@ -482,15 +484,14 @@ std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromAr
     const std::string& targetPlatform)
 {
     NLS::Core::Assets::ArtifactDatabase artifactDatabase;
-    const auto artifactDatabasePath = projectRoot / "Library" / "ArtifactDB" / "index.tsv";
+    const auto artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot);
     if (!artifactDatabase.Load(artifactDatabasePath))
         return std::nullopt;
 
-    std::vector<ModelTextureAssetCandidate> candidates;
+    std::unordered_map<std::string, const NLS::Core::Assets::ArtifactDatabaseRecord*> selectedTextureRecords;
     for (const auto& record : artifactDatabase.GetRecords())
     {
         if (record.artifactType != NLS::Core::Assets::ArtifactType::Texture ||
-            record.targetPlatform != targetPlatform ||
             record.status != NLS::Core::Assets::ArtifactRecordStatus::UpToDate)
         {
             continue;
@@ -511,16 +512,31 @@ std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromAr
             }
         }
 
+        const auto selectionKey = record.sourceAssetId.ToString() + "\n" + record.subAssetKey;
+        const auto selected = selectedTextureRecords.find(selectionKey);
+        if (selected != selectedTextureRecords.end() &&
+            selected->second->targetPlatform == targetPlatform)
+        {
+            continue;
+        }
+        if (selected == selectedTextureRecords.end() || record.targetPlatform == targetPlatform)
+            selectedTextureRecords[selectionKey] = &record;
+    }
+
+    std::vector<ModelTextureAssetCandidate> candidates;
+    candidates.reserve(selectedTextureRecords.size());
+    for (const auto& [_, record] : selectedTextureRecords)
+    {
         ModelTextureAssetCandidate candidate;
-        candidate.assetId = record.sourceAssetId;
-        candidate.editorPath = NormalizeEditorAssetPath(record.sourcePath);
-        candidate.subAssetKey = record.subAssetKey;
-        candidate.artifactPath = record.artifactPath;
-        candidate.displayName = std::filesystem::path(record.sourcePath).stem().generic_string();
+        candidate.assetId = record->sourceAssetId;
+        candidate.editorPath = NormalizeEditorAssetPath(record->sourcePath);
+        candidate.subAssetKey = record->subAssetKey;
+        candidate.artifactPath = record->artifactPath;
+        candidate.displayName = std::filesystem::path(record->sourcePath).stem().generic_string();
         candidate.assetType = NLS::Core::Assets::AssetType::Texture;
         candidate.imported = true;
         candidate.rootIndex = 0u;
-        candidate.artifactHashOrVersion = record.contentHash;
+        candidate.artifactHashOrVersion = record->contentHash;
         candidate.nameQuery = mode == "name-search" ? query : std::string {};
         candidates.push_back(std::move(candidate));
     }
@@ -1571,25 +1587,18 @@ std::optional<std::filesystem::path> TryRemapImportedArtifactPathToCurrentRoot(
     if (absoluteArtifactPath.empty() || artifactRoot.empty())
         return std::nullopt;
 
-    const auto sourceAssetId = artifactRoot.filename();
-    if (sourceAssetId.empty())
-        return std::nullopt;
-
     std::vector<std::filesystem::path> parts;
     for (const auto& part : absoluteArtifactPath.lexically_normal())
         parts.push_back(part);
 
     for (size_t index = 0u; index + 1u < parts.size(); ++index)
     {
-        if (parts[index + 1u] != sourceAssetId)
-            continue;
-
         const auto artifactDirectory = parts[index].generic_string();
         if (artifactDirectory != "Artifacts" && artifactDirectory != "ArtifactStaging")
             continue;
 
         std::filesystem::path relative;
-        for (size_t relativeIndex = index + 2u; relativeIndex < parts.size(); ++relativeIndex)
+        for (size_t relativeIndex = index + 1u; relativeIndex < parts.size(); ++relativeIndex)
             relative /= parts[relativeIndex];
         if (relative.empty())
             return std::nullopt;
@@ -1688,8 +1697,9 @@ std::string BuildRendererArtifactStamp(
             continue;
         }
 
+        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetIdText));
         const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts" / assetIdText;
-        const auto externalManifest = LoadArtifactManifestFile(externalArtifactRoot / "manifest.json");
+        const auto externalManifest = LoadArtifactManifestForSource(projectRoot, externalAssetId);
         if (!externalManifest.has_value())
         {
             stamps.push_back("dependencyArtifact=" + dependency.value + "@" + dependency.hashOrVersion + "|missing");
@@ -1729,8 +1739,7 @@ std::string BuildRendererArtifactStamp(
 }
 
 std::string BuildManifestContentStamp(
-    const NLS::Core::Assets::ArtifactManifest& manifest,
-    const std::filesystem::path& manifestPath)
+    const NLS::Core::Assets::ArtifactManifest& manifest)
 {
     std::vector<std::string> stamps;
     stamps.push_back("source=" + manifest.sourceAssetId.ToString());
@@ -1768,7 +1777,7 @@ std::string BuildManifestContentStamp(
     }
     std::sort(stamps.begin(), stamps.end());
 
-    std::string combined = "manifestFile@" + FileStamp(manifestPath);
+    std::string combined = "artifactdb";
     for (const auto& stamp : stamps)
     {
         combined.push_back(';');
@@ -1836,13 +1845,12 @@ UnifiedPrefabLoadKey BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
     PrefabSourceIdentity source,
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::ImportedArtifact& prefabArtifact,
-    const std::filesystem::path& manifestPath,
     const std::filesystem::path& prefabPath,
     std::string rendererArtifactStamp)
 {
     UnifiedPrefabLoadKey key;
     key.source = std::move(source);
-    key.stamps.manifestStamp = BuildManifestContentStamp(manifest, manifestPath);
+    key.stamps.manifestStamp = BuildManifestContentStamp(manifest);
     key.stamps.dependencyStamp = BuildDependencyManifestStamp(manifest);
     key.stamps.prefabArtifactStamp = BuildPrefabArtifactContentStamp(prefabArtifact, prefabPath);
     key.stamps.rendererArtifactStamp = std::move(rendererArtifactStamp);
@@ -1860,19 +1868,15 @@ UnifiedPrefabLoadKey BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
 }
 
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadFastManifest(
-    const std::filesystem::path& manifestPath)
+    const std::filesystem::path& projectRoot,
+    const NLS::Core::Assets::AssetId sourceAssetId)
 {
     NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
     telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::ManifestValidation;
-    telemetry.path = manifestPath.generic_string();
+    telemetry.path = GetProjectArtifactDatabasePath(projectRoot).generic_string();
     NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
 
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input)
-        return std::nullopt;
-
-    const auto root = nlohmann::json::parse(input, nullptr, false);
-    return ParseArtifactManifestJson(root, true);
+    return LoadArtifactManifestFromProjectArtifactDB(projectRoot, sourceAssetId);
 }
 
 std::vector<uint8_t> ReadAllBytes(const std::filesystem::path& path)
@@ -2059,8 +2063,9 @@ FastImportedPrefabLoadResult ValidateRendererManifestDependenciesReady(
         }
         visitedDependencies.push_back(dependencyKey);
 
+        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetIdText));
         const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts" / assetIdText;
-        const auto externalManifest = LoadArtifactManifestFile(externalArtifactRoot / "manifest.json");
+        const auto externalManifest = LoadArtifactManifestForSource(projectRoot, externalAssetId);
         if (!externalManifest.has_value())
         {
             return MakeRendererDependencyMissingResult(
@@ -2206,8 +2211,9 @@ FastImportedPrefabLoadResult GeneratedModelRendererArtifactFilesExist(
         }
         visitedDependencies.push_back(dependencyKey);
 
+        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetIdText));
         const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts" / assetIdText;
-        const auto externalManifest = LoadArtifactManifestFile(externalArtifactRoot / "manifest.json");
+        const auto externalManifest = LoadArtifactManifestForSource(projectRoot, externalAssetId);
         if (!externalManifest.has_value())
         {
             result.rendererDependencyMissing = true;
@@ -2283,9 +2289,8 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         currentMeta.importerVersion,
         NLS::Core::Assets::GetCurrentImporterVersion(currentMeta.assetType));
 
-    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
-    const auto manifestPath = artifactRoot / "manifest.json";
-    auto manifest = LoadFastManifest(manifestPath);
+    const auto artifactRoot = projectRoot / "Library" / "Artifacts";
+    auto manifest = LoadFastManifest(projectRoot, currentMeta.id);
     if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
         return result;
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
@@ -2324,7 +2329,6 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
             assetType),
         *manifest,
         *prefabArtifact,
-        manifestPath,
         prefabPath,
         IncludeRendererArtifactStamp(loadMode)
             ? BuildRendererArtifactStamp(*manifest, projectRoot, artifactRoot)
@@ -2532,8 +2536,8 @@ bool IsImportedPrefabArtifactCurrentForPayload(
         currentMeta.importerVersion,
         NLS::Core::Assets::GetCurrentImporterVersion(currentMeta.assetType));
 
-    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
-    const auto manifest = LoadFastManifest(artifactRoot / "manifest.json");
+    const auto artifactRoot = projectRoot / "Library" / "Artifacts";
+    const auto manifest = LoadFastManifest(projectRoot, currentMeta.id);
     if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
         return false;
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
@@ -2745,9 +2749,8 @@ std::optional<UnifiedPrefabLoadKey> EditorAssetDragDropBridge::BuildUnifiedPrefa
         currentMeta.id,
         currentMeta.assetType);
 
-    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
-    const auto manifestPath = artifactRoot / "manifest.json";
-    auto manifest = LoadFastManifest(manifestPath);
+    const auto artifactRoot = projectRoot / "Library" / "Artifacts";
+    auto manifest = LoadFastManifest(projectRoot, currentMeta.id);
     if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
         return std::nullopt;
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
@@ -2772,7 +2775,6 @@ std::optional<UnifiedPrefabLoadKey> EditorAssetDragDropBridge::BuildUnifiedPrefa
         std::move(source),
         *manifest,
         *prefabArtifact,
-        manifestPath,
         prefabPath,
         IncludeRendererArtifactStamp(loadMode)
             ? BuildRendererArtifactStamp(*manifest, projectRoot, artifactRoot)

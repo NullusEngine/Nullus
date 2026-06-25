@@ -1,7 +1,9 @@
 #include "Assets/PreviewRenderableSnapshot.h"
 
 #include "Assets/ImportedPrefabRendererDependencyTemplates.h"
+#include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
+#include "GameObject.h"
 
 #include <optional>
 #include <unordered_map>
@@ -27,6 +29,36 @@ const NLS::Engine::Serialize::PropertyRecord* FindProperty(
             return &property;
     }
     return nullptr;
+}
+
+std::vector<NLS::Engine::Serialize::ObjectId> ReadOwnedObjectArray(
+    const NLS::Engine::Serialize::ObjectRecord& record,
+    const std::string& propertyName)
+{
+    std::vector<NLS::Engine::Serialize::ObjectId> ids;
+    const auto* property = FindProperty(record, propertyName);
+    if (!property || property->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Array)
+        return ids;
+
+    for (const auto& value : property->value.GetArray())
+    {
+        if (value.GetKind() == NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference)
+            ids.push_back(value.GetObjectId());
+    }
+    return ids;
+}
+
+template<typename ComponentType>
+bool RecordIsComponent(const NLS::Engine::Serialize::ObjectRecord& record)
+{
+    static const std::string typeName = NLS_TYPEOF(ComponentType).GetName();
+    return record.typeName == typeName;
+}
+
+bool RecordIsGameObject(const NLS::Engine::Serialize::ObjectRecord& record)
+{
+    static const std::string typeName = NLS_TYPEOF(NLS::Engine::GameObject).GetName();
+    return record.typeName == typeName;
 }
 
 const NLS::Engine::Serialize::PropertyValue* FindObjectValue(
@@ -325,6 +357,35 @@ NLS::Core::Assets::AssetId FindResolvedAssetIdForPath(
     }
     return {};
 }
+
+size_t CountPreviewRendererGameObjects(
+    const NLS::Engine::Serialize::ObjectGraphDocument& graph)
+{
+    const auto objectRecordsById = BuildObjectRecordIndex(graph);
+    size_t count = 0u;
+    for (const auto& sourceObject : graph.objects)
+    {
+        if (sourceObject.state != NLS::Engine::Serialize::ObjectRecordState::Alive ||
+            !RecordIsGameObject(sourceObject))
+        {
+            continue;
+        }
+
+        const auto sourceComponents = ReadOwnedObjectArray(sourceObject, "components");
+        for (const auto& componentId : sourceComponents)
+        {
+            const auto foundComponentRecord = objectRecordsById.find(componentId);
+            if (foundComponentRecord != objectRecordsById.end() &&
+                foundComponentRecord->second != nullptr &&
+                RecordIsComponent<NLS::Engine::Components::MeshRenderer>(*foundComponentRecord->second))
+            {
+                ++count;
+                break;
+            }
+        }
+    }
+    return count;
+}
 }
 
 PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
@@ -332,6 +393,7 @@ PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
 {
     PreviewRenderableSnapshot snapshot;
     const auto templates = BuildImportedPrefabRendererDependencyTemplates(prefab);
+    snapshot.expectedDrawItemCount = CountPreviewRendererGameObjects(prefab.graph);
     const auto recordsById = BuildObjectRecordIndex(prefab.graph);
     snapshot.drawItems.reserve(templates.size());
     std::unordered_map<NLS::Engine::Serialize::ObjectId, ParsedPreviewTransform> transformCache;

@@ -2,7 +2,8 @@
 
 #include "Assets/AssetThumbnailService.h"
 #include "Assets/AssetDatabaseFacade.h"
-#include "Assets/EditorAssetManifestJson.h"
+#include "Assets/ArtifactDatabaseManifestUtils.h"
+#include "Assets/ArtifactManifest.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Assets/PreviewRenderableSnapshot.h"
@@ -30,15 +31,12 @@
 #include "SceneSystem/Scene.h"
 #include "ServiceLocator.h"
 
-#include <Json/json.hpp>
-
 #include <algorithm>
 #include <any>
 #include <array>
 #include <cmath>
 #include <deque>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -181,21 +179,7 @@ std::string ToGenericPath(const std::filesystem::path& path)
 
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadManifest(const AssetThumbnailRequest& request)
 {
-    const auto manifestPath =
-        request.projectRoot /
-        "Library" /
-        "Artifacts" /
-        request.assetId.ToString() /
-        "manifest.json";
-
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input)
-        return std::nullopt;
-
-    auto root = nlohmann::json::parse(input, nullptr, false);
-    if (root.is_discarded())
-        return std::nullopt;
-    return ParseArtifactManifestJson(root, true);
+    return LoadArtifactManifestFromProjectArtifactDB(request.projectRoot, request.assetId);
 }
 
 std::string BuildPreviewReadbackRequestKey(const AssetThumbnailRequest& request)
@@ -257,7 +241,7 @@ std::optional<std::filesystem::path> ResolveArtifactPath(
 
     const auto rawPath = std::filesystem::path(artifactPath).lexically_normal();
     const auto artifactRoot = NLS::Core::Assets::NormalizeAssetPath(
-        request.projectRoot / "Library" / "Artifacts" / request.assetId.ToString());
+        request.projectRoot / "Library" / "Artifacts");
     if (artifactRoot.empty())
         return std::nullopt;
 
@@ -284,43 +268,6 @@ std::optional<std::filesystem::path> ResolveArtifactPath(
     return resolveCandidate(artifactRoot / rawPath);
 }
 
-std::optional<std::filesystem::path> ResolveSourceMaterialPath(
-    const AssetThumbnailRequest& request,
-    const std::string& artifactPath)
-{
-    if (artifactPath.empty())
-        return std::nullopt;
-
-    const auto rawPath = std::filesystem::path(artifactPath).lexically_normal();
-    if (rawPath.extension() != ".mat")
-        return std::nullopt;
-
-    const auto assetsRoot = NLS::Core::Assets::NormalizeAssetPath(request.projectRoot / "Assets");
-    if (assetsRoot.empty())
-        return std::nullopt;
-
-    const auto candidate = rawPath.is_absolute()
-        ? rawPath
-        : request.projectRoot / rawPath;
-    const auto normalized = NLS::Core::Assets::NormalizeAssetPath(candidate);
-    if (normalized.empty() ||
-        !IsPhysicalRegularFileInsideEditorAssetRoot(normalized, assetsRoot))
-    {
-        return std::nullopt;
-    }
-    return normalized;
-}
-
-std::optional<std::filesystem::path> ResolveSourceMaterialPath(const AssetThumbnailRequest& request)
-{
-    if (auto resolved = ResolveSourceMaterialPath(request, request.artifactPath);
-        resolved.has_value())
-    {
-        return resolved;
-    }
-    return ResolveSourceMaterialPath(request, request.sourceAssetPath);
-}
-
 std::vector<std::filesystem::path> ResolveMeshArtifactPaths(const AssetThumbnailRequest& request)
 {
     std::vector<std::filesystem::path> paths;
@@ -334,7 +281,8 @@ std::vector<std::filesystem::path> ResolveMeshArtifactPaths(const AssetThumbnail
     if (!manifest.has_value())
     {
         if (auto resolved = ResolveArtifactPath(request, request.artifactPath);
-            resolved.has_value() && resolved->extension() == ".nmesh")
+            resolved.has_value() &&
+            NLS::Render::Assets::ReadMeshArtifactHeaderPreview(*resolved, 64u * 1024u).has_value())
         {
             paths.push_back(*resolved);
         }
@@ -384,14 +332,16 @@ std::vector<std::filesystem::path> ResolveMaterialArtifactPaths(const AssetThumb
     if (!manifest.has_value())
     {
         if (auto resolved = ResolveArtifactPath(request, request.artifactPath);
-            resolved.has_value() && resolved->extension() == ".nmat")
+            resolved.has_value())
         {
-            paths.push_back(*resolved);
-        }
-        else if (auto sourceMaterial = ResolveSourceMaterialPath(request);
-            sourceMaterial.has_value())
-        {
-            paths.push_back(*sourceMaterial);
+            const auto prefix = NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+                *resolved,
+                NLS::Core::Assets::ArtifactType::Material,
+                1u,
+                0u,
+                64u * 1024u);
+            if (prefix.has_value())
+                paths.push_back(*resolved);
         }
         return paths;
     }
@@ -411,11 +361,6 @@ std::vector<std::filesystem::path> ResolveMaterialArtifactPaths(const AssetThumb
             {
                 paths.push_back(*resolved);
             }
-            else if (auto sourceMaterial = ResolveSourceMaterialPath(request, artifact.artifactPath);
-                sourceMaterial.has_value())
-            {
-                paths.push_back(*sourceMaterial);
-            }
             return paths;
         }
     }
@@ -429,19 +374,6 @@ std::vector<std::filesystem::path> ResolveMaterialArtifactPaths(const AssetThumb
             resolved.has_value())
         {
             paths.push_back(*resolved);
-        }
-        else if (auto sourceMaterial = ResolveSourceMaterialPath(request, artifact.artifactPath);
-            sourceMaterial.has_value())
-        {
-            paths.push_back(*sourceMaterial);
-        }
-    }
-    if (paths.empty())
-    {
-        if (auto sourceMaterial = ResolveSourceMaterialPath(request);
-            sourceMaterial.has_value())
-        {
-            paths.push_back(*sourceMaterial);
         }
     }
     return paths;
@@ -609,8 +541,7 @@ NLS::Render::Resources::Material* ResolvePreviewMaterial(
     if (auto* cached = materialManager.GetResource(materialPath, false))
         return cached;
 
-    const auto extension = std::filesystem::path(materialPath).extension().string();
-    if (extension == ".nmat")
+    if (NLS::Core::Assets::IsContentStorageArtifactPath(materialPath))
         return materialManager.RequestAsyncArtifact(materialPath, true);
 
     return materialManager.GetResource(materialPath, true);
@@ -687,7 +618,7 @@ std::optional<std::filesystem::path> ResolvePrefabPreviewMaterialBudgetPath(
     {
         return resolved;
     }
-    return ResolveSourceMaterialPath(request, materialPath);
+    return std::nullopt;
 }
 
 std::optional<std::filesystem::path> ResolvePrefabPreviewMeshBudgetPath(

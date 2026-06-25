@@ -6,7 +6,10 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <mutex>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "Base/Image.h"
@@ -40,6 +43,20 @@ namespace
 	using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
 	using UniformType = NLS::Render::Resources::UniformType;
 
+	std::string BuildExplicitShaderCacheKey(
+		const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device,
+		const NLS::Render::Resources::Shader* shader)
+	{
+		const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
+		const auto backend = device != nullptr ? device->GetNativeDeviceInfo().backend : NLS::Render::RHI::NativeBackendType::None;
+		const auto shaderInstanceId = shader != nullptr ? shader->GetInstanceId() : 0u;
+		const auto shaderGeneration = shader != nullptr ? shader->GetGeneration() : 0u;
+		return std::to_string(deviceIdentity) + "|" +
+			std::to_string(static_cast<uint32_t>(backend)) + "|" +
+			std::to_string(shaderInstanceId) + "|" +
+			std::to_string(shaderGeneration);
+	}
+
 	uint64_t NextMaterialInstanceId()
 	{
 		static std::atomic<uint64_t> nextInstanceId { 1u };
@@ -47,6 +64,36 @@ namespace
 		if (instanceId == 0u)
 			instanceId = nextInstanceId.fetch_add(1u, std::memory_order_relaxed);
 		return instanceId;
+	}
+
+	std::mutex& LiveMaterialRegistryMutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
+	std::unordered_set<NLS::Render::Resources::Material*>& LiveMaterialRegistry()
+	{
+		static std::unordered_set<NLS::Render::Resources::Material*> materials;
+		return materials;
+	}
+
+	void RegisterLiveMaterial(NLS::Render::Resources::Material* material)
+	{
+		if (material == nullptr)
+			return;
+
+		std::lock_guard lock(LiveMaterialRegistryMutex());
+		LiveMaterialRegistry().insert(material);
+	}
+
+	void UnregisterLiveMaterial(NLS::Render::Resources::Material* material)
+	{
+		if (material == nullptr)
+			return;
+
+		std::lock_guard lock(LiveMaterialRegistryMutex());
+		LiveMaterialRegistry().erase(material);
 	}
 
 	NLS::Render::RHI::SamplerDesc BuildDefaultSamplerDesc(const std::string& bindingName)
@@ -217,6 +264,73 @@ namespace
 		return name.size() >= 3u && name.rfind("Map") == name.size() - 3u;
 	}
 
+	NLS::Render::Resources::ResourceBindingLayout BuildMaterialBindingLayoutForShader(
+		const NLS::Render::Resources::Shader* shader)
+	{
+		NLS::Render::Resources::ResourceBindingLayout layout;
+		if (shader == nullptr)
+			return layout;
+
+		const auto reflection = shader->GetReflectionSnapshot();
+		for (const auto& constantBuffer : reflection->constantBuffers)
+		{
+			if (constantBuffer.bindingSpace != NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace)
+				continue;
+
+			layout.bindings.push_back({
+				constantBuffer.name,
+				NLS::Render::Resources::ShaderResourceKind::UniformBuffer,
+				NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+				constantBuffer.bindingSpace,
+				constantBuffer.bindingIndex
+			});
+		}
+
+		for (const auto& property : reflection->properties)
+		{
+			if (!ShouldExposeToMaterial(property) ||
+				(property.kind != NLS::Render::Resources::ShaderResourceKind::SampledTexture &&
+				 property.kind != NLS::Render::Resources::ShaderResourceKind::Sampler))
+			{
+				continue;
+			}
+
+			layout.bindings.push_back({
+				property.name,
+				property.kind,
+				property.type,
+				property.bindingSpace,
+				property.bindingIndex
+			});
+		}
+
+		return layout;
+	}
+
+	void FillMissingMaterialDefaultsFromShader(
+		NLS::Render::Resources::MaterialParameterBlock& parameterBlock,
+		const NLS::Render::Resources::Shader* shader)
+	{
+		if (shader == nullptr)
+			return;
+
+		const auto reflection = shader->GetReflectionSnapshot();
+		for (const auto& property : reflection->properties)
+		{
+			if (!ShouldExposeToMaterial(property) || parameterBlock.Contains(property.name))
+				continue;
+
+			if (const auto uniformInfo = shader->GetUniformInfo(property.name); uniformInfo.has_value())
+			{
+				parameterBlock.Set(property.name, uniformInfo->defaultValue);
+				continue;
+			}
+
+			if (const auto defaultValue = CreateDefaultMaterialValue(property.type); defaultValue.has_value())
+				parameterBlock.Set(property.name, defaultValue);
+		}
+	}
+
 	size_t ResolveRenderTargetCount(const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc)
 	{
 		return std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size());
@@ -302,16 +416,26 @@ namespace
 					return target.colorWriteMask != NLS::Render::RHI::RHIColorWriteMask::None;
 				});
 		}
+		if (overrides.alphaToCoverage.has_value())
+			desc.blendState.alphaToCoverageEnable = *overrides.alphaToCoverage;
+		if (overrides.independentBlend.has_value())
+			desc.blendState.independentBlendEnable = *overrides.independentBlend;
 		if (overrides.depthWrite.has_value())
 			desc.depthStencilState.depthWrite = *overrides.depthWrite;
 		if (overrides.depthTest.has_value())
 			desc.depthStencilState.depthTest = *overrides.depthTest;
+		if (overrides.depthCompare.has_value())
+			desc.depthStencilState.depthCompare = *overrides.depthCompare;
 		if (overrides.stencilTest.has_value())
 			desc.depthStencilState.stencilTest = *overrides.stencilTest;
 		if (overrides.stencilWriteMask.has_value())
 			desc.depthStencilState.stencilWriteMask = *overrides.stencilWriteMask;
 		if (overrides.hasDepthAttachment.has_value())
 			desc.renderTargetLayout.hasDepth = *overrides.hasDepthAttachment;
+		if (overrides.depthFormat.has_value())
+			desc.renderTargetLayout.depthFormat = *overrides.depthFormat;
+		if (overrides.sampleCount.has_value())
+			desc.renderTargetLayout.sampleCount = std::max(1u, *overrides.sampleCount);
 		if (overrides.culling.has_value())
 			desc.rasterState.cullEnabled = *overrides.culling;
 		if (overrides.cullFace.has_value())
@@ -413,32 +537,73 @@ namespace
 		}
 	}
 
-	std::vector<uint8_t> BuildMaterialConstantBufferData(
+	struct MaterialConstantBufferBuildResult
+	{
+		std::vector<uint8_t> data;
+		std::vector<NLS::Render::Resources::MaterialBindingDiagnostic> diagnostics;
+		bool success = true;
+	};
+
+	MaterialConstantBufferBuildResult BuildMaterialConstantBufferData(
 		const NLS::Render::Resources::ShaderConstantBufferDesc& constantBuffer,
 		const NLS::Render::Resources::MaterialParameterBlock& parameterBlock)
 	{
-		std::vector<uint8_t> bufferData(constantBuffer.byteSize, 0u);
+		MaterialConstantBufferBuildResult result;
+		result.data.resize(constantBuffer.byteSize, 0u);
+
+		auto addError = [&result, &constantBuffer](const std::string& memberName, std::string message)
+		{
+			result.success = false;
+			result.diagnostics.push_back({
+				NLS::Render::Resources::MaterialBindingDiagnosticSeverity::Error,
+				constantBuffer.name,
+				std::move(message)
+			});
+			if (!memberName.empty() &&
+				result.diagnostics.back().message.find(memberName) == std::string::npos)
+			{
+				result.diagnostics.back().message += " Member: \"" + memberName + "\".";
+			}
+		};
 
 		for (const auto& member : constantBuffer.members)
 		{
-			if (member.byteOffset >= bufferData.size() ||
-				member.byteOffset + member.byteSize > bufferData.size())
+			if (member.byteOffset > result.data.size() ||
+				member.byteSize > result.data.size() - member.byteOffset)
 			{
+				addError(
+					member.name,
+					"Material constant buffer \"" + constantBuffer.name +
+					"\" member \"" + member.name +
+					"\" is outside the reflected buffer size.");
 				continue;
 			}
 
 			const auto* parameter = parameterBlock.TryGet(member.name);
 			if (parameter == nullptr)
+			{
+				addError(
+					member.name,
+					"Material constant buffer \"" + constantBuffer.name +
+					"\" is missing value for member \"" + member.name + "\".");
 				continue;
+			}
 
-			CopyParameterValueToBuffer(
+			if (!CopyParameterValueToBuffer(
 				*parameter,
 				member.type,
-				bufferData.data() + member.byteOffset,
-				member.byteSize);
+				result.data.data() + member.byteOffset,
+				member.byteSize))
+			{
+				addError(
+					member.name,
+					"Material constant buffer \"" + constantBuffer.name +
+					"\" cannot copy value for member \"" + member.name +
+					"\" because the material parameter type does not match reflection.");
+			}
 		}
 
-		return bufferData;
+		return result;
 	}
 
 	NLS::Render::RHI::ShaderStageMask ToShaderStageMask(const NLS::Render::ShaderCompiler::ShaderStage stage)
@@ -530,7 +695,7 @@ namespace
 				debugNamePrefix);
 
 		return NLS::Render::Resources::BuildExplicitBindingLayoutDescsBySet(
-			shader.GetReflection(),
+			*shader.GetReflectionSnapshot(),
 			debugNamePrefix);
 	}
 
@@ -681,10 +846,19 @@ namespace NLS::Render::Resources
 		hashOptionalBool(seed, hasDepthAttachment);
 		hashOptionalBool(seed, culling);
 		hashOptionalBool(seed, stencilTest);
+		hashOptionalBool(seed, alphaToCoverage);
+		hashOptionalBool(seed, independentBlend);
 		hashOptionalUInt(seed, stencilWriteMask);
+		hashOptionalUInt(seed, sampleCount);
+		hashCombine(seed, depthCompare.has_value());
+		if (depthCompare.has_value())
+			hashCombine(seed, static_cast<uint32_t>(*depthCompare));
 		hashCombine(seed, cullFace.has_value());
 		if (cullFace.has_value())
 			hashCombine(seed, static_cast<uint32_t>(*cullFace));
+		hashCombine(seed, depthFormat.has_value());
+		if (depthFormat.has_value())
+			hashCombine(seed, static_cast<uint32_t>(*depthFormat));
 		hashCombine(seed, HasColorFormatsOverride());
 		const auto formats = GetColorFormats();
 		hashCombine(seed, formats.size());
@@ -696,6 +870,25 @@ namespace NLS::Render::Resources
 		for (const auto& target : renderTargetBlendStates)
 			hashRenderTarget(seed, target);
 		return seed;
+	}
+
+	MaterialPipelineStateOverrides BuildMaterialPipelineStateOverrides(
+		const NLS::Render::ShaderLab::ShaderLabPassState& state)
+	{
+		MaterialPipelineStateOverrides overrides;
+		overrides.depthWrite = state.depthWrite;
+		overrides.depthTest = state.depthCompare != Settings::EComparaisonAlgorithm::ALWAYS || state.depthWrite;
+		overrides.depthCompare = state.depthCompare;
+		const auto rasterState = NLS::Render::ShaderLab::ToRhiRasterState(state.cullMode);
+		overrides.culling = rasterState.cullEnabled;
+		overrides.cullFace = rasterState.cullFace;
+		overrides.blending = state.blend.enabled;
+		overrides.colorWrite = state.blend.colorWrite;
+		overrides.alphaToCoverage = state.blend.alphaToCoverageEnable;
+		overrides.independentBlend = state.blend.independentBlendEnable;
+		if (!state.blend.renderTargets.empty())
+			overrides.SetRenderTargetBlendStates(state.blend.renderTargets);
+		return overrides;
 	}
 
 	struct Material::MaterialRuntimeState
@@ -711,13 +904,23 @@ namespace NLS::Render::Resources
 		std::shared_ptr<RHI::RHIBindingLayout> explicitBindingLayout;
 		std::shared_ptr<RHI::RHIBindingSet> explicitBindingSet;
 		std::shared_ptr<RHI::RHIPipelineLayout> explicitPipelineLayout;
+		std::unordered_map<std::string, std::shared_ptr<RHI::RHIBindingLayout>> explicitBindingLayoutsByShaderKey;
+		std::unordered_map<std::string, std::shared_ptr<RHI::RHIBindingSet>> explicitBindingSetsByShaderKey;
+		std::unordered_map<std::string, std::shared_ptr<RHI::RHIPipelineLayout>> explicitPipelineLayoutsByShaderKey;
 		std::vector<MaterialBindingDiagnostic> explicitBindingDiagnostics;
+		std::vector<MaterialBindingDiagnostic> materialConstantBufferDiagnostics;
         uint64_t explicitBindingLayoutDeviceIdentity = 0u;
         uint64_t explicitBindingSetDeviceIdentity = 0u;
         uint64_t explicitPipelineLayoutDeviceIdentity = 0u;
 		RHI::NativeBackendType explicitBindingLayoutBackend = RHI::NativeBackendType::None;
 		RHI::NativeBackendType explicitBindingSetBackend = RHI::NativeBackendType::None;
 		RHI::NativeBackendType explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+		uint64_t explicitBindingLayoutShaderInstanceId = 0u;
+		uint64_t explicitBindingLayoutShaderGeneration = 0u;
+		uint64_t explicitBindingSetShaderInstanceId = 0u;
+		uint64_t explicitBindingSetShaderGeneration = 0u;
+		uint64_t explicitPipelineLayoutShaderInstanceId = 0u;
+		uint64_t explicitPipelineLayoutShaderGeneration = 0u;
 		uint64_t shaderGeneration = 0u;
 		uint64_t explicitBindingSetCreationCount = 0u;
 		uint64_t explicitSnapshotBufferCreationCount = 0u;
@@ -740,13 +943,23 @@ namespace NLS::Render::Resources
 		state.explicitBindingLayout.reset();
 		state.explicitBindingSet.reset();
 		state.explicitPipelineLayout.reset();
+		state.explicitBindingLayoutsByShaderKey.clear();
+		state.explicitBindingSetsByShaderKey.clear();
+		state.explicitPipelineLayoutsByShaderKey.clear();
 		state.explicitBindingDiagnostics.clear();
+		state.materialConstantBufferDiagnostics.clear();
         state.explicitBindingLayoutDeviceIdentity = 0u;
         state.explicitBindingSetDeviceIdentity = 0u;
         state.explicitPipelineLayoutDeviceIdentity = 0u;
 		state.explicitBindingLayoutBackend = RHI::NativeBackendType::None;
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
 		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+		state.explicitBindingLayoutShaderInstanceId = 0u;
+		state.explicitBindingLayoutShaderGeneration = 0u;
+		state.explicitBindingSetShaderInstanceId = 0u;
+		state.explicitBindingSetShaderGeneration = 0u;
+		state.explicitPipelineLayoutShaderInstanceId = 0u;
+		state.explicitPipelineLayoutShaderGeneration = 0u;
 		state.shaderGeneration = m_shader != nullptr ? m_shader->GetGeneration() : 0u;
 		state.explicitBindingLayoutDirty = true;
 		state.explicitBindingSetDirty = true;
@@ -786,11 +999,17 @@ namespace NLS::Render::Resources
 		++m_bindingRevision;
 		state.explicitBindingSet.reset();
 		state.explicitPipelineLayout.reset();
+		state.explicitBindingSetsByShaderKey.clear();
+		state.explicitPipelineLayoutsByShaderKey.clear();
 		state.explicitBindingDiagnostics.clear();
         state.explicitBindingSetDeviceIdentity = 0u;
         state.explicitPipelineLayoutDeviceIdentity = 0u;
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
 		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+		state.explicitBindingSetShaderInstanceId = 0u;
+		state.explicitBindingSetShaderGeneration = 0u;
+		state.explicitPipelineLayoutShaderInstanceId = 0u;
+		state.explicitPipelineLayoutShaderGeneration = 0u;
 		state.explicitBindingSetDirty = true;
 	}
 
@@ -799,14 +1018,24 @@ namespace NLS::Render::Resources
 		, m_instanceId(NextMaterialInstanceId())
 	{
 		m_runtimeState = std::make_unique<MaterialRuntimeState>();
+		RegisterLiveMaterial(this);
 		SetShader(p_shader);
 	}
 
-	Material::~Material() = default;
+	Material::~Material()
+	{
+		UnregisterLiveMaterial(this);
+	}
 
 	void Material::SetShader(Shader* p_shader)
 	{
 		m_shader = p_shader;
+		if (m_shader != nullptr && !m_shaderLabSourcePathExplicit && !m_shader->GetImportedArtifactSourcePath().empty())
+			m_shaderLabSourcePath = m_shader->GetImportedArtifactSourcePath();
+		if (m_shader == nullptr && !m_shaderLabSourcePathExplicit)
+			m_shaderLabSourcePath.clear();
+		if (m_shader == nullptr)
+			m_shaderReferencePath.clear();
 		++m_renderStateRevision;
 		ResetRuntimeState();
 
@@ -832,31 +1061,19 @@ namespace NLS::Render::Resources
 		if (!m_shader)
 			return;
 
-		for (const auto& property : m_shader->GetReflection().properties)
-		{
-			if (!ShouldExposeToMaterial(property))
-				continue;
-
-			if (const auto* uniformInfo = m_shader->GetUniformInfo(property.name); uniformInfo != nullptr)
-			{
-				m_parameterBlock.Set(property.name, uniformInfo->defaultValue);
-				continue;
-			}
-
-			if (const auto defaultValue = CreateDefaultMaterialValue(property.type); defaultValue.has_value())
-				m_parameterBlock.Set(property.name, defaultValue);
-		}
+		FillMissingMaterialDefaultsFromShader(m_parameterBlock, m_shader);
 
 		RebuildBindingLayout();
 		RebuildBindingSet();
 	}
 
-	const ShaderPropertyDesc* Material::FindMaterialProperty(const std::string& key) const
+	std::optional<ShaderPropertyDesc> Material::FindMaterialProperty(const std::string& key) const
 	{
 		if (m_shader == nullptr)
-			return nullptr;
+			return std::nullopt;
 
-		const auto& properties = m_shader->GetReflection().properties;
+		const auto reflection = m_shader->GetReflectionSnapshot();
+		const auto& properties = reflection->properties;
 		const auto found = std::find_if(
 			properties.begin(),
 			properties.end(),
@@ -864,7 +1081,7 @@ namespace NLS::Render::Resources
 			{
 				return property.name == key && ShouldExposeToMaterial(property);
 			});
-		return found != properties.end() ? &*found : nullptr;
+		return found != properties.end() ? std::optional<ShaderPropertyDesc>(*found) : std::nullopt;
 	}
 
 	bool Material::EnsureMaterialParameterExists(const std::string& key)
@@ -872,11 +1089,11 @@ namespace NLS::Render::Resources
 		if (m_parameterBlock.Contains(key))
 			return true;
 
-		const auto* property = FindMaterialProperty(key);
-		if (property == nullptr)
+		const auto property = FindMaterialProperty(key);
+		if (!property.has_value())
 			return false;
 
-		if (const auto* uniformInfo = m_shader->GetUniformInfo(property->name); uniformInfo != nullptr)
+		if (const auto uniformInfo = m_shader->GetUniformInfo(property->name); uniformInfo.has_value())
 			m_parameterBlock.Set(property->name, uniformInfo->defaultValue);
 		else if (const auto defaultValue = CreateDefaultMaterialValue(property->type); defaultValue.has_value())
 			m_parameterBlock.Set(property->name, defaultValue);
@@ -894,54 +1111,30 @@ namespace NLS::Render::Resources
 
 	void Material::RebuildBindingLayout()
 	{
-		m_bindingLayout.bindings.clear();
 		ResetRuntimeState();
 
-		if (!m_shader)
-			return;
-
-		for (const auto& constantBuffer : m_shader->GetReflection().constantBuffers)
-		{
-			if (constantBuffer.bindingSpace != NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace)
-				continue;
-
-			m_bindingLayout.bindings.push_back({
-				constantBuffer.name,
-				ShaderResourceKind::UniformBuffer,
-				UniformType::UNIFORM_FLOAT,
-				constantBuffer.bindingSpace,
-				constantBuffer.bindingIndex
-			});
-		}
-
-		for (const auto& property : m_shader->GetReflection().properties)
-		{
-			if (!ShouldExposeToMaterial(property) ||
-				(property.kind != ShaderResourceKind::SampledTexture && property.kind != ShaderResourceKind::Sampler))
-			{
-				continue;
-			}
-
-			m_bindingLayout.bindings.push_back({
-				property.name,
-				property.kind,
-				property.type,
-				property.bindingSpace,
-				property.bindingIndex
-			});
-		}
-
+		m_bindingLayout = BuildMaterialBindingLayoutForShader(m_shader);
 		m_materialLayout.bindings = m_bindingLayout;
 	}
 
 	void Material::RebuildBindingSet() const
 	{
+		RebuildBindingSet(m_shader);
+	}
+
+	void Material::RebuildBindingSet(const Shader* effectiveShader) const
+	{
 		auto& state = GetRuntimeState();
 		EnsureShaderGenerationCacheCurrent();
-		InvalidateExplicitBindingSetCache();
-		state.bindingSet.SetLayout(m_bindingLayout);
+		state.materialConstantBufferDiagnostics.clear();
+		const auto* shader = effectiveShader != nullptr ? effectiveShader : m_shader;
+		FillMissingMaterialDefaultsFromShader(const_cast<Material*>(this)->m_parameterBlock, shader);
+		const auto bindingLayout = shader == m_shader
+			? m_bindingLayout
+			: BuildMaterialBindingLayoutForShader(shader);
+		state.bindingSet.SetLayout(bindingLayout);
 
-		for (const auto& binding : m_bindingLayout.bindings)
+		for (const auto& binding : bindingLayout.bindings)
 		{
 			if (binding.kind == ShaderResourceKind::Sampler)
 			{
@@ -991,13 +1184,14 @@ namespace NLS::Render::Resources
 			}
 		}
 
-		if (!m_shader)
+		if (!shader)
 			return;
 
-		if (ShouldLogMaterialBindingDiagnostics() && m_shader->path.find("Skybox") != std::string::npos)
+		if (ShouldLogMaterialBindingDiagnostics() && shader->path.find("Skybox") != std::string::npos)
 		{
-			NLS_LOG_INFO("[SkyboxMaterial] Reflection constant buffer count = " + std::to_string(m_shader->GetReflection().constantBuffers.size()));
-			for (const auto& constantBuffer : m_shader->GetReflection().constantBuffers)
+			const auto reflection = shader->GetReflectionSnapshot();
+			NLS_LOG_INFO("[SkyboxMaterial] Reflection constant buffer count = " + std::to_string(reflection->constantBuffers.size()));
+			for (const auto& constantBuffer : reflection->constantBuffers)
 			{
 				NLS_LOG_INFO(
 					"[SkyboxMaterial] CBuffer name=" + constantBuffer.name +
@@ -1023,7 +1217,8 @@ namespace NLS::Render::Resources
 				NLS_LOG_INFO("[SkyboxMaterial] Parameter u_UseProceduralSky is missing");
 		}
 
-		for (const auto& constantBuffer : m_shader->GetReflection().constantBuffers)
+		const auto reflection = shader->GetReflectionSnapshot();
+		for (const auto& constantBuffer : reflection->constantBuffers)
 		{
 			if (constantBuffer.bindingSpace != NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace ||
 				constantBuffer.byteSize == 0)
@@ -1047,16 +1242,25 @@ namespace NLS::Render::Resources
 			}
 
 			auto bufferData = BuildMaterialConstantBufferData(constantBuffer, m_parameterBlock);
-			if (ShouldLogMaterialBindingDiagnostics() && m_shader->path.find("Skybox") != std::string::npos)
+			if (!bufferData.success)
+			{
+				state.materialConstantBufferDiagnostics.insert(
+					state.materialConstantBufferDiagnostics.end(),
+					bufferData.diagnostics.begin(),
+					bufferData.diagnostics.end());
+				state.materialConstantBuffers.erase(constantBuffer.name);
+				continue;
+			}
+			if (ShouldLogMaterialBindingDiagnostics() && shader->path.find("Skybox") != std::string::npos)
 			{
 				NLS_LOG_INFO(
 					"[SkyboxMaterial] Buffer \"" + constantBuffer.name +
 					"\" members=" + std::to_string(constantBuffer.members.size()) +
-					" bytes=" + std::to_string(bufferData.size()) +
-					" firstInt=" + std::to_string(bufferData.size() >= sizeof(int32_t) ? *reinterpret_cast<const int32_t*>(bufferData.data()) : -1));
+					" bytes=" + std::to_string(bufferData.data.size()) +
+					" firstInt=" + std::to_string(bufferData.data.size() >= sizeof(int32_t) ? *reinterpret_cast<const int32_t*>(bufferData.data.data()) : -1));
 			}
-			if (!bufferData.empty())
-				bufferState.buffer->SetRawData(bufferData.data(), static_cast<uint32_t>(bufferData.size()));
+			if (!bufferData.data.empty())
+				bufferState.buffer->SetRawData(bufferData.data.data(), static_cast<uint32_t>(bufferData.data.size()));
 
 			state.bindingSet.SetBuffer(
 				constantBuffer.name,
@@ -1072,6 +1276,171 @@ namespace NLS::Render::Resources
 	const Shader* Material::GetShader() const
 	{
 		return m_shader;
+	}
+
+	Shader* Material::ResolveShaderForLightMode(std::string_view lightMode) const
+	{
+		if (lightMode.empty())
+			return m_shader;
+
+		if (!m_shaderLabSourcePathExplicit && m_shaderLabPassShadersByLightMode.empty())
+		{
+			if (m_shader != nullptr && !m_shader->GetShaderLabLightMode().empty())
+				return m_shader->GetShaderLabLightMode() == lightMode ? m_shader : nullptr;
+			return lightMode == "Forward" ? m_shader : nullptr;
+		}
+
+		const auto found = m_shaderLabPassShadersByLightMode.find(std::string(lightMode));
+		if (found != m_shaderLabPassShadersByLightMode.end() &&
+			found->second != nullptr &&
+			found->second->GetShaderLabLightMode() == lightMode)
+		{
+			return found->second;
+		}
+
+		for (const auto& [_, shader] : m_shaderLabPassShadersByLightMode)
+		{
+			if (shader != nullptr && shader->GetShaderLabLightMode() == lightMode)
+				return shader;
+		}
+
+		return nullptr;
+	}
+
+	void Material::SetShaderLabSourcePath(std::string sourcePath)
+	{
+		const auto sourcePathExplicit = !sourcePath.empty();
+		if (m_shaderLabSourcePath == sourcePath && m_shaderLabSourcePathExplicit == sourcePathExplicit)
+			return;
+
+		m_shaderLabSourcePath = std::move(sourcePath);
+		m_shaderLabSourcePathExplicit = sourcePathExplicit;
+		m_shaderLabPassShadersByLightMode.clear();
+		++m_renderStateRevision;
+		ResetRuntimeState();
+	}
+
+	const std::string& Material::GetShaderLabSourcePath() const
+	{
+		return m_shaderLabSourcePath;
+	}
+
+	bool Material::HasExplicitShaderLabSourcePath() const
+	{
+		return m_shaderLabSourcePathExplicit;
+	}
+
+	void Material::SetShaderReferencePath(std::string shaderPath)
+	{
+		if (m_shaderReferencePath == shaderPath)
+			return;
+
+		m_shaderReferencePath = std::move(shaderPath);
+		++m_renderStateRevision;
+		ResetRuntimeState();
+	}
+
+	const std::string& Material::GetShaderReferencePath() const
+	{
+		return m_shaderReferencePath;
+	}
+
+	void Material::RegisterShaderLabPassShader(Shader* shader)
+	{
+		if (shader == nullptr)
+			return;
+
+		const auto sourcePath = shader->GetImportedArtifactSourcePath();
+		const auto lightMode = shader->GetShaderLabLightMode();
+		if (sourcePath.empty() || lightMode.empty())
+			return;
+		if (!m_shaderLabSourcePath.empty() && sourcePath != m_shaderLabSourcePath)
+			return;
+
+		if (m_shaderLabSourcePath.empty())
+			m_shaderLabSourcePath = sourcePath;
+
+		const auto [_, inserted] = m_shaderLabPassShadersByLightMode.try_emplace(lightMode, shader);
+		if (!inserted)
+			return;
+		const bool becomesPrimaryShader = m_shader == nullptr || lightMode == "Forward";
+		const bool primaryShaderChanged = becomesPrimaryShader && m_shader != shader;
+		if (becomesPrimaryShader)
+			m_shader = shader;
+
+		if (primaryShaderChanged)
+		{
+			FillMissingMaterialDefaultsFromShader(m_parameterBlock, m_shader);
+			m_bindingLayout = BuildMaterialBindingLayoutForShader(m_shader);
+			m_materialLayout.bindings = m_bindingLayout;
+		}
+
+		++m_renderStateRevision;
+		ResetRuntimeState();
+	}
+
+	void Material::ClearShaderReferencesFromLiveMaterials(const Shader* shader)
+	{
+		if (shader == nullptr)
+			return;
+
+		std::vector<Material*> materials;
+		{
+			std::lock_guard lock(LiveMaterialRegistryMutex());
+			materials.assign(LiveMaterialRegistry().begin(), LiveMaterialRegistry().end());
+		}
+
+		for (auto* material : materials)
+		{
+			if (material != nullptr)
+				material->ClearShaderReferences(shader);
+		}
+	}
+
+	void Material::ClearShaderReferences(const Shader* shader)
+	{
+		if (shader == nullptr)
+			return;
+
+		bool changed = false;
+		if (m_shader == shader)
+		{
+			m_shader = nullptr;
+			m_shaderReferencePath.clear();
+			changed = true;
+		}
+
+		for (auto it = m_shaderLabPassShadersByLightMode.begin(); it != m_shaderLabPassShadersByLightMode.end();)
+		{
+			if (it->second == shader)
+			{
+				it = m_shaderLabPassShadersByLightMode.erase(it);
+				changed = true;
+			}
+			else
+			{
+				++it;
+			}
+		}
+
+		if (!changed)
+			return;
+
+		if (m_shader == nullptr)
+		{
+			if (const auto found = m_shaderLabPassShadersByLightMode.find("Forward");
+				found != m_shaderLabPassShadersByLightMode.end())
+			{
+				m_shader = found->second;
+			}
+			else if (!m_shaderLabPassShadersByLightMode.empty())
+			{
+				m_shader = m_shaderLabPassShadersByLightMode.begin()->second;
+			}
+		}
+
+		++m_renderStateRevision;
+		ResetRuntimeState();
 	}
 
 	bool Material::HasShader() const
@@ -1177,6 +1546,40 @@ namespace NLS::Render::Resources
 		m_gpuInstances = p_instances;
 		++m_renderStateRevision;
 	}
+
+	void Material::EnableKeyword(std::string keyword)
+	{
+		if (keyword.empty() || m_shaderLabKeywords.Contains(keyword))
+			return;
+		m_shaderLabKeywords.Enable(std::move(keyword));
+		++m_renderStateRevision;
+		ResetRuntimeState();
+	}
+
+	void Material::DisableKeyword(std::string_view keyword)
+	{
+		if (!m_shaderLabKeywords.Contains(keyword))
+			return;
+		m_shaderLabKeywords.Disable(keyword);
+		++m_renderStateRevision;
+		ResetRuntimeState();
+	}
+
+	bool Material::IsKeywordEnabled(std::string_view keyword) const
+	{
+		return m_shaderLabKeywords.Contains(keyword);
+	}
+
+	std::vector<std::string> Material::GetShaderLabKeywordNames() const
+	{
+		return m_shaderLabKeywords.ToVector();
+	}
+
+	const NLS::Render::ShaderLab::ShaderLabKeywordSet& Material::GetShaderLabKeywords() const
+	{
+		return m_shaderLabKeywords;
+	}
+
 	bool Material::IsBlendable() const { return m_blendable; }
 	MaterialSurfaceMode Material::GetSurfaceMode() const { return m_surfaceMode; }
 	bool Material::IsDecal() const { return m_surfaceMode == MaterialSurfaceMode::Decal; }
@@ -1208,14 +1611,17 @@ namespace NLS::Render::Resources
 		MaterialPipelineStateOverrides overrides,
 		bool* hasPipelineLayout,
 		bool* hasVertexShader,
-		bool* hasFragmentShader) const
+		bool* hasFragmentShader,
+		const Shader* effectiveShader) const
 	{
-		const auto pipelineLayout = GetExplicitPipelineLayout(device);
-		const auto vertexShader = device != nullptr && m_shader != nullptr
-			? m_shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Vertex)
+		const auto* shader = effectiveShader != nullptr ? effectiveShader : m_shader;
+		const auto pipelineLayout = GetExplicitPipelineLayout(device, shader);
+		const auto shaderLabKeywordHash = m_shaderLabKeywords.Hash();
+		const auto vertexShader = device != nullptr && shader != nullptr
+			? shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Vertex, shaderLabKeywordHash)
 			: nullptr;
-		const auto fragmentShader = device != nullptr && m_shader != nullptr
-			? m_shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Pixel)
+		const auto fragmentShader = device != nullptr && shader != nullptr
+			? shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Pixel, shaderLabKeywordHash)
 			: nullptr;
 
 		if (hasPipelineLayout != nullptr)
@@ -1234,7 +1640,7 @@ namespace NLS::Render::Resources
 			desc.pipelineLayout = pipelineLayout;
 			desc.vertexShader = vertexShader;
 			desc.fragmentShader = fragmentShader;
-			desc.reflection = m_shader ? &m_shader->GetReflection() : nullptr;
+			desc.reflection = shader ? shader->GetReflectionSnapshot() : nullptr;
 			desc.rasterState.cullEnabled = m_backfaceCulling || m_frontfaceCulling;
 			desc.rasterState.cullFace = m_backfaceCulling && m_frontfaceCulling
 				? Settings::ECullFace::FRONT_AND_BACK
@@ -1275,6 +1681,10 @@ namespace NLS::Render::Resources
 				{ 4u, 0u, 44u, 12u }
 			};
 			RHI::ApplyPipelineStateToGraphicsPipelineDesc(pipelineState, desc);
+			if (shader != nullptr && shader->GetShaderLabPassState().has_value())
+				ApplyPipelineStateOverrides(
+					desc,
+					BuildMaterialPipelineStateOverrides(*shader->GetShaderLabPassState()));
 			ApplyPipelineStateOverrides(desc, overrides);
 			if (!desc.renderTargetLayout.hasDepth)
 			{
@@ -1300,7 +1710,14 @@ namespace NLS::Render::Resources
 
 	std::shared_ptr<RHI::RHIBindingSet> Material::GetRecordedBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
-		return GetExplicitBindingSet(device);
+		return GetRecordedBindingSet(device, m_shader);
+	}
+
+	std::shared_ptr<RHI::RHIBindingSet> Material::GetRecordedBindingSet(
+		const std::shared_ptr<RHI::RHIDevice>& device,
+		const Shader* effectiveShader) const
+	{
+		return GetExplicitBindingSet(device, effectiveShader);
 	}
 
 	const MaterialParameterBlock& Material::GetParameterBlock() const
@@ -1316,14 +1733,38 @@ namespace NLS::Render::Resources
 
 	const std::shared_ptr<RHI::RHIBindingLayout>& Material::GetExplicitBindingLayout(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
+		return GetExplicitBindingLayout(device, m_shader);
+	}
+
+	const std::shared_ptr<RHI::RHIBindingLayout>& Material::GetExplicitBindingLayout(
+		const std::shared_ptr<RHI::RHIDevice>& device,
+		const Shader* effectiveShader) const
+	{
 		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
+		const auto* shader = effectiveShader != nullptr ? effectiveShader : m_shader;
+		const auto shaderInstanceId = shader != nullptr ? shader->GetInstanceId() : 0u;
+		const auto shaderGeneration = shader != nullptr ? shader->GetGeneration() : 0u;
 		const auto backend = ResolveDeviceBackendType(device);
         const auto deviceIdentity = ResolveDeviceCacheIdentity(device);
+		const auto cacheKey = BuildExplicitShaderCacheKey(device, shader);
+		if (const auto cached = state.explicitBindingLayoutsByShaderKey.find(cacheKey);
+			cached != state.explicitBindingLayoutsByShaderKey.end())
+		{
+			state.explicitBindingLayout = cached->second;
+			state.explicitBindingLayoutDeviceIdentity = deviceIdentity;
+			state.explicitBindingLayoutBackend = backend;
+			state.explicitBindingLayoutShaderInstanceId = shaderInstanceId;
+			state.explicitBindingLayoutShaderGeneration = shaderGeneration;
+			state.explicitBindingLayoutDirty = false;
+			return state.explicitBindingLayout;
+		}
 		if (!state.explicitBindingLayoutDirty &&
 			state.explicitBindingLayout != nullptr &&
             state.explicitBindingLayoutDeviceIdentity == deviceIdentity &&
-			state.explicitBindingLayoutBackend == backend)
+			state.explicitBindingLayoutBackend == backend &&
+			state.explicitBindingLayoutShaderInstanceId == shaderInstanceId &&
+			state.explicitBindingLayoutShaderGeneration == shaderGeneration)
 		{
 			return state.explicitBindingLayout;
 		}
@@ -1332,15 +1773,17 @@ namespace NLS::Render::Resources
 		state.explicitBindingDiagnostics.clear();
         state.explicitBindingLayoutDeviceIdentity = deviceIdentity;
 		state.explicitBindingLayoutBackend = backend;
-		if (!m_shader)
+		state.explicitBindingLayoutShaderInstanceId = shaderInstanceId;
+		state.explicitBindingLayoutShaderGeneration = shaderGeneration;
+		if (!shader)
 		{
 			state.explicitBindingLayoutDirty = false;
 			return state.explicitBindingLayout;
 		}
 
-		if (!m_shader->HasParameterStructs())
+		if (!shader->HasParameterStructs())
 		{
-			const auto validation = ValidateShaderBindingReflection(m_shader->GetReflection());
+			const auto validation = ValidateShaderBindingReflection(*shader->GetReflectionSnapshot());
 			if (validation.HasErrors())
 			{
 				for (const auto& diagnostic : validation.diagnostics)
@@ -1360,7 +1803,7 @@ namespace NLS::Render::Resources
 		}
 
 		const auto layoutDescs = BuildExplicitBindingLayoutDescs(
-			*m_shader,
+			*shader,
 			path.empty() ? "Material" : path);
 		constexpr uint32_t materialSetIndex = NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet;
 		if (device != nullptr &&
@@ -1371,30 +1814,57 @@ namespace NLS::Render::Resources
 			layoutDesc.debugName = path.empty() ? "MaterialBindingLayout" : path + ":MaterialBindingLayout";
 			state.explicitBindingLayout = device->CreateBindingLayout(layoutDesc);
 		}
+		state.explicitBindingLayoutsByShaderKey[cacheKey] = state.explicitBindingLayout;
 		state.explicitBindingLayoutDirty = false;
 		return state.explicitBindingLayout;
 	}
 
 	const std::shared_ptr<RHI::RHIBindingSet>& Material::GetExplicitBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
+		return GetExplicitBindingSet(device, m_shader);
+	}
+
+	const std::shared_ptr<RHI::RHIBindingSet>& Material::GetExplicitBindingSet(
+		const std::shared_ptr<RHI::RHIDevice>& device,
+		const Shader* effectiveShader) const
+	{
 		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
+		const auto* shader = effectiveShader != nullptr ? effectiveShader : m_shader;
+		const auto shaderInstanceId = shader != nullptr ? shader->GetInstanceId() : 0u;
+		const auto shaderGeneration = shader != nullptr ? shader->GetGeneration() : 0u;
 		const auto backend = ResolveDeviceBackendType(device);
         const auto deviceIdentity = ResolveDeviceCacheIdentity(device);
+		const auto cacheKey = BuildExplicitShaderCacheKey(device, shader);
+		if (const auto cached = state.explicitBindingSetsByShaderKey.find(cacheKey);
+			cached != state.explicitBindingSetsByShaderKey.end())
+		{
+			state.explicitBindingSet = cached->second;
+			state.explicitBindingSetDeviceIdentity = deviceIdentity;
+			state.explicitBindingSetBackend = backend;
+			state.explicitBindingSetShaderInstanceId = shaderInstanceId;
+			state.explicitBindingSetShaderGeneration = shaderGeneration;
+			state.explicitBindingSetDirty = false;
+			return state.explicitBindingSet;
+		}
 		if (!state.explicitBindingSetDirty &&
 			state.explicitBindingSet != nullptr &&
             state.explicitBindingSetDeviceIdentity == deviceIdentity &&
-			state.explicitBindingSetBackend == backend)
+			state.explicitBindingSetBackend == backend &&
+			state.explicitBindingSetShaderInstanceId == shaderInstanceId &&
+			state.explicitBindingSetShaderGeneration == shaderGeneration)
 		{
 			return state.explicitBindingSet;
 		}
 
-		RebuildBindingSet();
+		RebuildBindingSet(shader);
 
-		const auto& explicitLayout = GetExplicitBindingLayout(device);
+		const auto& explicitLayout = GetExplicitBindingLayout(device, shader);
 		state.explicitBindingSet.reset();
         state.explicitBindingSetDeviceIdentity = deviceIdentity;
 		state.explicitBindingSetBackend = backend;
+		state.explicitBindingSetShaderInstanceId = shaderInstanceId;
+		state.explicitBindingSetShaderGeneration = shaderGeneration;
 		if (device == nullptr || explicitLayout == nullptr)
 		{
 			state.explicitBindingSetDirty = false;
@@ -1404,8 +1874,11 @@ namespace NLS::Render::Resources
 		RHI::RHIBindingSetDesc bindingSetDesc;
 		bindingSetDesc.layout = explicitLayout;
 		bindingSetDesc.debugName = path.empty() ? "MaterialBindingSet" : path + ":MaterialBindingSet";
-		if (!state.explicitBindingDiagnostics.empty())
-			state.explicitBindingDiagnostics.clear();
+		state.explicitBindingDiagnostics.clear();
+		state.explicitBindingDiagnostics.insert(
+			state.explicitBindingDiagnostics.end(),
+			state.materialConstantBufferDiagnostics.begin(),
+			state.materialConstantBufferDiagnostics.end());
 
 		auto addBindingDiagnostic = [&state](MaterialBindingDiagnosticSeverity severity, std::string bindingName, std::string message)
 		{
@@ -1414,6 +1887,17 @@ namespace NLS::Render::Resources
 				std::move(bindingName),
 				std::move(message)
 			});
+		};
+		auto hasExistingBindingError = [&state](const std::string& bindingName)
+		{
+			return std::any_of(
+				state.explicitBindingDiagnostics.begin(),
+				state.explicitBindingDiagnostics.end(),
+				[&bindingName](const MaterialBindingDiagnostic& diagnostic)
+				{
+					return diagnostic.severity == MaterialBindingDiagnosticSeverity::Error &&
+						diagnostic.bindingName == bindingName;
+				});
 		};
 
 		for (const auto& entry : explicitLayout->GetDesc().entries)
@@ -1431,11 +1915,14 @@ namespace NLS::Render::Resources
 				auto bufferState = state.materialConstantBuffers.find(entry.name);
 				if (bufferState == state.materialConstantBuffers.end() || !bufferState->second.buffer)
 				{
-					addBindingDiagnostic(
-						MaterialBindingDiagnosticSeverity::Error,
-						entry.name,
-						"Material binding \"" + entry.name + "\" is missing required buffer resource.");
-					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
+					if (!hasExistingBindingError(entry.name))
+					{
+						addBindingDiagnostic(
+							MaterialBindingDiagnosticSeverity::Error,
+							entry.name,
+							"Material binding \"" + entry.name + "\" is missing required buffer resource.");
+					}
+					if (ShouldLogMaterialBindingDiagnostics() && shader != nullptr && shader->path.find("Skybox") != std::string::npos)
 					{
 						NLS_LOG_INFO(
 							"[SkyboxMaterial] Missing explicit buffer for entry \"" + entry.name +
@@ -1482,7 +1969,7 @@ namespace NLS::Render::Resources
 						MaterialBindingDiagnosticSeverity::Error,
 						entry.name,
 						"Material binding \"" + entry.name + "\" is missing required texture parameter.");
-					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
+					if (ShouldLogMaterialBindingDiagnostics() && shader != nullptr && shader->path.find("Skybox") != std::string::npos)
 						NLS_LOG_INFO("[SkyboxMaterial] Missing texture parameter for entry \"" + entry.name + "\"");
 					continue;
 				}
@@ -1514,7 +2001,7 @@ namespace NLS::Render::Resources
 						MaterialBindingDiagnosticSeverity::Error,
 						entry.name,
 						"Material binding \"" + entry.name + "\" resolved to a null texture descriptor.");
-					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
+					if (ShouldLogMaterialBindingDiagnostics() && shader != nullptr && shader->path.find("Skybox") != std::string::npos)
 						NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" resolved to null texture or null handle, skipping");
 					continue;
 				}
@@ -1526,12 +2013,12 @@ namespace NLS::Render::Resources
 						MaterialBindingDiagnosticSeverity::Error,
 						entry.name,
 						"Material binding \"" + entry.name + "\" resolved to a null texture view descriptor.");
-					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
+					if (ShouldLogMaterialBindingDiagnostics() && shader != nullptr && shader->path.find("Skybox") != std::string::npos)
 						NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" GetOrCreateExplicitTextureView returned null, skipping");
 					continue;
 				}
 
-				if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
+				if (ShouldLogMaterialBindingDiagnostics() && shader != nullptr && shader->path.find("Skybox") != std::string::npos)
 					NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" added to binding set");
 				break;
 			}
@@ -1559,20 +2046,31 @@ namespace NLS::Render::Resources
 			bindingSetDesc.entries.push_back(std::move(bindingEntry));
 		}
 
-		if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
+		if (ShouldLogMaterialBindingDiagnostics() && shader != nullptr && shader->path.find("Skybox") != std::string::npos)
 			NLS_LOG_INFO("[SkyboxMaterial] Explicit binding set entry count = " + std::to_string(bindingSetDesc.entries.size()));
 
 		state.explicitBindingSet = device->CreateBindingSet(bindingSetDesc);
 		if (state.explicitBindingSet != nullptr)
 			++state.explicitBindingSetCreationCount;
+		state.explicitBindingSetsByShaderKey[cacheKey] = state.explicitBindingSet;
 		state.explicitBindingSetDirty = false;
 		return state.explicitBindingSet;
 	}
 
 	const std::shared_ptr<RHI::RHIPipelineLayout>& Material::GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
+		return GetExplicitPipelineLayout(device, m_shader);
+	}
+
+	const std::shared_ptr<RHI::RHIPipelineLayout>& Material::GetExplicitPipelineLayout(
+		const std::shared_ptr<RHI::RHIDevice>& device,
+		const Shader* effectiveShader) const
+	{
 		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
+		const auto* shader = effectiveShader != nullptr ? effectiveShader : m_shader;
+		const auto shaderInstanceId = shader != nullptr ? shader->GetInstanceId() : 0u;
+		const auto shaderGeneration = shader != nullptr ? shader->GetGeneration() : 0u;
 		auto backend = ResolveDeviceBackendType(device);
         const auto deviceIdentity = ResolveDeviceCacheIdentity(device);
 		if (device != nullptr)
@@ -1581,27 +2079,42 @@ namespace NLS::Render::Resources
 			if (nativeInfo.backend != RHI::NativeBackendType::None)
 				backend = nativeInfo.backend;
 		}
+		const auto cacheKey = BuildExplicitShaderCacheKey(device, shader);
+		if (const auto cached = state.explicitPipelineLayoutsByShaderKey.find(cacheKey);
+			cached != state.explicitPipelineLayoutsByShaderKey.end())
+		{
+			state.explicitPipelineLayout = cached->second;
+			state.explicitPipelineLayoutDeviceIdentity = deviceIdentity;
+			state.explicitPipelineLayoutBackend = backend;
+			state.explicitPipelineLayoutShaderInstanceId = shaderInstanceId;
+			state.explicitPipelineLayoutShaderGeneration = shaderGeneration;
+			return state.explicitPipelineLayout;
+		}
 		if (state.explicitPipelineLayout != nullptr &&
             state.explicitPipelineLayoutDeviceIdentity == deviceIdentity &&
-            state.explicitPipelineLayoutBackend == backend)
+            state.explicitPipelineLayoutBackend == backend &&
+			state.explicitPipelineLayoutShaderInstanceId == shaderInstanceId &&
+			state.explicitPipelineLayoutShaderGeneration == shaderGeneration)
 			return state.explicitPipelineLayout;
 
 		state.explicitPipelineLayout.reset();
         state.explicitPipelineLayoutDeviceIdentity = deviceIdentity;
 		state.explicitPipelineLayoutBackend = backend;
+		state.explicitPipelineLayoutShaderInstanceId = shaderInstanceId;
+		state.explicitPipelineLayoutShaderGeneration = shaderGeneration;
 		if (device == nullptr)
 			return state.explicitPipelineLayout;
 
-		if (m_shader == nullptr)
+		if (shader == nullptr)
 			return state.explicitPipelineLayout;
 
 		const auto layoutDescs = BuildExplicitBindingLayoutDescs(
-			*m_shader,
+			*shader,
 			path.empty() ? "Material" : path);
 		if (layoutDescs.empty())
 			return state.explicitPipelineLayout;
 
-		const bool requiresIndexedObjectData = ShaderSupportsIndexedObjectData(*m_shader);
+		const bool requiresIndexedObjectData = ShaderSupportsIndexedObjectData(*shader);
 		if (requiresIndexedObjectData && !BackendSupportsIndexedObjectDataPushConstants(backend))
 			return state.explicitPipelineLayout;
 
@@ -1626,6 +2139,7 @@ namespace NLS::Render::Resources
 			pipelineLayoutDesc.bindingLayouts.push_back(device->CreateBindingLayout(layoutDesc));
 		}
 		state.explicitPipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+		state.explicitPipelineLayoutsByShaderKey[cacheKey] = state.explicitPipelineLayout;
 		return state.explicitPipelineLayout;
 	}
 
@@ -1648,27 +2162,33 @@ namespace NLS::Render::Resources
 
 	bool Material::RequiresPassDescriptorSet() const
 	{
+		return RequiresPassDescriptorSet(m_shader);
+	}
+
+	bool Material::RequiresPassDescriptorSet(const Shader* effectiveShader) const
+	{
 		EnsureShaderGenerationCacheCurrent();
-		if (m_shader == nullptr)
+		const auto* shader = effectiveShader != nullptr ? effectiveShader : m_shader;
+		if (shader == nullptr)
 			return false;
 
-		if (m_shader->HasParameterStructs())
+		if (shader->HasParameterStructs())
 		{
 			const auto layoutDescs = BuildExplicitBindingLayoutDescs(
-				*m_shader,
+				*shader,
 				path.empty() ? "Material" : path);
 			constexpr uint32_t passSetIndex = NLS::Render::RHI::BindingPointMap::kPassDescriptorSet;
 			return layoutDescs.size() > passSetIndex && !layoutDescs[passSetIndex].entries.empty();
 		}
 
-		const auto& reflection = m_shader->GetReflection();
-		for (const auto& constantBuffer : reflection.constantBuffers)
+		const auto reflection = shader->GetReflectionSnapshot();
+		for (const auto& constantBuffer : reflection->constantBuffers)
 		{
 			if (constantBuffer.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
 				return true;
 		}
 
-		for (const auto& property : reflection.properties)
+		for (const auto& property : reflection->properties)
 		{
 			if (property.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
 				return true;
@@ -1763,6 +2283,11 @@ namespace NLS::Render::Resources
 	{
 		const auto found = m_samplerOverrides.find(name);
 		return found != m_samplerOverrides.end() ? &found->second : nullptr;
+	}
+
+	const std::map<std::string, RHI::SamplerDesc>& Material::GetSamplerOverrides() const
+	{
+		return m_samplerOverrides;
 	}
 
 	uint64_t Material::GetInstanceId() const

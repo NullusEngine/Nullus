@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "Assets/PrefabUtilityFacade.h"
+#include "Assets/ArtifactManifest.h"
 #include "Components/LightComponent.h"
 #include "Components/MeshRenderer.h"
 #include "Components/MeshFilter.h"
@@ -188,6 +189,14 @@ bool ContainsResolvedAsset(
                 resolved.expectedType == expectedType &&
                 resolved.artifactPath == artifactPath;
         });
+}
+
+std::string ContentArtifactPath(const std::string& owner, const std::string& suffix)
+{
+    const auto fileName = NLS::Core::Assets::BuildArtifactStorageFileName(owner + ":" + suffix);
+    return (std::filesystem::path("Library") /
+        "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(fileName)).generic_string();
 }
 
 std::string ReadStringProperty(const PrefabArtifact& artifact, const char* propertyName)
@@ -1146,8 +1155,8 @@ TEST(PrefabUtilityFacadeTests, MissingScenePrefabRestoreMarksNameAndSuppressesSt
 
     const auto meshAssetId = Id("f4070a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a");
     const auto materialAssetId = Id("f4070b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b");
-    const std::string meshArtifactPath = "Library/Artifacts/MissingRenderable/mesh.nmesh";
-    const std::string materialArtifactPath = "Library/Artifacts/MissingRenderable/material.nmat";
+    const std::string meshArtifactPath = ContentArtifactPath("MissingRenderable", "c001");
+    const std::string materialArtifactPath = ContentArtifactPath("MissingRenderable", "c002");
     const auto meshReference = ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(meshAssetId.GetGuid()),
         NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshAssetId.GetGuid(), meshArtifactPath),
@@ -2114,8 +2123,8 @@ TEST(PrefabUtilityFacadeTests, SaveAsPrefabAssetResolvesMeshAndMaterialObjectRef
 
     const auto meshAssetId = Id("b2040404-0404-4404-8404-040404040404");
     const auto materialAssetId = Id("b2050505-0505-4505-8505-050505050505");
-    const std::string meshArtifactPath = "Library/Artifacts/Cube/mesh.nmesh";
-    const std::string materialArtifactPath = "Library/Artifacts/Cube/material.nmat";
+    const std::string meshArtifactPath = ContentArtifactPath("Cube", "c011");
+    const std::string materialArtifactPath = ContentArtifactPath("Cube", "c012");
     const auto meshReference = ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(meshAssetId.GetGuid()),
         NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshAssetId.GetGuid(), meshArtifactPath),
@@ -2188,8 +2197,8 @@ TEST(PrefabUtilityFacadeTests, SavePrefabContentsRefreshesResolvedAssetReference
     auto* meshRenderer = open.stage->stageRoot->AddComponent<NLS::Engine::Components::MeshRenderer>();
     const auto meshAssetId = Id("b2080808-0808-4808-8808-080808080808");
     const auto materialAssetId = Id("b2090909-0909-4909-8909-090909090909");
-    const std::string meshArtifactPath = "Library/Artifacts/Editable/mesh.nmesh";
-    const std::string materialArtifactPath = "Library/Artifacts/Editable/material.nmat";
+    const std::string meshArtifactPath = ContentArtifactPath("Editable", "c021");
+    const std::string materialArtifactPath = ContentArtifactPath("Editable", "c022");
     const auto meshReference = ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(meshAssetId.GetGuid()),
         NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshAssetId.GetGuid(), meshArtifactPath),
@@ -2221,7 +2230,7 @@ TEST(PrefabUtilityFacadeTests, SavePrefabContentsPrunesRemovedResolvedAssetRefer
     auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
 
     const auto meshAssetId = Id("b20a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a");
-    const std::string meshArtifactPath = "Library/Artifacts/Pruned/mesh.nmesh";
+    const std::string meshArtifactPath = ContentArtifactPath("Pruned", "c031");
     const auto meshReference = ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(meshAssetId.GetGuid()),
         NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshAssetId.GetGuid(), meshArtifactPath),

@@ -10,15 +10,15 @@ TEST(MaterialVariantKeyTests, BuildsStableMaterialIdentityFromAssetPath)
 {
     NLS::Render::Resources::Material firstMaterial;
     NLS::Render::Resources::Material secondMaterial;
-    firstMaterial.path = "App/Assets/Shared.nmat";
-    secondMaterial.path = "App/Assets/Shared.nmat";
+    firstMaterial.path = "App/Assets/Shared.mat";
+    secondMaterial.path = "App/Assets/Shared.mat";
     secondMaterial.SetBlendable(true);
     secondMaterial.SetColorWriting(false);
 
     const auto firstIdentity = NLS::Render::Resources::BuildMaterialVariantIdentity(firstMaterial);
     const auto secondIdentity = NLS::Render::Resources::BuildMaterialVariantIdentity(secondMaterial);
 
-    EXPECT_EQ(firstIdentity.stableKey, "path:App/Assets/Shared.nmat");
+    EXPECT_EQ(firstIdentity.stableKey, "path:App/Assets/Shared.mat");
     EXPECT_EQ(secondIdentity.stableKey, firstIdentity.stableKey);
 }
 
@@ -62,10 +62,35 @@ TEST(MaterialVariantKeyTests, RuntimeMaterialIdentityUsesSemanticSurfaceModeToke
     EXPECT_EQ(decalIdentity.stableKey.find("|surface:2"), std::string::npos);
 }
 
+TEST(MaterialVariantKeyTests, RuntimeMaterialIdentityIncludesShaderLabKeywordsInStableOrder)
+{
+    NLS::Render::Resources::Material alphaNormalMaterial;
+    alphaNormalMaterial.EnableKeyword("_ALPHATEST_ON");
+    alphaNormalMaterial.EnableKeyword("_NORMALMAP");
+
+    NLS::Render::Resources::Material normalAlphaMaterial;
+    normalAlphaMaterial.EnableKeyword("_NORMALMAP");
+    normalAlphaMaterial.EnableKeyword("_ALPHATEST_ON");
+
+    NLS::Render::Resources::Material alphaOnlyMaterial;
+    alphaOnlyMaterial.EnableKeyword("_ALPHATEST_ON");
+
+    const auto alphaNormalIdentity =
+        NLS::Render::Resources::BuildMaterialVariantIdentity(alphaNormalMaterial);
+    const auto normalAlphaIdentity =
+        NLS::Render::Resources::BuildMaterialVariantIdentity(normalAlphaMaterial);
+    const auto alphaOnlyIdentity =
+        NLS::Render::Resources::BuildMaterialVariantIdentity(alphaOnlyMaterial);
+
+    EXPECT_EQ(alphaNormalIdentity.stableKey, normalAlphaIdentity.stableKey);
+    EXPECT_NE(alphaNormalIdentity.stableKey, alphaOnlyIdentity.stableKey);
+    EXPECT_NE(alphaNormalIdentity.stableKey.find("|keywords:_ALPHATEST_ON,_NORMALMAP"), std::string::npos);
+}
+
 TEST(MaterialVariantKeyTests, BuildsPassAndPipelineVariantKeysFromMaterialPipelineAndOverrides)
 {
     NLS::Render::Resources::Material material;
-    material.path = "App/Assets/Variant.nmat";
+    material.path = "App/Assets/Variant.mat";
 
     NLS::Render::Data::PipelineState pipelineState;
     pipelineState.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::GREATER;
@@ -96,7 +121,7 @@ TEST(MaterialVariantKeyTests, BuildsPassAndPipelineVariantKeysFromMaterialPipeli
         overrides);
 
     EXPECT_NE(gbufferKey.stableKey.find("pass:DeferredGBuffer"), std::string::npos);
-    EXPECT_NE(gbufferKey.stableKey.find("material:path:App/Assets/Variant.nmat"), std::string::npos);
+    EXPECT_NE(gbufferKey.stableKey.find("material:path:App/Assets/Variant.mat"), std::string::npos);
     EXPECT_NE(gbufferKey.stableKey.find("overrideDepthTest:0"), std::string::npos);
     EXPECT_NE(gbufferKey.stableKey, lightingKey.stableKey);
     EXPECT_NE(gbufferKey.stableKey, changedPipelineKey.stableKey);
@@ -105,7 +130,7 @@ TEST(MaterialVariantKeyTests, BuildsPassAndPipelineVariantKeysFromMaterialPipeli
 TEST(MaterialVariantKeyTests, IncludesRenderTargetFormatsInPassVariantKey)
 {
     NLS::Render::Resources::Material material;
-    material.path = "App/Assets/GBuffer.nmat";
+    material.path = "App/Assets/GBuffer.mat";
 
     const NLS::Render::Data::PipelineState pipelineState;
 
@@ -139,7 +164,7 @@ TEST(MaterialVariantKeyTests, IncludesRenderTargetFormatsInPassVariantKey)
 TEST(MaterialVariantKeyTests, IncludesBlendOverrideInPassVariantKey)
 {
     NLS::Render::Resources::Material material;
-    material.path = "App/Assets/Overlay.nmat";
+    material.path = "App/Assets/Overlay.mat";
 
     const NLS::Render::Data::PipelineState pipelineState;
 
@@ -168,7 +193,7 @@ TEST(MaterialVariantKeyTests, IncludesBlendOverrideInPassVariantKey)
 TEST(MaterialVariantKeyTests, IncludesPerTargetBlendAndStencilOverridesInPassVariantKey)
 {
     NLS::Render::Resources::Material material;
-    material.path = "App/Assets/Decal.nmat";
+    material.path = "App/Assets/Decal.mat";
 
     const NLS::Render::Data::PipelineState pipelineState;
 
@@ -217,7 +242,7 @@ TEST(MaterialVariantKeyTests, IncludesPerTargetBlendAndStencilOverridesInPassVar
 TEST(MaterialVariantKeyTests, InlineColorFormatOverridesMatchOwnedVectorKeySemantics)
 {
     NLS::Render::Resources::Material material;
-    material.path = "App/Assets/GBufferInline.nmat";
+    material.path = "App/Assets/GBufferInline.mat";
 
     const NLS::Render::Data::PipelineState pipelineState;
 

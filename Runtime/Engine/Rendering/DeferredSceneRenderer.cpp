@@ -323,6 +323,9 @@ namespace
 		overrides.depthWrite = sourceMaterial.HasDepthWriting();
 		overrides.colorWrite = true;
 		overrides.SetColorFormats(GetDeferredGBufferColorFormats());
+		overrides.hasDepthAttachment = true;
+		overrides.depthFormat = NLS::Render::FrameGraph::kDeferredGBufferDepthFormat;
+		overrides.sampleCount = 1u;
 		overrides.culling = sourceMaterial.HasBackfaceCulling() || sourceMaterial.HasFrontfaceCulling();
 		overrides.cullFace = sourceMaterial.HasBackfaceCulling() && sourceMaterial.HasFrontfaceCulling()
 			? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
@@ -896,7 +899,7 @@ namespace NLS::Engine::Rendering
 							if (!drawable.material)
 								continue;
 							auto gbufferDrawable = drawable;
-							gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
+							gbufferDrawable.material = &ResolveGBufferDrawableMaterial(*drawable.material);
 
 							const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
 
@@ -905,6 +908,7 @@ namespace NLS::Engine::Rendering
 								gbufferDrawable,
 								gBufferOverrides,
 								gbufferPso.depthFunc,
+								"GBuffer",
 								preparedDraw);
 							bool queued = false;
 							if (captured)
@@ -926,7 +930,7 @@ namespace NLS::Engine::Rendering
 								continue;
 
 							auto gbufferDrawable = drawable;
-							gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
+							gbufferDrawable.material = &ResolveGBufferDrawableMaterial(*drawable.material);
 
 							const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
 
@@ -935,6 +939,7 @@ namespace NLS::Engine::Rendering
 								gbufferDrawable,
 								decalOverrides,
 								GetDeferredDecalDepthCompare(),
+								"GBuffer",
 								preparedDraw);
 							bool queued = false;
 							if (captured)
@@ -974,6 +979,7 @@ namespace NLS::Engine::Rendering
 							lightingDrawable,
 							compositeOverrides,
 							gbufferPso.depthFunc,
+							"Forward",
 							preparedDraw);
 						const bool queued = captured && QueueThreadedRecordedDraw(preparedDraw);
 						if (queued)
@@ -997,6 +1003,7 @@ namespace NLS::Engine::Rendering
 								drawable,
 								transparentOverrides,
 								transparentPso.depthFunc,
+								"Forward",
 								preparedDraw);
 							bool queued = false;
 							if (captured)
@@ -1306,10 +1313,10 @@ namespace NLS::Engine::Rendering
 		using ShaderLoader = NLS::Render::Resources::Loaders::ShaderLoader;
 		const auto& projectAssetsRoot = NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot();
 
-		m_gBufferShader = ShaderLoader::Create(ResolveEngineShaderPath("DeferredGBuffer.hlsl"), projectAssetsRoot);
-		m_lightingShader = ShaderLoader::Create(ResolveEngineShaderPath("DeferredLighting.hlsl"), projectAssetsRoot);
-		m_hzbBuildShader = ShaderLoader::Create(ResolveEngineShaderPath("HZBBuild.hlsl"), projectAssetsRoot);
-		m_hzbOcclusionShader = ShaderLoader::Create(ResolveEngineShaderPath("HZBOcclusion.hlsl"), projectAssetsRoot);
+		m_gBufferShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("DeferredGBuffer.hlsl"), projectAssetsRoot);
+		m_lightingShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("DeferredLighting.hlsl"), projectAssetsRoot);
+		m_hzbBuildShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("HZBBuild.hlsl"), projectAssetsRoot);
+		m_hzbOcclusionShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("HZBOcclusion.hlsl"), projectAssetsRoot);
 
 		if (m_lightingShader)
 		{
@@ -2305,6 +2312,14 @@ namespace NLS::Engine::Rendering
 		return material;
 	}
 
+	NLS::Render::Resources::Material& DeferredSceneRenderer::ResolveGBufferDrawableMaterial(
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		if (sourceMaterial.ResolveShaderForLightMode("GBuffer") != nullptr)
+			return sourceMaterial;
+		return ResolveFrameGBufferMaterial(sourceMaterial);
+	}
+
 	void DeferredSceneRenderer::ClearFrameGBufferMaterialResolveCache()
 	{
 		m_frameGBufferMaterialResolveCache.clear();
@@ -2343,11 +2358,11 @@ namespace NLS::Engine::Rendering
 				continue;
 
 			auto gbufferDrawable = drawable;
-			gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
+			gbufferDrawable.material = &ResolveGBufferDrawableMaterial(*drawable.material);
 
 			const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
 
-			DrawEntity(gbufferDrawable, gBufferOverrides, pso.depthFunc);
+			DrawEntity(gbufferDrawable, gBufferOverrides, pso.depthFunc, "GBuffer");
 		}
 	}
 
@@ -2366,11 +2381,11 @@ namespace NLS::Engine::Rendering
 				continue;
 
 			auto gbufferDrawable = drawable;
-			gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
+			gbufferDrawable.material = &ResolveGBufferDrawableMaterial(*drawable.material);
 
 			const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
 
-			DrawEntity(gbufferDrawable, decalOverrides, GetDeferredDecalDepthCompare());
+			DrawEntity(gbufferDrawable, decalOverrides, GetDeferredDecalDepthCompare(), "GBuffer");
 		}
 	}
 
@@ -2408,10 +2423,6 @@ namespace NLS::Engine::Rendering
 			m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
 		EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
 
-		auto commandBuffer = GetActiveExplicitCommandBuffer();
-		auto device = GetExplicitDevice();
-		auto pipelineCache = NLS::Render::Context::DriverRendererAccess::GetPipelineCache(GetDriver());
-
 		NLS::Render::Entities::Drawable lightingDrawable;
 		lightingDrawable.mesh = m_fullscreenQuad.get();
 		lightingDrawable.material = m_lightingMaterial.get();
@@ -2423,18 +2434,21 @@ namespace NLS::Engine::Rendering
 		compositeOverrides.culling = false;
 		compositeOverrides.colorWrite = true;
 
-		auto material = lightingDrawable.material;
-		auto mesh = lightingDrawable.mesh;
+		PreparedRecordedDraw preparedDraw;
+		if (!PrepareRecordedDraw(lightingDrawable, compositeOverrides, pso.depthFunc, "Forward", preparedDraw))
+			return;
 
-		auto pipeline = material->BuildRecordedGraphicsPipeline(
-			device, pipelineCache, lightingDrawable.primitiveMode, pso, compositeOverrides);
-		auto bindingSet = material->GetRecordedBindingSet(device);
-		auto rhiMesh = mesh->GetRHIMesh();
-		commandBuffer->BindGraphicsPipeline(pipeline);
-		if (GetLightGridGraphicsPassBindingSet() != nullptr)
-			commandBuffer->BindBindingSet(NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, GetLightGridGraphicsPassBindingSet());
-		commandBuffer->BindBindingSet(NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet, bindingSet);
-		SubmitMeshDraw(commandBuffer, rhiMesh, material->GetGPUInstances());
+		BindPreparedGraphicsPipeline(preparedDraw);
+		if (preparedDraw.commandBuffer != nullptr &&
+			GetLightGridGraphicsPassBindingSet() != nullptr &&
+			preparedDraw.passBindingSet != GetLightGridGraphicsPassBindingSet())
+		{
+			preparedDraw.commandBuffer->BindBindingSet(
+				NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,
+				GetLightGridGraphicsPassBindingSet());
+		}
+		BindPreparedMaterialBindingSet(preparedDraw);
+		SubmitPreparedDraw(preparedDraw);
 	}
 
 	void DeferredSceneRenderer::DrawTransparents(NLS::Render::Data::PipelineState pso)
@@ -2450,7 +2464,7 @@ namespace NLS::Engine::Rendering
 			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
 				continue;
-			DrawEntity(drawable, transparentOverrides, pso.depthFunc);
+			DrawEntity(drawable, transparentOverrides, pso.depthFunc, "Forward");
 		}
 	}
 
@@ -2466,6 +2480,13 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::Material& sourceMaterial)
 	{
 		return renderer.ResolveFrameGBufferMaterial(sourceMaterial);
+	}
+
+	NLS::Render::Resources::Material& DeferredSceneRendererTestAccess::ResolveGBufferDrawableMaterialForTesting(
+		DeferredSceneRenderer& renderer,
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		return renderer.ResolveGBufferDrawableMaterial(sourceMaterial);
 	}
 
 	DeferredSceneRendererTestAccess::GBufferMaterialCache& DeferredSceneRendererTestAccess::GetGBufferMaterialCache(
@@ -2533,6 +2554,12 @@ namespace NLS::Engine::Rendering
 		const NLS::Render::Resources::Material& sourceMaterial)
 	{
 		return BuildDeferredDecalMaterialOverrides(sourceMaterial);
+	}
+
+	NLS::Render::Resources::MaterialPipelineStateOverrides DeferredSceneRendererTestAccess::BuildGBufferMaterialOverridesForTesting(
+		const NLS::Render::Resources::Material& sourceMaterial)
+	{
+		return BuildGBufferMaterialOverrides(sourceMaterial);
 	}
 
 	NLS::Render::Settings::EComparaisonAlgorithm DeferredSceneRendererTestAccess::GetDeferredDecalDepthCompareForTesting()

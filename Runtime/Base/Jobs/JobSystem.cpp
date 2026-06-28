@@ -626,6 +626,9 @@ void ResetJobSystemForTesting()
     if (queue != nullptr)
         queue->Shutdown(JobSystemShutdownMode::Immediate);
     Internal::ShutdownBackgroundJobQueue(JobSystemShutdownMode::Immediate);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    Internal::ResetBackgroundJobQueueForTesting();
+#endif
     Internal::ClearBackgroundJobRetiredHistory();
     Internal::ClearJobTerminalStatusesForTesting();
 

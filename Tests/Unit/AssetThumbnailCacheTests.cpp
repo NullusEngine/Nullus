@@ -4271,7 +4271,7 @@ TEST(AssetThumbnailCacheTests, ThumbnailPreviewDefaultShaderUsesLoadedStandardPb
     auto* forward = Shader::CreateForTesting("Library/Artifacts/12/standardpbrforward");
     ASSERT_NE(forward, nullptr);
     forward->SetImportedShaderLabPassForTesting(
-        "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+        "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
         "shader:StandardPBR/Forward#0",
         "Forward",
         {});

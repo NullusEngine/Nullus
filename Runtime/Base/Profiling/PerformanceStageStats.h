@@ -3,9 +3,11 @@
 #include "BaseDef.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <initializer_list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -110,6 +112,24 @@ private:
     mutable std::mutex m_mutex;
 };
 
+struct PerformanceStageStatsCaptureState;
+
+class NLS_BASE_API PerformanceStageStatsCaptureToken
+{
+public:
+    PerformanceStageStatsCaptureToken() = default;
+
+    [[nodiscard]] bool IsValid() const;
+
+private:
+    friend class PerformanceStageStatsCapture;
+    friend class PerformanceStageStatsCaptureScope;
+
+    explicit PerformanceStageStatsCaptureToken(std::weak_ptr<PerformanceStageStatsCaptureState> state);
+
+    std::weak_ptr<PerformanceStageStatsCaptureState> m_state;
+};
+
 class NLS_BASE_API PerformanceStageStatsCapture
 {
 public:
@@ -122,8 +142,35 @@ public:
     PerformanceStageStatsCapture(PerformanceStageStatsCapture&&) = delete;
     PerformanceStageStatsCapture& operator=(PerformanceStageStatsCapture&&) = delete;
 
+    [[nodiscard]] PerformanceStageStatsCaptureToken GetToken() const;
+    [[nodiscard]] static PerformanceStageStatsCaptureToken GetActiveToken();
+
 private:
     PerformanceStageStats* m_previous = nullptr;
+    std::shared_ptr<PerformanceStageStatsCaptureState> m_previousState;
+    std::shared_ptr<PerformanceStageStatsCaptureState> m_state;
+};
+
+class NLS_BASE_API PerformanceStageStatsCaptureScope
+{
+public:
+    explicit PerformanceStageStatsCaptureScope(const PerformanceStageStatsCaptureToken& token);
+    ~PerformanceStageStatsCaptureScope();
+
+    PerformanceStageStatsCaptureScope(const PerformanceStageStatsCaptureScope&) = delete;
+    PerformanceStageStatsCaptureScope& operator=(const PerformanceStageStatsCaptureScope&) = delete;
+
+    PerformanceStageStatsCaptureScope(PerformanceStageStatsCaptureScope&&) = delete;
+    PerformanceStageStatsCaptureScope& operator=(PerformanceStageStatsCaptureScope&&) = delete;
+
+    [[nodiscard]] explicit operator bool() const { return m_active; }
+
+private:
+    PerformanceStageStats* m_previous = nullptr;
+    std::shared_ptr<PerformanceStageStatsCaptureState> m_previousState;
+    std::shared_ptr<PerformanceStageStatsCaptureState> m_state;
+    std::unique_lock<std::mutex> m_lock;
+    bool m_active = false;
 };
 
 class NLS_BASE_API PerformanceStageScope

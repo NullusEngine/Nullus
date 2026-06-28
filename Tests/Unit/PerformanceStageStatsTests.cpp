@@ -188,6 +188,30 @@ TEST(PerformanceStageStatsTests, ScopedCaptureRecordsIntoActiveCollector)
     EXPECT_EQ(stage.counters.at("componentCount"), 7u);
 }
 
+TEST(PerformanceStageStatsTests, CaptureTokenExpiresWhenCaptureScopeEnds)
+{
+    PerformanceStageStats stats;
+    PerformanceStageStatsCaptureToken token;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        token = capture.GetToken();
+        ASSERT_TRUE(token.IsValid());
+    }
+
+    EXPECT_FALSE(token.IsValid());
+
+    {
+        PerformanceStageStatsCaptureScope capture(token);
+        EXPECT_FALSE(static_cast<bool>(capture));
+        PerformanceStageScope scope(
+            PerformanceStageDomain::Thumbnail,
+            "ExpiredBackgroundWork",
+            PerformanceStageThread::Background);
+    }
+
+    EXPECT_TRUE(stats.Snapshot().stages.empty());
+}
+
 TEST(PerformanceStageStatsTests, RequiredStageWarningsListMissingStagesDeterministically)
 {
     PerformanceStageStats stats;

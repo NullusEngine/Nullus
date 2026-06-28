@@ -10,6 +10,7 @@ namespace NLS::Base::Profiling
 namespace
 {
 thread_local PerformanceStageStats* g_activePerformanceStageStats = nullptr;
+thread_local std::shared_ptr<PerformanceStageStatsCaptureState> g_activePerformanceStageStatsState;
 
 bool IsMaximumGaugeCounter(const std::string& name)
 {
@@ -51,6 +52,19 @@ void AggregateCounter(
     counters[name] += value;
 }
 }
+
+struct PerformanceStageStatsCaptureState
+{
+    explicit PerformanceStageStatsCaptureState(PerformanceStageStats& stats)
+        : activeStats(&stats)
+    {
+    }
+
+    PerformanceStageStats* activeStats = nullptr;
+    uint32_t activeScopes = 0u;
+    std::mutex mutex;
+    std::condition_variable idle;
+};
 
 bool PerformanceStageStats::StageKeyLess::operator()(const StageKey& lhs, const StageKey& rhs) const
 {
@@ -204,13 +218,88 @@ PerformanceBenchmarkComparison ComparePerformanceRuns(
 
 PerformanceStageStatsCapture::PerformanceStageStatsCapture(PerformanceStageStats& stats)
     : m_previous(g_activePerformanceStageStats)
+    , m_previousState(g_activePerformanceStageStatsState)
+    , m_state(std::make_shared<PerformanceStageStatsCaptureState>(stats))
 {
     g_activePerformanceStageStats = &stats;
+    g_activePerformanceStageStatsState = m_state;
 }
 
 PerformanceStageStatsCapture::~PerformanceStageStatsCapture()
 {
+    if (m_state)
+    {
+        std::unique_lock lock(m_state->mutex);
+        m_state->activeStats = nullptr;
+        m_state->idle.wait(lock, [state = m_state.get()]
+        {
+            return state->activeScopes == 0u;
+        });
+    }
     g_activePerformanceStageStats = m_previous;
+    g_activePerformanceStageStatsState = m_previousState;
+}
+
+PerformanceStageStatsCaptureToken::PerformanceStageStatsCaptureToken(
+    std::weak_ptr<PerformanceStageStatsCaptureState> state)
+    : m_state(std::move(state))
+{
+}
+
+bool PerformanceStageStatsCaptureToken::IsValid() const
+{
+    const auto state = m_state.lock();
+    if (!state)
+        return false;
+
+    std::scoped_lock lock(state->mutex);
+    return state->activeStats != nullptr;
+}
+
+PerformanceStageStatsCaptureToken PerformanceStageStatsCapture::GetToken() const
+{
+    return PerformanceStageStatsCaptureToken(m_state);
+}
+
+PerformanceStageStatsCaptureToken PerformanceStageStatsCapture::GetActiveToken()
+{
+    return PerformanceStageStatsCaptureToken(g_activePerformanceStageStatsState);
+}
+
+PerformanceStageStatsCaptureScope::PerformanceStageStatsCaptureScope(
+    const PerformanceStageStatsCaptureToken& token)
+    : m_previous(g_activePerformanceStageStats)
+    , m_previousState(g_activePerformanceStageStatsState)
+    , m_state(token.m_state.lock())
+{
+    if (!m_state)
+        return;
+
+    m_lock = std::unique_lock<std::mutex>(m_state->mutex);
+    if (m_state->activeStats == nullptr)
+        return;
+
+    g_activePerformanceStageStats = m_state->activeStats;
+    g_activePerformanceStageStatsState = m_state;
+    ++m_state->activeScopes;
+    m_lock.unlock();
+    m_active = true;
+}
+
+PerformanceStageStatsCaptureScope::~PerformanceStageStatsCaptureScope()
+{
+    if (!m_active)
+        return;
+
+    g_activePerformanceStageStats = m_previous;
+    g_activePerformanceStageStatsState = m_previousState;
+    std::unique_lock lock(m_state->mutex);
+    if (m_state->activeScopes > 0u)
+        --m_state->activeScopes;
+    const bool idle = m_state->activeScopes == 0u;
+    lock.unlock();
+    if (idle)
+        m_state->idle.notify_all();
 }
 
 PerformanceStageScope::PerformanceStageScope(

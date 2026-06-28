@@ -16,7 +16,7 @@ namespace NLS::Editor::Assets
 {
 namespace
 {
-constexpr const char* kProjectStandardPbrShaderPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
+constexpr const char* kProjectStandardPbrShaderPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet";
 
 struct PreparedPrefabCachePreflightSummary
 {

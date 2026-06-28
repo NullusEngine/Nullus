@@ -1666,5 +1666,25 @@ namespace Internal
         if (queue != nullptr)
             queue->ClearRetiredHistory();
     }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    bool HasBackgroundJobQueueForTesting()
+    {
+        std::lock_guard lock(g_backgroundMutex);
+        return g_backgroundQueue != nullptr;
+    }
+
+    void ResetBackgroundJobQueueForTesting()
+    {
+        std::shared_ptr<BackgroundQueue> queue;
+        {
+            std::lock_guard lock(g_backgroundMutex);
+            queue = std::move(g_backgroundQueue);
+        }
+
+        if (queue != nullptr)
+            queue->Shutdown(JobSystemShutdownMode::Immediate);
+    }
+#endif
 }
 }

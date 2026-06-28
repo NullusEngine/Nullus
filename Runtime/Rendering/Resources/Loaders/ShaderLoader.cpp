@@ -462,7 +462,7 @@ Shader* ShaderLoader::Create(const std::string& p_filePath)
 	if (IsNativeShaderArtifactFile(p_filePath))
 		return CreateImportedShaderArtifact(p_filePath);
 	const auto extension = ToLowerAscii(std::filesystem::path(p_filePath).extension().generic_string());
-	if (extension == ".shader" || extension == ".hlsl")
+	if (extension == ".shadet" || extension == ".hlsl")
 	{
 		NLS_LOG_ERROR("[SHADER] \"" + p_filePath + "\": runtime source loading is disabled; load the imported artifact listed in ArtifactDB/manifest.");
 		return nullptr;
@@ -477,7 +477,7 @@ Shader* ShaderLoader::Create(const std::string& p_filePath, const std::string& p
 	if (IsNativeShaderArtifactFile(p_filePath))
 		return CreateImportedShaderArtifact(p_filePath);
 	const auto extension = ToLowerAscii(std::filesystem::path(p_filePath).extension().generic_string());
-	if (extension == ".shader" || extension == ".hlsl")
+	if (extension == ".shadet" || extension == ".hlsl")
 	{
 		NLS_LOG_ERROR("[SHADER] \"" + p_filePath + "\": runtime source loading is disabled; load the imported artifact listed in ArtifactDB/manifest.");
 		return nullptr;

@@ -5127,7 +5127,8 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
         auto pixels = std::move(preview.rgbaPixels);
         const auto width = preview.width;
         const auto height = preview.height;
-        auto* activeStats = NLS::Base::Profiling::PerformanceStageScope::GetActiveStats();
+        const auto performanceCaptureToken =
+            NLS::Base::Profiling::PerformanceStageStatsCapture::GetActiveToken();
         try
         {
             if (!pollingPendingReadback &&
@@ -5150,11 +5151,9 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
                 cancelToken,
                 ScheduleThumbnailJobFuture(
                     "AssetThumbnailService.GpuPreviewCacheWrite",
-                    [request, metadataRequest, evaluation, pixels = std::move(pixels), width, height, cancelToken, activeStats]() mutable
+                    [request, metadataRequest, evaluation, pixels = std::move(pixels), width, height, cancelToken, performanceCaptureToken]() mutable
                     {
-                        std::optional<NLS::Base::Profiling::PerformanceStageStatsCapture> capture;
-                        if (activeStats != nullptr)
-                            capture.emplace(*activeStats);
+                        NLS::Base::Profiling::PerformanceStageStatsCaptureScope capture(performanceCaptureToken);
                         ScopedThumbnailGenerationStageThread backgroundStageThread(
                             PerformanceStageThread::Background);
                         return WriteRgbaThumbnailResult(
@@ -5316,7 +5315,8 @@ bool AssetThumbnailService::StartNextThumbnailGeneration(IEditorThumbnailPreview
             m_generationCancelToken = std::make_shared<AssetThumbnailGenerationCancelToken>();
         m_generationCancelToken->generation = m_generationSerial;
         const auto cancelToken = m_generationCancelToken;
-        auto* activeStats = NLS::Base::Profiling::PerformanceStageScope::GetActiveStats();
+        const auto performanceCaptureToken =
+            NLS::Base::Profiling::PerformanceStageStatsCapture::GetActiveToken();
 
         try
         {
@@ -5334,11 +5334,9 @@ bool AssetThumbnailService::StartNextThumbnailGeneration(IEditorThumbnailPreview
                 cancelToken,
                 ScheduleThumbnailJobFuture(
                     "AssetThumbnailService.GenerateThumbnail",
-                    [request, cancelToken, activeStats]
+                    [request, cancelToken, performanceCaptureToken]
                     {
-                        std::optional<NLS::Base::Profiling::PerformanceStageStatsCapture> capture;
-                        if (activeStats != nullptr)
-                            capture.emplace(*activeStats);
+                        NLS::Base::Profiling::PerformanceStageStatsCaptureScope capture(performanceCaptureToken);
                         ScopedThumbnailGenerationStageThread backgroundStageThread(
                             PerformanceStageThread::Background);
                         return TryGenerateThumbnailForRequest(request, cancelToken);

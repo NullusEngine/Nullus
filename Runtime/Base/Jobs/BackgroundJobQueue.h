@@ -48,5 +48,9 @@ namespace NLS::Base::Jobs
         NLS_BASE_API void CompleteBackgroundJob(JobHandle handle);
         NLS_BASE_API void ClearBackgroundJob(JobHandle handle);
         NLS_BASE_API void ClearBackgroundJobRetiredHistory();
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        NLS_BASE_API bool HasBackgroundJobQueueForTesting();
+        NLS_BASE_API void ResetBackgroundJobQueueForTesting();
+#endif
     }
 }

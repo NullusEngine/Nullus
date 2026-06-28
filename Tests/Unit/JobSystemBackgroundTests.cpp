@@ -339,6 +339,42 @@ TEST_F(JobSystemBackgroundTests, BackgroundJobDebugNameIsOwnedAfterScheduleRetur
     NLS::Base::Profiling::Profiler::ResetForTesting();
 }
 
+TEST_F(JobSystemBackgroundTests, ResetForTestingReleasesBackgroundQueueStateBeforeNextInitialize)
+{
+    NLS::Base::Jobs::JobSystemConfig config;
+    config.workerCount = 0u;
+    config.backgroundWorkerCount = 1u;
+    ASSERT_TRUE(NLS::Base::Jobs::InitializeJobSystem(config));
+    ASSERT_TRUE(NLS::Base::Jobs::Internal::HasBackgroundJobQueueForTesting());
+
+    std::atomic<int> dependencyCounter = 0;
+    AtomicCounterData dependencyData{&dependencyCounter};
+    NLS::Base::Jobs::JobScheduleDesc dependencyDesc;
+    dependencyDesc.function = IncrementCounter;
+    dependencyDesc.userData = &dependencyData;
+    auto dependency = NLS::Base::Jobs::ScheduleJob(dependencyDesc);
+    ASSERT_NE(dependency.id, 0u);
+
+    std::atomic<int> backgroundCounter = 0;
+    AtomicCounterData backgroundData{&backgroundCounter};
+    NLS::Base::Jobs::BackgroundJobDesc desc;
+    desc.function = IncrementCounter;
+    desc.userData = &backgroundData;
+    desc.dependency = dependency;
+
+    auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
+    ASSERT_NE(handle.id, 0u);
+    EXPECT_TRUE(NLS::Base::Jobs::Internal::IsKnownBackgroundJobHandle(handle));
+
+    NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::Immediate);
+    EXPECT_TRUE(NLS::Base::Jobs::Internal::IsKnownBackgroundJobHandle(handle));
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Base::Jobs::ResetJobSystemForTesting();
+#endif
+    EXPECT_FALSE(NLS::Base::Jobs::Internal::HasBackgroundJobQueueForTesting());
+}
+
 TEST_F(JobSystemBackgroundTests, BackgroundWorkerRejectsSynchronousWaitForBackgroundJob)
 {
     NLS::Base::Jobs::JobSystemConfig config;

@@ -12,7 +12,7 @@ TEST(PathParserTests, TreatsNativeMaterialArtifactsAsMaterialFiles)
 TEST(PathParserTests, TreatsShaderLabAssetsAsShaderFiles)
 {
     EXPECT_EQ(
-        NLS::Utils::PathParser::GetFileType("Assets/Shaders/ShaderLab/Hero.shader"),
+        NLS::Utils::PathParser::GetFileType("Assets/Shaders/ShaderLab/Hero.shadet"),
         NLS::Utils::PathParser::EFileType::SHADER);
 }
 
@@ -33,7 +33,7 @@ TEST(PathParserTests, ClassifiesAssetBrowserProjectExtensionsConsistently)
         {"Assets/Textures/Hero.png", FileType::TEXTURE},
         {"Assets/Textures/Hero.bmp", FileType::TEXTURE},
         {"Assets/Textures/Hero.dds", FileType::TEXTURE},
-        {"Assets/Shaders/Hero.shader", FileType::SHADER},
+        {"Assets/Shaders/Hero.shadet", FileType::SHADER},
         {"Assets/Scenes/Hero.scene", FileType::SCENE},
         {"Assets/Scenes/Hero.objectgraph.json", FileType::SCENE},
         {"Assets/Scripts/Hero.cs", FileType::SCRIPT},

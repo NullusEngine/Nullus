@@ -117,7 +117,7 @@ TEST(AssetFoundationTests, ScanRewritesSemanticallyStaleMeta)
 TEST(AssetFoundationTests, ScanUsesSourceExtensionAsAuthoritativeWhenMetaHasDifferentType)
 {
     const auto root = MakeAssetTestRoot();
-    const auto shaderPath = root / "Shaders" / "RenamedFromMaterial.shader";
+    const auto shaderPath = root / "Shaders" / "RenamedFromMaterial.shadet";
     const auto stableGuid = NLS::Guid::New();
     WriteTextFile(shaderPath, R"(Shader "Tests/Renamed" { SubShader { Pass { HLSLPROGRAM ENDHLSL } } })");
     WriteTextFile(
@@ -205,7 +205,7 @@ TEST(AssetFoundationTests, InferAssetTypesMatchAssetBrowserProjectExtensions)
         {"Textures/Hero.png", AssetType::Texture, "texture"},
         {"Textures/Hero.bmp", AssetType::Texture, "texture"},
         {"Textures/Hero.dds", AssetType::Texture, "texture"},
-        {"Shaders/Hero.shader", AssetType::Shader, "shader"},
+        {"Shaders/Hero.shadet", AssetType::Shader, "shader"},
         {"Materials/Hero.mat", AssetType::Material, "material"},
         {"Scenes/Hero.scene", AssetType::Scene, "scene"},
         {"Scenes/Hero.objectgraph.json", AssetType::Scene, "scene"},
@@ -231,7 +231,7 @@ TEST(AssetFoundationTests, ScanWritesMetaForAssetBrowserProjectExtensions)
     using NLS::Core::Assets::AssetType;
 
     const auto root = MakeAssetTestRoot();
-    const auto shaderPath = root / "Shaders" / "Hero.shader";
+    const auto shaderPath = root / "Shaders" / "Hero.shadet";
     const auto scenePath = root / "Scenes" / "Hero.scene";
     const auto objectGraphScenePath = root / "Scenes" / "Hero.objectgraph.json";
     const auto bmpPath = root / "Textures" / "Hero.bmp";

@@ -631,10 +631,10 @@ std::string ToLowerAscii(std::string value)
 bool IsStandardPbrSourcePath(const std::string& path)
 {
     const auto sourcePath = ToLowerGenericPath(path);
-    return sourcePath == "app/assets/engine/shaders/shaderlab/standardpbr.shader" ||
-        sourcePath.ends_with("/app/assets/engine/shaders/shaderlab/standardpbr.shader") ||
-        sourcePath == "assets/engine/shaders/shaderlab/standardpbr.shader" ||
-        sourcePath.ends_with("/assets/engine/shaders/shaderlab/standardpbr.shader");
+    return sourcePath == "app/assets/engine/shaders/shaderlab/standardpbr.shadet" ||
+        sourcePath.ends_with("/app/assets/engine/shaders/shaderlab/standardpbr.shadet") ||
+        sourcePath == "assets/engine/shaders/shaderlab/standardpbr.shadet" ||
+        sourcePath.ends_with("/assets/engine/shaders/shaderlab/standardpbr.shadet");
 }
 
 bool IsStandardPbrForwardSubAssetKey(const std::string& subAssetKey)

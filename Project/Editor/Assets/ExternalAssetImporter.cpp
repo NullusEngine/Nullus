@@ -1937,6 +1937,29 @@ std::optional<std::filesystem::path> ResolveModelTextureProjectRelativePath(
         return std::nullopt;
 
     auto resolved = ResolveExternalSceneResourcePath(request, texture.uri);
+    if (!resolved.has_value() && !request.projectRoot.empty())
+    {
+        for (const auto& candidate : ExternalSceneResourceCandidates(
+                 request.projectRoot,
+                 request.sourcePath,
+                 texture.uri))
+        {
+            if (!IsInsideProjectRoot(request.projectRoot, candidate))
+                continue;
+
+            const auto candidateRelative = NormalizeProjectRelativePath(candidate, request.projectRoot);
+            if (PathEscapesRoot(candidateRelative) || candidateRelative.empty())
+                continue;
+
+            const auto caseResolved = ResolveExistingPathCaseInsensitive(request.projectRoot, candidateRelative);
+            std::error_code error;
+            if (std::filesystem::is_regular_file(caseResolved, error) && !error)
+            {
+                resolved = caseResolved;
+                break;
+            }
+        }
+    }
     if (!resolved.has_value())
         return std::nullopt;
 

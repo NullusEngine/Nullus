@@ -1687,12 +1687,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shadet";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shadet", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -1704,12 +1704,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + Utils::PathParser::Separator() + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
+					finalPath = filePath + Utils::PathParser::Separator() + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shadet";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders/ShaderLab/StandardPBR.shader", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders/ShaderLab/StandardPBR.shadet", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -1721,12 +1721,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shadet";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitColor.shader", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitColor.shadet", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -1738,12 +1738,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shadet";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitTexture.shader", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitTexture.shadet", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -3513,9 +3513,9 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	}
 	case ProjectBrowserTextDialogKind::CreateStandardShader:
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shadet");
 		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader",
+			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shadet",
 			finalPath,
 			std::filesystem::copy_options::overwrite_existing);
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
@@ -3523,9 +3523,9 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	}
 	case ProjectBrowserTextDialogKind::CreateStandardPBRShader:
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shadet");
 		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader",
+			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shadet",
 			finalPath,
 			std::filesystem::copy_options::overwrite_existing);
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
@@ -3533,9 +3533,9 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	}
 	case ProjectBrowserTextDialogKind::CreateUnlitShader:
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shadet");
 		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitColor.shader",
+			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitColor.shadet",
 			finalPath,
 			std::filesystem::copy_options::overwrite_existing);
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
@@ -3543,9 +3543,9 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	}
 	case ProjectBrowserTextDialogKind::CreateUnlitTextureShader:
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shadet");
 		std::filesystem::copy_file(
-			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitTexture.shader",
+			EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitTexture.shadet",
 			finalPath,
 			std::filesystem::copy_options::overwrite_existing);
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());

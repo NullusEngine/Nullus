@@ -99,7 +99,7 @@ NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std:
 	if (ext == "fbx" || ext == "obj" || ext == "gltf" || ext == "glb")			return EFileType::MODEL;
 	else if (ext == "png" || ext == "jpeg" || ext == "jpg" || ext == "tga" ||
 		ext == "bmp" || ext == "dds")											return EFileType::TEXTURE;
-	else if (ext == "shader")													return EFileType::SHADER;
+	else if (ext == "shadet")													return EFileType::SHADER;
 	else if (ext == "mat")														return EFileType::MATERIAL;
 	else if (ext == "wav" || ext == "mp3" || ext == "ogg")						return EFileType::SOUND;
 	else if (ext == "scene")													return EFileType::SCENE;

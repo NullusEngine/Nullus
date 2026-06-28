@@ -89,7 +89,7 @@ void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
     NLS::Editor::Assets::AssetDatabaseFacade database(
         NLS::Editor::Assets::MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
+    ASSERT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet").empty());
 }
 
 std::vector<NLS::Editor::Assets::EditorAssetRoot> AppendBuiltInShaderRootForTest(
@@ -1729,7 +1729,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportWarmsColdModelBeforeRetur
         .LoadSubAssetAtPath("Assets/Models/StartupColdHero.gltf", "prefab:StartupColdHero")
         .has_value());
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/StartupColdHero.gltf"));
-    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
+    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet").empty());
     EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Engine" / "Shaders"))
         << "Built-in ShaderLab sources must stay in App/Assets and only project Library artifacts may be generated.";
 
@@ -1778,7 +1778,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportImportsBuiltInShaderForEm
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
+    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet").empty());
 
     std::filesystem::remove_all(root);
 }
@@ -1794,13 +1794,13 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotOverwriteProjectSh
         "Assets" /
         "Engine" /
         "Shaders";
-    const auto bundledStandardPbr = bundledShaderRoot / "ShaderLab" / "StandardPBR.shader";
+    const auto bundledStandardPbr = bundledShaderRoot / "ShaderLab" / "StandardPBR.shadet";
     const auto bundledCore = bundledShaderRoot / "NullusShaderLibrary" / "Core.hlsl";
     ASSERT_TRUE(std::filesystem::is_regular_file(bundledStandardPbr));
     ASSERT_TRUE(std::filesystem::is_regular_file(bundledCore));
 
     WriteText(
-        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader",
+        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shadet",
         R"(Shader "Project/StandardPBR"
 {
     SubShader
@@ -1842,7 +1842,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotOverwriteProjectSh
     EXPECT_TRUE(result.succeeded);
     EXPECT_GE(result.importedAssetCount, 1u);
     EXPECT_EQ(
-        ReadText(root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader"),
+        ReadText(root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shadet"),
         R"(Shader "Project/StandardPBR"
 {
     SubShader

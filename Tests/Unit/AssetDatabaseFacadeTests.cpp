@@ -1403,7 +1403,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelMaterialReferencesAuthoritativeShade
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader",
+        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shadet",
         R"(
 Shader "Nullus/StandardPBR"
 {
@@ -1452,10 +1452,10 @@ Shader "Nullus/StandardPBR"
         root / materialArtifact->artifactPath,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
-    const auto shaderId = database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader");
+    const auto shaderId = database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet");
     ASSERT_FALSE(shaderId.empty());
     EXPECT_NE(
-        materialPayload.find("shader=Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"),
+        materialPayload.find("shader=Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet"),
         std::string::npos);
     EXPECT_EQ(materialPayload.find("shader=Library/Artifacts/"), std::string::npos);
     EXPECT_EQ(materialPayload.find(":Shaders/StandardPBR.hlsl"), std::string::npos);
@@ -1475,11 +1475,11 @@ TEST(AssetDatabaseFacadeTests, PathConstructorMountsBuiltInShaderRootForAssetsOn
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
 
-    EXPECT_TRUE(database.ImportAsset("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"))
+    EXPECT_TRUE(database.ImportAsset("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet"))
         << "Project-root path construction must mount the read-only built-in shader root even "
            "when lightweight test projects do not have a .nullus file.";
     EXPECT_TRUE(database.GetArtifactManifestForAssetPath(
-        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").has_value());
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet").has_value());
     EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Engine"))
         << "Built-in ShaderLab source must stay mounted read-only instead of being copied into project Assets.";
 
@@ -1496,7 +1496,7 @@ TEST(AssetDatabaseFacadeTests, ImportShaderSourceWritesShaderArtifactManifestAnd
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Shaders" / "HeroSurface.shader",
+        root / "Assets" / "Shaders" / "HeroSurface.shadet",
         R"(Shader "Tests/HeroSurface"
 {
     SubShader
@@ -1516,12 +1516,12 @@ TEST(AssetDatabaseFacadeTests, ImportShaderSourceWritesShaderArtifactManifestAnd
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/HeroSurface.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/HeroSurface.shadet"));
 
-    const auto sourceId = ParseAssetId(database.AssetPathToGUID("Assets/Shaders/HeroSurface.shader"));
+    const auto sourceId = ParseAssetId(database.AssetPathToGUID("Assets/Shaders/HeroSurface.shadet"));
     ASSERT_TRUE(sourceId.IsValid());
 
-    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Shaders/HeroSurface.shader");
+    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Shaders/HeroSurface.shadet");
     ASSERT_TRUE(mainAsset.has_value());
     EXPECT_EQ(mainAsset->subAssetKey, "shader:HeroSurface");
     EXPECT_EQ(mainAsset->artifactType, ArtifactType::Shader);
@@ -1532,7 +1532,7 @@ TEST(AssetDatabaseFacadeTests, ImportShaderSourceWritesShaderArtifactManifestAnd
     const auto artifactPayload = ReadTextFile(mainAsset->artifactPath);
     ASSERT_FALSE(artifactPayload.empty());
     EXPECT_NE(artifactPayload.find("NULLUS_IMPORTED_SHADER_ARTIFACT=1"), std::string::npos);
-    EXPECT_NE(artifactPayload.find("SOURCE=Assets/Shaders/HeroSurface.shader"), std::string::npos);
+    EXPECT_NE(artifactPayload.find("SOURCE=Assets/Shaders/HeroSurface.shadet"), std::string::npos);
     EXPECT_NE(artifactPayload.find("SUB_ASSET=shader:HeroSurface"), std::string::npos);
     EXPECT_NE(artifactPayload.find("ENTRY=VSMain"), std::string::npos);
     EXPECT_NE(artifactPayload.find("ENTRY=PSMain"), std::string::npos);
@@ -1562,7 +1562,7 @@ TEST(AssetDatabaseFacadeTests, ImportShaderSourceWritesShaderArtifactManifestAnd
                 !stage.output.bytecode.empty();
         }));
 
-    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/HeroSurface.shader");
+    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/HeroSurface.shadet");
     ASSERT_TRUE(manifest.has_value());
     EXPECT_EQ(manifest->sourceAssetId, sourceId);
     EXPECT_EQ(manifest->importerId, "shader");
@@ -1592,7 +1592,7 @@ TEST(AssetDatabaseFacadeTests, ImportShaderSourceWritesShaderArtifactManifestAnd
     ASSERT_TRUE(artifactDatabase.Load(root / "Library" / "ArtifactDB"));
     const auto* record = artifactDatabase.Find(sourceId, "shader:HeroSurface", "editor");
     ASSERT_NE(record, nullptr);
-    EXPECT_EQ(record->sourcePath, "Assets/Shaders/HeroSurface.shader");
+    EXPECT_EQ(record->sourcePath, "Assets/Shaders/HeroSurface.shadet");
     EXPECT_EQ(record->artifactType, ArtifactType::Shader);
     EXPECT_EQ(record->loaderId, "shader");
     EXPECT_EQ(record->artifactPath, std::filesystem::path(mainAsset->artifactPath).lexically_relative(root).generic_string());
@@ -1610,7 +1610,7 @@ TEST(AssetDatabaseFacadeTests, ShaderArtifactManifestCurrentRejectsMissingCompil
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Shaders" / "ToolchainFreshness.shader",
+        root / "Assets" / "Shaders" / "ToolchainFreshness.shadet",
         R"(Shader "Tests/ToolchainFreshness"
 {
     SubShader
@@ -1630,18 +1630,18 @@ TEST(AssetDatabaseFacadeTests, ShaderArtifactManifestCurrentRejectsMissingCompil
 
     AssetDatabaseFacade importer(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(importer.Refresh());
-    ASSERT_TRUE(importer.ImportAsset("Assets/Shaders/ToolchainFreshness.shader"));
-    ASSERT_TRUE(importer.IsArtifactManifestCurrentForAssetPath("Assets/Shaders/ToolchainFreshness.shader"));
+    ASSERT_TRUE(importer.ImportAsset("Assets/Shaders/ToolchainFreshness.shadet"));
+    ASSERT_TRUE(importer.IsArtifactManifestCurrentForAssetPath("Assets/Shaders/ToolchainFreshness.shadet"));
 
     RemovePersistedArtifactDependency(
         root,
-        ParseAssetId(importer.AssetPathToGUID("Assets/Shaders/ToolchainFreshness.shader")),
+        ParseAssetId(importer.AssetPathToGUID("Assets/Shaders/ToolchainFreshness.shadet")),
         NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
         "shader-compiler-toolchain");
 
     AssetDatabaseFacade restarted(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(restarted.Refresh());
-    EXPECT_FALSE(restarted.IsArtifactManifestCurrentForAssetPath("Assets/Shaders/ToolchainFreshness.shader"));
+    EXPECT_FALSE(restarted.IsArtifactManifestCurrentForAssetPath("Assets/Shaders/ToolchainFreshness.shadet"));
 
     std::filesystem::remove_all(root);
 }
@@ -1655,7 +1655,7 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportWritesMultiCompileVariantsButNotMa
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Shaders" / "KeywordCombo.shader",
+        root / "Assets" / "Shaders" / "KeywordCombo.shadet",
         R"(Shader "Tests/KeywordCombo"
 {
     SubShader
@@ -1688,9 +1688,9 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportWritesMultiCompileVariantsButNotMa
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/KeywordCombo.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/KeywordCombo.shadet"));
 
-    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/KeywordCombo.shader");
+    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/KeywordCombo.shadet");
     ASSERT_TRUE(manifest.has_value());
     const auto* shaderArtifact = manifest->FindPrimaryArtifact();
     ASSERT_NE(shaderArtifact, nullptr);
@@ -1738,7 +1738,7 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportReflectionUsesDefaultVariantOnly)
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Shaders" / "KeywordResource.shader",
+        root / "Assets" / "Shaders" / "KeywordResource.shadet",
         R"(Shader "Tests/KeywordResource"
 {
     SubShader
@@ -1785,9 +1785,9 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportReflectionUsesDefaultVariantOnly)
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/KeywordResource.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/KeywordResource.shadet"));
 
-    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/KeywordResource.shader");
+    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/KeywordResource.shadet");
     ASSERT_TRUE(manifest.has_value());
     const auto* shaderArtifact = manifest->FindPrimaryArtifact();
     ASSERT_NE(shaderArtifact, nullptr);
@@ -1835,7 +1835,7 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportWritesLightModePassSubAssets)
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Shaders" / "MultiPass.shader",
+        root / "Assets" / "Shaders" / "MultiPass.shadet",
         R"(Shader "Tests/MultiPass"
 {
     SubShader
@@ -1869,9 +1869,9 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportWritesLightModePassSubAssets)
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/MultiPass.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/MultiPass.shadet"));
 
-    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/MultiPass.shader");
+    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/MultiPass.shadet");
     ASSERT_TRUE(manifest.has_value());
     EXPECT_EQ(manifest->primarySubAssetKey, "shader:MultiPass");
     ASSERT_NE(manifest->FindSubAsset("shader:MultiPass"), nullptr);
@@ -1892,7 +1892,7 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportDisambiguatesDuplicateLightModePas
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Shaders" / "DuplicateForward.shader",
+        root / "Assets" / "Shaders" / "DuplicateForward.shadet",
         R"(Shader "Tests/DuplicateForward"
 {
     SubShader
@@ -1924,9 +1924,9 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportDisambiguatesDuplicateLightModePas
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/DuplicateForward.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/DuplicateForward.shadet"));
 
-    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/DuplicateForward.shader");
+    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Shaders/DuplicateForward.shadet");
     ASSERT_TRUE(manifest.has_value());
     EXPECT_NE(manifest->FindSubAsset("shader:DuplicateForward"), nullptr);
     EXPECT_NE(manifest->FindSubAsset("shader:DuplicateForward/ForwardAlphaTest#1"), nullptr);
@@ -1966,13 +1966,13 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportGeneratedSourcePathIncludesAssetPa
         return stream.str();
     };
 
-    WriteTextFile(root / "Assets" / "Shaders" / "A" / "Foo.shader", shaderSource("A/Foo", "0.25"));
-    WriteTextFile(root / "Assets" / "Shaders" / "B" / "Foo.shader", shaderSource("B/Foo", "0.75"));
+    WriteTextFile(root / "Assets" / "Shaders" / "A" / "Foo.shadet", shaderSource("A/Foo", "0.25"));
+    WriteTextFile(root / "Assets" / "Shaders" / "B" / "Foo.shadet", shaderSource("B/Foo", "0.75"));
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/A/Foo.shader"));
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/B/Foo.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/A/Foo.shadet"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/B/Foo.shadet"));
 
     const auto shaderCacheRoot = root / "Library" / "ShaderCache" / "ImportedShaderLab";
     std::vector<std::filesystem::path> generatedFooSources;
@@ -1993,8 +1993,8 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportGeneratedSourcePathIncludesAssetPa
     {
         generatedNames.insert(generatedPath.filename().generic_string());
         const auto generatedText = ReadTextFile(generatedPath);
-        foundA = foundA || generatedText.find("Assets/Shaders/A/Foo.shader") != std::string::npos;
-        foundB = foundB || generatedText.find("Assets/Shaders/B/Foo.shader") != std::string::npos;
+        foundA = foundA || generatedText.find("Assets/Shaders/A/Foo.shadet") != std::string::npos;
+        foundB = foundB || generatedText.find("Assets/Shaders/B/Foo.shadet") != std::string::npos;
     }
 
     EXPECT_EQ(generatedNames.size(), generatedFooSources.size());
@@ -2039,7 +2039,7 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanIncludesShaderSourceAssetsAnd
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Shaders" / "Warmup.shader",
+        root / "Assets" / "Shaders" / "Warmup.shadet",
         R"(Shader "Tests/Warmup"
 {
     SubShader
@@ -2063,18 +2063,18 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanIncludesShaderSourceAssetsAnd
     AssetPreimportScheduler scheduler;
     auto coldPlan = scheduler.BuildPlan(database, AssetPreimportReason::EditorStartup);
     EXPECT_NE(
-        std::find(coldPlan.assetPaths.begin(), coldPlan.assetPaths.end(), "Assets/Shaders/Warmup.shader"),
+        std::find(coldPlan.assetPaths.begin(), coldPlan.assetPaths.end(), "Assets/Shaders/Warmup.shadet"),
         coldPlan.assetPaths.end());
 
     ImportProgressTracker tracker;
     ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
     auto warmPlan = scheduler.BuildPlan(database, AssetPreimportReason::EditorStartup);
     EXPECT_EQ(
-        std::find(warmPlan.assetPaths.begin(), warmPlan.assetPaths.end(), "Assets/Shaders/Warmup.shader"),
+        std::find(warmPlan.assetPaths.begin(), warmPlan.assetPaths.end(), "Assets/Shaders/Warmup.shadet"),
         warmPlan.assetPaths.end());
 
     WriteTextFile(
-        root / "Assets" / "Shaders" / "Warmup.shader",
+        root / "Assets" / "Shaders" / "Warmup.shadet",
         R"(Shader "Tests/Warmup"
 {
     SubShader
@@ -2092,9 +2092,9 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanIncludesShaderSourceAssetsAnd
     }
 })");
     ASSERT_TRUE(database.Refresh());
-    auto changedPlan = scheduler.BuildPlan(database, {AssetPreimportReason::FileWatcherChanged, {root / "Assets" / "Shaders" / "Warmup.shader"}});
+    auto changedPlan = scheduler.BuildPlan(database, {AssetPreimportReason::FileWatcherChanged, {root / "Assets" / "Shaders" / "Warmup.shadet"}});
     EXPECT_NE(
-        std::find(changedPlan.assetPaths.begin(), changedPlan.assetPaths.end(), "Assets/Shaders/Warmup.shader"),
+        std::find(changedPlan.assetPaths.begin(), changedPlan.assetPaths.end(), "Assets/Shaders/Warmup.shadet"),
         changedPlan.assetPaths.end());
 
     std::filesystem::remove_all(root);
@@ -2105,7 +2105,7 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanReimportsShaderArtifactsWitho
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetDatabaseFacadeRoot();
-    WriteTextFile(root / "Assets" / "Shaders" / "Broken.shader", R"(Shader "Tests/Broken"
+    WriteTextFile(root / "Assets" / "Shaders" / "Broken.shadet", R"(Shader "Tests/Broken"
 {
     SubShader
     {
@@ -2121,16 +2121,16 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanReimportsShaderArtifactsWitho
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    EXPECT_FALSE(database.ImportAsset("Assets/Shaders/Broken.shader"));
-    const auto sourceRecord = database.LoadMainAssetAtPath("Assets/Shaders/Broken.shader");
+    EXPECT_FALSE(database.ImportAsset("Assets/Shaders/Broken.shadet"));
+    const auto sourceRecord = database.LoadMainAssetAtPath("Assets/Shaders/Broken.shadet");
     ASSERT_TRUE(sourceRecord.has_value());
     EXPECT_TRUE(sourceRecord->artifactPath.empty());
-    EXPECT_FALSE(database.GetArtifactManifestForAssetPath("Assets/Shaders/Broken.shader").has_value());
+    EXPECT_FALSE(database.GetArtifactManifestForAssetPath("Assets/Shaders/Broken.shadet").has_value());
 
     AssetPreimportScheduler scheduler;
     auto plan = scheduler.BuildPlan(database, AssetPreimportReason::EditorStartup);
     EXPECT_NE(
-        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Shaders/Broken.shader"),
+        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Shaders/Broken.shadet"),
         plan.assetPaths.end());
 
     std::filesystem::remove_all(root);
@@ -2141,7 +2141,7 @@ TEST(AssetDatabaseFacadeTests, ShaderLabParseFailureDoesNotPublishFailedArtifact
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetDatabaseFacadeRoot();
-    WriteTextFile(root / "Assets" / "Shaders" / "Malformed.shader", R"(Shader "Tests/Malformed"
+    WriteTextFile(root / "Assets" / "Shaders" / "Malformed.shadet", R"(Shader "Tests/Malformed"
 {
     SubShader
     {
@@ -2167,13 +2167,13 @@ TEST(AssetDatabaseFacadeTests, ShaderLabParseFailureDoesNotPublishFailedArtifact
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/Malformed.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/Malformed.shadet"));
 
-    const auto previousMainAsset = database.LoadMainAssetAtPath("Assets/Shaders/Malformed.shader");
+    const auto previousMainAsset = database.LoadMainAssetAtPath("Assets/Shaders/Malformed.shadet");
     ASSERT_TRUE(previousMainAsset.has_value());
     const auto previousArtifactPath = previousMainAsset->artifactPath;
 
-    WriteTextFile(root / "Assets" / "Shaders" / "Malformed.shader", R"(Shader "Tests/Malformed"
+    WriteTextFile(root / "Assets" / "Shaders" / "Malformed.shadet", R"(Shader "Tests/Malformed"
 {
     SubShader
     {
@@ -2186,9 +2186,9 @@ TEST(AssetDatabaseFacadeTests, ShaderLabParseFailureDoesNotPublishFailedArtifact
 })");
 
     ASSERT_TRUE(database.Refresh());
-    EXPECT_FALSE(database.ImportAsset("Assets/Shaders/Malformed.shader"));
+    EXPECT_FALSE(database.ImportAsset("Assets/Shaders/Malformed.shadet"));
 
-    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Shaders/Malformed.shader");
+    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Shaders/Malformed.shadet");
     ASSERT_TRUE(mainAsset.has_value());
     EXPECT_EQ(mainAsset->artifactPath, previousArtifactPath);
     const auto artifact = NLS::Render::Assets::LoadShaderArtifact(mainAsset->artifactPath);
@@ -2212,7 +2212,7 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportUsesFirstLightModePassWhenForwardI
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetDatabaseFacadeRoot();
-    WriteTextFile(root / "Assets" / "Shaders" / "DepthOnly.shader", R"(Shader "Tests/DepthOnly"
+    WriteTextFile(root / "Assets" / "Shaders" / "DepthOnly.shadet", R"(Shader "Tests/DepthOnly"
 {
     SubShader
     {
@@ -2232,9 +2232,9 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportUsesFirstLightModePassWhenForwardI
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/DepthOnly.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/DepthOnly.shadet"));
 
-    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Shaders/DepthOnly.shader");
+    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Shaders/DepthOnly.shadet");
     ASSERT_TRUE(mainAsset.has_value());
     const auto artifact = NLS::Render::Assets::LoadShaderArtifact(mainAsset->artifactPath);
     ASSERT_TRUE(artifact.has_value());
@@ -2251,7 +2251,7 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanReimportsShaderArtifactsMissi
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Shaders" / "LegacyWarm.shader",
+        root / "Assets" / "Shaders" / "LegacyWarm.shadet",
         R"(Shader "Tests/LegacyWarm"
 {
     SubShader
@@ -2271,9 +2271,9 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanReimportsShaderArtifactsMissi
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/LegacyWarm.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Shaders/LegacyWarm.shadet"));
 
-    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Shaders/LegacyWarm.shader");
+    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Shaders/LegacyWarm.shadet");
     ASSERT_TRUE(mainAsset.has_value());
     auto shaderArtifact = NLS::Render::Assets::LoadShaderArtifact(mainAsset->artifactPath);
     ASSERT_TRUE(shaderArtifact.has_value());
@@ -2294,7 +2294,7 @@ TEST(AssetDatabaseFacadeTests, StartupPreimportPlanReimportsShaderArtifactsMissi
     AssetPreimportScheduler scheduler;
     auto plan = scheduler.BuildPlan(database, AssetPreimportReason::EditorStartup);
     EXPECT_NE(
-        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Shaders/LegacyWarm.shader"),
+        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Shaders/LegacyWarm.shadet"),
         plan.assetPaths.end());
 
     std::filesystem::remove_all(root);
@@ -2441,7 +2441,7 @@ TEST(AssetDatabaseFacadeTests, AutoImportedTextureManifestSurvivesDeferredArtifa
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(
-        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader",
+        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shadet",
         R"(
 Shader "Nullus/StandardPBR"
 {
@@ -2492,7 +2492,7 @@ Shader "Nullus/StandardPBR"
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet"));
 
     const auto modelId = ParseAssetId(database.AssetPathToGUID("Assets/Models/AutoTextureHero.gltf"));
     ASSERT_TRUE(modelId.IsValid());
@@ -4643,7 +4643,7 @@ TEST(AssetDatabaseFacadeTests, CreateAddExtractAndContainmentUseAssetObjectSeman
     material.loaderId = "material";
     material.serializedPayload =
         "shaderLabMaterialVersion=1\n"
-        "shader=Assets/Shaders/Unlit.shader\n"
+        "shader=Assets/Shaders/Unlit.shadet\n"
         "property _BaseColor Color 1,1,1,1\n";
 
     ASSERT_TRUE(database.CreateAsset(material, "Assets/Materials/Hero.mat"));
@@ -4753,7 +4753,7 @@ TEST(AssetDatabaseFacadeTests, StandaloneMaterialImportUsesNativePayloadAndRejec
     material.loaderId = "material";
     material.serializedPayload =
         "shaderLabMaterialVersion=1\n"
-        "shader=Assets/Shaders/Unlit.shader\n"
+        "shader=Assets/Shaders/Unlit.shadet\n"
         "property _BaseColor Color 1 1 1 1\n";
 
     ASSERT_TRUE(database.CreateAsset(material, "Assets/Materials/Hero.mat"));

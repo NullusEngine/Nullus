@@ -300,12 +300,12 @@ namespace
     bool IsForbiddenMaterialShaderSourceReference(const std::string& shaderPath)
     {
         const auto extension = ToLower(std::filesystem::path(shaderPath).extension().generic_string());
-        return extension != ".shader";
+        return extension != ".shadet";
     }
 
     bool IsShaderLabSourceReference(const std::string& shaderPath)
     {
-        return ToLower(std::filesystem::path(shaderPath).extension().generic_string()) == ".shader";
+        return ToLower(std::filesystem::path(shaderPath).extension().generic_string()) == ".shadet";
     }
 
     std::string NormalizePortablePath(std::string path)
@@ -975,7 +975,7 @@ namespace
             {
                 NLS_LOG_ERROR(
                     "Failed to load ShaderLab material: shader reference '" + shaderPath +
-                    "' is not an authoritative ShaderLab .shader source asset.");
+                    "' is not an authoritative ShaderLab .shadet source asset.");
                 return false;
             }
 

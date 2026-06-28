@@ -3635,7 +3635,19 @@ TEST(AssetThumbnailCacheTests, GpuPumpPollsExistingPendingReadbackWhenReadbackBu
         << "Readback budget throttles new GPU submissions, but must not block polling an existing fence.";
     EXPECT_EQ(renderer.renderCount, 2u);
 
-    std::filesystem::remove_all(root);
+    auto written = service.ConsumeCompletedThumbnail();
+    for (size_t attempt = 0u; attempt < 100u && !written.has_value(); ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        written = service.ConsumeCompletedThumbnail();
+    }
+    ASSERT_TRUE(written.has_value());
+    ASSERT_EQ(written->status, AssetThumbnailServiceStatus::Fresh);
+    ASSERT_TRUE(written->cacheEntry.has_value());
+
+    std::error_code removeError;
+    std::filesystem::remove_all(root, removeError);
+    EXPECT_FALSE(removeError) << removeError.message();
 }
 
 TEST(AssetThumbnailCacheTests, SourcePrefabAndGeneratedPrimaryPrefabSharePreviewCacheIdentity)

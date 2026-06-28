@@ -4951,6 +4951,20 @@ TEST(AssetImportPipelineTests, ExternalModelImportMatchesProjectTexturesCaseInse
             "textures": [
                 { "source": 0 }
             ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIA",
+                    "byteLength": 66
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 60, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
             "materials": [
                 {
                     "name": "Body",
@@ -4961,7 +4975,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportMatchesProjectTexturesCaseInse
             ],
             "scene": 0,
             "scenes": [{ "nodes": [0] }],
-            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": { "POSITION": 0 }, "indices": 1, "material": 0 }] }],
             "nodes": [{ "name": "Root", "mesh": 0 }]
         })");
 

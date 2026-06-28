@@ -189,6 +189,7 @@ namespace NLS::Engine::Rendering
 		std::unique_ptr<SceneLightingProvider> m_sceneLightingProvider;
 		std::unique_ptr<Material> m_sceneFallbackMaterial;
 		NLS::Render::Resources::Shader* m_sceneFallbackShader = nullptr;
+		uint64_t m_sceneFallbackShaderInstanceId = 0u;
 		uint64_t m_sceneFallbackShaderGeneration = 0u;
 		std::string m_sceneFallbackShaderResourcePath;
 		RenderScene m_renderScene;

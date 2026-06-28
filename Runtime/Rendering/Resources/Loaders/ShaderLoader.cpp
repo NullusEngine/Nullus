@@ -74,6 +74,14 @@ namespace
 		return ToLowerAscii(path.filename().string()) == ToLowerAscii(expected);
 	}
 
+	bool IsRuntimeSharedPackageDirectory(const std::filesystem::path& path)
+	{
+		const auto name = ToLowerAscii(path.filename().string());
+		const std::string suffix = "_runtime_shared";
+		return name.size() > suffix.size() &&
+			name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+	}
+
 	std::string InferBuiltInHlslLightMode(const std::string& sourcePath)
 	{
 		const auto normalized = ToLowerAscii(std::filesystem::path(sourcePath).lexically_normal().generic_string());
@@ -246,6 +254,20 @@ namespace
 
 		roots.emplace_back(workspaceRoot / kAppDirectoryName / kAssetsDirectoryName / kEngineDirectoryName / "Shaders");
 		roots.emplace_back(workspaceRoot / kAppDirectoryName / kAssetsDirectoryName / kEditorDirectoryName / "Shaders");
+
+		const auto appRoot = workspaceRoot / kAppDirectoryName;
+		std::error_code iterateError;
+		for (const auto& entry : std::filesystem::directory_iterator(appRoot, iterateError))
+		{
+			if (iterateError)
+				break;
+			std::error_code entryError;
+			if (!entry.is_directory(entryError) || entryError || !IsRuntimeSharedPackageDirectory(entry.path()))
+				continue;
+
+			roots.emplace_back(entry.path() / kAssetsDirectoryName / kEngineDirectoryName / "Shaders");
+			roots.emplace_back(entry.path() / kAssetsDirectoryName / kEditorDirectoryName / "Shaders");
+		}
 	}
 
 	bool IsAllowedBuiltInHlslSourcePath(
@@ -464,10 +486,15 @@ Shader* ShaderLoader::Create(const std::string& p_filePath, const std::string& p
 	return nullptr;
 }
 
+bool ShaderLoader::IsBuiltInHlslSourcePath(const std::string& p_filePath, const std::string& p_projectAssetsPath)
+{
+	return IsAllowedBuiltInHlslSourcePath(p_filePath, ResolveProjectAssetsPath(p_projectAssetsPath));
+}
+
 Shader* ShaderLoader::CreateBuiltInHlsl(const std::string& p_filePath)
 {
 	__FILE_TRACE = p_filePath;
-	if (!IsAllowedBuiltInHlslSourcePath(p_filePath))
+	if (!IsBuiltInHlslSourcePath(p_filePath))
 	{
 		NLS_LOG_ERROR("[SHADER] \"" + p_filePath + "\": built-in HLSL loading only accepts engine/editor shader library paths; project shader sources must be imported artifacts.");
 		return nullptr;
@@ -479,7 +506,7 @@ Shader* ShaderLoader::CreateBuiltInHlsl(const std::string& p_filePath, const std
 {
 	__FILE_TRACE = p_filePath;
 	const auto resolvedProjectAssetsPath = ResolveProjectAssetsPath(p_projectAssetsPath);
-	if (!IsAllowedBuiltInHlslSourcePath(p_filePath, resolvedProjectAssetsPath))
+	if (!IsBuiltInHlslSourcePath(p_filePath, resolvedProjectAssetsPath))
 	{
 		NLS_LOG_ERROR("[SHADER] \"" + p_filePath + "\": built-in HLSL loading only accepts engine/editor shader library paths; project shader sources must be imported artifacts.");
 		return nullptr;
@@ -645,15 +672,17 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(
 	const bool hasVertexEntryPoint = !prepared.vertexEntry.empty() && HasEntryPointToken(sourceText, prepared.vertexEntry);
 	const bool hasPixelEntryPoint = !prepared.pixelEntry.empty() && HasEntryPointToken(sourceText, prepared.pixelEntry);
 	const bool hasComputeEntryPoint = !prepared.computeEntry.empty() && HasEntryPointToken(sourceText, prepared.computeEntry);
-    const auto activeBackend = ResolveActiveGraphicsBackend();
-    const bool compileAllRuntimeBackends = !activeBackend.has_value();
-    const bool compileDxil = compileAllRuntimeBackends ||
-        activeBackend.value_or(NLS::Render::Settings::EGraphicsBackend::NONE) == NLS::Render::Settings::EGraphicsBackend::DX12;
-    const bool compileSpirv = compileAllRuntimeBackends ||
-        activeBackend.value_or(NLS::Render::Settings::EGraphicsBackend::NONE) == NLS::Render::Settings::EGraphicsBackend::VULKAN ||
-        activeBackend.value_or(NLS::Render::Settings::EGraphicsBackend::NONE) == NLS::Render::Settings::EGraphicsBackend::OPENGL;
-    const bool compileGlsl = compileAllRuntimeBackends ||
-        activeBackend.value_or(NLS::Render::Settings::EGraphicsBackend::NONE) == NLS::Render::Settings::EGraphicsBackend::OPENGL;
+        const auto activeBackend = ResolveActiveGraphicsBackend();
+        const bool compileDxil =
+            !activeBackend.has_value() ||
+            activeBackend.value() == NLS::Render::Settings::EGraphicsBackend::DX12;
+        const bool compileSpirv =
+            !activeBackend.has_value() ||
+            activeBackend.value() == NLS::Render::Settings::EGraphicsBackend::VULKAN ||
+            activeBackend.value() == NLS::Render::Settings::EGraphicsBackend::OPENGL;
+        const bool compileGlsl =
+            activeBackend.has_value() &&
+            activeBackend.value() == NLS::Render::Settings::EGraphicsBackend::OPENGL;
 	ShaderCompileOptions vertexDxilOptions;
 	vertexDxilOptions.sourceLanguage = ShaderSourceLanguage::HLSL;
 	vertexDxilOptions.targetPlatform = ShaderTargetPlatform::DXIL;

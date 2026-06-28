@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
 #include <mutex>
 #include <string_view>
 #include <unordered_map>
@@ -262,6 +263,17 @@ namespace
 	bool IsMaterialTextureBindingName(const std::string& name)
 	{
 		return name.size() >= 3u && name.rfind("Map") == name.size() - 3u;
+	}
+
+	std::string NormalizeShaderLabSourceIdentity(std::string sourcePath)
+	{
+		std::replace(sourcePath.begin(), sourcePath.end(), '\\', '/');
+		return std::filesystem::path(sourcePath).lexically_normal().generic_string();
+	}
+
+	bool ShaderLabSourceIdentityMatches(const std::string& lhs, const std::string& rhs)
+	{
+		return NormalizeShaderLabSourceIdentity(lhs) == NormalizeShaderLabSourceIdentity(rhs);
 	}
 
 	NLS::Render::Resources::ResourceBindingLayout BuildMaterialBindingLayoutForShader(
@@ -1354,7 +1366,7 @@ namespace NLS::Render::Resources
 		const auto lightMode = shader->GetShaderLabLightMode();
 		if (sourcePath.empty() || lightMode.empty())
 			return;
-		if (!m_shaderLabSourcePath.empty() && sourcePath != m_shaderLabSourcePath)
+		if (!m_shaderLabSourcePath.empty() && !ShaderLabSourceIdentityMatches(sourcePath, m_shaderLabSourcePath))
 			return;
 
 		if (m_shaderLabSourcePath.empty())

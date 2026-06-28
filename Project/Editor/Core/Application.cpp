@@ -13,6 +13,7 @@
 #include "Core/ResizeRefreshPolicy.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/EditorStartupAssetPreimport.h"
+#include "Rendering/BaseSceneRenderer.h"
 #include "Settings/EditorSettings.h"
 #include "Windowing/Inputs/EMouseButton.h"
 #include "Windowing/Inputs/EMouseButtonState.h"
@@ -103,6 +104,8 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
         });
     if (startupPreimport.succeeded && !startupPreimport.hadRunningJobsAfterCompletion)
     {
+        m_context.RefreshRuntimeAssetDatabaseFromArtifactDB();
+        NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager);
         NLS_LOG_INFO(
             "Startup asset preimport completed: " +
             std::to_string(startupPreimport.importedAssetCount) +
@@ -118,6 +121,16 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
             " imported / " +
             std::to_string(startupPreimport.plannedAssetCount) +
             " planned.");
+        for (const auto& diagnostic : startupPreimport.diagnostics)
+        {
+            NLS_LOG_ERROR(
+                "Startup asset preimport diagnostic code=" +
+                diagnostic.code +
+                " path=" +
+                diagnostic.path.generic_string() +
+                " message=" +
+                diagnostic.message);
+        }
         if (startupPreimport.hadRunningJobsAfterCompletion)
             NLS_LOG_ERROR("Startup asset preimport returned with running jobs still active.");
         throw std::runtime_error(
@@ -199,6 +212,7 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
     };
 
     runStartupWatcherPreimport("Importing startup asset changes", 0.94f);
+    m_context.RefreshRuntimeAssetDatabaseFromArtifactDB();
     m_editor->RefreshProjectAssetBrowser();
     m_context.PresentStartupProgressFrame("Rendering first editor frame", 0.96f);
     RunEditorFrame(0.0f);
@@ -217,6 +231,7 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
         throw std::runtime_error(
             "Final startup watcher asset preimport failed; editor UI will not open until changed assets are imported.");
     }
+    m_context.RefreshRuntimeAssetDatabaseFromArtifactDB();
     m_context.PresentStartupProgressFrame("Opening editor", 1.0f);
     NLS_LOG_INFO("[Startup] CompleteStartupProgress begin");
     m_context.CompleteStartupProgress();

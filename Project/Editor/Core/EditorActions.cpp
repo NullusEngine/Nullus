@@ -94,6 +94,24 @@ constexpr uint64_t kSceneLoadProgressTaskKey = 0x4E4C5343656E654Cull;
 constexpr size_t kImportedResourceTrimCandidatesPerSlice = 8u;
 constexpr size_t kImportedResourceTrimBytesPerSlice = 64u * 1024u * 1024u;
 
+std::string FormatDragDropDiagnosticsForLog(
+    const NLS::Editor::Assets::EditorAssetDragDropBridgeResult& result)
+{
+    if (result.dragDrop.diagnostics.empty())
+        return {};
+
+    std::ostringstream stream;
+    bool first = true;
+    for (const auto& diagnostic : result.dragDrop.diagnostics)
+    {
+        if (!first)
+            stream << "; ";
+        first = false;
+        stream << diagnostic.code << ": " << diagnostic.message;
+    }
+    return stream.str();
+}
+
 std::optional<std::string> ReadTextFileAtPath(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
@@ -3165,9 +3183,13 @@ bool Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
         return false;
 
     auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(*currentScene);
-    NLS::Editor::Assets::PrefabUtilityFacade().AnnotateSceneDocumentWithPrefabInstances(
+    NLS::Editor::Assets::PrefabUtilityFacade prefabFacade;
+    prefabFacade.AnnotateSceneDocumentWithPrefabInstances(
         document,
         *currentScene,
+        m_context.prefabInstanceRegistry);
+    prefabFacade.NormalizeSceneDocumentPrefabAssetReferences(
+        document,
         m_context.prefabInstanceRegistry);
     if (!document.Validate().HasErrors() &&
         WriteTextFileAtomicallyAtPath(scenePath, NLS::Engine::Serialize::ObjectGraphWriter::Write(document)))
@@ -4336,7 +4358,10 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAssetB
     if (!result.handled || result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
         !result.dragDrop.instance.has_value() || !result.dragDrop.instance->instanceRoot)
     {
-        NLS_LOG_ERROR("Failed to synchronously create GameObject from asset drag handle: " + path);
+        auto message = "Failed to synchronously create GameObject from asset drag handle: " + path;
+        if (const auto diagnostics = FormatDragDropDiagnosticsForLog(result); !diagnostics.empty())
+            message += " diagnostics=[" + diagnostics + "]";
+        NLS_LOG_ERROR(message);
         return nullptr;
     }
 
@@ -4411,7 +4436,10 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImport
     if (!result.handled || result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
         !result.dragDrop.instance.has_value() || !result.dragDrop.instance->instanceRoot)
     {
-        NLS_LOG_WARNING("Cached imported prefab drop failed; falling back to asset handle drop: " + path);
+        auto message = "Cached imported prefab drop failed; falling back to asset handle drop: " + path;
+        if (const auto diagnostics = FormatDragDropDiagnosticsForLog(result); !diagnostics.empty())
+            message += " diagnostics=[" + diagnostics + "]";
+        NLS_LOG_WARNING(message);
         return CreateGameObjectFromAssetBlocking(payload, focusOnCreation, p_parent, placementOverride);
     }
 
@@ -4479,7 +4507,10 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImport
     if (!result.handled || result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
         !result.dragDrop.instance.has_value() || !result.dragDrop.instance->instanceRoot)
     {
-        NLS_LOG_WARNING("Shared imported prefab drop failed; falling back to asset handle drop: " + path);
+        auto message = "Shared imported prefab drop failed; falling back to asset handle drop: " + path;
+        if (const auto diagnostics = FormatDragDropDiagnosticsForLog(result); !diagnostics.empty())
+            message += " diagnostics=[" + diagnostics + "]";
+        NLS_LOG_WARNING(message);
         return CreateGameObjectFromAssetBlocking(payload, focusOnCreation, p_parent, placementOverride);
     }
 

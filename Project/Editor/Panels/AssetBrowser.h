@@ -378,6 +378,7 @@ private:
     std::unordered_set<std::string> m_thumbnailTexturesFailedToLoad;
     std::vector<InFlightThumbnailTextureDecode> m_thumbnailTextureDecodes;
     std::unordered_set<std::string> m_thumbnailTexturesDecoding;
+    double m_lightGpuThumbnailGenerationDeferredUntil = 0.0;
     uint64_t m_thumbnailTextureFrameSerial = 0u;
     std::optional<ObjectReferencePickerRefresh> m_objectReferencePickerRefresh;
     std::vector<ObjectReferencePickerRefresh> m_retiredObjectReferencePickerRefreshes;

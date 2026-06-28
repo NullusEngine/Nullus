@@ -339,12 +339,58 @@ namespace
         return reflection;
     }
 
-    NLS::Render::Resources::Shader* CreateTestShader(const std::string& sourcePath)
+    NLS::Render::Resources::ShaderReflection MakeShaderLabStandardPbrShaderReflection()
+    {
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.constantBuffers.push_back({
+            "MaterialProperties",
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            0u,
+            64u,
+            {
+                {"_BaseColor", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 0u, 16u, 1u},
+                {"_Metallic", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, 16u, 4u, 1u},
+                {"_Roughness", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, 20u, 4u, 1u},
+                {"_AmbientOcclusion", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, 24u, 4u, 1u}
+            }
+        });
+        for (const auto& [name, type, kind, offset, size, cbuffer] : {
+            std::tuple{"_BaseColor", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 0u, 16u, "MaterialProperties"},
+            std::tuple{"_Metallic", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, NLS::Render::Resources::ShaderResourceKind::Value, 16u, 4u, "MaterialProperties"},
+            std::tuple{"_Roughness", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, NLS::Render::Resources::ShaderResourceKind::Value, 20u, 4u, "MaterialProperties"},
+            std::tuple{"_AmbientOcclusion", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, NLS::Render::Resources::ShaderResourceKind::Value, 24u, 4u, "MaterialProperties"},
+            std::tuple{"_BaseMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 0u, 0u, ""},
+            std::tuple{"_NormalMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 1u, 0u, ""},
+            std::tuple{"_MetallicMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 2u, 0u, ""},
+            std::tuple{"_RoughnessMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 3u, 0u, ""}
+        })
+        {
+            reflection.properties.push_back({
+                name,
+                type,
+                kind,
+                NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+                0u,
+                -1,
+                1,
+                offset,
+                size,
+                cbuffer
+            });
+        }
+        return reflection;
+    }
+
+    NLS::Render::Resources::Shader* CreateTestShader(
+        const std::string& sourcePath,
+        NLS::Render::Resources::ShaderReflection reflection = MakeDeferredMaterialShaderReflection())
     {
         NLS::Render::Assets::ShaderArtifact artifact;
         artifact.sourcePath = sourcePath;
         artifact.subAssetKey = "shader:test";
-        artifact.reflection = MakeDeferredMaterialShaderReflection();
+        artifact.reflection = std::move(reflection);
         artifact.stages.push_back({
             NLS::Render::ShaderCompiler::ShaderStage::Vertex,
             NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
@@ -1127,6 +1173,110 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
     NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, MapsShaderLabStandardPBRParametersIntoDeferredGBufferFallback)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    auto* standardShader = CreateTestShader(
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+        MakeShaderLabStandardPbrShaderReflection());
+    ASSERT_NE(standardShader, nullptr);
+    auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(gbufferShader, nullptr);
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, gbufferShader);
+
+    auto* baseMap = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(96, 128, 160, 255);
+    auto* normalMap = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(128, 128, 255, 255);
+    auto* metallicMap = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32, 32, 32, 255);
+    auto* roughnessMap = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(192, 192, 192, 255);
+    ASSERT_NE(baseMap, nullptr);
+    ASSERT_NE(normalMap, nullptr);
+    ASSERT_NE(metallicMap, nullptr);
+    ASSERT_NE(roughnessMap, nullptr);
+
+    NLS::Render::Resources::Material source(standardShader);
+    source.Set<NLS::Maths::Vector4>("_BaseColor", { 0.2f, 0.4f, 0.6f, 0.8f });
+    source.Set<NLS::Render::Resources::Texture2D*>("_BaseMap", baseMap);
+    source.SetTextureResourcePath("_BaseMap", "Library/Artifacts/ab/abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+    source.Set<float>("_Metallic", 0.35f);
+    source.Set<float>("_Roughness", 0.65f);
+    source.Set<float>("_AmbientOcclusion", 0.75f);
+    source.Set<NLS::Render::Resources::Texture2D*>("_NormalMap", normalMap);
+    source.Set<NLS::Render::Resources::Texture2D*>("_MetallicMap", metallicMap);
+    source.Set<NLS::Render::Resources::Texture2D*>("_RoughnessMap", roughnessMap);
+
+    SyncOneDeferredCacheMaterial(renderer, source);
+
+    const auto& gbufferCache = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer);
+    ASSERT_EQ(gbufferCache.size(), 1u);
+    const auto& gbuffer = *gbufferCache.begin()->second.material;
+
+    const auto* albedoValue = gbuffer.GetParameterBlock().TryGet("u_Albedo");
+    ASSERT_NE(albedoValue, nullptr);
+    ASSERT_EQ(albedoValue->type(), typeid(NLS::Maths::Vector4));
+    const auto& albedo = std::any_cast<const NLS::Maths::Vector4&>(*albedoValue);
+    EXPECT_FLOAT_EQ(albedo.x, 0.2f);
+    EXPECT_FLOAT_EQ(albedo.y, 0.4f);
+    EXPECT_FLOAT_EQ(albedo.z, 0.6f);
+    EXPECT_FLOAT_EQ(albedo.w, 0.8f);
+
+    const auto* albedoMapValue = gbuffer.GetParameterBlock().TryGet("u_AlbedoMap");
+    ASSERT_NE(albedoMapValue, nullptr);
+    ASSERT_EQ(albedoMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*albedoMapValue), baseMap);
+    EXPECT_EQ(
+        gbuffer.GetTextureResourcePath("u_AlbedoMap"),
+        "Library/Artifacts/ab/abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+
+    const auto* metallicValue = gbuffer.GetParameterBlock().TryGet("u_Metallic");
+    ASSERT_NE(metallicValue, nullptr);
+    ASSERT_EQ(metallicValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*metallicValue), 0.35f);
+
+    const auto* roughnessValue = gbuffer.GetParameterBlock().TryGet("u_Roughness");
+    ASSERT_NE(roughnessValue, nullptr);
+    ASSERT_EQ(roughnessValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*roughnessValue), 0.65f);
+
+    const auto* ambientOcclusionValue = gbuffer.GetParameterBlock().TryGet("u_AmbientOcclusion");
+    ASSERT_NE(ambientOcclusionValue, nullptr);
+    ASSERT_EQ(ambientOcclusionValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*ambientOcclusionValue), 0.75f);
+
+    const auto* normalMapValue = gbuffer.GetParameterBlock().TryGet("u_NormalMap");
+    ASSERT_NE(normalMapValue, nullptr);
+    ASSERT_EQ(normalMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*normalMapValue), normalMap);
+
+    const auto* metallicMapValue = gbuffer.GetParameterBlock().TryGet("u_MetallicMap");
+    ASSERT_NE(metallicMapValue, nullptr);
+    ASSERT_EQ(metallicMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*metallicMapValue), metallicMap);
+
+    const auto* roughnessMapValue = gbuffer.GetParameterBlock().TryGet("u_RoughnessMap");
+    ASSERT_NE(roughnessMapValue, nullptr);
+    ASSERT_EQ(roughnessMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*roughnessMapValue), roughnessMap);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(baseMap));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(normalMap));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(metallicMap));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(roughnessMap));
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(standardShader));
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, SkipsGBufferMaterialSyncUntilSourceMaterialRevisionChanges)

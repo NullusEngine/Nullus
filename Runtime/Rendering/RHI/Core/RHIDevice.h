@@ -72,6 +72,9 @@ namespace NLS::Render::RHI
         virtual std::shared_ptr<RHIQueue> GetQueue(QueueType queueType) = 0;
         virtual std::shared_ptr<RHISwapchain> CreateSwapchain(const SwapchainDesc& desc) = 0;
         virtual std::shared_ptr<RHIBuffer> CreateBuffer(const RHIBufferDesc& desc, const RHIBufferUploadDesc& uploadDesc) = 0;
+        // Initial upload data is caller-owned and only guaranteed to stay valid for this call.
+        // Backend implementations must synchronously copy it into backend-owned upload/GPU memory
+        // before returning, or fail the call.
         virtual std::shared_ptr<RHITexture> CreateTexture(const RHITextureDesc& desc, const RHITextureUploadDesc& uploadDesc) = 0;
         virtual std::shared_ptr<RHIBuffer> CreateBuffer(const RHIBufferDesc& desc)
         {

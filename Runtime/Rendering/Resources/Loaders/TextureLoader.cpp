@@ -3,40 +3,29 @@
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
+#include "Assets/ArtifactManifest.h"
 #include "Assets/NativeArtifactContainer.h"
 
 #include <Debug/Logger.h>
 #include <Image.h>
 #include <array>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <optional>
 #include <algorithm>
 #include <vector>
 
 namespace
 {
-std::vector<uint8_t> ReadBinaryFile(const std::string& path)
+bool ShouldTryLoadTextureArtifact(const std::string& path)
 {
-	std::ifstream input(path, std::ios::binary);
-	if (!input)
-		return {};
+	if (NLS::Core::Assets::TryMakePortableContentArtifactPath(path).empty())
+		return false;
 
-	return {
-		std::istreambuf_iterator<char>(input),
-		std::istreambuf_iterator<char>()
-	};
-}
-
-bool IsNativeTextureArtifactFile(const std::string& path)
-{
-	const auto bytes = ReadBinaryFile(path);
-	return !bytes.empty() &&
-		NLS::Core::Assets::ReadNativeArtifactContainerView(
-			bytes,
-			NLS::Core::Assets::ArtifactType::Texture,
-			4u).has_value();
+	return NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+		path,
+		NLS::Core::Assets::ArtifactType::Texture,
+		4u,
+		0u).has_value();
 }
 }
 
@@ -44,31 +33,29 @@ namespace NLS::Render::Resources::Loaders
 {
 Texture2D* TextureLoader::Create(const std::string& p_filepath, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
-	if (IsNativeTextureArtifactFile(p_filepath))
-	{
-		if (auto artifact = NLS::Render::Assets::LoadTextureArtifact(p_filepath))
-		{
-			Texture2D* texture = new Texture2D;
-			texture->firstFilter = p_firstFilter;
-			texture->secondFilter = p_secondFilter;
-			texture->isMimapped = artifact->mips.size() > 1u || p_generateMipmap;
-			if (!texture->SetTextureResource(*artifact))
-			{
-				if (NLS::Render::RHI::IsTextureFormatCompressed(artifact->format))
-				{
-					NLS_LOG_WARNING(
-						"TextureLoader: unsupported compressed texture artifact \"" +
-						p_filepath +
-						"\" for current runtime backend");
-				}
-				delete texture;
-				return nullptr;
-			}
-			texture->path = p_filepath;
-			return texture;
-		}
-
+	if (!ShouldTryLoadTextureArtifact(p_filepath))
 		return nullptr;
+
+	if (auto artifact = NLS::Render::Assets::LoadTextureArtifact(p_filepath))
+	{
+		Texture2D* texture = new Texture2D(Texture2D::SkipInitialTextureTag {});
+		texture->firstFilter = p_firstFilter;
+		texture->secondFilter = p_secondFilter;
+		texture->isMimapped = artifact->mips.size() > 1u || p_generateMipmap;
+		if (!texture->SetTextureResource(*artifact))
+		{
+			if (NLS::Render::RHI::IsTextureFormatCompressed(artifact->format))
+			{
+				NLS_LOG_WARNING(
+					"TextureLoader: unsupported compressed texture artifact \"" +
+					p_filepath +
+					"\" for current runtime backend");
+			}
+			delete texture;
+			return nullptr;
+		}
+		texture->path = p_filepath;
+		return texture;
 	}
 
 	return nullptr;
@@ -136,7 +123,7 @@ Texture2D* TextureLoader::CreateFromArtifact(
 	Settings::ETextureFilteringMode p_secondFilter,
 	bool p_generateMipmap)
 {
-	Texture2D* texture = new Texture2D;
+	Texture2D* texture = new Texture2D(Texture2D::SkipInitialTextureTag {});
 	texture->firstFilter = p_firstFilter;
 	texture->secondFilter = p_secondFilter;
 	texture->isMimapped = artifact.mips.size() > 1u || p_generateMipmap;

@@ -43,6 +43,10 @@ namespace NLS::Render::Resources
 		std::shared_ptr<RHI::RHITextureView> GetOrCreateExplicitTextureView(const std::string& debugName = {}) const;
 
 	protected:
+		struct SkipInitialTextureTag {};
+
+		Texture(RHI::TextureDimension dimension, SkipInitialTextureTag);
+
 		bool RecreateRHITextureIfNeeded(
 		    uint32_t width,
 		    uint32_t height,

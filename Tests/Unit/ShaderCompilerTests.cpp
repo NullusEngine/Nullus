@@ -1209,6 +1209,8 @@ TEST(ShaderCompilerTests, ShaderManagerProvideAssetPathsConfiguresShaderLoaderDe
 
 TEST(ShaderCompilerTests, ShaderLoaderCreateRoutesConfiguredEngineShaderCacheToProjectLibrary)
 {
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_shader_loader_create_no_app_library_" + NLS::Guid::New().ToString());
     const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
@@ -1254,6 +1256,129 @@ TEST(ShaderCompilerTests, ShaderLoaderCreateRoutesConfiguredEngineShaderCacheToP
     EXPECT_FALSE(std::filesystem::exists(root / "App" / "Library"));
 
     NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslWithoutActiveDriverDoesNotGenerateOpenGLFallback)
+{
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_no_driver_no_glsl_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "NoDriver.hlsl";
+    std::filesystem::create_directories(engineShader.parent_path());
+    std::filesystem::create_directories(root / "Project" / "Assets");
+    std::ofstream shaderFile(engineShader, std::ios::binary);
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
+        engineShader.string(),
+        projectAssets);
+
+    ASSERT_NE(shader, nullptr);
+    const auto artifacts = shader->GetCompiledArtifacts();
+    EXPECT_TRUE(std::any_of(
+        artifacts.begin(),
+        artifacts.end(),
+        [](const NLS::Render::Resources::ShaderCompiledArtifact& artifact)
+        {
+            return artifact.targetPlatform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+        })) << "Headless/no-driver shader loading must compile DXIL artifacts for D3D12 coverage.";
+    EXPECT_TRUE(std::any_of(
+        artifacts.begin(),
+        artifacts.end(),
+        [](const NLS::Render::Resources::ShaderCompiledArtifact& artifact)
+        {
+            return artifact.targetPlatform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV;
+        })) << "Headless/no-driver shader loading must compile SPIR-V artifacts for non-D3D backends.";
+    EXPECT_FALSE(std::any_of(
+        artifacts.begin(),
+        artifacts.end(),
+        [](const NLS::Render::Resources::ShaderCompiledArtifact& artifact)
+        {
+            return artifact.targetPlatform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL;
+        })) << "Headless/no-driver tests must not compile OpenGL GLSL fallback artifacts.";
+
+    NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslAllowsPackagedRuntimeSharedEditorShader)
+{
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_packaged_runtime_shared_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = root / "App" / "Win64_Release_Runtime_Shared" / "Assets" / "Editor" / "Shaders" / "Grid.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(root / "Project" / "Assets");
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
+        shaderPath.string(),
+        projectAssets);
+
+    EXPECT_NE(shader, nullptr);
+    NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderManagerLoadsPackagedRuntimeSharedEditorShaderAsBuiltInHlsl)
+{
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_manager_packaged_runtime_shared_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineAssets = (root / "App" / "Win64_Release_Runtime_Shared" / "Assets" / "Engine").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = root / "App" / "Win64_Release_Runtime_Shared" / "Assets" / "Editor" / "Shaders" / "Grid.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(root / "Project" / "Assets");
+    std::filesystem::create_directories(root / "App" / "Win64_Release_Runtime_Shared" / "Assets" / "Engine");
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    {
+        const ScopedShaderManagerAssetPaths scopedPaths(projectAssets, engineAssets);
+        NLS::Core::ResourceManagement::ShaderManager manager;
+        auto* shader = manager.LoadResource(shaderPath.string());
+        EXPECT_NE(shader, nullptr);
+        manager.UnloadResources();
+    }
+
     std::filesystem::remove_all(root);
 }
 

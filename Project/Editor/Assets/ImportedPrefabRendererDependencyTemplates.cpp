@@ -104,6 +104,11 @@ bool PrefabResolvedAssetMatchesReferenceHint(
     if (resolved.artifactPath == referencePath)
         return true;
 
+    const auto referenceSubAssetKeyHint =
+        NLS::Engine::Assets::ExtractPrefabAssetReferenceSubAssetKeyHint(referencePath);
+    if (!referenceSubAssetKeyHint.empty() && resolved.subAssetKey == referenceSubAssetKeyHint)
+        return true;
+
     return !resolved.artifactPath.empty() &&
         NormalizePrefabReferencePath(resolved.artifactPath) == normalizedReferencePath;
 }

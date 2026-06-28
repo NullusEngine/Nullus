@@ -13,6 +13,7 @@
 #include <thread>
 
 #include <Core/ServiceLocator.h>
+#include "Assets/ArtifactDatabase.h"
 #include <Debug/Logger.h>
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Assets/EditorAssetDatabase.h"
@@ -42,6 +43,8 @@ namespace NLS
 {
 namespace
 {
+    constexpr const char* kEditorRuntimeAssetTargetPlatform = "editor";
+
     std::string EnsureTrailingPathSeparator(const std::filesystem::path& path)
     {
         auto text = path.lexically_normal().string();
@@ -157,6 +160,87 @@ namespace
     {
         return event.targetPlatform != NLS::Editor::Core::kRendererResourceResolutionTargetPlatform &&
             event.targetPlatform != NLS::Editor::Core::kSceneLoadRendererResourceResolutionTargetPlatform;
+    }
+
+    std::vector<NLS::Engine::Assets::RuntimeAssetRef> BuildEditorRuntimeDependencies(
+        const NLS::Core::Assets::ArtifactManifest& manifest)
+    {
+        std::vector<NLS::Engine::Assets::RuntimeAssetRef> dependencies;
+        for (const auto& dependency : manifest.dependencies)
+        {
+            if (dependency.kind != NLS::Core::Assets::AssetDependencyKind::ImportedArtifact &&
+                dependency.kind != NLS::Core::Assets::AssetDependencyKind::PrefabBase &&
+                dependency.kind != NLS::Core::Assets::AssetDependencyKind::NestedPrefab)
+            {
+                continue;
+            }
+
+            const auto parsedGuid = NLS::Guid::TryParse(dependency.value);
+            if (!parsedGuid.has_value() || dependency.hashOrVersion.empty())
+                continue;
+
+            NLS::Engine::Assets::RuntimeAssetRef reference {
+                NLS::Core::Assets::AssetId(*parsedGuid),
+                dependency.hashOrVersion
+            };
+            if (std::find(dependencies.begin(), dependencies.end(), reference) == dependencies.end())
+                dependencies.push_back(std::move(reference));
+        }
+        return dependencies;
+    }
+
+    std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> LoadEditorRuntimeAssetDatabase(
+        const std::filesystem::path& projectRoot)
+    {
+        NLS::Core::Assets::ArtifactDatabase artifactDatabase;
+        if (!artifactDatabase.Load(projectRoot / "Library" / "ArtifactDB"))
+            return std::nullopt;
+
+        NLS::Engine::Assets::RuntimeAssetManifest manifest;
+        manifest.schemaVersion = 1u;
+        manifest.targetPlatform = kEditorRuntimeAssetTargetPlatform;
+
+        artifactDatabase.VisitRecords([&](const NLS::Core::Assets::ArtifactDatabaseRecord& record)
+        {
+            if (record.status != NLS::Core::Assets::ArtifactRecordStatus::UpToDate ||
+                record.targetPlatform != kEditorRuntimeAssetTargetPlatform ||
+                record.artifactPath.empty())
+            {
+                return;
+            }
+
+            const auto sourceManifest = artifactDatabase.BuildManifestForSource(
+                record.sourceAssetId,
+                record.targetPlatform);
+            if (!sourceManifest.has_value())
+                return;
+
+            const auto entryAssetId = record.artifactSourceAssetId.IsValid()
+                ? record.artifactSourceAssetId
+                : record.sourceAssetId;
+
+            manifest.entries.push_back({
+                entryAssetId,
+                record.subAssetKey,
+                record.artifactType,
+                record.loaderId,
+                record.artifactPath,
+                record.contentHash,
+                BuildEditorRuntimeDependencies(*sourceManifest)
+            });
+
+            if (record.primarySubAssetKey == record.subAssetKey)
+            {
+                NLS::Engine::Assets::RuntimeAssetRef root {record.sourceAssetId, record.subAssetKey};
+                if (std::find(manifest.roots.begin(), manifest.roots.end(), root) == manifest.roots.end())
+                    manifest.roots.push_back(std::move(root));
+            }
+        });
+
+        if (manifest.entries.empty())
+            return std::nullopt;
+
+        return NLS::Engine::Assets::RuntimeAssetDatabase(std::move(manifest));
     }
 
 	bool ResolveEditorLightGridEnabled(const std::filesystem::path& projectPath)
@@ -899,6 +983,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     NLS::Core::ServiceLocator::Provide<ShaderManager>(shaderManager);
     NLS::Core::ServiceLocator::Provide<MaterialManager>(materialManager);
     NLS::Core::ServiceLocator::Provide<ResourceLifetimeRegistry>(resourceLifetimeRegistry);
+    RefreshRuntimeAssetDatabaseFromArtifactDB();
     NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
 
     PresentStartupProgressFrame("Preparing editor resources", 0.34f);
@@ -1025,6 +1110,23 @@ bool Editor::Core::Context::IsProjectSettingsIntegrityVerified()
 
 void Editor::Core::Context::ApplyProjectSettings()
 {
+}
+
+bool Editor::Core::Context::RefreshRuntimeAssetDatabaseFromArtifactDB()
+{
+    runtimeAssetDatabase = LoadEditorRuntimeAssetDatabase(std::filesystem::path(projectPath));
+    if (!runtimeAssetDatabase.has_value())
+    {
+        if (NLS::Core::ServiceLocator::Contains<NLS::Engine::Assets::RuntimeAssetDatabase>())
+            NLS::Core::ServiceLocator::Remove<NLS::Engine::Assets::RuntimeAssetDatabase>();
+        return false;
+    }
+
+    NLS::Core::ServiceLocator::Provide<NLS::Engine::Assets::RuntimeAssetDatabase>(*runtimeAssetDatabase);
+    NLS_LOG_INFO(
+        "Editor runtime asset database refreshed from ArtifactDB: entries=" +
+        std::to_string(runtimeAssetDatabase->GetManifest().entries.size()));
+    return true;
 }
 
 void Editor::Core::Context::PresentStartupProgressFrame(

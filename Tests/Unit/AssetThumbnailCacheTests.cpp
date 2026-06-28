@@ -12,6 +12,7 @@
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Core/ResourceManagement/MeshManager.h"
+#include "Core/ResourceManagement/ShaderManager.h"
 #include "Engine/Assets/PrefabAsset.h"
 #include "Jobs/JobSystem.h"
 #include "Profiling/PerformanceStageStats.h"
@@ -21,6 +22,7 @@
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/RHI/RHITypes.h"
+#include "Rendering/Resources/Shader.h"
 #include <Json/json.hpp>
 
 #include <filesystem>
@@ -801,6 +803,29 @@ NLS::Render::Assets::MeshArtifactData OversizedMeshArtifact()
     mesh.hasBoundingSphere = true;
     mesh.boundingSphere.position = NLS::Maths::Vector3(1.5f, 0.15f, 0.0f);
     mesh.boundingSphere.radius = 2.0f;
+    return mesh;
+}
+
+NLS::Render::Assets::MeshArtifactData BudgetSizedMeshArtifact(
+    const uint32_t vertexCount,
+    const uint32_t indexCount,
+    const float xOffset)
+{
+    NLS::Render::Assets::MeshArtifactData mesh;
+    mesh.vertices.resize(vertexCount);
+    mesh.indices.reserve(indexCount);
+    for (uint32_t vertexIndex = 0u; vertexIndex < vertexCount; ++vertexIndex)
+    {
+        auto& vertex = mesh.vertices[vertexIndex];
+        vertex.position[0] = xOffset + static_cast<float>(vertexIndex % 400u) * 0.01f;
+        vertex.position[1] = static_cast<float>(vertexIndex / 400u) * 0.01f;
+        vertex.position[2] = 0.0f;
+    }
+    for (uint32_t index = 0u; index < indexCount; ++index)
+        mesh.indices.push_back(index % vertexCount);
+    mesh.hasBoundingSphere = true;
+    mesh.boundingSphere.position = NLS::Maths::Vector3(xOffset + 2.0f, 2.0f, 0.0f);
+    mesh.boundingSphere.radius = 3.0f;
     return mesh;
 }
 
@@ -2164,7 +2189,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     EXPECT_EQ(textureRequest->kind, AssetThumbnailKind::Texture);
     EXPECT_EQ(textureRequest->requestedSize, 96u);
     EXPECT_EQ(textureRequest->priority, ThumbnailRequestPriority::Background);
-    EXPECT_EQ(textureRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v1");
+    EXPECT_EQ(textureRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v3");
     EXPECT_EQ(textureRequest->settingsFingerprint, "asset-browser-thumbnail:v15-lowres-image-thumbnails");
     EXPECT_FALSE(textureRequest->dependencyStamp.empty());
     EXPECT_EQ(textureRequest->colorSpaceMode, "linear");
@@ -2186,7 +2211,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto materialRequest = BuildAssetThumbnailRequestForItem(root, material, 96u);
     ASSERT_TRUE(materialRequest.has_value());
     EXPECT_EQ(materialRequest->kind, AssetThumbnailKind::MaterialSphere);
-    EXPECT_EQ(materialRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v1");
+    EXPECT_EQ(materialRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v3");
     EXPECT_EQ(materialRequest->settingsFingerprint, "asset-browser-thumbnail:v19-gpu-preview-textured-materials");
     EXPECT_FALSE(materialRequest->dependencyStamp.empty());
     EXPECT_EQ(materialRequest->colorSpaceMode, "linear");
@@ -2221,7 +2246,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto modelRequest = BuildAssetThumbnailRequestForItem(root, modelSource, 96u);
     ASSERT_TRUE(modelRequest.has_value());
     EXPECT_EQ(modelRequest->kind, AssetThumbnailKind::PrefabPreview);
-    EXPECT_EQ(modelRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v1");
+    EXPECT_EQ(modelRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v3");
     EXPECT_EQ(modelRequest->settingsFingerprint, "asset-browser-thumbnail:v22-prefab-mesh-set-preview");
     EXPECT_FALSE(modelRequest->dependencyStamp.empty());
     EXPECT_EQ(modelRequest->colorSpaceMode, "linear");
@@ -2240,7 +2265,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto meshRequest = BuildAssetThumbnailRequestForItem(root, mesh, 96u);
     ASSERT_TRUE(meshRequest.has_value());
     EXPECT_EQ(meshRequest->kind, AssetThumbnailKind::ModelPreview);
-    EXPECT_EQ(meshRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v1");
+    EXPECT_EQ(meshRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v3");
     EXPECT_EQ(meshRequest->settingsFingerprint, "asset-browser-thumbnail:v19-gpu-preview-textured-materials");
     EXPECT_FALSE(meshRequest->dependencyStamp.empty());
     EXPECT_EQ(meshRequest->colorSpaceMode, "linear");
@@ -2258,7 +2283,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto prefabRequest = BuildAssetThumbnailRequestForItem(root, prefab, 96u);
     ASSERT_TRUE(prefabRequest.has_value());
     EXPECT_EQ(prefabRequest->kind, AssetThumbnailKind::PrefabPreview);
-    EXPECT_EQ(prefabRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v1");
+    EXPECT_EQ(prefabRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v3");
     EXPECT_EQ(prefabRequest->settingsFingerprint, "asset-browser-thumbnail:v22-prefab-mesh-set-preview");
     EXPECT_FALSE(prefabRequest->dependencyStamp.empty());
     EXPECT_EQ(prefabRequest->colorSpaceMode, "linear");
@@ -4166,6 +4191,90 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailDoesNotCachePartialSnapshotWhen
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetThumbnailCacheTests, GpuPrefabPreviewRejectsPartialRenderableSnapshot)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("bf0d0d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d"));
+    const auto prefabPayload = PrefabPayloadWithTwoTransformedRendererDependencies(
+        assetId,
+        "mesh:Body",
+        "mesh:Missing");
+    auto imported = NLS::Engine::Assets::ImportPrefabArtifact(
+        prefabPayload,
+        assetId,
+        {
+            {assetId, "Mesh", "mesh:Body", "Library/Artifacts/bodymesh"}
+        });
+    ASSERT_FALSE(imported.diagnostics.HasErrors());
+
+    const auto snapshot = BuildPreviewRenderableSnapshot(imported.artifact);
+    ASSERT_EQ(snapshot.expectedDrawItemCount, 2u);
+    ASSERT_EQ(snapshot.drawItems.size(), 1u)
+        << "This regression requires the prefab snapshot builder to drop one unresolved renderer.";
+
+    EXPECT_FALSE(ThumbnailPreviewSnapshotIsCompleteForGpuPrefabPreviewForTesting(snapshot))
+        << "GPU thumbnails must not render and cache a misleading partial prefab preview.";
+}
+
+TEST(AssetThumbnailCacheTests, GpuPrefabPreviewDrawItemCapacityCoversLargeImportedModelPrefabs)
+{
+    using namespace NLS::Editor::Assets;
+
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect GPU thumbnail preview capacity.";
+#else
+    constexpr size_t kSponzaMainGltfPrimitiveCount = 405u;
+
+    EXPECT_GE(GetThumbnailPreviewPrefabDrawItemCapacityForTesting(), kSponzaMainGltfPrimitiveCount)
+        << "Large imported model thumbnails such as Sponza must stay on the complete GPU prefab "
+           "preview path instead of falling back to a partial CPU mesh-set thumbnail.";
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, ThumbnailPreviewDefaultShaderDoesNotUseLegacyStandardHlslFallbackWhenUnavailable)
+{
+    using NLS::Core::ResourceManagement::ShaderManager;
+
+    ShaderManager shaderManager;
+
+    const auto selection = NLS::Editor::Assets::SelectThumbnailPreviewDefaultShaderForTesting(shaderManager);
+
+    EXPECT_FALSE(selection.usesLegacyBuiltInStandardHlsl)
+        << "After ShaderLab migration, thumbnail default material must not silently fall back to legacy Standard.hlsl.";
+    EXPECT_TRUE(selection.resourcePath.empty());
+    EXPECT_FALSE(selection.usesShaderLabStandardPbrForward);
+}
+
+TEST(AssetThumbnailCacheTests, ThumbnailPreviewDefaultShaderUsesLoadedStandardPbrForwardShaderLabPass)
+{
+    using NLS::Core::ResourceManagement::ShaderManager;
+    using NLS::Render::Resources::Shader;
+
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to create a ShaderLab shader for thumbnail fallback selection.";
+#else
+    ShaderManager shaderManager;
+    auto* forward = Shader::CreateForTesting("Library/Artifacts/12/standardpbrforward");
+    ASSERT_NE(forward, nullptr);
+    forward->SetImportedShaderLabPassForTesting(
+        "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+        "shader:StandardPBR/Forward#0",
+        "Forward",
+        {});
+    shaderManager.RegisterResource("Library/Artifacts/12/standardpbrforward", forward);
+
+    const auto selection = NLS::Editor::Assets::SelectThumbnailPreviewDefaultShaderForTesting(shaderManager);
+
+    EXPECT_EQ(selection.resourcePath, "Library/Artifacts/12/standardpbrforward");
+    EXPECT_TRUE(selection.usesShaderLabStandardPbrForward);
+    EXPECT_FALSE(selection.usesLegacyBuiltInStandardHlsl);
+
+    shaderManager.UnloadResources();
+#endif
+}
+
 TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailResolvesSnapshotMeshFromReferencedAssetManifest)
 {
     using namespace NLS::Core::Assets;
@@ -4443,6 +4552,89 @@ TEST(AssetThumbnailCacheTests, GpuPreviewCameraAndLightingUseUpperObliqueUnitySt
 #endif
 }
 
+TEST(AssetThumbnailCacheTests, GpuPreviewMeshLoaderUsesArtifactPathForContentAddressedStorage)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect GPU thumbnail preview path routing.";
+#else
+    const auto storageName = BuildArtifactStorageFileName("thumbnail-preview:mesh:Body");
+    const auto contentArtifactPath = (std::filesystem::path("Library") /
+        "Artifacts" /
+        BuildArtifactStorageRelativePath(storageName)).generic_string();
+    ASSERT_TRUE(IsContentStorageArtifactPath(contentArtifactPath));
+
+    EXPECT_TRUE(ThumbnailPreviewMeshPathUsesArtifactLoaderForTesting(contentArtifactPath))
+        << "Prefab GPU previews must load extensionless Asset Database v2 mesh artifacts through "
+           "MeshManager::RequestAsyncArtifact; normal resource loading treats them as source paths.";
+    EXPECT_FALSE(ThumbnailPreviewMeshPathUsesArtifactLoaderForTesting(
+        "Library/Artifacts/legacy-guid/meshes/Body.nmesh"))
+        << "Asset Database v2 preview loading should treat extensionless content artifacts as authoritative.";
+    EXPECT_FALSE(ThumbnailPreviewMeshPathUsesArtifactLoaderForTesting("Assets/Models/Body.fbx"));
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, GpuPreviewMeshLoadPathUsesResolvedContentArtifactFile)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect GPU thumbnail preview path routing.";
+#else
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto prefabAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("bf171717-1717-4717-8717-171717171717"));
+    const auto meshAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("bf181818-1818-4818-8818-181818181818"));
+    const auto meshPayload = NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact());
+    const auto meshStorageName = BuildArtifactStorageFileName(meshPayload.data(), meshPayload.size());
+    const auto meshArtifactPath = (std::filesystem::path("Library") /
+        "Artifacts" /
+        BuildArtifactStorageRelativePath(meshStorageName)).generic_string();
+    WriteBinaryFile(root / meshArtifactPath, meshPayload);
+
+    NLS::Engine::Assets::PrefabResolvedAsset resolvedMesh;
+    resolvedMesh.assetId = meshAssetId;
+    resolvedMesh.expectedType = "Mesh";
+    resolvedMesh.subAssetKey = "mesh:Body";
+    resolvedMesh.artifactPath = meshArtifactPath;
+
+    auto imported = NLS::Engine::Assets::ImportPrefabArtifact(
+        PrefabPayloadWithSingleRendererDependency(meshAssetId, "mesh:Body"),
+        prefabAssetId,
+        {resolvedMesh});
+    ASSERT_FALSE(imported.diagnostics.HasErrors());
+    const auto snapshot = BuildPreviewRenderableSnapshot(imported.artifact);
+    ASSERT_EQ(snapshot.drawItems.size(), 1u);
+    ASSERT_EQ(snapshot.drawItems.front().meshPath, meshArtifactPath);
+    ASSERT_EQ(snapshot.drawItems.front().meshAssetId, meshAssetId);
+
+    auto request = MakeThumbnailRequest(root, "prefab:Body");
+    request.assetId = prefabAssetId;
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.artifactPath = (std::filesystem::path("Library") /
+        "Artifacts" /
+        "aa" /
+        "aa00000000000000000000000000000000000000000000000000000000000000").generic_string();
+
+    const auto loadPath = ResolveThumbnailPreviewMeshLoadPathForTesting(
+        request,
+        snapshot.drawItems.front().meshPath,
+        snapshot.drawItems.front().meshAssetId);
+
+    EXPECT_NE(loadPath, snapshot.drawItems.front().meshPath)
+        << "GPU prefab previews should load the physical resolved content artifact file, not the "
+           "raw prefab snapshot reference.";
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(loadPath)))
+        << loadPath;
+    EXPECT_TRUE(ThumbnailPreviewMeshPathUsesArtifactLoaderForTesting(loadPath))
+        << "Resolved physical content artifact files are extensionless but still need the mesh artifact loader.";
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
 TEST(AssetThumbnailCacheTests, OversizedImportedModelPrefabFallsBackToManifestMeshPreview)
 {
     using namespace NLS::Core::Assets;
@@ -4515,6 +4707,97 @@ TEST(AssetThumbnailCacheTests, OversizedImportedModelPrefabFallsBackToManifestMe
     ASSERT_NE(decoded.GetData(), nullptr);
     EXPECT_GT(CountOpaquePixels(decoded), 0u);
     EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, MeshSetFallbackDoesNotCachePartialPreviewWhenMeshBudgetSkipsManifestMeshes)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("bf191919-1919-4919-8919-191919191919"));
+    const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
+    std::filesystem::create_directories(artifactRoot / "meshes");
+
+    WriteBinaryFile(root / "Assets" / "Models" / "LargeSet.fbx", std::vector<uint8_t>{'f', 'b', 'x'});
+    WriteBinaryFile(
+        artifactRoot / "meshes" / "BlockA.nmesh",
+        NLS::Render::Assets::SerializeMeshArtifact(BudgetSizedMeshArtifact(180000u, 540000u, 0.0f)));
+    WriteBinaryFile(
+        artifactRoot / "meshes" / "BlockB.nmesh",
+        NLS::Render::Assets::SerializeMeshArtifact(BudgetSizedMeshArtifact(120000u, 360000u, 8.0f)));
+
+    const std::string largePadding((1024u * 1024u) + 64u, ' ');
+    WriteNativeArtifactTextFile(
+        artifactRoot / "LargeSet.nprefab",
+        ArtifactType::Prefab,
+        "prefab",
+        1u,
+        MinimalPrefabPayload() + largePadding);
+    WriteTextFile(
+        artifactRoot / "manifest.json",
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"importerId\":\"scene-model\","
+        "\"importerVersion\":1,"
+        "\"targetPlatform\":\"editor\","
+        "\"primarySubAssetKey\":\"prefab:LargeSet\","
+        "\"subAssets\":["
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"subAssetKey\":\"prefab:LargeSet\","
+        "\"artifactType\":\"Prefab\","
+        "\"loaderId\":\"native-prefab\","
+        "\"targetPlatform\":\"editor\","
+        "\"artifactPath\":\"Library/Artifacts/" + assetId.ToString() + "/LargeSet.nprefab\","
+        "\"contentHash\":\"prefab-hash\""
+        "},"
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"subAssetKey\":\"mesh:BlockA\","
+        "\"artifactType\":\"Mesh\","
+        "\"loaderId\":\"mesh\","
+        "\"targetPlatform\":\"editor\","
+        "\"artifactPath\":\"Library/Artifacts/" + assetId.ToString() + "/meshes/BlockA.nmesh\","
+        "\"contentHash\":\"mesh-a-hash\""
+        "},"
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"subAssetKey\":\"mesh:BlockB\","
+        "\"artifactType\":\"Mesh\","
+        "\"loaderId\":\"mesh\","
+        "\"targetPlatform\":\"editor\","
+        "\"artifactPath\":\"Library/Artifacts/" + assetId.ToString() + "/meshes/BlockB.nmesh\","
+        "\"contentHash\":\"mesh-b-hash\""
+        "}"
+        "]"
+        "}");
+
+    auto request = MakeThumbnailRequest(root, "prefab:LargeSet");
+    request.assetId = assetId;
+    request.sourceAssetPath = "Assets/Models/LargeSet.fbx";
+    request.artifactPath = RedirectedArtifactPathOrFallback(
+        "Library/Artifacts/" + assetId.ToString() + "/LargeSet.nprefab");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 96u;
+    request.freshnessInputs = {{"artifact", "budgeted-manifest-mesh-set:v1"}};
+
+    const auto entry = ResolveAssetThumbnailCacheEntry(request);
+    ASSERT_TRUE(entry.has_value());
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    const auto generated = service.GenerateNextThumbnail();
+    ASSERT_TRUE(generated.has_value());
+
+    EXPECT_NE(generated->status, AssetThumbnailServiceStatus::Fresh)
+        << "A source-model prefab fallback must not cache a partial mesh-set thumbnail when "
+           "CPU preview budgets skip manifest meshes.";
+    EXPECT_EQ(generated->diagnostic, "thumbnail-model-preview-budget-exceeded");
+    EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Failed);
 
     std::filesystem::remove_all(root);
 }
@@ -5500,6 +5783,12 @@ TEST(AssetThumbnailCacheTests, ServiceGeneratesTextureThumbnailFromGeneratedText
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
     EXPECT_TRUE(std::filesystem::exists(generated->imagePath));
+    const NLS::Image decoded(generated->imagePath.string(), false);
+    ASSERT_NE(decoded.GetData(), nullptr);
+    EXPECT_GT(decoded.GetWidth(), 0);
+    EXPECT_GT(decoded.GetHeight(), 0);
+    EXPECT_GT(CountOpaquePixels(decoded), 0u)
+        << "Native texture artifacts loaded through backed pixel views must remain usable by thumbnail generation.";
 
     const auto evaluated = EvaluateAssetThumbnailCache(request);
     EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Fresh);

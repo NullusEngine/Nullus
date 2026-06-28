@@ -7,6 +7,7 @@
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetThumbnailService.h"
 #include "Assets/ExternalAssetImporter.h"
+#include "Assets/NativeArtifactContainer.h"
 #include "Core/EditorResources.h"
 #include "Guid.h"
 #include "Utils/PathParser.h"
@@ -17,6 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <system_error>
 #include <string>
 #include <string_view>
@@ -97,7 +99,8 @@ NLS::Core::Assets::ImportedArtifact MakeArtifact(
     NLS::Core::Assets::AssetId owner,
     std::string subAssetKey,
     NLS::Core::Assets::ArtifactType type,
-    std::string loaderId)
+    std::string loaderId,
+    std::string targetPlatform = "editor")
 {
     const auto artifactPath =
         (std::filesystem::path("Library") /
@@ -109,10 +112,19 @@ NLS::Core::Assets::ImportedArtifact MakeArtifact(
         std::move(subAssetKey),
         type,
         std::move(loaderId),
-        "editor",
+        std::move(targetPlatform),
         artifactPath,
         "sha256:" + owner.ToString() + ":" + subAssetKey
     };
+}
+
+std::string TextureArtifactTargetPlatformForTest()
+{
+#if defined(_WIN32)
+    return "win64-dx12";
+#else
+    return "editor";
+#endif
 }
 
 std::string FileStamp(const std::filesystem::path& path)
@@ -129,6 +141,18 @@ std::string FileStamp(const std::filesystem::path& path)
 
     const auto writeTimeTicks = static_cast<std::intmax_t>(writeTime.time_since_epoch().count());
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
+}
+
+std::string SourceFileContentHashForTest(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return {};
+
+    const std::vector<uint8_t> bytes{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
 }
 
 void WriteManifestArtifactFiles(
@@ -155,7 +179,7 @@ void AddCurrentSourceDependencies(
     manifest.dependencies.push_back({
         NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
         assetPath,
-        FileStamp(sourcePath)
+        SourceFileContentHashForTest(sourcePath)
     });
     manifest.dependencies.push_back({
         NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
@@ -1638,7 +1662,7 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationScopeDecisionRequeriesDir
     EXPECT_FALSE(resizedDecision.requerySameScope);
 }
 
-TEST(AssetBrowserPresentationTests, HeavyGpuThumbnailPumpRunsOnlyFromBudgetedNonInteractivePump)
+TEST(AssetBrowserPresentationTests, GpuThumbnailPumpsRunOnlyFromBudgetedNonInteractivePump)
 {
     using namespace NLS::Editor::Assets;
 
@@ -1646,6 +1670,7 @@ TEST(AssetBrowserPresentationTests, HeavyGpuThumbnailPumpRunsOnlyFromBudgetedNon
     lightInput.hasQueuedWork = true;
     lightInput.hasPreviewRenderer = true;
     lightInput.nowSeconds = 10.0;
+    lightInput.deferredUntilSeconds = 8.0;
     lightInput.nextAllowedSeconds = 9.0;
 
     EXPECT_TRUE(PlanAssetBrowserLightGpuThumbnailPump(lightInput).shouldPump)
@@ -1666,8 +1691,15 @@ TEST(AssetBrowserPresentationTests, HeavyGpuThumbnailPumpRunsOnlyFromBudgetedNon
         << "Background CPU thumbnail writes must not starve visible material GPU previews in large folders.";
 
     lightInput.hasInFlightWork = false;
+    lightInput.deferredUntilSeconds = 8.0;
     lightInput.nowSeconds = 8.5;
     EXPECT_FALSE(PlanAssetBrowserLightGpuThumbnailPump(lightInput).shouldPump);
+
+    lightInput.nowSeconds = 9.5;
+    lightInput.nextAllowedSeconds = 9.0;
+    lightInput.deferredUntilSeconds = 10.0;
+    EXPECT_FALSE(PlanAssetBrowserLightGpuThumbnailPump(lightInput).shouldPump)
+        << "Light GPU previews still render on the UI thread, so they must wait until the browser has been idle.";
 
     AssetBrowserHeavyGpuThumbnailPumpInput input;
     input.hasQueuedWork = true;
@@ -2665,9 +2697,14 @@ TEST(AssetBrowserPresentationTests, StandaloneTextureManifestLoadsWithoutExpandi
     textureManifest.sourceAssetId = textureId;
     textureManifest.importerId = "texture";
     textureManifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::Texture);
-    textureManifest.targetPlatform = "editor";
+    textureManifest.targetPlatform = TextureArtifactTargetPlatformForTest();
     textureManifest.primarySubAssetKey = "texture:main";
-    textureManifest.subAssets.push_back(MakeArtifact(textureId, "texture:main", ArtifactType::Texture, "texture"));
+    textureManifest.subAssets.push_back(MakeArtifact(
+        textureId,
+        "texture:main",
+        ArtifactType::Texture,
+        "texture",
+        TextureArtifactTargetPlatformForTest()));
     WriteManifestArtifactFiles(root, textureManifest);
     database.AddArtifactManifest(textureManifest);
 
@@ -2698,9 +2735,14 @@ TEST(AssetBrowserPresentationTests, RestartedBrowserBuildsTextureThumbnailReques
         textureManifest.sourceAssetId = textureId;
         textureManifest.importerId = "texture";
         textureManifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::Texture);
-        textureManifest.targetPlatform = "editor";
+        textureManifest.targetPlatform = TextureArtifactTargetPlatformForTest();
         textureManifest.primarySubAssetKey = "texture:main";
-        textureManifest.subAssets.push_back(MakeArtifact(textureId, "texture:main", ArtifactType::Texture, "texture"));
+        textureManifest.subAssets.push_back(MakeArtifact(
+            textureId,
+            "texture:main",
+            ArtifactType::Texture,
+            "texture",
+            TextureArtifactTargetPlatformForTest()));
         WriteManifestArtifactFiles(root, textureManifest);
         WritePersistedArtifactManifest(root, textureManifest);
         database.AddArtifactManifest(textureManifest);

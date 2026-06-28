@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "Guid.h"
+#include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Core/ServiceLocator.h"
@@ -545,7 +546,13 @@ namespace
         metadata.schemaName = "material";
         metadata.schemaVersion = 1u;
 
-        const std::string payload = "name=PendingMaterial\n";
+        const std::string payload =
+            "shaderLabMaterialVersion=1\n"
+            "shader=?\n"
+            "surfaceMode=Opaque\n"
+            "alphaMode=Opaque\n"
+            "doubleSided=false\n"
+            "depthWrite=true\n";
         const std::vector<uint8_t> bytes(payload.begin(), payload.end());
         WriteBytes(artifactPath, NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), bytes));
     }
@@ -562,24 +569,38 @@ namespace
         WriteBytes(artifactPath, NLS::Render::Assets::SerializeTextureArtifact(texture));
     }
 
+    std::filesystem::path ContentAddressedArtifactPath(
+        const std::filesystem::path& root,
+        const std::string& key)
+    {
+        const auto fileName = NLS::Core::Assets::BuildArtifactStorageFileName(key);
+        return root / "Library" / "Artifacts" / NLS::Core::Assets::BuildArtifactStorageRelativePath(fileName);
+    }
+
     void CopyTextFile(const std::filesystem::path& source, const std::filesystem::path& destination)
     {
         std::filesystem::create_directories(destination.parent_path());
         std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing);
     }
 
-    void RegisterImportedShaderLabArtifact(
-        const std::filesystem::path& projectRoot,
-        NLS::Core::ResourceManagement::ShaderManager& shaderManager,
-        const std::string& sourcePath,
-        const std::string& subAssetKey,
-        const std::string& fileName)
-    {
-        NLS::Render::Assets::ShaderArtifact artifact;
-        artifact.sourcePath = sourcePath;
-        artifact.subAssetKey = subAssetKey;
-        artifact.shaderLabPassState = NLS::Render::ShaderLab::ShaderLabPassState{};
-        artifact.stages.push_back({
+	void RegisterImportedShaderLabArtifact(
+		const std::filesystem::path& projectRoot,
+		NLS::Core::ResourceManagement::ShaderManager& shaderManager,
+		const std::string& sourcePath,
+		const std::string& subAssetKey,
+		const std::string& fileName)
+	{
+		NLS::Render::Assets::ShaderArtifact artifact;
+		artifact.sourcePath = sourcePath;
+		artifact.subAssetKey = subAssetKey;
+		if (subAssetKey.find("ForwardPreview") != std::string::npos)
+			artifact.shaderLabLightMode = "ForwardPreview";
+		else if (subAssetKey.find("Picking") != std::string::npos)
+			artifact.shaderLabLightMode = "Picking";
+		else
+			artifact.shaderLabLightMode = "Forward";
+		artifact.shaderLabPassState = NLS::Render::ShaderLab::ShaderLabPassState{};
+		artifact.stages.push_back({
             NLS::Render::ShaderCompiler::ShaderStage::Vertex,
             NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
             "VSMain",
@@ -655,6 +676,83 @@ namespace
             "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
             "shader:StandardPBR/ForwardPreview#1",
             "0a6a3e42e1d842508a0167200da19f4dce088e622f8346ca6bf5f7b449223bd1");
+    }
+
+    std::string ContentAddressedArtifactPath(const std::string& hash)
+    {
+        return (std::filesystem::path("Library") / "Artifacts" / hash.substr(0u, 2u) / hash).generic_string();
+    }
+
+    void WriteImportedShaderLabArtifactDatabaseRecord(
+        const std::filesystem::path& projectRoot,
+        const std::string& sourcePath,
+        const std::string& subAssetKey,
+        const std::string& artifactHash,
+        const std::string& lightMode,
+        const std::string& targetPlatform = "editor")
+    {
+        NLS::Render::Assets::ShaderArtifact artifact;
+        artifact.sourcePath = sourcePath;
+        artifact.subAssetKey = subAssetKey;
+        artifact.shaderLabLightMode = lightMode;
+        artifact.shaderLabPassState = NLS::Render::ShaderLab::ShaderLabPassState{};
+        artifact.stages.push_back({
+            NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+            NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+            "VSMain",
+            "vs_6_0",
+            {
+                NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                { 0x44u, 0x58u, 0x49u, 0x4cu, 0x56u, 0x53u },
+                {},
+                {},
+                "standard-pbr-forward-vs-cache",
+                "StandardPBR.vs.dxil"
+            }
+        });
+        artifact.stages.push_back({
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+            "PSMain",
+            "ps_6_0",
+            {
+                NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                { 0x44u, 0x58u, 0x49u, 0x4cu, 0x50u, 0x53u },
+                {},
+                {},
+                "standard-pbr-forward-ps-cache",
+                "StandardPBR.ps.dxil"
+            }
+        });
+
+        const auto artifactPath = ContentAddressedArtifactPath(artifactHash);
+        WriteBytes(projectRoot / artifactPath, NLS::Render::Assets::SerializeShaderArtifact(artifact));
+
+        const auto sourceAssetId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic(sourcePath));
+        NLS::Core::Assets::ArtifactManifest manifest;
+        manifest.sourceAssetId = sourceAssetId;
+        manifest.importerId = "ShaderLabImporter";
+        manifest.importerVersion = 1u;
+        manifest.targetPlatform = targetPlatform;
+        manifest.primarySubAssetKey = subAssetKey;
+        manifest.subAssets.push_back({
+            sourceAssetId,
+            subAssetKey,
+            NLS::Core::Assets::ArtifactType::Shader,
+            "ShaderLoader",
+            targetPlatform,
+            artifactPath,
+            artifactHash,
+            "StandardPBR Forward"
+        });
+
+        NLS::Core::Assets::ArtifactDatabase database;
+        database.Load(projectRoot / "Library" / "ArtifactDB");
+        database.UpsertManifest(
+            manifest,
+            sourcePath,
+            NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+        ASSERT_TRUE(database.Save(projectRoot / "Library" / "ArtifactDB"));
     }
 }
 
@@ -1313,6 +1411,164 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsLoadedPrimitiveCubeWithColdDefault
     EXPECT_EQ(drawables.opaques.front().second.mesh, meshFilter->ResolveMesh());
     ASSERT_NE(drawables.opaques.front().second.material, nullptr);
     EXPECT_TRUE(drawables.opaques.front().second.material->IsValid());
+    EXPECT_NE(drawables.opaques.front().second.material->GetParameterBlock().TryGet("_BaseColor"), nullptr)
+        << "Default scene fallback material must populate ShaderLab StandardPBR properties, not legacy HLSL parameter names.";
+    EXPECT_EQ(drawables.opaques.front().second.material->GetParameterBlock().TryGet("u_Diffuse"), nullptr);
+}
+
+TEST(RenderSceneCacheTests, SceneFallbackPreloadLoadsStandardPbrForwardFromArtifactDatabase)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_fallback_artifactdb_" + NLS::Guid::New().ToString()));
+    const auto projectRoot = root.Path() / "Project";
+    const auto projectAssetsRoot = (projectRoot / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    const ScopedRenderSceneResourceManagers resourceManagers(
+        meshManager,
+        materialManager,
+        shaderManager,
+        projectAssetsRoot,
+        engineAssetsRoot);
+
+    WriteImportedShaderLabArtifactDatabaseRecord(
+        projectRoot,
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+        "shader:StandardPBR/Forward#0",
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
+        "Forward");
+
+    EXPECT_TRUE(shaderManager.GetResources().empty());
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+
+    const auto resources = shaderManager.GetResources();
+    ASSERT_EQ(resources.size(), 1u);
+    const auto* shader = resources.begin()->second;
+    ASSERT_NE(shader, nullptr);
+    EXPECT_TRUE(shader->GetShaderLabPassState().has_value());
+    EXPECT_EQ(shader->GetShaderLabLightMode(), "Forward");
+    EXPECT_EQ(shader->GetImportedArtifactSubAssetKey(), "shader:StandardPBR/Forward#0");
+}
+
+TEST(RenderSceneCacheTests, SceneFallbackPreloadAcceptsStandardPbrPrimarySubAssetForwardArtifact)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_fallback_primary_subasset_" + NLS::Guid::New().ToString()));
+    const auto projectRoot = root.Path() / "Project";
+    const auto projectAssetsRoot = (projectRoot / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    const ScopedRenderSceneResourceManagers resourceManagers(
+        meshManager,
+        materialManager,
+        shaderManager,
+        projectAssetsRoot,
+        engineAssetsRoot);
+
+    WriteImportedShaderLabArtifactDatabaseRecord(
+        projectRoot,
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+        "shader:StandardPBR",
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
+        "Forward");
+
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+
+    const auto resources = shaderManager.GetResources();
+    ASSERT_EQ(resources.size(), 1u);
+    const auto* shader = resources.begin()->second;
+    ASSERT_NE(shader, nullptr);
+    EXPECT_EQ(shader->GetShaderLabLightMode(), "Forward");
+    EXPECT_EQ(shader->GetImportedArtifactSubAssetKey(), "shader:StandardPBR");
+}
+
+TEST(RenderSceneCacheTests, SceneFallbackPreloadAcceptsPackagedStandardPbrSourcePath)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_fallback_packaged_source_" + NLS::Guid::New().ToString()));
+    const auto projectRoot = root.Path() / "Project";
+    const auto projectAssetsRoot = (projectRoot / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    const ScopedRenderSceneResourceManagers resourceManagers(
+        meshManager,
+        materialManager,
+        shaderManager,
+        projectAssetsRoot,
+        engineAssetsRoot);
+
+    WriteImportedShaderLabArtifactDatabaseRecord(
+        projectRoot,
+        "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+        "shader:StandardPBR/Forward#0",
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
+        "Forward");
+
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+
+    const auto resources = shaderManager.GetResources();
+    ASSERT_EQ(resources.size(), 1u);
+    const auto* shader = resources.begin()->second;
+    ASSERT_NE(shader, nullptr);
+    EXPECT_EQ(shader->GetShaderLabLightMode(), "Forward");
+    EXPECT_EQ(resources.begin()->first, "Library/Artifacts/2b/2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
+}
+
+TEST(RenderSceneCacheTests, SceneFallbackPreloadIgnoresRuntimeTargetStandardPbrArtifact)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_fallback_runtime_target_ignored_" + NLS::Guid::New().ToString()));
+    const auto projectRoot = root.Path() / "Project";
+    const auto projectAssetsRoot = (projectRoot / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    const ScopedRenderSceneResourceManagers resourceManagers(
+        meshManager,
+        materialManager,
+        shaderManager,
+        projectAssetsRoot,
+        engineAssetsRoot);
+
+    WriteImportedShaderLabArtifactDatabaseRecord(
+        projectRoot,
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+        "shader:StandardPBR/Forward#0",
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
+        "Forward",
+        "win64");
+
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+
+    EXPECT_TRUE(shaderManager.GetResources().empty())
+        << "Editor scene fallback selection must not load runtime-target ShaderLab records from ArtifactDB.";
 }
 
 TEST(RenderSceneCacheTests, SceneRendererDoesNotUseArbitraryShaderLabArtifactAsDefaultMaterialFallback)
@@ -1618,7 +1874,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialTexturePathWithInvalidBytesDoesNotTh
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
@@ -1780,7 +2036,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathRebindsDeclaredTextureWhenItArri
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
@@ -1930,7 +2186,7 @@ TEST(RenderSceneCacheTests, SharedDeclaredTexturePathIsResolvedOncePerSync)
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material defaultMaterial;
@@ -2163,14 +2419,12 @@ TEST(RenderSceneCacheTests, ResourceManagersScopePendingAsyncArtifactRequestsPer
     const ScopedTempDirectory root(
         std::filesystem::temp_directory_path() /
         ("nullus_owner_scoped_pending_artifact_" + NLS::Guid::New().ToString()));
-    const auto meshPath = root.Path() / "Meshes" / "hero.nmesh";
-    const auto materialPath = root.Path() / "Materials" / "hero.nmat";
-    const auto texturePath = root.Path() / "Textures" / "hero.ntex";
+    const auto meshPath = ContentAddressedArtifactPath(root.Path(), "owner-scoped:mesh:hero");
+    const auto materialPath = ContentAddressedArtifactPath(root.Path(), "owner-scoped:material:hero");
+    const auto texturePath = ContentAddressedArtifactPath(root.Path(), "owner-scoped:texture:hero");
     WriteCubeMeshArtifact(meshPath);
-    std::filesystem::create_directories(materialPath.parent_path());
-    std::ofstream(materialPath, std::ios::binary | std::ios::trunc) << "";
-    std::filesystem::create_directories(texturePath.parent_path());
-    std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+    WriteMaterialArtifact(materialPath);
+    WriteTextureArtifact(texturePath);
 
     NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
     NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();
@@ -2249,21 +2503,20 @@ TEST(RenderSceneCacheTests, ResourceManagersBoundPendingAsyncArtifactRequests)
     NLS::Core::ResourceManagement::TextureManager textureManager;
     for (size_t index = 0u; index < 80u; ++index)
     {
-        const auto meshPath = root.Path() / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        const auto meshPath = ContentAddressedArtifactPath(root.Path(), "bounded:mesh:" + std::to_string(index));
         WriteCubeMeshArtifact(meshPath);
         EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), true), nullptr);
 
-        const auto texturePath = root.Path() / "Textures" / ("hero" + std::to_string(index) + ".ntex");
-        std::filesystem::create_directories(texturePath.parent_path());
-        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        const auto texturePath = ContentAddressedArtifactPath(root.Path(), "bounded:texture:" + std::to_string(index));
+        WriteTextureArtifact(texturePath);
         EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
     }
 
     EXPECT_LE(NLS::Core::ResourceManagement::MeshManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u);
     EXPECT_LE(NLS::Core::ResourceManagement::TextureManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u);
-    EXPECT_TRUE(meshManager.IsAsyncArtifactLoadPending((root.Path() / "Meshes" / "hero79.nmesh").string()))
+    EXPECT_TRUE(meshManager.IsAsyncArtifactLoadPending(ContentAddressedArtifactPath(root.Path(), "bounded:mesh:79").string()))
         << "Requests beyond the active async cap must stay observable as pending instead of looking like missing resources.";
-    EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending((root.Path() / "Textures" / "hero79.ntex").string()))
+    EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending(ContentAddressedArtifactPath(root.Path(), "bounded:texture:79").string()))
         << "Texture requests beyond the active async cap must stay observable as pending instead of looking like missing resources.";
 
     NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
@@ -2289,13 +2542,12 @@ TEST(RenderSceneCacheTests, ResourceManagersBoundTotalQueuedAsyncArtifactRequest
     NLS::Core::ResourceManagement::TextureManager textureManager;
     for (size_t index = 0u; index < 320u; ++index)
     {
-        const auto meshPath = root.Path() / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        const auto meshPath = ContentAddressedArtifactPath(root.Path(), "total-bounded:mesh:" + std::to_string(index));
         WriteCubeMeshArtifact(meshPath);
         EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), true), nullptr);
 
-        const auto texturePath = root.Path() / "Textures" / ("hero" + std::to_string(index) + ".ntex");
-        std::filesystem::create_directories(texturePath.parent_path());
-        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        const auto texturePath = ContentAddressedArtifactPath(root.Path(), "total-bounded:texture:" + std::to_string(index));
+        WriteTextureArtifact(texturePath);
         EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
     }
 
@@ -2331,16 +2583,14 @@ TEST(RenderSceneCacheTests, ResourceManagersBoundGlobalActiveAsyncArtifactReques
     for (size_t index = 0u; index < 80u; ++index)
     {
         auto meshManager = std::make_unique<NLS::Core::ResourceManagement::MeshManager>();
-        const auto meshPath = root.Path() / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
-        std::filesystem::create_directories(meshPath.parent_path());
-        std::ofstream(meshPath, std::ios::binary | std::ios::trunc) << "not-a-mesh";
+        const auto meshPath = ContentAddressedArtifactPath(root.Path(), "global-active:mesh:" + std::to_string(index));
+        WriteCubeMeshArtifact(meshPath);
         EXPECT_EQ(meshManager->RequestAsyncArtifact(meshPath.string(), true), nullptr);
         meshManagers.push_back(std::move(meshManager));
 
         auto textureManager = std::make_unique<NLS::Core::ResourceManagement::TextureManager>();
-        const auto texturePath = root.Path() / "Textures" / ("hero" + std::to_string(index) + ".ntex");
-        std::filesystem::create_directories(texturePath.parent_path());
-        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        const auto texturePath = ContentAddressedArtifactPath(root.Path(), "global-active:texture:" + std::to_string(index));
+        WriteTextureArtifact(texturePath);
         EXPECT_EQ(textureManager->RequestAsyncArtifact(texturePath.string(), true), nullptr);
         textureManagers.push_back(std::move(textureManager));
     }
@@ -2371,7 +2621,7 @@ TEST(RenderSceneCacheTests, CancelAsyncArtifactDoesNotConsumeSharedMeshOrTexture
     NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
     NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
 
-    const auto meshPath = root.Path() / "Meshes" / "hero.nmesh";
+    const auto meshPath = ContentAddressedArtifactPath(root.Path(), "cancel-shared:mesh:hero");
     WriteCubeMeshArtifact(meshPath);
     NLS::Core::ResourceManagement::MeshManager meshManager;
     EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), false), nullptr);
@@ -2381,9 +2631,8 @@ TEST(RenderSceneCacheTests, CancelAsyncArtifactDoesNotConsumeSharedMeshOrTexture
     EXPECT_TRUE(meshManager.IsAsyncArtifactLoadPending(meshPath.string()))
         << "Preview cleanup must not cancel shared/final mesh interest by repeating path-only cancellation.";
 
-    const auto texturePath = root.Path() / "Textures" / "hero.ntex";
-    std::filesystem::create_directories(texturePath.parent_path());
-    std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+    const auto texturePath = ContentAddressedArtifactPath(root.Path(), "cancel-shared:texture:hero");
+    WriteTextureArtifact(texturePath);
     NLS::Core::ResourceManagement::TextureManager textureManager;
     EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), false), nullptr);
     EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
@@ -2415,13 +2664,12 @@ TEST(RenderSceneCacheTests, ClearingAsyncArtifactStateDrainsMeshAndTextureWorker
     NLS::Core::ResourceManagement::TextureManager textureManager;
     for (size_t index = 0u; index < 8u; ++index)
     {
-        const auto meshPath = root.Path() / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        const auto meshPath = ContentAddressedArtifactPath(root.Path(), "clear-drains:mesh:" + std::to_string(index));
         WriteCubeMeshArtifact(meshPath);
         EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string(), true), nullptr);
 
-        const auto texturePath = root.Path() / "Textures" / ("hero" + std::to_string(index) + ".ntex");
-        std::filesystem::create_directories(texturePath.parent_path());
-        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        const auto texturePath = ContentAddressedArtifactPath(root.Path(), "clear-drains:texture:" + std::to_string(index));
+        WriteTextureArtifact(texturePath);
         EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
     }
 
@@ -2456,29 +2704,25 @@ TEST(RenderSceneCacheTests, ResourceManagersBoundPendingAsyncArtifactRequestsPer
 
     for (size_t index = 0u; index < 64u; ++index)
     {
-        const auto meshPath = root.Path() / "OwnerA" / "Meshes" / ("hero" + std::to_string(index) + ".nmesh");
+        const auto meshPath = ContentAddressedArtifactPath(root.Path(), "owner-bounded:a:mesh:" + std::to_string(index));
         WriteCubeMeshArtifact(meshPath);
         EXPECT_EQ(meshOwnerA.RequestAsyncArtifact(meshPath.string(), true), nullptr);
 
-        const auto materialPath = root.Path() / "OwnerA" / "Materials" / ("hero" + std::to_string(index) + ".nmat");
-        std::filesystem::create_directories(materialPath.parent_path());
-        std::ofstream(materialPath, std::ios::binary | std::ios::trunc) << "";
+        const auto materialPath = ContentAddressedArtifactPath(root.Path(), "owner-bounded:a:material:" + std::to_string(index));
+        WriteMaterialArtifact(materialPath);
         EXPECT_EQ(materialOwnerA.RequestAsyncArtifact(materialPath.string(), true), nullptr);
 
-        const auto texturePath = root.Path() / "OwnerA" / "Textures" / ("hero" + std::to_string(index) + ".ntex");
-        std::filesystem::create_directories(texturePath.parent_path());
-        std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+        const auto texturePath = ContentAddressedArtifactPath(root.Path(), "owner-bounded:a:texture:" + std::to_string(index));
+        WriteTextureArtifact(texturePath);
         EXPECT_EQ(textureOwnerA.RequestAsyncArtifact(texturePath.string(), true), nullptr);
     }
 
-    const auto meshPathB = root.Path() / "OwnerB" / "Meshes" / "hero.nmesh";
-    const auto materialPathB = root.Path() / "OwnerB" / "Materials" / "hero.nmat";
-    const auto texturePathB = root.Path() / "OwnerB" / "Textures" / "hero.ntex";
+    const auto meshPathB = ContentAddressedArtifactPath(root.Path(), "owner-bounded:b:mesh:hero");
+    const auto materialPathB = ContentAddressedArtifactPath(root.Path(), "owner-bounded:b:material:hero");
+    const auto texturePathB = ContentAddressedArtifactPath(root.Path(), "owner-bounded:b:texture:hero");
     WriteCubeMeshArtifact(meshPathB);
-    std::filesystem::create_directories(materialPathB.parent_path());
-    std::ofstream(materialPathB, std::ios::binary | std::ios::trunc) << "";
-    std::filesystem::create_directories(texturePathB.parent_path());
-    std::ofstream(texturePathB, std::ios::binary | std::ios::trunc) << "not-a-texture";
+    WriteMaterialArtifact(materialPathB);
+    WriteTextureArtifact(texturePathB);
 
     EXPECT_EQ(meshOwnerB.RequestAsyncArtifact(meshPathB.string(), true), nullptr);
     EXPECT_TRUE(meshOwnerB.IsAsyncArtifactLoadPending(meshPathB.string()))
@@ -2509,14 +2753,12 @@ TEST(RenderSceneCacheTests, DestroyedResourceManagersReleasePendingAsyncArtifact
     const ScopedTempDirectory root(
         std::filesystem::temp_directory_path() /
         ("nullus_destroyed_owner_pending_artifact_" + NLS::Guid::New().ToString()));
-    const auto meshPath = root.Path() / "Meshes" / "owner.nmesh";
-    const auto materialPath = root.Path() / "Materials" / "owner.nmat";
-    const auto texturePath = root.Path() / "Textures" / "owner.ntex";
+    const auto meshPath = ContentAddressedArtifactPath(root.Path(), "destroyed-owner:mesh");
+    const auto materialPath = ContentAddressedArtifactPath(root.Path(), "destroyed-owner:material");
+    const auto texturePath = ContentAddressedArtifactPath(root.Path(), "destroyed-owner:texture");
     WriteCubeMeshArtifact(meshPath);
-    std::filesystem::create_directories(materialPath.parent_path());
-    std::ofstream(materialPath, std::ios::binary | std::ios::trunc) << "";
-    std::filesystem::create_directories(texturePath.parent_path());
-    std::ofstream(texturePath, std::ios::binary | std::ios::trunc) << "not-a-texture";
+    WriteMaterialArtifact(materialPath);
+    WriteTextureArtifact(texturePath);
 
     NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
     NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();

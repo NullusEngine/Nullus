@@ -171,7 +171,7 @@ namespace
         std::vector<NLS::Engine::Assets::RuntimeAssetRef> dependencies)
     {
         return {
-            record.sourceAssetId,
+            record.artifactSourceAssetId.IsValid() ? record.artifactSourceAssetId : record.sourceAssetId,
             record.subAssetKey,
             record.artifactType,
             record.loaderId,
@@ -262,7 +262,12 @@ std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> LoadRuntimeAssetDatabas
 
         manifest.entries.push_back(MakeRuntimeEntry(*record, BuildRuntimeDependencies(*sourceManifest)));
         if (record->primarySubAssetKey == record->subAssetKey)
-            AddUniqueReference(manifest.roots, {record->sourceAssetId, record->subAssetKey});
+        {
+            AddUniqueReference(manifest.roots, {
+                record->artifactSourceAssetId.IsValid() ? record->artifactSourceAssetId : record->sourceAssetId,
+                record->subAssetKey
+            });
+        }
     }
 
     RegisterRuntimeManifestArtifactAuthorizations(manifest);

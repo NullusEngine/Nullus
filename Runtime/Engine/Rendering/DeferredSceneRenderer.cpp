@@ -192,6 +192,19 @@ namespace
 			SetMaterialParameter(target, targetName, *value);
 	}
 
+	void CopyMaterialParameterAndTexturePathIfPresent(
+		NLS::Render::Resources::Material& target,
+		const char* targetName,
+		const NLS::Render::Resources::Material& source,
+		const char* sourceName)
+	{
+		CopyMaterialParameterIfPresent(target, targetName, source, sourceName);
+
+		const auto path = source.GetTextureResourcePath(sourceName);
+		if (!path.empty())
+			target.SetTextureResourcePath(targetName, path);
+	}
+
 	void EnsureDeferredLightingSkyParameters(
 		NLS::Render::Resources::Material& lightingMaterial,
 		const NLS::Render::Resources::Material* skyboxMaterial)
@@ -2339,7 +2352,22 @@ namespace NLS::Engine::Rendering
 		}
 
 		CopyMaterialParameterIfPresent(target, "u_Albedo", sourceMaterial, "u_Diffuse");
-		CopyMaterialParameterIfPresent(target, "u_AlbedoMap", sourceMaterial, "u_DiffuseMap");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AlbedoMap", sourceMaterial, "u_DiffuseMap");
+
+		CopyMaterialParameterIfPresent(target, "u_Albedo", sourceMaterial, "_BaseColor");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AlbedoMap", sourceMaterial, "_BaseMap");
+		CopyMaterialParameterIfPresent(target, "u_Metallic", sourceMaterial, "_Metallic");
+		CopyMaterialParameterIfPresent(target, "u_Roughness", sourceMaterial, "_Roughness");
+		CopyMaterialParameterIfPresent(target, "u_AmbientOcclusion", sourceMaterial, "_AmbientOcclusion");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_MetallicMap", sourceMaterial, "_MetallicMap");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_RoughnessMap", sourceMaterial, "_RoughnessMap");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AmbientOcclusionMap", sourceMaterial, "_OcclusionMap");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_NormalMap", sourceMaterial, "_NormalMap");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_OpacityMap", sourceMaterial, "_OpacityMap");
+		CopyMaterialParameterIfPresent(target, "u_Emissive", sourceMaterial, "_EmissiveColor");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_EmissiveMap", sourceMaterial, "_EmissiveMap");
+		CopyMaterialParameterIfPresent(target, "u_Specular", sourceMaterial, "_SpecularColor");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_SpecularMap", sourceMaterial, "_SpecularMap");
 		EnsureDeferredGBufferFallbackParameters(target);
 	}
 

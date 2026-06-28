@@ -1,7 +1,9 @@
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/AssetImporterFacade.h"
+#include "Assets/NativeArtifactContainer.h"
 
 #include "Rendering/Assets/ShaderArtifact.h"
+#include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/SceneRendererMaterialBinding.h"
 
 #include <algorithm>
@@ -326,7 +328,28 @@ bool IsPreimportableAsset(const std::string& assetPath)
     const auto assetType = NLS::Core::Assets::InferAssetType(assetPath);
     return assetType == NLS::Core::Assets::AssetType::ModelScene ||
         assetType == NLS::Core::Assets::AssetType::Prefab ||
+        assetType == NLS::Core::Assets::AssetType::Material ||
+        assetType == NLS::Core::Assets::AssetType::Texture ||
         assetType == NLS::Core::Assets::AssetType::Shader;
+}
+
+int PreimportAssetPriority(const std::string& assetPath)
+{
+    switch (NLS::Core::Assets::InferAssetType(assetPath))
+    {
+    case NLS::Core::Assets::AssetType::Shader:
+        return 0;
+    case NLS::Core::Assets::AssetType::Texture:
+        return 1;
+    case NLS::Core::Assets::AssetType::Material:
+        return 2;
+    case NLS::Core::Assets::AssetType::ModelScene:
+        return 3;
+    case NLS::Core::Assets::AssetType::Prefab:
+        return 4;
+    default:
+        return 5;
+    }
 }
 
 std::vector<std::string> CollectPreimportableAssets(AssetDatabaseFacade& database)
@@ -334,9 +357,32 @@ std::vector<std::string> CollectPreimportableAssets(AssetDatabaseFacade& databas
     std::vector<std::string> assets = database.FindAssets("type:model-scene", {});
     auto prefabs = database.FindAssets("type:prefab", {});
     assets.insert(assets.end(), prefabs.begin(), prefabs.end());
+    auto materials = database.FindAssets("type:material", {});
+    assets.insert(assets.end(), materials.begin(), materials.end());
+    auto textures = database.FindAssets("type:texture", {});
+    assets.insert(assets.end(), textures.begin(), textures.end());
     auto shaders = database.FindAssets("type:shader", {});
     assets.insert(assets.end(), shaders.begin(), shaders.end());
-    std::sort(assets.begin(), assets.end());
+    assets.erase(
+        std::remove_if(
+            assets.begin(),
+            assets.end(),
+            [&database](const std::string& assetPath)
+            {
+                return database.IsReadOnlyAssetPath(assetPath);
+            }),
+        assets.end());
+    std::sort(
+        assets.begin(),
+        assets.end(),
+        [](const std::string& lhs, const std::string& rhs)
+        {
+            const auto lhsPriority = PreimportAssetPriority(lhs);
+            const auto rhsPriority = PreimportAssetPriority(rhs);
+            if (lhsPriority != rhsPriority)
+                return lhsPriority < rhsPriority;
+            return lhs < rhs;
+        });
     assets.erase(std::unique(assets.begin(), assets.end()), assets.end());
     return assets;
 }
@@ -357,15 +403,32 @@ bool IsWarmPreimportableAsset(
             DefaultGeneratedPrefabSubAssetKey(assetPath)).has_value();
     }
 
-    if (assetType != NLS::Core::Assets::AssetType::Shader)
-        return false;
-
     const auto mainAsset = database.LoadMainAssetAtPath(assetPath);
     if (!mainAsset.has_value() || mainAsset->artifactPath.empty())
         return false;
 
     const auto physicalArtifactPath = database.ResolveArtifactPathAtPath(assetPath, mainAsset->subAssetKey);
     if (physicalArtifactPath.empty())
+        return false;
+
+    if (assetType == NLS::Core::Assets::AssetType::Material)
+    {
+        return NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+            physicalArtifactPath,
+            NLS::Core::Assets::ArtifactType::Material,
+            1u,
+            0u,
+            64u * 1024u).has_value();
+    }
+
+    if (assetType == NLS::Core::Assets::AssetType::Texture)
+    {
+        return NLS::Render::Assets::ReadTextureArtifactHeaderPreview(
+            physicalArtifactPath,
+            64u * 1024u).has_value();
+    }
+
+    if (assetType != NLS::Core::Assets::AssetType::Shader)
         return false;
 
     const auto artifact = NLS::Render::Assets::LoadShaderArtifact(physicalArtifactPath);

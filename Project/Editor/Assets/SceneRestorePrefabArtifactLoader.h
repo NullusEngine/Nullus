@@ -41,9 +41,7 @@ namespace NLS::Editor::Assets
             NLS::Core::Assets::InferAssetType(absoluteSourcePath) == NLS::Core::Assets::AssetType::ModelScene;
         const bool shouldRepairGeneratedModelRestore =
             requiresRendererReadyRestore &&
-            !artifact &&
-            (unifiedLoad.rendererDependencyMissing ||
-             unifiedLoad.diagnosticCode == "prefab-load-pending");
+            !artifact;
         if (!shouldRepairGeneratedModelRestore)
             return artifact;
 

@@ -517,6 +517,62 @@ TEST(PrefabUtilityFacadeTests, AnnotatesSceneDocumentWithUnityStylePrefabInstanc
     EXPECT_EQ(output.find("\"scenePrefab\""), std::string::npos);
 }
 
+TEST(PrefabUtilityFacadeTests, NormalizesScenePrefabInstanceArtifactPathsToSubAssetKeys)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto sourceAssetId = Id("f5010101-0101-4101-8101-010101010101");
+    const std::string meshSubAssetKey = "mesh:mesh/62/primitive/0";
+    const std::string staleMeshArtifactPath =
+        "Library/Artifacts/fd/fd33dd784c321423fb587ab5c7a31fc82b3ede1ece4a385bdd1f79924ea02abd";
+    const std::string currentMeshArtifactPath =
+        "Library/Artifacts/90/90e31b89cd9e8c563eb9695e50a3b5d00fb5b90c36575b290280408d262b926d";
+
+    ObjectGraphDocument document;
+    document.format = "Nullus.ObjectGraph.Scene";
+    document.version = 1;
+    document.documentId = NLS::Guid::NewDeterministic("NormalizePrefabAssetRefs.Document");
+    document.root = ObjectId(NLS::Guid::NewDeterministic("NormalizePrefabAssetRefs.Root"));
+    document.objects.push_back({
+        document.root,
+        "NLS::Engine::Components::MeshFilter",
+        "MeshFilter",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"mesh", PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+                NLS::Engine::Serialize::AssetId(sourceAssetId.GetGuid()),
+                MakeLocalIdentifierInFile(sourceAssetId.GetGuid(), meshSubAssetKey),
+                staleMeshArtifactPath))}
+        },
+        MakeLocalIdentifierInFile(document.root)
+    });
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    NLS::Editor::Assets::PrefabInstanceRecord instance;
+    instance.prefabAssetId = sourceAssetId;
+    instance.prefabSubAssetKey = "prefab:Generated";
+    instance.preservedResolvedAssets.push_back({
+        sourceAssetId,
+        "Mesh",
+        meshSubAssetKey,
+        currentMeshArtifactPath
+    });
+    registry.Register(std::move(instance));
+
+    PrefabUtilityFacade().NormalizeSceneDocumentPrefabAssetReferences(document, registry);
+
+    const auto* meshFilter = FindObjectRecord(document, document.root);
+    ASSERT_NE(meshFilter, nullptr);
+    const auto* mesh = FindProperty(*meshFilter, "mesh");
+    ASSERT_NE(mesh, nullptr);
+    ASSERT_EQ(mesh->value.GetKind(), PropertyValue::Kind::ObjectReference);
+    EXPECT_EQ(mesh->value.GetObjectReference().filePath, meshSubAssetKey);
+    EXPECT_EQ(
+        mesh->value.GetObjectReference().localIdentifierInFile,
+        MakeLocalIdentifierInFile(sourceAssetId.GetGuid(), meshSubAssetKey));
+}
+
 TEST(PrefabUtilityFacadeTests, UnityStylePrefabInstanceRecordRoundTripsThroughReaderAndWriter)
 {
     PrefabUtilityFacade facade;

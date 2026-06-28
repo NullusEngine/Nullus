@@ -435,6 +435,12 @@ bool SourceAssetDatabase::RegisterSourceAssetEntry(
     auto metaPath = GetAssetMetaPath(absolutePath);
     const auto loadedMeta = AssetMeta::Load(metaPath);
     auto meta = loadedMeta.value_or(AssetMeta::CreateForAsset(absolutePath));
+    const auto relativePath = std::filesystem::relative(absolutePath, normalizedRoot);
+    if (readOnly && !loadedMeta.has_value())
+    {
+        meta.id = AssetId(NLS::Guid::NewDeterministic(
+            "readonly-asset:" + relativePath.lexically_normal().generic_string()));
+    }
 
     const auto inferredType = InferAssetType(absolutePath);
     if (inferredType != AssetType::Unknown && meta.assetType != inferredType)
@@ -465,7 +471,7 @@ bool SourceAssetDatabase::RegisterSourceAssetEntry(
             return false;
         }
     }
-    else if (!std::filesystem::exists(metaPath))
+    else if (!readOnly && !std::filesystem::exists(metaPath))
     {
         AddDiagnostic(
             AssetDiagnosticSeverity::Warning,
@@ -509,7 +515,6 @@ bool SourceAssetDatabase::RegisterSourceAssetEntry(
             "Duplicate asset GUID found while scanning source assets; generated a new editable metadata identity.");
     }
 
-    const auto relativePath = std::filesystem::relative(absolutePath, NormalizeAssetPath(root));
     SourceAssetRecord record;
     record.id = meta.id;
     record.absolutePath = absolutePath;

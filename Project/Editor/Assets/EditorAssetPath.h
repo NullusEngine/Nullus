@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Assets/AssetPath.h"
+#include "Platform/Process/Process.h"
 
 #include <filesystem>
 #include <optional>
@@ -56,6 +57,48 @@ inline bool HasNullusProjectFile(const std::filesystem::path& projectRoot)
     return false;
 }
 
+inline void AppendBuiltInShaderAssetRoot(
+    std::vector<EditorAssetRoot>& roots,
+    const std::filesystem::path& projectRoot)
+{
+    const auto normalizedProjectRoot = NLS::Core::Assets::NormalizeAssetPath(projectRoot);
+    if (normalizedProjectRoot.empty() || normalizedProjectRoot == normalizedProjectRoot.root_path())
+        return;
+
+    std::vector<std::filesystem::path> candidateRoots;
+    const auto installShaderRoot =
+        (NLS::Platform::Process::ResolveInstallResourceRoots().engineAssetsRoot /
+            "Shaders").lexically_normal();
+    if (!installShaderRoot.empty())
+        candidateRoots.push_back(installShaderRoot);
+#if defined(NLS_ROOT_DIR)
+    candidateRoots.push_back(
+        (std::filesystem::path(NLS_ROOT_DIR) /
+            "App" /
+            "Assets" /
+            "Engine" /
+            "Shaders").lexically_normal());
+#endif
+
+    std::error_code error;
+    for (const auto& builtInShaderRoot : candidateRoots)
+    {
+        if (!std::filesystem::is_directory(builtInShaderRoot, error))
+        {
+            error.clear();
+            continue;
+        }
+
+        roots.push_back({
+            builtInShaderRoot,
+            true,
+            std::filesystem::path("Assets") / "Engine" / "Shaders",
+            normalizedProjectRoot / "Library"
+        });
+        return;
+    }
+}
+
 inline std::vector<EditorAssetRoot> MakeEditorAssetRoots(
     const std::vector<std::filesystem::path>& roots,
     const bool readOnly = false)
@@ -76,11 +119,11 @@ inline std::vector<EditorAssetRoot> MakeEditorAssetRoots(
         const bool looksLikeProjectRoot =
             normalized.filename() != "Assets" &&
             std::filesystem::exists(assetsRoot, error) &&
-            std::filesystem::is_directory(assetsRoot, error) &&
-            HasNullusProjectFile(normalized);
+            std::filesystem::is_directory(assetsRoot, error);
         if (looksLikeProjectRoot)
         {
             result.push_back({assetsRoot.lexically_normal(), readOnly, "Assets", normalized / "Library"});
+            AppendBuiltInShaderAssetRoot(result, normalized);
             continue;
         }
 
@@ -95,12 +138,16 @@ inline std::vector<EditorAssetRoot> MakeProjectEditorAssetRoots(const std::files
     if (normalized.empty() || normalized == normalized.root_path())
         return {};
 
-    return {{
+    std::vector<EditorAssetRoot> roots {{
         normalized / "Assets",
         false,
         "Assets",
         normalized / "Library"
     }};
+
+    AppendBuiltInShaderAssetRoot(roots, normalized);
+
+    return roots;
 }
 
 inline std::filesystem::path GetEditorAssetRootLibraryPath(const EditorAssetRoot& root)

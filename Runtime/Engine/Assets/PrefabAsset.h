@@ -44,6 +44,9 @@ struct PrefabImportResult
 NLS_ENGINE_API std::vector<Serialize::ObjectIdentifier> CollectPrefabAssetReferences(
     const Serialize::ObjectGraphDocument& graph);
 
+NLS_ENGINE_API std::string ExtractPrefabAssetReferenceSubAssetKeyHint(
+    const std::string& referencePath);
+
 NLS_ENGINE_API std::vector<PrefabResolvedAsset> BuildPrefabResolvedAssetsFromReferences(
     const Serialize::ObjectGraphDocument& graph);
 

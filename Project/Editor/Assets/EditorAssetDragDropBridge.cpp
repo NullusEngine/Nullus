@@ -209,11 +209,24 @@ std::string FileStamp(const std::filesystem::path& path)
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
+std::string SourceFileContentHash(const std::filesystem::path& path)
+{
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream)
+        return {};
+
+    const std::vector<uint8_t> bytes{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
+}
+
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestForSource(
     const std::filesystem::path& projectRoot,
-    const NLS::Core::Assets::AssetId sourceAssetId)
+    const NLS::Core::Assets::AssetId sourceAssetId,
+    const std::string& targetPlatform = "editor")
 {
-    return LoadArtifactManifestFromProjectArtifactDB(projectRoot, sourceAssetId);
+    return LoadArtifactManifestFromProjectArtifactDB(projectRoot, sourceAssetId, targetPlatform);
 }
 
 std::string ToLower(std::string value)
@@ -274,7 +287,8 @@ std::string BuildModelTextureMappingDependencyProjectStamp(
     (void)ParseModelTextureMappingDependencyValue(dependencyValue, query, mode);
 
     const auto artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot);
-    std::string stamp = "artifactDb@" + FileStamp(artifactDatabasePath);
+    const auto artifactDatabaseDataPath = artifactDatabasePath / "data.mdb";
+    std::string stamp = "artifactDb@" + FileStamp(artifactDatabaseDataPath);
     if (mode == "source-path")
     {
         const auto sourcePath = (projectRoot / NormalizeEditorAssetPath(query)).lexically_normal();
@@ -284,7 +298,7 @@ std::string BuildModelTextureMappingDependencyProjectStamp(
         const auto meta = NLS::Core::Assets::AssetMeta::Load(metaPath);
         if (meta.has_value() && meta->id.IsValid())
         {
-            stamp += "|manifest@" + FileStamp(artifactDatabasePath);
+            stamp += "|manifest@" + FileStamp(artifactDatabaseDataPath);
         }
     }
     return stamp;
@@ -1528,7 +1542,7 @@ bool ManifestDependenciesAreCurrent(
                 checkedAsset = true;
 
             const auto dependencyPath = ResolveEditorManifestDependencyPath(projectRoot, dependency.value);
-            if (!dependencyPath.has_value() || dependency.hashOrVersion != FileStamp(*dependencyPath))
+            if (!dependencyPath.has_value() || dependency.hashOrVersion != SourceFileContentHash(*dependencyPath))
                 return false;
             continue;
         }
@@ -1631,8 +1645,10 @@ std::filesystem::path ResolveManifestArtifactPath(
     }
     else
     {
-        candidates.push_back((artifactRoot / path).lexically_normal());
         const auto projectRelative = (projectRoot / path).lexically_normal();
+        if (NLS::Core::Assets::IsContentStorageArtifactPath(path.generic_string()))
+            candidates.push_back(projectRelative);
+        candidates.push_back((artifactRoot / path).lexically_normal());
         if (std::find(candidates.begin(), candidates.end(), projectRelative) == candidates.end())
             candidates.push_back(projectRelative);
     }
@@ -1648,6 +1664,45 @@ std::filesystem::path ResolveManifestArtifactPath(
     }
 
     return {};
+}
+
+struct ImportedArtifactDependencyRef
+{
+    std::string assetIdText;
+    std::string subAssetKey;
+    std::string targetPlatform;
+};
+
+std::optional<ImportedArtifactDependencyRef> ParseImportedArtifactDependencyRef(
+    const NLS::Core::Assets::AssetDependencyRecord& dependency)
+{
+    if (dependency.kind != NLS::Core::Assets::AssetDependencyKind::ImportedArtifact)
+        return std::nullopt;
+
+    ImportedArtifactDependencyRef result;
+    if (const auto separator = dependency.value.find('#');
+        separator != std::string::npos)
+    {
+        result.assetIdText = dependency.value.substr(0u, separator);
+        result.subAssetKey = dependency.value.substr(separator + 1u);
+    }
+    else
+    {
+        result.assetIdText = dependency.value;
+        result.subAssetKey = dependency.hashOrVersion;
+    }
+
+    if (const auto targetSeparator = result.subAssetKey.rfind('@');
+        targetSeparator != std::string::npos)
+    {
+        result.targetPlatform = result.subAssetKey.substr(targetSeparator + 1u);
+        result.subAssetKey = result.subAssetKey.substr(0u, targetSeparator);
+    }
+
+    if (!NLS::Guid::TryParse(result.assetIdText).has_value() || result.subAssetKey.empty())
+        return std::nullopt;
+
+    return result;
 }
 
 std::string BuildRendererArtifactStamp(
@@ -1676,47 +1731,43 @@ std::string BuildRendererArtifactStamp(
     }
     for (const auto& dependency : manifest.dependencies)
     {
-        if (dependency.kind != NLS::Core::Assets::AssetDependencyKind::ImportedArtifact)
+        const auto importedRef = ParseImportedArtifactDependencyRef(dependency);
+        if (!importedRef.has_value())
             continue;
 
-        const auto separator = dependency.value.find('#');
-        if (separator == std::string::npos)
-            continue;
-
-        const auto assetIdText = dependency.value.substr(0u, separator);
-        auto subAssetKey = dependency.value.substr(separator + 1u);
-        if (const auto targetSeparator = subAssetKey.rfind('@');
-            targetSeparator != std::string::npos)
-        {
-            subAssetKey = subAssetKey.substr(0u, targetSeparator);
-        }
-        if (subAssetKey.rfind("mesh:", 0u) != 0u &&
-            subAssetKey.rfind("material:", 0u) != 0u &&
-            subAssetKey.rfind("texture:", 0u) != 0u)
+        if (importedRef->subAssetKey.rfind("mesh:", 0u) != 0u &&
+            importedRef->subAssetKey.rfind("material:", 0u) != 0u &&
+            importedRef->subAssetKey.rfind("texture:", 0u) != 0u)
         {
             continue;
         }
 
-        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetIdText));
-        const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts" / assetIdText;
-        const auto externalManifest = LoadArtifactManifestForSource(projectRoot, externalAssetId);
+        const auto dependencyTargetPlatform = importedRef->targetPlatform.empty()
+            ? manifest.targetPlatform
+            : importedRef->targetPlatform;
+        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(importedRef->assetIdText));
+        const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts";
+        const auto externalManifest = LoadArtifactManifestForSource(
+            projectRoot,
+            externalAssetId,
+            dependencyTargetPlatform);
         if (!externalManifest.has_value())
         {
             stamps.push_back("dependencyArtifact=" + dependency.value + "@" + dependency.hashOrVersion + "|missing");
             continue;
         }
 
-        const auto* artifact = externalManifest->FindSubAsset(subAssetKey);
+        const auto* artifact = externalManifest->FindSubAsset(importedRef->subAssetKey);
         if (artifact == nullptr)
         {
             stamps.push_back("dependencyArtifact=" + dependency.value + "@" + dependency.hashOrVersion + "|missing");
             continue;
         }
 
-        auto resolvedPath = std::filesystem::path(artifact->artifactPath);
-        if (resolvedPath.is_relative())
-            resolvedPath = externalArtifactRoot / resolvedPath;
-        resolvedPath = resolvedPath.lexically_normal();
+        const auto resolvedPath = ResolveManifestArtifactPath(
+            projectRoot,
+            externalArtifactRoot,
+            artifact->artifactPath);
         stamps.push_back(
             "dependencyArtifact=" +
             dependency.value +
@@ -1941,38 +1992,6 @@ FastImportedPrefabLoadResult MakeRendererDependencyMissingResult(
     return result;
 }
 
-std::optional<std::pair<std::string, std::string>> ParseImportedArtifactDependencyRef(
-    const NLS::Core::Assets::AssetDependencyRecord& dependency)
-{
-    if (dependency.kind != NLS::Core::Assets::AssetDependencyKind::ImportedArtifact)
-        return std::nullopt;
-
-    std::string assetIdText;
-    std::string subAssetKey;
-    if (const auto separator = dependency.value.find('#');
-        separator != std::string::npos)
-    {
-        assetIdText = dependency.value.substr(0u, separator);
-        subAssetKey = dependency.value.substr(separator + 1u);
-    }
-    else
-    {
-        assetIdText = dependency.value;
-        subAssetKey = dependency.hashOrVersion;
-    }
-
-    if (const auto targetSeparator = subAssetKey.rfind('@');
-        targetSeparator != std::string::npos)
-    {
-        subAssetKey = subAssetKey.substr(0u, targetSeparator);
-    }
-
-    if (!NLS::Guid::TryParse(assetIdText).has_value() || subAssetKey.empty())
-        return std::nullopt;
-
-    return std::pair<std::string, std::string> {std::move(assetIdText), std::move(subAssetKey)};
-}
-
 FastImportedPrefabLoadResult ValidateRendererArtifactReadable(
     const NLS::Core::Assets::ImportedArtifact& artifact,
     const std::filesystem::path& projectRoot,
@@ -1985,7 +2004,12 @@ FastImportedPrefabLoadResult ValidateRendererArtifactReadable(
     if (resolvedPath.empty())
     {
         return MakeRendererDependencyMissingResult(
-            "The generated model renderer dependency is missing: " + artifact.subAssetKey);
+            "The generated model renderer dependency is missing: " +
+            artifact.subAssetKey +
+            " artifactPath=" +
+            artifact.artifactPath +
+            " artifactRoot=" +
+            artifactRoot.generic_string());
     }
 
     if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture &&
@@ -2051,11 +2075,14 @@ FastImportedPrefabLoadResult ValidateRendererManifestDependenciesReady(
         if (!importedRef.has_value())
             continue;
 
-        const auto& [assetIdText, subAssetKey] = *importedRef;
-        if (!IsRendererDependencySubAssetKey(subAssetKey))
+        if (!IsRendererDependencySubAssetKey(importedRef->subAssetKey))
             continue;
 
-        const auto dependencyKey = assetIdText + "#" + subAssetKey;
+        const auto dependencyTargetPlatform = importedRef->targetPlatform.empty()
+            ? manifest.targetPlatform
+            : importedRef->targetPlatform;
+        const auto dependencyKey =
+            importedRef->assetIdText + "#" + importedRef->subAssetKey + "@" + dependencyTargetPlatform;
         if (std::find(visitedDependencies.begin(), visitedDependencies.end(), dependencyKey) !=
             visitedDependencies.end())
         {
@@ -2063,20 +2090,23 @@ FastImportedPrefabLoadResult ValidateRendererManifestDependenciesReady(
         }
         visitedDependencies.push_back(dependencyKey);
 
-        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetIdText));
-        const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts" / assetIdText;
-        const auto externalManifest = LoadArtifactManifestForSource(projectRoot, externalAssetId);
+        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(importedRef->assetIdText));
+        const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts";
+        const auto externalManifest = LoadArtifactManifestForSource(
+            projectRoot,
+            externalAssetId,
+            dependencyTargetPlatform);
         if (!externalManifest.has_value())
         {
             return MakeRendererDependencyMissingResult(
-                "The generated model renderer dependency manifest is missing: " + subAssetKey);
+                "The generated model renderer dependency manifest is missing: " + importedRef->subAssetKey);
         }
 
-        const auto* artifact = externalManifest->FindSubAsset(subAssetKey);
+        const auto* artifact = externalManifest->FindSubAsset(importedRef->subAssetKey);
         if (artifact == nullptr)
         {
             return MakeRendererDependencyMissingResult(
-                "The generated model renderer dependency is missing from its manifest: " + subAssetKey);
+                "The generated model renderer dependency is missing from its manifest: " + importedRef->subAssetKey);
         }
 
         auto artifactReadiness = ValidateRendererArtifactReadable(
@@ -2199,11 +2229,14 @@ FastImportedPrefabLoadResult GeneratedModelRendererArtifactFilesExist(
         if (!importedRef.has_value())
             continue;
 
-        const auto& [assetIdText, subAssetKey] = *importedRef;
-        if (!IsRendererDependencySubAssetKey(subAssetKey))
+        if (!IsRendererDependencySubAssetKey(importedRef->subAssetKey))
             continue;
 
-        const auto dependencyKey = assetIdText + "#" + subAssetKey;
+        const auto dependencyTargetPlatform = importedRef->targetPlatform.empty()
+            ? manifest.targetPlatform
+            : importedRef->targetPlatform;
+        const auto dependencyKey =
+            importedRef->assetIdText + "#" + importedRef->subAssetKey + "@" + dependencyTargetPlatform;
         if (std::find(visitedDependencies.begin(), visitedDependencies.end(), dependencyKey) !=
             visitedDependencies.end())
         {
@@ -2211,27 +2244,30 @@ FastImportedPrefabLoadResult GeneratedModelRendererArtifactFilesExist(
         }
         visitedDependencies.push_back(dependencyKey);
 
-        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetIdText));
-        const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts" / assetIdText;
-        const auto externalManifest = LoadArtifactManifestForSource(projectRoot, externalAssetId);
+        const auto externalAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(importedRef->assetIdText));
+        const auto externalArtifactRoot = projectRoot / "Library" / "Artifacts";
+        const auto externalManifest = LoadArtifactManifestForSource(
+            projectRoot,
+            externalAssetId,
+            dependencyTargetPlatform);
         if (!externalManifest.has_value())
         {
             result.rendererDependencyMissing = true;
             result.diagnosticCode = "dragdrop-renderer-dependency-missing";
             result.diagnosticMessage =
                 "The generated model renderer dependency manifest is missing: " +
-                subAssetKey;
+                importedRef->subAssetKey;
             return result;
         }
 
-        const auto* artifact = externalManifest->FindSubAsset(subAssetKey);
+        const auto* artifact = externalManifest->FindSubAsset(importedRef->subAssetKey);
         if (artifact == nullptr)
         {
             result.rendererDependencyMissing = true;
             result.diagnosticCode = "dragdrop-renderer-dependency-missing";
             result.diagnosticMessage =
                 "The generated model renderer dependency is missing from its manifest: " +
-                subAssetKey;
+                importedRef->subAssetKey;
             return result;
         }
 
@@ -2245,7 +2281,11 @@ FastImportedPrefabLoadResult GeneratedModelRendererArtifactFilesExist(
             result.diagnosticCode = "dragdrop-renderer-dependency-missing";
             result.diagnosticMessage =
                 "The generated model renderer dependency is missing: " +
-                artifact->subAssetKey;
+                artifact->subAssetKey +
+                " artifactPath=" +
+                artifact->artifactPath +
+                " artifactRoot=" +
+                externalArtifactRoot.generic_string();
             return result;
         }
 

@@ -35,6 +35,12 @@ namespace NLS::Render::Resources
 
 	private:
 		Texture2D() = default;
+		struct SkipInitialTextureTag {};
+
+		explicit Texture2D(SkipInitialTextureTag)
+			: Texture(RHI::TextureDimension::Texture2D, Texture::SkipInitialTextureTag {})
+		{
+		}
 
 		void SetTextureResource(const Image*);
 		bool SetTextureResource(const NLS::Render::Assets::TextureArtifactData& artifact);

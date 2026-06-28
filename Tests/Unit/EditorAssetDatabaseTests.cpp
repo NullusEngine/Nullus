@@ -84,59 +84,20 @@ void WriteText(const std::filesystem::path& path, const std::string& text)
     output << text;
 }
 
-void CopyDirectoryRecursive(
-    const std::filesystem::path& source,
-    const std::filesystem::path& destination)
-{
-    std::filesystem::create_directories(destination);
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(source))
-    {
-        const auto relative = entry.path().lexically_relative(source);
-        const auto target = destination / relative;
-        if (entry.is_directory())
-        {
-            std::filesystem::create_directories(target);
-            continue;
-        }
-        if (!entry.is_regular_file())
-            continue;
-
-        std::filesystem::create_directories(target.parent_path());
-        std::filesystem::copy_file(
-            entry.path(),
-            target,
-            std::filesystem::copy_options::overwrite_existing);
-    }
-}
-
 void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
 {
-    const auto shaderRoot =
-        std::filesystem::path(NLS_ROOT_DIR) /
-        "App" /
-        "Assets" /
-        "Engine" /
-        "Shaders";
-    const auto shaderDestination =
-        root /
-        "Assets" /
-        "Engine" /
-        "Shaders" /
-        "ShaderLab" /
-        "StandardPBR.shader";
-    std::filesystem::create_directories(shaderDestination.parent_path());
-    std::filesystem::copy_file(
-        shaderRoot / "ShaderLab" / "StandardPBR.shader",
-        shaderDestination,
-        std::filesystem::copy_options::overwrite_existing);
-    CopyDirectoryRecursive(
-        shaderRoot / "NullusShaderLibrary",
-        root / "Assets" / "Engine" / "Shaders" / "NullusShaderLibrary");
-
     NLS::Editor::Assets::AssetDatabaseFacade database(
         NLS::Editor::Assets::MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
     ASSERT_TRUE(database.ImportAsset("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+}
+
+std::vector<NLS::Editor::Assets::EditorAssetRoot> AppendBuiltInShaderRootForTest(
+    const std::filesystem::path& root,
+    std::vector<NLS::Editor::Assets::EditorAssetRoot> roots)
+{
+    NLS::Editor::Assets::AppendBuiltInShaderAssetRoot(roots, root);
+    return roots;
 }
 
 std::string ReadText(const std::filesystem::path& path)
@@ -231,6 +192,26 @@ void WriteBinary(const std::filesystem::path& path, const std::vector<uint8_t>& 
     output.write(
         reinterpret_cast<const char*>(bytes.data()),
         static_cast<std::streamsize>(bytes.size()));
+}
+
+void WriteNativeMaterialSource(
+    const std::filesystem::path& path,
+    std::string displayName,
+    const std::string& payloadText)
+{
+    NLS::Core::Assets::NativeArtifactMetadata metadata;
+    metadata.artifactType = NLS::Core::Assets::ArtifactType::Material;
+    metadata.schemaName = "material";
+    metadata.schemaVersion = 1u;
+    metadata.subAssetKey = "material:" + std::move(displayName);
+    metadata.displayName = std::filesystem::path(path).stem().generic_string();
+    metadata.importerId = "material";
+    metadata.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Material);
+    metadata.targetPlatform = "editor";
+
+    const std::vector<uint8_t> payload(payloadText.begin(), payloadText.end());
+    WriteBinary(path, NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload));
 }
 
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestForTest(
@@ -508,17 +489,134 @@ TEST(EditorAssetDatabaseTests, PreimportPlanIncludesColdModelAndPrefabAssets)
     const auto root = MakeEditorAssetTestRoot();
     WriteText(root / "Assets" / "Models" / "ColdHero.gltf", R"({"asset":{"version":"2.0"}})");
     WriteText(root / "Assets" / "Prefabs" / "ColdLamp.prefab", R"({"objects":[]})");
-    WriteText(root / "Assets" / "Textures" / "Ignored.png", "not-a-real-png");
+    WriteBinary(root / "Assets" / "Textures" / "Ignored.png", TinyPng());
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
     const auto plan = scheduler.BuildPlan(database);
 
-    ASSERT_EQ(plan.assetPaths.size(), 2u);
-    EXPECT_EQ(plan.assetPaths[0], "Assets/Models/ColdHero.gltf");
-    EXPECT_EQ(plan.assetPaths[1], "Assets/Prefabs/ColdLamp.prefab");
+    ASSERT_EQ(plan.assetPaths.size(), 3u);
+    EXPECT_EQ(plan.assetPaths[0], "Assets/Textures/Ignored.png");
+    EXPECT_EQ(plan.assetPaths[1], "Assets/Models/ColdHero.gltf");
+    EXPECT_EQ(plan.assetPaths[2], "Assets/Prefabs/ColdLamp.prefab");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, PreimportPlanIncludesColdMaterialAndTextureAssets)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteBinary(root / "Assets" / "Textures" / "ColdAlbedo.png", TinyPng());
+    WriteNativeMaterialSource(
+        root / "Assets" / "Materials" / "ColdMaterial.mat",
+        "ColdMaterial",
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+
+    AssetPreimportScheduler scheduler;
+    const auto plan = scheduler.BuildPlan(database);
+
+    EXPECT_NE(
+        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Materials/ColdMaterial.mat"),
+        plan.assetPaths.end());
+    EXPECT_NE(
+        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Textures/ColdAlbedo.png"),
+        plan.assetPaths.end());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, PreimportPlanSkipsWarmMaterialAndTextureArtifacts)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteBinary(root / "Assets" / "Textures" / "WarmAlbedo.png", TinyPng());
+    WriteNativeMaterialSource(
+        root / "Assets" / "Materials" / "WarmMaterial.mat",
+        "WarmMaterial",
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+
+    AssetPreimportScheduler scheduler;
+    auto coldPlan = scheduler.BuildPlan(database);
+    EXPECT_NE(
+        std::find(coldPlan.assetPaths.begin(), coldPlan.assetPaths.end(), "Assets/Materials/WarmMaterial.mat"),
+        coldPlan.assetPaths.end());
+    EXPECT_NE(
+        std::find(coldPlan.assetPaths.begin(), coldPlan.assetPaths.end(), "Assets/Textures/WarmAlbedo.png"),
+        coldPlan.assetPaths.end());
+
+    ImportProgressTracker tracker;
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
+    ASSERT_TRUE(database.Refresh());
+
+    const auto warmPlan = scheduler.BuildPlan(database);
+    EXPECT_EQ(
+        std::find(warmPlan.assetPaths.begin(), warmPlan.assetPaths.end(), "Assets/Materials/WarmMaterial.mat"),
+        warmPlan.assetPaths.end());
+    EXPECT_EQ(
+        std::find(warmPlan.assetPaths.begin(), warmPlan.assetPaths.end(), "Assets/Textures/WarmAlbedo.png"),
+        warmPlan.assetPaths.end());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, PreimportPlanReimportsMaterialAndTextureWhenArtifactPayloadIsCorrupt)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteBinary(root / "Assets" / "Textures" / "CorruptAlbedo.png", TinyPng());
+    WriteNativeMaterialSource(
+        root / "Assets" / "Materials" / "CorruptMaterial.mat",
+        "CorruptMaterial",
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+
+    AssetPreimportScheduler scheduler;
+    ImportProgressTracker tracker;
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
+    ASSERT_TRUE(database.Refresh());
+
+    const auto materialArtifactPath = database.ResolveArtifactPathAtPath(
+        "Assets/Materials/CorruptMaterial.mat",
+        "material:main");
+    const auto textureArtifactPath = database.ResolveArtifactPathAtPath(
+        "Assets/Textures/CorruptAlbedo.png",
+        "texture:main");
+    ASSERT_FALSE(materialArtifactPath.empty());
+    ASSERT_FALSE(textureArtifactPath.empty());
+    WriteText(materialArtifactPath, "not-a-material-artifact");
+    WriteText(textureArtifactPath, "not-a-texture-artifact");
+
+    const auto plan = scheduler.BuildPlan(database);
+    EXPECT_NE(
+        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Materials/CorruptMaterial.mat"),
+        plan.assetPaths.end());
+    EXPECT_NE(
+        std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Textures/CorruptAlbedo.png"),
+        plan.assetPaths.end());
 
     std::filesystem::remove_all(root);
 }
@@ -537,7 +635,7 @@ TEST(EditorAssetDatabaseTests, PreimportPlanSkipsWarmModelArtifacts)
             "nodes": [{ "name": "WarmHeroRoot" }]
         })");
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -566,9 +664,10 @@ TEST(EditorAssetDatabaseTests, StartupRefreshPlansPreimportWhenCentralArtifactDa
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "RollbackWarmHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     {
-        AssetDatabaseFacade database({root});
+        AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
         ASSERT_TRUE(database.Refresh());
         ASSERT_TRUE(database.ImportAsset("Assets/Models/RollbackWarmHero.gltf"));
         ASSERT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/RollbackWarmHero.gltf"));
@@ -586,7 +685,7 @@ TEST(EditorAssetDatabaseTests, StartupRefreshPlansPreimportWhenCentralArtifactDa
         ASSERT_TRUE(std::filesystem::exists(rollbackRoot / "data.mdb"));
     }
 
-    AssetDatabaseFacade restartedDatabase({root});
+    AssetDatabaseFacade restartedDatabase(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(restartedDatabase.Refresh());
 
     const auto recoveredRollbackRoot = root / "Library" / "ArtifactDB.publish-rollback";
@@ -617,8 +716,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsWarmSceneAssetsWhenDepen
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ChangedHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -650,8 +750,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStalePlanWhenAssetBecame
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ConcurrentHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade planningDatabase({root});
+    AssetDatabaseFacade planningDatabase(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(planningDatabase.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -662,7 +763,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStalePlanWhenAssetBecame
     const auto stalePlan = scheduler.BuildPlan(planningDatabase, watcherRequest);
     ASSERT_EQ(stalePlan.assetPaths, std::vector<std::string>({"Assets/Models/ConcurrentHero.gltf"}));
 
-    AssetDatabaseFacade importingDatabase({root});
+    AssetDatabaseFacade importingDatabase(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(importingDatabase.Refresh());
     ImportProgressTracker tracker;
     ASSERT_TRUE(importingDatabase.ImportAsset("Assets/Models/ConcurrentHero.gltf", tracker));
@@ -733,8 +834,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportUsesFilteredBatchSizeAfterSki
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StillColdHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade planningDatabase({root});
+    AssetDatabaseFacade planningDatabase(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(planningDatabase.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -745,7 +847,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportUsesFilteredBatchSizeAfterSki
     const auto stalePlan = scheduler.BuildPlan(planningDatabase, watcherRequest);
     ASSERT_EQ(stalePlan.assetPaths.size(), 2u);
 
-    AssetDatabaseFacade importingDatabase({root});
+    AssetDatabaseFacade importingDatabase(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(importingDatabase.Refresh());
     ImportProgressTracker importTracker;
     ASSERT_TRUE(importingDatabase.ImportAsset("Assets/Models/AlreadyWarmHero.gltf", importTracker));
@@ -821,8 +923,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenS
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ChangedHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -864,8 +967,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenA
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MissingArtifactHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -908,8 +1012,9 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsWarmSceneAssetsWhe
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupChangedHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -949,8 +1054,9 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsWarmSceneAssetsWhe
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupMissingArtifactHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -991,8 +1097,9 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsMalformedManifestI
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupMalformedManifestHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -1031,8 +1138,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenM
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MetaChangedHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -1086,11 +1194,12 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyManifestStaysWarmWhenDep
             ]
         })");
     WriteText(packageRoot / "Models" / "Hero.bin", "mesh-binary");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({
+    AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {root / "Assets", false, "Assets", root / "Library"},
         EditorAssetRoot {packageRoot, false, "Packages/StarterContent"}
-    });
+    }));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -1098,13 +1207,14 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyManifestStaysWarmWhenDep
     ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
         << JoinDiagnosticSummaries(database.GetDiagnostics())
         << JoinImportProgressSummaries(tracker);
-    ASSERT_EQ(database.GetCompletedImportCount(), 1u);
+    ASSERT_EQ(database.GetCompletedImportCount(), 2u);
 
     ASSERT_TRUE(scheduler.Run(database, tracker, {
         AssetPreimportReason::FileWatcherChanged,
         {modelPath}
-    }));
-    EXPECT_EQ(database.GetCompletedImportCount(), 1u);
+    })) << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
+    EXPECT_EQ(database.GetCompletedImportCount(), 2u);
 
     std::filesystem::remove_all(root);
 }
@@ -1143,11 +1253,12 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyUsesOwningRootWhenAnothe
             ]
         })");
     WriteText(packageRoot / "Models" / "Hero.bin", "mesh-binary");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({
+    AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {projectRoot, false, {}},
         EditorAssetRoot {packageRoot, false, "Packages/StarterContent"}
-    });
+    }));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -1155,13 +1266,14 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyUsesOwningRootWhenAnothe
     ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
         << JoinDiagnosticSummaries(database.GetDiagnostics())
         << JoinImportProgressSummaries(tracker);
-    ASSERT_EQ(database.GetCompletedImportCount(), 1u);
+    ASSERT_EQ(database.GetCompletedImportCount(), 3u);
 
     ASSERT_TRUE(scheduler.Run(database, tracker, {
         AssetPreimportReason::FileWatcherChanged,
         {modelPath}
-    }));
-    EXPECT_EQ(database.GetCompletedImportCount(), 1u);
+    })) << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
+    EXPECT_EQ(database.GetCompletedImportCount(), 3u);
 
     std::filesystem::remove_all(root);
 }
@@ -1199,11 +1311,12 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangePlansOwningModel)
             ]
         })");
     WriteText(packageRoot / "Models" / "Hero.bin", "mesh-binary");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({
+    AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {root / "Assets", false, "Assets", root / "Library"},
         EditorAssetRoot {packageRoot, false, "Packages/StarterContent"}
-    });
+    }));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -1211,7 +1324,7 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangePlansOwningModel)
     ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
         << JoinDiagnosticSummaries(database.GetDiagnostics())
         << JoinImportProgressSummaries(tracker);
-    ASSERT_EQ(database.GetCompletedImportCount(), 1u);
+    ASSERT_EQ(database.GetCompletedImportCount(), 2u);
 
     WriteText(texturePath, "texture-after");
     const auto plan = scheduler.BuildPlan(database, {
@@ -1219,8 +1332,9 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangePlansOwningModel)
         {texturePath}
     });
 
-    ASSERT_EQ(plan.assetPaths.size(), 1u);
-    EXPECT_EQ(plan.assetPaths[0], "Packages/StarterContent/Models/MountedDependencyChangedHero.gltf");
+    ASSERT_EQ(plan.assetPaths.size(), 2u);
+    EXPECT_EQ(plan.assetPaths[0], "Packages/StarterContent/Textures/HeroBaseColor.png");
+    EXPECT_EQ(plan.assetPaths[1], "Packages/StarterContent/Models/MountedDependencyChangedHero.gltf");
 
     std::filesystem::remove_all(root);
 }
@@ -1255,18 +1369,19 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangeIgnoresDisjointRoo
                 { "source": 0 }
             ]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({
+    AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {root / "Assets", false, "Assets", root / "Library"},
         EditorAssetRoot {packageRoot, false, "Packages/StarterContent"},
         EditorAssetRoot {otherRoot, false, "Other"}
-    });
+    }));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
     ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
-    ASSERT_EQ(database.GetCompletedImportCount(), 1u);
+    ASSERT_EQ(database.GetCompletedImportCount(), 3u);
 
     const auto plan = scheduler.BuildPlan(database, {
         AssetPreimportReason::FileWatcherChanged,
@@ -1307,18 +1422,19 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangeIgnoresNestedMount
                 { "source": 0 }
             ]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({
+    AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {root / "Assets", false, "Assets", root / "Library"},
         EditorAssetRoot {parentRoot, false, "Packages"},
         EditorAssetRoot {childRoot, false, "Packages/StarterContent"}
-    });
+    }));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
     ImportProgressTracker tracker;
     ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
-    ASSERT_EQ(database.GetCompletedImportCount(), 1u);
+    ASSERT_EQ(database.GetCompletedImportCount(), 3u);
 
     const auto plan = scheduler.BuildPlan(database, {
         AssetPreimportReason::FileWatcherChanged,
@@ -1342,8 +1458,9 @@ TEST(EditorAssetDatabaseTests, AssetCopiedOrMovedPreimportSkipsWarmSceneAssetsWh
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "CopiedHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -1512,8 +1629,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportPlansModelWhenExternalDepende
             ]
         })");
     WriteText(root / "Assets" / "Models" / "Stable.gltf", R"({"asset":{"version":"2.0"}})");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -1529,8 +1647,9 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportPlansModelWhenExternalDepende
         {root / "Assets" / "Textures" / "HeroBaseColor.png"}
     });
 
-    ASSERT_EQ(plan.assetPaths.size(), 1u);
-    EXPECT_EQ(plan.assetPaths[0], "Assets/Models/Hero.gltf");
+    ASSERT_EQ(plan.assetPaths.size(), 2u);
+    EXPECT_EQ(plan.assetPaths[0], "Assets/Textures/HeroBaseColor.png");
+    EXPECT_EQ(plan.assetPaths[1], "Assets/Models/Hero.gltf");
 
     std::filesystem::remove_all(root);
 }
@@ -1604,14 +1723,78 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportWarmsColdModelBeforeRetur
             return event.terminalStatus == ImportJobTerminalStatus::Succeeded;
         }));
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
     EXPECT_TRUE(database
         .LoadSubAssetAtPath("Assets/Models/StartupColdHero.gltf", "prefab:StartupColdHero")
         .has_value());
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/StartupColdHero.gltf"));
-    EXPECT_TRUE(std::filesystem::is_regular_file(
-        root / "Assets" / "Engine" / "Shaders" / "NullusShaderLibrary" / "Core.hlsl"));
+    {
+        const auto standardPbrManifest = database.GetArtifactManifestForAssetPath(
+            "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader");
+        std::ostringstream dependencyTrace;
+        if (standardPbrManifest.has_value())
+        {
+            for (const auto& dependency : standardPbrManifest->dependencies)
+            {
+                dependencyTrace << static_cast<int>(dependency.kind)
+                    << '|' << dependency.value
+                    << '|' << dependency.hashOrVersion
+                    << '\n';
+            }
+        }
+        EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath(
+            "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"))
+            << dependencyTrace.str();
+    }
+    EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Engine" / "Shaders"))
+        << "Built-in ShaderLab sources must stay in App/Assets and only project Library artifacts may be generated.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportSucceedsWhenNoProjectAssetsNeedImport)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    std::filesystem::create_directories(root / "Assets");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+
+    const auto result = RunBlockingStartupAssetPreimport(options);
+
+    EXPECT_TRUE(result.succeeded) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(result.plannedAssetCount, 0u);
+    EXPECT_EQ(result.importedAssetCount, 0u);
+    EXPECT_FALSE(result.hadRunningJobsAfterCompletion);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportImportsBuiltInShaderForEmptyProject)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    std::filesystem::create_directories(root / "Assets");
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+
+    const auto result = RunBlockingStartupAssetPreimport(options);
+
+    EXPECT_TRUE(result.succeeded) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(result.plannedAssetCount, 0u);
+    EXPECT_EQ(result.importedAssetCount, 0u);
+    EXPECT_FALSE(result.hadRunningJobsAfterCompletion);
+    EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Engine" / "Shaders"))
+        << "Built-in ShaderLab imports must produce project Library artifacts without copying sources.";
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath(
         "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
 
@@ -1702,9 +1885,9 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotOverwriteProjectSh
     EXPECT_EQ(
         ReadText(root / "Assets" / "Engine" / "Shaders" / "NullusShaderLibrary" / "ProjectOnly.hlsl"),
         "// project local include\n");
-    EXPECT_TRUE(std::filesystem::is_regular_file(
+    EXPECT_FALSE(std::filesystem::exists(
         root / "Assets" / "Engine" / "Shaders" / "NullusShaderLibrary" / "Common.hlsl"))
-        << "Missing bundled library files should still be seeded without overwriting project files.";
+        << "Startup preimport must not seed bundled shader library files into project Assets.";
 
     std::filesystem::remove_all(root);
 }
@@ -1775,8 +1958,9 @@ TEST(EditorAssetDatabaseTests, StartupPreimportRunsPlannedImportsAgainstCurrentD
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "PlannedHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
 
     AssetPreimportScheduler scheduler;
@@ -1795,7 +1979,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportRunsPlannedImportsAgainstCurrentD
         plan));
 
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/PlannedHero.gltf"));
-    EXPECT_FALSE(database.AssetPathToGUID("Assets/Models/CreatedAfterPlan.gltf").empty());
+    EXPECT_TRUE(database.AssetPathToGUID("Assets/Models/CreatedAfterPlan.gltf").empty());
     EXPECT_FALSE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/CreatedAfterPlan.gltf"));
 
     std::filesystem::remove_all(root);
@@ -1941,8 +2125,9 @@ TEST(EditorAssetDatabaseTests, StartupPreparedPrefabPreflightBudgetCapsAttempts)
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "SecondHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
     ASSERT_TRUE(database.ImportAsset("Assets/Models/A_FirstHero.gltf"));
     ASSERT_TRUE(database.ImportAsset("Assets/Models/B_SecondHero.gltf"));
@@ -2213,7 +2398,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRejectsEscapingDatabaseAr
             .has_value());
 
         const auto plan = AssetPreimportScheduler().BuildPlan(database);
-        ASSERT_EQ(plan.assetPaths.size(), 2u);
+        ASSERT_EQ(plan.assetPaths.size(), 1u);
         EXPECT_NE(
             std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Models/EscapingDatabaseHero.gltf"),
             plan.assetPaths.end());
@@ -2271,7 +2456,7 @@ TEST(EditorAssetDatabaseTests, DatabaseArtifactPathRejectsProjectRelativeTypedPa
         .has_value());
 
     const auto plan = AssetPreimportScheduler().BuildPlan(database);
-    ASSERT_EQ(plan.assetPaths.size(), 2u);
+    ASSERT_EQ(plan.assetPaths.size(), 1u);
     EXPECT_NE(
         std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Models/ProjectRelativeArtifactHero.gltf"),
         plan.assetPaths.end());
@@ -2316,7 +2501,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRejectsArtifactRootRelati
             .has_value());
 
         const auto plan = AssetPreimportScheduler().BuildPlan(database);
-        ASSERT_EQ(plan.assetPaths.size(), 2u);
+        ASSERT_EQ(plan.assetPaths.size(), 1u);
         EXPECT_NE(
             std::find(plan.assetPaths.begin(), plan.assetPaths.end(), "Assets/Model/ArtifactRootRelativeHero.gltf"),
             plan.assetPaths.end());
@@ -2418,8 +2603,9 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportReimportsLegacyModelMater
         ASSERT_TRUE(manifest.has_value());
         const auto* material = manifest->FindSubAsset("material:material/0");
         ASSERT_NE(material, nullptr);
-        WriteText(
+        WriteNativeMaterialSource(
             material->artifactPath,
+            "material/0",
             "shaderLabMaterialVersion=1\n"
             "shader=?\n"
             "property _BaseMap Texture2D Models/../Textures/HeroBaseColor.png\n");
@@ -2427,8 +2613,8 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportReimportsLegacyModelMater
 
     const auto result = RunBlockingStartupAssetPreimport({root});
     ASSERT_TRUE(result.succeeded);
-    EXPECT_EQ(result.plannedAssetCount, 1u);
-    EXPECT_EQ(result.importedAssetCount, 1u);
+    EXPECT_EQ(result.plannedAssetCount, 2u);
+    EXPECT_EQ(result.importedAssetCount, 2u);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -2688,7 +2874,7 @@ TEST(EditorAssetDatabaseTests, LegacyProjectRootFacadeOnlyGeneratesMetaBelowAsse
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDatabaseTests, LegacyFilesystemRootWithAssetsChildKeepsScanningSiblings)
+TEST(EditorAssetDatabaseTests, ProjectRootWithAssetsChildDoesNotScanSiblingFoldersAsAssets)
 {
     using namespace NLS::Editor::Assets;
 
@@ -2700,9 +2886,9 @@ TEST(EditorAssetDatabaseTests, LegacyFilesystemRootWithAssetsChildKeepsScanningS
     ASSERT_TRUE(database.Refresh());
 
     EXPECT_TRUE(std::filesystem::exists(root / "Assets" / "Models" / "Hero.gltf.meta"));
-    EXPECT_TRUE(std::filesystem::exists(root / "Packages" / "Starter" / "Tree.obj.meta"));
+    EXPECT_FALSE(std::filesystem::exists(root / "Packages" / "Starter" / "Tree.obj.meta"));
     EXPECT_FALSE(database.AssetPathToGUID("Assets/Models/Hero.gltf").empty());
-    EXPECT_FALSE(database.AssetPathToGUID("Packages/Starter/Tree.obj").empty());
+    EXPECT_TRUE(database.AssetPathToGUID("Packages/Starter/Tree.obj").empty());
 
     std::filesystem::remove_all(root);
 }
@@ -2724,7 +2910,7 @@ TEST(EditorAssetDatabaseTests, ReadOnlySnapshotSharesLargeObjectReferenceSnapsho
         })");
     PrepareStandardPbrShaderLabDependency(root);
 
-    AssetDatabaseFacade database({root});
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Heavy.gltf"));
 

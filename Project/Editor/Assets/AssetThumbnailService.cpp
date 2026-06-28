@@ -831,7 +831,16 @@ bool IsRgba8TextureArtifactMipUsable(const NLS::Render::Assets::TextureArtifactM
     return mip.width > 0u &&
         mip.height > 0u &&
         mip.rowPitch >= mip.width * 4u &&
-        !mip.pixels.empty();
+        mip.HasPixels() &&
+        mip.PixelSize() >= static_cast<size_t>(mip.rowPitch) * mip.height;
+}
+
+std::vector<uint8_t> CopyTextureArtifactMipPixels(const NLS::Render::Assets::TextureArtifactMip& mip)
+{
+    const auto* pixels = mip.PixelData();
+    if (pixels == nullptr)
+        return {};
+    return {pixels, pixels + mip.PixelSize()};
 }
 
 const NLS::Render::Assets::TextureArtifactMip* SelectTextureThumbnailMip(
@@ -2698,7 +2707,7 @@ DownsampledThumbnail RenderTexturePathThumbnail(
 
         const auto& mip = artifact->mips.front();
         return DownsampleRgba8ToThumbnail(
-            mip.pixels.data(),
+            mip.PixelData(),
             mip.width,
             mip.height,
             mip.rowPitch,
@@ -2728,7 +2737,7 @@ const NLS::Render::Assets::TextureArtifactMip* SelectTexturePreviewMip(
     uint32_t bestScore = std::numeric_limits<uint32_t>::max();
     for (const auto& mip : artifact.mips)
     {
-        if (mip.width == 0u || mip.height == 0u || mip.rowPitch < mip.width * 4u || mip.pixels.empty())
+        if (!IsRgba8TextureArtifactMipUsable(mip))
             continue;
 
         const auto mipLargestDimension = (std::max)(mip.width, mip.height);
@@ -2762,7 +2771,7 @@ std::optional<ThumbnailTextureSampleData> LoadTextureSampleData(
         if (mip == nullptr)
             return std::nullopt;
 
-        data.pixels = mip->pixels;
+        data.pixels = CopyTextureArtifactMipPixels(*mip);
         data.width = mip->width;
         data.height = mip->height;
         data.rowPitch = mip->rowPitch;
@@ -3667,6 +3676,7 @@ AssetThumbnailServiceResult GenerateMeshSetThumbnail(
     meshes.reserve(candidates.size());
     size_t loadedVertices = 0u;
     size_t loadedIndices = 0u;
+    bool skippedBudgetedMesh = false;
     for (const auto& candidate : candidates)
     {
         const bool wouldExceedBudget =
@@ -3674,7 +3684,10 @@ AssetThumbnailServiceResult GenerateMeshSetThumbnail(
             (loadedVertices + candidate.header.vertexCount > kMaxMeshPreviewLoadedVertices ||
                 loadedIndices + candidate.header.indexCount > kMaxMeshPreviewLoadedIndices);
         if (wouldExceedBudget)
+        {
+            skippedBudgetedMesh = true;
             continue;
+        }
 
         const auto mesh = LoadMeshArtifactForThumbnailPreview(candidate.path, candidate.header);
         if (IsThumbnailGenerationCancelled(cancelToken))
@@ -3693,6 +3706,19 @@ AssetThumbnailServiceResult GenerateMeshSetThumbnail(
         loadedVertices += mesh->vertices.size();
         loadedIndices += mesh->indices.size();
         meshes.push_back(*mesh);
+    }
+
+    if (skippedBudgetedMesh)
+    {
+        result.status = AssetThumbnailServiceStatus::Fallback;
+        result.diagnostic = "thumbnail-model-preview-budget-exceeded";
+        WriteThumbnailMetadataForEvaluation(
+            request,
+            evaluation,
+            AssetThumbnailCacheStatus::Failed,
+            result.diagnostic,
+            &cacheMetadataRequest);
+        return result;
     }
 
     if (meshes.empty())
@@ -4108,7 +4134,7 @@ AssetThumbnailServiceResult GenerateTextureThumbnail(
             request,
             evaluation,
             DownsampleRgba8ToThumbnail(
-                mip->pixels.data(),
+                mip->PixelData(),
                 mip->width,
                 mip->height,
                 mip->rowPitch,
@@ -4473,7 +4499,7 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     request.requestedSize = request.kind == AssetThumbnailKind::Texture
         ? (std::min)(std::max(1u, requestedSize), kMaxTextureThumbnailGenerationSize)
         : std::max(1u, requestedSize);
-    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v1";
+    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v3";
     if (request.kind == AssetThumbnailKind::Texture)
     {
         request.settingsFingerprint = "asset-browser-thumbnail:v15-lowres-image-thumbnails";

@@ -24,6 +24,7 @@
 #include "Settings/EditorSettings.h"
 #include "Assets/ImportProgressTracker.h"
 #include "Assets/PrefabEditorWorkflow.h"
+#include "Engine/Assets/RuntimeAssetDatabase.h"
 namespace NLS
 {
 namespace Editor::Core
@@ -70,6 +71,7 @@ class Context
      * Apply project settings to the ini file
      */
     void ApplyProjectSettings();
+    bool RefreshRuntimeAssetDatabaseFromArtifactDB();
     void PresentStartupProgressFrame(const std::string& label, float normalizedProgress);
     void CompleteStartupProgress();
     bool IsNativeStartupProgressAvailable() const;
@@ -122,6 +124,7 @@ class Context
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::MaterialManager materialManager;
     NLS::Core::ResourceManagement::ResourceLifetimeRegistry resourceLifetimeRegistry;
+    std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> runtimeAssetDatabase;
 
     NLS::Windowing::Settings::WindowSettings windowSettings;
 

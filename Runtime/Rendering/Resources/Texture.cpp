@@ -24,6 +24,11 @@ Texture::Texture(RHI::TextureDimension dimension)
 	CreateRHITexture();
 }
 
+Texture::Texture(RHI::TextureDimension dimension, SkipInitialTextureTag)
+	: m_dimension(dimension)
+{
+}
+
 Texture::~Texture()
 {
 	ReleaseRHITexture();

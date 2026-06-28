@@ -9,10 +9,16 @@
 #include "Assets/EditorAssetPath.h"
 #include "Assets/ExternalAssetImporter.h"
 #include "Assets/ModelTextureReferenceResolver.h"
+#include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Guid.h"
 #include "Engine/Assets/PrefabAsset.h"
 #include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/ShaderArtifact.h"
+#include "Rendering/Assets/TextureArtifact.h"
+#include "Rendering/Assets/TextureBuildSettings.h"
+#include "Rendering/Assets/TextureEncoder.h"
+#include "Rendering/Assets/TextureFormatResolver.h"
+#include "Rendering/Assets/TextureMipGenerator.h"
 #include "Rendering/Resources/ShaderReflectionMerge.h"
 #include "Rendering/Resources/ShaderType.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
@@ -37,7 +43,6 @@ namespace NLS::Editor::Assets
 namespace
 {
 constexpr const char* kStandardPbrShaderAssetPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
-constexpr const char* kStandardPbrShaderLibraryPath = "Assets/Engine/Shaders/NullusShaderLibrary";
 constexpr const char* kShaderCompilerToolchainDependencyName = "shader-compiler-toolchain";
 
 std::string ToLower(std::string value)
@@ -91,83 +96,6 @@ std::string JoinList(std::vector<std::string> values)
     return joined;
 }
 
-std::filesystem::path FindBundledShaderAssetSource(const std::filesystem::path& relative)
-{
-    std::vector<std::filesystem::path> probes;
-#if defined(NLS_ROOT_DIR)
-    probes.push_back(std::filesystem::path(NLS_ROOT_DIR));
-#endif
-    probes.push_back(std::filesystem::current_path());
-    probes.push_back(std::filesystem::absolute(std::filesystem::path(".")));
-
-    for (auto probe : probes)
-    {
-        probe = probe.lexically_normal();
-        const auto directCandidate = probe / relative;
-        if (std::filesystem::exists(directCandidate))
-            return directCandidate;
-
-        while (!probe.empty())
-        {
-            const auto candidate = probe / relative;
-            if (std::filesystem::exists(candidate))
-                return candidate;
-            const auto parent = probe.parent_path();
-            if (parent == probe)
-                break;
-            probe = parent;
-        }
-    }
-    return {};
-}
-
-bool CopyMissingDirectoryFilesRecursive(
-    const std::filesystem::path& source,
-    const std::filesystem::path& destination)
-{
-    std::error_code error;
-    std::filesystem::create_directories(destination, error);
-    if (error)
-        return false;
-
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(source, error))
-    {
-        if (error)
-            return false;
-
-        const auto relative = entry.path().lexically_relative(source);
-        const auto target = destination / relative;
-        if (entry.is_directory(error))
-        {
-            std::filesystem::create_directories(target, error);
-            if (error)
-                return false;
-            continue;
-        }
-        if (!entry.is_regular_file(error))
-            continue;
-
-        if (std::filesystem::exists(target, error))
-        {
-            error.clear();
-            continue;
-        }
-
-        std::filesystem::create_directories(target.parent_path(), error);
-        if (error)
-            return false;
-
-        std::filesystem::copy_file(
-            entry.path(),
-            target,
-            std::filesystem::copy_options::none,
-            error);
-        if (error)
-            return false;
-    }
-    return true;
-}
-
 std::string FileStamp(const std::filesystem::path& path)
 {
     std::error_code error;
@@ -184,9 +112,36 @@ std::string FileStamp(const std::filesystem::path& path)
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
+std::string SourceFileContentHash(const std::filesystem::path& path)
+{
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream)
+        return {};
+
+    const std::vector<uint8_t> bytes{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
+}
+
+std::string AssetMetaStamp(
+    const std::filesystem::path& metaPath,
+    const NLS::Core::Assets::AssetMeta& meta)
+{
+    auto stamp = FileStamp(metaPath);
+    if (!stamp.empty())
+        return stamp;
+    return "guid:" + meta.id.ToString();
+}
+
 std::string ParentEditorAssetPath(const std::string& assetPath)
 {
     return NormalizeEditorAssetPath(std::filesystem::path(assetPath).parent_path());
+}
+
+bool IsProjectOverrideAllowedForReadOnlyAlias(const std::string& editorAssetPath)
+{
+    return editorAssetPath.rfind("Assets/Engine/Shaders/", 0u) == 0u;
 }
 
 bool IsDependencyKindAssetReference(const NLS::Core::Assets::AssetDependencyKind kind)
@@ -226,12 +181,12 @@ std::vector<NLS::Core::Assets::AssetDependencyRecord> BuildNativeAssetManifestDe
         {
             NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
             std::move(editorAssetPath),
-            FileStamp(absolutePath)
+            SourceFileContentHash(absolutePath)
         },
         {
             NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
             std::move(editorMetaPath),
-            FileStamp(metaPath)
+            AssetMetaStamp(metaPath, meta)
         },
         {
             NLS::Core::Assets::AssetDependencyKind::ImporterVersion,
@@ -697,6 +652,99 @@ std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
     return std::vector<uint8_t>(
         std::istreambuf_iterator<char>(stream),
         std::istreambuf_iterator<char>());
+}
+
+NLS::Render::Assets::TextureBackendCapabilities BuildStandaloneTextureCapabilities(
+    std::string targetPlatform,
+    const bool enableBcCompression)
+{
+    NLS::Render::Assets::TextureBackendCapabilities capabilities;
+    capabilities.targetPlatform = std::move(targetPlatform);
+
+    NLS::Render::RHI::TextureFormatCapability rgba8;
+    rgba8.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    rgba8.sampled = true;
+    rgba8.upload = true;
+    rgba8.supportsSrgbView = true;
+
+    NLS::Render::RHI::TextureFormatCapability rgba16f;
+    rgba16f.format = NLS::Render::RHI::TextureFormat::RGBA16F;
+    rgba16f.sampled = true;
+    rgba16f.upload = true;
+
+    capabilities.supportedFormats = {
+        {NLS::Render::RHI::TextureFormat::RGBA8, rgba8},
+        {NLS::Render::RHI::TextureFormat::RGBA16F, rgba16f}
+    };
+
+    if (!enableBcCompression)
+        return capabilities;
+
+    const auto addCompressed = [&capabilities](
+        const NLS::Render::RHI::TextureFormat format,
+        const bool supportsSrgbView)
+    {
+        NLS::Render::RHI::TextureFormatCapability capability;
+        capability.format = format;
+        capability.sampled = true;
+        capability.upload = true;
+        capability.supportsSrgbView = supportsSrgbView;
+        capability.supportsUnalignedBlockTextures = true;
+        capabilities.supportedFormats[format] = capability;
+    };
+
+    addCompressed(NLS::Render::RHI::TextureFormat::BC1, true);
+    addCompressed(NLS::Render::RHI::TextureFormat::BC3, true);
+    addCompressed(NLS::Render::RHI::TextureFormat::BC5, false);
+    addCompressed(NLS::Render::RHI::TextureFormat::BC7, true);
+    return capabilities;
+}
+
+std::string StandaloneTextureBuildTargetPlatform()
+{
+#if defined(_WIN32)
+    return "win64-dx12";
+#else
+    return "editor";
+#endif
+}
+
+std::string EditorManifestTargetPlatformForAssetType(const NLS::Core::Assets::AssetType assetType)
+{
+    if (assetType == NLS::Core::Assets::AssetType::Texture)
+        return StandaloneTextureBuildTargetPlatform();
+    return "editor";
+}
+
+std::string BuildStandaloneTextureSettingsIdentity(
+    const NLS::Render::Assets::TextureImportSettingsSnapshot& settings)
+{
+    std::ostringstream stream;
+    stream
+        << "type=" << settings.textureType
+        << "|srgb=" << (settings.srgbTexture ? 1u : 0u)
+        << "|alphaTransparency=" << (settings.alphaIsTransparency ? 1u : 0u)
+        << "|mips=" << (settings.mipmapEnabled ? 1u : 0u)
+        << "|maxSize=" << settings.maxTextureSize
+        << "|resize=" << settings.resizePolicy
+        << "|compression=" << settings.compressionIntent
+        << "|explicit=" << settings.explicitFormat;
+    return stream.str();
+}
+
+std::string BuildStandaloneDirectXTexEncoderOptionsHash(
+    const NLS::Render::Assets::TextureBuildSettings& settings)
+{
+    std::ostringstream stream;
+    stream << "directxtex:parallel,";
+    stream << (settings.colorSpace == NLS::Render::RHI::TextureColorSpace::SRGB ? "srgb" : "linear");
+    if (settings.resolvedFormat == NLS::Render::RHI::TextureFormat::BC5 ||
+        settings.textureIntent == "normal" ||
+        settings.textureIntent == "mask")
+    {
+        stream << ",uniform";
+    }
+    return stream.str();
 }
 
 std::string ReadTextFile(const std::filesystem::path& path)
@@ -1371,7 +1419,7 @@ std::optional<NLS::Core::Assets::AssetDependencyRecord> MakeShaderSourceFileDepe
     if (relativePath.empty() || relativePath.is_absolute())
         return std::nullopt;
 
-    const auto stamp = FileStamp(dependencyPath);
+    const auto stamp = SourceFileContentHash(dependencyPath);
     if (stamp.empty())
         return std::nullopt;
 
@@ -1693,6 +1741,240 @@ NLS::Core::Assets::ArtifactManifest FilterContentStorageArtifacts(
     return manifest;
 }
 
+std::optional<NLS::Core::Assets::ArtifactManifest> ImportSingleNativeArtifact(
+    const NLS::Core::Assets::SourceAssetRecord& record,
+    const NLS::Core::Assets::AssetMeta& meta,
+    const std::filesystem::path& absolutePath,
+    const std::string& editorAssetPath,
+    const std::string& editorMetaPath,
+    const std::filesystem::path& artifactRoot,
+    const std::filesystem::path& stagingRoot,
+    const std::string& subAssetKey,
+    const NLS::Core::Assets::ArtifactType artifactType,
+    const std::string& loaderId,
+    const std::string& displayName,
+    std::vector<uint8_t> payload,
+    std::optional<NLS::Core::Assets::ArtifactManifest> previousManifest,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const std::string& targetPlatform = "editor")
+{
+    NLS::Core::Assets::ArtifactWriteRequest writeRequest;
+    writeRequest.sourceAssetId = record.id;
+    writeRequest.importerId = meta.importerId;
+    writeRequest.importerVersion = meta.importerVersion;
+    writeRequest.targetPlatform = targetPlatform;
+    writeRequest.primarySubAssetKey = subAssetKey;
+    writeRequest.artifacts.push_back({
+        subAssetKey,
+        artifactType,
+        loaderId,
+        displayName,
+        ToArtifactTypeKey(artifactType),
+        std::move(payload)
+    });
+    AddNativeAssetManifestDependencies(
+        writeRequest.dependencies,
+        editorAssetPath,
+        editorMetaPath,
+        absolutePath,
+        NLS::Core::Assets::GetAssetMetaPath(absolutePath),
+        meta,
+        targetPlatform);
+
+    NLS::Core::Assets::ArtifactWriter writer(stagingRoot, artifactRoot);
+    const auto writeResult = writer.WriteAndCommit(
+        writeRequest,
+        previousManifest.has_value() ? &*previousManifest : nullptr);
+    diagnostics.insert(
+        diagnostics.end(),
+        writeResult.diagnostics.begin(),
+        writeResult.diagnostics.end());
+    if (!writeResult.committed || HasErrors(writeResult.diagnostics))
+        return std::nullopt;
+
+    return writeResult.manifest;
+}
+
+std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneTextureArtifact(
+    const NLS::Core::Assets::SourceAssetRecord& record,
+    const NLS::Core::Assets::AssetMeta& meta,
+    const std::filesystem::path& absolutePath,
+    const std::string& editorAssetPath,
+    const std::string& editorMetaPath,
+    const std::filesystem::path& artifactRoot,
+    const std::filesystem::path& stagingRoot,
+    std::optional<NLS::Core::Assets::ArtifactManifest> previousManifest,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics)
+{
+    const auto encoded = ReadBinaryFile(absolutePath);
+    auto artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        encoded.data(),
+        encoded.size(),
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        false);
+    if (!artifact.has_value())
+        return std::nullopt;
+
+    const std::string textureBuildTargetPlatform = StandaloneTextureBuildTargetPlatform();
+    const bool canEncodeBc = textureBuildTargetPlatform == "win64-dx12";
+    auto encoder = canEncodeBc ? CreateDirectXTexTextureEncoder() : nullptr;
+
+    NLS::Render::Assets::TextureImportSettingsSnapshot importSettings;
+    importSettings.textureType = "default";
+    importSettings.srgbTexture = true;
+    importSettings.alphaIsTransparency = false;
+    importSettings.mipmapEnabled = true;
+    importSettings.maxTextureSize = 0u;
+    importSettings.resizePolicy = "keep";
+    importSettings.compressionIntent = "default";
+
+    NLS::Render::Assets::TextureSourceDescriptor sourceDescriptor;
+    sourceDescriptor.assetPath = editorAssetPath;
+    sourceDescriptor.width = artifact->width;
+    sourceDescriptor.height = artifact->height;
+    sourceDescriptor.hasAlpha = true;
+    if (!artifact->mips.empty() && artifact->format == NLS::Render::RHI::TextureFormat::RGBA8)
+    {
+        sourceDescriptor.hasAlpha = false;
+        const auto& pixels = artifact->mips.front().pixels;
+        for (size_t alphaIndex = 3u; alphaIndex < pixels.size(); alphaIndex += 4u)
+        {
+            if (pixels[alphaIndex] != 255u)
+            {
+                sourceDescriptor.hasAlpha = true;
+                break;
+            }
+        }
+    }
+    sourceDescriptor.isHDR = artifact->format == NLS::Render::RHI::TextureFormat::RGBA16F;
+
+    const auto capabilities = BuildStandaloneTextureCapabilities(textureBuildTargetPlatform, canEncodeBc && encoder != nullptr);
+    auto resolved = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        importSettings,
+        std::nullopt,
+        sourceDescriptor,
+        capabilities,
+        canEncodeBc && encoder != nullptr ? std::string(encoder->GetId()) : std::string("rgba8-passthrough"),
+        canEncodeBc && encoder != nullptr ? encoder->GetVersion() : 1u);
+    if (!resolved.settings.has_value())
+        return std::nullopt;
+
+    resolved.settings->sourceAssetPath = editorAssetPath;
+    resolved.settings->sourceAssetIdentity = meta.id.ToString();
+    resolved.settings->sourceContentHash = NLS::Core::Assets::ComputeNativeArtifactPayloadHash(encoded);
+    resolved.settings->normalizedSettingsHash = BuildStandaloneTextureSettingsIdentity(importSettings);
+    resolved.settings->platformOverrideHash = "none";
+    resolved.settings->importerVersion = meta.importerVersion;
+    resolved.settings->postprocessorVersion = 1u;
+    resolved.settings->dependencyHash = "none";
+
+    if (resolved.settings->encoderId == "directxtex-bc" && encoder != nullptr)
+    {
+        resolved.settings->encoderOptionsHash = BuildStandaloneDirectXTexEncoderOptionsHash(*resolved.settings);
+        resolved.settings->toolVersion = GetDirectXTexTextureEncoderToolVersion();
+        auto encodeResult = encoder->Encode({ &*resolved.settings, &*artifact });
+        if (encodeResult.succeeded)
+        {
+            artifact = std::move(encodeResult.artifact);
+        }
+        else
+        {
+            resolved.settings->resolvedFormat = NLS::Render::RHI::TextureFormat::RGBA8;
+            resolved.settings->encoderId = "rgba8-passthrough";
+            resolved.settings->encoderVersion = 1u;
+            resolved.settings->encoderOptionsHash.clear();
+            resolved.settings->toolVersion.clear();
+        }
+    }
+
+    if (resolved.settings->encoderId == "rgba8-passthrough")
+    {
+        artifact->targetPlatform = resolved.settings->targetPlatform;
+        artifact->encoderId = resolved.settings->encoderId;
+        artifact->encoderVersion = resolved.settings->encoderVersion;
+        artifact->buildIdentity = NLS::Render::Assets::BuildTextureBuildIdentity(*resolved.settings);
+    }
+
+    auto payload = NLS::Render::Assets::SerializeTextureArtifact(*artifact);
+    if (payload.empty())
+        return std::nullopt;
+
+    return ImportSingleNativeArtifact(
+        record,
+        meta,
+        absolutePath,
+        editorAssetPath,
+        editorMetaPath,
+        artifactRoot,
+        stagingRoot,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        absolutePath.stem().generic_string(),
+        std::move(payload),
+        std::move(previousManifest),
+        diagnostics,
+        textureBuildTargetPlatform);
+}
+
+std::optional<NLS::Core::Assets::ArtifactManifest> ImportStandaloneMaterialArtifact(
+    const NLS::Core::Assets::SourceAssetRecord& record,
+    const NLS::Core::Assets::AssetMeta& meta,
+    const std::filesystem::path& absolutePath,
+    const std::string& editorAssetPath,
+    const std::string& editorMetaPath,
+    const std::filesystem::path& artifactRoot,
+    const std::filesystem::path& stagingRoot,
+    std::optional<NLS::Core::Assets::ArtifactManifest> previousManifest,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics)
+{
+    const auto sourceBytes = ReadBinaryFile(absolutePath);
+    const auto sourceContainer = NLS::Core::Assets::ReadNativeArtifactContainer(
+        sourceBytes,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    if (!sourceContainer.has_value() || sourceContainer->metadata.schemaName != "material")
+    {
+        diagnostics.push_back({
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-material-source-native-container-required",
+            record.id,
+            absolutePath,
+            "Material source assets must be authoritative .mat native containers; legacy text/XML material payloads are not supported."
+        });
+        return std::nullopt;
+    }
+
+    const std::string payloadText(sourceContainer->payload.begin(), sourceContainer->payload.end());
+    if (payloadText.find("shaderLabMaterialVersion=1") != 0u)
+    {
+        diagnostics.push_back({
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-material-source-shaderlab-payload-required",
+            record.id,
+            absolutePath,
+            "Material source assets must contain ShaderLab material payloads."
+        });
+        return std::nullopt;
+    }
+
+    return ImportSingleNativeArtifact(
+        record,
+        meta,
+        absolutePath,
+        editorAssetPath,
+        editorMetaPath,
+        artifactRoot,
+        stagingRoot,
+        "material:main",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        absolutePath.stem().generic_string(),
+        sourceContainer->payload,
+        std::move(previousManifest),
+        diagnostics);
+}
+
 }
 
 AssetDatabaseFacade::AssetDatabaseFacade(std::vector<std::filesystem::path> roots)
@@ -1757,55 +2039,7 @@ std::shared_ptr<const AssetDatabaseFacade> AssetDatabaseFacade::CreateReadOnlySn
 
 bool AssetDatabaseFacade::EnsureStandardPbrShaderLabSourceAvailable()
 {
-    const auto standardPbrAssetPath = std::filesystem::path(kStandardPbrShaderAssetPath);
-    const auto shaderLibraryAssetPath = std::filesystem::path(kStandardPbrShaderLibraryPath);
-    const auto bundledShaderRoot =
-        std::filesystem::path("App") /
-        "Assets" /
-        "Engine" /
-        "Shaders";
-
-    for (const auto& root : m_roots)
-    {
-        if (root.readOnly)
-            continue;
-
-        const bool mountedAssetsRoot = root.mountPath == "Assets" || root.path.filename() == "Assets";
-        const auto projectRoot = !root.libraryPath.empty()
-            ? root.libraryPath.parent_path()
-            : (mountedAssetsRoot ? root.path.parent_path() : root.path);
-        const auto assetsRoot = mountedAssetsRoot ? root.path : projectRoot / "Assets";
-        const auto destination = assetsRoot / standardPbrAssetPath.lexically_relative("Assets");
-        const auto source = FindBundledShaderAssetSource(
-            bundledShaderRoot / "ShaderLab" / "StandardPBR.shader");
-        if (!std::filesystem::is_regular_file(source))
-            return false;
-
-        std::error_code error;
-        if (!std::filesystem::exists(destination, error))
-        {
-            std::filesystem::create_directories(destination.parent_path(), error);
-            if (error)
-                return false;
-            std::filesystem::copy_file(
-                source,
-                destination,
-                std::filesystem::copy_options::none,
-                error);
-            if (error)
-                return false;
-        }
-
-        const auto libraryDestination = assetsRoot / shaderLibraryAssetPath.lexically_relative("Assets");
-        const auto librarySource = FindBundledShaderAssetSource(
-            bundledShaderRoot / "NullusShaderLibrary");
-        if (!std::filesystem::is_directory(librarySource))
-            return false;
-        if (!CopyMissingDirectoryFilesRecursive(librarySource, libraryDestination))
-            return false;
-        return true;
-    }
-    return false;
+    return !ResolveAssetPath(kStandardPbrShaderAssetPath).empty();
 }
 
 bool AssetDatabaseFacade::Refresh()
@@ -2727,6 +2961,12 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPath(const std::strin
     return current;
 }
 
+bool AssetDatabaseFacade::IsReadOnlyAssetPath(const std::string& assetPath) const
+{
+    const auto* record = FindRecordByEditorAssetPath(assetPath);
+    return record != nullptr && record->readOnly;
+}
+
 bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(const std::string& assetPath) const
 {
     if (!IsEditorMode())
@@ -2746,14 +2986,15 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(const st
         manifestCopy = manifest->second;
     }
 
-    auto meta = NLS::Core::Assets::AssetMeta::Load(record->metaPath);
+    auto meta = LoadMetaForPath(assetPath);
     if (!meta.has_value())
         return false;
     meta->importerVersion = std::max(meta->importerVersion, record->importerVersion);
 
+    const auto expectedTargetPlatform = EditorManifestTargetPlatformForAssetType(meta->assetType);
     if (manifestCopy.importerId != meta->importerId ||
         manifestCopy.importerVersion != meta->importerVersion ||
-        manifestCopy.targetPlatform != "editor" ||
+        manifestCopy.targetPlatform != expectedTargetPlatform ||
         !HasCurrentExternalTextureBuildPipelineDependency(manifestCopy, meta->assetType) ||
         !HasCurrentShaderCompilerToolchainDependency(manifestCopy, meta->assetType))
     {
@@ -2804,7 +3045,13 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(const st
             *record,
             dependency.value,
             checksPrimaryAsset || checksPrimaryMeta);
-        if (dependencyPath.empty() || FileStamp(dependencyPath) != dependency.hashOrVersion)
+        if (dependencyPath.empty())
+            return false;
+
+        const auto currentStamp = checksPrimaryMeta
+            ? AssetMetaStamp(dependencyPath, *meta)
+            : SourceFileContentHash(dependencyPath);
+        if (currentStamp != dependency.hashOrVersion)
             return false;
 
         if (checksPrimaryAsset)
@@ -2825,8 +3072,8 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(const st
     const bool checkedBuildTarget = HasDependency(
         manifestCopy,
         NLS::Core::Assets::AssetDependencyKind::BuildTarget,
-        "editor",
-        "editor");
+        expectedTargetPlatform,
+        expectedTargetPlatform);
 
     return checkedAsset && checkedMeta && checkedImporterVersion && checkedBuildTarget;
 }
@@ -3788,7 +4035,18 @@ std::optional<NLS::Core::Assets::AssetMeta> AssetDatabaseFacade::LoadMetaForPath
     const auto* record = FindRecordByEditorAssetPath(assetPath);
     if (!record)
         return std::nullopt;
-    return NLS::Core::Assets::AssetMeta::Load(record->metaPath);
+    auto meta = NLS::Core::Assets::AssetMeta::Load(record->metaPath);
+    if (meta.has_value())
+        return meta;
+    if (!record->readOnly)
+        return std::nullopt;
+
+    NLS::Core::Assets::AssetMeta readOnlyMeta;
+    readOnlyMeta.id = record->id;
+    readOnlyMeta.importerId = record->importerId;
+    readOnlyMeta.importerVersion = record->importerVersion;
+    readOnlyMeta.assetType = record->assetType;
+    return readOnlyMeta;
 }
 
 bool AssetDatabaseFacade::SaveMetaForPath(
@@ -4154,6 +4412,108 @@ bool AssetDatabaseFacade::RefreshSingle(
         return true;
     }
 
+    if (record->assetType == NLS::Core::Assets::AssetType::Material ||
+        record->assetType == NLS::Core::Assets::AssetType::Texture)
+    {
+        const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath);
+        const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+        const auto editorAssetPath = ToEditorAssetPath(absolutePath);
+        const auto editorMetaPath = ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+
+        if (artifactRoot.empty() ||
+            stagingRoot.empty() ||
+            !CanSaveArtifactManifestForAssetPath(absolutePath))
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-native-artifact-manifest-unwritable",
+                GetArtifactManifestPathForAssetPath(absolutePath),
+                "Imported native asset artifact manifest cannot be written.");
+            return false;
+        }
+
+        std::optional<NLS::Core::Assets::ArtifactManifest> previousManifest;
+        {
+            std::lock_guard manifestLock(m_manifestMutex);
+            const auto& manifests = ManifestsBySource();
+            const auto previous = manifests.find(record->id);
+            if (previous != manifests.end())
+                previousManifest = previous->second;
+        }
+
+        ImportJobId job = existingJob;
+        if (progressTracker && !job.IsValid())
+            job = progressTracker->BeginJob(meta->id, editorAssetPath, "editor", 1u);
+        if (progressTracker && job.IsValid())
+            progressTracker->ReportProgress(job, ImportPhase::SourceParse, 0.05, "Importing native asset source");
+
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
+        ArtifactRootRollback artifactRollback(artifactRoot);
+        if (!artifactRollback.Prepare())
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-native-artifact-rollback-prepare-failed",
+                artifactRoot,
+                "Previous imported native asset artifact root could not be prepared for rollback.");
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        auto manifest = record->assetType == NLS::Core::Assets::AssetType::Texture
+            ? ImportStandaloneTextureArtifact(
+                *record,
+                *meta,
+                absolutePath,
+                editorAssetPath,
+                editorMetaPath,
+                artifactRoot,
+                stagingRoot,
+                std::move(previousManifest),
+                m_diagnostics)
+            : ImportStandaloneMaterialArtifact(
+                *record,
+                *meta,
+                absolutePath,
+                editorAssetPath,
+                editorMetaPath,
+                artifactRoot,
+                stagingRoot,
+                std::move(previousManifest),
+                m_diagnostics);
+        if (!manifest.has_value())
+        {
+            std::error_code restoreError;
+            if (!artifactRollback.Restore(&restoreError))
+                ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, restoreError);
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        if (!SaveArtifactManifestForAssetPath(absolutePath, *manifest))
+        {
+            std::error_code restoreError;
+            if (!artifactRollback.Restore(&restoreError))
+                ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, restoreError);
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-native-artifact-manifest-write-failed",
+                GetArtifactManifestPathForAssetPath(absolutePath),
+                "Imported native asset artifact manifest could not be written.");
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        AddArtifactManifest(std::move(*manifest));
+        artifactRollback.Commit();
+        if (progressTracker && job.IsValid())
+            progressTracker->FinishJob(job, ImportJobTerminalStatus::Succeeded, {});
+        return true;
+    }
+
     if (record->assetType != NLS::Core::Assets::AssetType::ModelScene)
         return true;
 
@@ -4473,7 +4833,9 @@ void AssetDatabaseFacade::LoadPersistedArtifactManifests()
             continue;
         }
 
-        auto manifest = databaseIt->second.BuildManifestForSource(record.id, "editor");
+        auto manifest = databaseIt->second.BuildManifestForSource(
+            record.id,
+            EditorManifestTargetPlatformForAssetType(record.assetType));
         if (!manifest.has_value())
             continue;
 
@@ -4817,13 +5179,33 @@ void AssetDatabaseFacade::RebuildPathIndexes()
         if (editorAssetPath.empty())
             continue;
 
-        if (m_idByEditorPath.find(editorAssetPath) != m_idByEditorPath.end())
+        auto existing = m_idByEditorPath.find(editorAssetPath);
+        if (existing != m_idByEditorPath.end())
         {
-            AddDiagnostic(
-                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
-                "assetdatabase-editor-path-alias",
-                record.absolutePath,
-                "Multiple mounted asset roots produced the same editor asset path.");
+            const auto* existingRecord = m_sourceDatabase.FindById(existing->second);
+            if (existingRecord != nullptr &&
+                existingRecord->readOnly &&
+                !record.readOnly &&
+                IsProjectOverrideAllowedForReadOnlyAlias(editorAssetPath))
+            {
+                m_editorPathById.erase(existingRecord->id);
+                existing->second = record.id;
+                m_editorPathById[record.id] = editorAssetPath;
+            }
+            else if (existingRecord != nullptr &&
+                !existingRecord->readOnly &&
+                record.readOnly &&
+                IsProjectOverrideAllowedForReadOnlyAlias(editorAssetPath))
+            {
+            }
+            else if (!record.readOnly || existingRecord == nullptr || !existingRecord->readOnly)
+            {
+                AddDiagnostic(
+                    NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                    "assetdatabase-editor-path-alias",
+                    record.absolutePath,
+                    "Multiple mounted asset roots produced the same editor asset path.");
+            }
             continue;
         }
 

@@ -56,7 +56,7 @@ struct TextureImporterSettings
     std::string textureType = "default";
     bool srgbTexture = true;
     bool alphaIsTransparency = false;
-    bool mipmapEnabled = false;
+    bool mipmapEnabled = true;
     std::string wrapMode = "repeat";
     std::string filterMode = "bilinear";
     uint32_t maxTextureSize = 2048u;

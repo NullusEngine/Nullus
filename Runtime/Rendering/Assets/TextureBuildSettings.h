@@ -26,7 +26,7 @@ struct TextureImportSettingsSnapshot
     std::string textureType = "default";
     bool srgbTexture = true;
     bool alphaIsTransparency = false;
-    bool mipmapEnabled = false;
+    bool mipmapEnabled = true;
     uint32_t maxTextureSize = 2048u;
     std::string resizePolicy = "keep";
     std::string compressionIntent = "default";
@@ -62,7 +62,7 @@ struct TextureBuildSettings
     std::string targetPlatform;
     std::string textureIntent;
     RHI::TextureFormat resolvedFormat = RHI::TextureFormat::RGBA8;
-    bool mipmapEnabled = false;
+    bool mipmapEnabled = true;
     uint32_t maxTextureSize = 0u;
     std::string resizePolicy;
     RHI::TextureColorSpace colorSpace = RHI::TextureColorSpace::Linear;

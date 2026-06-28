@@ -15,7 +15,7 @@ namespace NLS::Core::Assets
 namespace
 {
 constexpr const char* kArtifactDatabaseSchema = "Nullus.ArtifactDB.LMDB";
-constexpr const char* kArtifactDatabaseVersion = "4";
+constexpr const char* kArtifactDatabaseVersion = "5";
 constexpr const char* kMetaDatabaseName = "meta";
 constexpr const char* kManifestDatabaseName = "manifest";
 constexpr const char* kRecordsDatabaseName = "records";
@@ -283,6 +283,7 @@ std::string EncodeRecord(const ArtifactDatabaseRecord& record)
 {
     std::ostringstream output;
     AppendField(output, record.sourceAssetId.ToString()); output << '\t';
+    AppendField(output, record.artifactSourceAssetId.ToString()); output << '\t';
     AppendField(output, record.sourcePath); output << '\t';
     AppendField(output, record.subAssetKey); output << '\t';
     output << ToInt(record.artifactType) << '\t';
@@ -302,31 +303,33 @@ std::string EncodeRecord(const ArtifactDatabaseRecord& record)
 std::optional<ArtifactDatabaseRecord> DecodeRecord(const std::string& value)
 {
     const auto fields = SplitTabLine(value);
-    if (fields.size() != 14u)
+    if (fields.size() != 15u)
         return std::nullopt;
 
-    const auto guid = NLS::Guid::TryParse(fields[0]);
-    if (!guid.has_value())
+    const auto sourceGuid = NLS::Guid::TryParse(fields[0]);
+    const auto artifactSourceGuid = NLS::Guid::TryParse(fields[1]);
+    if (!sourceGuid.has_value() || !artifactSourceGuid.has_value())
         return std::nullopt;
-    const auto dependencyCount = TryParseSizeStrict(fields[12]);
+    const auto dependencyCount = TryParseSizeStrict(fields[13]);
     if (!dependencyCount.has_value())
         return std::nullopt;
 
     ArtifactDatabaseRecord record;
-    record.sourceAssetId = AssetId(*guid);
-    record.sourcePath = fields[1];
-    record.subAssetKey = fields[2];
-    record.artifactType = ToArtifactType(fields[3]);
-    record.loaderId = fields[4];
-    record.targetPlatform = fields[5];
-    record.artifactPath = fields[6];
-    record.contentHash = fields[7];
-    record.displayName = fields[8];
-    record.importerId = fields[9];
-    record.importerVersion = ParseU32(fields[10]);
-    record.primarySubAssetKey = fields[11];
+    record.sourceAssetId = AssetId(*sourceGuid);
+    record.artifactSourceAssetId = AssetId(*artifactSourceGuid);
+    record.sourcePath = fields[2];
+    record.subAssetKey = fields[3];
+    record.artifactType = ToArtifactType(fields[4]);
+    record.loaderId = fields[5];
+    record.targetPlatform = fields[6];
+    record.artifactPath = fields[7];
+    record.contentHash = fields[8];
+    record.displayName = fields[9];
+    record.importerId = fields[10];
+    record.importerVersion = ParseU32(fields[11]);
+    record.primarySubAssetKey = fields[12];
     record.dependencyCount = *dependencyCount;
-    record.status = ToStatus(fields[13]);
+    record.status = ToStatus(fields[14]);
     return record;
 }
 
@@ -512,6 +515,7 @@ void ArtifactDatabase::UpsertManifest(
 
         ArtifactDatabaseRecord record;
         record.sourceAssetId = manifest.sourceAssetId;
+        record.artifactSourceAssetId = artifact.sourceAssetId.IsValid() ? artifact.sourceAssetId : manifest.sourceAssetId;
         record.sourcePath = m_manifestHeadersBySourceTarget[sourceTargetKey].sourcePath;
         record.subAssetKey = artifact.subAssetKey;
         record.artifactType = artifact.artifactType;
@@ -576,7 +580,9 @@ std::optional<ArtifactManifest> ArtifactDatabase::BuildManifestForSource(
             continue;
 
         ImportedArtifact artifact;
-        artifact.sourceAssetId = record->sourceAssetId;
+        artifact.sourceAssetId = record->artifactSourceAssetId.IsValid()
+            ? record->artifactSourceAssetId
+            : record->sourceAssetId;
         artifact.subAssetKey = record->subAssetKey;
         artifact.artifactType = record->artifactType;
         artifact.loaderId = record->loaderId;

@@ -5,6 +5,7 @@
 #include "Assets/AssetId.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/EditorAssetDragDropBridge.h"
+#include "Assets/ImportedPrefabRendererDependencyTemplates.h"
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/NativeArtifactContainer.h"
@@ -672,6 +673,351 @@ TEST(AssetPrefabPipelineTests, ImportPrefabSourceRebuildsResolvedAssetsFromExter
     EXPECT_TRUE(result.artifact.resolvedAssets.front().artifactPath.empty());
 }
 
+TEST(AssetPrefabPipelineTests, ImportPrefabSourceDoesNotResolveLegacyArtifactPathHints)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto prefabId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("13131313-1313-4313-8313-131313131313"));
+    const auto modelAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("14141414-1414-4414-8414-141414141414"));
+    const std::string subAssetKey = "mesh:mesh/4/primitive/0";
+    const std::string currentArtifactPath =
+        LibraryArtifactPath("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899");
+    const std::string legacyArtifactPath =
+        "D:/VSProject/Nullus/TestProject/Library/Artifacts/" +
+        modelAssetId.GetGuid().ToString() +
+        "/meshes/mesh%3Amesh%2F4%2Fprimitive%2F0.nmesh";
+
+    ObjectGraphDocument document;
+    document.format = "Nullus.ObjectGraph.Prefab";
+    document.version = 1;
+    document.documentId = NLS::Guid::NewDeterministic("LegacyArtifactPathHint.Document");
+    document.root = ObjectId(NLS::Guid::NewDeterministic("LegacyArtifactPathHint.Root"));
+    document.objects.push_back({
+        document.root,
+        "NLS::Engine::Components::MeshFilter",
+        "MeshFilter",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"mesh", MakeObjectReference(modelAssetId, legacyArtifactPath)}
+        },
+        MakeLocalIdentifierInFile(document.root)
+    });
+
+    std::vector<NLS::Engine::Assets::PrefabResolvedAsset> existingResolvedAssets;
+    existingResolvedAssets.push_back({
+        modelAssetId,
+        "Mesh",
+        subAssetKey,
+        currentArtifactPath
+    });
+
+    const auto result = NLS::Engine::Assets::ImportPrefabArtifact(
+        ObjectGraphWriter::Write(document),
+        prefabId,
+        std::move(existingResolvedAssets));
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    ASSERT_EQ(result.artifact.resolvedAssets.size(), 1u);
+    EXPECT_EQ(result.artifact.resolvedAssets.front().assetId, modelAssetId);
+    EXPECT_EQ(result.artifact.resolvedAssets.front().expectedType, "Mesh");
+    EXPECT_EQ(result.artifact.resolvedAssets.front().subAssetKey, legacyArtifactPath);
+    EXPECT_TRUE(result.artifact.resolvedAssets.front().artifactPath.empty())
+        << "Legacy Library/Artifacts/<guid>/<typed-dir>/<escaped-subAssetKey>.<n*> paths "
+           "must not be treated as authoritative sub-asset hints.";
+}
+
+TEST(AssetPrefabPipelineTests, ImportPrefabSourceResolvesStaleContentArtifactPathThroughLocalFileId)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto prefabId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("18181818-1818-4818-8818-181818181818"));
+    const auto modelAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("19191919-1919-4919-8919-191919191919"));
+    const std::string subAssetKey = "mesh:mesh/62/primitive/0";
+    const std::string staleArtifactPath =
+        LibraryArtifactPath("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+    const std::string currentArtifactPath =
+        LibraryArtifactPath("ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100");
+
+    ObjectGraphDocument document;
+    document.format = "Nullus.ObjectGraph.Prefab";
+    document.version = 1;
+    document.documentId = NLS::Guid::NewDeterministic("StaleContentArtifactPath.Document");
+    document.root = ObjectId(NLS::Guid::NewDeterministic("StaleContentArtifactPath.Root"));
+    document.objects.push_back({
+        document.root,
+        "NLS::Engine::Components::MeshFilter",
+        "MeshFilter",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"mesh", PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+                AssetId(modelAssetId.GetGuid()),
+                MakeLocalIdentifierInFile(modelAssetId.GetGuid(), subAssetKey),
+                staleArtifactPath))}
+        },
+        MakeLocalIdentifierInFile(document.root)
+    });
+
+    std::vector<NLS::Engine::Assets::PrefabResolvedAsset> existingResolvedAssets;
+    existingResolvedAssets.push_back({
+        modelAssetId,
+        "Mesh",
+        subAssetKey,
+        currentArtifactPath
+    });
+
+    const auto result = NLS::Engine::Assets::ImportPrefabArtifact(
+        ObjectGraphWriter::Write(document),
+        prefabId,
+        std::move(existingResolvedAssets));
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    ASSERT_EQ(result.artifact.resolvedAssets.size(), 1u);
+    EXPECT_EQ(result.artifact.resolvedAssets.front().assetId, modelAssetId);
+    EXPECT_EQ(result.artifact.resolvedAssets.front().expectedType, "Mesh");
+    EXPECT_EQ(result.artifact.resolvedAssets.front().subAssetKey, subAssetKey);
+    EXPECT_EQ(result.artifact.resolvedAssets.front().artifactPath, currentArtifactPath);
+}
+
+TEST(AssetPrefabPipelineTests, ImportPrefabSourceIgnoresNonLegacyArtifactPathSubAssetKeyLookalikes)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto prefabId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("16161616-1616-4616-8616-161616161616"));
+    const auto modelAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("17171717-1717-4717-8717-171717171717"));
+    const std::string subAssetKey = "mesh:mesh/4/primitive/0";
+    const std::string lookalikePath =
+        "D:/VSProject/Nullus/TestProject/Assets/UserFiles/Library/Artifacts/" +
+        modelAssetId.GetGuid().ToString() +
+        "/meshes/mesh%3Amesh%2F4%2Fprimitive%2F0.nmesh";
+
+    ObjectGraphDocument document;
+    document.format = "Nullus.ObjectGraph.Prefab";
+    document.version = 1;
+    document.documentId = NLS::Guid::NewDeterministic("LegacyArtifactPathLookalike.Document");
+    document.root = ObjectId(NLS::Guid::NewDeterministic("LegacyArtifactPathLookalike.Root"));
+    document.objects.push_back({
+        document.root,
+        "NLS::Engine::Components::MeshFilter",
+        "MeshFilter",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"mesh", MakeObjectReference(modelAssetId, lookalikePath)}
+        },
+        MakeLocalIdentifierInFile(document.root)
+    });
+
+    std::vector<NLS::Engine::Assets::PrefabResolvedAsset> existingResolvedAssets;
+    existingResolvedAssets.push_back({
+        modelAssetId,
+        "Mesh",
+        subAssetKey,
+        LibraryArtifactPath("ddeeff00112233445566778899aabbccddeeff00112233445566778899aabbcc")
+    });
+
+    const auto result = NLS::Engine::Assets::ImportPrefabArtifact(
+        ObjectGraphWriter::Write(document),
+        prefabId,
+        std::move(existingResolvedAssets));
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    ASSERT_EQ(result.artifact.resolvedAssets.size(), 1u);
+    EXPECT_TRUE(result.artifact.resolvedAssets.front().artifactPath.empty())
+        << "Only old Library/Artifacts/<guid>/<typed-dir>/<escaped-subAssetKey>.<legacy-ext> paths "
+           "may be treated as sub-asset key hints.";
+}
+
+TEST(AssetPrefabPipelineTests, RendererDependencyTemplatesRejectLegacyArtifactPathHints)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("15151515-1515-4515-8515-151515151515"));
+    const std::string meshSubAssetKey = "mesh:mesh/4/primitive/0";
+    const std::string materialSubAssetKey = "material:material/22";
+    const std::string meshArtifactPath =
+        LibraryArtifactPath("bbccddeeff00112233445566778899aabbccddeeff00112233445566778899aa");
+    const std::string materialArtifactPath =
+        LibraryArtifactPath("ccddeeff00112233445566778899aabbccddeeff00112233445566778899aabb");
+    const std::string legacyMeshPath =
+        "D:/VSProject/Nullus/TestProject/Library/Artifacts/" +
+        sourceAssetId.GetGuid().ToString() +
+        "/meshes/mesh%3Amesh%2F4%2Fprimitive%2F0.nmesh";
+    const std::string legacyMaterialPath =
+        "D:/VSProject/Nullus/TestProject/Library/Artifacts/" +
+        sourceAssetId.GetGuid().ToString() +
+        "/materials/material%3Amaterial%2F22.nmat";
+
+    NLS::Engine::Assets::PrefabArtifact prefab;
+    prefab.assetId = sourceAssetId;
+    prefab.generatedModelPrefab = true;
+    prefab.graph.format = "Nullus.ObjectGraph.Prefab";
+    prefab.graph.version = 1;
+    prefab.graph.documentId = NLS::Guid::NewDeterministic("LegacyRendererDependencyHint.Document");
+    prefab.graph.root = ObjectId(NLS::Guid::NewDeterministic("LegacyRendererDependencyHint.Root"));
+    const auto meshFilterId = ObjectId(NLS::Guid::NewDeterministic("LegacyRendererDependencyHint.MeshFilter"));
+    const auto meshRendererId = ObjectId(NLS::Guid::NewDeterministic("LegacyRendererDependencyHint.MeshRenderer"));
+
+    prefab.graph.objects.push_back({
+        prefab.graph.root,
+        "NLS::Engine::GameObject",
+        "Legacy Renderer Root",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"name", PropertyValue::String("Legacy Renderer Root")},
+            {"tag", PropertyValue::String("Prefab")},
+            {"active", PropertyValue::Bool(true)},
+            {"components", PropertyValue::Array({
+                PropertyValue::OwnedReference(meshFilterId),
+                PropertyValue::OwnedReference(meshRendererId)
+            })},
+            {"children", PropertyValue::Array({})},
+            {"parent", PropertyValue::Null()}
+        },
+        MakeLocalIdentifierInFile(prefab.graph.root)
+    });
+    prefab.graph.objects.push_back({
+        meshFilterId,
+        "NLS::Engine::Components::MeshFilter",
+        "Legacy MeshFilter",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"mesh", MakeObjectReference(sourceAssetId, legacyMeshPath)}
+        },
+        MakeLocalIdentifierInFile(meshFilterId)
+    });
+    prefab.graph.objects.push_back({
+        meshRendererId,
+        "NLS::Engine::Components::MeshRenderer",
+        "Legacy MeshRenderer",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"materials", PropertyValue::Array({
+                MakeObjectReference(sourceAssetId, legacyMaterialPath)
+            })}
+        },
+        MakeLocalIdentifierInFile(meshRendererId)
+    });
+    prefab.resolvedAssets.push_back({
+        sourceAssetId,
+        "Mesh",
+        meshSubAssetKey,
+        meshArtifactPath
+    });
+    prefab.resolvedAssets.push_back({
+        sourceAssetId,
+        "Material",
+        materialSubAssetKey,
+        materialArtifactPath
+    });
+
+    const auto templates = NLS::Editor::Assets::BuildImportedPrefabRendererDependencyTemplates(prefab);
+
+    EXPECT_TRUE(templates.empty())
+        << "Renderer dependency templates must not resolve stale .nmesh/.nmat artifact path hints; "
+           "prefabs need current content-addressed artifact paths or stable local identifiers.";
+}
+
+TEST(AssetPrefabPipelineTests, RendererDependencyTemplatesIgnoreNonLegacyArtifactPathSubAssetKeyLookalikes)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("18181818-1818-4818-8818-181818181818"));
+    const std::string meshSubAssetKey = "mesh:mesh/4/primitive/0";
+    const std::string materialSubAssetKey = "material:material/22";
+    const std::string lookalikeMeshPath =
+        "D:/VSProject/Nullus/TestProject/Assets/UserFiles/Library/Artifacts/" +
+        sourceAssetId.GetGuid().ToString() +
+        "/meshes/mesh%3Amesh%2F4%2Fprimitive%2F0.nmesh";
+    const std::string lookalikeMaterialPath =
+        "D:/VSProject/Nullus/TestProject/Assets/UserFiles/Library/Artifacts/" +
+        sourceAssetId.GetGuid().ToString() +
+        "/materials/material%3Amaterial%2F22.nmat";
+
+    NLS::Engine::Assets::PrefabArtifact prefab;
+    prefab.assetId = sourceAssetId;
+    prefab.generatedModelPrefab = true;
+    prefab.graph.format = "Nullus.ObjectGraph.Prefab";
+    prefab.graph.version = 1;
+    prefab.graph.documentId = NLS::Guid::NewDeterministic("LegacyRendererDependencyLookalike.Document");
+    prefab.graph.root = ObjectId(NLS::Guid::NewDeterministic("LegacyRendererDependencyLookalike.Root"));
+    const auto meshFilterId = ObjectId(NLS::Guid::NewDeterministic("LegacyRendererDependencyLookalike.MeshFilter"));
+    const auto meshRendererId = ObjectId(NLS::Guid::NewDeterministic("LegacyRendererDependencyLookalike.MeshRenderer"));
+
+    prefab.graph.objects.push_back({
+        prefab.graph.root,
+        "NLS::Engine::GameObject",
+        "Lookalike Renderer Root",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"name", PropertyValue::String("Lookalike Renderer Root")},
+            {"tag", PropertyValue::String("Prefab")},
+            {"active", PropertyValue::Bool(true)},
+            {"components", PropertyValue::Array({
+                PropertyValue::OwnedReference(meshFilterId),
+                PropertyValue::OwnedReference(meshRendererId)
+            })},
+            {"children", PropertyValue::Array({})},
+            {"parent", PropertyValue::Null()}
+        },
+        MakeLocalIdentifierInFile(prefab.graph.root)
+    });
+    prefab.graph.objects.push_back({
+        meshFilterId,
+        "NLS::Engine::Components::MeshFilter",
+        "Lookalike MeshFilter",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"mesh", MakeObjectReference(sourceAssetId, lookalikeMeshPath)}
+        },
+        MakeLocalIdentifierInFile(meshFilterId)
+    });
+    prefab.graph.objects.push_back({
+        meshRendererId,
+        "NLS::Engine::Components::MeshRenderer",
+        "Lookalike MeshRenderer",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"materials", PropertyValue::Array({
+                MakeObjectReference(sourceAssetId, lookalikeMaterialPath)
+            })}
+        },
+        MakeLocalIdentifierInFile(meshRendererId)
+    });
+    prefab.resolvedAssets.push_back({
+        sourceAssetId,
+        "Mesh",
+        meshSubAssetKey,
+        LibraryArtifactPath("eff00112233445566778899aabbccddeeff00112233445566778899aabbccdd")
+    });
+    prefab.resolvedAssets.push_back({
+        sourceAssetId,
+        "Material",
+        materialSubAssetKey,
+        LibraryArtifactPath("ff00112233445566778899aabbccddeeff00112233445566778899aabbccddee")
+    });
+
+    const auto templates = NLS::Editor::Assets::BuildImportedPrefabRendererDependencyTemplates(prefab);
+
+    EXPECT_TRUE(templates.empty())
+        << "Arbitrary filenames that decode to sub-asset-looking text must not bind renderer dependencies.";
+}
+
 TEST(AssetPrefabPipelineTests, InstantiatesPrefabArtifactWithStableSourceToInstanceMap)
 {
     NLS::Engine::GameObject root("Crate", "Prop");
@@ -1156,6 +1502,51 @@ TEST(AssetPrefabPipelineTests, ExtractsNestedPrefabDependenciesAndValidatesCycle
     EXPECT_EQ(
         missingDiagnostics.GetItems()[0].GetCode(),
         NLS::Engine::Serialize::SerializationDiagnosticCode::MissingAsset);
+}
+
+TEST(AssetPrefabPipelineTests, ExtractsNestedPrefabDependenciesFromLegacyArtifactPathHints)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto parentId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("19191919-1919-4919-8919-191919191919"));
+    const auto childId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a"));
+    const std::string childSubAssetKey = "prefab:Child";
+    const std::string legacyChildPath =
+        "D:/VSProject/Nullus/TestProject/Library/Artifacts/" +
+        childId.GetGuid().ToString() +
+        "/prefabs/prefab%3AChild.nprefab";
+
+    NLS::Engine::Assets::PrefabArtifact parent;
+    parent.assetId = parentId;
+    parent.graph.format = "Nullus.ObjectGraph.Prefab";
+    parent.graph.version = 1;
+    parent.graph.documentId = NLS::Guid::NewDeterministic("LegacyNestedPrefab.Document");
+    parent.graph.root = ObjectId(NLS::Guid::NewDeterministic("LegacyNestedPrefab.Root"));
+    parent.graph.objects.push_back({
+        parent.graph.root,
+        "NLS::Engine::GameObject",
+        "ParentPrefab",
+        "",
+        ObjectRecordState::Alive,
+        {
+            {"name", PropertyValue::String("ParentPrefab")},
+            {"nestedPrefab", MakeObjectReference(childId, legacyChildPath)}
+        },
+        MakeLocalIdentifierInFile(parent.graph.root)
+    });
+    parent.resolvedAssets.push_back({
+        childId,
+        "Prefab",
+        childSubAssetKey,
+        LibraryArtifactPath("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+    });
+
+    const auto dependencies = NLS::Engine::Assets::ExtractNestedPrefabDependencies(parent);
+
+    ASSERT_EQ(dependencies.size(), 1u);
+    EXPECT_EQ(dependencies.front(), childId);
 }
 
 TEST(AssetPrefabPipelineTests, BuildsGeneratedModelPrefabHierarchyWithRendererAssetReferences)
@@ -1832,19 +2223,16 @@ TEST(AssetPrefabPipelineTests, FailedPreparedPrefabLoadDoesNotEnterHotOrDiskCach
     ASSERT_FALSE(guid.empty());
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 
-    const auto manifestPath = root / "Library" / "Artifacts" / guid / "manifest.json";
-    std::ifstream manifestInput(manifestPath, std::ios::binary);
-    ASSERT_TRUE(manifestInput.is_open());
-    auto manifestJson = nlohmann::json::parse(manifestInput, nullptr, false);
-    ASSERT_TRUE(manifestJson.is_object());
-
     std::filesystem::path prefabPath;
-    for (const auto& subAsset : manifestJson.value("subAssets", nlohmann::json::array()))
+    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
+    ASSERT_TRUE(artifactDatabase.Load(root / "Library" / "ArtifactDB"));
+    for (const auto& record : artifactDatabase.GetRecords())
     {
-        if (subAsset.value("artifactType", std::string {}) == "prefab" &&
-            subAsset.value("subAssetKey", std::string {}) == kPrefabSubAssetKey)
+        if (record.artifactType == NLS::Core::Assets::ArtifactType::Prefab &&
+            record.sourceAssetId == assetId &&
+            record.subAssetKey == kPrefabSubAssetKey)
         {
-            prefabPath = subAsset.value("artifactPath", std::string {});
+            prefabPath = root / record.artifactPath;
             break;
         }
     }
@@ -1921,27 +2309,6 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabMappingDependencyFingerprintReusesS
     textureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
         NLS::Core::Assets::AssetType::Texture);
     ASSERT_TRUE(textureMeta.Save(root / "Assets" / "Textures" / "SharedWood.png.meta"));
-    WriteTextFile(
-        root / "Library" / "Artifacts" / textureAssetId.ToString() / "manifest.json",
-        "{\n"
-        "  \"sourceAssetId\": \"13131313-1313-4313-8313-131313131313\",\n"
-        "  \"importerId\": \"texture\",\n"
-        "  \"importerVersion\": 1,\n"
-        "  \"targetPlatform\": \"editor\",\n"
-        "  \"primarySubAssetKey\": \"texture:SharedWood\",\n"
-        "  \"subAssets\": [\n"
-        "    {\n"
-        "      \"sourceAssetId\": \"13131313-1313-4313-8313-131313131313\",\n"
-        "      \"subAssetKey\": \"texture:SharedWood\",\n"
-        "      \"artifactType\": \"texture\",\n"
-        "      \"loaderId\": \"texture\",\n"
-        "      \"targetPlatform\": \"editor\",\n"
-        "      \"artifactPath\": \"texture.ntex\",\n"
-        "      \"contentHash\": \"hash:wood\"\n"
-        "    }\n"
-        "  ],\n"
-        "  \"dependencies\": []\n"
-        "}\n");
     NLS::Core::Assets::ArtifactManifest textureManifest;
     textureManifest.sourceAssetId = textureAssetId;
     textureManifest.importerId = "texture";
@@ -1955,7 +2322,7 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabMappingDependencyFingerprintReusesS
         NLS::Core::Assets::ArtifactType::Texture,
         "texture",
         "editor",
-        "Library/Artifacts/13131313-1313-4313-8313-131313131313/texture.ntex",
+        LibraryArtifactPath("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
         "hash:wood",
         "SharedWood"
     });
@@ -1964,7 +2331,12 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabMappingDependencyFingerprintReusesS
         textureManifest,
         "Assets/Textures/SharedWood.png",
         NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
-    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB" / "index.tsv"));
+    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
+    {
+        NLS::Core::Assets::ArtifactDatabase loadedDatabase;
+        ASSERT_TRUE(loadedDatabase.Load(root / "Library" / "ArtifactDB"));
+        ASSERT_FALSE(loadedDatabase.GetRecords().empty());
+    }
 
     NLS::Editor::Assets::ClearModelTextureMappingDependencyFingerprintCacheForTesting();
     const auto dependencyValue =
@@ -2006,7 +2378,14 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabMappingDependencyFingerprintReusesS
         textureManifest,
         "Assets/Textures/SharedWood.png",
         NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
-    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB" / "index.tsv"));
+    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
+    {
+        NLS::Core::Assets::ArtifactDatabase loadedDatabase;
+        ASSERT_TRUE(loadedDatabase.Load(root / "Library" / "ArtifactDB"));
+        const auto* record = loadedDatabase.Find(textureAssetId, "texture:SharedWood", "editor");
+        ASSERT_NE(record, nullptr);
+        ASSERT_EQ(record->contentHash, "hash:wood-updated");
+    }
     const auto third = NLS::Editor::Assets::ComputeModelTextureMappingDependencyFingerprintForTesting(
         root,
         dependencyValue,
@@ -2038,31 +2417,36 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathMappingFallbackTracksText
         NLS::Core::Assets::AssetType::Texture);
     ASSERT_TRUE(textureMeta.Save(root / "Assets" / "Textures" / "ExactBaseColor.png.meta"));
 
-    const auto manifestPath = root / "Library" / "Artifacts" / textureAssetId.ToString() / "manifest.json";
-    WriteTextFile(
-        manifestPath,
-        "{\n"
-        "  \"sourceAssetId\": \"15151515-1515-4515-8515-151515151515\",\n"
-        "  \"importerId\": \"texture\",\n"
-        "  \"importerVersion\": 1,\n"
-        "  \"targetPlatform\": \"editor\",\n"
-        "  \"primarySubAssetKey\": \"texture:main\",\n"
-        "  \"subAssets\": [\n"
-        "    {\n"
-        "      \"sourceAssetId\": \"15151515-1515-4515-8515-151515151515\",\n"
-        "      \"subAssetKey\": \"texture:main\",\n"
-        "      \"artifactType\": \"texture\",\n"
-        "      \"loaderId\": \"texture\",\n"
-        "      \"targetPlatform\": \"editor\",\n"
-        "      \"artifactPath\": \"Library/Artifacts/15151515-1515-4515-8515-151515151515/texture.ntex\",\n"
-        "      \"contentHash\": \"hash:exact-v1\"\n"
-        "    }\n"
-        "  ],\n"
-        "  \"dependencies\": []\n"
-        "}\n");
-
+    NLS::Core::Assets::ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureAssetId;
+    textureManifest.importerId = "texture";
+    textureManifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back({
+        textureAssetId,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        "editor",
+        LibraryArtifactPath("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+        "hash:exact-v1",
+        "ExactBaseColor"
+    });
     NLS::Core::Assets::ArtifactDatabase artifactDatabase;
-    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB" / "index.tsv"));
+    artifactDatabase.UpsertManifest(
+        textureManifest,
+        "Assets/Textures/ExactBaseColor.png",
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
+    {
+        NLS::Core::Assets::ArtifactDatabase loadedDatabase;
+        ASSERT_TRUE(loadedDatabase.Load(root / "Library" / "ArtifactDB"));
+        const auto* record = loadedDatabase.Find(textureAssetId, "texture:main", "editor");
+        ASSERT_NE(record, nullptr);
+        ASSERT_EQ(record->contentHash, "hash:exact-v1");
+    }
 
     NLS::Editor::Assets::ClearModelTextureMappingDependencyFingerprintCacheForTesting();
     const auto dependencyValue =
@@ -2078,27 +2462,19 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathMappingFallbackTracksText
     EXPECT_NE(first->find("hash:exact-v1"), std::string::npos);
     EXPECT_EQ(NLS::Editor::Assets::GetModelTextureMappingDependencyFingerprintScanCountForTesting(), 0u);
 
-    WriteTextFile(
-        manifestPath,
-        "{\n"
-        "  \"sourceAssetId\": \"15151515-1515-4515-8515-151515151515\",\n"
-        "  \"importerId\": \"texture\",\n"
-        "  \"importerVersion\": 1,\n"
-        "  \"targetPlatform\": \"editor\",\n"
-        "  \"primarySubAssetKey\": \"texture:main\",\n"
-        "  \"subAssets\": [\n"
-        "    {\n"
-        "      \"sourceAssetId\": \"15151515-1515-4515-8515-151515151515\",\n"
-        "      \"subAssetKey\": \"texture:main\",\n"
-        "      \"artifactType\": \"texture\",\n"
-        "      \"loaderId\": \"texture\",\n"
-        "      \"targetPlatform\": \"editor\",\n"
-        "      \"artifactPath\": \"Library/Artifacts/15151515-1515-4515-8515-151515151515/texture.ntex\",\n"
-        "      \"contentHash\": \"hash:exact-v2\"\n"
-        "    }\n"
-        "  ],\n"
-        "  \"dependencies\": []\n"
-        "}\n");
+    textureManifest.subAssets.front().contentHash = "hash:exact-v2";
+    artifactDatabase.UpsertManifest(
+        textureManifest,
+        "Assets/Textures/ExactBaseColor.png",
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
+    {
+        NLS::Core::Assets::ArtifactDatabase loadedDatabase;
+        ASSERT_TRUE(loadedDatabase.Load(root / "Library" / "ArtifactDB"));
+        const auto* record = loadedDatabase.Find(textureAssetId, "texture:main", "editor");
+        ASSERT_NE(record, nullptr);
+        ASSERT_EQ(record->contentHash, "hash:exact-v2");
+    }
 
     const auto second = NLS::Editor::Assets::ComputeModelTextureMappingDependencyFingerprintForTesting(
         root,

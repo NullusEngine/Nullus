@@ -14,6 +14,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace NLS::Engine::Assets
 {
@@ -58,20 +59,49 @@ const Serialize::PropertyRecord* FindProperty(
     return nullptr;
 }
 
+bool ResolvedAssetReferencePathMatches(
+    const PrefabResolvedAsset& resolved,
+    const std::string& referenceFilePath)
+{
+    if (referenceFilePath.empty())
+        return resolved.subAssetKey.empty() && resolved.artifactPath.empty();
+
+    if (resolved.subAssetKey == referenceFilePath ||
+        resolved.artifactPath == referenceFilePath)
+    {
+        return true;
+    }
+
+    const auto referencePath = std::filesystem::path(referenceFilePath).lexically_normal();
+    const auto resolvedPath = std::filesystem::path(resolved.artifactPath).lexically_normal();
+    return !resolved.artifactPath.empty() && resolvedPath == referencePath;
+}
+
+bool ResolvedAssetLocalIdentifierMatches(
+    const PrefabResolvedAsset& resolved,
+    const Serialize::ObjectIdentifier& reference)
+{
+    if (resolved.subAssetKey.empty() || reference.localIdentifierInFile == 0)
+        return false;
+
+    return Serialize::MakeLocalIdentifierInFile(
+        reference.guid,
+        resolved.subAssetKey) == reference.localIdentifierInFile;
+}
+
 bool HasResolvedAsset(
     const PrefabArtifact& artifact,
     const Serialize::ObjectIdentifier& reference)
 {
     const auto assetId = NLS::Core::Assets::AssetId(reference.guid);
-    const auto referencePath = std::filesystem::path(reference.filePath).lexically_normal();
     for (const auto& resolved : artifact.resolvedAssets)
     {
-        const auto resolvedPath = std::filesystem::path(resolved.artifactPath).lexically_normal();
-        if (resolved.assetId == assetId &&
-            (reference.filePath.empty() ||
-                resolved.subAssetKey == reference.filePath ||
-                resolved.artifactPath == reference.filePath ||
-                (!resolved.artifactPath.empty() && resolvedPath == referencePath)))
+        if (resolved.assetId != assetId)
+            continue;
+
+        if (reference.filePath.empty() ||
+            ResolvedAssetReferencePathMatches(resolved, reference.filePath) ||
+            ResolvedAssetLocalIdentifierMatches(resolved, reference))
         {
             return true;
         }
@@ -191,11 +221,8 @@ bool ResolvedAssetMatchesReference(
     if (reference.filePath.empty())
         return resolved.subAssetKey.empty() && resolved.artifactPath.empty();
 
-    const auto referencePath = std::filesystem::path(reference.filePath).lexically_normal();
-    const auto resolvedPath = std::filesystem::path(resolved.artifactPath).lexically_normal();
-    return resolved.subAssetKey == reference.filePath ||
-        resolved.artifactPath == reference.filePath ||
-        (!resolved.artifactPath.empty() && resolvedPath == referencePath);
+    return ResolvedAssetReferencePathMatches(resolved, reference.filePath) ||
+        ResolvedAssetLocalIdentifierMatches(resolved, reference);
 }
 
 std::optional<PrefabResolvedAsset> FindExistingResolvedAssetForReference(
@@ -392,8 +419,7 @@ bool IsResolvedPrefabReference(
             return resolved.assetId == NLS::Core::Assets::AssetId(reference.guid) &&
                 resolved.expectedType == "Prefab" &&
                 (reference.filePath.empty() ||
-                    resolved.subAssetKey == reference.filePath ||
-                    resolved.artifactPath == reference.filePath);
+                    ResolvedAssetReferencePathMatches(resolved, reference.filePath));
         });
 }
 
@@ -440,7 +466,8 @@ const PrefabResolvedAsset* FindResolvedAsset(
         if (!reference.filePath.empty())
         {
             if ((resolved.assetId == assetId || resolved.subAssetKey == reference.filePath) &&
-                (resolved.subAssetKey == reference.filePath || resolved.artifactPath == reference.filePath))
+                (ResolvedAssetReferencePathMatches(resolved, reference.filePath) ||
+                    ResolvedAssetLocalIdentifierMatches(resolved, reference)))
             {
                 return &resolved;
             }
@@ -627,6 +654,12 @@ std::vector<Serialize::ObjectIdentifier> CollectPrefabAssetReferences(
     for (auto& assetReference : assetReferences)
         references.push_back(std::move(assetReference.reference));
     return references;
+}
+
+std::string ExtractPrefabAssetReferenceSubAssetKeyHint(const std::string& referencePath)
+{
+    (void)referencePath;
+    return {};
 }
 
 std::vector<PrefabAssetReference> CollectPrefabAssetReferenceRecords(

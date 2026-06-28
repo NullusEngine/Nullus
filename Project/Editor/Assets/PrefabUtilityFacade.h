@@ -323,6 +323,9 @@ public:
         NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
         const NLS::Engine::SceneSystem::Scene& scene,
         const PrefabInstanceRegistry& instanceRegistry) const;
+    void NormalizeSceneDocumentPrefabAssetReferences(
+        NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+        const PrefabInstanceRegistry& instanceRegistry) const;
     PrefabOperationResult RestorePrefabInstancesFromSceneDocument(
         const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
         NLS::Engine::SceneSystem::Scene& scene,

@@ -10,8 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <fstream>
-#include <system_error>
 #include <unordered_map>
 
 namespace NLS::Editor::Assets
@@ -19,129 +17,12 @@ namespace NLS::Editor::Assets
 namespace
 {
 constexpr const char* kProjectStandardPbrShaderPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
-constexpr const char* kProjectShaderLibraryPath = "Assets/Engine/Shaders/NullusShaderLibrary";
 
 struct PreparedPrefabCachePreflightSummary
 {
     size_t attemptedCount = 0u;
     size_t preparedCount = 0u;
 };
-
-bool CopyMissingDirectoryFilesRecursive(
-    const std::filesystem::path& source,
-    const std::filesystem::path& destination)
-{
-    std::error_code error;
-    std::filesystem::create_directories(destination, error);
-    if (error)
-        return false;
-
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(source, error))
-    {
-        if (error)
-            return false;
-
-        const auto relative = entry.path().lexically_relative(source);
-        const auto target = destination / relative;
-        if (entry.is_directory(error))
-        {
-            std::filesystem::create_directories(target, error);
-            if (error)
-                return false;
-            continue;
-        }
-
-        if (!entry.is_regular_file(error))
-            continue;
-
-        if (std::filesystem::exists(target, error))
-        {
-            error.clear();
-            continue;
-        }
-
-        std::filesystem::create_directories(target.parent_path(), error);
-        if (error)
-            return false;
-
-        std::filesystem::copy_file(
-            entry.path(),
-            target,
-            std::filesystem::copy_options::none,
-            error);
-        if (error)
-            return false;
-    }
-
-    return true;
-}
-
-bool EnsureProjectStandardPbrShaderSource(const std::filesystem::path& projectRoot)
-{
-    const auto destination = projectRoot / kProjectStandardPbrShaderPath;
-    auto findBundledSource =
-        [&](const std::filesystem::path& relative) -> std::filesystem::path
-    {
-        std::vector<std::filesystem::path> probes;
-#if defined(NLS_ROOT_DIR)
-        probes.push_back(std::filesystem::path(NLS_ROOT_DIR));
-#endif
-        probes.push_back(std::filesystem::current_path());
-        probes.push_back(std::filesystem::absolute(std::filesystem::path(".")));
-        probes.push_back(projectRoot);
-        for (auto probe : probes)
-        {
-            probe = probe.lexically_normal();
-            const auto directCandidate = probe / relative;
-            if (std::filesystem::exists(directCandidate))
-                return directCandidate;
-
-            while (!probe.empty())
-            {
-                const auto candidate = probe / relative;
-                if (std::filesystem::exists(candidate))
-                    return candidate;
-                const auto parent = probe.parent_path();
-                if (parent == probe)
-                    break;
-                probe = parent;
-            }
-        }
-        return {};
-    };
-
-    const auto appAssetsRoot =
-        std::filesystem::path("App") /
-        "Assets" /
-        "Engine" /
-        "Shaders";
-
-    const auto source = findBundledSource(appAssetsRoot / "ShaderLab" / "StandardPBR.shader");
-    if (!std::filesystem::is_regular_file(source))
-        return false;
-
-    std::error_code error;
-    if (!std::filesystem::exists(destination, error))
-    {
-        std::filesystem::create_directories(destination.parent_path(), error);
-        if (error)
-            return false;
-
-        std::filesystem::copy_file(
-            source,
-            destination,
-            std::filesystem::copy_options::none,
-            error);
-        if (error)
-            return false;
-    }
-
-    const auto libraryDestination = projectRoot / kProjectShaderLibraryPath;
-    const auto librarySource = findBundledSource(appAssetsRoot / "NullusShaderLibrary");
-    if (!std::filesystem::is_directory(librarySource))
-        return false;
-    return CopyMissingDirectoryFilesRecursive(librarySource, libraryDestination);
-}
 
 void LogStartupAssetPreimportProgress(const ImportProgressEvent& event)
 {
@@ -313,21 +194,15 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         return result;
     }
 
-    if (!EnsureProjectStandardPbrShaderSource(options.projectRoot))
+    if (database.AssetPathToGUID(kProjectStandardPbrShaderPath).empty())
     {
         NLS::Core::Assets::AssetDiagnostic diagnostic;
         diagnostic.severity = NLS::Core::Assets::AssetDiagnosticSeverity::Error;
-        diagnostic.code = "startup-standard-pbr-sync-failed";
-        diagnostic.path = options.projectRoot / kProjectStandardPbrShaderPath;
+        diagnostic.code = "startup-standard-pbr-source-missing";
+        diagnostic.path = kProjectStandardPbrShaderPath;
         diagnostic.message =
-            "Startup asset preimport could not synchronize the built-in StandardPBR ShaderLab source and library into the project.";
+            "Startup asset preimport could not find the built-in StandardPBR ShaderLab source in the mounted engine shader root.";
         result.diagnostics.push_back(std::move(diagnostic));
-        result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
-        return result;
-    }
-    if (!database.Refresh())
-    {
-        result.diagnostics = database.GetDiagnostics();
         result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
         return result;
     }

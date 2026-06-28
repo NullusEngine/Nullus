@@ -29,6 +29,7 @@
 #include "Debug/Logger.h"
 #include "Guid.h"
 #include "Image.h"
+#include "Jobs/JobSystem.h"
 #include "Math/Vector4.h"
 
 #include <algorithm>
@@ -337,6 +338,42 @@ public:
 
 private:
     NLS::Render::Context::Driver* m_previousDriver = nullptr;
+};
+
+class ScopedMaterialConversionJobSystem final
+{
+public:
+    explicit ScopedMaterialConversionJobSystem(const uint32_t backgroundWorkerCount = 1u)
+    {
+        NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::Immediate);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        NLS::Base::Jobs::ResetJobSystemForTesting();
+#endif
+
+        NLS::Base::Jobs::JobSystemConfig config;
+        config.workerCount = 0u;
+        config.backgroundWorkerCount = backgroundWorkerCount;
+        m_initialized = NLS::Base::Jobs::InitializeJobSystem(config);
+    }
+
+    ~ScopedMaterialConversionJobSystem()
+    {
+        NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::Immediate);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        NLS::Base::Jobs::ResetJobSystemForTesting();
+#endif
+    }
+
+    [[nodiscard]] bool IsInitialized() const
+    {
+        return m_initialized;
+    }
+
+    ScopedMaterialConversionJobSystem(const ScopedMaterialConversionJobSystem&) = delete;
+    ScopedMaterialConversionJobSystem& operator=(const ScopedMaterialConversionJobSystem&) = delete;
+
+private:
+    bool m_initialized = false;
 };
 
 class TextureLoaderTestAdapter final : public NLS::Render::RHI::RHIAdapter
@@ -693,11 +730,31 @@ void WriteNativeMaterialArtifactFile(
         contents);
 }
 
+void WriteMinimalShaderLabMaterialArtifactFile(
+    const std::filesystem::path& path,
+    const std::string& shaderPath = "Assets/Shaders/AsyncMaterial.shader")
+{
+    WriteNativeMaterialArtifactFile(
+        path,
+        "shaderLabMaterialVersion=1\n"
+        "shader=" + shaderPath + "\n"
+        "surfaceMode=Opaque\n"
+        "alphaMode=Opaque\n"
+        "doubleSided=false\n"
+        "depthWrite=true\n");
+}
+
 std::filesystem::path MaterialArtifactPath(
     const std::filesystem::path& root,
     const std::string& hash = "9ecdfef170d27a0c3492458106af879cd7920bf5392f8461ca7d01b0ced0b2c6")
 {
     return root / "Library" / "Artifacts" / NLS::Core::Assets::BuildArtifactStorageRelativePath(hash);
+}
+
+std::string IndexedArtifactHash(const std::string_view prefix, const size_t index)
+{
+    return NLS::Core::Assets::BuildArtifactStorageFileName(
+        std::string(prefix) + ":" + std::to_string(index));
 }
 
 std::filesystem::path RuntimeMaterialArtifactPath(
@@ -722,6 +779,23 @@ std::string RuntimeArtifactPath(const std::string& hash)
 std::filesystem::path ArtifactPath(const std::filesystem::path& root, const std::string& hash)
 {
     return root / LibraryArtifactPath(hash);
+}
+
+std::filesystem::path TextureArtifactPathForBytes(
+    const std::filesystem::path& root,
+    const std::vector<uint8_t>& bytes)
+{
+    const auto hash = NLS::Core::Assets::BuildArtifactStorageFileName(bytes.data(), bytes.size());
+    return ArtifactPath(root, hash);
+}
+
+std::filesystem::path WriteTextureArtifactBytes(
+    const std::filesystem::path& root,
+    const std::vector<uint8_t>& bytes)
+{
+    const auto artifactPath = TextureArtifactPathForBytes(root, bytes);
+    WriteBinaryFile(artifactPath, bytes);
+    return artifactPath;
 }
 
 std::string ReadNativeArtifactPayloadText(
@@ -1003,7 +1077,7 @@ NLS::Render::Assets::ShaderArtifact MakeShaderArtifact(
             {},
             {},
             "test-vertex",
-            "Library/Artifacts/shader-guid/2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607"
+            LibraryArtifactPath("2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607")
         }
     });
     artifact.stages.push_back({
@@ -1017,7 +1091,7 @@ NLS::Render::Assets::ShaderArtifact MakeShaderArtifact(
             {},
             {},
             "test-pixel",
-            "Library/Artifacts/shader-guid/2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607"
+            LibraryArtifactPath("2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607")
         }
     });
     return artifact;
@@ -2150,6 +2224,45 @@ TEST(AssetMaterialConversionTests, MaterialLoaderResolvesShaderLabSourcePassArti
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetMaterialConversionTests, MaterialLoaderMatchesShaderLabPassArtifactsByNormalizedSourcePath)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shaderlab_source_pass_normalized_resolve_" + NLS::Guid::New().ToString());
+    const auto projectAssets = root / "Assets";
+    const auto shaderSourcePath = WriteShaderLabSourceBackedStandardPbrShaderArtifact(root);
+    const auto materialPath = MaterialArtifactPath(root, "b849801dcde7e91a308f68782aa84df2038d786d32c05df2df0f2c742f695d57");
+
+    WriteNativeMaterialArtifactFile(
+        materialPath,
+        "shaderLabMaterialVersion=1\n"
+        "shader=Assets/./Shaders/StandardPBR.shader\n"
+        "surfaceMode=Opaque\n"
+        "property _BaseColor Color 0.250000 0.500000 0.750000 1.000000\n");
+
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    const ScopedShaderManagerAssetPaths shaderAssetPaths(
+        projectAssets.string() + "/",
+        "App/Assets/Engine/");
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string(), {false, true});
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/./Shaders/StandardPBR.shader");
+    auto* forwardShader = loaded->ResolveShaderForLightMode("Forward");
+    ASSERT_NE(forwardShader, nullptr)
+        << "Material pass registration must compare ShaderLab source identities after path normalization.";
+    EXPECT_EQ(forwardShader->GetImportedArtifactSourcePath(), shaderSourcePath.generic_string());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    shaderManager.UnloadResources();
+    textureManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetMaterialConversionTests, MaterialLoaderResolvesRuntimeShaderLabPassArtifactsFromExplicitArtifactDatabase)
 {
     const auto root = std::filesystem::temp_directory_path() /
@@ -2214,6 +2327,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderResolvesRuntimeShaderLabPassArt
     options.loadMissingTextures = false;
     options.loadMissingShaders = true;
     options.artifactDatabasePath = dataRoot / "ArtifactDB";
+    options.targetPlatform = "win64";
     auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string(), options);
 
     ASSERT_NE(loaded, nullptr);
@@ -2223,6 +2337,111 @@ TEST(AssetMaterialConversionTests, MaterialLoaderResolvesRuntimeShaderLabPassArt
     EXPECT_EQ(forwardShader->GetImportedArtifactSourcePath(), shaderSourcePath.generic_string());
     EXPECT_EQ(forwardShader->GetShaderLabLightMode(), "Forward");
     EXPECT_EQ(forwardShader->path.find((dataRoot / "Artifacts").string()), 0u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    shaderManager.UnloadResources();
+    textureManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderDefaultTargetPlatformDoesNotWildcardShaderLabPassArtifacts)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shaderlab_material_platform_filter_" + NLS::Guid::New().ToString());
+    const auto shaderSourcePath = std::filesystem::path("Assets") / "Shaders" / "PlatformFilter.shader";
+    const auto shaderSourceId = NLS::Core::Assets::AssetId(NLS::Guid::New());
+    const auto editorShaderHash =
+        "3ce8c6cf9f32ef118b65e72f8193fbc930a4538e60335bce37dcf8d5fa83a101";
+    const auto runtimeShaderHash =
+        "c0f2355c058aa0f17a4812603ecf1816097706b89a75a8f27589cb546a3611ad";
+    const auto materialHash =
+        "2f209e74ea4f4b4fc34b4c54ba7f9bb90bdab3b771e5d6ebe0cc1af9ea57a773";
+
+    auto editorShader = MakeStandardPbrShaderArtifact();
+    editorShader.sourcePath = shaderSourcePath.generic_string();
+    editorShader.subAssetKey = "shader:PlatformFilter/Forward#0";
+    editorShader.shaderLabLightMode = "Forward";
+    editorShader.shaderLabPassState = NLS::Render::ShaderLab::ShaderLabPassState{};
+    WriteBinaryFile(
+        root / "Library" / "Artifacts" / NLS::Core::Assets::BuildArtifactStorageRelativePath(editorShaderHash),
+        NLS::Render::Assets::SerializeShaderArtifact(editorShader));
+
+    auto runtimeShader = editorShader;
+    runtimeShader.subAssetKey = "shader:PlatformFilter/Forward#1";
+    WriteBinaryFile(
+        root / "Library" / "Artifacts" / NLS::Core::Assets::BuildArtifactStorageRelativePath(runtimeShaderHash),
+        NLS::Render::Assets::SerializeShaderArtifact(runtimeShader));
+
+    NLS::Core::Assets::ArtifactManifest editorManifest;
+    editorManifest.sourceAssetId = shaderSourceId;
+    editorManifest.importerId = "ShaderLabImporter";
+    editorManifest.importerVersion = 1u;
+    editorManifest.targetPlatform = "editor";
+    editorManifest.primarySubAssetKey = editorShader.subAssetKey;
+    editorManifest.subAssets.push_back({
+        shaderSourceId,
+        editorShader.subAssetKey,
+        NLS::Core::Assets::ArtifactType::Shader,
+        "ShaderLoader",
+        "editor",
+        (std::filesystem::path("Library") / "Artifacts" / NLS::Core::Assets::BuildArtifactStorageRelativePath(editorShaderHash)).generic_string(),
+        "sha256:" + std::string(editorShaderHash),
+        "PlatformFilter editor Forward"
+    });
+
+    auto runtimeManifest = editorManifest;
+    runtimeManifest.targetPlatform = "win64-dx12";
+    runtimeManifest.primarySubAssetKey = runtimeShader.subAssetKey;
+    runtimeManifest.subAssets.clear();
+    runtimeManifest.subAssets.push_back({
+        shaderSourceId,
+        runtimeShader.subAssetKey,
+        NLS::Core::Assets::ArtifactType::Shader,
+        "ShaderLoader",
+        "win64-dx12",
+        (std::filesystem::path("Library") / "Artifacts" / NLS::Core::Assets::BuildArtifactStorageRelativePath(runtimeShaderHash)).generic_string(),
+        "sha256:" + std::string(runtimeShaderHash),
+        "PlatformFilter runtime Forward"
+    });
+
+    NLS::Core::Assets::ArtifactDatabase database;
+    database.UpsertManifest(
+        runtimeManifest,
+        shaderSourcePath.generic_string(),
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    database.UpsertManifest(
+        editorManifest,
+        shaderSourcePath.generic_string(),
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(root / "Library" / "ArtifactDB"));
+
+    const auto materialPath = MaterialArtifactPath(root, materialHash);
+    WriteNativeMaterialArtifactFile(
+        materialPath,
+        "shaderLabMaterialVersion=1\n"
+        "shader=" + shaderSourcePath.generic_string() + "\n"
+        "surfaceMode=Opaque\n");
+
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    const ScopedShaderManagerAssetPaths shaderAssetPaths(
+        (root / "Assets").string() + "/",
+        "App/Assets/Engine/");
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions options;
+    options.loadMissingTextures = false;
+    options.loadMissingShaders = true;
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string(), options);
+
+    ASSERT_NE(loaded, nullptr);
+    auto* forwardShader = loaded->ResolveShaderForLightMode("Forward");
+    ASSERT_NE(forwardShader, nullptr);
+    EXPECT_EQ(forwardShader->GetImportedArtifactSubAssetKey(), editorShader.subAssetKey)
+        << "Default material loads must filter ShaderLab pass artifacts by editor target instead of wildcarding all platforms.";
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
     shaderManager.UnloadResources();
@@ -2363,8 +2582,9 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesShaderLabPropertyName
         ("nullus_shaderlab_material_save_properties_" + NLS::Guid::New().ToString());
     std::filesystem::create_directories(root);
 
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" /
-        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
+    const auto shaderArtifactPath = ArtifactPath(
+        root,
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
@@ -2404,8 +2624,9 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSavePreservesNativeShaderLabPro
         ("nullus_shaderlab_material_save_native_properties_" + NLS::Guid::New().ToString());
     std::filesystem::create_directories(root);
 
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" /
-        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
+    const auto shaderArtifactPath = ArtifactPath(
+        root,
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
@@ -2418,7 +2639,9 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSavePreservesNativeShaderLabPro
 
     NLS::Render::Resources::Material material(shader);
     material.Set<NLS::Maths::Vector4>("_BaseColor", {0.125f, 0.25f, 0.5f, 1.0f});
-    material.SetTextureResourcePath("_BaseMap", "Library/Artifacts/texture-guid/1111111111111111111111111111111111111111111111111111111111111111");
+    const auto textureResourcePath =
+        LibraryArtifactPath("1111111111111111111111111111111111111111111111111111111111111111");
+    material.SetTextureResourcePath("_BaseMap", textureResourcePath);
 
     const auto materialPath = MaterialArtifactPath(root, "43c80be0cf7d568c4af735cd446da1049d27d23d750f2fb1525afc8ddc5c2a6d");
     NLS::Render::Resources::Loaders::MaterialLoader::Save(material, materialPath.string());
@@ -2429,7 +2652,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSavePreservesNativeShaderLabPro
         1u);
     EXPECT_NE(payload.find("property _BaseColor Color 0.125000 0.250000 0.500000 1.000000"), std::string::npos);
     EXPECT_NE(
-        payload.find("property _BaseMap Texture2D Library/Artifacts/texture-guid/1111111111111111111111111111111111111111111111111111111111111111"),
+        payload.find("property _BaseMap Texture2D " + textureResourcePath),
         std::string::npos);
     EXPECT_EQ(payload.find("property u_Albedo"), std::string::npos);
     EXPECT_EQ(payload.find("property u_AlbedoMap"), std::string::npos);
@@ -2607,8 +2830,9 @@ TEST(AssetMaterialConversionTests, MaterialLoaderRejectsInvalidExplicitSurfaceMo
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_invalid_surface_mode_material_" + NLS::Guid::New().ToString());
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" /
-        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
+    const auto shaderArtifactPath = ArtifactPath(
+        root,
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
@@ -2745,7 +2969,9 @@ TEST(AssetMaterialConversionTests, DefaultWhiteTextureRecoversRhiHandleAfterHead
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_default_white_texture_headless_recover_" + NLS::Guid::New().ToString());
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
+    const auto shaderArtifactPath = ArtifactPath(
+        root,
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
@@ -2800,8 +3026,9 @@ TEST(AssetMaterialConversionTests, ShaderReflectionFallsBackToRuntimeCompileBack
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_shader_reflection_artifact_" + NLS::Guid::New().ToString());
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" /
-        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
+    const auto shaderArtifactPath = ArtifactPath(
+        root,
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
@@ -2917,7 +3144,11 @@ TEST(AssetMaterialConversionTests, MaterialLoaderRejectsShaderArtifactReferenceE
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_shader_artifact_material_" + NLS::Guid::New().ToString());
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
+    const auto shaderArtifactResourcePath =
+        LibraryArtifactPath("2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
+    const auto shaderArtifactPath = ArtifactPath(
+        root,
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
     WriteNativeArtifactTextFile(
         shaderArtifactPath,
         NLS::Core::Assets::ArtifactType::Shader,
@@ -2934,7 +3165,7 @@ ENTRY=VSMain
 PROFILE=vs_6_0
 STATUS=Succeeded
 CACHE_KEY=test-vertex
-ARTIFACT_PATH=Library/Artifacts/shader-guid/2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607
+ARTIFACT_PATH=)" + shaderArtifactResourcePath + R"(
 BYTECODE_HEX=01020304
 STAGE_END
 STAGE_BEGIN
@@ -2944,7 +3175,7 @@ ENTRY=PSMain
 PROFILE=ps_6_0
 STATUS=Succeeded
 CACHE_KEY=test-pixel
-ARTIFACT_PATH=Library/Artifacts/shader-guid/2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607
+ARTIFACT_PATH=)" + shaderArtifactResourcePath + R"(
 BYTECODE_HEX=05060708
 STAGE_END
 CBUFFER_BEGIN
@@ -2980,7 +3211,7 @@ PROPERTY_END
     WriteNativeMaterialArtifactFile(
         materialPath,
         "shaderLabMaterialVersion=1\n"
-        "shader=Library/Artifacts/shader-guid/2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607\n"
+        "shader=" + shaderArtifactResourcePath + "\n"
         "property _BaseColor Color 0.250000 0.500000 0.750000 1.000000\n");
 
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
@@ -3011,7 +3242,9 @@ TEST(AssetMaterialConversionTests, ShaderArtifactPreservesShaderLabPassState)
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_shaderlab_pass_state_artifact_" + NLS::Guid::New().ToString());
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "pass-state";
+    const auto shaderArtifactPath = ArtifactPath(
+        root,
+        NLS::Core::Assets::BuildArtifactStorageFileName("shaderlab-pass-state"));
 
     auto artifact = MakeStandardPbrShaderArtifact();
     artifact.shaderLabLightMode = "Forward";
@@ -3052,8 +3285,6 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsDeclaredTextureS
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_material_texture_load_" + NLS::Guid::New().ToString());
     const auto materialPath = MaterialArtifactPath(root, "d4fe16a6a775c5a201978a3430d0e4ca1849af34caee64e82c89f24a34d85553");
-    const auto texturePath = root / "Library" / "Artifacts" / "texture-guid" /
-        "f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b";
     const auto png = TinyPng();
     auto textureArtifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
         png.data(),
@@ -3061,7 +3292,8 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsDeclaredTextureS
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         true);
     ASSERT_TRUE(textureArtifact.has_value());
-    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(*textureArtifact));
+    const auto textureBytes = NLS::Render::Assets::SerializeTextureArtifact(*textureArtifact);
+    const auto texturePath = WriteTextureArtifactBytes(root, textureBytes);
 
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
@@ -3287,12 +3519,8 @@ TEST(AssetMaterialConversionTests, MaterialManagerCoalescesDuplicateAsyncArtifac
 
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_material_async_coalescing_" + NLS::Guid::New().ToString());
-    const auto materialPath = root / "Materials" / "Hero.nmat";
-    WriteTextFile(
-        materialPath,
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "</root>\n");
+    const auto materialPath = MaterialArtifactPath(root, "03442e14a6314368560968cb6a1528199a45d0fe5d5407533fb7a2a7382c3f01");
+    WriteMinimalShaderLabMaterialArtifactFile(materialPath);
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     MaterialManager materialManager;
@@ -3325,14 +3553,16 @@ TEST(AssetMaterialConversionTests, MaterialManagerBoundsPendingAsyncArtifactRequ
 
     for (size_t index = 0u; index < 80u; ++index)
     {
-        const auto materialPath = root / "Materials" / ("Hero" + std::to_string(index) + ".nmat");
-        WriteTextFile(materialPath, "");
+        const auto materialPath = MaterialArtifactPath(
+            root,
+            IndexedArtifactHash("pending-material", index));
+        WriteMinimalShaderLabMaterialArtifactFile(materialPath);
         EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
     }
 
     EXPECT_LE(MaterialManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
         << "Async material artifact scheduling must be bounded so large prefab drags cannot spawn unbounded std::async work.";
-    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending((root / "Materials" / "Hero79.nmat").string()))
+    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(MaterialArtifactPath(root, IndexedArtifactHash("pending-material", 79u)).string()))
         << "Requests beyond the active material cap must remain pending so large prefab finalization retries instead of failing.";
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
@@ -3354,8 +3584,10 @@ TEST(AssetMaterialConversionTests, MaterialManagerBoundsTotalQueuedAsyncArtifact
 
     for (size_t index = 0u; index < 320u; ++index)
     {
-        const auto materialPath = root / "Materials" / ("Hero" + std::to_string(index) + ".nmat");
-        WriteTextFile(materialPath, "");
+        const auto materialPath = MaterialArtifactPath(
+            root,
+            IndexedArtifactHash("queued-material", index));
+        WriteMinimalShaderLabMaterialArtifactFile(materialPath);
         EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
     }
 
@@ -3383,8 +3615,10 @@ TEST(AssetMaterialConversionTests, MaterialManagerBoundsGlobalActiveAsyncArtifac
     for (size_t index = 0u; index < 80u; ++index)
     {
         auto materialManager = std::make_unique<MaterialManager>();
-        const auto materialPath = root / "Materials" / ("Hero" + std::to_string(index) + ".nmat");
-        WriteTextFile(materialPath, "");
+        const auto materialPath = MaterialArtifactPath(
+            root,
+            IndexedArtifactHash("global-material", index));
+        WriteMinimalShaderLabMaterialArtifactFile(materialPath);
         EXPECT_EQ(materialManager->RequestAsyncArtifact(materialPath.string()), nullptr);
         materialManagers.push_back(std::move(materialManager));
     }
@@ -3407,8 +3641,8 @@ TEST(AssetMaterialConversionTests, MaterialManagerCancelAsyncArtifactDoesNotCons
 
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_material_async_cancel_shared_" + NLS::Guid::New().ToString());
-    const auto materialPath = root / "Materials" / "Hero.nmat";
-    WriteTextFile(materialPath, "");
+    const auto materialPath = MaterialArtifactPath(root, "fa123c1b71823847f07518473ec7d4186dc647a432199e87291c6dcc1afe0ca0");
+    WriteMinimalShaderLabMaterialArtifactFile(materialPath);
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     MaterialManager materialManager;
@@ -3437,13 +3671,95 @@ TEST(AssetMaterialConversionTests, MaterialManagerClearAsyncArtifactStateDrainsW
     MaterialManager materialManager;
     for (size_t index = 0u; index < 8u; ++index)
     {
-        const auto materialPath = root / "Materials" / ("Hero" + std::to_string(index) + ".nmat");
-        WriteTextFile(materialPath, "");
+        const auto materialPath = MaterialArtifactPath(
+            root,
+            IndexedArtifactHash("clear-material", index));
+        WriteMinimalShaderLabMaterialArtifactFile(materialPath);
         EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
     }
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     EXPECT_TRUE(MaterialManager::WaitForAsyncArtifactWorkersForTesting());
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerPreviewAsyncArtifactReturnsMaterialBeforeTexturesResolve)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_preview_async_deferred_textures_" + NLS::Guid::New().ToString());
+    const auto projectAssets = root / "Assets";
+    const auto materialResourcePath = LibraryArtifactPath("47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
+    const auto materialPath = root / materialResourcePath;
+    const auto textureResourcePath = LibraryArtifactPath("f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b");
+    const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
+        root,
+        std::filesystem::path("Assets") / "Shaders" / "PreviewDeferredTexture.shader",
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
+        MakeAlbedoMapShaderArtifact(),
+        "PreviewDeferredTexture Forward");
+
+    WriteNativeMaterialArtifactFile(
+        materialPath,
+        "shaderLabMaterialVersion=1\n"
+        "shader=" + shaderSourcePath.generic_string() + "\n"
+        "property _BaseMap Texture2D " + textureResourcePath + "\n");
+
+    const ScopedMaterialConversionJobSystem jobSystem;
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    MaterialManager materialManager;
+    const ScopedShaderManagerAssetPaths shaderAssetPaths(
+        projectAssets.string() + "/",
+        "App/Assets/Engine/");
+    MaterialManager::ProvideAssetPaths(projectAssets.string() + "/", "App/Assets/Engine/");
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(
+        projectAssets.string() + "/",
+        "App/Assets/Engine/");
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    EXPECT_EQ(materialManager.RequestAsyncArtifactForPreview(materialPath.string()), nullptr);
+    for (size_t attempt = 0u; attempt < 256u && !materialManager.IsResourceRegistered(materialPath.string()); ++attempt)
+    {
+        materialManager.PumpAsyncLoadsForPaths({materialPath.string()}, 1u);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    auto* material = materialManager.RequestAsyncArtifactForPreview(materialPath.string());
+    ASSERT_NE(material, nullptr);
+    EXPECT_TRUE(materialManager.IsResourceRegistered(materialPath.string()));
+    EXPECT_EQ(material->GetTextureResourcePath("_BaseMap"), textureResourcePath);
+    const auto* albedoMap = material->GetParameterBlock().TryGet("_BaseMap");
+    ASSERT_NE(albedoMap, nullptr);
+    ASSERT_EQ(albedoMap->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*albedoMap), nullptr)
+        << "Preview code must be able to inspect material texture paths before texture artifacts finish loading.";
+
+    materialManager.UnloadResources();
+    shaderManager.UnloadResources();
+    textureManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    MaterialManager::ProvideAssetPaths({}, {});
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     std::filesystem::remove_all(root);
 #endif
 }
@@ -3506,12 +3822,19 @@ TEST(AssetMaterialConversionTests, MaterialReloadClearsPreviousTextureSlotSample
     WriteNativeMaterialArtifactFile(materialPath, secondPayload);
     NLS::Render::Resources::Loaders::MaterialLoader::Reload(*material, materialPath.string(), {false, true});
 
-    const auto* sampler = material->GetBindingSet().GetSampler("sampler_BaseMap");
-    ASSERT_NE(sampler, nullptr);
-    EXPECT_EQ(sampler->wrapU, NLS::Render::RHI::TextureWrap::Repeat);
-    EXPECT_EQ(sampler->wrapV, NLS::Render::RHI::TextureWrap::Repeat);
-    EXPECT_EQ(sampler->minFilter, NLS::Render::RHI::TextureFilter::Linear);
-    EXPECT_EQ(sampler->magFilter, NLS::Render::RHI::TextureFilter::Linear);
+    EXPECT_EQ(material->GetSamplerOverride("sampler_BaseMap"), nullptr);
+    const auto* forwardShader = material->ResolveShaderForLightMode("Forward");
+    ASSERT_NE(forwardShader, nullptr);
+    const auto reflection = forwardShader->GetReflectionSnapshot();
+    ASSERT_NE(reflection, nullptr);
+    EXPECT_TRUE(std::any_of(
+        reflection->properties.begin(),
+        reflection->properties.end(),
+        [](const auto& property)
+        {
+            return property.name == "sampler_BaseMap" &&
+                property.kind == NLS::Render::Resources::ShaderResourceKind::Sampler;
+        }));
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(material));
     shaderManager.UnloadResources();
@@ -3636,7 +3959,9 @@ TEST(AssetMaterialConversionTests, MaterialLoaderPrefersShaderLabPropertyNamesOv
         "shaderLabMaterialVersion=1\n"
         "shader=" + shaderSourcePath.generic_string() + "\n"
         "property _BaseColor Color 0.125000 0.250000 0.500000 1.000000\n"
-        "property _BaseMap Texture2D Library/Artifacts/texture-guid/textures/f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b\n");
+        "property _BaseMap Texture2D " +
+        LibraryArtifactPath("f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b") +
+        "\n");
 
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
@@ -3653,7 +3978,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderPrefersShaderLabPropertyNamesOv
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string(), {false, true});
     ASSERT_NE(loaded, nullptr);
     ASSERT_NE(loaded->GetShader(), nullptr);
 
@@ -3668,7 +3993,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderPrefersShaderLabPropertyNamesOv
     EXPECT_EQ(loaded->GetParameterBlock().TryGet("u_Albedo"), nullptr);
     EXPECT_EQ(
         loaded->GetTextureResourcePath("_BaseMap"),
-        "Library/Artifacts/texture-guid/textures/f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b");
+        LibraryArtifactPath("f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b"));
     EXPECT_TRUE(loaded->GetTextureResourcePath("u_AlbedoMap").empty());
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
@@ -3870,11 +4195,14 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_material_equivalent_cached_texture_" + NLS::Guid::New().ToString());
     const auto projectAssets = root / "Assets";
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "shader.nshader";
-    const auto textureResourcePath = std::filesystem::path("Library/Artifacts/texture-guid/textures/BaseColor.ntex")
-        .generic_string();
-
-    WriteBinaryFile(shaderArtifactPath, NLS::Render::Assets::SerializeShaderArtifact(MakeAlbedoMapShaderArtifact()));
+    const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
+        root,
+        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shader",
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
+        MakeAlbedoMapShaderArtifact(),
+        "StandardPBR Forward");
+    const auto shaderArtifactPath = ArtifactPath(root, "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
+    const auto textureResourcePath = LibraryArtifactPath("f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b");
 
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
@@ -3897,7 +4225,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
 
     auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
     ASSERT_NE(shader, nullptr);
-    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
+    shaderManager.RegisterResource(shaderArtifactPath.string(), shader);
 
     const auto absoluteTexturePath =
         NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(textureResourcePath);
@@ -3907,18 +4235,17 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
     textureManager.RegisterResource(absoluteTexturePath, cachedTexture);
 
     const std::string payload =
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "  <uniform name=\"u_AlbedoMap\" type=\"sampler2D\" value=\"" + textureResourcePath + "\"/>\n"
-        "</root>\n";
+        "shaderLabMaterialVersion=1\n"
+        "shader=" + shaderSourcePath.generic_string() + "\n"
+        "property _BaseMap Texture2D " + textureResourcePath + "\n";
 
     auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::CreateFromSerializedPayload(
-        (root / "Library" / "Artifacts" / "material-guid" / "materials" / "Hero.nmat").string(),
+        MaterialArtifactPath(root, "47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae").string(),
         payload,
         {true, true});
 
     ASSERT_NE(loaded, nullptr);
-    const auto* albedoMap = loaded->GetParameterBlock().TryGet("u_AlbedoMap");
+    const auto* albedoMap = loaded->GetParameterBlock().TryGet("_BaseMap");
     ASSERT_NE(albedoMap, nullptr);
     ASSERT_EQ(albedoMap->type(), typeid(NLS::Render::Resources::Texture2D*));
     EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*albedoMap), cachedTexture)
@@ -3942,11 +4269,14 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_material_equivalent_cached_texture_index_" + NLS::Guid::New().ToString());
     const auto projectAssets = root / "Assets";
-    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "shader.nshader";
-    const auto textureResourcePath = std::filesystem::path("Library/Artifacts/texture-guid/textures/BaseColor.ntex")
-        .generic_string();
-
-    WriteBinaryFile(shaderArtifactPath, NLS::Render::Assets::SerializeShaderArtifact(MakeAlbedoMapShaderArtifact()));
+    const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
+        root,
+        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shader",
+        "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
+        MakeAlbedoMapShaderArtifact(),
+        "StandardPBR Forward");
+    const auto shaderArtifactPath = ArtifactPath(root, "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
+    const auto textureResourcePath = LibraryArtifactPath("f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b");
 
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
@@ -3969,7 +4299,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
 
     auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
     ASSERT_NE(shader, nullptr);
-    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
+    shaderManager.RegisterResource(shaderArtifactPath.string(), shader);
 
     const auto absoluteTexturePath =
         NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(textureResourcePath);
@@ -3984,21 +4314,20 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
     loadedMaterials.reserve(kMaterialCount);
 
     const std::string payload =
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "  <uniform name=\"u_AlbedoMap\" type=\"sampler2D\" value=\"" + textureResourcePath + "\"/>\n"
-        "</root>\n";
+        "shaderLabMaterialVersion=1\n"
+        "shader=" + shaderSourcePath.generic_string() + "\n"
+        "property _BaseMap Texture2D " + textureResourcePath + "\n";
 
     for (size_t index = 0u; index < kMaterialCount; ++index)
     {
         auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::CreateFromSerializedPayload(
-            (root / "Library" / "Artifacts" / ("material-guid-" + std::to_string(index)) / "materials" / "Hero.nmat").string(),
+            MaterialArtifactPath(root, IndexedArtifactHash("cached-texture-material", index)).string(),
             payload,
             {true, true});
         ASSERT_NE(loaded, nullptr);
         loadedMaterials.push_back(loaded);
 
-        const auto* albedoMap = loaded->GetParameterBlock().TryGet("u_AlbedoMap");
+        const auto* albedoMap = loaded->GetParameterBlock().TryGet("_BaseMap");
         ASSERT_NE(albedoMap, nullptr);
         ASSERT_EQ(albedoMap->type(), typeid(NLS::Render::Resources::Texture2D*));
         EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*albedoMap), cachedTexture);
@@ -4023,8 +4352,6 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedTextureArtifactPayl
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_imported_texture_artifact_load_" + NLS::Guid::New().ToString());
-    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" /
-        "1111111111111111111111111111111111111111111111111111111111111111";
     const auto png = TinyPng();
     auto artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
         png.data(),
@@ -4032,7 +4359,8 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedTextureArtifactPayl
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         true);
     ASSERT_TRUE(artifact.has_value());
-    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(*artifact));
+    const auto textureBytes = NLS::Render::Assets::SerializeTextureArtifact(*artifact);
+    const auto texturePath = WriteTextureArtifactBytes(root, textureBytes);
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -4096,8 +4424,6 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedRgb16TextureArtifac
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_imported_rgb16_texture_artifact_load_" + NLS::Guid::New().ToString());
-    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" /
-        "2222222222222222222222222222222222222222222222222222222222222222";
     const auto png = TinyRgb16Png();
     auto artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
         png.data(),
@@ -4105,7 +4431,8 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedRgb16TextureArtifac
         NLS::Render::Assets::TextureArtifactColorSpace::Linear,
         true);
     ASSERT_TRUE(artifact.has_value());
-    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(*artifact));
+    const auto textureBytes = NLS::Render::Assets::SerializeTextureArtifact(*artifact);
+    const auto texturePath = WriteTextureArtifactBytes(root, textureBytes);
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -4134,8 +4461,6 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsNativeTextureArtifactWithou
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_native_texture_artifact_load_" + NLS::Guid::New().ToString());
-    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" / "f8dcf19b4b7a5aff9586141a2fda1af06331bfab55197de73748b5fa7a5b9e19";
-
     NLS::Render::Assets::TextureArtifactData artifact;
     artifact.width = 2u;
     artifact.height = 2u;
@@ -4156,7 +4481,7 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsNativeTextureArtifactWithou
     });
     artifact.mips.push_back({1u, 1u, 1u, 4u, 4u, {128u, 128u, 128u, 255u}});
     const auto bytes = NLS::Render::Assets::SerializeTextureArtifact(artifact);
-    WriteBinaryFile(texturePath, bytes);
+    const auto texturePath = WriteTextureArtifactBytes(root, bytes);
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -4186,15 +4511,14 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsNativeTextureArtifactWithou
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_native_texture_artifact_headless_load_" + NLS::Guid::New().ToString());
-    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" / "f8dcf19b4b7a5aff9586141a2fda1af06331bfab55197de73748b5fa7a5b9e19";
-
     const auto artifact = MakeDescriptorBackedTextureArtifact(
         NLS::Render::RHI::TextureFormat::RGBA8,
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         2u,
         2u,
         2u);
-    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+    const auto textureBytes = NLS::Render::Assets::SerializeTextureArtifact(artifact);
+    const auto texturePath = WriteTextureArtifactBytes(root, textureBytes);
 
     const ScopedNoDriverService noDriverService;
 
@@ -4219,15 +4543,14 @@ TEST(AssetMaterialConversionTests, TextureLoaderPropagatesCompressedArtifactMeta
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_compressed_texture_artifact_load_" + NLS::Guid::New().ToString());
-    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" / "aad983c752639797f73d680333c16dfdf6c5db40c17cd27356b426ca76e0202e";
-
     const auto artifact = MakeDescriptorBackedTextureArtifact(
         NLS::Render::RHI::TextureFormat::BC7,
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         8u,
         8u,
         2u);
-    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+    const auto textureBytes = NLS::Render::Assets::SerializeTextureArtifact(artifact);
+    const auto texturePath = WriteTextureArtifactBytes(root, textureBytes);
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -4272,15 +4595,14 @@ TEST(AssetMaterialConversionTests, TextureLoaderWarnsWhenCompressedArtifactBacke
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_unsupported_compressed_texture_artifact_" + NLS::Guid::New().ToString());
-    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" / "a1bcde1a58bbc5332c3069826e11afefc1ef46c0e08236c91288b526cd2005d4";
-
     const auto artifact = MakeDescriptorBackedTextureArtifact(
         NLS::Render::RHI::TextureFormat::BC1,
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         4u,
         4u,
         1u);
-    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+    const auto textureBytes = NLS::Render::Assets::SerializeTextureArtifact(artifact);
+    const auto texturePath = WriteTextureArtifactBytes(root, textureBytes);
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;

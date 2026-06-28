@@ -49,7 +49,10 @@ RuntimeAssetRef MakeReference(
     NLS::Core::Assets::AssetId sourceAssetId,
     const NLS::Core::Assets::ImportedArtifact& artifact)
 {
-    return {sourceAssetId, artifact.subAssetKey};
+    return {
+        artifact.sourceAssetId.IsValid() ? artifact.sourceAssetId : sourceAssetId,
+        artifact.subAssetKey
+    };
 }
 
 RuntimeAssetManifestEntry MakeEntry(
@@ -57,7 +60,7 @@ RuntimeAssetManifestEntry MakeEntry(
     const NLS::Core::Assets::ImportedArtifact& artifact)
 {
     return {
-        sourceAssetId,
+        artifact.sourceAssetId.IsValid() ? artifact.sourceAssetId : sourceAssetId,
         artifact.subAssetKey,
         artifact.artifactType,
         artifact.loaderId,
@@ -301,6 +304,17 @@ const NLS::Core::Assets::ArtifactManifest* RuntimeManifestBuilder::FindManifest(
     for (const auto& manifest : m_manifests)
     {
         if (manifest.sourceAssetId == assetId && manifest.targetPlatform == targetPlatform)
+            return &manifest;
+        if (manifest.targetPlatform != targetPlatform)
+            continue;
+        const auto found = std::find_if(
+            manifest.subAssets.begin(),
+            manifest.subAssets.end(),
+            [assetId](const NLS::Core::Assets::ImportedArtifact& artifact)
+            {
+                return artifact.sourceAssetId == assetId;
+            });
+        if (found != manifest.subAssets.end())
             return &manifest;
     }
     return nullptr;

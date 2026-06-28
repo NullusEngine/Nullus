@@ -397,7 +397,7 @@ TEST(AssetImporterFacadeTests, LegacyProjectRootRefreshOnlyGeneratesMetaBelowAss
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, LegacyFilesystemRootWithAssetsChildKeepsScanningSiblings)
+TEST(AssetImporterFacadeTests, ProjectRootWithAssetsChildDoesNotScanSiblingPackages)
 {
     using namespace NLS::Editor::Assets;
 
@@ -409,9 +409,9 @@ TEST(AssetImporterFacadeTests, LegacyFilesystemRootWithAssetsChildKeepsScanningS
     ASSERT_TRUE(facade.Refresh());
 
     EXPECT_TRUE(std::filesystem::exists(root / "Assets" / "Models" / "Hero.gltf.meta"));
-    EXPECT_TRUE(std::filesystem::exists(root / "Packages" / "Starter" / "Tree.obj.meta"));
+    EXPECT_FALSE(std::filesystem::exists(root / "Packages" / "Starter" / "Tree.obj.meta"));
     EXPECT_TRUE(facade.GetAtPath("Assets/Models/Hero.gltf").has_value());
-    EXPECT_TRUE(facade.GetAtPath("Packages/Starter/Tree.obj").has_value());
+    EXPECT_FALSE(facade.GetAtPath("Packages/Starter/Tree.obj").has_value());
 
     std::filesystem::remove_all(root);
 }

@@ -2,7 +2,9 @@
 #include "Assets/NativeArtifactContainer.h"
 
 #include <algorithm>
+#include <array>
 #include <fstream>
+#include <set>
 namespace NLS::Core::Assets
 {
 namespace
@@ -73,6 +75,48 @@ bool HasUnsafeRootRelationship(
         return true;
     return IsSameOrNestedPath(stagingRoot, committedRoot) ||
         IsSameOrNestedPath(committedRoot, stagingRoot);
+}
+
+bool FilesHaveSameBytes(
+    const std::filesystem::path& left,
+    const std::filesystem::path& right,
+    std::error_code& error)
+{
+    error.clear();
+    const auto leftSize = std::filesystem::file_size(left, error);
+    if (error)
+        return false;
+
+    const auto rightSize = std::filesystem::file_size(right, error);
+    if (error || leftSize != rightSize)
+        return false;
+
+    std::ifstream leftStream(left, std::ios::binary);
+    std::ifstream rightStream(right, std::ios::binary);
+    if (!leftStream || !rightStream)
+    {
+        error.clear();
+        return false;
+    }
+
+    std::array<char, 64 * 1024> leftBuffer {};
+    std::array<char, 64 * 1024> rightBuffer {};
+    while (leftStream && rightStream)
+    {
+        leftStream.read(leftBuffer.data(), static_cast<std::streamsize>(leftBuffer.size()));
+        rightStream.read(rightBuffer.data(), static_cast<std::streamsize>(rightBuffer.size()));
+        if (leftStream.gcount() != rightStream.gcount())
+            return false;
+        if (!std::equal(
+                leftBuffer.begin(),
+                leftBuffer.begin() + leftStream.gcount(),
+                rightBuffer.begin()))
+        {
+            return false;
+        }
+    }
+
+    return leftStream.eof() && rightStream.eof();
 }
 
 void AddError(
@@ -441,8 +485,12 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
 
     std::vector<CommitPlan> commitPlans;
     commitPlans.reserve(stagedArtifacts.size());
+    std::set<std::filesystem::path> plannedRelativePaths;
     for (const auto& artifact : stagedArtifacts)
     {
+        if (!plannedRelativePaths.insert(artifact.relativePath).second)
+            continue;
+
         const auto sourcePath = stagingRoot / artifact.relativePath;
         const auto destinationPath = committedRoot / artifact.relativePath;
         std::filesystem::create_directories(destinationPath.parent_path(), error);
@@ -464,6 +512,14 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
             std::filesystem::remove_all(stagingRoot, error);
             return result;
         }
+        error.clear();
+
+        if (std::filesystem::exists(destinationPath, error) &&
+            FilesHaveSameBytes(sourcePath, destinationPath, error))
+        {
+            continue;
+        }
+        error.clear();
 
         commitPlans.push_back({
             sourcePath,

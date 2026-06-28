@@ -141,7 +141,7 @@ bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactDat
 	if (artifact.width == 0u || artifact.height == 0u || artifact.mips.empty())
 		return false;
 
-	if (artifact.mips.front().pixels.empty())
+	if (!artifact.mips.front().HasPixels())
 		return false;
 
 	const auto applyArtifactMetadata = [&]()
@@ -151,9 +151,6 @@ bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactDat
 		bitsPerPixel = NLS::Render::RHI::GetTextureFormatBytesPerPixel(artifact.format);
 		isMimapped = artifact.mips.size() > 1u;
 	};
-
-	if (m_explicitTexture == nullptr)
-		CreateRHITexture();
 
 	auto* driver = NLS::Render::Context::TryGetLocatedDriver();
 	auto device = driver != nullptr
@@ -166,8 +163,6 @@ bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactDat
 		applyArtifactMetadata();
 		return true;
 	}
-	if (m_explicitTexture == nullptr)
-		return false;
 	if (NLS::Render::RHI::IsTextureFormatCompressed(artifact.format))
 	{
 		const auto& capability = device->GetCapabilities().GetTextureFormatCapability(artifact.format);
@@ -193,12 +188,12 @@ bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactDat
 	uploadDesc.subresources.reserve(artifact.mips.size());
 	for (const auto& mip : artifact.mips)
 	{
-		if (mip.pixels.empty())
+		if (!mip.HasPixels())
 			return false;
-		uploadDataSize += mip.pixels.size();
+		uploadDataSize += mip.PixelSize();
 		uploadDesc.subresources.push_back({
-			mip.pixels.data(),
-			mip.pixels.size()
+			mip.PixelData(),
+			mip.PixelSize()
 		});
 	}
 	uploadDesc.dataSize = uploadDataSize;

@@ -950,6 +950,40 @@ TEST(AssetManifestTests, RuntimeManifestBuildIncludesGeneratedPrefabSiblingArtif
     EXPECT_NE(database.Resolve(model, "material:Body"), nullptr);
 }
 
+TEST(AssetManifestTests, RuntimeManifestBuildIndexesGeneratedSiblingArtifactsByArtifactSourceAssetId)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Engine::Assets;
+
+    const auto model = MakeAssetId("4a4a4a4a-4a4a-4a4a-8a4a-4a4a4a4a4a4a");
+    const auto material = MakeAssetId("4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b");
+
+    auto materialArtifact = MakeArtifact(
+        material,
+        "material:Body",
+        ArtifactType::Material,
+        "material",
+        RuntimeArtifactPathForHash("3333333333333333333333333333333333333333333333333333333333333333"));
+
+    auto manifest = MakeManifest(model, "prefab:Hero", {
+        MakeArtifact(model, "prefab:Hero", ArtifactType::Prefab, "prefab", RuntimeArtifactPathForHash("1111111111111111111111111111111111111111111111111111111111111111")),
+        MakeArtifact(model, "mesh:Body", ArtifactType::Mesh, "mesh", RuntimeArtifactPathForHash("2222222222222222222222222222222222222222222222222222222222222222")),
+        materialArtifact
+    });
+
+    RuntimeManifestBuilder builder;
+    builder.AddArtifactManifest(manifest);
+
+    const auto result = builder.Build({{model, "prefab:Hero"}}, "win64");
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    const RuntimeAssetDatabase database(result.manifest);
+    EXPECT_NE(database.Resolve(model, "prefab:Hero"), nullptr);
+    EXPECT_NE(database.Resolve(model, "mesh:Body"), nullptr);
+    EXPECT_NE(database.Resolve(material, "material:Body"), nullptr);
+    EXPECT_EQ(database.Resolve(model, "material:Body"), nullptr);
+}
+
 TEST(AssetManifestTests, RuntimeManifestBuildRejectsArtifactTargetPlatformMismatch)
 {
     using namespace NLS::Core::Assets;

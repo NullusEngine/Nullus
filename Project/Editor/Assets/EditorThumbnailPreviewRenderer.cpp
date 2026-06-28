@@ -24,6 +24,7 @@
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Assets/MeshArtifact.h"
+#include "Assets/ArtifactDatabase.h"
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Rendering/Resources/Material.h"
@@ -34,6 +35,7 @@
 #include <algorithm>
 #include <any>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <deque>
 #include <filesystem>
@@ -160,7 +162,7 @@ constexpr size_t kMaxGpuPreviewPrefabPayloadBytes = 8u * 1024u * 1024u;
 constexpr size_t kMaxGpuPreviewPrefabGraphObjects = 24000u;
 constexpr size_t kMaxGpuPreviewPrefabGraphProperties = 160000u;
 constexpr size_t kMaxGpuPreviewPrefabResolvedAssets = 4096u;
-constexpr size_t kMaxGpuPreviewPrefabDrawItems = 64u;
+constexpr size_t kMaxGpuPreviewPrefabDrawItems = 1024u;
 constexpr size_t kMaxGpuPreviewMeshVertices = 240000u;
 constexpr size_t kMaxGpuPreviewMeshIndices = 720000u;
 constexpr size_t kMaxPreviewRenderableSnapshotCacheEntries = 64u;
@@ -429,7 +431,7 @@ std::optional<std::filesystem::path> ResolvePrefabArtifactPathByIdentity(const A
     for (const auto& root : MakeProjectEditorAssetRoots(request.projectRoot))
     {
         const auto artifactRoot =
-            GetEditorAssetRootLibraryPath(root) / "Artifacts" / request.assetId.ToString();
+            GetEditorAssetRootLibraryPath(root) / "Artifacts";
 
         const auto resolvedInArtifactRoot = NLS::Core::Assets::NormalizeAssetPath(artifactRoot / rawPath);
         if (!resolvedInArtifactRoot.empty() &&
@@ -541,10 +543,28 @@ NLS::Render::Resources::Material* ResolvePreviewMaterial(
     if (auto* cached = materialManager.GetResource(materialPath, false))
         return cached;
 
-    if (NLS::Core::Assets::IsContentStorageArtifactPath(materialPath))
-        return materialManager.RequestAsyncArtifact(materialPath, true);
+    auto portableArtifactPath = NLS::Core::Assets::TryMakePortableContentArtifactPath(materialPath);
+    if (NLS::Core::Assets::IsContentStorageArtifactPath(materialPath) || !portableArtifactPath.empty())
+    {
+        return materialManager.RequestAsyncArtifactForPreview(
+            portableArtifactPath.empty() ? materialPath : portableArtifactPath,
+            true);
+    }
 
     return materialManager.GetResource(materialPath, true);
+}
+
+bool ShouldLoadPreviewMeshThroughArtifactLoader(const std::string& meshPath)
+{
+    if (meshPath.empty())
+        return false;
+
+    if (NLS::Core::Assets::IsContentStorageArtifactPath(meshPath))
+        return true;
+
+    std::error_code error;
+    return std::filesystem::is_regular_file(meshPath, error) &&
+        NLS::Render::Assets::ReadMeshArtifactHeaderPreview(meshPath, 64u * 1024u).has_value();
 }
 
 bool MaterialTextureDependenciesReady(
@@ -589,6 +609,115 @@ bool MaterialTextureDependenciesReady(
     return ready;
 }
 
+std::string ToLowerGenericPath(std::string path)
+{
+    path = std::filesystem::path(path).generic_string();
+    std::transform(path.begin(), path.end(), path.begin(), [](const unsigned char character)
+    {
+        return static_cast<char>(std::tolower(character));
+    });
+    return path;
+}
+
+std::string ToLowerAscii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char character)
+    {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
+bool IsStandardPbrSourcePath(const std::string& path)
+{
+    const auto sourcePath = ToLowerGenericPath(path);
+    return sourcePath == "app/assets/engine/shaders/shaderlab/standardpbr.shader" ||
+        sourcePath.ends_with("/app/assets/engine/shaders/shaderlab/standardpbr.shader") ||
+        sourcePath == "assets/engine/shaders/shaderlab/standardpbr.shader" ||
+        sourcePath.ends_with("/assets/engine/shaders/shaderlab/standardpbr.shader");
+}
+
+bool IsStandardPbrForwardSubAssetKey(const std::string& subAssetKey)
+{
+    const auto key = ToLowerAscii(subAssetKey);
+    return key == "shader:standardpbr" ||
+        key == "shader:standardpbr/forward" ||
+        key.rfind("shader:standardpbr/forward#", 0u) == 0u;
+}
+
+bool IsThumbnailPreviewDefaultShader(const NLS::Render::Resources::Shader& shader)
+{
+    return shader.GetShaderLabPassState().has_value() &&
+        IsStandardPbrSourcePath(shader.GetImportedArtifactSourcePath()) &&
+        IsStandardPbrForwardSubAssetKey(shader.GetImportedArtifactSubAssetKey()) &&
+        shader.GetShaderLabLightMode() == "Forward";
+}
+
+NLS::Render::Resources::Shader* ResolveThumbnailPreviewDefaultShader(
+    NLS::Core::ResourceManagement::ShaderManager& shaderManager,
+    std::string* resourcePath = nullptr)
+{
+    for (const auto& [path, shader] : shaderManager.GetResources())
+    {
+        if (shader != nullptr && IsThumbnailPreviewDefaultShader(*shader))
+        {
+            if (resourcePath != nullptr)
+                *resourcePath = path;
+            return shader;
+        }
+    }
+
+    if (resourcePath != nullptr)
+        resourcePath->clear();
+    const auto& projectAssetsPath = shaderManager.ProjectAssetsRoot();
+    if (projectAssetsPath.empty())
+        return nullptr;
+
+    auto projectRoot = std::filesystem::path(projectAssetsPath).lexically_normal();
+    if (projectRoot.filename().generic_string().empty())
+        projectRoot = projectRoot.parent_path();
+    if (ToLowerGenericPath(projectRoot.filename().generic_string()) == "assets")
+        projectRoot = projectRoot.parent_path();
+    if (projectRoot.empty())
+        return nullptr;
+
+    NLS::Core::Assets::ArtifactDatabase database;
+    if (!database.Load(projectRoot / "Library" / "ArtifactDB"))
+        return nullptr;
+
+    std::vector<std::string> candidateArtifactPaths;
+    database.VisitRecords([&candidateArtifactPaths](const NLS::Core::Assets::ArtifactDatabaseRecord& record)
+    {
+        if (record.status == NLS::Core::Assets::ArtifactRecordStatus::UpToDate &&
+            record.artifactType == NLS::Core::Assets::ArtifactType::Shader &&
+            record.targetPlatform == "editor" &&
+            !record.artifactPath.empty() &&
+            IsStandardPbrSourcePath(record.sourcePath) &&
+            IsStandardPbrForwardSubAssetKey(record.subAssetKey))
+        {
+            candidateArtifactPaths.push_back(std::filesystem::path(record.artifactPath).lexically_normal().generic_string());
+        }
+    });
+
+    for (const auto& candidate : candidateArtifactPaths)
+    {
+        auto* shader = shaderManager.GetResource(candidate, true);
+        if (shader != nullptr && IsThumbnailPreviewDefaultShader(*shader))
+        {
+            if (resourcePath != nullptr)
+                *resourcePath = candidate;
+            return shader;
+        }
+    }
+
+    return nullptr;
+}
+
+bool PreviewSnapshotIsCompleteForGpuPrefabPreview(const PreviewRenderableSnapshot& snapshot)
+{
+    return snapshot.expectedDrawItemCount <= snapshot.drawItems.size();
+}
+
 NLS::Render::Resources::Mesh* ResolvePreviewMesh(
     NLS::Core::ResourceManagement::MeshManager& meshManager,
     const std::string& meshPath)
@@ -599,8 +728,7 @@ NLS::Render::Resources::Mesh* ResolvePreviewMesh(
     if (auto* cached = meshManager.GetResource(meshPath, false))
         return cached;
 
-    const auto extension = std::filesystem::path(meshPath).extension().string();
-    if (extension == ".nmesh")
+    if (ShouldLoadPreviewMeshThroughArtifactLoader(meshPath))
         return meshManager.RequestAsyncArtifact(meshPath, true);
 
     return meshManager.GetResource(meshPath, true);
@@ -633,18 +761,53 @@ std::optional<std::filesystem::path> ResolvePrefabPreviewMeshBudgetPath(
 std::optional<std::filesystem::path> ResolvePrefabDependencyArtifactBudgetPath(
     const AssetThumbnailRequest& request,
     const NLS::Core::Assets::AssetId& assetId,
+    const std::string& artifactPath);
+
+std::string ResolvePreviewMeshLoadPath(
+    const AssetThumbnailRequest& request,
+    const std::string& meshPath,
+    const NLS::Core::Assets::AssetId meshAssetId)
+{
+    const auto genericMeshPath = ToGenericPath(meshPath);
+    auto meshLoadPath = ResolvePrefabPreviewMeshBudgetPath(request, genericMeshPath);
+    if (!meshLoadPath.has_value())
+        meshLoadPath = ResolvePrefabDependencyArtifactBudgetPath(request, meshAssetId, genericMeshPath);
+    return meshLoadPath.has_value()
+        ? ToGenericPath(*meshLoadPath)
+        : genericMeshPath;
+}
+
+std::string ResolvePreviewMaterialLoadPath(
+    const AssetThumbnailRequest& request,
+    const std::string& materialPath,
+    const NLS::Core::Assets::AssetId materialAssetId)
+{
+    const auto genericMaterialPath = ToGenericPath(materialPath);
+    auto materialLoadPath = ResolvePrefabPreviewMaterialBudgetPath(request, genericMaterialPath);
+    if (!materialLoadPath.has_value())
+        materialLoadPath = ResolvePrefabDependencyArtifactBudgetPath(request, materialAssetId, genericMaterialPath);
+    return materialLoadPath.has_value()
+        ? ToGenericPath(*materialLoadPath)
+        : genericMaterialPath;
+}
+
+std::optional<std::filesystem::path> ResolvePrefabDependencyArtifactBudgetPath(
+    const AssetThumbnailRequest& request,
+    const NLS::Core::Assets::AssetId& assetId,
     const std::string& artifactPath)
 {
     if (artifactPath.empty() || !assetId.IsValid() || IsBuiltInPreviewResourcePath(artifactPath))
         return std::nullopt;
 
-    const auto rawPath = std::filesystem::path(artifactPath).lexically_normal();
+    const auto portableArtifactPath = NLS::Core::Assets::TryMakePortableContentArtifactPath(artifactPath);
+    if (portableArtifactPath.empty())
+        return std::nullopt;
+
+    const auto rawPath = std::filesystem::path(portableArtifactPath).lexically_normal();
     for (const auto& root : MakeProjectEditorAssetRoots(request.projectRoot))
     {
-        const auto artifactRoot = GetEditorAssetRootLibraryPath(root) / "Artifacts" / assetId.ToString();
-        const auto candidate = rawPath.is_absolute()
-            ? rawPath
-            : artifactRoot / rawPath.filename();
+        const auto artifactRoot = GetEditorAssetRootLibraryPath(root) / "Artifacts";
+        const auto candidate = GetEditorAssetRootLibraryPath(root).parent_path() / rawPath;
         const auto normalized = NLS::Core::Assets::NormalizeAssetPath(candidate);
         if (!normalized.empty() &&
             IsPhysicalRegularFileInsideEditorAssetRoot(normalized, artifactRoot))
@@ -907,6 +1070,49 @@ size_t GetThumbnailPreviewMaterialPumpBudgetForTesting()
 size_t GetThumbnailPreviewTexturePumpBudgetForTesting()
 {
     return kThumbnailPreviewTexturePumpCompletionsPerFrame;
+}
+
+size_t GetThumbnailPreviewPrefabDrawItemCapacityForTesting()
+{
+    return kMaxGpuPreviewPrefabDrawItems;
+}
+
+bool ThumbnailPreviewMeshPathUsesArtifactLoaderForTesting(const std::string& meshPath)
+{
+    return ShouldLoadPreviewMeshThroughArtifactLoader(meshPath);
+}
+
+std::string ResolveThumbnailPreviewMeshLoadPathForTesting(
+    const AssetThumbnailRequest& request,
+    const std::string& meshPath,
+    const NLS::Core::Assets::AssetId meshAssetId)
+{
+    return ResolvePreviewMeshLoadPath(request, meshPath, meshAssetId);
+}
+
+ThumbnailPreviewDefaultShaderSelectionForTesting SelectThumbnailPreviewDefaultShaderForTesting(
+    NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+{
+    std::string resourcePath;
+    const auto* shader = ResolveThumbnailPreviewDefaultShader(shaderManager, &resourcePath);
+
+    ThumbnailPreviewDefaultShaderSelectionForTesting selection;
+    selection.resourcePath = resourcePath;
+    selection.usesLegacyBuiltInStandardHlsl = ToLowerGenericPath(resourcePath) == ":shaders/standard.hlsl";
+    if (shader == nullptr)
+        return selection;
+
+    selection.sourcePath = shader->GetImportedArtifactSourcePath();
+    selection.subAssetKey = shader->GetImportedArtifactSubAssetKey();
+    selection.lightMode = shader->GetShaderLabLightMode();
+    selection.usesShaderLabStandardPbrForward = IsThumbnailPreviewDefaultShader(*shader);
+    return selection;
+}
+
+bool ThumbnailPreviewSnapshotIsCompleteForGpuPrefabPreviewForTesting(
+    const PreviewRenderableSnapshot& snapshot)
+{
+    return PreviewSnapshotIsCompleteForGpuPrefabPreview(snapshot);
 }
 #endif
 
@@ -1389,6 +1595,11 @@ private:
             result.diagnostic = "thumbnail-gpu-preview-prefab-renderer-missing";
             return false;
         }
+        if (!PreviewSnapshotIsCompleteForGpuPrefabPreview(snapshot))
+        {
+            result.diagnostic = kGpuPreviewPrefabBudgetExceededDiagnostic;
+            return false;
+        }
         if (snapshot.drawItems.size() > kMaxGpuPreviewPrefabDrawItems)
         {
             result.diagnostic = kGpuPreviewPrefabBudgetExceededDiagnostic;
@@ -1437,7 +1648,11 @@ private:
                     return false;
                 }
 
-                auto* mesh = ResolvePreviewMesh(meshManager, genericMeshPath);
+                const auto meshLoadPath = ResolvePreviewMeshLoadPath(
+                    request,
+                    genericMeshPath,
+                    drawItem.meshAssetId);
+                auto* mesh = ResolvePreviewMesh(meshManager, meshLoadPath);
                 if (mesh == nullptr)
                 {
                     resourcesPending = true;
@@ -1471,7 +1686,14 @@ private:
                         return false;
                     }
 
-                    auto* material = ResolvePreviewMaterial(materialManager, genericMaterialPath);
+                    const auto materialAssetId = materialIndex < drawItem.materialAssetIds.size()
+                        ? drawItem.materialAssetIds[materialIndex]
+                        : NLS::Core::Assets::AssetId {};
+                    const auto materialLoadPath = ResolvePreviewMaterialLoadPath(
+                        request,
+                        genericMaterialPath,
+                        materialAssetId);
+                    auto* material = ResolvePreviewMaterial(materialManager, materialLoadPath);
                     if (material == nullptr)
                     {
                         resourcesPending = true;
@@ -1781,11 +2003,14 @@ private:
         if (!m_defaultMaterial.HasShader() &&
             NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::ShaderManager>())
         {
-            m_defaultMaterial.SetShader(
-                NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).GetResource(":Shaders/Standard.hlsl"));
-            m_defaultMaterial.Set("u_Albedo", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
-            m_defaultMaterial.Set("u_Metallic", 0.0f);
-            m_defaultMaterial.Set("u_Roughness", 0.72f);
+            auto& shaderManager = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager);
+            if (auto* shader = ResolveThumbnailPreviewDefaultShader(shaderManager))
+            {
+                m_defaultMaterial.SetShader(shader);
+                m_defaultMaterial.SetRawParameter("_BaseColor", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
+                m_defaultMaterial.SetRawParameter("_Metallic", 0.0f);
+                m_defaultMaterial.SetRawParameter("_Roughness", 0.72f);
+            }
         }
         return m_defaultMaterial;
     }

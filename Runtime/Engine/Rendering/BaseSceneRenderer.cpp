@@ -26,6 +26,8 @@
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ResourceManagement/TextureManager.h"
 #include "Core/ServiceLocator.h"
+#include "Assets/ArtifactDatabase.h"
+#include "Assets/ArtifactManifest.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
@@ -63,32 +65,51 @@ namespace
 		std::string resourcePath;
 	};
 
+	std::string ToLowerGenericPath(std::string path)
+	{
+		path = std::filesystem::path(path).generic_string();
+		std::transform(path.begin(), path.end(), path.begin(), [](const unsigned char character)
+		{
+			return static_cast<char>(std::tolower(character));
+		});
+		return path;
+	}
+
+	std::string ToLowerAscii(std::string value)
+	{
+		std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char character)
+		{
+			return static_cast<char>(std::tolower(character));
+		});
+		return value;
+	}
+
+	bool IsStandardPbrSourcePath(const std::string& path)
+	{
+		const auto sourcePath = ToLowerGenericPath(path);
+		return sourcePath == "app/assets/engine/shaders/shaderlab/standardpbr.shader" ||
+			sourcePath.ends_with("/app/assets/engine/shaders/shaderlab/standardpbr.shader") ||
+			sourcePath == "assets/engine/shaders/shaderlab/standardpbr.shader" ||
+			sourcePath.ends_with("/assets/engine/shaders/shaderlab/standardpbr.shader");
+	}
+
+	bool IsStandardPbrForwardSubAssetKey(const std::string& subAssetKey)
+	{
+		const auto key = ToLowerAscii(subAssetKey);
+		return key == "shader:standardpbr" ||
+			key == "shader:standardpbr/forward" ||
+			key.rfind("shader:standardpbr/forward#", 0u) == 0u;
+	}
+
 	bool IsDefaultSceneFallbackShader(const NLS::Render::Resources::Shader& shader)
 	{
 		if (!shader.GetShaderLabPassState().has_value())
 			return false;
-
-		auto sourcePath = std::filesystem::path(shader.GetImportedArtifactSourcePath()).generic_string();
-		std::transform(sourcePath.begin(), sourcePath.end(), sourcePath.begin(), [](const unsigned char character)
-		{
-			return static_cast<char>(std::tolower(character));
-		});
-
-		auto subAssetKey = shader.GetImportedArtifactSubAssetKey();
-		std::transform(subAssetKey.begin(), subAssetKey.end(), subAssetKey.begin(), [](const unsigned char character)
-		{
-			return static_cast<char>(std::tolower(character));
-		});
-
-		const bool isStandardPbrSource =
-			sourcePath == "app/assets/engine/shaders/shaderlab/standardpbr.shader" ||
-			sourcePath.ends_with("/app/assets/engine/shaders/shaderlab/standardpbr.shader") ||
-			sourcePath == "assets/engine/shaders/shaderlab/standardpbr.shader" ||
-			sourcePath.ends_with("/assets/engine/shaders/shaderlab/standardpbr.shader");
-		const bool isForwardPass =
-			subAssetKey == "shader:standardpbr/forward" ||
-			subAssetKey.rfind("shader:standardpbr/forward#", 0u) == 0u;
-		return isStandardPbrSource && isForwardPass;
+		if (!IsStandardPbrSourcePath(shader.GetImportedArtifactSourcePath()))
+			return false;
+		if (!IsStandardPbrForwardSubAssetKey(shader.GetImportedArtifactSubAssetKey()))
+			return false;
+		return shader.GetShaderLabLightMode() == "Forward";
 	}
 
 	LoadedSceneFallbackShader ResolveLoadedSceneFallbackShader()
@@ -104,6 +125,67 @@ namespace
 		}
 
 		return {};
+	}
+
+		bool IsStandardPbrForwardArtifactRecord(const NLS::Core::Assets::ArtifactDatabaseRecord& record)
+		{
+			if (record.status != NLS::Core::Assets::ArtifactRecordStatus::UpToDate ||
+				record.artifactType != NLS::Core::Assets::ArtifactType::Shader ||
+				record.targetPlatform != "editor" ||
+				record.artifactPath.empty())
+			{
+				return false;
+		}
+
+		if (!IsStandardPbrSourcePath(record.sourcePath))
+			return false;
+
+		return IsStandardPbrForwardSubAssetKey(record.subAssetKey);
+	}
+
+	std::filesystem::path ResolveProjectRootFromShaderManager(
+		const NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+	{
+		const auto& projectAssetsPath = shaderManager.ProjectAssetsRoot();
+		if (projectAssetsPath.empty())
+			return {};
+
+		auto projectAssetsRoot = std::filesystem::path(projectAssetsPath).lexically_normal();
+		if (projectAssetsRoot.filename().generic_string().empty())
+			projectAssetsRoot = projectAssetsRoot.parent_path();
+		if (ToLowerGenericPath(projectAssetsRoot.filename().generic_string()) == "assets")
+			return projectAssetsRoot.parent_path();
+		return {};
+	}
+
+	bool TryLoadDefaultSceneFallbackShaderFromArtifactDatabase(
+		NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+	{
+		const auto projectRoot = ResolveProjectRootFromShaderManager(shaderManager);
+		if (projectRoot.empty())
+			return false;
+
+		NLS::Core::Assets::ArtifactDatabase database;
+		if (!database.Load(projectRoot / "Library" / "ArtifactDB"))
+			return false;
+
+		std::vector<std::string> candidateArtifactPaths;
+		database.VisitRecords([&](const NLS::Core::Assets::ArtifactDatabaseRecord& record)
+		{
+			if (IsStandardPbrForwardArtifactRecord(record))
+				candidateArtifactPaths.push_back(std::filesystem::path(record.artifactPath).lexically_normal().generic_string());
+		});
+
+		for (const auto& artifactPath : candidateArtifactPaths)
+		{
+			if (auto* shader = shaderManager.GetResource(artifactPath, true);
+				shader != nullptr && IsDefaultSceneFallbackShader(*shader))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	uint64_t ElapsedNanoseconds(const std::chrono::steady_clock::time_point start)
@@ -481,6 +563,9 @@ void BaseSceneRenderer::PreloadSceneFallbackShader(NLS::Core::ResourceManagement
 			return;
 	}
 
+	if (TryLoadDefaultSceneFallbackShaderFromArtifactDatabase(shaderManager))
+		return;
+
 	NLS_LOG_WARNING("BaseSceneRenderer has no loaded StandardPBR Forward ShaderLab artifact fallback shader; scene objects without explicit materials may be skipped until a default material or imported shader artifact is loaded.");
 }
 
@@ -654,20 +739,29 @@ BaseSceneRenderer::Material* BaseSceneRenderer::ResolveDefaultSceneMaterial()
 {
 	const auto fallbackShader = ResolveLoadedSceneFallbackShader();
 	if (fallbackShader.shader == nullptr)
+	{
+		m_sceneFallbackMaterial.reset();
+		m_sceneFallbackShader = nullptr;
+		m_sceneFallbackShaderInstanceId = 0u;
+		m_sceneFallbackShaderGeneration = 0u;
+		m_sceneFallbackShaderResourcePath.clear();
 		return nullptr;
+	}
 
+	const auto shaderInstanceId = fallbackShader.shader->GetInstanceId();
 	const auto shaderGeneration = fallbackShader.shader->GetGeneration();
 	if (!m_sceneFallbackMaterial ||
 		m_sceneFallbackShader != fallbackShader.shader ||
+		m_sceneFallbackShaderInstanceId != shaderInstanceId ||
 		m_sceneFallbackShaderGeneration != shaderGeneration ||
 		m_sceneFallbackShaderResourcePath != fallbackShader.resourcePath)
 	{
 		m_sceneFallbackMaterial = std::make_unique<Render::Resources::Material>();
 		m_sceneFallbackMaterial->SetShader(fallbackShader.shader);
 		const_cast<std::string&>(m_sceneFallbackMaterial->path) = ":Generated/SceneFallbackMaterial";
-		m_sceneFallbackMaterial->Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
-		m_sceneFallbackMaterial->Set<Maths::Vector2>("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
-		m_sceneFallbackMaterial->Set<Maths::Vector2>("u_TextureOffset", Maths::Vector2::Zero);
+		m_sceneFallbackMaterial->SetRawParameter("_BaseColor", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
+		m_sceneFallbackMaterial->SetRawParameter("_Metallic", 0.0f);
+		m_sceneFallbackMaterial->SetRawParameter("_Roughness", 0.72f);
 		m_sceneFallbackMaterial->SetBlendable(false);
 		m_sceneFallbackMaterial->SetBackfaceCulling(false);
 		m_sceneFallbackMaterial->SetFrontfaceCulling(false);
@@ -675,6 +769,7 @@ BaseSceneRenderer::Material* BaseSceneRenderer::ResolveDefaultSceneMaterial()
 		m_sceneFallbackMaterial->SetDepthWriting(true);
 		m_sceneFallbackMaterial->SetColorWriting(true);
 		m_sceneFallbackShader = fallbackShader.shader;
+		m_sceneFallbackShaderInstanceId = shaderInstanceId;
 		m_sceneFallbackShaderGeneration = shaderGeneration;
 		m_sceneFallbackShaderResourcePath = fallbackShader.resourcePath;
 	}

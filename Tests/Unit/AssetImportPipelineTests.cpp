@@ -662,6 +662,8 @@ std::filesystem::path WriteTextureArtifactBlobForTest(
     return textureArtifactRelativePath;
 }
 
+std::string TextureArtifactTargetPlatformForTest();
+
 std::optional<NLS::Core::Assets::ArtifactManifest> ReadArtifactManifestFile(
     const std::filesystem::path& manifestPath)
 {
@@ -698,6 +700,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ReadArtifactManifestFile(
     {
         if (auto manifest = database.BuildManifestForSource(*requestedSourceAssetId, "editor"))
             return manifest;
+        if (auto manifest = database.BuildManifestForSource(*requestedSourceAssetId, TextureArtifactTargetPlatformForTest()))
+            return manifest;
     }
 
     for (const auto& record : database.GetRecords())
@@ -730,6 +734,15 @@ std::vector<uint8_t> TinyPng()
     };
 }
 
+std::string TextureArtifactTargetPlatformForTest()
+{
+#if defined(_WIN32)
+    return "win64-dx12";
+#else
+    return "editor";
+#endif
+}
+
 std::filesystem::path WriteImportedTextureAssetForTest(
     const std::filesystem::path& root,
     const std::filesystem::path& assetPath,
@@ -755,7 +768,10 @@ std::filesystem::path WriteImportedTextureAssetForTest(
     if (!decodedTexture.has_value())
         return {};
 
-    decodedTexture->targetPlatform = targetPlatform;
+    const auto effectiveTargetPlatform = targetPlatform == "editor"
+        ? TextureArtifactTargetPlatformForTest()
+        : targetPlatform;
+    decodedTexture->targetPlatform = effectiveTargetPlatform;
     decodedTexture->encoderId = "rgba8-passthrough";
     decodedTexture->encoderVersion = 1u;
     decodedTexture->buildIdentity = "unit-test-imported-texture:" + displayName;
@@ -765,7 +781,7 @@ std::filesystem::path WriteImportedTextureAssetForTest(
         textureMeta,
         "texture:main",
         displayName,
-        targetPlatform,
+        effectiveTargetPlatform,
         *decodedTexture);
     if (textureArtifactRelativePath.empty())
         return {};
@@ -776,14 +792,14 @@ std::filesystem::path WriteImportedTextureAssetForTest(
     textureManifest.sourceAssetId = textureMeta.id;
     textureManifest.importerId = textureMeta.importerId;
     textureManifest.importerVersion = textureMeta.importerVersion;
-    textureManifest.targetPlatform = targetPlatform;
+    textureManifest.targetPlatform = effectiveTargetPlatform;
     textureManifest.primarySubAssetKey = "texture:main";
     textureManifest.subAssets.push_back({
         textureMeta.id,
         "texture:main",
         NLS::Core::Assets::ArtifactType::Texture,
         "texture",
-        targetPlatform,
+        effectiveTargetPlatform,
         textureArtifactRelativePath.generic_string(),
         "sha256:" + textureArtifactPath.filename().generic_string(),
         displayName
@@ -1648,6 +1664,97 @@ TEST(AssetImportPipelineTests, ArtifactWriterFileNameDependsOnStoredContentNotRe
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetImportPipelineTests, ArtifactWriterCommitsDuplicateContentAddressedPayloadOnce)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeImportTestRoot();
+    const auto stagingRoot = root / "Staging";
+    const auto commitRoot = root / "Committed";
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = AssetId(NLS::Guid::Parse("abababab-abab-4bab-8bab-abababababab"));
+    request.importerId = "texture";
+    request.importerVersion = 4u;
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = "texture:Shared";
+    request.artifacts.push_back({
+        "texture:Shared",
+        ArtifactType::Texture,
+        "texture",
+        "Shared",
+        "textures/shared-a",
+        std::vector<uint8_t>{'s', 'a', 'm', 'e'}
+    });
+    request.artifacts.push_back({
+        "texture:Shared",
+        ArtifactType::Texture,
+        "texture",
+        "Shared",
+        "textures/shared-b",
+        std::vector<uint8_t>{'s', 'a', 'm', 'e'}
+    });
+
+    ArtifactWriter writer(stagingRoot, commitRoot);
+    const auto result = writer.WriteAndCommit(request, nullptr);
+
+    ASSERT_TRUE(result.committed) << JoinDiagnosticSummaries(result.diagnostics);
+    ASSERT_EQ(result.manifest.subAssets.size(), 2u);
+    EXPECT_EQ(result.manifest.subAssets[0].artifactPath, result.manifest.subAssets[1].artifactPath);
+
+    const auto relative = std::filesystem::path(result.manifest.subAssets[0].artifactPath);
+    ASSERT_FALSE(relative.empty());
+    EXPECT_EQ(relative.begin()->generic_string().size(), 2u);
+    EXPECT_TRUE(std::filesystem::is_regular_file(commitRoot / relative));
+    EXPECT_FALSE(std::filesystem::path(result.manifest.subAssets[0].artifactPath).filename().has_extension());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ArtifactWriterSkipsPhysicalCommitWhenContentBlobAlreadyExists)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeImportTestRoot();
+    const auto stagingRoot = root / "Staging";
+    const auto commitRoot = root / "Committed";
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = AssetId(NLS::Guid::Parse("acacacac-acac-4cac-8cac-acacacacacac"));
+    request.importerId = "model";
+    request.importerVersion = 5u;
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = "prefab:Root";
+    request.artifacts.push_back({
+        "prefab:Root",
+        ArtifactType::Prefab,
+        "prefab",
+        "Root",
+        "prefabs/root",
+        std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'}
+    });
+    request.artifacts.push_back({
+        "material:Body",
+        ArtifactType::Material,
+        "material",
+        "Body",
+        "materials/body",
+        std::vector<uint8_t>{'m', 'a', 't'}
+    });
+
+    ArtifactWriter writer(stagingRoot, commitRoot);
+    const auto firstResult = writer.WriteAndCommit(request, nullptr);
+    ASSERT_TRUE(firstResult.committed) << JoinDiagnosticSummaries(firstResult.diagnostics);
+
+    const auto secondResult = writer.WriteAndCommit(request, &firstResult.manifest);
+    ASSERT_TRUE(secondResult.committed) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    ASSERT_EQ(secondResult.manifest.subAssets.size(), firstResult.manifest.subAssets.size());
+    EXPECT_EQ(secondResult.manifest.subAssets[0].artifactPath, firstResult.manifest.subAssets[0].artifactPath);
+    EXPECT_EQ(secondResult.manifest.subAssets[1].artifactPath, firstResult.manifest.subAssets[1].artifactPath);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImportPipelineTests, NativeArtifactContainerViewPreservesValidationAndAvoidsPayloadCopy)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
@@ -1697,6 +1804,22 @@ TEST(AssetImportPipelineTests, NativeArtifactContainerViewPreservesValidationAnd
     const auto corruptView = ReadNativeArtifactContainerView(corrupted, ArtifactType::Prefab, 1u);
     EXPECT_FALSE(corruptView.has_value())
         << "The low-copy view must keep native container payload hash validation, not trust mapped bytes blindly.";
+
+    auto corruptedDependencyHash = bytes;
+    const std::string dependencyHashPrefix = "DEPENDENCY_HASH=fnv1a64:";
+    const auto dependencyHashBegin = std::search(
+        corruptedDependencyHash.begin(),
+        corruptedDependencyHash.end(),
+        dependencyHashPrefix.begin(),
+        dependencyHashPrefix.end());
+    ASSERT_NE(dependencyHashBegin, corruptedDependencyHash.end());
+    const auto dependencyHashDigit = dependencyHashBegin + static_cast<std::ptrdiff_t>(dependencyHashPrefix.size());
+    ASSERT_NE(dependencyHashDigit, corruptedDependencyHash.end());
+    *dependencyHashDigit = *dependencyHashDigit == '0' ? '1' : '0';
+    const auto corruptDependencyHashView =
+        ReadNativeArtifactContainerView(corruptedDependencyHash, ArtifactType::Prefab, 1u);
+    EXPECT_FALSE(corruptDependencyHashView.has_value())
+        << "The low-copy view must also keep native container dependency hash validation.";
 }
 
 TEST(AssetImportPipelineTests, NativeArtifactContainerViewRejectsMissingPayloadWithDiagnostics)
@@ -3604,7 +3727,6 @@ TEST(AssetImportPipelineTests, TextureFormatResolverMapsWindowsDx12CommonCases)
     NLS::Render::Assets::TextureImportSettingsSnapshot settings;
     settings.textureType = "default";
     settings.compressionIntent = "default";
-    settings.mipmapEnabled = true;
 
     NLS::Render::Assets::TextureSourceDescriptor source;
     source.assetPath = "Assets/Textures/HeroBaseColor.png";
@@ -3642,6 +3764,7 @@ TEST(AssetImportPipelineTests, TextureFormatResolverMapsWindowsDx12CommonCases)
         1u);
     ASSERT_TRUE(color.has_value());
     EXPECT_EQ(color->resolvedFormat, NLS::Render::RHI::TextureFormat::BC1);
+    EXPECT_TRUE(color->mipmapEnabled);
 
     const auto incompatibleSettings = settings;
     auto incompatibleSource = source;
@@ -4668,7 +4791,11 @@ TEST(AssetImportPipelineTests, ExternalModelImportReusesProjectTextureAssetBySou
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         false);
     ASSERT_TRUE(decodedTexture.has_value());
-    decodedTexture->targetPlatform = "editor";
+    const auto textureTargetPlatform = TextureArtifactTargetPlatformForTest();
+    const auto wrongTextureTargetPlatform = textureTargetPlatform == "editor"
+        ? std::string("win64-dx12")
+        : std::string("editor");
+    decodedTexture->targetPlatform = textureTargetPlatform;
     decodedTexture->encoderId = "rgba8-passthrough";
     decodedTexture->encoderVersion = 1u;
     decodedTexture->buildIdentity = "unit-test-shared-texture";
@@ -4677,18 +4804,18 @@ TEST(AssetImportPipelineTests, ExternalModelImportReusesProjectTextureAssetBySou
         textureMeta,
         "texture:main",
         "SharedAlbedo",
-        "editor",
+        textureTargetPlatform,
         *decodedTexture);
     ASSERT_FALSE(textureArtifactRelativePath.empty());
     const auto textureArtifactPath = root / textureArtifactRelativePath;
-    decodedTexture->targetPlatform = "win64-dx12";
-    decodedTexture->buildIdentity = "unit-test-shared-texture-win64";
+    decodedTexture->targetPlatform = wrongTextureTargetPlatform;
+    decodedTexture->buildIdentity = "unit-test-shared-texture-wrong-platform";
     const auto wrongPlatformTextureArtifactRelativePath = WriteTextureArtifactBlobForTest(
         root,
         textureMeta,
-        "texture:win64",
-        "SharedAlbedoWin64",
-        "win64-dx12",
+        "texture:wrong-platform",
+        "SharedAlbedoWrongPlatform",
+        wrongTextureTargetPlatform,
         *decodedTexture);
     ASSERT_FALSE(wrongPlatformTextureArtifactRelativePath.empty());
     const auto wrongPlatformTextureArtifactPath = root / wrongPlatformTextureArtifactRelativePath;
@@ -4697,34 +4824,34 @@ TEST(AssetImportPipelineTests, ExternalModelImportReusesProjectTextureAssetBySou
     textureManifest.sourceAssetId = textureAssetId;
     textureManifest.importerId = textureMeta.importerId;
     textureManifest.importerVersion = textureMeta.importerVersion;
-    textureManifest.targetPlatform = "editor";
+    textureManifest.targetPlatform = textureTargetPlatform;
     textureManifest.primarySubAssetKey = "texture:main";
     NLS::Core::Assets::ArtifactManifest wrongPlatformTextureManifest;
     wrongPlatformTextureManifest.sourceAssetId = textureAssetId;
     wrongPlatformTextureManifest.importerId = textureMeta.importerId;
     wrongPlatformTextureManifest.importerVersion = textureMeta.importerVersion;
-    wrongPlatformTextureManifest.targetPlatform = "win64-dx12";
-    wrongPlatformTextureManifest.primarySubAssetKey = "texture:win64";
+    wrongPlatformTextureManifest.targetPlatform = wrongTextureTargetPlatform;
+    wrongPlatformTextureManifest.primarySubAssetKey = "texture:wrong-platform";
 
     textureManifest.subAssets.push_back({
         textureAssetId,
         "texture:main",
         NLS::Core::Assets::ArtifactType::Texture,
         "texture",
-        "editor",
+        textureTargetPlatform,
         textureArtifactRelativePath.generic_string(),
         "sha256:" + textureArtifactPath.filename().generic_string(),
         "SharedAlbedo"
     });
     wrongPlatformTextureManifest.subAssets.push_back({
         textureAssetId,
-        "texture:win64",
+        "texture:wrong-platform",
         NLS::Core::Assets::ArtifactType::Texture,
         "texture",
-        "win64-dx12",
+        wrongTextureTargetPlatform,
         wrongPlatformTextureArtifactRelativePath.generic_string(),
         "sha256:" + wrongPlatformTextureArtifactPath.filename().generic_string(),
-        "SharedAlbedoWin64"
+        "SharedAlbedoWrongPlatform"
     });
     WriteArtifactManifestFile(textureArtifactRoot, textureManifest);
     WriteArtifactManifestFile(textureArtifactRoot, wrongPlatformTextureManifest);
@@ -4965,18 +5092,26 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsMissingProjectTextu
     const auto& importedTextureManifest = result.autoImportedDependencies.front().manifest;
     EXPECT_EQ(result.autoImportedDependencies.front().sourcePath.lexically_normal(), texturePath.lexically_normal());
     ASSERT_EQ(importedTextureManifest.sourceAssetId, importedTextureMeta->id);
-    ASSERT_EQ(importedTextureManifest.targetPlatform, "editor");
+    ASSERT_EQ(importedTextureManifest.targetPlatform, TextureArtifactTargetPlatformForTest());
     const auto* importedTextureArtifact = importedTextureManifest.FindPrimaryArtifact();
     ASSERT_NE(importedTextureArtifact, nullptr);
     EXPECT_EQ(importedTextureArtifact->artifactType, NLS::Core::Assets::ArtifactType::Texture);
-    EXPECT_EQ(importedTextureArtifact->targetPlatform, "editor");
+    EXPECT_EQ(importedTextureArtifact->targetPlatform, TextureArtifactTargetPlatformForTest());
     const auto importedTextureArtifactPath = ResolveTestArtifactPath(root, importedTextureArtifact->artifactPath);
     EXPECT_TRUE(std::filesystem::is_regular_file(importedTextureArtifactPath));
 
     const auto decodedTexture = NLS::Render::Assets::DeserializeTextureArtifact(
         ReadBinaryFile(importedTextureArtifactPath));
     ASSERT_TRUE(decodedTexture.has_value());
+#if defined(_WIN32) && NLS_HAS_DIRECTXTEX
+    EXPECT_EQ(decodedTexture->targetPlatform, "win64-dx12");
+    EXPECT_EQ(decodedTexture->format, NLS::Render::RHI::TextureFormat::BC1);
+    EXPECT_EQ(decodedTexture->encoderId, "directxtex-bc");
+#else
     EXPECT_EQ(decodedTexture->targetPlatform, "editor");
+    EXPECT_EQ(decodedTexture->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    EXPECT_EQ(decodedTexture->encoderId, "rgba8-passthrough");
+#endif
 
     const auto* materialArtifact = FindFirstArtifactOfType(
         result.manifest,
@@ -5071,7 +5206,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportRecordsProjectTextureFreshness
     const auto* artifactDependency = FindDependency(
         result.manifest,
         NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,
-        textureAssetId.ToString() + "#texture:main@editor");
+        textureAssetId.ToString() + "#texture:main@" + TextureArtifactTargetPlatformForTest());
     ASSERT_NE(artifactDependency, nullptr);
     const auto textureArtifactContentHash = "sha256:" + textureArtifactPath.filename().generic_string();
     EXPECT_EQ(artifactDependency->hashOrVersion, textureArtifactContentHash);
@@ -7396,7 +7531,8 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapOverridesS
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         false);
     ASSERT_TRUE(remapTextureArtifact.has_value());
-    remapTextureArtifact->targetPlatform = "editor";
+    const auto textureTargetPlatform = TextureArtifactTargetPlatformForTest();
+    remapTextureArtifact->targetPlatform = textureTargetPlatform;
     remapTextureArtifact->encoderId = "rgba8-passthrough";
     remapTextureArtifact->encoderVersion = 1u;
     remapTextureArtifact->buildIdentity = "unit-test-remap-texture";
@@ -7406,7 +7542,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapOverridesS
         remapTextureMeta,
         "texture:main",
         "OverrideAlbedo",
-        "editor",
+        textureTargetPlatform,
         *remapTextureArtifact);
     ASSERT_FALSE(remapTextureArtifactRelativePath.empty());
     const auto remapTextureArtifactPath = root / remapTextureArtifactRelativePath;
@@ -7414,14 +7550,14 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapOverridesS
     remapTextureManifest.sourceAssetId = remapTextureId;
     remapTextureManifest.importerId = remapTextureMeta.importerId;
     remapTextureManifest.importerVersion = remapTextureMeta.importerVersion;
-    remapTextureManifest.targetPlatform = "editor";
+    remapTextureManifest.targetPlatform = textureTargetPlatform;
     remapTextureManifest.primarySubAssetKey = "texture:main";
     remapTextureManifest.subAssets.push_back({
         remapTextureId,
         "texture:main",
         NLS::Core::Assets::ArtifactType::Texture,
         "texture",
-        "editor",
+        textureTargetPlatform,
         remapTextureArtifactRelativePath.generic_string(),
         "sha256:" + remapTextureArtifactPath.filename().generic_string(),
         "OverrideAlbedo"
@@ -7525,7 +7661,8 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapSurvivesTa
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         false);
     ASSERT_TRUE(remapTextureArtifact.has_value());
-    remapTextureArtifact->targetPlatform = "editor";
+    const auto textureTargetPlatform = TextureArtifactTargetPlatformForTest();
+    remapTextureArtifact->targetPlatform = textureTargetPlatform;
     remapTextureArtifact->encoderId = "rgba8-passthrough";
     remapTextureArtifact->encoderVersion = 1u;
     remapTextureArtifact->buildIdentity = "unit-test-moved-remap-texture";
@@ -7535,7 +7672,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapSurvivesTa
         remapTextureMeta,
         "texture:main",
         "MovedOverride",
-        "editor",
+        textureTargetPlatform,
         *remapTextureArtifact);
     ASSERT_FALSE(remapTextureArtifactRelativePath.empty());
     const auto remapTextureArtifactPath = root / remapTextureArtifactRelativePath;
@@ -7544,14 +7681,14 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitTextureRemapSurvivesTa
     remapTextureManifest.sourceAssetId = remapTextureId;
     remapTextureManifest.importerId = remapTextureMeta.importerId;
     remapTextureManifest.importerVersion = remapTextureMeta.importerVersion;
-    remapTextureManifest.targetPlatform = "editor";
+    remapTextureManifest.targetPlatform = textureTargetPlatform;
     remapTextureManifest.primarySubAssetKey = "texture:main";
     remapTextureManifest.subAssets.push_back({
         remapTextureId,
         "texture:main",
         NLS::Core::Assets::ArtifactType::Texture,
         "texture",
-        "editor",
+        textureTargetPlatform,
         remapTextureArtifactRelativePath.generic_string(),
         "sha256:" + remapTextureArtifactPath.filename().generic_string(),
         "MovedOverride"
@@ -7654,7 +7791,8 @@ TEST(AssetImportPipelineTests, ExternalModelImportInvalidTextureRemapWarnsAndFal
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
         false);
     ASSERT_TRUE(decodedTexture.has_value());
-    decodedTexture->targetPlatform = "editor";
+    const auto textureTargetPlatform = TextureArtifactTargetPlatformForTest();
+    decodedTexture->targetPlatform = textureTargetPlatform;
     decodedTexture->encoderId = "rgba8-passthrough";
     decodedTexture->encoderVersion = 1u;
     decodedTexture->buildIdentity = "unit-test-remap-fallback";
@@ -7664,7 +7802,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportInvalidTextureRemapWarnsAndFal
         textureMeta,
         "texture:main",
         "SharedAlbedo",
-        "editor",
+        textureTargetPlatform,
         *decodedTexture);
     ASSERT_FALSE(textureArtifactRelativePath.empty());
     const auto textureArtifactPath = root / textureArtifactRelativePath;
@@ -7672,14 +7810,14 @@ TEST(AssetImportPipelineTests, ExternalModelImportInvalidTextureRemapWarnsAndFal
     textureManifest.sourceAssetId = textureAssetId;
     textureManifest.importerId = textureMeta.importerId;
     textureManifest.importerVersion = textureMeta.importerVersion;
-    textureManifest.targetPlatform = "editor";
+    textureManifest.targetPlatform = textureTargetPlatform;
     textureManifest.primarySubAssetKey = "texture:main";
     textureManifest.subAssets.push_back({
         textureAssetId,
         "texture:main",
         NLS::Core::Assets::ArtifactType::Texture,
         "texture",
-        "editor",
+        textureTargetPlatform,
         textureArtifactRelativePath.generic_string(),
         "sha256:" + textureArtifactPath.filename().generic_string(),
         "SharedAlbedo"

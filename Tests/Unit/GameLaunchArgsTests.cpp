@@ -61,6 +61,7 @@ namespace
         void TearDown() override
         {
             ResetRuntimeArtifactAuthorization();
+            NLS::Core::ResourceManagement::ShaderManager::ProvideAssetPaths({}, {});
         }
 
     private:
@@ -208,6 +209,61 @@ TEST_F(GameLaunchArgsTests, LoadsRuntimeAssetDatabaseFromProjectArtifactDB)
     ASSERT_NE(entry, nullptr);
     EXPECT_EQ(entry->artifactPath, RuntimeArtifactPath(kHeroArtifactHash));
     EXPECT_EQ(entry->loaderId, "mesh");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST_F(GameLaunchArgsTests, RuntimeAssetDatabaseLoadedFromArtifactDbUsesArtifactSourceAssetId)
+{
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("nullus_game_runtime_artifact_db_subasset_identity_" + NLS::Guid::New().ToString());
+
+    const auto modelId = NLS::Core::Assets::AssetId(NLS::Guid::New());
+    const auto materialId = NLS::Core::Assets::AssetId(NLS::Guid::New());
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = modelId;
+    manifest.importerId = "scene-model";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "win64";
+    manifest.primarySubAssetKey = "prefab:Hero";
+    manifest.subAssets.push_back({
+        modelId,
+        "prefab:Hero",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        "prefab",
+        "win64",
+        RuntimeArtifactPath(kHeroArtifactHash),
+        "sha256:" + std::string(kHeroArtifactHash),
+        "Hero"
+    });
+    constexpr const char* kMaterialArtifactHash = "abababababababababababababababababababababababababababababababab";
+    manifest.subAssets.push_back({
+        materialId,
+        "material:Body",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        "win64",
+        RuntimeArtifactPath(kMaterialArtifactHash),
+        "sha256:" + std::string(kMaterialArtifactHash),
+        "Body"
+    });
+
+    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
+    artifactDatabase.UpsertManifest(
+        manifest,
+        "Assets/Models/Hero.gltf",
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
+
+    const auto runtimeDatabase =
+        NLS::Game::RuntimeAssets::LoadRuntimeAssetDatabaseForProjectSettings(root / "TestProject.nullus");
+
+    ASSERT_TRUE(runtimeDatabase.has_value());
+    EXPECT_NE(runtimeDatabase->Resolve(modelId, "prefab:Hero"), nullptr);
+    EXPECT_NE(runtimeDatabase->Resolve(materialId, "material:Body"), nullptr);
+    EXPECT_EQ(runtimeDatabase->Resolve(modelId, "material:Body"), nullptr);
 
     std::filesystem::remove_all(root);
 }

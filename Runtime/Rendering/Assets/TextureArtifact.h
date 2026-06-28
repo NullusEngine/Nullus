@@ -6,7 +6,9 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,24 @@ struct TextureArtifactMip
     uint32_t rowPitch = 0u;
     uint32_t slicePitch = 0u;
     std::vector<uint8_t> pixels;
+    std::span<const uint8_t> pixelView;
+
+    bool HasPixels() const
+    {
+        return PixelData() != nullptr && PixelSize() != 0u;
+    }
+
+    const uint8_t* PixelData() const
+    {
+        if (!pixelView.empty())
+            return pixelView.data();
+        return pixels.empty() ? nullptr : pixels.data();
+    }
+
+    size_t PixelSize() const
+    {
+        return !pixelView.empty() ? pixelView.size() : pixels.size();
+    }
 };
 
 struct TextureArtifactSubresource
@@ -70,6 +90,7 @@ struct TextureArtifactData
     uint32_t encoderVersion = 0u;
     std::vector<TextureArtifactMip> mips;
     std::vector<TextureArtifactSubresource> subresources;
+    std::shared_ptr<std::vector<uint8_t>> backingBytes;
 };
 
 struct TextureArtifactHeaderPreview

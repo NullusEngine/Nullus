@@ -2395,7 +2395,11 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 		m_projectBrowserInlineRename.pending = false;
 	}
 	if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)
+	{
 		m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
+		m_lightGpuThumbnailGenerationDeferredUntil =
+			now + kAssetBrowserScrollIdleDelaySeconds;
+	}
 	const bool interactive = IsAssetBrowserInteractive();
 	const auto texturePumpDecision = NLS::Editor::Assets::PlanAssetBrowserCachedThumbnailTexturePump({
 		interactive,
@@ -2856,6 +2860,7 @@ void Editor::Panels::AssetBrowser::SelectProjectFolder(const std::string& projec
 	m_selectedProjectItem.clear();
 	CancelInlineRenameProjectItem();
 	m_assetBrowserInteractiveUntil = ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds;
+	m_lightGpuThumbnailGenerationDeferredUntil = ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds;
 	m_heavyGpuThumbnailGenerationDeferredUntil = ImGui::GetTime() + kAssetBrowserHeavyGpuThumbnailIdleDelaySeconds;
 	m_nextHeavyGpuThumbnailGenerationTime = m_heavyGpuThumbnailGenerationDeferredUntil;
 	AddProjectBrowserAncestorFolders(m_expandedProjectFolders, m_selectedProjectFolder);
@@ -2936,6 +2941,9 @@ void Editor::Panels::AssetBrowser::MarkProjectAssetDisplayItemsDirty()
 	m_thumbnailScopeBuildInProgress = false;
 	m_heavyGpuThumbnailGenerationDeferredUntil = (std::max)(
 		m_heavyGpuThumbnailGenerationDeferredUntil,
+		ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds);
+	m_lightGpuThumbnailGenerationDeferredUntil = (std::max)(
+		m_lightGpuThumbnailGenerationDeferredUntil,
 		ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds);
 	m_nextGpuThumbnailGenerationTime = (std::max)(
 		m_nextGpuThumbnailGenerationTime,
@@ -4848,6 +4856,7 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 		m_thumbnailService.HasInFlightRequest(),
 		hasPreviewRenderer,
 		now,
+		m_lightGpuThumbnailGenerationDeferredUntil,
 		m_nextGpuThumbnailGenerationTime
 	});
 	if (lightGpuPumpDecision.shouldPump)

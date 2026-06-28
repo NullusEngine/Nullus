@@ -3,7 +3,6 @@
 #include "Assets/ArtifactManifest.h"
 #include "CoreDef.h"
 
-#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>

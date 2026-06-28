@@ -1582,7 +1582,9 @@ AssetBrowserLightGpuThumbnailPumpDecision PlanAssetBrowserLightGpuThumbnailPump(
         return decision;
     }
 
-    decision.shouldPump = input.nowSeconds >= input.nextAllowedSeconds;
+    decision.shouldPump =
+        input.nowSeconds >= input.deferredUntilSeconds &&
+        input.nowSeconds >= input.nextAllowedSeconds;
     return decision;
 }
 

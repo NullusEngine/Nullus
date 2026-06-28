@@ -339,6 +339,7 @@ struct AssetBrowserLightGpuThumbnailPumpInput
     bool hasInFlightWork = false;
     bool hasPreviewRenderer = false;
     double nowSeconds = 0.0;
+    double deferredUntilSeconds = 0.0;
     double nextAllowedSeconds = 0.0;
 };
 

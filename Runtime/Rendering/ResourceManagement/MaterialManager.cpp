@@ -892,6 +892,18 @@ Material* MaterialManager::RequestAsyncArtifact(const std::string& path, const b
 		return nullptr;
 	}
 
+Material* MaterialManager::RequestAsyncArtifactForPreview(const std::string& path, const bool cancelableInterest)
+{
+	if (auto* cached = GetResource(path, false))
+		return cached;
+
+	const auto realPath = ResolveResourcePath(path);
+	if (auto* cached = FindCachedMaterialByEquivalentArtifactPath(*this, realPath))
+		return cached;
+
+	return RequestAsyncArtifact(path, cancelableInterest);
+}
+
 void MaterialManager::CancelAsyncArtifact(const std::string& path)
 {
 	if (path.empty())

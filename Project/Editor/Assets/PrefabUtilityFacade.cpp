@@ -17,6 +17,7 @@ namespace
 {
 using NLS::Engine::Assets::PrefabArtifact;
 using NLS::Engine::Assets::PrefabOverridePatchKind;
+using NLS::Engine::Assets::PrefabResolvedAsset;
 using NLS::Engine::Serialize::ObjectIdentifier;
 
 std::string NormalizePrefabIdentityAssetPath(const std::string& sourceAssetPath)
@@ -79,6 +80,91 @@ void AddDiagnostic(
     std::string message)
 {
     state.diagnostics.push_back({std::move(code), std::move(message)});
+}
+
+const PrefabResolvedAsset* FindResolvedAssetForSerializedReference(
+    const std::vector<PrefabResolvedAsset>& resolvedAssets,
+    const ObjectIdentifier& reference)
+{
+    const auto assetId = NLS::Core::Assets::AssetId(reference.guid);
+    for (const auto& resolved : resolvedAssets)
+    {
+        if (resolved.assetId != assetId || resolved.subAssetKey.empty())
+            continue;
+
+        const auto expectedFileId = NLS::Engine::Serialize::MakeLocalIdentifierInFile(
+            reference.guid,
+            resolved.subAssetKey);
+        if (expectedFileId != reference.localIdentifierInFile)
+            continue;
+
+        return &resolved;
+    }
+    return nullptr;
+}
+
+void NormalizeAssetReferenceValue(
+    NLS::Engine::Serialize::PropertyValue& value,
+    const std::vector<PrefabResolvedAsset>& resolvedAssets)
+{
+    switch (value.GetKind())
+    {
+    case NLS::Engine::Serialize::PropertyValue::Kind::ObjectReference:
+    {
+        auto reference = value.GetObjectReference();
+        if (!reference.guid.IsValid())
+            return;
+
+        const auto* resolved = FindResolvedAssetForSerializedReference(resolvedAssets, reference);
+        if (resolved == nullptr || reference.filePath == resolved->subAssetKey)
+            return;
+
+        reference.filePath = resolved->subAssetKey;
+        value = NLS::Engine::Serialize::PropertyValue::ObjectReference(std::move(reference));
+        break;
+    }
+    case NLS::Engine::Serialize::PropertyValue::Kind::Array:
+    {
+        auto items = value.GetArray();
+        for (auto& item : items)
+            NormalizeAssetReferenceValue(item, resolvedAssets);
+        value = NLS::Engine::Serialize::PropertyValue::Array(std::move(items));
+        break;
+    }
+    case NLS::Engine::Serialize::PropertyValue::Kind::Object:
+    {
+        auto properties = value.GetObject();
+        for (auto& property : properties)
+            NormalizeAssetReferenceValue(property.second, resolvedAssets);
+        value = NLS::Engine::Serialize::PropertyValue::Object(std::move(properties));
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void NormalizeAssetReferencesInDocument(
+    NLS::Engine::Serialize::ObjectGraphDocument& document,
+    const std::vector<PrefabResolvedAsset>& resolvedAssets)
+{
+    if (resolvedAssets.empty())
+        return;
+
+    for (auto& object : document.objects)
+    {
+        for (auto& property : object.properties)
+            NormalizeAssetReferenceValue(property.value, resolvedAssets);
+    }
+}
+
+void NormalizePrefabInstanceAssetReferences(
+    NLS::Engine::Serialize::ObjectGraphDocument& document,
+    const PrefabInstanceRecord& instance)
+{
+    NormalizeAssetReferencesInDocument(document, instance.preservedResolvedAssets);
+    for (const auto& nested : instance.nestedInstances)
+        NormalizePrefabInstanceAssetReferences(document, nested);
 }
 
 PrefabOverrideKind ConvertOverrideKind(PrefabOverridePatchKind kind)
@@ -1819,6 +1905,14 @@ void PrefabUtilityFacade::AnnotateSceneDocumentWithPrefabInstances(
         if (emittedInstances.insert(instance).second)
             AddUnityStylePrefabInstanceRecord(sceneDocument, *instance, sceneObjectIdsByObject);
     }
+}
+
+void PrefabUtilityFacade::NormalizeSceneDocumentPrefabAssetReferences(
+    NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const PrefabInstanceRegistry& instanceRegistry) const
+{
+    for (const auto& instance : instanceRegistry.GetInstances())
+        NormalizePrefabInstanceAssetReferences(sceneDocument, instance);
 }
 
 PrefabOperationResult PrefabUtilityFacade::RestorePrefabInstancesFromSceneDocument(

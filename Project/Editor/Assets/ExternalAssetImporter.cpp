@@ -536,6 +536,14 @@ std::string FileStamp(const std::filesystem::path& path)
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
+std::string SourceFileContentHash(const std::filesystem::path& path)
+{
+    const auto bytes = ReadBinaryFile(path);
+    if (bytes.empty() && !std::filesystem::is_regular_file(path))
+        return {};
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
+}
+
 bool IsEmbeddedUri(const std::string& uri)
 {
     return ToLower(uri).rfind("data:", 0u) == 0u;
@@ -672,7 +680,7 @@ std::optional<NLS::Core::Assets::AssetDependencyRecord> MakeExternalSourceFileDe
         return std::nullopt;
     const auto dependencyEditorPath = (editorPathRoot / editorPath).lexically_normal();
 
-    const auto stamp = FileStamp(*dependencyPath);
+    const auto stamp = SourceFileContentHash(*dependencyPath);
     if (stamp.empty())
         return std::nullopt;
 
@@ -758,6 +766,8 @@ std::string MappingModeForTextureResolutionKind(const ModelTextureResolutionKind
     return {};
 }
 
+std::string ResolveExternalTextureBuildTargetPlatform(const std::string& artifactTargetPlatform);
+
 void AddResolvedTextureDependencies(
     std::vector<NLS::Core::Assets::AssetDependencyRecord>& dependencies,
     const ExternalModelImportRequest& request,
@@ -799,9 +809,10 @@ void AddResolvedTextureDependencies(
 
         if (!resolved.targetSubAssetKey.empty())
         {
+            const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
             AddUniqueDependency(dependencies, {
                 NLS::Core::Assets::AssetDependencyKind::ImportedArtifact,
-                resolved.targetAssetId.ToString() + "#" + resolved.targetSubAssetKey + "@" + request.targetPlatform,
+                resolved.targetAssetId.ToString() + "#" + resolved.targetSubAssetKey + "@" + textureTargetPlatform,
                 resolved.targetArtifactHashOrVersion
             });
         }
@@ -1491,7 +1502,7 @@ void AddMtlTextureDependencyUri(
         return;
     editorPath = (request.editorPathRoot / editorPath).lexically_normal();
 
-    const auto stamp = FileStamp(dependencyPath);
+    const auto stamp = SourceFileContentHash(dependencyPath);
     if (stamp.empty())
         return;
 
@@ -1810,7 +1821,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextu
     const std::filesystem::path& editorPath,
     const NLS::Core::Assets::AssetMeta& textureMeta,
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
-    std::vector<ModelTextureAutoImportSideEffect>* sideEffects);
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects,
+    const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders);
 
 bool ValidateDecodedTextureSafetyLimits(
     const NLS::Render::Assets::TextureArtifactData& artifact,
@@ -1819,6 +1831,18 @@ bool ValidateDecodedTextureSafetyLimits(
     const std::filesystem::path& sourcePath,
     const std::string& textureKey,
     const std::string& textureUri);
+
+std::vector<uint8_t> BuildExternalModelTextureArtifactPayload(
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::string& textureKey,
+    const std::string& artifactKey,
+    NLS::Render::Assets::TextureArtifactColorSpace colorSpace,
+    const std::vector<uint8_t>& encodedBytes,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    NLS::Core::Assets::AssetId assetId,
+    const ExternalModelImportRequest& request,
+    const std::string& textureBuildTargetPlatform,
+    const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders);
 
 std::optional<std::filesystem::path> ToProjectRelativePath(
     const ExternalModelImportRequest& request,
@@ -2042,7 +2066,8 @@ std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForPath(
     const std::filesystem::path& editorPath,
     const ModelTextureResolutionSettings& settings,
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
-    std::vector<ModelTextureAutoImportSideEffect>* sideEffects)
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects,
+    const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders)
 {
     std::vector<ModelTextureAssetCandidate> candidates;
     NLS::Core::Assets::AssetMeta meta;
@@ -2066,14 +2091,15 @@ std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForPath(
     candidate.rootIndex = 0u;
 
     const auto artifactRoot = request.projectRoot / "Library" / "Artifacts";
-    auto manifest = LoadArtifactManifestForSource(request.projectRoot, meta.id, request.targetPlatform);
+    const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
+    auto manifest = LoadArtifactManifestForSource(request.projectRoot, meta.id, textureTargetPlatform);
     if (!manifest.has_value() && settings.autoImportMissingTextureFiles)
-        manifest = AutoImportMissingProjectTextureAsset(request, editorPath, meta, diagnostics, sideEffects);
+        manifest = AutoImportMissingProjectTextureAsset(request, editorPath, meta, diagnostics, sideEffects, textureEncoders);
     if (manifest.has_value() &&
         TryApplyTextureArtifactCandidate(
             candidate,
             *manifest,
-            request.targetPlatform,
+            textureTargetPlatform,
             request.projectRoot,
             artifactRoot))
     {
@@ -2083,13 +2109,13 @@ std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForPath(
 
     if (settings.autoImportMissingTextureFiles)
     {
-        manifest = AutoImportMissingProjectTextureAsset(request, editorPath, meta, diagnostics, sideEffects);
+        manifest = AutoImportMissingProjectTextureAsset(request, editorPath, meta, diagnostics, sideEffects, textureEncoders);
         if (manifest.has_value())
         {
             (void)TryApplyTextureArtifactCandidate(
                 candidate,
                 *manifest,
-                request.targetPlatform,
+                textureTargetPlatform,
                 request.projectRoot,
                 artifactRoot);
         }
@@ -2123,18 +2149,19 @@ std::optional<ModelTextureAssetCandidate> BuildTextureAssetCandidateForExistingA
     candidate.nameQuery = nameQuery;
 
     const auto artifactRoot = request.projectRoot / "Library" / "Artifacts";
-    const auto manifest = LoadArtifactManifestForSource(request.projectRoot, meta->id, request.targetPlatform);
+    const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
+    const auto manifest = LoadArtifactManifestForSource(request.projectRoot, meta->id, textureTargetPlatform);
     if (!manifest.has_value())
         return candidate;
 
-    const auto* artifact = FindTextureArtifactForRequest(*manifest, request.targetPlatform);
+    const auto* artifact = FindTextureArtifactForRequest(*manifest, textureTargetPlatform);
     if (artifact == nullptr)
         return candidate;
 
     (void)TryApplyTextureArtifactCandidate(
         candidate,
         *manifest,
-        request.targetPlatform,
+        textureTargetPlatform,
         request.projectRoot,
         artifactRoot);
     return candidate;
@@ -2238,14 +2265,15 @@ std::optional<ModelTextureAssetCandidate> BuildTextureAssetCandidateForRemapSett
 
     candidate.assetId = setting.targetAssetId;
     const auto artifactRoot = request.projectRoot / "Library" / "Artifacts";
-    const auto manifest = LoadArtifactManifestForSource(request.projectRoot, setting.targetAssetId, request.targetPlatform);
+    const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
+    const auto manifest = LoadArtifactManifestForSource(request.projectRoot, setting.targetAssetId, textureTargetPlatform);
     if (!manifest.has_value())
         return candidate;
 
     (void)TryApplyTextureArtifactCandidate(
         candidate,
         *manifest,
-        request.targetPlatform,
+        textureTargetPlatform,
         request.projectRoot,
         artifactRoot,
         setting.targetSubAssetKey);
@@ -2373,7 +2401,8 @@ ModelTextureResolveRequest BuildModelTextureResolveRequest(
     const ExternalModelImportRequest& request,
     const std::vector<ModelTextureSourceReference>& sources,
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
-    std::vector<ModelTextureAutoImportSideEffect>* sideEffects)
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects,
+    const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders)
 {
     ModelTextureResolveRequest resolveRequest;
     resolveRequest.settings = LoadModelTextureResolutionSettings(request.meta);
@@ -2404,7 +2433,8 @@ ModelTextureResolveRequest BuildModelTextureResolveRequest(
             path,
             resolveRequest.settings,
             diagnostics,
-            sideEffects);
+            sideEffects,
+            textureEncoders);
         resolveRequest.pathCandidates.insert(
             resolveRequest.pathCandidates.end(),
             std::make_move_iterator(candidates.begin()),
@@ -2487,7 +2517,8 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextu
     const std::filesystem::path& editorPath,
     const NLS::Core::Assets::AssetMeta& textureMeta,
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
-    std::vector<ModelTextureAutoImportSideEffect>* sideEffects)
+    std::vector<ModelTextureAutoImportSideEffect>* sideEffects,
+    const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders)
 {
     const auto projectRelativePath = ToProjectRelativePath(request, editorPath);
     if (!projectRelativePath.has_value())
@@ -2505,43 +2536,30 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextu
         return std::nullopt;
     }
 
-    auto artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
-        encodedBytes.data(),
-        encodedBytes.size(),
+    NLS::Render::Assets::ImportedScene scene;
+    scene.textures.push_back({
+        "texture:main",
+        editorPath.generic_string(),
+        {}
+    });
+    scene.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
+        "texture:main",
+        SourceFileContentHash(absolutePath)
+    });
+
+    const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
+    const auto serialized = BuildExternalModelTextureArtifactPayload(
+        scene,
+        "texture:main",
+        "texture:main",
         NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
-        false);
-    if (!artifact.has_value())
-    {
-        AddWarning(
-            diagnostics,
-            request.meta.id,
-            absolutePath,
-            "model-texture-auto-import-failed",
-            "Texture " + editorPath.generic_string() + " could not be decoded for automatic import.");
-        return std::nullopt;
-    }
-    if (!ValidateDecodedTextureSafetyLimits(
-            *artifact,
-            diagnostics,
-            request.meta.id,
-            request.sourcePath,
-            "texture:main",
-            editorPath.generic_string()))
-    {
-        return std::nullopt;
-    }
-
-    artifact->targetPlatform = request.targetPlatform;
-    artifact->encoderId = "rgba8-passthrough";
-    artifact->encoderVersion = 1u;
-    artifact->buildIdentity = "auto-import|" +
-        textureMeta.id.ToString() +
-        "|" +
-        request.targetPlatform +
-        "|" +
-        FileStamp(absolutePath);
-
-    const auto serialized = NLS::Render::Assets::SerializeTextureArtifact(*artifact);
+        encodedBytes,
+        diagnostics,
+        request.meta.id,
+        request,
+        textureTargetPlatform,
+        textureEncoders);
     if (serialized.empty())
     {
         AddWarning(
@@ -2559,7 +2577,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextu
     writeRequest.sourceAssetId = textureMeta.id;
     writeRequest.importerId = textureMeta.importerId;
     writeRequest.importerVersion = textureMeta.importerVersion;
-    writeRequest.targetPlatform = request.targetPlatform;
+    writeRequest.targetPlatform = textureTargetPlatform;
     writeRequest.primarySubAssetKey = "texture:main";
     writeRequest.artifacts.push_back({
         "texture:main",
@@ -2570,7 +2588,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextu
         serialized
     });
 
-    const auto previousManifest = LoadArtifactManifestForSource(request.projectRoot, textureMeta.id, request.targetPlatform);
+    const auto previousManifest = LoadArtifactManifestForSource(request.projectRoot, textureMeta.id, textureTargetPlatform);
     NLS::Core::Assets::ArtifactWriter writer(stagingRoot, artifactRoot);
     const auto writeResult = writer.WriteAndCommit(
         writeRequest,
@@ -2941,7 +2959,7 @@ std::string TextureSourceContentHash(
 {
     if (auto path = ResolveExternalSceneResourceFilePath(request.projectRoot, request.sourcePath, source.assetPath))
     {
-        const auto stamp = FileStamp(*path);
+        const auto stamp = SourceFileContentHash(*path);
         if (!stamp.empty())
             return stamp;
     }
@@ -4140,13 +4158,18 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     ModelTextureAutoImportCleanupGuard autoImportCleanupGuard(autoImportSideEffects);
     std::unordered_set<std::string> externallyResolvedTextureSourceKeys;
     std::unordered_map<std::string, std::filesystem::path> resolvedTextureArtifactPaths;
+    NLS::Render::Assets::TextureEncoderRegistry textureEncoders;
+#if NLS_HAS_DIRECTXTEX
+    textureEncoders.Register(CreateDirectXTexTextureEncoder());
+#endif
     textureSources = BuildModelTextureSourceReferences(request, scene, texturePayloads);
     {
         const auto resolveRequest = BuildModelTextureResolveRequest(
             request,
             textureSources,
             result.diagnostics,
-            &autoImportSideEffects);
+            &autoImportSideEffects,
+            textureEncoders);
         resolvedTextures.reserve(textureSources.size());
         for (const auto& source : textureSources)
             resolvedTextures.push_back(ResolveModelTextureReference(source, resolveRequest));
@@ -4188,11 +4211,6 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         }
         ReportProgress(request, ImportPhase::IntermediateConversion, 0.44, "Loaded texture payloads");
     }
-    NLS::Render::Assets::TextureEncoderRegistry textureEncoders;
-#if NLS_HAS_DIRECTXTEX
-    textureEncoders.Register(CreateDirectXTexTextureEncoder());
-#endif
-
     size_t processedSubAssets = 0u;
     const size_t convertibleSubAssetCount = static_cast<size_t>(std::count_if(
         subAssets.begin(),

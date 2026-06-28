@@ -33,9 +33,12 @@ namespace
 	bool IsBuiltInHlslShaderPath(
 		const std::string& requestedPath,
 		const std::string& resolvedPath,
-		const std::string& engineAssetsPath)
+		const std::string& engineAssetsPath,
+		const std::string& projectAssetsPath)
 	{
 		if (ToLowerGenericPath(requestedPath).rfind(":shaders/", 0u) == 0u)
+			return true;
+		if (ShaderLoader::IsBuiltInHlslSourcePath(resolvedPath, projectAssetsPath))
 			return true;
 
 		auto canonicalPath = [](std::filesystem::path path)
@@ -58,9 +61,6 @@ namespace
 		std::vector<std::filesystem::path> allowedRoots;
 		if (!engineAssetsPath.empty())
 			allowedRoots.emplace_back(engineAssetsPath);
-		allowedRoots.emplace_back("App/Assets/Engine/Shaders");
-		allowedRoots.emplace_back("App/Assets/Editor/Shaders");
-		allowedRoots.emplace_back("EngineAssets/Shaders");
 
 		for (const auto& root : allowedRoots)
 		{
@@ -88,7 +88,7 @@ Shader* ShaderManager::CreateResource(const std::string& path)
 
 	std::string realPath = GetRealPath(path);
 	const auto extension = ToLowerGenericPath(std::filesystem::path(realPath).extension().generic_string());
-	Shader* shader = extension == ".hlsl" && IsBuiltInHlslShaderPath(path, realPath, GetEngineAssetsPath())
+	Shader* shader = extension == ".hlsl" && IsBuiltInHlslShaderPath(path, realPath, GetEngineAssetsPath(), GetProjectAssetsPath())
 		? ShaderLoader::CreateBuiltInHlsl(realPath, GetProjectAssetsPath())
 		: ShaderLoader::Create(realPath, GetProjectAssetsPath());
 
@@ -114,7 +114,7 @@ void ShaderManager::ReloadResource(Shader* resource, const std::string& path)
 {
 	const auto realPath = GetRealPath(path);
 	const auto extension = ToLowerGenericPath(std::filesystem::path(realPath).extension().generic_string());
-	if (extension == ".hlsl" && IsBuiltInHlslShaderPath(path, realPath, GetEngineAssetsPath()))
+	if (extension == ".hlsl" && IsBuiltInHlslShaderPath(path, realPath, GetEngineAssetsPath(), GetProjectAssetsPath()))
 	{
 		ShaderLoader::RecompileBuiltInHlsl(*resource, realPath, GetProjectAssetsPath());
 		return;

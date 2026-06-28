@@ -6,6 +6,10 @@
 #define NLS_HAS_AUTODESK_FBX_SDK 0
 #endif
 
+#ifndef NLS_HAS_DIRECTXTEX
+#define NLS_HAS_DIRECTXTEX 0
+#endif
+
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/AssetDatabaseFacade.h"
@@ -134,6 +138,14 @@ std::string FileStamp(const std::filesystem::path& path)
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
+std::string SourceFileContentHash(const std::filesystem::path& path)
+{
+    const auto bytes = ReadBinaryFile(path);
+    if (bytes.empty() && !std::filesystem::is_regular_file(path))
+        return {};
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
+}
+
 std::string ReadArtifactPayloadText(
     const std::filesystem::path& path,
     const NLS::Core::Assets::ArtifactType artifactType,
@@ -190,6 +202,15 @@ std::string ContentStorageArtifactPath(
         "Artifacts" /
         NLS::Core::Assets::BuildArtifactStorageRelativePath(
             StableArtifactBlobFileName(owner, subAssetKey))).generic_string();
+}
+
+std::string TextureArtifactTargetPlatformForTest()
+{
+#if defined(_WIN32)
+    return "win64-dx12";
+#else
+    return "editor";
+#endif
 }
 
 void AddCurrentExternalTextureBuildPipelineDependency(NLS::Core::Assets::ArtifactManifest& manifest)
@@ -262,6 +283,62 @@ void WritePersistedArtifactManifest(
     ASSERT_TRUE(database.Save(databasePath));
 }
 
+TEST(AssetDatabaseFacadeTests, ArtifactDatabaseRoundTripPreservesSubAssetSourceAssetIds)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto modelAssetId = AssetId(NLS::Guid::Parse("83000000-0000-4000-8000-000000000001"));
+    const auto meshAssetId = AssetId(NLS::Guid::Parse("83000000-0000-4000-8000-000000000002"));
+    const auto materialAssetId = AssetId(NLS::Guid::Parse("83000000-0000-4000-8000-000000000003"));
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = modelAssetId;
+    manifest.importerId = "AssimpModelImporter";
+    manifest.importerVersion = 12u;
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "prefab:Hero";
+    manifest.dependencies.push_back({
+        AssetDependencyKind::SourceFileHash,
+        "Assets/Models/Hero.gltf",
+        "stamp"
+    });
+    manifest.subAssets.push_back(MakeArtifact(
+        modelAssetId,
+        "prefab:Hero",
+        ArtifactType::Prefab,
+        "PrefabLoader"));
+    manifest.subAssets.push_back(MakeArtifact(
+        meshAssetId,
+        "mesh:/0/primitive/0",
+        ArtifactType::Mesh,
+        "MeshLoader"));
+    manifest.subAssets.push_back(MakeArtifact(
+        materialAssetId,
+        "material:/0",
+        ArtifactType::Material,
+        "MaterialLoader"));
+
+    WritePersistedArtifactManifest(root, manifest);
+
+    ArtifactDatabase loaded;
+    ASSERT_TRUE(loaded.Load(root / "Library" / "ArtifactDB")) << loaded.GetLastError();
+    const auto rebuilt = loaded.BuildManifestForSource(modelAssetId, "editor");
+    ASSERT_TRUE(rebuilt.has_value());
+
+    const auto* prefab = rebuilt->FindSubAsset("prefab:Hero");
+    const auto* mesh = rebuilt->FindSubAsset("mesh:/0/primitive/0");
+    const auto* material = rebuilt->FindSubAsset("material:/0");
+    ASSERT_NE(prefab, nullptr);
+    ASSERT_NE(mesh, nullptr);
+    ASSERT_NE(material, nullptr);
+    EXPECT_TRUE(prefab->sourceAssetId == modelAssetId);
+    EXPECT_TRUE(mesh->sourceAssetId == meshAssetId);
+    EXPECT_TRUE(material->sourceAssetId == materialAssetId);
+
+    std::filesystem::remove_all(root);
+}
+
 void AddCurrentSourceDependencies(
     const std::filesystem::path& root,
     NLS::Core::Assets::ArtifactManifest& manifest,
@@ -278,7 +355,7 @@ void AddCurrentSourceDependencies(
     manifest.dependencies.push_back({
         NLS::Core::Assets::AssetDependencyKind::SourceFileHash,
         assetPath,
-        FileStamp(sourcePath)
+        SourceFileContentHash(sourcePath)
     });
     manifest.dependencies.push_back({
         NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
@@ -1348,6 +1425,26 @@ Shader "Nullus/StandardPBR"
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetDatabaseFacadeTests, PathConstructorMountsBuiltInShaderRootForAssetsOnlyProjectRoots)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    EXPECT_TRUE(database.ImportAsset("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"))
+        << "Project-root path construction must mount the read-only built-in shader root even "
+           "when lightweight test projects do not have a .nullus file.";
+    EXPECT_TRUE(database.GetArtifactManifestForAssetPath(
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").has_value());
+    EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Engine"))
+        << "Built-in ShaderLab source must stay mounted read-only instead of being copied into project Assets.";
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetDatabaseFacadeTests, ImportShaderSourceWritesShaderArtifactManifestAndCentralIndex)
 {
 #if !defined(_WIN32)
@@ -2394,7 +2491,7 @@ Shader "Nullus/StandardPBR"
     ArtifactDatabase artifactDatabase;
     ASSERT_TRUE(artifactDatabase.Load(root / "Library" / "ArtifactDB"));
     EXPECT_NE(artifactDatabase.Find(modelId, "prefab:AutoTextureHero", "editor"), nullptr);
-    EXPECT_NE(artifactDatabase.Find(textureMeta.id, "texture:main", "editor"), nullptr)
+    EXPECT_NE(artifactDatabase.Find(textureMeta.id, "texture:main", TextureArtifactTargetPlatformForTest()), nullptr)
         << "Facade-level ArtifactDB cache flush must not overwrite auto-imported dependency manifests.";
 
     std::filesystem::remove_all(root);
@@ -2455,6 +2552,38 @@ TEST(AssetDatabaseFacadeTests, RefreshDoesNotWarnWhenCentralArtifactDatabaseIsMi
         });
     EXPECT_FALSE(hasArtifactDbReadFailure)
         << "A missing ArtifactDB is normal for a fresh Library and should not be reported as corruption.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, RefreshReportsStaleArtifactDatabaseSchemaForReimport)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteTextFile(root / "Assets" / "Prefabs" / "Stale.prefab", "Prefab \"Stale\" {}\n");
+    std::filesystem::create_directories(root / "Library" / "ArtifactDB");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
+    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
+    WriteTextFile(root / "Library" / "ArtifactDB" / "data.mdb", "stale artifact database schema\n");
+
+    AssetDatabaseFacade reload({root});
+    ASSERT_TRUE(reload.Refresh());
+
+    const auto foundDiagnostic = std::find_if(
+        reload.GetDiagnostics().begin(),
+        reload.GetDiagnostics().end(),
+        [](const NLS::Core::Assets::AssetDiagnostic& diagnostic)
+        {
+            return diagnostic.code == "assetdatabase-artifactdb-read-failed" &&
+                diagnostic.message.find("reimport source assets") != std::string::npos;
+        });
+    ASSERT_NE(foundDiagnostic, reload.GetDiagnostics().end());
+    EXPECT_NE(foundDiagnostic->message.find("ArtifactDB could not be read"), std::string::npos);
 
     std::filesystem::remove_all(root);
 }
@@ -2632,10 +2761,9 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsReadOnlyMetaBelowCu
     meta.importerVersion = 5u;
     ASSERT_TRUE(meta.Save(packageRoot / "Models" / "LegacyReadOnlyHero.gltf.meta"));
 
-    AssetDatabaseFacade importer({
-        {root / "Assets", false, "Assets", root / "Library"},
-        {packageRoot, false, "Packages", root / "Library"}
-    });
+    auto writableRoots = MakeProjectEditorAssetRoots(root);
+    writableRoots.push_back({packageRoot, false, "Packages", root / "Library"});
+    AssetDatabaseFacade importer(writableRoots);
     ASSERT_TRUE(importer.Refresh());
     ASSERT_TRUE(importer.ImportAsset("Packages/Models/LegacyReadOnlyHero.gltf"));
     {
@@ -2653,10 +2781,9 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsReadOnlyMetaBelowCu
         ASSERT_TRUE(artifactDatabase.Save(databasePath));
     }
 
-    AssetDatabaseFacade readOnlyDatabase({
-        {root / "Assets", false, "Assets", root / "Library"},
-        {packageRoot, true, "Packages", root / "Library"}
-    });
+    auto readOnlyRoots = MakeProjectEditorAssetRoots(root);
+    readOnlyRoots.push_back({packageRoot, true, "Packages", root / "Library"});
+    AssetDatabaseFacade readOnlyDatabase(readOnlyRoots);
     ASSERT_TRUE(readOnlyDatabase.Refresh());
 
     EXPECT_FALSE(readOnlyDatabase.IsArtifactManifestCurrentForAssetPath("Packages/Models/LegacyReadOnlyHero.gltf"));
@@ -3477,6 +3604,14 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesNativeTextureArtifactsAndCe
     EXPECT_EQ(artifact->height, 1u);
     EXPECT_FALSE(artifact->targetPlatform.empty());
     EXPECT_FALSE(artifact->encoderId.empty());
+#if defined(_WIN32) && NLS_HAS_DIRECTXTEX
+    EXPECT_EQ(artifact->targetPlatform, "win64-dx12");
+    EXPECT_EQ(artifact->format, NLS::Render::RHI::TextureFormat::BC1);
+    EXPECT_EQ(artifact->encoderId, "directxtex-bc");
+#else
+    EXPECT_EQ(artifact->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    EXPECT_EQ(artifact->encoderId, "rgba8-passthrough");
+#endif
 
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -4566,6 +4701,58 @@ TEST(AssetDatabaseFacadeTests, CreateAddExtractAndContainmentUseAssetObjectSeman
     foreign.mainAsset = true;
     EXPECT_FALSE(database.Contains(foreign));
     EXPECT_TRUE(database.IsForeignAsset(foreign));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, StandaloneMaterialImportUsesNativePayloadAndRejectsLegacyTextPayload)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    AssetObjectRecord material;
+    material.name = "HeroMaterial";
+    material.artifactType = ArtifactType::Material;
+    material.loaderId = "material";
+    material.serializedPayload =
+        "shaderLabMaterialVersion=1\n"
+        "shader=Assets/Shaders/Unlit.shader\n"
+        "property _BaseColor Color 1 1 1 1\n";
+
+    ASSERT_TRUE(database.CreateAsset(material, "Assets/Materials/Hero.mat"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Materials/Hero.mat"));
+
+    const auto mainAsset = database.LoadMainAssetAtPath("Assets/Materials/Hero.mat");
+    ASSERT_TRUE(mainAsset.has_value());
+    EXPECT_EQ(
+        ReadArtifactPayloadText(mainAsset->artifactPath, ArtifactType::Material, 1u),
+        material.serializedPayload);
+
+    const auto legacyPath = root / "Assets" / "Materials" / "Legacy.mat";
+    WriteTextFile(
+        legacyPath,
+        "NULLUS_NATIVE_ASSET=1\n"
+        "NAME=Legacy\n"
+        "SUB_ASSET_KEY=material:Legacy\n"
+        "LOADER_ID=material\n"
+        "PAYLOAD=<root><shader>?</shader></root>\n");
+    auto legacyMeta = AssetMeta::CreateForAsset(legacyPath);
+    legacyMeta.importerId = "material";
+    ASSERT_TRUE(legacyMeta.Save(GetAssetMetaPath(legacyPath)));
+
+    ASSERT_TRUE(database.Refresh());
+    EXPECT_FALSE(database.ImportAsset("Assets/Materials/Legacy.mat"));
+    const auto legacyMainAsset = database.LoadMainAssetAtPath("Assets/Materials/Legacy.mat");
+    ASSERT_TRUE(legacyMainAsset.has_value());
+    EXPECT_EQ(legacyMainAsset->artifactType, ArtifactType::Unknown);
+    EXPECT_TRUE(legacyMainAsset->artifactPath.empty());
+    EXPECT_TRUE(ContainsAssetDiagnosticCode(
+        database.GetDiagnostics(),
+        "assetdatabase-material-source-native-container-required"));
 
     std::filesystem::remove_all(root);
 }

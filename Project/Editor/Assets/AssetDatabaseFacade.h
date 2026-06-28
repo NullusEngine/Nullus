@@ -141,6 +141,7 @@ public:
     std::optional<NLS::Core::Assets::ArtifactManifest> GetArtifactManifestForAssetPath(
         const std::string& assetPath) const;
     bool IsArtifactManifestCurrentForAssetPath(const std::string& assetPath) const;
+    bool IsReadOnlyAssetPath(const std::string& assetPath) const;
     bool IsArtifactManifestKnownCurrentForAssetPath(const std::string& assetPath) const;
     std::vector<std::string> GetKnownCurrentArtifactManifestAssetPaths() const;
     std::vector<ObjectReferencePickerAssetSnapshot> GetObjectReferencePickerAssetSnapshots() const;

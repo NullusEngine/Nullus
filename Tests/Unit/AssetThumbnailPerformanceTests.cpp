@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Assets/AssetThumbnailCache.h"
+#include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/AssetThumbnailService.h"
 #include "Assets/EditorThumbnailPreviewRenderer.h"
@@ -219,6 +220,48 @@ bool ContainsPathWithSuffix(const std::vector<std::string>& paths, const std::st
             return path.size() >= pathSuffix.size() &&
                 path.compare(path.size() - pathSuffix.size(), pathSuffix.size(), pathSuffix) == 0;
         });
+}
+
+std::string ThumbnailPerformanceLibraryArtifactPath(const std::string& hash)
+{
+    return (std::filesystem::path("Library") /
+        "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(hash)).generic_string();
+}
+
+void WriteThumbnailPerformanceArtifactDatabase(
+    const std::filesystem::path& root,
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    NLS::Core::Assets::ArtifactDatabase database;
+    const auto databasePath = root / "Library" / "ArtifactDB";
+    if (std::filesystem::exists(databasePath))
+        (void)database.Load(databasePath);
+
+    database.UpsertManifest(
+        manifest,
+        (std::filesystem::path("Assets") / "Models" / "Hero.fbx").generic_string(),
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(databasePath));
+}
+
+NLS::Core::Assets::ImportedArtifact MakeThumbnailPerformanceImportedArtifact(
+    const NLS::Core::Assets::AssetId& sourceAssetId,
+    std::string subAssetKey,
+    NLS::Core::Assets::ArtifactType artifactType,
+    std::string loaderId,
+    std::string artifactPath,
+    std::string contentHash)
+{
+    NLS::Core::Assets::ImportedArtifact artifact;
+    artifact.sourceAssetId = sourceAssetId;
+    artifact.subAssetKey = std::move(subAssetKey);
+    artifact.artifactType = artifactType;
+    artifact.loaderId = std::move(loaderId);
+    artifact.targetPlatform = "editor";
+    artifact.artifactPath = std::move(artifactPath);
+    artifact.contentHash = std::move(contentHash);
+    return artifact;
 }
 
 std::vector<uint8_t> TinyPng()
@@ -492,6 +535,11 @@ public:
         asyncRequestPaths.push_back(path);
         (void)cancelableInterest;
         return nullptr;
+    }
+
+    Material* RequestAsyncArtifactForPreview(const std::string& path, bool cancelableInterest = false) override
+    {
+        return RequestAsyncArtifact(path, cancelableInterest);
     }
 
     size_t prewarmWithDependenciesCount = 0u;
@@ -1362,16 +1410,18 @@ TEST(AssetThumbnailPerformanceTests, GpuPreviewRendererDoesNotSynchronouslyLoadU
     const auto root = MakeThumbnailPerformanceRoot();
     const auto assetId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("32323232-3232-4232-8232-323232323232"));
-    const auto materialPath = root / "Library" / "Artifacts" / assetId.ToString() / "materials" / "Body.nmat";
+    const auto materialArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("d001000000000000000000000000000000000000000000000000000000000001");
+    const auto materialPath = root / materialArtifactPath;
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.fbx", std::vector<uint8_t>{'f', 'b', 'x'});
     WriteNativeArtifactTextFile(
         materialPath,
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "</root>\n");
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
 
     NLS::Core::ResourceManagement::MeshManager meshManager;
     CountingMaterialManager materialManager;
@@ -1384,7 +1434,7 @@ TEST(AssetThumbnailPerformanceTests, GpuPreviewRendererDoesNotSynchronouslyLoadU
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
     request.subAssetKey = "material:Body";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/materials/Body.nmat";
+    request.artifactPath = materialArtifactPath;
     request.kind = AssetThumbnailKind::MaterialSphere;
     request.requestedSize = 64u;
     request.previewRendererVersion = "real-preview:no-sync-material-load";
@@ -1399,20 +1449,23 @@ TEST(AssetThumbnailPerformanceTests, GpuPreviewRendererDoesNotSynchronouslyLoadU
     EXPECT_EQ(rendered.diagnostic, "thumbnail-gpu-preview-resources-pending");
     EXPECT_EQ(materialManager.prewarmWithDependenciesCount, 0u);
     EXPECT_EQ(materialManager.asyncRequestCount, 1u);
-    EXPECT_NE(materialManager.lastAsyncPath.find("Body.nmat"), std::string::npos);
+    EXPECT_TRUE(ContainsPathWithSuffix(
+        materialManager.asyncRequestPaths,
+        std::filesystem::path(materialArtifactPath).filename().generic_string()));
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    const auto materialArtifactFileName = std::filesystem::path(materialArtifactPath).filename().generic_string();
     EXPECT_EQ(
         CountArtifactTelemetryStageForPathSuffix(
             telemetry,
             NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy,
-            "materials/Body.nmat"),
+            materialArtifactFileName),
         0u);
     EXPECT_EQ(
         CountArtifactTelemetryStageForPathSuffix(
             telemetry,
             NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize,
-            "materials/Body.nmat"),
+            materialArtifactFileName),
         0u);
 
     std::filesystem::remove_all(root);
@@ -1424,74 +1477,68 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewDoesNotSynchronouslyPrewarm
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeThumbnailPerformanceRoot();
-    const auto prefab = MakePrefabArtifactWithPreviewRendererDependencies();
+    auto prefab = MakePrefabArtifactWithPreviewRendererDependencies();
     const auto assetId = prefab.assetId;
     const auto prefabPayload = NLS::Engine::Serialize::ObjectGraphWriter::Write(prefab.graph);
-    const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
+    const auto prefabArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("a001000000000000000000000000000000000000000000000000000000000001");
+    const auto meshArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("a002000000000000000000000000000000000000000000000000000000000002");
+    const auto materialArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("a003000000000000000000000000000000000000000000000000000000000003");
     const auto meshId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("50505050-5050-4050-8050-505050505050"));
     const auto materialId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("60606060-6060-4060-8060-606060606060"));
-    std::filesystem::create_directories(artifactRoot / "meshes");
+    prefab.resolvedAssets[0].artifactPath = meshArtifactPath;
+    prefab.resolvedAssets[1].artifactPath = materialArtifactPath;
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.fbx", std::vector<uint8_t>{'f', 'b', 'x'});
     WriteBinaryFile(
-        artifactRoot / "meshes" / "Hero.nmesh",
+        root / meshArtifactPath,
         NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
 
     WriteNativeArtifactTextFile(
-        artifactRoot / "Hero.nprefab",
+        root / prefabArtifactPath,
         ArtifactType::Prefab,
         "prefab",
         1u,
         prefabPayload);
     WriteNativeArtifactTextFile(
-        artifactRoot / "Hero.nmat",
+        root / materialArtifactPath,
         ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "</root>\n");
-    {
-        std::ofstream manifest(artifactRoot / "manifest.json", std::ios::binary | std::ios::trunc);
-        manifest <<
-            "{"
-            "\"sourceAssetId\":\"" << assetId.GetGuid().ToString() << "\","
-            "\"importerId\":\"scene-model\","
-            "\"importerVersion\":1,"
-            "\"targetPlatform\":\"editor\","
-            "\"primarySubAssetKey\":\"prefab:Hero\","
-            "\"subAssets\":["
-            "{"
-            "\"sourceAssetId\":\"" << assetId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"prefab:Hero\","
-            "\"artifactType\":\"Prefab\","
-            "\"loaderId\":\"native-prefab\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"Hero.nprefab\","
-            "\"contentHash\":\"prefab-hash\""
-            "},"
-            "{"
-            "\"sourceAssetId\":\"" << meshId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"mesh:Hero\","
-            "\"artifactType\":\"Mesh\","
-            "\"loaderId\":\"mesh\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"meshes/Hero.nmesh\","
-            "\"contentHash\":\"mesh-hash\""
-            "},"
-            "{"
-            "\"sourceAssetId\":\"" << materialId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"material:Hero\","
-            "\"artifactType\":\"Material\","
-            "\"loaderId\":\"native-material\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"Hero.nmat\","
-            "\"contentHash\":\"material-hash\""
-            "}"
-            "]"
-            "}";
-    }
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = assetId;
+    manifest.importerId = "scene-model";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "prefab:Hero";
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        assetId,
+        "prefab:Hero",
+        ArtifactType::Prefab,
+        "native-prefab",
+        prefabArtifactPath,
+        "prefab-hash"));
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        meshId,
+        "mesh:Hero",
+        ArtifactType::Mesh,
+        "mesh",
+        meshArtifactPath,
+        "mesh-hash"));
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        materialId,
+        "material:Hero",
+        ArtifactType::Material,
+        "native-material",
+        materialArtifactPath,
+        "material-hash"));
+    WriteThumbnailPerformanceArtifactDatabase(root, manifest);
 
     auto importedFixture = NLS::Engine::Assets::ImportPrefabArtifact(
         prefabPayload,
@@ -1513,7 +1560,7 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewDoesNotSynchronouslyPrewarm
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
     request.subAssetKey = "prefab:Hero";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab";
+    request.artifactPath = prefabArtifactPath;
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 64u;
     request.previewRendererVersion = "real-preview:no-sync-prefab-mesh-load";
@@ -1528,20 +1575,20 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewDoesNotSynchronouslyPrewarm
     EXPECT_EQ(rendered.diagnostic, "thumbnail-gpu-preview-resources-pending");
     EXPECT_EQ(meshManager.prewarmCount, 0u);
     EXPECT_EQ(meshManager.asyncRequestCount, 1u);
-    EXPECT_NE(meshManager.lastAsyncPath.find("Hero.nmesh"), std::string::npos);
+    EXPECT_EQ(meshManager.lastAsyncPath, (root / meshArtifactPath).generic_string());
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_EQ(
         CountArtifactTelemetryStageForPathSuffix(
             telemetry,
             NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy,
-            "meshes/Hero.nmesh"),
+            std::filesystem::path(meshArtifactPath).filename().generic_string()),
         0u);
     EXPECT_EQ(
         CountArtifactTelemetryStageForPathSuffix(
             telemetry,
             NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize,
-            "meshes/Hero.nmesh"),
+            std::filesystem::path(meshArtifactPath).filename().generic_string()),
         0u);
 
     std::filesystem::remove_all(root);
@@ -1553,73 +1600,67 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewReusesSnapshotWhileResource
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeThumbnailPerformanceRoot();
-    const auto prefab = MakePrefabArtifactWithPreviewRendererDependencies();
+    auto prefab = MakePrefabArtifactWithPreviewRendererDependencies();
     const auto assetId = prefab.assetId;
     const auto prefabPayload = NLS::Engine::Serialize::ObjectGraphWriter::Write(prefab.graph);
-    const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
+    const auto prefabArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("b001000000000000000000000000000000000000000000000000000000000001");
+    const auto meshArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("b002000000000000000000000000000000000000000000000000000000000002");
+    const auto materialArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("b003000000000000000000000000000000000000000000000000000000000003");
     const auto meshId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("50505050-5050-4050-8050-505050505050"));
     const auto materialId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("60606060-6060-4060-8060-606060606060"));
-    std::filesystem::create_directories(artifactRoot / "meshes");
+    prefab.resolvedAssets[0].artifactPath = meshArtifactPath;
+    prefab.resolvedAssets[1].artifactPath = materialArtifactPath;
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.fbx", std::vector<uint8_t>{'f', 'b', 'x'});
     WriteBinaryFile(
-        artifactRoot / "meshes" / "Hero.nmesh",
+        root / meshArtifactPath,
         NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
     WriteNativeArtifactTextFile(
-        artifactRoot / "Hero.nprefab",
+        root / prefabArtifactPath,
         ArtifactType::Prefab,
         "prefab",
         1u,
         prefabPayload);
     WriteNativeArtifactTextFile(
-        artifactRoot / "Hero.nmat",
+        root / materialArtifactPath,
         ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "</root>\n");
-    {
-        std::ofstream manifest(artifactRoot / "manifest.json", std::ios::binary | std::ios::trunc);
-        manifest <<
-            "{"
-            "\"sourceAssetId\":\"" << assetId.GetGuid().ToString() << "\","
-            "\"importerId\":\"scene-model\","
-            "\"importerVersion\":1,"
-            "\"targetPlatform\":\"editor\","
-            "\"primarySubAssetKey\":\"prefab:Hero\","
-            "\"subAssets\":["
-            "{"
-            "\"sourceAssetId\":\"" << assetId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"prefab:Hero\","
-            "\"artifactType\":\"Prefab\","
-            "\"loaderId\":\"native-prefab\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"Hero.nprefab\","
-            "\"contentHash\":\"prefab-hash\""
-            "},"
-            "{"
-            "\"sourceAssetId\":\"" << meshId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"mesh:Hero\","
-            "\"artifactType\":\"Mesh\","
-            "\"loaderId\":\"mesh\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"meshes/Hero.nmesh\","
-            "\"contentHash\":\"mesh-hash\""
-            "},"
-            "{"
-            "\"sourceAssetId\":\"" << materialId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"material:Hero\","
-            "\"artifactType\":\"Material\","
-            "\"loaderId\":\"native-material\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"Hero.nmat\","
-            "\"contentHash\":\"material-hash\""
-            "}"
-            "]"
-            "}";
-    }
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = assetId;
+    manifest.importerId = "scene-model";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "prefab:Hero";
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        assetId,
+        "prefab:Hero",
+        ArtifactType::Prefab,
+        "native-prefab",
+        prefabArtifactPath,
+        "prefab-hash"));
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        meshId,
+        "mesh:Hero",
+        ArtifactType::Mesh,
+        "mesh",
+        meshArtifactPath,
+        "mesh-hash"));
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        materialId,
+        "material:Hero",
+        ArtifactType::Material,
+        "native-material",
+        materialArtifactPath,
+        "material-hash"));
+    WriteThumbnailPerformanceArtifactDatabase(root, manifest);
 
     CountingMeshManager meshManager;
     NLS::Core::ResourceManagement::MaterialManager materialManager;
@@ -1632,7 +1673,7 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewReusesSnapshotWhileResource
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
     request.subAssetKey = "prefab:Hero";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab";
+    request.artifactPath = prefabArtifactPath;
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 64u;
     request.previewRendererVersion = "real-preview:snapshot-cache-pending";
@@ -1648,7 +1689,7 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewReusesSnapshotWhileResource
     ASSERT_EQ(first.diagnostic, "thumbnail-gpu-preview-resources-pending");
 
     NLS::Core::Assets::ClearArtifactLoadTelemetry();
-    std::filesystem::remove(artifactRoot / "Hero.nprefab");
+    std::filesystem::remove(root / prefabArtifactPath);
 
     const auto second = renderer.Render(request);
 
@@ -1659,7 +1700,7 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewReusesSnapshotWhileResource
         CountArtifactTelemetryStageForPathSuffix(
             telemetry,
             NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy,
-            "Hero.nprefab"),
+            std::filesystem::path(prefabArtifactPath).filename().generic_string()),
         0u);
 
     std::filesystem::remove_all(root);
@@ -1682,9 +1723,19 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewQueuesAllMissingResourcesBe
         NLS::Guid::Parse("51515151-5151-4151-8151-515151515151"));
     const auto materialBId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("61616161-6161-4161-8161-616161616161"));
+    const auto prefabArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("c001000000000000000000000000000000000000000000000000000000000001");
+    const auto meshAArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("c002000000000000000000000000000000000000000000000000000000000002");
+    const auto materialAArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("c003000000000000000000000000000000000000000000000000000000000003");
+    const auto meshBArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("c004000000000000000000000000000000000000000000000000000000000004");
+    const auto materialBArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("c005000000000000000000000000000000000000000000000000000000000005");
 
-    prefab.resolvedAssets[1].artifactPath =
-        "Library/Artifacts/" + materialAId.ToString() + "/HeroA.nmat";
+    prefab.resolvedAssets[0].artifactPath = meshAArtifactPath;
+    prefab.resolvedAssets[1].artifactPath = materialAArtifactPath;
 
     const auto secondGameObjectId = MakeObjectId("11111111-1111-4111-8111-111111111111");
     const auto secondMeshFilterId = MakeObjectId("12121212-1212-4121-8121-121212121212");
@@ -1762,83 +1813,83 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewQueuesAllMissingResourcesBe
         meshBId,
         "Mesh",
         "mesh:HeroB",
-        "Library/Artifacts/" + meshBId.ToString() + "/HeroB.nmesh"
+        meshBArtifactPath
     });
     prefab.resolvedAssets.push_back({
         materialBId,
         "Material",
         "material:HeroB",
-        "Library/Artifacts/" + materialBId.ToString() + "/HeroB.nmat"
+        materialBArtifactPath
     });
 
     const auto prefabPayload = NLS::Engine::Serialize::ObjectGraphWriter::Write(prefab.graph);
-    const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
-    std::filesystem::create_directories(artifactRoot);
     WriteBinaryFile(root / "Assets" / "Models" / "Hero.fbx", std::vector<uint8_t>{'f', 'b', 'x'});
     WriteNativeArtifactTextFile(
-        artifactRoot / "Hero.nprefab",
+        root / prefabArtifactPath,
         ArtifactType::Prefab,
         "prefab",
         1u,
         prefabPayload);
-    {
-        std::ofstream manifest(artifactRoot / "manifest.json", std::ios::binary | std::ios::trunc);
-        manifest <<
-            "{"
-            "\"sourceAssetId\":\"" << assetId.GetGuid().ToString() << "\","
-            "\"importerId\":\"scene-model\","
-            "\"importerVersion\":1,"
-            "\"targetPlatform\":\"editor\","
-            "\"primarySubAssetKey\":\"prefab:Hero\","
-            "\"subAssets\":["
-            "{"
-            "\"sourceAssetId\":\"" << assetId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"prefab:Hero\","
-            "\"artifactType\":\"Prefab\","
-            "\"loaderId\":\"native-prefab\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"Hero.nprefab\","
-            "\"contentHash\":\"prefab-hash\""
-            "},"
-            "{"
-            "\"sourceAssetId\":\"" << meshAId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"mesh:Hero\","
-            "\"artifactType\":\"Mesh\","
-            "\"loaderId\":\"mesh\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"HeroA.nmesh\","
-            "\"contentHash\":\"mesh-a-hash\""
-            "},"
-            "{"
-            "\"sourceAssetId\":\"" << materialAId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"material:Hero\","
-            "\"artifactType\":\"Material\","
-            "\"loaderId\":\"native-material\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"HeroA.nmat\","
-            "\"contentHash\":\"material-a-hash\""
-            "},"
-            "{"
-            "\"sourceAssetId\":\"" << meshBId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"mesh:HeroB\","
-            "\"artifactType\":\"Mesh\","
-            "\"loaderId\":\"mesh\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"HeroB.nmesh\","
-            "\"contentHash\":\"mesh-b-hash\""
-            "},"
-            "{"
-            "\"sourceAssetId\":\"" << materialBId.GetGuid().ToString() << "\","
-            "\"subAssetKey\":\"material:HeroB\","
-            "\"artifactType\":\"Material\","
-            "\"loaderId\":\"native-material\","
-            "\"targetPlatform\":\"editor\","
-            "\"artifactPath\":\"HeroB.nmat\","
-            "\"contentHash\":\"material-b-hash\""
-            "}"
-            "]"
-            "}";
-    }
+    WriteBinaryFile(root / meshAArtifactPath, NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
+    WriteBinaryFile(root / meshBArtifactPath, NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
+    WriteNativeArtifactTextFile(
+        root / materialAArtifactPath,
+        ArtifactType::Material,
+        "material",
+        1u,
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
+    WriteNativeArtifactTextFile(
+        root / materialBArtifactPath,
+        ArtifactType::Material,
+        "material",
+        1u,
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = assetId;
+    manifest.importerId = "scene-model";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "prefab:Hero";
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        assetId,
+        "prefab:Hero",
+        ArtifactType::Prefab,
+        "native-prefab",
+        prefabArtifactPath,
+        "prefab-hash"));
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        meshAId,
+        "mesh:Hero",
+        ArtifactType::Mesh,
+        "mesh",
+        meshAArtifactPath,
+        "mesh-a-hash"));
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        materialAId,
+        "material:Hero",
+        ArtifactType::Material,
+        "native-material",
+        materialAArtifactPath,
+        "material-a-hash"));
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        meshBId,
+        "mesh:HeroB",
+        ArtifactType::Mesh,
+        "mesh",
+        meshBArtifactPath,
+        "mesh-b-hash"));
+    manifest.subAssets.push_back(MakeThumbnailPerformanceImportedArtifact(
+        materialBId,
+        "material:HeroB",
+        ArtifactType::Material,
+        "native-material",
+        materialBArtifactPath,
+        "material-b-hash"));
+    WriteThumbnailPerformanceArtifactDatabase(root, manifest);
 
     CountingMeshManager meshManager;
     CountingMaterialManager materialManager;
@@ -1846,14 +1897,19 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewQueuesAllMissingResourcesBe
     ScopedServiceOverride<NLS::Core::ResourceManagement::MaterialManager> materialManagerOverride(materialManager);
     ScopedThumbnailResourceManagerAssetPaths paths(root / "Assets", root / "EngineAssets");
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
-    ASSERT_TRUE(database.LoadPrefabArtifactByAssetId(assetId, "prefab:Hero").has_value());
+    auto loadedPrefab = database.LoadPrefabArtifactByAssetId(assetId, "prefab:Hero");
+    ASSERT_TRUE(loadedPrefab.has_value());
+    const auto loadedSnapshot = BuildPreviewRenderableSnapshot(*loadedPrefab);
+    ASSERT_EQ(loadedSnapshot.drawItems.size(), 2u);
+    ASSERT_EQ(loadedSnapshot.drawItems[0].materialPaths.size(), 1u);
+    ASSERT_EQ(loadedSnapshot.drawItems[1].materialPaths.size(), 1u);
 
     AssetThumbnailRequest request;
     request.projectRoot = root;
     request.assetId = assetId;
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
     request.subAssetKey = "prefab:Hero";
-    request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/Hero.nprefab";
+    request.artifactPath = prefabArtifactPath;
     request.kind = AssetThumbnailKind::PrefabPreview;
     request.requestedSize = 64u;
     request.previewRendererVersion = "real-preview:batch-resource-request";
@@ -1866,11 +1922,19 @@ TEST(AssetThumbnailPerformanceTests, GpuPrefabPreviewQueuesAllMissingResourcesBe
     EXPECT_TRUE(rendered.rgbaPixels.empty());
     EXPECT_EQ(rendered.diagnostic, "thumbnail-gpu-preview-resources-pending");
     EXPECT_EQ(meshManager.asyncRequestCount, 2u);
-    EXPECT_TRUE(ContainsPathWithSuffix(meshManager.asyncRequestPaths, "HeroA.nmesh"));
-    EXPECT_TRUE(ContainsPathWithSuffix(meshManager.asyncRequestPaths, "HeroB.nmesh"));
+    EXPECT_TRUE(ContainsPathWithSuffix(
+        meshManager.asyncRequestPaths,
+        std::filesystem::path(meshAArtifactPath).filename().generic_string()));
+    EXPECT_TRUE(ContainsPathWithSuffix(
+        meshManager.asyncRequestPaths,
+        std::filesystem::path(meshBArtifactPath).filename().generic_string()));
     EXPECT_EQ(materialManager.asyncRequestCount, 2u);
-    EXPECT_TRUE(ContainsPathWithSuffix(materialManager.asyncRequestPaths, "HeroA.nmat"));
-    EXPECT_TRUE(ContainsPathWithSuffix(materialManager.asyncRequestPaths, "HeroB.nmat"));
+    EXPECT_TRUE(ContainsPathWithSuffix(
+        materialManager.asyncRequestPaths,
+        std::filesystem::path(materialAArtifactPath).filename().generic_string()));
+    EXPECT_TRUE(ContainsPathWithSuffix(
+        materialManager.asyncRequestPaths,
+        std::filesystem::path(materialBArtifactPath).filename().generic_string()));
 
     std::filesystem::remove_all(root);
 }
@@ -2087,32 +2151,30 @@ TEST(AssetThumbnailPerformanceTests, MaterialManagerPumpAsyncLoadsForPathsLeaves
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
     const auto root = MakeThumbnailPerformanceRoot();
-    const auto targetPath = root / "Assets" / "target.nmat";
-    const auto unrelatedPath = root / "Assets" / "unrelated.nmat";
+    const auto targetArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("e001000000000000000000000000000000000000000000000000000000000001");
+    const auto unrelatedArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("e002000000000000000000000000000000000000000000000000000000000002");
+    const auto targetPath = root / targetArtifactPath;
+    const auto unrelatedPath = root / unrelatedArtifactPath;
     WriteNativeArtifactTextFile(
         targetPath,
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "</root>\n");
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
     WriteNativeArtifactTextFile(
         unrelatedPath,
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "</root>\n");
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
-    ShaderManager shaderManager;
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
-        "App/Assets/Engine/Shaders/StandardPBR.hlsl");
-    ASSERT_NE(shader, nullptr);
-    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
-    ScopedServiceOverride<ShaderManager> shaderManagerOverride(shaderManager);
     MaterialManager materialManager;
     EXPECT_EQ(materialManager.RequestAsyncArtifact(targetPath.string()), nullptr);
     EXPECT_EQ(materialManager.RequestAsyncArtifact(unrelatedPath.string()), nullptr);
@@ -2128,7 +2190,6 @@ TEST(AssetThumbnailPerformanceTests, MaterialManagerPumpAsyncLoadsForPathsLeaves
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     materialManager.UnloadResources();
-    shaderManager.UnloadResources();
     std::filesystem::remove_all(root);
 #endif
 }
@@ -2143,23 +2204,19 @@ TEST(AssetThumbnailPerformanceTests, MaterialManagerSharedRequestRevivesCanceled
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
     const auto root = MakeThumbnailPerformanceRoot();
-    const auto materialPath = root / "Assets" / "revive-canceled.nmat";
+    const auto materialArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("e003000000000000000000000000000000000000000000000000000000000003");
+    const auto materialPath = root / materialArtifactPath;
     WriteNativeArtifactTextFile(
         materialPath,
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "</root>\n");
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
-    ShaderManager shaderManager;
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
-        "App/Assets/Engine/Shaders/StandardPBR.hlsl");
-    ASSERT_NE(shader, nullptr);
-    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
-    ScopedServiceOverride<ShaderManager> shaderManagerOverride(shaderManager);
     MaterialManager materialManager;
     EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string(), true), nullptr);
     materialManager.CancelAsyncArtifact(materialPath.string());
@@ -2177,7 +2234,6 @@ TEST(AssetThumbnailPerformanceTests, MaterialManagerSharedRequestRevivesCanceled
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     materialManager.UnloadResources();
-    shaderManager.UnloadResources();
     std::filesystem::remove_all(root);
 #endif
 }
@@ -2192,23 +2248,19 @@ TEST(AssetThumbnailPerformanceTests, MaterialManagerCancelableRequestRevivesCanc
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
     const auto root = MakeThumbnailPerformanceRoot();
-    const auto materialPath = root / "Assets" / "revive-cancelable.nmat";
+    const auto materialArtifactPath =
+        ThumbnailPerformanceLibraryArtifactPath("e004000000000000000000000000000000000000000000000000000000000004");
+    const auto materialPath = root / materialArtifactPath;
     WriteNativeArtifactTextFile(
         materialPath,
         NLS::Core::Assets::ArtifactType::Material,
         "material",
         1u,
-        "<root>\n"
-        "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
-        "</root>\n");
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
-    ShaderManager shaderManager;
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
-        "App/Assets/Engine/Shaders/StandardPBR.hlsl");
-    ASSERT_NE(shader, nullptr);
-    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
-    ScopedServiceOverride<ShaderManager> shaderManagerOverride(shaderManager);
     MaterialManager materialManager;
     EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string(), true), nullptr);
     materialManager.CancelAsyncArtifact(materialPath.string());
@@ -2226,7 +2278,6 @@ TEST(AssetThumbnailPerformanceTests, MaterialManagerCancelableRequestRevivesCanc
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     materialManager.UnloadResources();
-    shaderManager.UnloadResources();
     std::filesystem::remove_all(root);
 #endif
 }

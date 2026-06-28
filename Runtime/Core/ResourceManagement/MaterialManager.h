@@ -51,6 +51,7 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
         virtual Material* PrewarmArtifactWithDependencies(const std::string& p_path);
         virtual Material* LoadArtifactWithoutTextures(const std::string& p_path);
         virtual Material* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
+        virtual Material* RequestAsyncArtifactForPreview(const std::string& p_path, bool p_cancelableInterest = false);
         virtual Material* FindRegisteredMaterialByEquivalentArtifactPath(const std::string& p_path);
         ResourceHandle<Material> AcquireMaterialHandle(
             ResourceLifetimeRegistry& registry,

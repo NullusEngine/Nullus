@@ -24,6 +24,7 @@ enum class ArtifactRecordStatus
 struct ArtifactDatabaseRecord
 {
     AssetId sourceAssetId;
+    AssetId artifactSourceAssetId;
     std::string sourcePath;
     std::string subAssetKey;
     ArtifactType artifactType = ArtifactType::Unknown;

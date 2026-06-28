@@ -20,8 +20,15 @@ namespace NLS::Render::RHI
 class RHICompletionToken;
 }
 
+namespace NLS::Core::ResourceManagement
+{
+class ShaderManager;
+}
+
 namespace NLS::Editor::Assets
 {
+struct PreviewRenderableSnapshot;
+
 struct EditorThumbnailPreviewResult
 {
     std::vector<uint8_t> rgbaPixels;
@@ -80,11 +87,30 @@ EditorThumbnailPreviewCameraDebugInfo BuildPrefabPreviewCameraDebugInfoForTestin
 
 NLS::Maths::Vector3 GetThumbnailPreviewKeyLightDirectionForTesting();
 float GetThumbnailPreviewKeyLightIntensityForTesting();
-	float GetThumbnailPreviewAmbientIntensityForTesting();
-	size_t GetThumbnailPreviewMeshPumpBudgetForTesting();
-	size_t GetThumbnailPreviewMaterialPumpBudgetForTesting();
-	size_t GetThumbnailPreviewTexturePumpBudgetForTesting();
-	#endif
+float GetThumbnailPreviewAmbientIntensityForTesting();
+size_t GetThumbnailPreviewMeshPumpBudgetForTesting();
+size_t GetThumbnailPreviewMaterialPumpBudgetForTesting();
+size_t GetThumbnailPreviewTexturePumpBudgetForTesting();
+size_t GetThumbnailPreviewPrefabDrawItemCapacityForTesting();
+bool ThumbnailPreviewMeshPathUsesArtifactLoaderForTesting(const std::string& meshPath);
+std::string ResolveThumbnailPreviewMeshLoadPathForTesting(
+    const AssetThumbnailRequest& request,
+    const std::string& meshPath,
+    NLS::Core::Assets::AssetId meshAssetId);
+struct ThumbnailPreviewDefaultShaderSelectionForTesting
+{
+    std::string resourcePath;
+    std::string sourcePath;
+    std::string subAssetKey;
+    std::string lightMode;
+    bool usesShaderLabStandardPbrForward = false;
+    bool usesLegacyBuiltInStandardHlsl = false;
+};
+ThumbnailPreviewDefaultShaderSelectionForTesting SelectThumbnailPreviewDefaultShaderForTesting(
+    NLS::Core::ResourceManagement::ShaderManager& shaderManager);
+bool ThumbnailPreviewSnapshotIsCompleteForGpuPrefabPreviewForTesting(
+    const PreviewRenderableSnapshot& snapshot);
+#endif
 
 class EditorThumbnailPreviewRenderer
 {

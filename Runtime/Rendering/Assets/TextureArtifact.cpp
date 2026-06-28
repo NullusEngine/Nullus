@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -345,7 +346,29 @@ bool ValidateMip(
     const uint64_t minimumSlicePitch = RHI::CalculateTextureSlicePitch(format, mip.width, mip.height, 1u);
     return mip.rowPitch == minimumRowPitch &&
         mip.slicePitch == minimumSlicePitch &&
-        mip.pixels.size() == mip.slicePitch;
+        mip.PixelSize() == mip.slicePitch;
+}
+
+bool ValidateMipRecordLayout(
+    const TextureArtifactMip& mip,
+    const RHI::TextureFormat format,
+    const uint32_t expectedLevel,
+    const uint32_t expectedWidth,
+    const uint32_t expectedHeight,
+    const uint64_t dataSize)
+{
+    if (mip.level != expectedLevel ||
+        mip.width != expectedWidth ||
+        mip.height != expectedHeight)
+    {
+        return false;
+    }
+
+    const uint64_t minimumRowPitch = RHI::CalculateTextureRowPitch(format, mip.width);
+    const uint64_t minimumSlicePitch = RHI::CalculateTextureSlicePitch(format, mip.width, mip.height, 1u);
+    return mip.rowPitch == minimumRowPitch &&
+        mip.slicePitch == minimumSlicePitch &&
+        dataSize == mip.slicePitch;
 }
 
 bool IsSupportedFace(const TextureArtifactCubeFace face)
@@ -535,13 +558,6 @@ bool ReadMetadataStringTable(const ByteView payload, const TextureArtifactHeader
         offset == endOffset;
 }
 
-}
-
-bool IsNativeTextureArtifact(const std::vector<uint8_t>& bytes)
-{
-    return NLS::Core::Assets::IsNativeArtifactContainer(bytes);
-}
-
 std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& texture)
 {
     if (texture.width == 0u ||
@@ -584,7 +600,7 @@ std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& 
                 subresource.depth != 1u ||
                 subresource.rowPitch != mip.rowPitch ||
                 subresource.slicePitch != mip.slicePitch ||
-                (subresource.dataSize != 0u && subresource.dataSize != mip.pixels.size()))
+                (subresource.dataSize != 0u && subresource.dataSize != mip.PixelSize()))
             {
                 return {};
             }
@@ -616,7 +632,7 @@ std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& 
             mip.rowPitch,
             mip.slicePitch,
             dataOffset,
-            static_cast<uint64_t>(mip.pixels.size())
+            static_cast<uint64_t>(mip.PixelSize())
         });
         const TextureArtifactSubresource defaultSubresource{
             mip.level,
@@ -628,7 +644,7 @@ std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& 
             mip.rowPitch,
             mip.slicePitch,
             dataOffset,
-            static_cast<uint64_t>(mip.pixels.size())
+            static_cast<uint64_t>(mip.PixelSize())
         };
         const auto& subresource = texture.subresources.empty()
             ? defaultSubresource
@@ -643,9 +659,9 @@ std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& 
             mip.rowPitch,
             mip.slicePitch,
             dataOffset,
-            static_cast<uint64_t>(mip.pixels.size())
+            static_cast<uint64_t>(mip.PixelSize())
         });
-        dataOffset += mip.pixels.size();
+        dataOffset += mip.PixelSize();
     }
     if (dataOffset > std::numeric_limits<size_t>::max())
         return {};
@@ -672,36 +688,33 @@ std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& 
         AppendSubresourceRecord(bytes, record);
     bytes.insert(bytes.end(), metadataBytes.begin(), metadataBytes.end());
     for (const auto& mip : texture.mips)
-        bytes.insert(bytes.end(), mip.pixels.begin(), mip.pixels.end());
+    {
+        const auto* pixels = mip.PixelData();
+        if (pixels == nullptr)
+            return {};
+        bytes.insert(bytes.end(), pixels, pixels + mip.PixelSize());
+    }
     return bytes;
 }
 
-std::vector<uint8_t> SerializeTextureArtifact(const TextureArtifactData& texture)
+std::optional<TextureArtifactData> DeserializeTextureArtifactInternal(
+    std::shared_ptr<std::vector<uint8_t>> bytes,
+    const bool usePixelViews)
 {
-    auto payload = SerializeTextureArtifactPayload(texture);
-    if (payload.empty())
-        return {};
+    if (bytes == nullptr)
+        return std::nullopt;
 
-    NLS::Core::Assets::NativeArtifactMetadata metadata;
-    metadata.artifactType = NLS::Core::Assets::ArtifactType::Texture;
-    metadata.schemaName = "texture";
-    metadata.schemaVersion = kTextureArtifactContainerSchemaVersion;
-    return NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload);
-}
-
-std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<uint8_t>& bytes)
-{
     NLS::Core::Assets::RecordArtifactLoadTelemetry({
         NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize});
 
     auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
-        bytes,
+        *bytes,
         NLS::Core::Assets::ArtifactType::Texture,
         kTextureArtifactContainerSchemaVersion);
     if (!container.has_value())
     {
         container = NLS::Core::Assets::ReadNativeArtifactContainerView(
-            bytes,
+            *bytes,
             NLS::Core::Assets::ArtifactType::Texture,
             kLegacyTextureArtifactContainerSchemaVersion);
     }
@@ -789,16 +802,25 @@ std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<
         mip.height = record.height;
         mip.rowPitch = record.rowPitch;
         mip.slicePitch = record.slicePitch;
-        const auto begin = payload.data + static_cast<size_t>(record.dataOffset);
-        mip.pixels.assign(begin, begin + static_cast<size_t>(record.dataSize));
-        if (!ValidateMip(
+        if (!ValidateMipRecordLayout(
                 mip,
                 texture.format,
                 record.level,
                 MipDimensionAtLevel(texture.width, record.level),
-                MipDimensionAtLevel(texture.height, record.level)))
+                MipDimensionAtLevel(texture.height, record.level),
+                record.dataSize))
         {
             return std::nullopt;
+        }
+        const auto* begin = payload.data + static_cast<size_t>(record.dataOffset);
+        const auto pixelSize = static_cast<size_t>(record.dataSize);
+        if (usePixelViews)
+        {
+            mip.pixelView = std::span<const uint8_t>(begin, pixelSize);
+        }
+        else
+        {
+            mip.pixels.assign(begin, begin + pixelSize);
         }
         const auto face = static_cast<TextureArtifactCubeFace>(subresourceRecord.face);
         if (!IsSupportedFace(face) ||
@@ -837,7 +859,36 @@ std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<
         return std::nullopt;
     }
 
+    if (usePixelViews)
+        texture.backingBytes = std::move(bytes);
     return texture;
+}
+
+}
+
+bool IsNativeTextureArtifact(const std::vector<uint8_t>& bytes)
+{
+    return NLS::Core::Assets::IsNativeArtifactContainer(bytes);
+}
+
+std::vector<uint8_t> SerializeTextureArtifact(const TextureArtifactData& texture)
+{
+    auto payload = SerializeTextureArtifactPayload(texture);
+    if (payload.empty())
+        return {};
+
+    NLS::Core::Assets::NativeArtifactMetadata metadata;
+    metadata.artifactType = NLS::Core::Assets::ArtifactType::Texture;
+    metadata.schemaName = "texture";
+    metadata.schemaVersion = kTextureArtifactContainerSchemaVersion;
+    return NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload);
+}
+
+std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<uint8_t>& bytes)
+{
+    return DeserializeTextureArtifactInternal(
+        std::make_shared<std::vector<uint8_t>>(bytes),
+        false);
 }
 
 std::optional<TextureArtifactHeaderPreview> ReadTextureArtifactHeaderPreview(
@@ -889,13 +940,12 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
     {
         return std::nullopt;
     }
-
     NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
     telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead;
     telemetry.path = path.generic_string();
     NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
 
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
         return std::nullopt;
 
@@ -906,7 +956,37 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
     if (isCancelled())
         return std::nullopt;
 
-    std::vector<uint8_t> bytes;
+    const auto endPosition = input.tellg();
+    if (endPosition != std::streampos(-1))
+    {
+        const auto fileSize = static_cast<std::streamoff>(endPosition);
+        if (fileSize >= 0)
+        {
+            const auto fileSizeValue = static_cast<uintmax_t>(fileSize);
+            if (fileSizeValue <= static_cast<uintmax_t>((std::numeric_limits<size_t>::max)()) &&
+                fileSizeValue <= static_cast<uintmax_t>((std::numeric_limits<std::streamsize>::max)()))
+            {
+                auto bytes = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(fileSizeValue));
+                input.seekg(0, std::ios::beg);
+                if (!input)
+                    return std::nullopt;
+                if (!bytes->empty())
+                    input.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(bytes->size()));
+                if (isCancelled())
+                    return std::nullopt;
+                if (input.gcount() == static_cast<std::streamsize>(bytes->size()))
+                    return DeserializeTextureArtifactInternal(std::move(bytes), true);
+                return std::nullopt;
+            }
+        }
+    }
+
+    input.clear();
+    input.seekg(0, std::ios::beg);
+    if (!input)
+        return std::nullopt;
+
+    auto bytes = std::make_shared<std::vector<uint8_t>>();
     std::array<char, 64u * 1024u> buffer {};
     while (input)
     {
@@ -919,12 +999,12 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
             break;
 
         const auto* begin = reinterpret_cast<const uint8_t*>(buffer.data());
-        bytes.insert(bytes.end(), begin, begin + static_cast<size_t>(readCount));
+        bytes->insert(bytes->end(), begin, begin + static_cast<size_t>(readCount));
     }
     if (isCancelled())
         return std::nullopt;
 
-    return DeserializeTextureArtifact(bytes);
+    return DeserializeTextureArtifactInternal(std::move(bytes), true);
 }
 
 std::optional<TextureArtifactData> DecodeTextureArtifactFromEncodedImage(

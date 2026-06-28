@@ -115,6 +115,18 @@ namespace
             GTEST_SKIP() << "Native dxc is unavailable in this environment."; \
     } while (false)
 
+    void ClearRenderSceneResourceManagerServicesForTesting()
+    {
+        NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MeshManager>();
+        NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+        NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+        NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+        NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths({}, {});
+        NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+        NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+        NLS::Core::ResourceManagement::ShaderManager::ProvideAssetPaths({}, {});
+    }
+
     class ScopedRenderSceneCacheJobSystem
     {
     public:
@@ -150,6 +162,7 @@ namespace
 
     NLS::Render::Context::Driver& EnsureRenderSceneTestDriver()
     {
+        ClearRenderSceneResourceManagerServicesForTesting();
         static auto driver = std::make_unique<NLS::Render::Context::Driver>([]()
         {
             NLS::Render::Settings::DriverSettings settings;
@@ -1912,6 +1925,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialTexturePathWithInvalidBytesDoesNotTh
 
     delete mesh;
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
 }
 

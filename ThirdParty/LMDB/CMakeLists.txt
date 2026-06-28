@@ -12,4 +12,7 @@ if(MSVC)
     target_compile_options(lmdb PRIVATE /wd4172 /wd4333)
 endif()
 
-set_target_properties(lmdb PROPERTIES FOLDER ThirdParty/LMDB)
+set_target_properties(lmdb PROPERTIES
+    FOLDER ThirdParty/LMDB
+    POSITION_INDEPENDENT_CODE ON
+)

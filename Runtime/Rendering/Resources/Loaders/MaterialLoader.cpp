@@ -2,8 +2,10 @@
 
 #include <array>
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -268,8 +270,18 @@ namespace
         const auto trimmed = Trim(value);
         const auto* begin = trimmed.data();
         const auto* end = begin + trimmed.size();
+#if defined(__APPLE__) && defined(_LIBCPP_VERSION)
+        errno = 0;
+        char* parseEnd = nullptr;
+        const float parsed = std::strtof(begin, &parseEnd);
+        if (errno != 0 || parseEnd != end)
+            return false;
+        output = parsed;
+        return true;
+#else
         const auto result = std::from_chars(begin, end, output);
         return result.ec == std::errc{} && result.ptr == end;
+#endif
     }
 
     std::string ToLower(std::string value)

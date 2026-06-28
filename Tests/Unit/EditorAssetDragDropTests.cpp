@@ -27,11 +27,14 @@
 #include "Core/RendererResourcePrewarmRequest.h"
 #include "Core/RendererResourceStreamingBudget.h"
 #include "Core/ResourceManagement/ResourceLifetimeRegistry.h"
+#include "Jobs/JobSystem.h"
 #include "Engine/Assets/PrefabAsset.h"
 #include "GameObject.h"
 #include "Guid.h"
 #include "Panels/ImportedPrefabDragPreviewSession.h"
 #include "Panels/SceneView.h"
+#include "Assets/NativeArtifactContainer.h"
+#include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "ResourceManagement/MaterialManager.h"
@@ -50,6 +53,129 @@ using NLS::Editor::Assets::AssetDragDropWorkflow;
 using NLS::Editor::Assets::DragDropOperationStatus;
 using NLS::Editor::Assets::UnifiedPrefabReadiness;
 using NLS::Engine::Assets::PrefabArtifact;
+
+template <typename T>
+class ScopedServiceOverride final
+{
+public:
+    explicit ScopedServiceOverride(T& service)
+    {
+        m_hadPrevious = NLS::Core::ServiceLocator::Contains<T>();
+        if (m_hadPrevious)
+            m_previous = &NLS::Core::ServiceLocator::Get<T>();
+        NLS::Core::ServiceLocator::Provide<T>(service);
+    }
+
+    ~ScopedServiceOverride()
+    {
+        if (m_hadPrevious && m_previous != nullptr)
+            NLS::Core::ServiceLocator::Provide<T>(*m_previous);
+        else
+            NLS::Core::ServiceLocator::Remove<T>();
+    }
+
+    ScopedServiceOverride(const ScopedServiceOverride&) = delete;
+    ScopedServiceOverride& operator=(const ScopedServiceOverride&) = delete;
+
+private:
+    bool m_hadPrevious = false;
+    T* m_previous = nullptr;
+};
+
+class ScopedResourceManagerAssetPaths final
+{
+public:
+    ScopedResourceManagerAssetPaths(std::string projectAssetsRoot, std::string engineAssetsRoot)
+    {
+        NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+        NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+    }
+
+    ~ScopedResourceManagerAssetPaths()
+    {
+        NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+        NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+    }
+
+    ScopedResourceManagerAssetPaths(const ScopedResourceManagerAssetPaths&) = delete;
+    ScopedResourceManagerAssetPaths& operator=(const ScopedResourceManagerAssetPaths&) = delete;
+};
+
+class ScopedEditorAssetDragDropJobSystem final
+{
+public:
+    explicit ScopedEditorAssetDragDropJobSystem(const uint32_t workerCount = 0u)
+    {
+        if (NLS::Base::Jobs::IsJobSystemInitialized())
+            return;
+
+        NLS::Base::Jobs::JobSystemConfig config;
+        config.workerCount = workerCount;
+        m_ownsRuntime = NLS::Base::Jobs::TryInitializeJobSystem(config);
+    }
+
+    ~ScopedEditorAssetDragDropJobSystem()
+    {
+        if (!m_ownsRuntime)
+            return;
+        NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::Immediate);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        NLS::Base::Jobs::ResetJobSystemForTesting();
+#endif
+    }
+
+    bool IsAvailable() const
+    {
+        return NLS::Base::Jobs::IsJobSystemInitialized();
+    }
+
+    ScopedEditorAssetDragDropJobSystem(const ScopedEditorAssetDragDropJobSystem&) = delete;
+    ScopedEditorAssetDragDropJobSystem& operator=(const ScopedEditorAssetDragDropJobSystem&) = delete;
+
+private:
+    bool m_ownsRuntime = false;
+};
+
+class ScopedAsyncArtifactRequestStateForTesting final
+{
+public:
+    ScopedAsyncArtifactRequestStateForTesting()
+        : m_ready(ClearAndWait())
+    {
+    }
+
+    ~ScopedAsyncArtifactRequestStateForTesting()
+    {
+        if (!ClearAndWait())
+            ADD_FAILURE() << "Timed out waiting for async artifact workers during test cleanup.";
+    }
+
+    bool IsReady() const
+    {
+        return m_ready;
+    }
+
+    ScopedAsyncArtifactRequestStateForTesting(const ScopedAsyncArtifactRequestStateForTesting&) = delete;
+    ScopedAsyncArtifactRequestStateForTesting& operator=(const ScopedAsyncArtifactRequestStateForTesting&) = delete;
+
+private:
+    static bool ClearAndWait()
+    {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        NLS::Core::ResourceManagement::MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+        NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+        const bool materialWorkersDrained =
+            NLS::Core::ResourceManagement::MaterialManager::WaitForAsyncArtifactWorkersForTesting();
+        const bool textureWorkersDrained =
+            NLS::Core::ResourceManagement::TextureManager::WaitForAsyncArtifactWorkersForTesting();
+        return materialWorkersDrained && textureWorkersDrained;
+#else
+        return true;
+#endif
+    }
+
+    bool m_ready = false;
+};
 
 AssetId Id(const char* guid)
 {
@@ -232,72 +358,55 @@ void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_
         static_cast<std::streamsize>(bytes.size()));
 }
 
-std::filesystem::path FindFirstImportedArtifactPathForSubAssetPrefix(
+std::filesystem::path ResolveImportedArtifactPath(
     const std::filesystem::path& root,
-    const std::filesystem::path& manifestPath,
-    const std::string& subAssetPrefix,
-    const std::string& extension)
+    const NLS::Core::Assets::ImportedArtifact& artifact)
 {
-    std::ifstream input(manifestPath, std::ios::binary);
-    if (!input.good())
+    auto artifactPath = std::filesystem::path(artifact.artifactPath);
+    if (artifactPath.empty())
+        return {};
+    if (artifactPath.is_relative())
+        artifactPath = root / artifactPath;
+    return artifactPath.lexically_normal();
+}
+
+std::filesystem::path FindFirstImportedArtifactPathForSubAssetPrefix(
+    NLS::Editor::Assets::AssetDatabaseFacade& database,
+    const std::filesystem::path& root,
+    const std::string& assetPath,
+    const std::string& subAssetPrefix,
+    const NLS::Core::Assets::ArtifactType artifactType)
+{
+    const auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
+    if (!manifest.has_value())
         return {};
 
-    auto manifest = nlohmann::json::parse(input, nullptr, false);
-    if (!manifest.is_object() || !manifest["dependencies"].is_array())
-        return {};
-
-    for (const auto& dependency : manifest["dependencies"])
+    for (const auto& artifact : manifest->subAssets)
     {
-        if (!dependency.is_object() ||
-            dependency.value("kind", std::string {}) != "imported-artifact")
-        {
+        if (artifact.artifactType != artifactType)
             continue;
-        }
-
-        const auto value = dependency.value("value", std::string {});
-        const auto separator = value.find('#');
-        if (separator == std::string::npos)
+        if (artifact.subAssetKey.rfind(subAssetPrefix, 0u) != 0u)
             continue;
+        return ResolveImportedArtifactPath(root, artifact);
+    }
 
-        const auto assetIdText = value.substr(0u, separator);
-        const auto subAssetAndTarget = value.substr(separator + 1u);
-        if (subAssetAndTarget.rfind(subAssetPrefix, 0u) != 0u)
-            continue;
+    return {};
+}
 
-        const auto targetSeparator = subAssetAndTarget.rfind('@');
-        const auto subAssetKey = targetSeparator == std::string::npos
-            ? subAssetAndTarget
-            : subAssetAndTarget.substr(0u, targetSeparator);
-        const auto importedManifestPath =
-            root / "Library" / "Artifacts" / assetIdText / "manifest.json";
+std::filesystem::path FindFirstImportedArtifactPathForAsset(
+    NLS::Editor::Assets::AssetDatabaseFacade& database,
+    const std::filesystem::path& root,
+    const std::string& assetPath,
+    const NLS::Core::Assets::ArtifactType artifactType)
+{
+    const auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
+    if (!manifest.has_value())
+        return {};
 
-        std::ifstream importedInput(importedManifestPath, std::ios::binary);
-        if (!importedInput.good())
-            continue;
-
-        auto importedManifest = nlohmann::json::parse(importedInput, nullptr, false);
-        if (!importedManifest.is_object() || !importedManifest["subAssets"].is_array())
-            continue;
-
-        for (const auto& subAsset : importedManifest["subAssets"])
-        {
-            if (!subAsset.is_object() ||
-                subAsset.value("subAssetKey", std::string {}) != subAssetKey)
-            {
-                continue;
-            }
-
-            const auto artifactPathText = subAsset.value("artifactPath", std::string {});
-            if (artifactPathText.empty())
-                return {};
-
-            auto artifactPath = std::filesystem::path(artifactPathText);
-            if (artifactPath.extension() != extension)
-                return {};
-            if (artifactPath.is_relative())
-                artifactPath = importedManifestPath.parent_path() / artifactPath;
-            return artifactPath.lexically_normal();
-        }
+    for (const auto& artifact : manifest->subAssets)
+    {
+        if (artifact.artifactType == artifactType)
+            return ResolveImportedArtifactPath(root, artifact);
     }
 
     return {};
@@ -501,18 +610,23 @@ TEST(EditorAssetDragDropTests, GeneratedModelBlockingDropReimportsWhenRendererTe
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
     ASSERT_TRUE(database.ImportAsset("Assets/Models/ReadyHero.gltf"));
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/ReadyHero.gltf");
-    const auto modelManifestPath = artifactRoot / "manifest.json";
     const auto textureArtifactPath = FindFirstImportedArtifactPathForSubAssetPrefix(
+        database,
         root,
-        modelManifestPath,
+        "Assets/Models/ReadyHero.gltf",
         "texture:",
-        ".ntex");
-    ASSERT_FALSE(textureArtifactPath.empty());
-    ASSERT_TRUE(std::filesystem::exists(textureArtifactPath));
-    std::filesystem::remove(textureArtifactPath);
-    ASSERT_FALSE(std::filesystem::exists(textureArtifactPath));
+        NLS::Core::Assets::ArtifactType::Texture);
+    const auto importedTextureArtifactPath = textureArtifactPath.empty()
+        ? FindFirstImportedArtifactPathForAsset(
+            database,
+            root,
+            "Assets/Textures/HeroBaseColor.png",
+            NLS::Core::Assets::ArtifactType::Texture)
+        : textureArtifactPath;
+    ASSERT_FALSE(importedTextureArtifactPath.empty());
+    ASSERT_TRUE(std::filesystem::exists(importedTextureArtifactPath));
+    std::filesystem::remove(importedTextureArtifactPath);
+    ASSERT_FALSE(std::filesystem::exists(importedTextureArtifactPath));
 
     const auto payload = MakeImportedGeneratedModelPayload(
         database,
@@ -551,7 +665,7 @@ TEST(EditorAssetDragDropTests, GeneratedModelBlockingDropReimportsWhenRendererTe
     ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
     ASSERT_EQ(scene.GetGameObjects().size(), 1u);
     EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "ReadyHeroRoot");
-    EXPECT_TRUE(std::filesystem::exists(textureArtifactPath))
+    EXPECT_TRUE(std::filesystem::exists(importedTextureArtifactPath))
         << "Blocking final drop must restore missing renderer texture artifacts before committing.";
     EXPECT_FALSE(progress.HasRunningJobs());
 
@@ -1203,19 +1317,65 @@ TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewHandoffPreservesLoadedTr
 
 TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewHandoffPromotesPendingMaterialTextureLoadsForCommit)
 {
-    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(
-        "C:/Nullus/TestProject/Assets/",
-        "C:/Nullus/EngineAssets/");
-    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(
-        "C:/Nullus/TestProject/Assets/",
-        "C:/Nullus/EngineAssets/");
+    const ScopedEditorAssetDragDropJobSystem jobSystem;
+    ASSERT_TRUE(jobSystem.IsAvailable());
+
+    const auto root = MakeAssetDragDropRoot();
+    const auto projectAssetsRoot = (root / "Assets").string() + "/";
+    const ScopedResourceManagerAssetPaths assetPaths(
+        projectAssetsRoot,
+        "App/Assets/Engine/");
 
     NLS::Core::ResourceManagement::MaterialManager materialManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
-    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
-    const std::string materialPath = "Library/Artifacts/Preview/Handoff/body.nmat";
-    const std::string texturePath = "Library/Artifacts/Preview/Handoff/albedo.ntex";
+    const ScopedServiceOverride<NLS::Core::ResourceManagement::MaterialManager> materialService(materialManager);
+    const ScopedServiceOverride<NLS::Core::ResourceManagement::TextureManager> textureService(textureManager);
+    const ScopedAsyncArtifactRequestStateForTesting asyncRequestState;
+    ASSERT_TRUE(asyncRequestState.IsReady());
+    const std::string materialPath =
+        "Library/Artifacts/5a/5a7b08f376165e7a24bca5d6717735939d1a03d386d31f76adac4e723db8b863";
+    const std::string texturePath =
+        "Library/Artifacts/a5/a55ac3737664a81088f904ab71979adda6090a6fae2b5bcf829cae2cbba29c37";
+    const auto absoluteMaterialPath =
+        NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(materialPath);
+    const auto absoluteTexturePath =
+        NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
+
+    const std::string materialPayload =
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n"
+        "alphaMode=Opaque\n"
+        "doubleSided=true\n"
+        "depthWrite=true\n";
+    NLS::Core::Assets::NativeArtifactMetadata materialMetadata;
+    materialMetadata.artifactType = NLS::Core::Assets::ArtifactType::Material;
+    materialMetadata.schemaName = "material";
+    materialMetadata.schemaVersion = 1u;
+    materialMetadata.sourceAssetId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic("HandoffMaterial"));
+    materialMetadata.subAssetKey = "material:Handoff";
+    materialMetadata.importerId = "test-material";
+    materialMetadata.importerVersion = 1u;
+    WriteBinaryFile(
+        absoluteMaterialPath,
+        NLS::Core::Assets::WriteNativeArtifactContainer(
+            std::move(materialMetadata),
+            std::vector<uint8_t>(materialPayload.begin(), materialPayload.end())));
+
+    NLS::Render::Assets::TextureArtifactData textureArtifact;
+    textureArtifact.width = 1u;
+    textureArtifact.height = 1u;
+    textureArtifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    textureArtifact.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    NLS::Render::Assets::TextureArtifactMip mip;
+    mip.level = 0u;
+    mip.width = 1u;
+    mip.height = 1u;
+    mip.rowPitch = 4u;
+    mip.slicePitch = 4u;
+    mip.pixels = {255u, 255u, 255u, 255u};
+    textureArtifact.mips.push_back(std::move(mip));
+    WriteBinaryFile(absoluteTexturePath, NLS::Render::Assets::SerializeTextureArtifact(textureArtifact));
 
     materialManager.RequestAsyncArtifact(materialPath, true);
     textureManager.RequestAsyncArtifact(texturePath, true);
@@ -1247,10 +1407,17 @@ TEST(EditorAssetDragDropTests, ImportedPrefabDragPreviewHandoffPromotesPendingMa
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
-    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
-    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
-    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+
+    const bool materialStillPending = materialManager.IsAsyncArtifactLoadPending(materialPath);
+    const bool textureStillPending = textureManager.IsAsyncArtifactLoadPending(texturePath);
+    ASSERT_FALSE(materialStillPending)
+        << "Material artifact load should complete before the test-local MaterialManager is destroyed.";
+    ASSERT_FALSE(textureStillPending)
+        << "Texture artifact load should complete before the test-local TextureManager is destroyed.";
+
+    materialManager.UnloadResources();
+    textureManager.UnloadResources();
+    std::filesystem::remove_all(root);
 }
 
 TEST(EditorAssetDragDropTests, PrefabDeletionCleanupReleasesSceneOwnedRendererResources)
@@ -2543,17 +2710,12 @@ TEST(EditorAssetDragDropTests, GeneratedModelBlockingDropReimportsWhenPrefabArti
     NLS::Editor::Assets::AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
     ASSERT_TRUE(database.ImportAsset("Assets/Models/MissingPrefabArtifactHero.gltf"));
-    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
-        "Assets/Models/MissingPrefabArtifactHero.gltf");
-    std::filesystem::path prefabArtifactPath;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(artifactRoot))
-    {
-        if (entry.is_regular_file() && entry.path().extension() == ".nprefab")
-        {
-            prefabArtifactPath = entry.path();
-            break;
-        }
-    }
+    const auto prefabArtifactPath = FindFirstImportedArtifactPathForSubAssetPrefix(
+        database,
+        root,
+        "Assets/Models/MissingPrefabArtifactHero.gltf",
+        "prefab:",
+        NLS::Core::Assets::ArtifactType::Prefab);
     ASSERT_FALSE(prefabArtifactPath.empty());
     ASSERT_TRUE(std::filesystem::exists(prefabArtifactPath));
     std::filesystem::remove(prefabArtifactPath);

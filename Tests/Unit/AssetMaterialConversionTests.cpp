@@ -733,7 +733,7 @@ void WriteNativeMaterialArtifactFile(
 
 void WriteMinimalShaderLabMaterialArtifactFile(
     const std::filesystem::path& path,
-    const std::string& shaderPath = "Assets/Shaders/AsyncMaterial.shadet")
+    const std::string& shaderPath = "Assets/Shaders/AsyncMaterial.shader")
 {
     WriteNativeMaterialArtifactFile(
         path,
@@ -1201,7 +1201,7 @@ std::filesystem::path WriteShaderLabSourceBackedStandardPbrShaderArtifact(const 
     artifact.subAssetKey = "shader:StandardPBR/Forward#0";
     return WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shader",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         std::move(artifact),
         "StandardPBR Forward");
@@ -1537,7 +1537,7 @@ TEST(AssetMaterialConversionTests, ConvertedStandardPbrPropertiesExistInBuiltInS
 
     const auto shaderPath =
         std::filesystem::path(NLS_ROOT_DIR) /
-        "App" / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shadet";
+        "App" / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader";
     std::ifstream shaderStream(shaderPath, std::ios::binary);
     ASSERT_TRUE(shaderStream) << shaderPath.string();
     std::ostringstream shaderBuffer;
@@ -1682,7 +1682,7 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadUsesShaderLabOnlySche
 
     EXPECT_NE(material.serializedPayload.find("shaderLabMaterialVersion=1"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("shader=?"), std::string::npos);
-    EXPECT_EQ(material.serializedPayload.find(".shadet"), std::string::npos);
+    EXPECT_EQ(material.serializedPayload.find(".shader"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("surfaceMode=Transparent"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("alphaMode=Blend"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("doubleSided=true"), std::string::npos);
@@ -1729,7 +1729,7 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadUsesShaderLabMaterial
 
     EXPECT_NE(material.serializedPayload.find("shaderLabMaterialVersion=1"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("shader=?"), std::string::npos);
-    EXPECT_EQ(material.serializedPayload.find(".shadet"), std::string::npos);
+    EXPECT_EQ(material.serializedPayload.find(".shader"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("property _BaseColor Color 0.250000 0.500000 0.750000 0.800000"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("property _Metallic Float 0.400000"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("property _Roughness Float 0.600000"), std::string::npos);
@@ -2162,7 +2162,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderRejectsShaderArtifactPathRefere
     loadOptions.allowSourceAssetNativeContainer = true;
     auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string(), loadOptions);
     EXPECT_EQ(loaded, nullptr)
-        << ".mat must reference the authoritative .shadet source; ArtifactDB owns artifact payload paths.";
+        << ".mat must reference the authoritative .shader source; ArtifactDB owns artifact payload paths.";
 
     std::filesystem::remove_all(root);
 }
@@ -2172,14 +2172,14 @@ TEST(AssetMaterialConversionTests, MaterialLoaderAcceptsShaderLabSourceAsAuthori
     auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::CreateFromSerializedPayload(
         "Assets/Materials/SourceBacked.mat",
         "shaderLabMaterialVersion=1\n"
-        "shader=Assets/Shaders/Multi.shadet\n"
+        "shader=Assets/Shaders/Multi.shader\n"
         "surfaceMode=Opaque\n",
         {false, false});
 
     ASSERT_NE(loaded, nullptr);
-    EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/Shaders/Multi.shadet");
+    EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/Shaders/Multi.shader");
     EXPECT_EQ(loaded->GetShader(), nullptr)
-        << "A .mat source shader reference must not direct-load or compile the .shadet source.";
+        << "A .mat source shader reference must not direct-load or compile the .shader source.";
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
 }
@@ -2236,7 +2236,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderMatchesShaderLabPassArtifactsBy
     WriteNativeMaterialArtifactFile(
         materialPath,
         "shaderLabMaterialVersion=1\n"
-        "shader=Assets/./Shaders/StandardPBR.shadet\n"
+        "shader=Assets/./Shaders/StandardPBR.shader\n"
         "surfaceMode=Opaque\n"
         "property _BaseColor Color 0.250000 0.500000 0.750000 1.000000\n");
 
@@ -2250,7 +2250,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderMatchesShaderLabPassArtifactsBy
 
     auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string(), {false, true});
     ASSERT_NE(loaded, nullptr);
-    EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/./Shaders/StandardPBR.shadet");
+    EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/./Shaders/StandardPBR.shader");
     auto* forwardShader = loaded->ResolveShaderForLightMode("Forward");
     ASSERT_NE(forwardShader, nullptr)
         << "Material pass registration must compare ShaderLab source identities after path normalization.";
@@ -2269,7 +2269,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderResolvesRuntimeShaderLabPassArt
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_shaderlab_runtime_source_pass_resolve_" + NLS::Guid::New().ToString());
     const auto dataRoot = root / "Data";
-    const auto shaderSourcePath = std::filesystem::path("Assets") / "Shaders" / "RuntimeMulti.shadet";
+    const auto shaderSourcePath = std::filesystem::path("Assets") / "Shaders" / "RuntimeMulti.shader";
     const auto shaderSourceId = NLS::Core::Assets::AssetId(NLS::Guid::New());
     const auto shaderArtifactHash =
         "9a14e94a076b68fcad5f2bc73efbdf8d7e88eb5fc171edc925d03ac358a64bc9";
@@ -2351,7 +2351,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderDefaultTargetPlatformDoesNotWil
 {
     const auto root = std::filesystem::temp_directory_path() /
         ("nullus_shaderlab_material_platform_filter_" + NLS::Guid::New().ToString());
-    const auto shaderSourcePath = std::filesystem::path("Assets") / "Shaders" / "PlatformFilter.shadet";
+    const auto shaderSourcePath = std::filesystem::path("Assets") / "Shaders" / "PlatformFilter.shader";
     const auto shaderSourceId = NLS::Core::Assets::AssetId(NLS::Guid::New());
     const auto editorShaderHash =
         "3ce8c6cf9f32ef118b65e72f8193fbc930a4538e60335bce37dcf8d5fa83a101";
@@ -2516,7 +2516,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesShaderLabOnlyPayload)
     std::filesystem::create_directories(root);
 
     NLS::Render::Resources::Material material;
-    material.SetShaderLabSourcePath("Assets/Shaders/Unlit.shadet");
+    material.SetShaderLabSourcePath("Assets/Shaders/Unlit.shader");
     material.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Opaque);
     material.SetBackfaceCulling(false);
     material.SetFrontfaceCulling(false);
@@ -2531,7 +2531,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesShaderLabOnlyPayload)
         1u);
 
     EXPECT_NE(payload.find("shaderLabMaterialVersion=1"), std::string::npos);
-    EXPECT_NE(payload.find("shader=Assets/Shaders/Unlit.shadet"), std::string::npos);
+    EXPECT_NE(payload.find("shader=Assets/Shaders/Unlit.shader"), std::string::npos);
     EXPECT_NE(payload.find("surfaceMode=Opaque"), std::string::npos);
     EXPECT_NE(payload.find("doubleSided=true"), std::string::npos);
     EXPECT_NE(payload.find("depthWrite=true"), std::string::npos);
@@ -2548,7 +2548,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesReadableSourceMatNati
     const auto materialPath = root / "Assets" / "Materials" / "Saved.mat";
 
     NLS::Render::Resources::Material material;
-    material.SetShaderLabSourcePath("Assets/Shaders/Unlit.shadet");
+    material.SetShaderLabSourcePath("Assets/Shaders/Unlit.shader");
     material.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Opaque);
     material.SetBackfaceCulling(false);
     material.SetDepthWriting(true);
@@ -2561,7 +2561,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesReadableSourceMatNati
         1u);
 
     EXPECT_NE(payload.find("shaderLabMaterialVersion=1"), std::string::npos);
-    EXPECT_NE(payload.find("shader=Assets/Shaders/Unlit.shadet"), std::string::npos);
+    EXPECT_NE(payload.find("shader=Assets/Shaders/Unlit.shader"), std::string::npos);
 
     auto* rejected = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
     EXPECT_EQ(rejected, nullptr);
@@ -2570,7 +2570,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesReadableSourceMatNati
     loadOptions.allowSourceAssetNativeContainer = true;
     auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string(), loadOptions);
     ASSERT_NE(loaded, nullptr);
-    EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/Shaders/Unlit.shadet");
+    EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/Shaders/Unlit.shader");
     EXPECT_FALSE(loaded->HasBackfaceCulling());
     EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
 
@@ -2589,7 +2589,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesShaderLabPropertyName
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
-            "Assets/Shaders/StandardPBR.shadet",
+            "Assets/Shaders/StandardPBR.shader",
             "shader:StandardPBR",
             MakeShaderLabNamedMaterialReflection())));
     auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
@@ -2631,7 +2631,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSavePreservesNativeShaderLabPro
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
-            "Assets/Shaders/Native.shadet",
+            "Assets/Shaders/Native.shader",
             "shader:Native",
             MakeShaderLabNamedMaterialReflection())));
 
@@ -2837,7 +2837,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderRejectsInvalidExplicitSurfaceMo
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
-            "Assets/Shaders/StandardPBR.shadet",
+            "Assets/Shaders/StandardPBR.shader",
             "shader:StandardPBR",
             MakeShaderLabNamedMaterialReflection())));
     static NLS::Core::ResourceManagement::ShaderManager shaderManager;
@@ -2877,7 +2877,7 @@ TEST(AssetMaterialConversionTests, MaterialConversionReferencesAuthoritativeShad
     ASSERT_EQ(scene.materials.size(), 1u);
 
     NLS::Render::Assets::MaterialConversionContext context;
-    context.shaderResourcePath = "Assets/Shaders/StandardPBR.shadet";
+    context.shaderResourcePath = "Assets/Shaders/StandardPBR.shader";
     const auto material = NLS::Render::Assets::ConvertImportedSceneMaterial(
         scene,
         scene.materials.front(),
@@ -2885,7 +2885,7 @@ TEST(AssetMaterialConversionTests, MaterialConversionReferencesAuthoritativeShad
         context);
 
     EXPECT_NE(
-        material.serializedPayload.find("shader=Assets/Shaders/StandardPBR.shadet"),
+        material.serializedPayload.find("shader=Assets/Shaders/StandardPBR.shader"),
         std::string::npos);
     EXPECT_EQ(material.serializedPayload.find("shader=Library/Artifacts/"), std::string::npos);
 }
@@ -2930,7 +2930,7 @@ TEST(AssetMaterialConversionTests, EngineDefaultMaterialIsDoubleSidedForDeferred
 
     ASSERT_FALSE(payload.empty());
     EXPECT_NE(payload.find("shaderLabMaterialVersion=1"), std::string::npos);
-    EXPECT_EQ(payload.find(".shadet"), std::string::npos);
+    EXPECT_EQ(payload.find(".shader"), std::string::npos);
     EXPECT_NE(payload.find("doubleSided=true"), std::string::npos);
 }
 
@@ -3033,7 +3033,7 @@ TEST(AssetMaterialConversionTests, ShaderReflectionFallsBackToRuntimeCompileBack
     WriteBinaryFile(
         shaderArtifactPath,
         NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
-            "Assets/Shaders/StandardPBR.shadet",
+            "Assets/Shaders/StandardPBR.shader",
             "shader:StandardPBR",
             MakeShaderLabNamedMaterialReflection())));
 
@@ -3088,10 +3088,10 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsAsRuntimeMateria
     constexpr const char* shaderArtifactHash = "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
     const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shader",
         shaderArtifactHash,
         MakeShaderArtifact(
-            "Assets/Shaders/StandardPBR.shadet",
+            "Assets/Shaders/StandardPBR.shader",
             "shader:StandardPBR/Forward#0",
             MakeShaderLabNamedMaterialReflection()),
         "StandardPBR Forward");
@@ -3232,7 +3232,7 @@ PROPERTY_END
 
     auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
     EXPECT_EQ(loaded, nullptr)
-        << ".mat files reference .shadet sources; ArtifactDB resolves imported shader payloads.";
+        << ".mat files reference .shader sources; ArtifactDB resolves imported shader payloads.";
     shaderManager.UnloadResources();
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
@@ -3471,7 +3471,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderAppliesShaderLabTextureSlotSamp
     constexpr const char* shaderArtifactHash = "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
     const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shader",
         shaderArtifactHash,
         MakeBaseMapWithSamplerShaderArtifact(),
         "StandardPBR Forward");
@@ -3700,7 +3700,7 @@ TEST(AssetMaterialConversionTests, MaterialManagerPreviewAsyncArtifactReturnsMat
     const auto textureResourcePath = LibraryArtifactPath("f51fc4f93fdfaeb9d91abfc64a3296734c991105b8782f8a4aa617684c5d109b");
     const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "PreviewDeferredTexture.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "PreviewDeferredTexture.shader",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         MakeAlbedoMapShaderArtifact(),
         "PreviewDeferredTexture Forward");
@@ -3787,7 +3787,7 @@ TEST(AssetMaterialConversionTests, MaterialReloadClearsPreviousTextureSlotSample
     constexpr const char* shaderArtifactHash = "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607";
     const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shader",
         shaderArtifactHash,
         MakeBaseMapWithSamplerShaderArtifact(),
         "StandardPBR Forward");
@@ -3913,7 +3913,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderCanKeepShaderResolutionCacheOnl
         ("nullus_material_shader_deferred_" + NLS::Guid::New().ToString());
     const auto projectAssets = root / "Assets";
     const auto materialPath = MaterialArtifactPath(root, "4d908c6dd9a8e406a58f8b148f48c9c71e04a45195541ce5517ee5b0ad6f4aa8");
-    const std::string shaderSourcePath = "Assets/Shaders/Deferred.shadet";
+    const std::string shaderSourcePath = "Assets/Shaders/Deferred.shader";
 
     WriteNativeMaterialArtifactFile(
         materialPath,
@@ -3946,10 +3946,10 @@ TEST(AssetMaterialConversionTests, MaterialLoaderPrefersShaderLabPropertyNamesOv
         ("nullus_shaderlab_named_material_" + NLS::Guid::New().ToString());
     const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "ShaderLabNamed.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "ShaderLabNamed.shader",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         MakeShaderArtifact(
-            "Assets/Shaders/ShaderLabNamed.shadet",
+            "Assets/Shaders/ShaderLabNamed.shader",
             "shader:ShaderLabNamed",
             MakeShaderLabNamedMaterialReflection()),
         "ShaderLabNamed Forward");
@@ -4012,7 +4012,7 @@ TEST(AssetMaterialConversionTests, MaterialPrewarmDoesNotPoisonLaterShaderLoadin
     const auto projectAssets = root / "Assets";
     const auto shaderResourcePath = LibraryArtifactPath("2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607");
     const auto shaderArtifactPath = root / shaderResourcePath;
-    const auto shaderSourcePath = std::filesystem::path("Assets") / "Shaders" / "Hero.shadet";
+    const auto shaderSourcePath = std::filesystem::path("Assets") / "Shaders" / "Hero.shader";
     const auto materialResourcePath = LibraryArtifactPath("47b24ab4b128645b99328e0a68370de1202b0ba370eafc30e8bb0b0b7cf8b5ae");
     const auto materialPath = root / materialResourcePath;
 
@@ -4022,7 +4022,7 @@ TEST(AssetMaterialConversionTests, MaterialPrewarmDoesNotPoisonLaterShaderLoadin
         "shader",
         1u,
         R"(NULLUS_IMPORTED_SHADER_ARTIFACT=1
-SOURCE=Assets/Shaders/Hero.shadet
+SOURCE=Assets/Shaders/Hero.shader
 SUB_ASSET=shader:Hero
 TARGET_PLATFORM=editor
 SHADERLAB_LIGHT_MODE=Forward
@@ -4048,7 +4048,7 @@ BYTECODE_HEX=05060708
 STAGE_END
 )");
     NLS::Core::Assets::ArtifactManifest shaderManifest;
-    shaderManifest.sourceAssetId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic("Assets/Shaders/Hero.shadet"));
+    shaderManifest.sourceAssetId = NLS::Core::Assets::AssetId(NLS::Guid::NewDeterministic("Assets/Shaders/Hero.shader"));
     shaderManifest.importerId = "ShaderLabImporter";
     shaderManifest.importerVersion = 1u;
     shaderManifest.targetPlatform = "editor";
@@ -4129,7 +4129,7 @@ TEST(AssetMaterialConversionTests, MaterialArtifactCanLoadShaderWhileDeferringTe
     const auto texturePath = root / textureResourcePath;
     const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "AlbedoMap.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "AlbedoMap.shader",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         MakeAlbedoMapShaderArtifact(),
         "AlbedoMap Forward");
@@ -4198,7 +4198,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
     const auto projectAssets = root / "Assets";
     const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shader",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         MakeAlbedoMapShaderArtifact(),
         "StandardPBR Forward");
@@ -4272,7 +4272,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReusesEquivalentCachedTextureAr
     const auto projectAssets = root / "Assets";
     const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
         root,
-        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shadet",
+        std::filesystem::path("Assets") / "Shaders" / "StandardPBR.shader",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         MakeAlbedoMapShaderArtifact(),
         "StandardPBR Forward");

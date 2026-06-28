@@ -1282,6 +1282,12 @@ TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslWithoutActiveDriverDoesNotGener
         << "}\n";
     shaderFile.close();
 
+    if (IsNativeDxcUnavailableForShader(engineShader))
+    {
+        std::filesystem::remove_all(root);
+        GTEST_SKIP() << "DXC is unavailable for no-driver built-in HLSL shader loading coverage.";
+    }
+
     auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
         engineShader.string(),
         projectAssets);

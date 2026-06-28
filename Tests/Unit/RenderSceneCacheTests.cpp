@@ -662,7 +662,7 @@ namespace
         RegisterImportedShaderLabArtifact(
             projectRoot,
             shaderManager,
-            "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
+            "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
             "shader:StandardPBR/Forward#0",
             "efb9b670c9b9f8ccf96ba7d887d80c19d3884bf71a87f8c3a02c97c6dc8dd55b");
     }
@@ -674,7 +674,7 @@ namespace
         RegisterImportedShaderLabArtifact(
             projectRoot,
             shaderManager,
-            "Assets/Project/Shaders/OnlyForPicking.shadet",
+            "Assets/Project/Shaders/OnlyForPicking.shader",
             "shader:OnlyForPicking/Picking#0",
             "3a6a3e42e1d842508a0167200da19f4dce088e622f8346ca6bf5f7b449223bd0");
     }
@@ -686,7 +686,7 @@ namespace
         RegisterImportedShaderLabArtifact(
             projectRoot,
             shaderManager,
-            "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
+            "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
             "shader:StandardPBR/ForwardPreview#1",
             "0a6a3e42e1d842508a0167200da19f4dce088e622f8346ca6bf5f7b449223bd1");
     }
@@ -1453,7 +1453,7 @@ TEST(RenderSceneCacheTests, SceneFallbackPreloadLoadsStandardPbrForwardFromArtif
 
     WriteImportedShaderLabArtifactDatabaseRecord(
         projectRoot,
-        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
         "shader:StandardPBR/Forward#0",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         "Forward");
@@ -1494,7 +1494,7 @@ TEST(RenderSceneCacheTests, SceneFallbackPreloadAcceptsStandardPbrPrimarySubAsse
 
     WriteImportedShaderLabArtifactDatabaseRecord(
         projectRoot,
-        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
         "shader:StandardPBR",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         "Forward");
@@ -1533,7 +1533,7 @@ TEST(RenderSceneCacheTests, SceneFallbackPreloadAcceptsPackagedStandardPbrSource
 
     WriteImportedShaderLabArtifactDatabaseRecord(
         projectRoot,
-        "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
+        "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
         "shader:StandardPBR/Forward#0",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         "Forward");
@@ -1572,7 +1572,7 @@ TEST(RenderSceneCacheTests, SceneFallbackPreloadIgnoresRuntimeTargetStandardPbrA
 
     WriteImportedShaderLabArtifactDatabaseRecord(
         projectRoot,
-        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
         "shader:StandardPBR/Forward#0",
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         "Forward",

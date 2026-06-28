@@ -42,7 +42,7 @@ namespace NLS::Editor::Assets
 {
 namespace
 {
-constexpr const char* kStandardPbrShaderAssetPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet";
+constexpr const char* kStandardPbrShaderAssetPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
 constexpr const char* kShaderCompilerToolchainDependencyName = "shader-compiler-toolchain";
 
 std::string ToLower(std::string value)
@@ -816,7 +816,7 @@ std::filesystem::path PrepareShaderImportCompileSource(
     shaderLabPassState.reset();
     shaderLabImportDiagnostics.clear();
 
-    if (ToLower(sourcePath.extension().generic_string()) != ".shadet")
+    if (ToLower(sourcePath.extension().generic_string()) != ".shader")
         return sourcePath;
 
     compileSourceText.clear();
@@ -4262,7 +4262,7 @@ bool AssetDatabaseFacade::RefreshSingle(
             progressTracker->ReportProgress(job, ImportPhase::SourceParse, 0.05, "Compiling shader source");
 
         std::vector<ImportedShaderArtifactPayload> shaderArtifacts;
-        if (ToLower(absolutePath.extension().generic_string()) == ".shadet")
+        if (ToLower(absolutePath.extension().generic_string()) == ".shader")
         {
             auto shaderLabImport = ImportShaderLabArtifactPayloads(
                 absolutePath,
@@ -4604,7 +4604,7 @@ bool AssetDatabaseFacade::RefreshSingle(
             NLS::Core::Assets::AssetDiagnosticSeverity::Error,
             "assetdatabase-model-material-shader-missing",
             absolutePath,
-            "Model material import requires ShaderLab source Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet.");
+            "Model material import requires ShaderLab source Assets/Engine/Shaders/ShaderLab/StandardPBR.shader.");
         return false;
     }
     const bool preserveModelLocalTextureArtifacts =

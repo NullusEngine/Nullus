@@ -3367,28 +3367,30 @@ TEST(AssetThumbnailCacheTests, RendererReadbackPollingReusesResolvedRequestWitho
     ASSERT_TRUE(request.has_value());
     ASSERT_TRUE(request->artifactPath.empty());
 
-    PendingThenReadyThumbnailPreviewRenderer renderer;
-    AssetThumbnailService service;
-    ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
-    const auto pending = service.GenerateNextThumbnail(renderer, true);
-    ASSERT_TRUE(pending.has_value());
-    EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
-    EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu);
-    ASSERT_TRUE(renderer.lastRenderRequest.has_value());
-    EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastRenderRequest->artifactPath));
-
-    PerformanceStageStats stats;
     {
-        PerformanceStageStatsCapture capture(stats);
-        const auto repolled = service.GenerateNextThumbnail(renderer, false);
-        ASSERT_TRUE(repolled.has_value());
-        EXPECT_EQ(repolled->status, AssetThumbnailServiceStatus::Pending);
-    }
+        PendingThenReadyThumbnailPreviewRenderer renderer;
+        AssetThumbnailService service;
+        ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
+        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        ASSERT_TRUE(pending.has_value());
+        EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
+        EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu);
+        ASSERT_TRUE(renderer.lastRenderRequest.has_value());
+        EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastRenderRequest->artifactPath));
 
-    EXPECT_EQ(renderer.renderCount, 2u);
-    EXPECT_EQ(FindThumbnailPerformanceStage(stats.Snapshot(), "ThumbnailManifestLookup"), nullptr)
-        << "Polling an already submitted GPU readback must reuse the resolved preview request "
-           "instead of parsing the manifest again on the editor thread.";
+        PerformanceStageStats stats;
+        {
+            PerformanceStageStatsCapture capture(stats);
+            const auto repolled = service.GenerateNextThumbnail(renderer, false);
+            ASSERT_TRUE(repolled.has_value());
+            EXPECT_EQ(repolled->status, AssetThumbnailServiceStatus::Pending);
+        }
+
+        EXPECT_EQ(renderer.renderCount, 2u);
+        EXPECT_EQ(FindThumbnailPerformanceStage(stats.Snapshot(), "ThumbnailManifestLookup"), nullptr)
+            << "Polling an already submitted GPU readback must reuse the resolved preview request "
+               "instead of parsing the manifest again on the editor thread.";
+    }
 
     std::filesystem::remove_all(root);
 }
@@ -4271,7 +4273,7 @@ TEST(AssetThumbnailCacheTests, ThumbnailPreviewDefaultShaderUsesLoadedStandardPb
     auto* forward = Shader::CreateForTesting("Library/Artifacts/12/standardpbrforward");
     ASSERT_NE(forward, nullptr);
     forward->SetImportedShaderLabPassForTesting(
-        "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
+        "App/Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
         "shader:StandardPBR/Forward#0",
         "Forward",
         {});

@@ -402,7 +402,7 @@ namespace
                 {},
                 {},
                 "test-vertex",
-                "test.shadet"
+                "test.shader"
             }
         });
         artifact.stages.push_back({
@@ -416,7 +416,7 @@ namespace
                 {},
                 {},
                 "test-pixel",
-                "test.shadet"
+                "test.shader"
             }
         });
 
@@ -1190,7 +1190,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, MapsShaderLabStandardPBRParameters
     NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
 
     auto* standardShader = CreateTestShader(
-        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet",
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
         MakeShaderLabStandardPbrShaderReflection());
     ASSERT_NE(standardShader, nullptr);
     auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
@@ -1439,23 +1439,23 @@ TEST(DeferredSceneRendererMaterialCacheTests, GBufferDrawableUsesSourceMaterialW
     ASSERT_NE(fallbackShader, nullptr);
     NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, fallbackShader);
 
-    auto* forwardShader = NLS::Render::Resources::Shader::CreateForTesting("Assets/Shaders/Multi.shadet");
-    auto* gbufferShader = NLS::Render::Resources::Shader::CreateForTesting("Assets/Shaders/Multi.shadet");
+    auto* forwardShader = NLS::Render::Resources::Shader::CreateForTesting("Assets/Shaders/Multi.shader");
+    auto* gbufferShader = NLS::Render::Resources::Shader::CreateForTesting("Assets/Shaders/Multi.shader");
     ASSERT_NE(forwardShader, nullptr);
     ASSERT_NE(gbufferShader, nullptr);
     forwardShader->SetImportedShaderLabPassForTesting(
-        "Assets/Shaders/Multi.shadet",
+        "Assets/Shaders/Multi.shader",
         "shader:Multi/Forward#0",
         "Forward",
         NLS::Render::ShaderLab::ShaderLabPassState{});
     gbufferShader->SetImportedShaderLabPassForTesting(
-        "Assets/Shaders/Multi.shadet",
+        "Assets/Shaders/Multi.shader",
         "shader:Multi/GBuffer#1",
         "GBuffer",
         NLS::Render::ShaderLab::ShaderLabPassState{});
 
     NLS::Render::Resources::Material source(forwardShader);
-    source.SetShaderLabSourcePath("Assets/Shaders/Multi.shadet");
+    source.SetShaderLabSourcePath("Assets/Shaders/Multi.shader");
     source.RegisterShaderLabPassShader(forwardShader);
     source.RegisterShaderLabPassShader(gbufferShader);
 

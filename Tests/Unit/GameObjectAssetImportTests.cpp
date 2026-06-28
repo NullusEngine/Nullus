@@ -3,6 +3,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -45,6 +46,10 @@
 #include "Serialize/ObjectGraphInstantiator.h"
 #include "Serialize/ObjectGraphSerializer.h"
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 #ifndef NLS_HAS_AUTODESK_FBX_SDK
 #define NLS_HAS_AUTODESK_FBX_SDK 0
 #endif
@@ -61,6 +66,48 @@ std::filesystem::path MakeGameObjectAssetImportRoot()
         ("nullus_gameobject_asset_import_" + NLS::Guid::New().ToString());
     std::filesystem::create_directories(root / "Assets" / "Models");
     return root;
+}
+
+bool HasExecutableShaderCompilerForGameObjectImportTests()
+{
+    const auto tryPath =
+        [](const std::filesystem::path& path)
+    {
+        if (path.empty())
+            return false;
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error)
+            return false;
+#if defined(_WIN32)
+        return true;
+#else
+        return access(path.string().c_str(), X_OK) == 0;
+#endif
+    };
+
+    if (const char* dxcPath = std::getenv("DXC_PATH"); dxcPath != nullptr && *dxcPath != '\0')
+    {
+        if (tryPath(std::filesystem::path(dxcPath)))
+            return true;
+    }
+    if (const char* vulkanSdk = std::getenv("VULKAN_SDK"); vulkanSdk != nullptr && *vulkanSdk != '\0')
+    {
+        if (tryPath(std::filesystem::path(vulkanSdk) / "bin" / "dxc") ||
+            tryPath(std::filesystem::path(vulkanSdk) / "Bin" / "dxc"))
+        {
+            return true;
+        }
+    }
+    if (const char* vkSdkPath = std::getenv("VK_SDK_PATH"); vkSdkPath != nullptr && *vkSdkPath != '\0')
+    {
+        if (tryPath(std::filesystem::path(vkSdkPath) / "bin" / "dxc") ||
+            tryPath(std::filesystem::path(vkSdkPath) / "Bin" / "dxc"))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 class ScopedShaderManagerAssetPaths final
@@ -4483,6 +4530,9 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragBindsRendererResourcesFromArt
 
 TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsRendererResourcesForSceneInsertion)
 {
+    if (!HasExecutableShaderCompilerForGameObjectImportTests())
+        GTEST_SKIP() << "Generated model ShaderLab material prewarm requires an executable DXC compiler.";
+
     EnsureGameObjectAssetImportTestDriver();
 
     const auto root = MakeGameObjectAssetImportRoot();
@@ -4603,6 +4653,9 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsRenderer
 
 TEST(GameObjectAssetImportTests, GeneratedModelSceneRestoreSynchronouslyPrewarmsRuntimeResources)
 {
+    if (!HasExecutableShaderCompilerForGameObjectImportTests())
+        GTEST_SKIP() << "Generated model ShaderLab material prewarm requires an executable DXC compiler.";
+
     EnsureGameObjectAssetImportTestDriver();
 
     const auto root = MakeGameObjectAssetImportRoot();
@@ -4754,6 +4807,9 @@ TEST(GameObjectAssetImportTests, GeneratedModelSceneRestoreSynchronouslyPrewarms
 
 TEST(GameObjectAssetImportTests, GeneratedModelDragSynchronouslyPrewarmsLargeImportedArtifacts)
 {
+    if (!HasExecutableShaderCompilerForGameObjectImportTests())
+        GTEST_SKIP() << "Generated model ShaderLab material prewarm requires an executable DXC compiler.";
+
     EnsureGameObjectAssetImportTestDriver();
 
     const auto root = MakeGameObjectAssetImportRoot();

@@ -433,10 +433,10 @@ TEST(AssetBrowserPresentationTests, EditorResourcesUsePrefabFileIconIdForPrefabF
 TEST(AssetBrowserPresentationTests, EditorResourcesUseShaderFileIconIdForShaderFiles)
 {
     EXPECT_STREQ(
-        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.shadet"),
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.shader"),
         "editor.icon.asset.shader");
     EXPECT_STREQ(
-        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.SHADET"),
+        NLS::Editor::Core::EditorResources::GetFileIconId("Hero.SHADER"),
         "editor.icon.asset.shader");
 }
 
@@ -455,7 +455,7 @@ TEST(AssetBrowserPresentationTests, OnlyModelAndPrefabSourceAssetsCanExposeGener
     EXPECT_TRUE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Models/Hero.gltf"));
     EXPECT_TRUE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Prefabs/Hero.prefab"));
 
-    EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Shaders/Hero.shadet"));
+    EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Shaders/Hero.shader"));
     EXPECT_FALSE(AssetBrowserSourceAssetCanHaveGeneratedSubAssets("Assets/Scenes/New Scene.scene"));
 }
 
@@ -944,7 +944,7 @@ TEST(AssetBrowserPresentationTests, CurrentFolderSourceAssetTypesMatchPathParser
     WriteTextFile(root / "Assets" / "Hero.fbx", "model");
     WriteTextFile(root / "Assets" / "Hero.bmp", "texture");
     WriteTextFile(root / "Assets" / "Hero.dds", "texture");
-    WriteTextFile(root / "Assets" / "Hero.shadet", "shader");
+    WriteTextFile(root / "Assets" / "Hero.shader", "shader");
     WriteTextFile(root / "Assets" / "Hero.scene", "scene");
     WriteTextFile(root / "Assets" / "Hero.cs", "script");
     WriteTextFile(root / "Assets" / "Hero.py", "script");
@@ -963,7 +963,7 @@ TEST(AssetBrowserPresentationTests, CurrentFolderSourceAssetTypesMatchPathParser
         {"Hero.fbx", AssetBrowserItemType::Model, FileType::MODEL},
         {"Hero.bmp", AssetBrowserItemType::Texture, FileType::TEXTURE},
         {"Hero.dds", AssetBrowserItemType::Texture, FileType::TEXTURE},
-        {"Hero.shadet", AssetBrowserItemType::Shader, FileType::SHADER},
+        {"Hero.shader", AssetBrowserItemType::Shader, FileType::SHADER},
         {"Hero.scene", AssetBrowserItemType::Scene, FileType::SCENE},
         {"Hero.cs", AssetBrowserItemType::Script, FileType::SCRIPT},
         {"Hero.py", AssetBrowserItemType::Script, FileType::SCRIPT},
@@ -1216,12 +1216,12 @@ TEST(AssetBrowserPresentationTests, ShaderSourceAssetsDoNotExposeGeneratedSubAss
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetBrowserPresentationRoot();
-    WriteTextFile(root / "Assets" / "Shaders" / "HeroSurface.shadet", "shader");
+    WriteTextFile(root / "Assets" / "Shaders" / "HeroSurface.shader", "shader");
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
 
-    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Shaders/HeroSurface.shadet"));
+    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Shaders/HeroSurface.shader"));
     ArtifactManifest manifest;
     manifest.sourceAssetId = shaderId;
     manifest.importerId = "shader";
@@ -1230,16 +1230,16 @@ TEST(AssetBrowserPresentationTests, ShaderSourceAssetsDoNotExposeGeneratedSubAss
     manifest.primarySubAssetKey = "shader:HeroSurface";
     manifest.subAssets.push_back(MakeArtifact(shaderId, "shader:HeroSurface", ArtifactType::Shader, "shader"));
     WriteManifestArtifactFiles(root, manifest);
-    AddCurrentSourceDependencies(root, manifest, "Assets/Shaders/HeroSurface.shadet");
+    AddCurrentSourceDependencies(root, manifest, "Assets/Shaders/HeroSurface.shader");
     database.AddArtifactManifest(manifest);
 
     AssetBrowserBuildOptions options;
     options.includeGeneratedSubAssets = true;
-    options.expandedSourceAssets.insert("Assets/Shaders/HeroSurface.shadet");
+    options.expandedSourceAssets.insert("Assets/Shaders/HeroSurface.shader");
     const auto items = BuildCurrentFolderAssetItems(root, "Assets/Shaders", &database, options);
 
     ASSERT_EQ(items.size(), 1u);
-    const auto* source = FindItem(items, "HeroSurface.shadet");
+    const auto* source = FindItem(items, "HeroSurface.shader");
     ASSERT_NE(source, nullptr);
     EXPECT_EQ(source->kind, AssetBrowserItemKind::SourceAsset);
     EXPECT_EQ(source->type, AssetBrowserItemType::Shader);
@@ -1284,7 +1284,7 @@ TEST(AssetBrowserPresentationTests, FiltersCurrentFolderItemsByTypeAndSearchQuer
     WriteTextFile(root / "Assets" / "Materials" / "LampGlass.mat", "material");
     WriteTextFile(root / "Assets" / "Materials" / "LampIcon.png", "texture");
     WriteTextFile(root / "Assets" / "Materials" / "Metal.mat", "material");
-    WriteTextFile(root / "Assets" / "Materials" / "LampShader.shadet", "shader");
+    WriteTextFile(root / "Assets" / "Materials" / "LampShader.shader", "shader");
 
     AssetBrowserBuildOptions options;
     options.searchQuery = "lamp";
@@ -1301,7 +1301,7 @@ TEST(AssetBrowserPresentationTests, FiltersCurrentFolderItemsByTypeAndSearchQuer
     EXPECT_NE(FindItem(allItems, "LampFolder"), nullptr);
     EXPECT_NE(FindItem(allItems, "LampGlass.mat"), nullptr);
     EXPECT_NE(FindItem(allItems, "LampIcon.png"), nullptr);
-    EXPECT_NE(FindItem(allItems, "LampShader.shadet"), nullptr);
+    EXPECT_NE(FindItem(allItems, "LampShader.shader"), nullptr);
     EXPECT_EQ(FindItem(allItems, "Metal.mat"), nullptr);
 
     std::filesystem::remove_all(root);

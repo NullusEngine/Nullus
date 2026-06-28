@@ -537,7 +537,7 @@ TEST_F(GameLaunchArgsTests, RuntimeShaderManagerRejectsUnmanifestedContentArtifa
     NLS::Core::Assets::ArtifactDatabase artifactDatabase;
     artifactDatabase.UpsertManifest(
         manifest,
-        "Assets/Shaders/Listed.shadet",
+        "Assets/Shaders/Listed.shader",
         NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
     ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
     const auto runtimeDatabase =
@@ -562,7 +562,7 @@ TEST_F(GameLaunchArgsTests, RuntimeDirectShaderArtifactLoadRequiresManifestAutho
     std::filesystem::create_directories(root / "Library" / "Artifacts");
 
     NLS::Render::Assets::ShaderArtifact artifact;
-    artifact.sourcePath = "Assets/Shaders/Direct.shadet";
+    artifact.sourcePath = "Assets/Shaders/Direct.shader";
     artifact.subAssetKey = "shader:Direct";
     artifact.targetPlatform = "editor";
     const auto payload = NLS::Render::Assets::SerializeShaderArtifact(artifact);

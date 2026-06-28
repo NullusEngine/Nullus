@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -36,6 +37,10 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Tests/Unit/TestServiceLocatorOverrides.h"
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 namespace
 {
@@ -77,6 +82,48 @@ std::filesystem::path MakeEditorAssetTestRoot()
     return root;
 }
 
+bool HasExecutableShaderCompilerForEditorAssetTests()
+{
+    const auto tryPath =
+        [](const std::filesystem::path& path)
+    {
+        if (path.empty())
+            return false;
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error)
+            return false;
+#if defined(_WIN32)
+        return true;
+#else
+        return access(path.string().c_str(), X_OK) == 0;
+#endif
+    };
+
+    if (const char* dxcPath = std::getenv("DXC_PATH"); dxcPath != nullptr && *dxcPath != '\0')
+    {
+        if (tryPath(std::filesystem::path(dxcPath)))
+            return true;
+    }
+    if (const char* vulkanSdk = std::getenv("VULKAN_SDK"); vulkanSdk != nullptr && *vulkanSdk != '\0')
+    {
+        if (tryPath(std::filesystem::path(vulkanSdk) / "bin" / "dxc") ||
+            tryPath(std::filesystem::path(vulkanSdk) / "Bin" / "dxc"))
+        {
+            return true;
+        }
+    }
+    if (const char* vkSdkPath = std::getenv("VK_SDK_PATH"); vkSdkPath != nullptr && *vkSdkPath != '\0')
+    {
+        if (tryPath(std::filesystem::path(vkSdkPath) / "bin" / "dxc") ||
+            tryPath(std::filesystem::path(vkSdkPath) / "Bin" / "dxc"))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void WriteText(const std::filesystem::path& path, const std::string& text)
 {
     std::filesystem::create_directories(path.parent_path());
@@ -89,7 +136,7 @@ void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
     NLS::Editor::Assets::AssetDatabaseFacade database(
         NLS::Editor::Assets::MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet").empty());
+    ASSERT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
 }
 
 std::vector<NLS::Editor::Assets::EditorAssetRoot> AppendBuiltInShaderRootForTest(
@@ -1729,7 +1776,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportWarmsColdModelBeforeRetur
         .LoadSubAssetAtPath("Assets/Models/StartupColdHero.gltf", "prefab:StartupColdHero")
         .has_value());
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/StartupColdHero.gltf"));
-    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet").empty());
+    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
     EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Engine" / "Shaders"))
         << "Built-in ShaderLab sources must stay in App/Assets and only project Library artifacts may be generated.";
 
@@ -1778,7 +1825,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportImportsBuiltInShaderForEm
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shadet").empty());
+    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
 
     std::filesystem::remove_all(root);
 }
@@ -1787,6 +1834,9 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotOverwriteProjectSh
 {
     using namespace NLS::Editor::Assets;
 
+    if (!HasExecutableShaderCompilerForEditorAssetTests())
+        GTEST_SKIP() << "Blocking ShaderLab startup preimport requires an executable DXC compiler.";
+
     const auto root = MakeEditorAssetTestRoot();
     const auto bundledShaderRoot =
         std::filesystem::path(NLS_ROOT_DIR) /
@@ -1794,13 +1844,13 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotOverwriteProjectSh
         "Assets" /
         "Engine" /
         "Shaders";
-    const auto bundledStandardPbr = bundledShaderRoot / "ShaderLab" / "StandardPBR.shadet";
+    const auto bundledStandardPbr = bundledShaderRoot / "ShaderLab" / "StandardPBR.shader";
     const auto bundledCore = bundledShaderRoot / "NullusShaderLibrary" / "Core.hlsl";
     ASSERT_TRUE(std::filesystem::is_regular_file(bundledStandardPbr));
     ASSERT_TRUE(std::filesystem::is_regular_file(bundledCore));
 
     WriteText(
-        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shadet",
+        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader",
         R"(Shader "Project/StandardPBR"
 {
     SubShader
@@ -1842,7 +1892,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotOverwriteProjectSh
     EXPECT_TRUE(result.succeeded);
     EXPECT_GE(result.importedAssetCount, 1u);
     EXPECT_EQ(
-        ReadText(root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shadet"),
+        ReadText(root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader"),
         R"(Shader "Project/StandardPBR"
 {
     SubShader

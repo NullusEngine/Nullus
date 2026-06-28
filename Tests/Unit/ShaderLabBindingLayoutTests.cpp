@@ -214,7 +214,7 @@ TEST(ShaderLabBindingLayoutTests, BuiltInStandardPbrDeclaresMaterialResourcesInM
 {
     const auto source = ReadTextFile(
         std::filesystem::path(NLS_ROOT_DIR) /
-        "App" / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shadet");
+        "App" / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader");
 
     ASSERT_FALSE(source.empty());
     const std::string textureNames[] = {
@@ -240,7 +240,7 @@ TEST(ShaderLabBindingLayoutTests, BuiltInStandardPbrDeclaresMaterialResourcesInM
     }
     EXPECT_NE(source.find("cbuffer MaterialProperties : register(b0, space2)"), std::string::npos);
 
-    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(source, "StandardPBR.shadet");
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(source, "StandardPBR.shader");
     ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
     ASSERT_FALSE(parsed.asset.subShaders.empty());
     ASSERT_FALSE(parsed.asset.subShaders.front().passes.empty());

@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdint>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <optional>
 #include <system_error>
@@ -30,6 +31,21 @@ namespace NLS::Render::ShaderLab
             Equals,
             End
         };
+
+        bool ParseFloatLiteral(const std::string& text, float& value)
+        {
+            const auto* begin = text.data();
+            const auto* end = begin + text.size();
+#if defined(__APPLE__) && defined(_LIBCPP_VERSION)
+            std::istringstream stream(text);
+            stream.imbue(std::locale::classic());
+            stream >> value;
+            return !stream.fail() && stream.eof();
+#else
+            const auto [ptr, ec] = std::from_chars(begin, end, value);
+            return ec == std::errc{} && ptr == end;
+#endif
+        }
 
         struct Token
         {
@@ -145,10 +161,7 @@ namespace NLS::Render::ShaderLab
             {
                 const auto token = Expect(TokenKind::Number, std::move(message));
                 float value = 0.0f;
-                const auto* begin = token.text.data();
-                const auto* end = begin + token.text.size();
-                const auto [ptr, ec] = std::from_chars(begin, end, value);
-                if (ec != std::errc{} || ptr != end)
+                if (!ParseFloatLiteral(token.text, value))
                     AddDiagnostic(token.location, "invalid numeric literal '" + token.text + "'");
                 return value;
             }

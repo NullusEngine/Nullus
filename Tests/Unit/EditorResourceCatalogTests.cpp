@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 namespace
 {
@@ -35,6 +36,15 @@ std::filesystem::path MakeCatalogTestRoot()
     std::filesystem::create_directories(root / "bin");
     return root;
 }
+
+std::filesystem::path NormalizeForCatalogTest(std::filesystem::path path)
+{
+    std::error_code error;
+    auto normalized = std::filesystem::weakly_canonical(path, error);
+    if (error)
+        normalized = path.lexically_normal();
+    return normalized;
+}
 }
 
 TEST(EditorResourceCatalogTests, ResolvesDevelopmentResourcesRelativeToInstallAssetsRoot)
@@ -47,7 +57,9 @@ TEST(EditorResourceCatalogTests, ResolvesDevelopmentResourcesRelativeToInstallAs
     const auto resolved = catalog.ResolvePath("editor.icon.asset.folder", EditorResourceBackendMode::Development);
 
     ASSERT_TRUE(resolved.has_value());
-    EXPECT_EQ(resolved->lexically_normal(), (root / "App" / "Assets" / "Editor" / "Icons" / "asset-folder.png").lexically_normal());
+    EXPECT_EQ(
+        NormalizeForCatalogTest(*resolved),
+        NormalizeForCatalogTest(root / "App" / "Assets" / "Editor" / "Icons" / "asset-folder.png"));
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -103,7 +115,9 @@ TEST(EditorResourceCatalogTests, DefaultRecordsCoverCurrentEditorResourceGroups)
 
     const auto fontPath = catalog.ResolvePath("editor.font.ui.default", EditorResourceBackendMode::Development);
     ASSERT_TRUE(fontPath.has_value());
-    EXPECT_EQ(fontPath->lexically_normal(), (root / "App" / "Assets" / "Editor" / "Fonts" / "Ruda-Bold.ttf").lexically_normal());
+    EXPECT_EQ(
+        NormalizeForCatalogTest(*fontPath),
+        NormalizeForCatalogTest(root / "App" / "Assets" / "Editor" / "Fonts" / "Ruda-Bold.ttf"));
 
     std::error_code error;
     std::filesystem::remove_all(root, error);
@@ -144,10 +158,10 @@ TEST(EditorResourceCatalogTests, ResolvesInstallRootsFromExecutableWithoutCurren
     const auto root = MakeCatalogTestRoot();
     const auto roots = EditorResourceCatalog::ResolveRootsFromExecutable(root / "bin" / "Editor.exe");
 
-    EXPECT_EQ(roots.installRoot.lexically_normal(), root.lexically_normal());
-    EXPECT_EQ(roots.assetsRoot.lexically_normal(), (root / "App" / "Assets").lexically_normal());
-    EXPECT_EQ(roots.editorAssetsRoot.lexically_normal(), (root / "App" / "Assets" / "Editor").lexically_normal());
-    EXPECT_EQ(roots.engineAssetsRoot.lexically_normal(), (root / "App" / "Assets" / "Engine").lexically_normal());
+    EXPECT_EQ(NormalizeForCatalogTest(roots.installRoot), NormalizeForCatalogTest(root));
+    EXPECT_EQ(NormalizeForCatalogTest(roots.assetsRoot), NormalizeForCatalogTest(root / "App" / "Assets"));
+    EXPECT_EQ(NormalizeForCatalogTest(roots.editorAssetsRoot), NormalizeForCatalogTest(root / "App" / "Assets" / "Editor"));
+    EXPECT_EQ(NormalizeForCatalogTest(roots.engineAssetsRoot), NormalizeForCatalogTest(root / "App" / "Assets" / "Engine"));
 
     std::error_code error;
     std::filesystem::remove_all(root, error);

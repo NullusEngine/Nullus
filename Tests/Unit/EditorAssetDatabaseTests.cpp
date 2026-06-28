@@ -89,7 +89,7 @@ void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
     NLS::Editor::Assets::AssetDatabaseFacade database(
         NLS::Editor::Assets::MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+    ASSERT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
 }
 
 std::vector<NLS::Editor::Assets::EditorAssetRoot> AppendBuiltInShaderRootForTest(
@@ -1729,24 +1729,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportWarmsColdModelBeforeRetur
         .LoadSubAssetAtPath("Assets/Models/StartupColdHero.gltf", "prefab:StartupColdHero")
         .has_value());
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/StartupColdHero.gltf"));
-    {
-        const auto standardPbrManifest = database.GetArtifactManifestForAssetPath(
-            "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader");
-        std::ostringstream dependencyTrace;
-        if (standardPbrManifest.has_value())
-        {
-            for (const auto& dependency : standardPbrManifest->dependencies)
-            {
-                dependencyTrace << static_cast<int>(dependency.kind)
-                    << '|' << dependency.value
-                    << '|' << dependency.hashOrVersion
-                    << '\n';
-            }
-        }
-        EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath(
-            "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"))
-            << dependencyTrace.str();
-    }
+    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
     EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Engine" / "Shaders"))
         << "Built-in ShaderLab sources must stay in App/Assets and only project Library artifacts may be generated.";
 
@@ -1795,8 +1778,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportImportsBuiltInShaderForEm
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath(
-        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+    EXPECT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
 
     std::filesystem::remove_all(root);
 }

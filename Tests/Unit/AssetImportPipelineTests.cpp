@@ -8404,6 +8404,38 @@ TEST(AssetImportPipelineTests, ModelTextureResolverUsesSourcePathBeforeNameSearc
     EXPECT_EQ(resolved.targetSubAssetKey, "texture:path");
 }
 
+TEST(AssetImportPipelineTests, ModelTextureResolverMatchesSourcePathCaseInsensitively)
+{
+    NLS::Editor::Assets::ModelTextureSourceReference source;
+    source.stableKey = "mtxsrc:v1:kind=ExternalFile;uri=Assets/Textures/casealbedo.png";
+    source.normalizedUri = "Assets/Textures/casealbedo.png";
+
+    NLS::Editor::Assets::ModelTextureResolveRequest request;
+    request.pathCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("81818181-8181-4181-8181-818181818181")),
+        "texture:path",
+        "Assets/Textures/CaseAlbedo.png",
+        "Library/Artifacts/CaseAlbedo.ntex",
+        "CaseAlbedo",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+    request.nameCandidates.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838383")),
+        "texture:name",
+        "Assets/Other/CaseAlbedo.png",
+        "Library/Artifacts/OtherCaseAlbedo.ntex",
+        "CaseAlbedo",
+        NLS::Core::Assets::AssetType::Texture,
+        true
+    });
+
+    const auto resolved = NLS::Editor::Assets::ResolveModelTextureReference(source, request);
+
+    EXPECT_EQ(resolved.kind, NLS::Editor::Assets::ModelTextureResolutionKind::SourcePath);
+    EXPECT_EQ(resolved.targetSubAssetKey, "texture:path");
+}
+
 TEST(AssetImportPipelineTests, ModelTextureResolverDoesNotBindAmbiguousNameMatches)
 {
     NLS::Editor::Assets::ModelTextureSourceReference source;

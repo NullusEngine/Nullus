@@ -1883,6 +1883,52 @@ std::optional<std::filesystem::path> ToProjectRelativePath(
     return relative.lexically_normal();
 }
 
+std::filesystem::path ResolveExistingPathCaseInsensitive(
+    const std::filesystem::path& root,
+    const std::filesystem::path& relativePath)
+{
+    auto resolved = root.lexically_normal();
+    for (const auto& part : relativePath.lexically_normal())
+    {
+        if (part.empty() || part == ".")
+            continue;
+        if (part == "..")
+            return (root / relativePath).lexically_normal();
+
+        const auto direct = (resolved / part).lexically_normal();
+        std::error_code error;
+        if (std::filesystem::exists(direct, error) && !error)
+        {
+            resolved = direct;
+            continue;
+        }
+        error.clear();
+
+        bool matched = false;
+        if (std::filesystem::is_directory(resolved, error) && !error)
+        {
+            for (std::filesystem::directory_iterator it(resolved, error), end;
+                !error && it != end;
+                it.increment(error))
+            {
+                if (CaseInsensitiveMatch(
+                        it->path().filename().generic_string(),
+                        part.generic_string()))
+                {
+                    resolved = it->path().lexically_normal();
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if (matched)
+            continue;
+
+        resolved = direct;
+    }
+    return resolved.lexically_normal();
+}
+
 std::optional<std::filesystem::path> ResolveModelTextureProjectRelativePath(
     const ExternalModelImportRequest& request,
     const NLS::Render::Assets::ImportedSceneNamedRecord& texture)
@@ -2471,7 +2517,7 @@ bool EnsureProjectTextureMeta(
     const auto projectRelativePath = ToProjectRelativePath(request, editorPath);
     if (!projectRelativePath.has_value())
         return false;
-    const auto absolutePath = (request.projectRoot / *projectRelativePath).lexically_normal();
+    const auto absolutePath = ResolveExistingPathCaseInsensitive(request.projectRoot, *projectRelativePath);
     if (NLS::Core::Assets::InferAssetType(absolutePath) != NLS::Core::Assets::AssetType::Texture)
         return false;
 
@@ -2523,7 +2569,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextu
     const auto projectRelativePath = ToProjectRelativePath(request, editorPath);
     if (!projectRelativePath.has_value())
         return std::nullopt;
-    const auto absolutePath = (request.projectRoot / *projectRelativePath).lexically_normal();
+    const auto absolutePath = ResolveExistingPathCaseInsensitive(request.projectRoot, *projectRelativePath);
     const auto encodedBytes = ReadBinaryFile(absolutePath);
     if (encodedBytes.empty())
     {

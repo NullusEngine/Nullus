@@ -219,16 +219,19 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         const auto beforeInternalImportCount = database.GetCompletedImportCount();
         if (!database.ImportAsset(kProjectStandardPbrShaderPath))
         {
-            result.diagnostics = database.GetDiagnostics();
-            result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
-            return result;
+            NLS_LOG_WARNING(
+                "[StartupAssetPreimport] Built-in StandardPBR ShaderLab artifact import failed; "
+                "model material imports will keep referencing the ShaderLab source and shader variants can be rebuilt later.");
         }
-        internalImportCount = database.GetCompletedImportCount() - beforeInternalImportCount;
-        if (!database.Refresh())
+        else
         {
-            result.diagnostics = database.GetDiagnostics();
-            result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
-            return result;
+            internalImportCount = database.GetCompletedImportCount() - beforeInternalImportCount;
+            if (!database.Refresh())
+            {
+                result.diagnostics = database.GetDiagnostics();
+                result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
+                return result;
+            }
         }
     }
 

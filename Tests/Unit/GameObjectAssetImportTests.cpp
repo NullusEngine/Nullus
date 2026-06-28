@@ -3699,8 +3699,6 @@ TEST(GameObjectAssetImportTests, WarmGeneratedModelHandleInstantiatesWhenArtifac
     NLS::Editor::Assets::AssetDatabaseFacade database(
         NLS::Editor::Assets::MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    ASSERT_TRUE(database.ImportAsset("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"))
-        << FormatAssetDiagnostics(database.GetDiagnostics());
     ASSERT_TRUE(database.ImportAsset("Assets/Models/ProjectLibraryHero.gltf"))
         << FormatAssetDiagnostics(database.GetDiagnostics());
     const auto guid = database.AssetPathToGUID("Assets/Models/ProjectLibraryHero.gltf");

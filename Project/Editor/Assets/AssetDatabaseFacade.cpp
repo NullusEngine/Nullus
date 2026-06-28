@@ -4594,13 +4594,17 @@ bool AssetDatabaseFacade::RefreshSingle(
         if (importedStandardPbr)
             refreshModelMaterialShaderDependency();
     }
+    if (!materialShaderResourcePath.has_value() && !ResolveAssetPath(kStandardPbrShaderAssetPath).empty())
+    {
+        materialShaderResourcePath = kStandardPbrShaderAssetPath;
+    }
     if (!materialShaderResourcePath.has_value())
     {
         AddDiagnostic(
             NLS::Core::Assets::AssetDiagnosticSeverity::Error,
             "assetdatabase-model-material-shader-missing",
             absolutePath,
-            "Model material import requires imported ShaderLab artifact Assets/Engine/Shaders/ShaderLab/StandardPBR.shader.");
+            "Model material import requires ShaderLab source Assets/Engine/Shaders/ShaderLab/StandardPBR.shader.");
         return false;
     }
     const bool preserveModelLocalTextureArtifacts =

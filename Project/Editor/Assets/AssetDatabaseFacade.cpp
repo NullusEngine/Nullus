@@ -814,6 +814,14 @@ std::filesystem::path ResolveManifestStampDependencyPath(
         auto dependencyPath = ResolveEditorAssetPath(roots, dependencyValue);
         if (!dependencyPath.empty())
             return dependencyPath;
+
+        const auto primaryMetaPath = NormalizeEditorAssetPath(ToEditorAssetPath(roots, record.metaPath));
+        if (record.readOnly &&
+            !primaryMetaPath.empty() &&
+            NormalizeEditorAssetPath(dependencyValue) == primaryMetaPath)
+        {
+            return record.metaPath;
+        }
     }
 
     if (!preferEditorAssetPath)

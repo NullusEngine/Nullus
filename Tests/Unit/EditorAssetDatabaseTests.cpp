@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Assets/AssetId.h"
+#include "Assets/ArtifactWriter.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/ArtifactDatabase.h"
@@ -34,7 +35,9 @@
 #include "GameObject.h"
 #include "Guid.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Tests/Unit/TestServiceLocatorOverrides.h"
@@ -141,12 +144,146 @@ void WriteText(const std::filesystem::path& path, const std::string& text)
     output << text;
 }
 
+std::string FileStampForPreparedManifest(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error)
+        return {};
+
+    error.clear();
+    const auto writeTime = std::filesystem::last_write_time(path, error);
+    if (error)
+        return {};
+
+    return std::to_string(size) + ":" +
+        std::to_string(static_cast<std::intmax_t>(writeTime.time_since_epoch().count()));
+}
+
+std::string ContentHashForPreparedManifest(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    const std::vector<uint8_t> bytes {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+    if (bytes.empty() && !std::filesystem::is_regular_file(path))
+        return {};
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
+}
+
+NLS::Render::Assets::ShaderArtifactStage MakePreparedShaderStage(
+    const NLS::Render::ShaderCompiler::ShaderTargetPlatform targetPlatform)
+{
+    NLS::Render::Assets::ShaderArtifactStage stage;
+    stage.stage = NLS::Render::ShaderCompiler::ShaderStage::Vertex;
+    stage.targetPlatform = targetPlatform;
+    stage.entryPoint = "VSMain";
+    stage.targetProfile = targetPlatform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL
+        ? "glsl-450"
+        : "vs_6_0";
+    stage.output.status = NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded;
+    // Freshness tests need loader-usable stages, not compiler-specific production bytecode.
+    stage.output.bytecode = {0x4eu, 0x4cu, 0x53u, static_cast<uint8_t>(targetPlatform)};
+    return stage;
+}
+
 void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
 {
-    NLS::Editor::Assets::AssetDatabaseFacade database(
-        NLS::Editor::Assets::MakeProjectEditorAssetRoots(root));
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    constexpr const char* standardPbrAssetPath =
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
+    const auto roots = MakeProjectEditorAssetRoots(root);
+    const auto shaderRoot = std::find_if(
+        roots.begin(),
+        roots.end(),
+        [](const EditorAssetRoot& candidate)
+        {
+            return candidate.readOnly &&
+                candidate.mountPath == std::filesystem::path("Assets/Engine/Shaders");
+        });
+    ASSERT_NE(shaderRoot, roots.end());
+
+    const auto shaderSourcePath = shaderRoot->path / "ShaderLab" / "StandardPBR.shader";
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderSourcePath));
+
+    AssetDatabaseFacade database(roots);
     ASSERT_TRUE(database.Refresh());
-    ASSERT_FALSE(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader").empty());
+    const auto shaderId = AssetId(NLS::Guid::Parse(database.AssetPathToGUID(standardPbrAssetPath)));
+    ASSERT_TRUE(shaderId.IsValid());
+
+    NLS::Render::Assets::ShaderArtifact shaderArtifact;
+    shaderArtifact.sourcePath = standardPbrAssetPath;
+    shaderArtifact.subAssetKey = "shader:StandardPBR/Forward#0";
+    shaderArtifact.stages = {
+        MakePreparedShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL),
+        MakePreparedShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV),
+        MakePreparedShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL)
+    };
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = shaderId;
+    request.importerId = "shader";
+    request.importerVersion = GetCurrentImporterVersion(AssetType::Shader);
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = shaderArtifact.subAssetKey;
+    request.artifacts.push_back({
+        shaderArtifact.subAssetKey,
+        ArtifactType::Shader,
+        "shader",
+        "StandardPBR Forward",
+        "shader",
+        NLS::Render::Assets::SerializeShaderArtifact(shaderArtifact)
+    });
+
+    const auto shaderMetaPath = GetAssetMetaPath(shaderSourcePath);
+    const auto metaStamp = FileStampForPreparedManifest(shaderMetaPath);
+    request.dependencies = {
+        {AssetDependencyKind::SourceFileHash, standardPbrAssetPath, ContentHashForPreparedManifest(shaderSourcePath)},
+        {
+            AssetDependencyKind::PathToGuidMapping,
+            std::string(standardPbrAssetPath) + ".meta",
+            metaStamp.empty() ? "guid:" + shaderId.ToString() : metaStamp
+        },
+        {AssetDependencyKind::ImporterVersion, request.importerId, std::to_string(request.importerVersion)},
+        {AssetDependencyKind::BuildTarget, request.targetPlatform, request.targetPlatform},
+        {
+            AssetDependencyKind::PostprocessorVersion,
+            "shader-compiler-toolchain",
+            NLS::Render::ShaderCompiler::BuildShaderCompilerToolchainDependencyFingerprint()
+        }
+    };
+
+    ArtifactWriter writer(
+        root / "Library" / "ArtifactStaging" / shaderId.ToString(),
+        root / "Library" / "Artifacts");
+    const auto writeResult = writer.WriteAndCommit(request, nullptr);
+    ASSERT_TRUE(writeResult.committed) << JoinDiagnosticSummaries(writeResult.diagnostics);
+    database.AddArtifactManifest(writeResult.manifest);
+
+    AssetDatabaseFacade reloadedDatabase(roots);
+    ASSERT_TRUE(reloadedDatabase.Refresh());
+    const auto persistedManifest = reloadedDatabase.GetArtifactManifestForAssetPath(standardPbrAssetPath);
+    ASSERT_TRUE(persistedManifest.has_value());
+    ASSERT_EQ(persistedManifest->primarySubAssetKey, shaderArtifact.subAssetKey);
+    const auto artifactPath = reloadedDatabase.ResolveArtifactPathAtPath(
+        standardPbrAssetPath,
+        shaderArtifact.subAssetKey);
+    ASSERT_TRUE(std::filesystem::is_regular_file(artifactPath));
+    const auto persistedArtifact = NLS::Render::Assets::LoadShaderArtifact(artifactPath);
+    ASSERT_TRUE(persistedArtifact.has_value());
+    ASSERT_TRUE(NLS::Render::Assets::HasUsableShaderArtifactStage(
+        *persistedArtifact,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL));
+    ASSERT_TRUE(NLS::Render::Assets::HasUsableShaderArtifactStage(
+        *persistedArtifact,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV));
+    ASSERT_TRUE(NLS::Render::Assets::HasUsableShaderArtifactStage(
+        *persistedArtifact,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL));
+    ASSERT_TRUE(reloadedDatabase.IsArtifactManifestCurrentForAssetPath(standardPbrAssetPath));
 }
 
 std::vector<NLS::Editor::Assets::EditorAssetRoot> AppendBuiltInShaderRootForTest(
@@ -800,6 +937,7 @@ TEST(EditorAssetDatabaseTests, PreimportPlanSkipsWarmModelArtifacts)
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "WarmHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1044,6 +1182,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStartupGeneratedMetaForW
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupGeneratedMetaHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1864,6 +2003,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportWarmsColdModelBeforeRetur
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupColdHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -1923,7 +2063,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportSucceedsWhenNoProjectAsse
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDatabaseTests, BlockingStartupPreimportImportsBuiltInShaderForEmptyProject)
+NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, BlockingStartupPreimportImportsBuiltInShaderForEmptyProject)
 {
     using namespace NLS::Editor::Assets;
 
@@ -1949,7 +2089,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportImportsBuiltInShaderForEm
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotOverwriteProjectShaderLabSources)
+NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, BlockingStartupPreimportDoesNotOverwriteProjectShaderLabSources)
 {
     using namespace NLS::Editor::Assets;
 
@@ -2064,6 +2204,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportFallsBackForDefaultFbxRea
                 NLS::Core::Assets::AssetType::ModelScene)) +
             "\n"
         "ASSET_TYPE=model-scene\n");
+    PrepareStandardPbrShaderLabDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -2149,6 +2290,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportReportsPlanningAndCurrentAssetPro
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ProgressHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     std::vector<ImportProgressEvent> events;
     const auto result = RunBlockingStartupAssetPreimport(
@@ -2209,6 +2351,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportReportsOneAggregatedProgressForMu
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "SecondHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     std::vector<ImportProgressEvent> events;
     const auto result = RunBlockingStartupAssetPreimport(
@@ -2388,6 +2531,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportProducesWarmDragHandleBef
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupDragHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -2540,6 +2684,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRejectsEscapingDatabaseAr
             7u,
             outsideArtifactPath.string());
     }
+    PrepareStandardPbrShaderLabDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -2585,6 +2730,7 @@ TEST(EditorAssetDatabaseTests, DatabaseArtifactPathRejectsProjectRelativeTypedPa
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ProjectRelativeArtifactHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -2677,6 +2823,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportScansAssetsButDoesNotImpo
         })");
     WriteText(root / "Library" / "Artifacts" / "cached" / "670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772", "cached-prefab");
     WriteText(root / "Library" / "Artifacts" / "cached" / "36eee85124b95361c55a48634e6956a87607d0b6a69bfd04ffcd04f145ffa8d7", "cached-mesh");
+    PrepareStandardPbrShaderLabDependency(root);
 
     const auto result = RunBlockingStartupAssetPreimport({root});
 
@@ -3172,6 +3319,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportMissingIndexSkipsImporterFingerpr
 
     const auto root = MakeEditorAssetTestRoot();
     std::filesystem::create_directories(root / "Assets");
+    PrepareStandardPbrShaderLabDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3284,8 +3432,8 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitReportsValidationProfile)
     EXPECT_EQ(secondResult.cacheValidationProfile.sourceEntryCount, 5u);
     EXPECT_EQ(secondResult.cacheValidationProfile.sourceDirectoryEntryCount, 2u);
     EXPECT_EQ(secondResult.cacheValidationProfile.dependencyEntryCount, 0u);
-    EXPECT_EQ(secondResult.cacheValidationProfile.artifactEntryCount, 4u);
-    EXPECT_EQ(secondResult.cacheValidationProfile.trackedFileEntryCount, 9u);
+    EXPECT_EQ(secondResult.cacheValidationProfile.artifactEntryCount, 3u);
+    EXPECT_EQ(secondResult.cacheValidationProfile.trackedFileEntryCount, 8u);
     EXPECT_EQ(secondResult.cacheValidationProfile.fileMetadataQueryCount, GetStartupAssetPreimportFileMetadataQueryCountForTesting());
     EXPECT_EQ(secondResult.cacheValidationProfile.contentHashReadCount, GetStartupAssetPreimportContentHashReadCountForTesting());
 
@@ -3446,7 +3594,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportPatchesChangedSourceIndexWhenPrev
 #endif
 }
 
-NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, StartupPreimportPatchesBuiltInShaderSourceWhenProjectPrefixAlsoMatches)
+TEST(EditorAssetDatabaseTests, StartupPreimportPatchesBuiltInShaderSourceWhenProjectPrefixAlsoMatches)
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
     using namespace NLS::Editor::Assets;
@@ -3575,7 +3723,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheIgnoresBuiltInShaderTimestam
 #endif
 }
 
-NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, StartupPreimportCacheMissReportsManifestFreshnessReason)
+TEST(EditorAssetDatabaseTests, StartupPreimportCacheMissReportsManifestFreshnessReason)
 {
     using namespace NLS::Editor::Assets;
 
@@ -4429,6 +4577,7 @@ TEST(EditorAssetDatabaseTests, DatabaseArtifactPathAcceptsOnlyExtensionlessConte
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ExtensionlessArtifactHeroRoot" }]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -4506,6 +4655,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotPrewarmRuntimeMesh
                 { "name": "WarmHeroRoot", "mesh": 0 }
             ]
         })");
+    PrepareStandardPbrShaderLabDependency(root);
 
     const auto projectAssetsRoot = (root / "Assets").string() + "/";
     NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(

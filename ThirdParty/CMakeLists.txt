@@ -163,6 +163,16 @@ function(nls_find_fbx_sdk)
         COMMENT "Copying Autodesk FBX SDK runtime to ${NLS_RUNTIME_OUTPUT_PATH}"
         VERBATIM)
     set_target_properties(AutodeskFbxSdkRuntime PROPERTIES FOLDER ${third_party_folder}/FBX)
+    if(WIN32)
+        set(_fbx_runtime_file_name "libfbxsdk.dll")
+    elseif(APPLE)
+        set(_fbx_runtime_file_name "libfbxsdk.dylib")
+    else()
+        set(_fbx_runtime_file_name "libfbxsdk.so")
+    endif()
+    nls_register_external_runtime_file(
+        FILE_NAME "${_fbx_runtime_file_name}"
+        PRODUCER_TARGET AutodeskFbxSdkRuntime)
 
     message(STATUS "Autodesk FBX SDK 2020.3.9 root: ${_fbx_root}")
 endfunction()

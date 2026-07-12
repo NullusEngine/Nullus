@@ -3086,6 +3086,11 @@ TEST(AssetBrowserPresentationTests, SharedRuntimeCMakeStagesDynamicLibrariesOnEv
     EXPECT_NE(rootCMake.find("file(GENERATE"), std::string::npos)
         << "Each deployment must receive an authoritative list of current runtime targets.";
     EXPECT_NE(rootCMake.find("$<TARGET_FILE_NAME:"), std::string::npos);
+    EXPECT_NE(rootCMake.find("function(nls_register_external_runtime_file"), std::string::npos);
+    EXPECT_NE(rootCMake.find("NLS_EXTERNAL_RUNTIME_FILES"), std::string::npos);
+    EXPECT_NE(rootCMake.find("NLS_EXTERNAL_RUNTIME_PRODUCERS"), std::string::npos);
+    EXPECT_NE(rootCMake.find("add_dependencies(${_nls_runtime_consumer}"), std::string::npos)
+        << "External runtime producers must finish before consumer deployment.";
     EXPECT_EQ(copyHelper.find("copy_directory"), std::string::npos)
         << "Parallel executable builds must use the locked deployment script.";
 
@@ -3093,6 +3098,14 @@ TEST(AssetBrowserPresentationTests, SharedRuntimeCMakeStagesDynamicLibrariesOnEv
     EXPECT_NE(deploymentScript.find("file(LOCK"), std::string::npos);
     EXPECT_NE(deploymentScript.find("MANIFEST"), std::string::npos);
     EXPECT_NE(deploymentScript.find("EXPECTED_MANIFEST"), std::string::npos);
+
+    EXPECT_NE(thirdPartyCMake.find("nls_register_external_runtime_file("), std::string::npos);
+    EXPECT_NE(thirdPartyCMake.find("PRODUCER_TARGET AutodeskFbxSdkRuntime"), std::string::npos);
+    EXPECT_NE(thirdPartyCMake.find("libfbxsdk.dll"), std::string::npos);
+    EXPECT_NE(thirdPartyCMake.find("libfbxsdk.dylib"), std::string::npos);
+    EXPECT_NE(thirdPartyCMake.find("libfbxsdk.so"), std::string::npos);
+    EXPECT_NE(thirdPartyCMake.find("$<CONFIG:Debug>"), std::string::npos);
+    EXPECT_NE(thirdPartyCMake.find("_fbx_debug_runtime_library"), std::string::npos);
 }
 
 TEST(AssetBrowserPresentationTests, PendingThumbnailResultDoesNotReplaceFreshVisibleResult)

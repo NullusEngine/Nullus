@@ -215,6 +215,27 @@ function(nls_configure_shared_runtime_output TARGET_NAME)
     endif()
 endfunction()
 
+function(nls_register_external_runtime_file)
+    set(options)
+    set(oneValueArgs FILE_NAME PRODUCER_TARGET)
+    cmake_parse_arguments(NLS_EXTERNAL "${options}" "${oneValueArgs}" "" ${ARGN})
+    if(NLS_EXTERNAL_UNPARSED_ARGUMENTS OR
+       NOT NLS_EXTERNAL_FILE_NAME OR
+       NOT NLS_EXTERNAL_PRODUCER_TARGET)
+        message(FATAL_ERROR
+            "nls_register_external_runtime_file requires FILE_NAME and PRODUCER_TARGET")
+    endif()
+    if(NOT TARGET ${NLS_EXTERNAL_PRODUCER_TARGET})
+        message(FATAL_ERROR
+            "External runtime producer target does not exist: ${NLS_EXTERNAL_PRODUCER_TARGET}")
+    endif()
+
+    set_property(GLOBAL APPEND PROPERTY
+        NLS_EXTERNAL_RUNTIME_FILES "${NLS_EXTERNAL_FILE_NAME}")
+    set_property(GLOBAL APPEND PROPERTY
+        NLS_EXTERNAL_RUNTIME_PRODUCERS "${NLS_EXTERNAL_PRODUCER_TARGET}")
+endfunction()
+
 function(nls_copy_shared_runtime_to_target TARGET_NAME)
     if(NLS_USE_SHARED_LIBRARY)
         set_property(GLOBAL APPEND PROPERTY NLS_SHARED_RUNTIME_CONSUMERS ${TARGET_NAME})
@@ -238,8 +259,12 @@ function(nls_generate_shared_runtime_manifests)
 
     get_property(_nls_runtime_targets GLOBAL PROPERTY NLS_SHARED_RUNTIME_TARGETS)
     get_property(_nls_runtime_consumers GLOBAL PROPERTY NLS_SHARED_RUNTIME_CONSUMERS)
+    get_property(_nls_external_runtime_files GLOBAL PROPERTY NLS_EXTERNAL_RUNTIME_FILES)
+    get_property(_nls_external_runtime_producers GLOBAL PROPERTY NLS_EXTERNAL_RUNTIME_PRODUCERS)
     list(REMOVE_DUPLICATES _nls_runtime_targets)
     list(REMOVE_DUPLICATES _nls_runtime_consumers)
+    list(REMOVE_DUPLICATES _nls_external_runtime_files)
+    list(REMOVE_DUPLICATES _nls_external_runtime_producers)
 
     set(_nls_expected_runtime_files "")
     foreach(_nls_runtime_target IN LISTS _nls_runtime_targets)
@@ -250,9 +275,15 @@ function(nls_generate_shared_runtime_manifests)
             string(APPEND _nls_expected_runtime_files "$<TARGET_LINKER_FILE_NAME:${_nls_runtime_target}>\n")
         endif()
     endforeach()
+    foreach(_nls_external_runtime_file IN LISTS _nls_external_runtime_files)
+        string(APPEND _nls_expected_runtime_files "${_nls_external_runtime_file}\n")
+    endforeach()
 
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/runtime-manifests")
     foreach(_nls_runtime_consumer IN LISTS _nls_runtime_consumers)
+        if(_nls_external_runtime_producers)
+            add_dependencies(${_nls_runtime_consumer} ${_nls_external_runtime_producers})
+        endif()
         file(GENERATE
             OUTPUT "${CMAKE_BINARY_DIR}/runtime-manifests/${_nls_runtime_consumer}-$<CONFIG>.txt"
             CONTENT "${_nls_expected_runtime_files}")

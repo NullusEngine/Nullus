@@ -3056,6 +3056,7 @@ TEST(AssetBrowserPresentationTests, SharedRuntimeCMakeStagesDynamicLibrariesOnEv
         << "Linux and macOS shared objects use LIBRARY_OUTPUT_DIRECTORY.";
     EXPECT_EQ(outputHelper.find("ARCHIVE_OUTPUT_DIRECTORY"), std::string::npos)
         << "Windows import libraries and static archives must retain their existing locations.";
+    EXPECT_NE(outputHelper.find("NLS_SHARED_RUNTIME_TARGETS"), std::string::npos);
 
     const auto countOccurrences = [](const std::string_view text, const std::string_view token)
     {
@@ -3081,12 +3082,17 @@ TEST(AssetBrowserPresentationTests, SharedRuntimeCMakeStagesDynamicLibrariesOnEv
         << "Shared .so and .dylib deployment must not be gated to Windows.";
     EXPECT_NE(copyHelper.find("${NLS_RUNTIME_OUTPUT_PATH}"), std::string::npos);
     EXPECT_NE(copyHelper.find("DeployRuntime.cmake"), std::string::npos);
+    EXPECT_NE(copyHelper.find("EXPECTED_MANIFEST"), std::string::npos);
+    EXPECT_NE(rootCMake.find("file(GENERATE"), std::string::npos)
+        << "Each deployment must receive an authoritative list of current runtime targets.";
+    EXPECT_NE(rootCMake.find("$<TARGET_FILE_NAME:"), std::string::npos);
     EXPECT_EQ(copyHelper.find("copy_directory"), std::string::npos)
         << "Parallel executable builds must use the locked deployment script.";
 
     const auto deploymentScript = ReadSourceText(RepoPath("Tools/CMake/DeployRuntime.cmake"));
     EXPECT_NE(deploymentScript.find("file(LOCK"), std::string::npos);
     EXPECT_NE(deploymentScript.find("MANIFEST"), std::string::npos);
+    EXPECT_NE(deploymentScript.find("EXPECTED_MANIFEST"), std::string::npos);
 }
 
 TEST(AssetBrowserPresentationTests, PendingThumbnailResultDoesNotReplaceFreshVisibleResult)

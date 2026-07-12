@@ -208,20 +208,55 @@ function(nls_configure_shared_runtime_output TARGET_NAME)
         RUNTIME_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
         LIBRARY_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
     )
+    get_target_property(_nls_runtime_target_type ${TARGET_NAME} TYPE)
+    if(_nls_runtime_target_type STREQUAL "SHARED_LIBRARY" OR
+       _nls_runtime_target_type STREQUAL "MODULE_LIBRARY")
+        set_property(GLOBAL APPEND PROPERTY NLS_SHARED_RUNTIME_TARGETS ${TARGET_NAME})
+    endif()
 endfunction()
 
 function(nls_copy_shared_runtime_to_target TARGET_NAME)
     if(NLS_USE_SHARED_LIBRARY)
+        set_property(GLOBAL APPEND PROPERTY NLS_SHARED_RUNTIME_CONSUMERS ${TARGET_NAME})
         add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND}
                 "-DSTAGE_DIR=${NLS_RUNTIME_OUTPUT_PATH}"
                 "-DDEST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>"
                 "-DCONFIG=$<CONFIG>"
+                "-DEXPECTED_MANIFEST=${CMAKE_BINARY_DIR}/runtime-manifests/${TARGET_NAME}-$<CONFIG>.txt"
                 -P "${NLS_ROOT_DIR}/Tools/CMake/DeployRuntime.cmake"
             VERBATIM
             COMMENT "Deploying Nullus runtime libraries for ${TARGET_NAME}"
         )
     endif()
+endfunction()
+
+function(nls_generate_shared_runtime_manifests)
+    if(NOT NLS_USE_SHARED_LIBRARY)
+        return()
+    endif()
+
+    get_property(_nls_runtime_targets GLOBAL PROPERTY NLS_SHARED_RUNTIME_TARGETS)
+    get_property(_nls_runtime_consumers GLOBAL PROPERTY NLS_SHARED_RUNTIME_CONSUMERS)
+    list(REMOVE_DUPLICATES _nls_runtime_targets)
+    list(REMOVE_DUPLICATES _nls_runtime_consumers)
+
+    set(_nls_expected_runtime_files "")
+    foreach(_nls_runtime_target IN LISTS _nls_runtime_targets)
+        string(APPEND _nls_expected_runtime_files "$<TARGET_FILE_NAME:${_nls_runtime_target}>\n")
+        get_target_property(_nls_runtime_target_type ${_nls_runtime_target} TYPE)
+        if(UNIX AND _nls_runtime_target_type STREQUAL "SHARED_LIBRARY")
+            string(APPEND _nls_expected_runtime_files "$<TARGET_SONAME_FILE_NAME:${_nls_runtime_target}>\n")
+            string(APPEND _nls_expected_runtime_files "$<TARGET_LINKER_FILE_NAME:${_nls_runtime_target}>\n")
+        endif()
+    endforeach()
+
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/runtime-manifests")
+    foreach(_nls_runtime_consumer IN LISTS _nls_runtime_consumers)
+        file(GENERATE
+            OUTPUT "${CMAKE_BINARY_DIR}/runtime-manifests/${_nls_runtime_consumer}-$<CONFIG>.txt"
+            CONTENT "${_nls_expected_runtime_files}")
+    endforeach()
 endfunction()
 
 function(nls_copy_app_assets_to_target TARGET_NAME)
@@ -349,3 +384,4 @@ add_subdirectory("Project")
 if(NLS_BUILD_TESTS OR NLS_BUILD_PERFORMANCE_TESTS)
     add_subdirectory("Tests")
 endif()
+nls_generate_shared_runtime_manifests()

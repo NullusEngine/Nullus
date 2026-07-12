@@ -44,6 +44,15 @@
 #include <unordered_set>
 #include <vector>
 
+#define NLS_UNREGISTERED_TEST(suite, name) static void suite##_##name##_Unregistered()
+#if defined(NLS_REGISTER_LONG_RUNNING_ASSET_THUMBNAIL_TESTS)
+#undef TEST
+#define TEST(suite, name) NLS_UNREGISTERED_TEST(suite, name)
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) GTEST_TEST(performanceSuite, name)
+#else
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) NLS_UNREGISTERED_TEST(performanceSuite, name)
+#endif
+
 namespace
 {
 template<typename T>
@@ -6536,7 +6545,7 @@ TEST(AssetThumbnailCacheTests, OversizedImportedModelPrefabFallsBackToManifestMe
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, MeshSetFallbackDoesNotCachePartialPreviewWhenMeshBudgetSkipsManifestMeshes)
+NLS_LONG_RUNNING_TEST(AssetThumbnailStressPerformanceTests, MeshSetFallbackDoesNotCachePartialPreviewWhenMeshBudgetSkipsManifestMeshes)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;

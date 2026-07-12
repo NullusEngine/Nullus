@@ -27,6 +27,7 @@
 #include "GameObject.h"
 #include "Guid.h"
 #include "Assets/NativeArtifactContainer.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
@@ -431,6 +432,29 @@ void AddCurrentSourceDependencies(
 NLS::Core::Assets::AssetId ParseAssetId(const std::string& guid)
 {
     return NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+}
+
+void RegisterPreparedStandardPbrShaderDependency(
+    NLS::Editor::Assets::AssetDatabaseFacade& database)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto shaderId = ParseAssetId(
+        database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+    ASSERT_TRUE(shaderId.IsValid());
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = shaderId;
+    manifest.importerId = "shaderlab";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "shader:StandardPBR/Forward#0";
+    manifest.subAssets.push_back(MakeArtifact(
+        shaderId,
+        manifest.primarySubAssetKey,
+        ArtifactType::Shader,
+        "shader"));
+    database.AddArtifactManifest(std::move(manifest));
 }
 
 template <typename T>
@@ -1190,6 +1214,7 @@ TEST(AssetDatabaseFacadeTests, RefreshAndImportBatchingQueueWorkUntilStopAssetEd
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_FALSE(database.AssetPathToGUID("Assets/Textures/Existing.png").empty());
 
     database.StartAssetEditing();
@@ -1272,6 +1297,7 @@ TEST(AssetDatabaseFacadeTests, ImportModelSceneWritesInternalArtifactsAndGenerat
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
 
     const auto allAssets = database.LoadAllAssetsAtPath("Assets/Models/Hero.gltf");
@@ -1301,6 +1327,16 @@ TEST(AssetDatabaseFacadeTests, ImportModelSceneWritesInternalArtifactsAndGenerat
     ASSERT_TRUE(prefabRecord.has_value());
     EXPECT_TRUE(std::filesystem::exists(prefabRecord->artifactPath));
     EXPECT_FALSE(std::filesystem::path(prefabRecord->artifactPath).filename().has_extension());
+    const auto prefabContainer = ReadNativeArtifactContainer(
+        ReadBinaryFile(prefabRecord->artifactPath),
+        ArtifactType::Prefab,
+        1u);
+    ASSERT_TRUE(prefabContainer.has_value());
+    const auto validationProof = NLS::Engine::Assets::FindPrefabValidationProofFingerprint(
+        prefabContainer->metadata.dependencies,
+        "prefab:Hero");
+    EXPECT_FALSE(validationProof.empty())
+        << "Generated model prefab containers should carry importer validation proof metadata for safe fast loads.";
     const auto meshRecordAsset = database.LoadSubAssetAtPath("Assets/Models/Hero.gltf", "mesh:mesh/0");
     ASSERT_TRUE(meshRecordAsset.has_value());
     const auto meshArtifactPath = std::filesystem::path(meshRecordAsset->artifactPath);
@@ -1362,6 +1398,7 @@ TEST(AssetDatabaseFacadeTests, ProjectLibraryArtifactDatabaseStoresModelMaterial
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
 
     ArtifactDatabase artifactDatabase;
@@ -1729,7 +1766,7 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportWritesMultiCompileVariantsButNotMa
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetDatabaseFacadeTests, ShaderLabImportReflectionUsesDefaultVariantOnly)
+TEST(AssetDatabaseFacadeTests, ShaderLabImportReflectionIncludesVariantOnlyResources)
 {
     if (!HasExecutableShaderCompilerForTests())
         GTEST_SKIP() << "ShaderLab import success requires an executable DXC compiler.";
@@ -1807,7 +1844,8 @@ TEST(AssetDatabaseFacadeTests, ShaderLabImportReflectionUsesDefaultVariantOnly)
     };
 
     EXPECT_TRUE(hasTexture("_BaseMap"));
-    EXPECT_FALSE(hasTexture("_ShadowMap"));
+    EXPECT_TRUE(hasTexture("_ShadowMap"))
+        << "A shared pipeline layout must include resources referenced only by non-default variants.";
 
     NLS::Render::ShaderLab::ShaderLabKeywordSet shadows;
     shadows.Enable("MAIN_LIGHT_SHADOWS");
@@ -2542,6 +2580,511 @@ Shader "Nullus/StandardPBR"
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetDatabaseFacadeTests, ExternalModelAutoImportedTextureManifestsFlushArtifactDatabaseOnce)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteTextFile(
+        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader",
+        R"(
+Shader "Nullus/StandardPBR"
+{
+    Properties
+    {
+        _BaseColor("Base Color", Color) = (1, 1, 1, 1)
+    }
+
+    SubShader
+    {
+        Pass
+        {
+            Name "Forward"
+            Tags { "LightMode" = "Forward" }
+            HLSLPROGRAM
+            #pragma vertex VSMain
+            #pragma fragment PSMain
+            float4 VSMain() : SV_Position { return float4(0, 0, 0, 1); }
+            float4 PSMain() : SV_Target { return float4(1, 1, 1, 1); }
+            ENDHLSL
+        }
+    }
+}
+)");
+    WriteBinaryFile(root / "Assets" / "Textures" / "AutoAlbedoA.png", TinyPng());
+    WriteBinaryFile(root / "Assets" / "Textures" / "AutoAlbedoB.png", TinyPng());
+    WriteTextFile(root / "Assets" / "Models" / "BatchTextureHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/AutoAlbedoA.png", "mimeType": "image/png" },
+                { "uri": "../Textures/AutoAlbedoB.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 },
+                { "source": 1 }
+            ],
+            "materials": [
+                {
+                    "name": "BodyA",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                },
+                {
+                    "name": "BodyB",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 1 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0, 1] }],
+            "meshes": [
+                { "name": "BodyMeshA", "primitives": [{ "attributes": {}, "material": 0 }] },
+                { "name": "BodyMeshB", "primitives": [{ "attributes": {}, "material": 1 }] }
+            ],
+            "nodes": [
+                { "name": "RootA", "mesh": 0 },
+                { "name": "RootB", "mesh": 1 }
+            ]
+        })");
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+    ASSERT_TRUE(shaderId.IsValid());
+    ArtifactManifest shaderManifest;
+    shaderManifest.sourceAssetId = shaderId;
+    shaderManifest.importerId = "shaderlab";
+    shaderManifest.targetPlatform = "editor";
+    shaderManifest.primarySubAssetKey = "shader:StandardPBR/Forward#0";
+    shaderManifest.subAssets.push_back(MakeArtifact(
+        shaderId,
+        "shader:StandardPBR/Forward#0",
+        ArtifactType::Shader,
+        "shader"));
+    database.AddArtifactManifest(shaderManifest);
+
+    for (const auto* textureName : {"AutoAlbedoA.png", "AutoAlbedoB.png"})
+    {
+        const auto texturePath = root / "Assets" / "Textures" / textureName;
+        const auto textureMetaPath = texturePath.generic_string() + ".meta";
+        auto textureMeta = AssetMeta::Load(textureMetaPath)
+            .value_or(AssetMeta::CreateForAsset(texturePath));
+        textureMeta.assetType = AssetType::Texture;
+        textureMeta.importerId = "texture";
+        ASSERT_TRUE(textureMeta.Save(textureMetaPath));
+    }
+
+    auto modelMeta = AssetMeta::Load(root / "Assets" / "Models" / "BatchTextureHero.gltf.meta");
+    ASSERT_TRUE(modelMeta.has_value());
+    ModelTextureResolutionSettings settings;
+    settings.autoImportMissingTextureFiles = true;
+    StoreModelTextureResolutionSettings(*modelMeta, settings);
+    ASSERT_TRUE(modelMeta->Save(root / "Assets" / "Models" / "BatchTextureHero.gltf.meta"));
+
+    ResetArtifactDatabaseSaveAttemptCountForTesting();
+    ResetAssetDatabaseArtifactManifestCurrentCheckCountForTesting();
+    ImportProgressTracker importProgress;
+    ASSERT_TRUE(database.ImportAssetFromCurrentDatabase(
+        "Assets/Models/BatchTextureHero.gltf",
+        importProgress,
+        1u));
+    EXPECT_EQ(GetArtifactDatabaseSaveAttemptCountForTesting(), 1u)
+        << "Model import should batch the model and auto-imported texture manifests into one ArtifactDB flush.";
+    EXPECT_EQ(GetAssetDatabaseArtifactManifestCurrentCheckCountForTesting(), 0u)
+        << "Freshly imported model and texture manifests should publish as known-current without rehashing sources.";
+
+    const auto textureAId = ParseAssetId(database.AssetPathToGUID("Assets/Textures/AutoAlbedoA.png"));
+    const auto textureBId = ParseAssetId(database.AssetPathToGUID("Assets/Textures/AutoAlbedoB.png"));
+    ASSERT_TRUE(textureAId.IsValid());
+    ASSERT_TRUE(textureBId.IsValid());
+
+    ArtifactDatabase artifactDatabase;
+    ASSERT_TRUE(artifactDatabase.Load(root / "Library" / "ArtifactDB"));
+    EXPECT_NE(artifactDatabase.Find(textureAId, "texture:main", TextureArtifactTargetPlatformForTest()), nullptr);
+    EXPECT_NE(artifactDatabase.Find(textureBId, "texture:main", TextureArtifactTargetPlatformForTest()), nullptr);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, FailedExternalModelDeferredArtifactDatabaseFlushRestoresDirtyCache)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteTextFile(
+        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader",
+        R"(Shader "Nullus/StandardPBR" {})");
+    WriteBinaryFile(root / "Assets" / "Textures" / "RollbackAlbedo.png", TinyPng());
+    WriteTextFile(root / "Assets" / "Models" / "RollbackHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/RollbackAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [
+                { "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }
+            ],
+            "nodes": [
+                { "name": "Root", "mesh": 0 }
+            ]
+        })");
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+
+    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+    ASSERT_TRUE(shaderId.IsValid());
+    ArtifactManifest shaderManifest;
+    shaderManifest.sourceAssetId = shaderId;
+    shaderManifest.importerId = "shaderlab";
+    shaderManifest.targetPlatform = "editor";
+    shaderManifest.primarySubAssetKey = "shader:StandardPBR/Forward#0";
+    shaderManifest.subAssets.push_back(MakeArtifact(
+        shaderId,
+        "shader:StandardPBR/Forward#0",
+        ArtifactType::Shader,
+        "shader"));
+    database.AddArtifactManifest(shaderManifest);
+
+    const auto texturePath = root / "Assets" / "Textures" / "RollbackAlbedo.png";
+    const auto textureMetaPath = texturePath.generic_string() + ".meta";
+    auto textureMeta = AssetMeta::Load(textureMetaPath)
+        .value_or(AssetMeta::CreateForAsset(texturePath));
+    textureMeta.assetType = AssetType::Texture;
+    textureMeta.importerId = "texture";
+    ASSERT_TRUE(textureMeta.Save(textureMetaPath));
+
+    auto modelMeta = AssetMeta::Load(root / "Assets" / "Models" / "RollbackHero.gltf.meta");
+    ASSERT_TRUE(modelMeta.has_value());
+    ModelTextureResolutionSettings settings;
+    settings.autoImportMissingTextureFiles = true;
+    StoreModelTextureResolutionSettings(*modelMeta, settings);
+    ASSERT_TRUE(modelMeta->Save(root / "Assets" / "Models" / "RollbackHero.gltf.meta"));
+
+    const auto modelId = ParseAssetId(database.AssetPathToGUID("Assets/Models/RollbackHero.gltf"));
+    const auto textureId = ParseAssetId(database.AssetPathToGUID("Assets/Textures/RollbackAlbedo.png"));
+    ASSERT_TRUE(modelId.IsValid());
+    ASSERT_TRUE(textureId.IsValid());
+
+    SetArtifactDatabaseFailNextSaveForTesting(true);
+    ImportProgressTracker importProgress;
+    EXPECT_FALSE(database.ImportAssetFromCurrentDatabase(
+        "Assets/Models/RollbackHero.gltf",
+        importProgress,
+        1u));
+    SetArtifactDatabaseFailNextSaveForTesting(false);
+
+    database.AddArtifactManifest(shaderManifest);
+
+    ArtifactDatabase artifactDatabase;
+    ASSERT_TRUE(artifactDatabase.Load(root / "Library" / "ArtifactDB"));
+    EXPECT_EQ(artifactDatabase.Find(modelId, "prefab:RollbackHero", "editor"), nullptr)
+        << "A failed deferred model import must not leak its prefab manifest into a later ArtifactDB flush.";
+    EXPECT_EQ(artifactDatabase.Find(textureId, "texture:main", TextureArtifactTargetPlatformForTest()), nullptr)
+        << "A failed deferred model import must not leak auto-imported texture manifests into a later ArtifactDB flush.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, FailedExternalModelDeferredArtifactDatabaseFlushRestoresPartiallySavedDatabases)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto textureRoot = root / "MountedTextures";
+    WriteTextFile(
+        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader",
+        R"(Shader "Nullus/StandardPBR" {})");
+    WriteBinaryFile(textureRoot / "Textures" / "CrossDbAlbedo.png", TinyPng());
+    WriteTextFile(root / "Assets" / "Models" / "CrossDbHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../../MountedTextures/Textures/CrossDbAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [
+                { "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }
+            ],
+            "nodes": [
+                { "name": "Root", "mesh": 0 }
+            ]
+        })");
+
+    std::vector<EditorAssetRoot> roots {{
+        root / "Assets",
+        false,
+        "Assets",
+        root / "Library"
+    }, {
+        textureRoot,
+        false,
+        "MountedTextures",
+        root / "TextureLibrary"
+    }};
+    AssetDatabaseFacade database(std::move(roots));
+    ASSERT_TRUE(database.Refresh());
+
+    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+    ASSERT_TRUE(shaderId.IsValid());
+    ArtifactManifest shaderManifest;
+    shaderManifest.sourceAssetId = shaderId;
+    shaderManifest.importerId = "shaderlab";
+    shaderManifest.targetPlatform = "editor";
+    shaderManifest.primarySubAssetKey = "shader:StandardPBR/Forward#0";
+    shaderManifest.subAssets.push_back(MakeArtifact(
+        shaderId,
+        "shader:StandardPBR/Forward#0",
+        ArtifactType::Shader,
+        "shader"));
+    database.AddArtifactManifest(shaderManifest);
+
+    const auto texturePath = textureRoot / "Textures" / "CrossDbAlbedo.png";
+    const auto textureMetaPath = texturePath.generic_string() + ".meta";
+    auto textureMeta = AssetMeta::Load(textureMetaPath)
+        .value_or(AssetMeta::CreateForAsset(texturePath));
+    textureMeta.assetType = AssetType::Texture;
+    textureMeta.importerId = "texture";
+    ASSERT_TRUE(textureMeta.Save(textureMetaPath));
+
+    auto modelMeta = AssetMeta::Load(root / "Assets" / "Models" / "CrossDbHero.gltf.meta");
+    ASSERT_TRUE(modelMeta.has_value());
+    ModelTextureResolutionSettings settings;
+    settings.autoImportMissingTextureFiles = true;
+    StoreModelTextureResolutionSettings(*modelMeta, settings);
+    ASSERT_TRUE(modelMeta->Save(root / "Assets" / "Models" / "CrossDbHero.gltf.meta"));
+
+    const auto modelId = ParseAssetId(database.AssetPathToGUID("Assets/Models/CrossDbHero.gltf"));
+    const auto textureId = ParseAssetId(database.AssetPathToGUID("MountedTextures/Textures/CrossDbAlbedo.png"));
+    ASSERT_TRUE(modelId.IsValid());
+    ASSERT_TRUE(textureId.IsValid());
+
+    ResetArtifactDatabaseSaveAttemptCountForTesting();
+    SetArtifactDatabaseFailSaveAttemptForTesting(2u);
+    ImportProgressTracker importProgress;
+    EXPECT_FALSE(database.ImportAssetFromCurrentDatabase(
+        "Assets/Models/CrossDbHero.gltf",
+        importProgress,
+        1u));
+    SetArtifactDatabaseFailSaveAttemptForTesting(0u);
+    EXPECT_EQ(GetArtifactDatabaseSaveAttemptCountForTesting(), 2u);
+
+    ArtifactDatabase modelDatabase;
+    ASSERT_TRUE(modelDatabase.Load(root / "Library" / "ArtifactDB"));
+    EXPECT_EQ(modelDatabase.Find(modelId, "prefab:CrossDbHero", "editor"), nullptr)
+        << "A failed multi-ArtifactDB import must not persist the model manifest if a later DB save fails.";
+
+    const auto textureDatabasePath = root / "TextureLibrary" / "ArtifactDB";
+    if (std::filesystem::exists(textureDatabasePath))
+    {
+        ArtifactDatabase textureDatabase;
+        ASSERT_TRUE(textureDatabase.Load(textureDatabasePath));
+        EXPECT_EQ(textureDatabase.Find(textureId, "texture:main", TextureArtifactTargetPlatformForTest()), nullptr)
+            << "A failed multi-ArtifactDB import must roll back any dependency DB saved before the failure.";
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, FailedExternalModelAutoImportRestoresDependencySourceIndexes)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteTextFile(
+        root / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader",
+        R"(Shader "Nullus/StandardPBR" {})");
+    WriteTextFile(root / "Assets" / "Models" / "SourceRollbackHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/AutoCreatedRollback.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [
+                { "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }
+            ],
+            "nodes": [
+                { "name": "Root", "mesh": 0 }
+            ]
+        })");
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+
+    const auto shaderId = ParseAssetId(database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+    ASSERT_TRUE(shaderId.IsValid());
+    ArtifactManifest shaderManifest;
+    shaderManifest.sourceAssetId = shaderId;
+    shaderManifest.importerId = "shaderlab";
+    shaderManifest.targetPlatform = "editor";
+    shaderManifest.primarySubAssetKey = "shader:StandardPBR/Forward#0";
+    shaderManifest.subAssets.push_back(MakeArtifact(
+        shaderId,
+        "shader:StandardPBR/Forward#0",
+        ArtifactType::Shader,
+        "shader"));
+    database.AddArtifactManifest(shaderManifest);
+
+    WriteBinaryFile(root / "Assets" / "Textures" / "AutoCreatedRollback.png", TinyPng());
+    auto modelMeta = AssetMeta::Load(root / "Assets" / "Models" / "SourceRollbackHero.gltf.meta");
+    ASSERT_TRUE(modelMeta.has_value());
+    ModelTextureResolutionSettings settings;
+    settings.autoImportMissingTextureFiles = true;
+    StoreModelTextureResolutionSettings(*modelMeta, settings);
+    ASSERT_TRUE(modelMeta->Save(root / "Assets" / "Models" / "SourceRollbackHero.gltf.meta"));
+    ASSERT_TRUE(database.AssetPathToGUID("Assets/Textures/AutoCreatedRollback.png").empty());
+
+    SetArtifactDatabaseFailNextSaveForTesting(true);
+    ImportProgressTracker importProgress;
+    EXPECT_FALSE(database.ImportAssetFromCurrentDatabase(
+        "Assets/Models/SourceRollbackHero.gltf",
+        importProgress,
+        1u));
+    SetArtifactDatabaseFailNextSaveForTesting(false);
+
+    EXPECT_TRUE(database.AssetPathToGUID("Assets/Textures/AutoCreatedRollback.png").empty())
+        << "Failed auto-import cleanup must also remove the dependency from the in-memory source/path indexes.";
+    EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "Textures" / "AutoCreatedRollback.png.meta"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, RefreshKnownSourceAssetsRejectsOnlyMetaPathsWithoutClearingDatabase)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "Hero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    const auto heroGuid = database.AssetPathToGUID("Assets/Models/Hero.gltf");
+    ASSERT_FALSE(heroGuid.empty());
+
+    const std::vector<std::filesystem::path> paths {
+        root / "Assets" / "Models" / "Hero.gltf.meta"
+    };
+    EXPECT_FALSE(database.RefreshKnownSourceAssets(std::span<const std::filesystem::path>(
+        paths.data(),
+        paths.size())));
+    EXPECT_EQ(database.AssetPathToGUID("Assets/Models/Hero.gltf"), heroGuid)
+        << "Rejected targeted refresh input must not replace the existing source database with an empty one.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, RefreshKnownSourceAssetsPreservesUntouchedSourceRecords)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "HeroA.gltf", R"({"asset":{"version":"2.0"}})");
+    WriteTextFile(root / "Assets" / "Models" / "HeroB.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    const auto heroAGuid = database.AssetPathToGUID("Assets/Models/HeroA.gltf");
+    const auto heroBGuid = database.AssetPathToGUID("Assets/Models/HeroB.gltf");
+    ASSERT_FALSE(heroAGuid.empty());
+    ASSERT_FALSE(heroBGuid.empty());
+
+    WriteTextFile(root / "Assets" / "Models" / "HeroA.gltf", R"({"asset":{"version":"2.0"},"scene":0})");
+    const std::vector<std::filesystem::path> paths {
+        root / "Assets" / "Models" / "HeroA.gltf"
+    };
+    ASSERT_TRUE(database.RefreshKnownSourceAssets(std::span<const std::filesystem::path>(
+        paths.data(),
+        paths.size())));
+
+    EXPECT_EQ(database.AssetPathToGUID("Assets/Models/HeroA.gltf"), heroAGuid);
+    EXPECT_EQ(database.AssetPathToGUID("Assets/Models/HeroB.gltf"), heroBGuid)
+        << "Targeted refresh of a visible/changed subset must not replace the source database with that subset.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, RefreshKnownSourceAssetsRejectsOutsideRootWithoutFlushingDeferredArtifactDatabase)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "Hero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    const auto heroId = ParseAssetId(database.AssetPathToGUID("Assets/Models/Hero.gltf"));
+    ASSERT_TRUE(heroId.IsValid());
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = heroId;
+    manifest.importerId = "scene-model";
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "model:Hero";
+    manifest.subAssets.push_back(MakeArtifact(heroId, "model:Hero", ArtifactType::Model, "model"));
+
+    database.StartAssetEditing();
+    database.AddArtifactManifest(manifest);
+    ResetArtifactDatabaseSaveAttemptCountForTesting();
+
+    const std::vector<std::filesystem::path> paths {
+        root / "Outside.gltf"
+    };
+    EXPECT_FALSE(database.RefreshKnownSourceAssets(std::span<const std::filesystem::path>(
+        paths.data(),
+        paths.size())));
+    EXPECT_EQ(GetArtifactDatabaseSaveAttemptCountForTesting(), 0u)
+        << "Rejected targeted refresh input must not flush StartAssetEditing-deferred ArtifactDB changes.";
+    EXPECT_FALSE(std::filesystem::exists(root / "Library" / "ArtifactDB"));
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetDatabaseFacadeTests, StopAssetEditingReportsArtifactDatabaseSaveFailure)
 {
     using namespace NLS::Core::Assets;
@@ -2705,6 +3248,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelManifestReloadsInFreshFacadeAfterRef
     {
         AssetDatabaseFacade importer({root});
         ASSERT_TRUE(importer.Refresh());
+        RegisterPreparedStandardPbrShaderDependency(importer);
         ASSERT_TRUE(importer.ImportAsset("Assets/Models/Hero.gltf"));
     }
 
@@ -2743,6 +3287,7 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsStaleImporterMetada
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/StaleManifestHero.gltf"));
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/StaleManifestHero.gltf"));
 
@@ -2773,6 +3318,7 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsPreDx12TextureBuild
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/LegacyTextureBuildHero.gltf"));
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/LegacyTextureBuildHero.gltf"));
 
@@ -2810,6 +3356,7 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsReadOnlyMetaBelowCu
     writableRoots.push_back({packageRoot, false, "Packages", root / "Library"});
     AssetDatabaseFacade importer(writableRoots);
     ASSERT_TRUE(importer.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(importer);
     ASSERT_TRUE(importer.ImportAsset("Packages/Models/LegacyReadOnlyHero.gltf"));
     {
         const auto sourceId = ParseAssetId(importer.AssetPathToGUID("Packages/Models/LegacyReadOnlyHero.gltf"));
@@ -2867,6 +3414,7 @@ f 1/1/1 2/2/1 3/3/1
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/TexturePipelineHero.obj"));
     ASSERT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/TexturePipelineHero.obj"));
 
@@ -3213,6 +3761,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelManifestRecordsExternalSourceDepende
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
 
     const auto sourceId = ParseAssetId(database.AssetPathToGUID("Assets/Models/Hero.gltf"));
@@ -3264,6 +3813,7 @@ f 1/1/1 2/2/1 3/3/1
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.obj"));
 
     const auto sourceId = ParseAssetId(database.AssetPathToGUID("Assets/Models/Hero.obj"));
@@ -3352,6 +3902,7 @@ TEST(AssetDatabaseFacadeTests, FailedAssimpModelImportDoesNotCommitEmptyArtifact
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ImportProgressTracker tracker;
     EXPECT_FALSE(database.ImportAsset("Assets/Models/Broken.fbx", tracker));
 
@@ -3421,6 +3972,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelMeshArtifactMergesMultiplePrimitives
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/TwoTriangles.gltf"));
 
     const auto firstPrimitiveRecord = database.LoadSubAssetAtPath(
@@ -3492,6 +4044,7 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesStaleNativeMeshArtifact)
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Reimported.gltf"));
     auto meshRecord = database.LoadSubAssetAtPath("Assets/Models/Reimported.gltf", "mesh:mesh/0");
     ASSERT_TRUE(meshRecord.has_value());
@@ -3613,6 +4166,7 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesNativeTextureArtifactsAndCe
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Textured.gltf"));
     ASSERT_TRUE(database.ReimportAsset("Assets/Models/Textured.gltf"));
 
@@ -3687,6 +4241,48 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesNativeTextureArtifactsAndCe
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetDatabaseFacadeTests, StandaloneTextureImportEmitsAssetImportStages)
+{
+    using namespace NLS::Base::Profiling;
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    PerformanceStageStats stats;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        ASSERT_TRUE(database.ImportAsset("Assets/Textures/HeroBaseColor.png"));
+    }
+
+    const auto warnings = FindMissingPerformanceStages(
+        stats.Snapshot(),
+        PerformanceStageDomain::AssetImport,
+        {
+            "ImportStandaloneTextureArtifact",
+            "StandaloneTextureReadSource",
+            "StandaloneTextureDecodeAndMip",
+            "StandaloneTextureAlphaScan",
+            "StandaloneTextureResolveBuildSettings",
+            "StandaloneTextureBuildIdentity",
+            "StandaloneTextureSerializeArtifact",
+            "StandaloneTextureCommitArtifact",
+        });
+    EXPECT_TRUE(warnings.empty());
+
+    const auto manifest = database.GetArtifactManifestForAssetPath("Assets/Textures/HeroBaseColor.png");
+    ASSERT_TRUE(manifest.has_value());
+    const auto* artifact = manifest->FindPrimaryArtifact();
+    ASSERT_NE(artifact, nullptr);
+    EXPECT_EQ(artifact->artifactType, ArtifactType::Texture);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetDatabaseFacadeTests, FailedReimportKeepsPreviousNativeMeshArtifact)
 {
     using namespace NLS::Editor::Assets;
@@ -3730,6 +4326,7 @@ TEST(AssetDatabaseFacadeTests, FailedReimportKeepsPreviousNativeMeshArtifact)
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Stable.gltf"));
     const auto meshRecord = database.LoadSubAssetAtPath("Assets/Models/Stable.gltf", "mesh:mesh/0");
     ASSERT_TRUE(meshRecord.has_value());
@@ -3791,6 +4388,7 @@ TEST(AssetDatabaseFacadeTests, FailedReimportRollsBackCommittedArtifactsWhenMani
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Transactional.gltf"));
     const auto meshRecord = database.LoadSubAssetAtPath("Assets/Models/Transactional.gltf", "mesh:mesh/0");
     ASSERT_TRUE(meshRecord.has_value());
@@ -4015,6 +4613,7 @@ TEST(AssetDatabaseFacadeTests, AssetBrowserHidesImportedModelGeneratedPrefabSubA
     {
         AssetDatabaseFacade importer({root});
         ASSERT_TRUE(importer.Refresh());
+        RegisterPreparedStandardPbrShaderDependency(importer);
         ASSERT_TRUE(importer.ImportAsset("Assets/Models/Hero.gltf"));
     }
 
@@ -4134,6 +4733,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelGeneratedPrefabLoadsAndInstantiatesT
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
+    RegisterPreparedStandardPbrShaderDependency(database);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
 
     auto prefab = database.LoadPrefabArtifactAtPath("Assets/Models/Hero.gltf", "prefab:Hero");
@@ -4209,6 +4809,7 @@ TEST(AssetDatabaseFacadeTests, EditorDragDropBridgeInstantiatesPreimportedModelG
     {
         AssetDatabaseFacade database({root});
         ASSERT_TRUE(database.Refresh());
+        RegisterPreparedStandardPbrShaderDependency(database);
         ASSERT_TRUE(database.ImportAsset("Assets/Models/BridgeHero.gltf"));
     }
     const auto result = bridge.DropModelAssetIntoHierarchy("Models/BridgeHero.gltf", scene);
@@ -4275,6 +4876,7 @@ TEST(AssetDatabaseFacadeTests, EditorDragDropBridgeInstantiatesGeneratedPrefabSu
     {
         AssetDatabaseFacade importer({root});
         ASSERT_TRUE(importer.Refresh());
+        RegisterPreparedStandardPbrShaderDependency(importer);
         ASSERT_TRUE(importer.ImportAsset("Assets/Models/BridgeHero.gltf"));
     }
 
@@ -4983,6 +5585,63 @@ TEST(AssetDatabaseFacadeTests, LoadsPersistedPrefabArtifactByAssetIdWithRelative
     EXPECT_EQ(prefab->assetId, prefabId);
     EXPECT_FALSE(prefab->Validate().HasErrors());
     EXPECT_EQ(prefab->graph.root.GetGuid(), created.artifact->graph.root.GetGuid());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, TargetedRefreshReimportUsesPersistedPreviousManifest)
+{
+    using namespace NLS::Base::Profiling;
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto prefabPath = root / "Assets" / "Prefabs" / "CachedReuse.prefab";
+    const std::string editorAssetPath = "Assets/Prefabs/CachedReuse.prefab";
+
+    NLS::Engine::GameObject gameObject("CachedReuse", "Prefab");
+    const auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &gameObject,
+        {},
+        ParseAssetId("e9191919-1919-4919-8919-191919191919"),
+        editorAssetPath
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_FALSE(created.prefabSourceText.empty());
+    WriteTextFile(prefabPath, created.prefabSourceText);
+
+    {
+        AssetDatabaseFacade database({root});
+        ASSERT_TRUE(database.Refresh());
+        ASSERT_TRUE(database.ImportAsset(editorAssetPath));
+    }
+
+    AssetDatabaseFacade database({root});
+    const std::vector<std::filesystem::path> refreshPaths {prefabPath};
+    ASSERT_TRUE(database.RefreshKnownSourceAssets(refreshPaths));
+
+    PerformanceStageStats stats;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        NLS::Editor::Assets::ImportProgressTracker importProgress;
+        ASSERT_TRUE(database.ImportAssetFromCurrentDatabase(editorAssetPath, importProgress, 1u));
+    }
+
+    const auto snapshot = stats.Snapshot();
+    const auto stage = std::find_if(
+        snapshot.stages.begin(),
+        snapshot.stages.end(),
+        [](const PerformanceStageEntry& entry)
+        {
+            return entry.domain == PerformanceStageDomain::Prefab &&
+                entry.stageName == "WriteAndCommitArtifactPayloads";
+        });
+    ASSERT_NE(stage, snapshot.stages.end());
+    ASSERT_TRUE(stage->counters.contains("contentPathReusedCount"));
+    EXPECT_EQ(stage->counters.at("contentPathReusedCount"), 1u)
+        << "Targeted refresh clears in-memory manifests, so reimport must recover the previous manifest from ArtifactDB.";
+    ASSERT_TRUE(stage->counters.contains("contentPathHashedCount"));
+    EXPECT_EQ(stage->counters.at("contentPathHashedCount"), 0u);
 
     std::filesystem::remove_all(root);
 }

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <optional>
 #include <sstream>
@@ -40,6 +41,15 @@
 
 #if !defined(_WIN32)
 #include <unistd.h>
+#endif
+
+#define NLS_UNREGISTERED_TEST(suite, name) static void suite##_##name##_Unregistered()
+#if defined(NLS_REGISTER_LONG_RUNNING_EDITOR_ASSET_DATABASE_TESTS)
+#undef TEST
+#define TEST(suite, name) NLS_UNREGISTERED_TEST(suite, name)
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) GTEST_TEST(performanceSuite, name)
+#else
+#define NLS_LONG_RUNNING_TEST(performanceSuite, name) NLS_UNREGISTERED_TEST(performanceSuite, name)
 #endif
 
 namespace
@@ -281,6 +291,57 @@ void SaveArtifactManifestForTest(
     ASSERT_TRUE(database.Load(databasePath));
     database.UpsertManifest(manifest, sourcePath, NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
     ASSERT_TRUE(database.Save(databasePath));
+}
+
+void ClearStartupPreimportSourceContentHashForTest(
+    const std::filesystem::path& stampPath,
+    const std::string& rootMount,
+    const std::string& relativePath)
+{
+    std::ifstream input(stampPath, std::ios::binary);
+    ASSERT_TRUE(input);
+
+    std::vector<std::string> lines;
+    std::string line;
+    bool replaced = false;
+    while (std::getline(input, line))
+    {
+        std::istringstream stream(line);
+        std::string key;
+        stream >> key;
+        if (key == "source")
+        {
+            std::string parsedRootMount;
+            std::string parsedRelativePath;
+            std::string stamp;
+            std::string contentHash;
+            std::string fingerprint;
+            stream >> std::quoted(parsedRootMount)
+                >> std::quoted(parsedRelativePath)
+                >> std::quoted(stamp)
+                >> std::quoted(contentHash)
+                >> std::quoted(fingerprint);
+            if (!stream.fail() && parsedRootMount == rootMount && parsedRelativePath == relativePath)
+            {
+                std::ostringstream replacement;
+                replacement << "source "
+                    << std::quoted(parsedRootMount) << ' '
+                    << std::quoted(parsedRelativePath) << ' '
+                    << std::quoted(stamp) << ' '
+                    << std::quoted(std::string {}) << ' '
+                    << std::quoted(fingerprint);
+                line = replacement.str();
+                replaced = true;
+            }
+        }
+        lines.push_back(std::move(line));
+    }
+    ASSERT_TRUE(replaced);
+
+    std::ofstream output(stampPath, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(output);
+    for (const auto& outputLine : lines)
+        output << outputLine << '\n';
 }
 
 void ReplaceArtifactDatabaseFieldForTest(
@@ -621,6 +682,64 @@ TEST(EditorAssetDatabaseTests, PreimportPlanSkipsWarmMaterialAndTextureArtifacts
         warmPlan.assetPaths.end());
 
     std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, PreimportBatchFlushesArtifactDatabaseOnceForMultipleColdAssets)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteBinary(root / "Assets" / "Textures" / "BatchAlbedo.png", TinyPng());
+    WriteNativeMaterialSource(
+        root / "Assets" / "Materials" / "BatchMaterial.mat",
+        "BatchMaterial",
+        "shaderLabMaterialVersion=1\n"
+        "shader=?\n"
+        "surfaceMode=Opaque\n");
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+
+    ResetArtifactDatabaseSaveAttemptCountForTesting();
+    ImportProgressTracker tracker;
+    AssetPreimportScheduler scheduler;
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup))
+        << JoinDiagnosticSummaries(database.GetDiagnostics())
+        << JoinImportProgressSummaries(tracker);
+
+    EXPECT_EQ(database.GetCompletedImportCount(), 2u);
+    EXPECT_EQ(GetArtifactDatabaseSaveAttemptCountForTesting(), 1u);
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Materials/BatchMaterial.mat"));
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Textures/BatchAlbedo.png"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, StandaloneTextureImportReusesEncodedSourceHashForManifestDependency)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteBinary(root / "Assets" / "Textures" / "SingleReadAlbedo.png", TinyPng());
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+
+    ResetAssetDatabaseSourceFileContentHashReadCountForTesting();
+    ASSERT_TRUE(database.ImportAsset("Assets/Textures/SingleReadAlbedo.png"))
+        << JoinDiagnosticSummaries(database.GetDiagnostics());
+
+    EXPECT_EQ(GetAssetDatabaseSourceFileContentHashReadCountForTesting(), 0u)
+        << "Standalone texture import already reads the encoded source for decode; manifest dependency hashing "
+           "should reuse that byte buffer instead of opening and reading the source file a second time.";
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Textures/SingleReadAlbedo.png"));
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count source hash reads.";
+#endif
 }
 
 TEST(EditorAssetDatabaseTests, PreimportPlanReimportsMaterialAndTextureWhenArtifactPayloadIsCorrupt)
@@ -2184,6 +2303,7 @@ TEST(EditorAssetDatabaseTests, StartupPreparedPrefabPreflightBudgetCapsAttempts)
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
+    options.enablePreparedPrefabCachePreflight = true;
     options.maxPreparedPrefabCachePreflightCount = 1u;
     options.priorityPreparedPrefabAssetPaths = {"Assets/Models/B_SecondHero.gltf"};
 
@@ -2577,7 +2697,1616 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportScansAssetsButDoesNotImpo
     std::filesystem::remove_all(root);
 }
 
-TEST(EditorAssetDatabaseTests, BlockingStartupPreimportReimportsLegacyModelMaterialsToTextureArtifacts)
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportUsesCacheForUnchangedRepeatStartup)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "CachedStartupHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "CachedStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    EXPECT_FALSE(firstResult.usedCache);
+    EXPECT_EQ(firstResult.plannedAssetCount, 1u);
+    EXPECT_EQ(firstResult.importedAssetCount, 1u);
+
+    std::vector<std::string> progressMessages;
+    const auto secondResult = RunBlockingStartupAssetPreimport(
+        options,
+        [&progressMessages](const ImportProgressEvent& event)
+        {
+            progressMessages.push_back(event.message);
+        });
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_TRUE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    ASSERT_FALSE(progressMessages.empty());
+    EXPECT_EQ(progressMessages.front(), "Checking startup asset cache");
+    EXPECT_NE(
+        std::find(progressMessages.begin(), progressMessages.end(), "Startup asset artifacts are current"),
+        progressMessages.end());
+    EXPECT_EQ(
+        std::find(progressMessages.begin(), progressMessages.end(), "Scanning project assets"),
+        progressMessages.end());
+    EXPECT_EQ(
+        std::find(progressMessages.begin(), progressMessages.end(), "Planning startup asset imports"),
+        progressMessages.end());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportSkipsAlreadyCurrentAssetsDuringPlanning)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "PlanSkipWarmHeroA.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "PlanSkipWarmHeroARoot" }]
+        })");
+    WriteText(
+        root / "Assets" / "Models" / "PlanSkipWarmHeroB.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "PlanSkipWarmHeroBRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    EXPECT_EQ(firstResult.plannedAssetCount, 2u);
+    EXPECT_EQ(firstResult.importedAssetCount, 2u);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    WriteText(
+        root / "Assets" / "Models" / "PlanSkipWarmHeroB.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "PlanSkipWarmHeroBRootChanged" }]
+        })");
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportLoadsCacheIndexOnceForChangedSourceMiss)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto stableModelPath = root / "Assets" / "Models" / "SinglePassStableHero.gltf";
+    const auto changedModelPath = root / "Assets" / "Models" / "SinglePassChangedHero.gltf";
+    WriteText(
+        stableModelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "SinglePassStableHeroRoot" }]
+        })");
+    WriteText(
+        changedModelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "SinglePassChangedHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 2u);
+    ASSERT_EQ(firstResult.importedAssetCount, 2u);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    WriteText(
+        changedModelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "SinglePassChangedHeroRootUpdated" }]
+        })");
+
+    ResetStartupAssetPreimportIndexLoadCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+    EXPECT_EQ(GetStartupAssetPreimportIndexLoadCountForTesting(), 1u);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup cache index loads.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportAvoidsFullSourceRefreshForChangedSourceMiss)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto stableModelPath = root / "Assets" / "Models" / "TargetedRefreshStableHero.gltf";
+    const auto changedModelPath = root / "Assets" / "Models" / "TargetedRefreshChangedHero.gltf";
+    WriteText(
+        stableModelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "TargetedRefreshStableHeroRoot" }]
+        })");
+    WriteText(
+        changedModelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "TargetedRefreshChangedHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 2u);
+    ASSERT_EQ(firstResult.importedAssetCount, 2u);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    WriteText(
+        changedModelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "TargetedRefreshChangedHeroRootUpdated" }]
+        })");
+
+    ResetAssetDatabaseFullSourceRefreshCountForTesting();
+    ResetAssetDatabaseLastKnownSourceRefreshAssetCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+    EXPECT_EQ(GetAssetDatabaseFullSourceRefreshCountForTesting(), 0u);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count full source refreshes.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, TargetedRefreshLazilyLoadsPersistedManifestForKnownSource)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto modelPath = root / "Assets" / "Models" / "LazyTargetedManifestHero.gltf";
+    WriteText(
+        modelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "LazyTargetedManifestHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    {
+        AssetDatabaseFacade warmDatabase(MakeProjectEditorAssetRoots(root));
+        ASSERT_TRUE(warmDatabase.Refresh());
+        ASSERT_TRUE(warmDatabase.ImportAsset("Assets/Models/LazyTargetedManifestHero.gltf"));
+        ASSERT_TRUE(warmDatabase.IsArtifactManifestCurrentForAssetPath(
+            "Assets/Models/LazyTargetedManifestHero.gltf"));
+    }
+
+    ResetAssetDatabaseFullSourceRefreshCountForTesting();
+    ResetAssetDatabasePersistedManifestLoadCountForTesting();
+    AssetDatabaseFacade targetedDatabase(MakeProjectEditorAssetRoots(root));
+    const std::array knownSourcePaths {modelPath};
+    ASSERT_TRUE(targetedDatabase.RefreshKnownSourceAssets(knownSourcePaths));
+    EXPECT_EQ(GetAssetDatabaseFullSourceRefreshCountForTesting(), 0u);
+    EXPECT_EQ(GetAssetDatabasePersistedManifestLoadCountForTesting(), 0u);
+
+    const auto manifest = targetedDatabase.GetArtifactManifestForAssetPath(
+        "Assets/Models/LazyTargetedManifestHero.gltf");
+    ASSERT_TRUE(manifest.has_value());
+    EXPECT_TRUE(manifest->sourceAssetId.IsValid());
+    EXPECT_NE(manifest->FindSubAsset("prefab:LazyTargetedManifestHero"), nullptr);
+
+    const auto artifactPath = targetedDatabase.ResolveArtifactPathAtPath(
+        "Assets/Models/LazyTargetedManifestHero.gltf",
+        "prefab:LazyTargetedManifestHero");
+    EXPECT_FALSE(artifactPath.empty());
+    EXPECT_TRUE(std::filesystem::exists(artifactPath));
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count full source refreshes.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitAvoidsRecursiveSourceEnumeration)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "EnumerationFastPathHeroA.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "EnumerationFastPathHeroARoot" }]
+        })");
+    WriteText(
+        root / "Assets" / "Models" / "EnumerationFastPathHeroB.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "EnumerationFastPathHeroBRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 2u);
+    ASSERT_EQ(firstResult.importedAssetCount, 2u);
+    ASSERT_TRUE(std::filesystem::exists(root / "Library" / "Editor" / "StartupAssetPreimport.stamp"));
+
+    ResetStartupAssetPreimportSourceEnumerationCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_TRUE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    EXPECT_EQ(GetStartupAssetPreimportSourceEnumerationCountForTesting(), 0u);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup source enumeration.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitAvoidsContentHashReads)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "FingerprintFastPathHeroA.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "FingerprintFastPathHeroARoot" }]
+        })");
+    WriteText(
+        root / "Assets" / "Models" / "FingerprintFastPathHeroB.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "FingerprintFastPathHeroBRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 2u);
+    ASSERT_EQ(firstResult.importedAssetCount, 2u);
+    ASSERT_TRUE(std::filesystem::exists(root / "Library" / "Editor" / "StartupAssetPreimport.stamp"));
+
+    ResetStartupAssetPreimportContentHashReadCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_TRUE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    EXPECT_EQ(GetStartupAssetPreimportContentHashReadCountForTesting(), 0u);
+
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup content hash reads.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportIndexRebuildUsesManifestContentHashes)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "IndexManifestHashHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "IndexManifestHashHeroRoot" }]
+        })");
+    WriteText(
+        root / "Assets" / "Models" / "IndexManifestHashSidekick.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "IndexManifestHashSidekickRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto result = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(result.succeeded) << JoinDiagnosticSummaries(result.diagnostics);
+    ASSERT_FALSE(result.usedCache);
+
+    std::unordered_map<std::string, std::string> manifestHashesByArtifactPath;
+    {
+        AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+        ASSERT_TRUE(database.Refresh());
+        for (const auto* assetPath : {
+            "Assets/Models/IndexManifestHashHero.gltf",
+            "Assets/Models/IndexManifestHashSidekick.gltf"})
+        {
+            const auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
+            ASSERT_TRUE(manifest.has_value());
+            for (const auto& artifact : manifest->subAssets)
+            {
+                const auto artifactPath = database.ResolveArtifactPathAtPath(assetPath, artifact.subAssetKey);
+                ASSERT_FALSE(artifactPath.empty());
+                manifestHashesByArtifactPath.emplace(
+                    NLS::Core::Assets::NormalizeAssetPath(artifactPath).generic_string(),
+                    artifact.contentHash);
+            }
+        }
+    }
+    ASSERT_FALSE(manifestHashesByArtifactPath.empty());
+
+    ResetStartupAssetPreimportContentHashReadCountForTesting();
+    ASSERT_TRUE(RewriteStartupAssetPreimportIndexForTesting(root));
+
+    std::ifstream indexInput(root / "Library" / "Editor" / "StartupAssetPreimport.stamp", std::ios::binary);
+    ASSERT_TRUE(indexInput);
+    std::string line;
+    size_t checkedArtifactLines = 0u;
+    while (std::getline(indexInput, line))
+    {
+        std::istringstream stream(line);
+        std::string key;
+        stream >> key;
+        if (key != "artifact")
+            continue;
+
+        std::string artifactPath;
+        std::string stamp;
+        std::string contentHash;
+        std::string fingerprint;
+        stream >> std::quoted(artifactPath)
+            >> std::quoted(stamp)
+            >> std::quoted(contentHash)
+            >> std::quoted(fingerprint);
+        ASSERT_FALSE(stream.fail());
+        const auto found = manifestHashesByArtifactPath.find(artifactPath);
+        if (found == manifestHashesByArtifactPath.end())
+            continue;
+        EXPECT_EQ(contentHash, found->second);
+        ++checkedArtifactLines;
+    }
+    EXPECT_EQ(checkedArtifactLines, manifestHashesByArtifactPath.size());
+
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup content hash reads.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportMissingIndexSkipsImporterFingerprintComputation)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    std::filesystem::create_directories(root / "Assets");
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto result = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(result.succeeded) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(result.cacheValidationProfile.missReason, "index-unavailable");
+    EXPECT_EQ(result.cacheValidationProfile.importerFingerprintComputeCount, 0u);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup importer fingerprint computation.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitQueriesFileMetadataOncePerEntry)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "MetadataFastPathHeroA.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "MetadataFastPathHeroARoot" }]
+        })");
+    WriteText(
+        root / "Assets" / "Models" / "MetadataFastPathHeroB.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "MetadataFastPathHeroBRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 2u);
+    ASSERT_EQ(firstResult.importedAssetCount, 2u);
+
+    ResetStartupAssetPreimportFileMetadataQueryCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_TRUE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    const size_t expectedMetadataQueryUpperBound =
+        secondResult.cacheValidationProfile.trackedFileEntryCount +
+        secondResult.cacheValidationProfile.sourceDirectoryEntryCount;
+    EXPECT_LE(
+        GetStartupAssetPreimportFileMetadataQueryCountForTesting(),
+        expectedMetadataQueryUpperBound);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup file metadata queries.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitReportsValidationProfile)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "ProfiledCacheHeroA.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ProfiledCacheHeroARoot" }]
+        })");
+    WriteText(
+        root / "Assets" / "Models" / "ProfiledCacheHeroB.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ProfiledCacheHeroBRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    ResetStartupAssetPreimportFileMetadataQueryCountForTesting();
+    ResetStartupAssetPreimportContentHashReadCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    ASSERT_TRUE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.cacheValidationProfile.sourceEntryCount, 5u);
+    EXPECT_EQ(secondResult.cacheValidationProfile.sourceDirectoryEntryCount, 2u);
+    EXPECT_EQ(secondResult.cacheValidationProfile.dependencyEntryCount, 0u);
+    EXPECT_EQ(secondResult.cacheValidationProfile.artifactEntryCount, 4u);
+    EXPECT_EQ(secondResult.cacheValidationProfile.trackedFileEntryCount, 9u);
+    EXPECT_EQ(secondResult.cacheValidationProfile.fileMetadataQueryCount, GetStartupAssetPreimportFileMetadataQueryCountForTesting());
+    EXPECT_EQ(secondResult.cacheValidationProfile.contentHashReadCount, GetStartupAssetPreimportContentHashReadCountForTesting());
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to report startup cache validation profile counters.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportCacheIndexRebuildSkipsUnchangedShardWrites)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "ShardWriteHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ShardWriteHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    EXPECT_GT(GetStartupAssetPreimportShardWriteCountForTesting(), 0u);
+
+    ResetStartupAssetPreimportShardWriteCountForTesting();
+    ASSERT_TRUE(RewriteStartupAssetPreimportIndexForTesting(root));
+    EXPECT_EQ(GetStartupAssetPreimportShardWriteCountForTesting(), 0u);
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    ASSERT_TRUE(secondResult.usedCache);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup index shard writes.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportPatchesChangedSourceIndexWhenPlanIsEmpty)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto modelPath = root / "Assets" / "Models" / "StampOnlyStartupHero.gltf";
+    WriteText(
+        modelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "StampOnlyStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 1u);
+    ASSERT_EQ(firstResult.importedAssetCount, 1u);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const auto text = ReadText(modelPath);
+    WriteText(modelPath, text);
+
+    ResetStartupAssetPreimportFullIndexRebuildCountForTesting();
+    ResetStartupAssetPreimportPatchedIndexWriteCountForTesting();
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    EXPECT_EQ(GetStartupAssetPreimportFullIndexRebuildCountForTesting(), 0u);
+    EXPECT_EQ(GetStartupAssetPreimportPatchedIndexWriteCountForTesting(), 1u);
+
+    const auto thirdResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(thirdResult.succeeded) << JoinDiagnosticSummaries(thirdResult.diagnostics);
+    EXPECT_TRUE(thirdResult.usedCache);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup index patching.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportPatchesChangedSourceIndexWhenPreviousContentHashIsEmpty)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto modelPath = root / "Assets" / "Models" / "StampOnlyStartupHeroMissingHash.gltf";
+    WriteText(
+        modelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "StampOnlyStartupHeroMissingHashRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 1u);
+    ASSERT_EQ(firstResult.importedAssetCount, 1u);
+
+    const auto stampPath = root / "Library" / "Editor" / "StartupAssetPreimport.stamp";
+    ClearStartupPreimportSourceContentHashForTest(
+        stampPath,
+        "Assets",
+        "Models/StampOnlyStartupHeroMissingHash.gltf");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const auto text = ReadText(modelPath);
+    WriteText(modelPath, text);
+
+    ResetStartupAssetPreimportFullIndexRebuildCountForTesting();
+    ResetStartupAssetPreimportPatchedIndexWriteCountForTesting();
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    EXPECT_EQ(GetStartupAssetPreimportFullIndexRebuildCountForTesting(), 0u);
+    EXPECT_EQ(GetStartupAssetPreimportPatchedIndexWriteCountForTesting(), 1u);
+
+    const auto thirdResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(thirdResult.succeeded) << JoinDiagnosticSummaries(thirdResult.diagnostics);
+    EXPECT_TRUE(thirdResult.usedCache);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup index patching.";
+#endif
+}
+
+NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, StartupPreimportPatchesBuiltInShaderSourceWhenProjectPrefixAlsoMatches)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    std::filesystem::create_directories(root / "Assets");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 0u);
+    ASSERT_EQ(firstResult.importedAssetCount, 0u);
+
+    const auto stampPath = root / "Library" / "Editor" / "StartupAssetPreimport.stamp";
+    ClearStartupPreimportSourceContentHashForTest(
+        stampPath,
+        "Assets/Engine/Shaders/ShaderLab",
+        "StandardPBR.shader");
+
+    ResetStartupAssetPreimportFullIndexRebuildCountForTesting();
+    ResetStartupAssetPreimportPatchedIndexWriteCountForTesting();
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    EXPECT_EQ(GetStartupAssetPreimportFullIndexRebuildCountForTesting(), 0u);
+    EXPECT_EQ(GetStartupAssetPreimportPatchedIndexWriteCountForTesting(), 1u);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup index patching.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportCacheIndexRecordsManifestFreshnessKey)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "ManifestFreshnessKeyHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ManifestFreshnessKeyHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto result = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(result.succeeded) << JoinDiagnosticSummaries(result.diagnostics);
+    ASSERT_FALSE(result.usedCache);
+
+    const auto indexText = ReadText(root / "Library" / "Editor" / "StartupAssetPreimport.stamp");
+    EXPECT_NE(indexText.find("startup-manifest-freshness-v1"), std::string::npos);
+    EXPECT_NE(indexText.find("postprocessor:external-texture-build-pipeline"), std::string::npos);
+    EXPECT_NE(indexText.find("postprocessor:shader-compiler-toolchain"), std::string::npos);
+    const auto textureType = static_cast<uint32_t>(NLS::Core::Assets::AssetType::Texture);
+    EXPECT_NE(indexText.find("build-target:" + std::to_string(textureType) + "=win64-dx12"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportCacheIgnoresBuiltInShaderTimestampOnlyChanges)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(root / "Assets" / "Models" / "ColdHero.gltf", R"({"asset":{"version":"2.0"}})");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    const auto standardPbrPath =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "App" /
+        "Assets" /
+        "Engine" /
+        "Shaders" /
+        "ShaderLab" /
+        "StandardPBR.shader";
+    ASSERT_TRUE(std::filesystem::is_regular_file(standardPbrPath));
+    std::error_code error;
+    const auto originalWriteTime = std::filesystem::last_write_time(standardPbrPath, error);
+    ASSERT_FALSE(error);
+    std::filesystem::last_write_time(
+        standardPbrPath,
+        originalWriteTime + std::chrono::seconds(1),
+        error);
+    ASSERT_FALSE(error);
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_TRUE(secondResult.usedCache)
+        << "Built-in shader timestamp-only changes are build noise and should not force project startup to "
+           "replan assets.";
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+
+    std::filesystem::last_write_time(standardPbrPath, originalWriteTime, error);
+    ASSERT_FALSE(error);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to verify startup cache behavior.";
+#endif
+}
+
+NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, StartupPreimportCacheMissReportsManifestFreshnessReason)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "MissReasonHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "MissReasonHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    const auto indexPath = root / "Library" / "Editor" / "StartupAssetPreimport.stamp";
+    auto indexText = ReadText(indexPath);
+    const auto importersLine = indexText.find("importers ");
+    ASSERT_NE(importersLine, std::string::npos);
+    const auto importersLineEnd = indexText.find('\n', importersLine);
+    ASSERT_NE(importersLineEnd, std::string::npos);
+    indexText.replace(importersLine, importersLineEnd - importersLine, "importers \"stale-manifest-freshness\"");
+    const auto staleImportersLineEnd = indexText.find('\n', importersLine);
+    ASSERT_NE(staleImportersLineEnd, std::string::npos);
+    indexText.replace(staleImportersLineEnd + 1u, std::string::npos, "sourceCount not-a-number\n");
+    WriteText(indexPath, indexText);
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.cacheValidationProfile.missReason, "manifest-freshness-mismatch");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportManifestFreshnessMismatchTargetsAffectedAssetTypesOnly)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "ToolchainOnlyHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ToolchainOnlyHeroRoot" }]
+        })");
+    WriteBinary(root / "Assets" / "Textures" / "ToolchainOnlyAlbedo.png", TinyPng());
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    const auto indexPath = root / "Library" / "Editor" / "StartupAssetPreimport.stamp";
+    auto indexText = ReadText(indexPath);
+    const auto toolchainKey = std::string("postprocessor:shader-compiler-toolchain=");
+    const auto toolchainOffset = indexText.find(toolchainKey);
+    ASSERT_NE(toolchainOffset, std::string::npos);
+    const auto toolchainValueBegin = toolchainOffset + toolchainKey.size();
+    const auto toolchainValueEnd = indexText.find(';', toolchainValueBegin);
+    ASSERT_NE(toolchainValueEnd, std::string::npos);
+    indexText.replace(toolchainValueBegin, toolchainValueEnd - toolchainValueBegin, "stale-toolchain");
+    WriteText(indexPath, indexText);
+
+    ResetAssetDatabaseFullSourceRefreshCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.cacheValidationProfile.missReason, "manifest-freshness-mismatch");
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u)
+        << "Shader toolchain freshness changes should not force project model/texture startup assets to replan.";
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    EXPECT_EQ(GetAssetDatabaseFullSourceRefreshCountForTesting(), 0u)
+        << "Manifest-freshness targeted startup misses should stay on the known-source refresh path.";
+    EXPECT_EQ(GetAssetDatabaseLastKnownSourceRefreshAssetCountForTesting(), 1u)
+        << "Shader toolchain freshness should refresh only the affected shader source, not every cached startup source.";
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count targeted refresh behavior.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportArtifactDatabaseStampMismatchRebuildsWarmIndex)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "ArtifactStampHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ArtifactStampHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    const auto indexPath = root / "Library" / "Editor" / "StartupAssetPreimport.stamp";
+    auto indexText = ReadText(indexPath);
+    const auto artifactDbLine = indexText.find("artifactDb ");
+    ASSERT_NE(artifactDbLine, std::string::npos);
+    const auto artifactDbLineEnd = indexText.find('\n', artifactDbLine);
+    ASSERT_NE(artifactDbLineEnd, std::string::npos);
+    indexText.replace(artifactDbLine, artifactDbLineEnd - artifactDbLine, "artifactDb \"stale-artifact-db\"");
+    WriteText(indexPath, indexText);
+
+    ResetAssetDatabaseFullSourceRefreshCountForTesting();
+    ResetStartupAssetPreimportPatchedIndexWriteCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.cacheValidationProfile.missReason, "artifact-database-stamp-mismatch");
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    EXPECT_EQ(GetAssetDatabaseFullSourceRefreshCountForTesting(), 1u);
+    EXPECT_EQ(GetStartupAssetPreimportPatchedIndexWriteCountForTesting(), 0u);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to verify startup cache index patching.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, StartupPreimportDirectoryChangeFallsBackToSourceEnumeration)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "DirectoryStampStableHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "DirectoryStampStableHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 1u);
+    ASSERT_EQ(firstResult.importedAssetCount, 1u);
+
+    std::error_code error;
+    const auto modelsDirectory = root / "Assets" / "Models";
+    const auto originalDirectoryWriteTime = std::filesystem::last_write_time(modelsDirectory, error);
+    ASSERT_FALSE(error);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    WriteText(
+        modelsDirectory / "DirectoryStampAddedHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "DirectoryStampAddedHeroRoot" }]
+        })");
+    std::filesystem::last_write_time(modelsDirectory, originalDirectoryWriteTime, error);
+    ASSERT_FALSE(error);
+
+    ResetStartupAssetPreimportSourceEnumerationCountForTesting();
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+    EXPECT_GT(GetStartupAssetPreimportSourceEnumerationCountForTesting(), 0u);
+
+    std::filesystem::remove_all(root);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to count startup source enumeration.";
+#endif
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportCacheIgnoresNonStartupAssetChanges)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "CacheIgnoresTextHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "CacheIgnoresTextHeroRoot" }]
+        })");
+    WriteText(root / "Assets" / "Docs" / "notes.txt", "startup cache should not track this file\n");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    EXPECT_EQ(firstResult.plannedAssetCount, 1u);
+    EXPECT_EQ(firstResult.importedAssetCount, 1u);
+
+    WriteText(root / "Assets" / "Docs" / "notes.txt", "changed non-startup source\n");
+
+    std::vector<std::string> progressMessages;
+    const auto secondResult = RunBlockingStartupAssetPreimport(
+        options,
+        [&progressMessages](const ImportProgressEvent& event)
+        {
+            progressMessages.push_back(event.message);
+        });
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_TRUE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+    EXPECT_EQ(
+        std::find(progressMessages.begin(), progressMessages.end(), "Scanning project assets"),
+        progressMessages.end());
+    EXPECT_EQ(
+        std::find(progressMessages.begin(), progressMessages.end(), "Planning startup asset imports"),
+        progressMessages.end());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenAssetChanges)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto modelPath = root / "Assets" / "Models" / "InvalidatedStartupHero.gltf";
+    WriteText(
+        modelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "InvalidatedStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    WriteText(
+        modelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "InvalidatedStartupHeroRootChanged" }]
+        })");
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenMetaChanges)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto modelPath = root / "Assets" / "Models" / "MetaInvalidatedStartupHero.gltf";
+    WriteText(
+        modelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "MetaInvalidatedStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    WriteText(modelPath.string() + ".meta", "guid=11111111111111111111111111111111\nimporter=scene-model\nversion=9\n");
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenArtifactPayloadChanges)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "MissingPayloadStartupHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "MissingPayloadStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+    const auto artifactPath = database.ResolveArtifactPathAtPath(
+        "Assets/Models/MissingPayloadStartupHero.gltf",
+        "prefab:MissingPayloadStartupHero");
+    ASSERT_FALSE(artifactPath.empty());
+    ASSERT_TRUE(std::filesystem::remove(artifactPath));
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenArtifactPayloadContentChanges)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "CorruptPayloadStartupHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "CorruptPayloadStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+    const auto artifactPath = database.ResolveArtifactPathAtPath(
+        "Assets/Models/CorruptPayloadStartupHero.gltf",
+        "prefab:CorruptPayloadStartupHero");
+    ASSERT_FALSE(artifactPath.empty());
+    std::error_code error;
+    const auto originalWriteTime = std::filesystem::last_write_time(artifactPath, error);
+    ASSERT_FALSE(error);
+    const auto originalSize = std::filesystem::file_size(artifactPath, error);
+    ASSERT_FALSE(error);
+    WriteText(artifactPath, std::string(static_cast<size_t>(originalSize), 'x'));
+    std::filesystem::last_write_time(artifactPath, originalWriteTime, error);
+    ASSERT_FALSE(error);
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesTruncatedCacheIndex)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "TruncatedIndexStartupHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "TruncatedIndexStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    WriteText(
+        root / "Library" / "Editor" / "StartupAssetPreimport.stamp",
+        "version \"3\"\n"
+        "projectRoot \"truncated\"\n"
+        "importers \"truncated\"\n"
+        "artifactDb \"truncated\"\n");
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 0u);
+    EXPECT_EQ(secondResult.importedAssetCount, 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRejectsEscapingArtifactPathInCacheIndex)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "EscapingIndexStartupHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "EscapingIndexStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    const auto indexPath = root / "Library" / "Editor" / "StartupAssetPreimport.stamp";
+    auto indexText = ReadText(indexPath);
+    const auto artifactLine = indexText.find("artifact ");
+    ASSERT_NE(artifactLine, std::string::npos);
+    const auto artifactLineEnd = indexText.find('\n', artifactLine);
+    ASSERT_NE(artifactLineEnd, std::string::npos);
+    const auto originalArtifactLine = indexText.substr(artifactLine, artifactLineEnd - artifactLine);
+
+    std::istringstream artifactStream(originalArtifactLine);
+    std::string key;
+    std::string artifactPath;
+    std::string stamp;
+    std::string contentHash;
+    std::string fingerprint;
+    artifactStream >> key
+        >> std::quoted(artifactPath)
+        >> std::quoted(stamp)
+        >> std::quoted(contentHash)
+        >> std::quoted(fingerprint);
+    ASSERT_FALSE(artifactStream.fail());
+
+    const auto escapedPath = (root / "Library" / "Artifacts" / ".." / "EscapedStartupPayload").lexically_normal();
+    std::ostringstream tamperedLineStream;
+    tamperedLineStream << "artifact "
+        << std::quoted(escapedPath.generic_string()) << ' '
+        << std::quoted(stamp) << ' '
+        << std::quoted(contentHash) << ' '
+        << std::quoted(fingerprint);
+    const auto tamperedLine = tamperedLineStream.str();
+    indexText.replace(artifactLine, artifactLineEnd - artifactLine, tamperedLine);
+    WriteText(indexPath, indexText);
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportFallsBackToFullPlanWhenArtifactPayloadChangesDuringSourceChange)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "ChangedSourceStartupHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ChangedSourceStartupHeroRoot" }]
+        })");
+    WriteText(
+        root / "Assets" / "Models" / "MissingPayloadDuringSourceChangeHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "MissingPayloadDuringSourceChangeHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 2u);
+    ASSERT_EQ(firstResult.importedAssetCount, 2u);
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+    const auto artifactPath = database.ResolveArtifactPathAtPath(
+        "Assets/Models/MissingPayloadDuringSourceChangeHero.gltf",
+        "prefab:MissingPayloadDuringSourceChangeHero");
+    ASSERT_FALSE(artifactPath.empty());
+    ASSERT_TRUE(std::filesystem::remove(artifactPath));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    WriteText(
+        root / "Assets" / "Models" / "ChangedSourceStartupHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ChangedSourceStartupHeroRootUpdated" }]
+        })");
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 2u);
+    EXPECT_EQ(secondResult.importedAssetCount, 2u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenExternalModelDependencyChanges)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(root / "Assets" / "Models" / "ExternalDependencyHero.bin", std::string(64, '\0'));
+    WriteText(
+        root / "Assets" / "Models" / "ExternalDependencyHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "buffers": [{ "uri": "ExternalDependencyHero.bin", "byteLength": 64 }],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ExternalDependencyHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 1u);
+    ASSERT_EQ(firstResult.importedAssetCount, 1u);
+
+    WriteText(root / "Assets" / "Models" / "ExternalDependencyHero.bin", std::string(64, '\1'));
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenManifestImporterVersionChanges)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto assetPath = std::string("Assets/Models/ManifestVersionStartupHero.gltf");
+    WriteText(
+        root / assetPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ManifestVersionStartupHeroRoot" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+    ASSERT_EQ(firstResult.plannedAssetCount, 1u);
+    ASSERT_EQ(firstResult.importedAssetCount, 1u);
+
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database.Refresh());
+    const auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
+    ASSERT_TRUE(manifest.has_value());
+    auto staleManifest = *manifest;
+    ++staleManifest.importerVersion;
+    for (auto& dependency : staleManifest.dependencies)
+    {
+        if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::ImporterVersion &&
+            dependency.value == staleManifest.importerId)
+        {
+            dependency.hashOrVersion = std::to_string(staleManifest.importerVersion);
+        }
+    }
+    SaveArtifactManifestForTest(root, staleManifest, assetPath);
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenSameSizeAssetContentChanges)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    const auto modelPath = root / "Assets" / "Models" / "ContentHashStartupHero.gltf";
+    WriteText(
+        modelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ContentHashStartupHeroA" }]
+        })");
+    PrepareStandardPbrShaderLabDependency(root);
+
+    StartupAssetPreimportOptions options;
+    options.projectRoot = root;
+    options.maxPreparedPrefabCachePreflightCount = 0u;
+
+    const auto firstResult = RunBlockingStartupAssetPreimport(options);
+    ASSERT_TRUE(firstResult.succeeded) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_FALSE(firstResult.usedCache);
+
+    std::error_code error;
+    const auto originalWriteTime = std::filesystem::last_write_time(modelPath, error);
+    ASSERT_FALSE(error);
+    WriteText(
+        modelPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ContentHashStartupHeroB" }]
+        })");
+    std::filesystem::last_write_time(modelPath, originalWriteTime, error);
+    ASSERT_FALSE(error);
+
+    const auto secondResult = RunBlockingStartupAssetPreimport(options);
+
+    ASSERT_TRUE(secondResult.succeeded) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    EXPECT_FALSE(secondResult.usedCache);
+    EXPECT_EQ(secondResult.plannedAssetCount, 1u);
+    EXPECT_EQ(secondResult.importedAssetCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, BlockingStartupPreimportReimportsLegacyModelMaterialsToTextureArtifacts)
 {
     using namespace NLS::Editor::Assets;
 
@@ -2807,7 +4536,9 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotPrewarmRuntimeMesh
     EXPECT_TRUE(result.succeeded);
     EXPECT_EQ(result.plannedAssetCount, 1u);
     EXPECT_EQ(result.importedAssetCount, 1u);
-    EXPECT_EQ(result.preparedPrefabCachePreflightAttemptCount, 1u);
+    EXPECT_EQ(result.preparedPrefabCachePreflightAttemptCount, 0u)
+        << "When Library/PreparedPrefabCache does not exist, startup preflight has no L2 entries to load "
+           "and should not enumerate model prefabs just to discover cold misses.";
     EXPECT_EQ(result.preparedPrefabCachePreflightCount, 0u);
     EXPECT_EQ(result.prewarmedMaterialArtifactCount, 0u);
     EXPECT_EQ(
@@ -2993,6 +4724,47 @@ TEST(EditorAssetDatabaseTests, ReadOnlySnapshotSharesLargeObjectReferenceSnapsho
             ++visited;
         });
     EXPECT_GE(visited, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, EmptyFacadePublishesValidSharedState)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    std::filesystem::create_directories(root / "Assets");
+
+    AssetDatabaseFacade database({root});
+    const auto state = database.GetPublishedState();
+    ASSERT_NE(state, nullptr);
+    EXPECT_EQ(database.GetPublishedState(), state);
+    ASSERT_NE(state->artifactManifests, nullptr);
+    ASSERT_NE(state->snapshotIndex, nullptr);
+    EXPECT_EQ(state->snapshotIndex->status, EditorAssetSnapshotStatus::Valid);
+    EXPECT_TRUE(state->snapshotIndex->diagnostic.Empty());
+    EXPECT_TRUE(state->snapshotIndex->assets.empty());
+    EXPECT_TRUE(state->snapshotIndex->assetIndexByCanonicalSourcePath.empty());
+
+    const auto snapshot = AssetDatabaseFacade::CreateReadOnlySnapshot(database);
+    ASSERT_NE(snapshot, nullptr);
+    EXPECT_EQ(snapshot->GetPublishedState(), state);
+
+    WriteText(root / "Assets" / "Models" / "PublishedState.gltf", R"({"asset":{"version":"2.0"}})");
+    ASSERT_TRUE(database.Refresh());
+    const auto sourceAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(
+        database.AssetPathToGUID("Assets/Models/PublishedState.gltf")));
+    ASSERT_TRUE(sourceAssetId.IsValid());
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = sourceAssetId;
+    database.AddArtifactManifest(manifest);
+    const auto changedState = database.GetPublishedState();
+    ASSERT_NE(changedState, nullptr);
+    EXPECT_NE(changedState, state);
+    EXPECT_TRUE(state->artifactManifests->empty());
+    EXPECT_EQ(changedState->artifactManifests->count(manifest.sourceAssetId), 1u);
+    EXPECT_EQ(snapshot->GetPublishedState(), state);
 
     std::filesystem::remove_all(root);
 }

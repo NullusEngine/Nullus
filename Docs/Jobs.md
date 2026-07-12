@@ -47,7 +47,14 @@ Job callbacks should not throw. If a foreground, background, combine, cancel, or
 
 Longer editor or IO-heavy work should use `ScheduleBackgroundJob`. Main-thread follow-up work should use `ScheduleMainThreadContinuation` and execute only from `DrainMainThreadContinuations`. Ready continuations are promoted into a dedicated ready queue so each drain consumes ready work instead of repeatedly scanning every blocked continuation. The editor update loop drains a bounded continuation budget once per frame after delayed editor actions. Shutdown does not implicitly execute main-thread continuations; owners should drain required continuations before stopping the JobSystem.
 Background jobs may provide a cancel callback so queued or dependency-waiting payloads can be released during immediate shutdown. Background cancel callbacks are invoked at most once for queued or dependency-waiting work cancelled by immediate shutdown, by a failed or cancelled dependency before execution, or by a callback exception after execution starts. They are not invoked for successful callbacks.
-Unity's background scheduling lane is used as the semantic reference; see `specs/032-job-system/research.md` for the local Unity 2018 source mapping. Unity 2018 background jobs do not support sync fences; Nullus intentionally exposes waitable background handles so native engine systems can compose foreground fences, background work, and main-thread continuations through one dependency vocabulary. Nullus keeps the background worker count configurable and treats dependency-aware continuations as a Nullus-native extension.
+Unity 2018's background scheduling lane is used as a semantic reference, not as a source transplant. The local mapping is:
+
+- Unity `Runtime/Jobs/JobBatchDispatcher.h` maps to `Runtime/Base/Jobs/JobBatchDispatcher.*` for batched dispatch and fan-in concepts.
+- Unity `Runtime/Jobs/WorkStealingRange.h` and `BlockRangeJob.h` map to `Runtime/Base/Jobs/JobRange.*` for partitioned work.
+- Unity managed `JobHandle` producers map to the native opaque-handle contract in `Runtime/Base/Jobs/JobBindings.*`.
+- Unity worker/profiler integration maps to `JobQueue.*`, `BackgroundJobQueue.*`, and `JobDiagnostics.*`.
+
+Unity 2018 background jobs do not support sync fences; Nullus intentionally exposes waitable background handles so native engine systems can compose foreground fences, background work, and main-thread continuations through one dependency vocabulary. Nullus keeps the background worker count configurable and treats dependency-aware continuations as a Nullus-native extension. The implementation remains correctness-first and synchronized; it does not claim Unity allocator, managed container safety, or API compatibility.
 
 The editor background task path in `EditorActions::TrackBackgroundTask` now delegates through `EditorBackgroundTaskTracker` to the shared JobSystem background queue instead of owning private worker threads.
 `EditorBackgroundTaskTracker` enforces the editor task capacity, rejects new work after stop, tracks submitted handles, and completes those handles during destruction even when the JobSystem is owned by the application.

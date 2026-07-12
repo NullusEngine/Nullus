@@ -157,7 +157,7 @@ When debugging rendering issues in Nullus:
 
 ## Large-Scene HZB/Occlusion Capture Notes
 
-Large-scene HZB occlusion validation must use the active DX12 runtime path and must record both the capture artifact and the exact validation notes under `specs/large-scene-optimization/validation/hzb-occlusion-dx12.md`.
+Large-scene HZB occlusion validation must use the active DX12 runtime path and record both the capture artifact and the exact validation notes in [HZBOcclusionValidation.md](HZBOcclusionValidation.md).
 
 Recommended capture command:
 

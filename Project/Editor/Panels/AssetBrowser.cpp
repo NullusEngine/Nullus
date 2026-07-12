@@ -69,6 +69,7 @@
 #include "Panels/Hierarchy.h"
 #include "Panels/SceneView.h"
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetDatabaseRetirementScheduler.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/EditorThumbnailPreviewRenderer.h"
@@ -6526,55 +6527,47 @@ void Editor::Panels::AssetBrowser::RetireProjectAssetDatabaseResult(
 
 void Editor::Panels::AssetBrowser::ScheduleProjectAssetDatabaseRetirementWorker()
 {
-	{
-		std::lock_guard lock(m_projectAssetDatabaseRetirementState->mutex);
-		if (m_projectAssetDatabaseRetirementState->workerRunning)
-			return;
-		m_projectAssetDatabaseRetirementState->workerRunning = true;
-	}
-
-	try
-	{
-		(void)ScheduleAssetBrowserJobFuture(
-			"AssetBrowser.RetireProjectAssetDatabase",
-			[retirementState = m_projectAssetDatabaseRetirementState]
+	(void)NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+		m_projectAssetDatabaseRetirementState->mutex,
+		m_projectAssetDatabaseRetirementState->workerRunning,
+		[](std::function<void()> worker)
+		{
+			(void)ScheduleAssetBrowserJobFuture(
+				"AssetBrowser.RetireProjectAssetDatabase",
+				std::move(worker));
+		},
+		[retirementState = m_projectAssetDatabaseRetirementState]
+		{
+			for (;;)
 			{
-				for (;;)
+				std::vector<AssetDatabaseRefreshResult> retired;
+				std::vector<std::future<AssetDatabaseRefreshResult>> retiredFutures;
 				{
-					std::vector<AssetDatabaseRefreshResult> retired;
-					std::vector<std::future<AssetDatabaseRefreshResult>> retiredFutures;
+					std::lock_guard lock(retirementState->mutex);
+					if (retirementState->pending.empty() &&
+						retirementState->pendingFutures.empty())
 					{
-						std::lock_guard lock(retirementState->mutex);
-						if (retirementState->pending.empty() &&
-							retirementState->pendingFutures.empty())
-						{
-							retirementState->workerRunning = false;
-							return;
-						}
-						retirementState->pending.swap(retired);
-						retirementState->pendingFutures.swap(retiredFutures);
+						retirementState->workerRunning = false;
+						return;
 					}
-					for (auto& future : retiredFutures)
-					{
-						AssetDatabaseRefreshResult result;
-						try
-						{
-							result = future.get();
-						}
-						catch (...)
-						{
-						}
-						retired.push_back(std::move(result));
-					}
-					retired.clear();
+					retirementState->pending.swap(retired);
+					retirementState->pendingFutures.swap(retiredFutures);
 				}
-			});
-	}
-	catch (...)
-	{
-		std::lock_guard lock(m_projectAssetDatabaseRetirementState->mutex);
-		m_projectAssetDatabaseRetirementState->workerRunning = false;
-	}
+				for (auto& future : retiredFutures)
+				{
+					AssetDatabaseRefreshResult result;
+					try
+					{
+						result = future.get();
+					}
+					catch (...)
+					{
+					}
+					retired.push_back(std::move(result));
+				}
+				retired.clear();
+			}
+		});
 }
 
 void Editor::Panels::AssetBrowser::RetireCurrentProjectAssetDatabase()

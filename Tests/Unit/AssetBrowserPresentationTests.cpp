@@ -5,12 +5,14 @@
 #include "Assets/ArtifactManifest.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetDatabaseRetirementScheduler.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetThumbnailService.h"
 #include "Assets/ExternalAssetImporter.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Core/EditorResources.h"
+#include "Core/ThumbnailTelemetrySummary.h"
 #include "GameObject.h"
 #include "Guid.h"
 #include "ImGui/imgui_internal.h"
@@ -27,6 +29,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <system_error>
 #include <string>
@@ -42,12 +45,6 @@ void DrawAssetBrowserSegmentPanel(
     const ImVec2& max,
     bool hovered,
     ImDrawFlags cornerFlags);
-
-namespace NLS::Editor::Core::Testing
-{
-std::string BuildThumbnailTelemetrySummaryReportForTesting(
-    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records);
-}
 
 void AssetBrowserRasterTestCallback(const ImDrawList*, const ImDrawCmd*)
 {
@@ -2194,7 +2191,7 @@ TEST(AssetBrowserPresentationTests, AssetDatabaseRefreshResultsRetireOffTheUiThr
     const auto schedulerBody = ExtractFunctionBody(
         source,
         "void Editor::Panels::AssetBrowser::ScheduleProjectAssetDatabaseRetirementWorker()");
-    EXPECT_NE(schedulerBody.find("workerRunning = true"), std::string::npos);
+    EXPECT_NE(schedulerBody.find("ScheduleAssetDatabaseRetirementWorker"), std::string::npos);
     EXPECT_NE(schedulerBody.find("ScheduleAssetBrowserJobFuture"), std::string::npos)
         << "Retirement must use the editor's unified JobSystem ownership path.";
     EXPECT_NE(
@@ -2231,6 +2228,31 @@ TEST(AssetBrowserPresentationTests, AssetDatabaseRefreshResultsRetireOffTheUiThr
     EXPECT_NE(installDatabase, std::string::npos);
     EXPECT_NE(retireStale, std::string::npos)
         << "Publication must retire old pointers first and stale results after the root guard.";
+}
+
+TEST(AssetBrowserPresentationTests, AssetDatabaseRetirementSchedulingRejectionResetsWorkerAndCompletesFailure)
+{
+    std::mutex mutex;
+    bool workerRunning = false;
+    bool workerCalled = false;
+
+    auto completion = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [](std::function<void()>)
+        {
+            throw std::runtime_error("forced retirement scheduling rejection");
+        },
+        [&workerCalled]
+        {
+            workerCalled = true;
+        });
+
+    ASSERT_TRUE(completion.valid());
+    EXPECT_EQ(completion.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    EXPECT_THROW(completion.get(), std::runtime_error);
+    EXPECT_FALSE(workerRunning);
+    EXPECT_FALSE(workerCalled);
 }
 
 TEST(AssetBrowserPresentationTests, AssetDatabaseRefreshShutdownNeverWaitsOrOwnsRetirementLifetime)
@@ -2752,22 +2774,18 @@ TEST(AssetBrowserPresentationTests, GridThumbnailDrawPathTelemetrySeparatesThumb
 
 TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryReportsGridDrawOutcomes)
 {
-#if !defined(NLS_ENABLE_TEST_HOOKS)
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to isolate draw outcome telemetry.";
-#else
-    using namespace NLS::Editor::Panels;
+    NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot drawOutcomes;
+    drawOutcomes.thumbnailDrawCount = 1u;
+    drawOutcomes.fallbackDrawCount = 1u;
+    drawOutcomes.typeFallbackDrawCount = 1u;
+    drawOutcomes.pathTotals = {
+        { "Assets/thumbnail.prefab|draw=thumbnail", 1u },
+        { "Assets/fallback.prefab|draw=fallback", 1u },
+        { "Assets/type-fallback.prefab|draw=type-fallback", 1u }
+    };
 
-    const bool wasEnabled = NLS::Core::Assets::IsArtifactLoadTelemetryEnabled();
-    NLS::Core::Assets::SetArtifactLoadTelemetryEnabled(true);
-    ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesting();
-    RecordAssetBrowserThumbnailDrawOutcomeTelemetry("Assets/thumbnail.prefab", AssetBrowserThumbnailDrawOutcome::Thumbnail);
-    RecordAssetBrowserThumbnailDrawOutcomeTelemetry("Assets/fallback.prefab", AssetBrowserThumbnailDrawOutcome::Fallback);
-    RecordAssetBrowserThumbnailDrawOutcomeTelemetry("Assets/type-fallback.prefab", AssetBrowserThumbnailDrawOutcome::TypeFallback);
+    const auto report = NLS::Editor::Core::BuildThumbnailTelemetrySummaryReport({}, drawOutcomes, true);
 
-    const auto report = NLS::Editor::Core::Testing::BuildThumbnailTelemetrySummaryReportForTesting({});
-
-    ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesting();
-    NLS::Core::Assets::SetArtifactLoadTelemetryEnabled(wasEnabled);
     EXPECT_NE(report.find("Thumbnail draw outcomes"), std::string::npos);
     EXPECT_NE(report.find("- |draw=thumbnail records=1"), std::string::npos);
     EXPECT_NE(report.find("- |draw=fallback records=1"), std::string::npos);
@@ -2775,7 +2793,6 @@ TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryReportsGridDrawOutc
     EXPECT_NE(report.find("Assets/thumbnail.prefab|draw=thumbnail records=1"), std::string::npos);
     EXPECT_NE(report.find("Assets/fallback.prefab|draw=fallback records=1"), std::string::npos);
     EXPECT_NE(report.find("Assets/type-fallback.prefab|draw=type-fallback records=1"), std::string::npos);
-#endif
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryIncludesGlobalArtifactStageTotals)
@@ -2793,7 +2810,7 @@ TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryIncludesGlobalArtif
         { ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender, 200us, 6u, "prefab-b" }
     };
 
-    const auto report = NLS::Editor::Core::Testing::BuildThumbnailTelemetrySummaryReportForTesting(records);
+    const auto report = NLS::Editor::Core::BuildThumbnailTelemetrySummaryReport(records, {}, true);
     EXPECT_EQ(
         report.find("- GpuUpload records=2 totalMs=2.000 totalBytes=24"),
         report.rfind("- GpuUpload records=2 totalMs=2.000 totalBytes=24"))
@@ -2838,6 +2855,49 @@ TEST(AssetBrowserPresentationTests, TextureRevivalTestsUseBackendNeutralExplicit
     EXPECT_NE(cancelableRevival.find("EnsureDeterministicThumbnailGpuTestDriver"), std::string::npos);
     EXPECT_EQ(sharedRevival.find("EnsureThumbnailPerformanceGpuTestDriver"), std::string::npos);
     EXPECT_EQ(cancelableRevival.find("EnsureThumbnailPerformanceGpuTestDriver"), std::string::npos);
+}
+
+TEST(AssetBrowserPresentationTests, SharedRuntimeCMakeStagesDynamicLibrariesOnEveryPlatform)
+{
+    const auto rootCMake = ReadSourceText(RepoPath("CMakeLists.txt"));
+    const auto runtimeCMake = ReadSourceText(RepoPath("Runtime/CMakeLists.txt"));
+    const auto thirdPartyCMake = ReadSourceText(RepoPath("ThirdParty/CMakeLists.txt"));
+    const auto imguiCMake = ReadSourceText(RepoPath("ThirdParty/imgui.cmake"));
+
+    const auto outputHelperStart = rootCMake.find("function(nls_configure_shared_runtime_output TARGET_NAME)");
+    const auto outputHelperEnd = rootCMake.find("endfunction()", outputHelperStart);
+    ASSERT_NE(outputHelperStart, std::string::npos);
+    ASSERT_NE(outputHelperEnd, std::string::npos);
+    const auto outputHelper = rootCMake.substr(outputHelperStart, outputHelperEnd - outputHelperStart);
+    EXPECT_NE(outputHelper.find("RUNTIME_OUTPUT_DIRECTORY \"${NLS_RUNTIME_OUTPUT_PATH}\""), std::string::npos);
+    EXPECT_NE(outputHelper.find("LIBRARY_OUTPUT_DIRECTORY \"${NLS_RUNTIME_OUTPUT_PATH}\""), std::string::npos)
+        << "Linux and macOS shared objects use LIBRARY_OUTPUT_DIRECTORY.";
+    EXPECT_EQ(outputHelper.find("ARCHIVE_OUTPUT_DIRECTORY"), std::string::npos)
+        << "Windows import libraries and static archives must retain their existing locations.";
+
+    const auto countOccurrences = [](const std::string_view text, const std::string_view token)
+    {
+        size_t count = 0u;
+        for (size_t offset = text.find(token);
+            offset != std::string_view::npos;
+            offset = text.find(token, offset + token.size()))
+            ++count;
+        return count;
+    };
+    EXPECT_EQ(countOccurrences(runtimeCMake, "nls_configure_shared_runtime_output(${TARGET_NAME})"), 2u)
+        << "Both Nullus runtime target constructors must stage shared-library outputs.";
+    EXPECT_NE(thirdPartyCMake.find("nls_configure_shared_runtime_output(glfw)"), std::string::npos);
+    EXPECT_NE(thirdPartyCMake.find("nls_configure_shared_runtime_output(assimp)"), std::string::npos);
+    EXPECT_NE(imguiCMake.find("nls_configure_shared_runtime_output(ImGui)"), std::string::npos);
+
+    const auto copyHelperStart = rootCMake.find("function(nls_copy_shared_runtime_to_target TARGET_NAME)");
+    const auto copyHelperEnd = rootCMake.find("endfunction()", copyHelperStart);
+    ASSERT_NE(copyHelperStart, std::string::npos);
+    ASSERT_NE(copyHelperEnd, std::string::npos);
+    const auto copyHelper = rootCMake.substr(copyHelperStart, copyHelperEnd - copyHelperStart);
+    EXPECT_EQ(copyHelper.find("WIN32"), std::string::npos)
+        << "Shared .so and .dylib deployment must not be gated to Windows.";
+    EXPECT_NE(copyHelper.find("${NLS_RUNTIME_OUTPUT_PATH}"), std::string::npos);
 }
 
 TEST(AssetBrowserPresentationTests, PendingThumbnailResultDoesNotReplaceFreshVisibleResult)

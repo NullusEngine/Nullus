@@ -203,6 +203,13 @@ endif()
 # build trees. Executable targets explicitly deploy this directory to App.
 set(NLS_RUNTIME_OUTPUT_PATH "${CMAKE_BINARY_DIR}/runtime/$<CONFIGURATION>")
 
+function(nls_configure_shared_runtime_output TARGET_NAME)
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
+        LIBRARY_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
+    )
+endfunction()
+
 function(nls_copy_shared_runtime_to_target TARGET_NAME)
     if(NLS_USE_SHARED_LIBRARY)
         add_custom_command(TARGET ${TARGET_NAME} POST_BUILD

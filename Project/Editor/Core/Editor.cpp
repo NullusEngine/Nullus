@@ -30,6 +30,7 @@
 
 #include "Core/Editor.h"
 #include "Core/EditorJobSystemPolicy.h"
+#include "Core/ThumbnailTelemetrySummary.h"
 #include "UI/Settings/PanelWindowSettings.h"
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
@@ -259,8 +260,10 @@ ArtifactTelemetryReportSummaries BuildArtifactTelemetryReportSummaries(
     return result;
 }
 
-std::string BuildThumbnailTelemetrySummaryReportFromRecords(
-    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records)
+std::string FormatThumbnailTelemetrySummaryReport(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
+    const NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot& thumbnailDrawOutcomes,
+    const bool telemetryEnabled)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
     using NLS::Core::Assets::ArtifactLoadTelemetryStageName;
@@ -343,8 +346,6 @@ std::string BuildThumbnailTelemetrySummaryReportFromRecords(
             return left.path < right.path;
         });
 
-    const auto thumbnailDrawOutcomes =
-        NLS::Editor::Panels::SnapshotAssetBrowserThumbnailDrawOutcomeTelemetry();
     auto thumbnailDrawOutcomePathTotals = thumbnailDrawOutcomes.pathTotals;
     std::sort(
         thumbnailDrawOutcomePathTotals.begin(),
@@ -359,7 +360,7 @@ std::string BuildThumbnailTelemetrySummaryReportFromRecords(
 
     std::ostringstream report;
     report << "Thumbnail telemetry summary\n";
-    report << "telemetryEnabled=" << (NLS::Core::Assets::IsArtifactLoadTelemetryEnabled() ? "true" : "false") << '\n';
+    report << "telemetryEnabled=" << (telemetryEnabled ? "true" : "false") << '\n';
     report << "thumbnailRecordCount=";
     size_t thumbnailRecordCount = 0u;
     for (const auto& aggregate : stageTotals)
@@ -473,7 +474,11 @@ std::string BuildThumbnailTelemetrySummaryReportFromRecords(
 std::string BuildThumbnailTelemetrySummaryReport()
 {
     const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
-    return BuildThumbnailTelemetrySummaryReportFromRecords(records);
+    const auto drawOutcomes = NLS::Editor::Panels::SnapshotAssetBrowserThumbnailDrawOutcomeTelemetry();
+    return NLS::Editor::Core::BuildThumbnailTelemetrySummaryReport(
+        records,
+        drawOutcomes,
+        NLS::Core::Assets::IsArtifactLoadTelemetryEnabled());
 }
 
 void WriteThumbnailTelemetrySummaryIfRequested(
@@ -657,12 +662,14 @@ void WritePrefabDragProxyValidationSummaryIfRequested(
 }
 }
 
-namespace Editor::Core::Testing
+namespace Editor::Core
 {
-std::string BuildThumbnailTelemetrySummaryReportForTesting(
-    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records)
+std::string BuildThumbnailTelemetrySummaryReport(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
+    const NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot& drawOutcomes,
+    const bool telemetryEnabled)
 {
-    return BuildThumbnailTelemetrySummaryReportFromRecords(records);
+    return FormatThumbnailTelemetrySummaryReport(records, drawOutcomes, telemetryEnabled);
 }
 }
 

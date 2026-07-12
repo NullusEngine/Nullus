@@ -30,7 +30,8 @@ namespace NLS::Render::Context
             PreparedRenderSceneBuilder renderSceneBuilder,
             bool applyPendingSwapchainResize = true,
             size_t* publishedSlotIndex = nullptr,
-            uint64_t* publishedFrameId = nullptr);
+            uint64_t* publishedFrameId = nullptr,
+            bool backgroundPreview = false);
         static bool DrainPendingRenderFrameBuildsSynchronously(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
         static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);

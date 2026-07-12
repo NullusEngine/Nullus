@@ -984,7 +984,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     NLS::Core::ServiceLocator::Provide<MaterialManager>(materialManager);
     NLS::Core::ServiceLocator::Provide<ResourceLifetimeRegistry>(resourceLifetimeRegistry);
     RefreshRuntimeAssetDatabaseFromArtifactDB();
-    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager, false);
 
     PresentStartupProgressFrame("Preparing editor resources", 0.34f);
 

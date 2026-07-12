@@ -291,6 +291,38 @@ TEST(MaterialVariantKeyTests, InlineColorFormatOverridesMatchOwnedVectorKeySeman
     EXPECT_FALSE(inlineOverrides.colorFormats.has_value());
 }
 
+TEST(MaterialVariantKeyTests, ColorAttachmentColorSpaceChangesMaterialVariantKey)
+{
+    NLS::Render::Resources::Material material;
+    material.path = "App/Assets/DisplayReadyPreview.mat";
+    const NLS::Render::Data::PipelineState pipelineState;
+
+    static constexpr NLS::Render::RHI::TextureColorSpace kLinear[] = {
+        NLS::Render::RHI::TextureColorSpace::Linear
+    };
+    NLS::Render::Resources::MaterialPipelineStateOverrides linearOverrides;
+    linearOverrides.SetColorSpaces(kLinear);
+
+    static constexpr NLS::Render::RHI::TextureColorSpace kSrgb[] = {
+        NLS::Render::RHI::TextureColorSpace::SRGB
+    };
+    NLS::Render::Resources::MaterialPipelineStateOverrides srgbOverrides;
+    srgbOverrides.SetColorSpaces(kSrgb);
+
+    const auto linearKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "Forward",
+        pipelineState,
+        linearOverrides);
+    const auto srgbKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "Forward",
+        pipelineState,
+        srgbOverrides);
+
+    EXPECT_NE(linearKey.stableKey, srgbKey.stableKey);
+}
+
 TEST(MaterialVariantKeyTests, OwnedColorFormatVectorOverridesInlineSetterStorage)
 {
     static constexpr NLS::Render::RHI::TextureFormat kInlineFormats[] = {

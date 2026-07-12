@@ -6,6 +6,7 @@
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Shortcuts/EditorShortcutService.h"
 #include <UI/Modules/Canvas.h>
+#include <chrono>
 #include <filesystem>
 namespace NLS
 {
@@ -45,6 +46,7 @@ public:
      * @param p_deltaTime
      */
     void Update(float p_deltaTime);
+    void LogNextUpdateStages();
 
     /**
      * Handle editor global shortcuts
@@ -59,14 +61,16 @@ public:
     void AdoptStartupAssetWatchers(
         AssetFileWatcher engineAssetsWatcher,
         AssetFileWatcher projectAssetsWatcher);
-    bool RunStartupWatcherPreimport(
+    NLS::Editor::Assets::StartupWatcherPreimportResult RunStartupWatcherPreimport(
         const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
-    bool CompleteStartupWatcherPreimportGate(
+    NLS::Editor::Assets::StartupWatcherPreimportResult CompleteStartupWatcherPreimportGate(
         const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
     void RememberLastOpenedScene(const std::string& p_scenePath);
     void RefreshProfilerRecordingState();
     bool IsProfilerRecordingEnabled();
+    void DeferStartupSceneViewRenderForNextFrame();
     void UpdateValidationTimelineTraceExport();
+    void UpdateThumbnailTelemetrySummaryExport();
 
     /**
      * Update the current editor mode
@@ -125,6 +129,9 @@ private:
     std::filesystem::path m_validationTracePath;
     bool m_validationTraceExportStarted = false;
     bool m_validationTraceExportFinished = false;
+    std::chrono::steady_clock::time_point m_lastThumbnailTelemetrySummaryWriteTime {};
+    bool m_thumbnailTelemetrySummaryWriteAttemptLogged = false;
+    bool m_logNextUpdateStages = false;
     UI::Canvas			m_canvas;
     Context& m_context;
     PanelsManager	m_panelsManager;

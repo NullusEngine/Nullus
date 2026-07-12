@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,7 @@ struct MaterialConversionContext
     std::string shaderResourcePath;
     bool ignoreFbxTexturedNeutralDiffuseTint = true;
     std::unordered_map<std::string, bool> sourceTextureAlphaEvidence;
+    std::unordered_set<std::string> deferredTextureSourceKeys;
 };
 
 NLS_RENDER_API ConvertedMaterialArtifact ConvertImportedSceneMaterial(

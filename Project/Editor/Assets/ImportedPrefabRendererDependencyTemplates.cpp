@@ -3,6 +3,7 @@
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "GameObject.h"
+#include "Profiling/PerformanceStageStats.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -66,16 +67,79 @@ bool PrefabRecordIsGameObject(const NLS::Engine::Serialize::ObjectRecord& record
 
 struct PrefabResolvedAssetIndex
 {
+    struct ReferenceHintMatch
+    {
+        const NLS::Engine::Assets::PrefabResolvedAsset* resolved = nullptr;
+        bool ambiguous = false;
+    };
+
+    std::unordered_map<std::string, const NLS::Engine::Assets::PrefabResolvedAsset*> byLogicalKey;
     std::unordered_map<NLS::Core::Assets::AssetId, std::vector<const NLS::Engine::Assets::PrefabResolvedAsset*>> byAssetId;
+    std::unordered_map<std::string, ReferenceHintMatch> byReferenceHint;
 };
+
+std::string MakeResolvedAssetLogicalKey(
+    const NLS::Core::Assets::AssetId assetId,
+    const std::string_view expectedType,
+    const std::string_view subAssetKey)
+{
+    std::string key = assetId.ToString();
+    key.push_back('|');
+    key.append(expectedType);
+    key.push_back('|');
+    key.append(subAssetKey);
+    return key;
+}
+
+std::string MakeResolvedAssetReferenceHintKey(
+    const std::string_view expectedType,
+    const std::string_view referenceHint)
+{
+    std::string key;
+    key.reserve(expectedType.size() + referenceHint.size() + 1u);
+    key.append(expectedType);
+    key.push_back('|');
+    key.append(referenceHint);
+    return key;
+}
+
+std::string NormalizePrefabReferencePath(const std::string& path);
+
+void AddResolvedAssetReferenceHint(
+    PrefabResolvedAssetIndex& index,
+    const NLS::Engine::Assets::PrefabResolvedAsset& resolved,
+    const std::string_view referenceHint)
+{
+    if (referenceHint.empty())
+        return;
+
+    auto& match = index.byReferenceHint[MakeResolvedAssetReferenceHintKey(resolved.expectedType, referenceHint)];
+    if (match.resolved != nullptr && match.resolved != &resolved)
+    {
+        match.ambiguous = true;
+        return;
+    }
+
+    match.resolved = &resolved;
+}
 
 PrefabResolvedAssetIndex BuildPrefabResolvedAssetIndex(
     const NLS::Engine::Assets::PrefabArtifact& prefab)
 {
     PrefabResolvedAssetIndex index;
+    index.byLogicalKey.reserve(prefab.resolvedAssets.size());
     index.byAssetId.reserve(prefab.resolvedAssets.size());
+    index.byReferenceHint.reserve(prefab.resolvedAssets.size() * 3u);
     for (const auto& resolved : prefab.resolvedAssets)
+    {
+        index.byLogicalKey.emplace(
+            MakeResolvedAssetLogicalKey(resolved.assetId, resolved.expectedType, resolved.subAssetKey),
+            &resolved);
         index.byAssetId[resolved.assetId].push_back(&resolved);
+        AddResolvedAssetReferenceHint(index, resolved, resolved.subAssetKey);
+        AddResolvedAssetReferenceHint(index, resolved, resolved.artifactPath);
+        AddResolvedAssetReferenceHint(index, resolved, NormalizePrefabReferencePath(resolved.artifactPath));
+    }
     return index;
 }
 
@@ -129,27 +193,16 @@ std::optional<std::string> ResolvePrefabAssetPath(
         if (referencePath.empty())
             return std::nullopt;
 
-        const NLS::Engine::Assets::PrefabResolvedAsset* candidate = nullptr;
-        for (const auto& [assetId, resolvedList] : resolvedAssets.byAssetId)
+        const auto found = resolvedAssets.byReferenceHint.find(
+            MakeResolvedAssetReferenceHintKey(expectedType, referencePath));
+        if (found != resolvedAssets.byReferenceHint.end())
         {
-            (void)assetId;
-            for (const auto* resolved : resolvedList)
-            {
-                if (!resolved ||
-                    !PrefabResolvedAssetMatchesReferenceHint(*resolved, value.GetString(), referencePath, expectedType))
-                {
-                    continue;
-                }
-
-                if (candidate)
-                    return std::nullopt;
-
-                candidate = resolved;
-            }
+            if (found->second.ambiguous)
+                return std::nullopt;
+            if (found->second.resolved)
+                return found->second.resolved->artifactPath;
         }
 
-        if (candidate)
-            return candidate->artifactPath;
         return referencePath;
     }
 
@@ -164,6 +217,36 @@ std::optional<std::string> ResolvePrefabAssetPath(
     const auto referencePath = NormalizePrefabReferencePath(reference.filePath);
     if (expectedType == "Mesh" && IsBuiltinPrimitiveMeshReferencePath(referencePath))
         return referencePath;
+
+    if (!referencePath.empty() && !expectedType.empty())
+    {
+        if (const auto found = resolvedAssets.byLogicalKey.find(
+                MakeResolvedAssetLogicalKey(assetId, expectedType, reference.filePath));
+            found != resolvedAssets.byLogicalKey.end() && found->second)
+        {
+            return found->second->artifactPath;
+        }
+
+        if (referencePath != reference.filePath)
+        {
+            if (const auto found = resolvedAssets.byLogicalKey.find(
+                    MakeResolvedAssetLogicalKey(assetId, expectedType, referencePath));
+                found != resolvedAssets.byLogicalKey.end() && found->second)
+            {
+                return found->second->artifactPath;
+            }
+        }
+
+        const auto subAssetKeyHint =
+            NLS::Engine::Assets::ExtractPrefabAssetReferenceSubAssetKeyHint(reference.filePath);
+        if (!subAssetKeyHint.empty())
+        {
+            const auto found = resolvedAssets.byLogicalKey.find(
+                MakeResolvedAssetLogicalKey(assetId, expectedType, subAssetKeyHint));
+            if (found != resolvedAssets.byLogicalKey.end() && found->second)
+                return found->second->artifactPath;
+        }
+    }
 
     const NLS::Engine::Assets::PrefabResolvedAsset* candidate = nullptr;
 
@@ -194,6 +277,10 @@ std::optional<std::string> ResolvePrefabAssetPath(
 std::vector<ImportedPrefabRendererDependencyTemplate> BuildImportedPrefabRendererDependencyTemplates(
     const NLS::Engine::Assets::PrefabArtifact& prefab)
 {
+    NLS::Base::Profiling::PerformanceStageScope scope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "BuildImportedPrefabRendererDependencyTemplates",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
     std::vector<ImportedPrefabRendererDependencyTemplate> templates;
     const auto objectRecordsById = BuildPrefabObjectRecordIndex(prefab.graph);
     const auto resolvedAssetIndex = BuildPrefabResolvedAssetIndex(prefab);
@@ -253,6 +340,9 @@ std::vector<ImportedPrefabRendererDependencyTemplate> BuildImportedPrefabRendere
             templates.push_back(std::move(item));
     }
 
+    scope.AddCounter("objectCount", prefab.graph.objects.size());
+    scope.AddCounter("resolvedAssetCount", prefab.resolvedAssets.size());
+    scope.AddCounter("rendererDependencyTemplateCount", templates.size());
     return templates;
 }
 }

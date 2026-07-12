@@ -4,6 +4,7 @@
 #include "Assets/AssetVersion.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/EditorAssetDatabase.h"
+#include "Assets/ImportedPrefabRendererDependencyTemplates.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Engine/Assets/PrefabAsset.h"
 #include "GameObject.h"
@@ -122,6 +123,7 @@ struct AssetDragDropResult
     std::vector<NLS::Core::Assets::AssetDependencyRecord> dependencyRefreshRequests;
     std::vector<EditorAssetCommandDescriptor> commandDescriptors;
     std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> sharedArtifact;
+    std::shared_ptr<const std::vector<ImportedPrefabRendererDependencyTemplate>> rendererDependencyTemplates;
     bool deferredAssetReferenceResolutionRequested = false;
 };
 

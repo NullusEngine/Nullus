@@ -1,6 +1,7 @@
 #include "Assets/AssetThumbnailCache.h"
 
 #include "Assets/ArtifactManifest.h"
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetPath.h"
 #include "Image.h"
@@ -42,6 +43,222 @@ constexpr uint64_t kFnvPrime = 1099511628211ull;
 
 constexpr size_t kCacheWriteMutexStripeCount = 64u;
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+std::atomic<size_t> g_canonicalPathAttemptCountForTesting {0u};
+std::atomic<size_t> g_containmentStampAttemptCountForTesting {0u};
+std::atomic<size_t> g_metadataFileLoadCountForTesting {0u};
+std::atomic<size_t> g_cacheEvaluationCountForTesting {0u};
+#endif
+
+using CanonicalPathCache = std::unordered_map<std::string, std::optional<std::filesystem::path>>;
+
+std::filesystem::path NormalizePath(const std::filesystem::path& path);
+
+struct MetadataCacheEntry
+{
+    std::filesystem::file_time_type lastWriteTime {};
+    uintmax_t byteSize = 0u;
+    nlohmann::json metadata;
+};
+
+struct FilesystemContainmentStamp
+{
+    std::filesystem::file_type type = std::filesystem::file_type::none;
+};
+
+struct CacheEntryContainmentCacheEntry
+{
+    std::array<FilesystemContainmentStamp, 6u> stamps {};
+    bool contained = false;
+};
+
+struct CacheRootContainmentCacheEntry
+{
+    FilesystemContainmentStamp projectRootStamp;
+    FilesystemContainmentStamp cacheRootStamp;
+    bool contained = false;
+};
+
+bool operator==(
+    const FilesystemContainmentStamp& lhs,
+    const FilesystemContainmentStamp& rhs)
+{
+    return lhs.type == rhs.type;
+}
+
+bool operator==(
+    const CacheEntryContainmentCacheEntry& lhs,
+    const CacheEntryContainmentCacheEntry& rhs)
+{
+    return lhs.stamps == rhs.stamps &&
+        lhs.contained == rhs.contained;
+}
+
+std::mutex& MetadataCacheMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::string, MetadataCacheEntry>& MetadataCache()
+{
+    static std::unordered_map<std::string, MetadataCacheEntry> cache;
+    return cache;
+}
+
+std::mutex& CacheEntryContainmentCacheMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::string, CacheEntryContainmentCacheEntry>& CacheEntryContainmentCache()
+{
+    static std::unordered_map<std::string, CacheEntryContainmentCacheEntry> cache;
+    return cache;
+}
+
+std::mutex& CacheRootContainmentCacheMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::string, CacheRootContainmentCacheEntry>& CacheRootContainmentCache()
+{
+    static std::unordered_map<std::string, CacheRootContainmentCacheEntry> cache;
+    return cache;
+}
+
+std::string MetadataCacheKey(const std::filesystem::path& path)
+{
+    return path.lexically_normal().generic_string();
+}
+
+#ifdef _WIN32
+bool PathHasWindowsReparsePoint(const std::filesystem::path& path)
+{
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u;
+}
+#endif
+
+FilesystemContainmentStamp BuildFilesystemContainmentStamp(const std::filesystem::path& path)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    g_containmentStampAttemptCountForTesting.fetch_add(1u, std::memory_order_relaxed);
+#endif
+    FilesystemContainmentStamp stamp;
+#ifdef _WIN32
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    const bool hasReparsePoint = PathHasWindowsReparsePoint(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES)
+    {
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND ||
+            error == ERROR_PATH_NOT_FOUND ||
+            error == ERROR_NOT_READY)
+        {
+            stamp.type = std::filesystem::file_type::not_found;
+        }
+        return stamp;
+    }
+
+    if (hasReparsePoint)
+        stamp.type = std::filesystem::file_type::symlink;
+    else if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0u)
+        stamp.type = std::filesystem::file_type::directory;
+    else
+        stamp.type = std::filesystem::file_type::regular;
+    return stamp;
+#else
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    if (error)
+    {
+        std::error_code existsError;
+        if (!std::filesystem::exists(path, existsError) && !existsError)
+            stamp.type = std::filesystem::file_type::not_found;
+        return stamp;
+    }
+
+    stamp.type = status.type();
+    return stamp;
+#endif
+}
+
+bool CacheEntryContainmentStampIsCacheable(const FilesystemContainmentStamp& stamp)
+{
+    return stamp.type == std::filesystem::file_type::directory ||
+        stamp.type == std::filesystem::file_type::regular ||
+        stamp.type == std::filesystem::file_type::not_found;
+}
+
+std::optional<CacheEntryContainmentCacheEntry> BuildCacheEntryContainmentCacheEntry(
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& cacheRoot,
+    const AssetThumbnailCacheEntry& entry,
+    const bool contained)
+{
+    const auto normalizedProjectRoot = NormalizePath(projectRoot);
+    const auto imageParent = entry.imagePath.parent_path();
+    const auto metadataParent = entry.metadataPath.parent_path();
+    const auto projectRootStamp = BuildFilesystemContainmentStamp(normalizedProjectRoot);
+    const auto cacheRootStamp = BuildFilesystemContainmentStamp(cacheRoot);
+    const auto imageParentStamp = BuildFilesystemContainmentStamp(imageParent);
+    const auto imageStamp = BuildFilesystemContainmentStamp(entry.imagePath);
+    const auto metadataParentStamp = imageParent == metadataParent
+        ? imageParentStamp
+        : BuildFilesystemContainmentStamp(metadataParent);
+    const auto metadataStamp = BuildFilesystemContainmentStamp(entry.metadataPath);
+
+    CacheEntryContainmentCacheEntry cacheEntry;
+    cacheEntry.stamps = {
+        projectRootStamp,
+        cacheRootStamp,
+        imageParentStamp,
+        imageStamp,
+        metadataParentStamp,
+        metadataStamp
+    };
+    cacheEntry.contained = contained;
+
+    if (!std::all_of(
+            cacheEntry.stamps.begin(),
+            cacheEntry.stamps.end(),
+            CacheEntryContainmentStampIsCacheable))
+    {
+        return std::nullopt;
+    }
+    return cacheEntry;
+}
+
+std::string CacheEntryContainmentCacheKey(
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& cacheRoot,
+    const AssetThumbnailCacheEntry& entry)
+{
+    return MetadataCacheKey(projectRoot) + "|" +
+        MetadataCacheKey(cacheRoot) + "|" +
+        entry.cacheKey + "|" +
+        MetadataCacheKey(entry.imagePath) + "|" +
+        MetadataCacheKey(entry.metadataPath);
+}
+
+std::string CacheRootContainmentCacheKey(
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& cacheRoot)
+{
+    return MetadataCacheKey(projectRoot) + "|" + MetadataCacheKey(cacheRoot);
+}
+
+void InvalidateMetadataCacheEntry(const std::filesystem::path& path)
+{
+    std::lock_guard<std::mutex> lock(MetadataCacheMutex());
+    MetadataCache().erase(MetadataCacheKey(path));
+}
+
 std::array<std::mutex, kCacheWriteMutexStripeCount>& CacheWriteMutexStripes()
 {
     static std::array<std::mutex, kCacheWriteMutexStripeCount> mutexes;
@@ -51,6 +268,41 @@ std::array<std::mutex, kCacheWriteMutexStripeCount>& CacheWriteMutexStripes()
 std::mutex& CacheWriteMutexForKey(const std::string& cacheKey)
 {
     return CacheWriteMutexStripes()[std::hash<std::string> {}(cacheKey) % kCacheWriteMutexStripeCount];
+}
+
+std::string ThumbnailTelemetryPathForRequest(const AssetThumbnailRequest& request)
+{
+    return request.sourceAssetPath + "|" + request.subAssetKey;
+}
+
+void RecordThumbnailCacheEvaluationTelemetry(
+    const NLS::Core::Assets::ArtifactLoadTelemetryStage stage,
+    const std::chrono::steady_clock::time_point begin,
+    const AssetThumbnailRequest& request,
+    const size_t byteCount = 0u)
+{
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        stage,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - begin),
+        byteCount,
+        ThumbnailTelemetryPathForRequest(request)
+    });
+}
+
+void RecordThumbnailCacheTelemetry(
+    const NLS::Core::Assets::ArtifactLoadTelemetryStage stage,
+    const std::chrono::steady_clock::time_point begin,
+    const std::string& path,
+    const size_t byteCount = 0u)
+{
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        stage,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - begin),
+        byteCount,
+        path
+    });
 }
 
 bool WriteNewFileExclusive(
@@ -163,9 +415,14 @@ std::string HashParts(const std::vector<std::string>& parts)
     for (const auto& part : parts)
         HashBytes(hash, part);
 
-    std::ostringstream stream;
-    stream << std::hex << std::setw(16) << std::setfill('0') << hash;
-    return stream.str();
+    constexpr char kHexDigits[] = "0123456789abcdef";
+    std::string result(16u, '0');
+    for (size_t index = 0u; index < result.size(); ++index)
+    {
+        const auto shift = static_cast<unsigned>((result.size() - index - 1u) * 4u);
+        result[index] = kHexDigits[(hash >> shift) & 0xfu];
+    }
+    return result;
 }
 
 struct AssetThumbnailKindDescriptor
@@ -273,9 +530,11 @@ std::vector<AssetThumbnailFreshnessInput> SortedFreshnessInputs(
     return inputs;
 }
 
-std::string BuildAssetThumbnailStablePathKey(const AssetThumbnailRequest& request)
+std::vector<std::string> BuildAssetThumbnailCommonKeyParts(const AssetThumbnailRequest& request)
 {
-    return HashParts({
+    std::vector<std::string> parts;
+    parts.reserve(11u);
+    parts = {
         request.assetId.ToString(),
         NormalizeEditorAssetPath(request.sourceAssetPath),
         request.subAssetKey,
@@ -287,7 +546,18 @@ std::string BuildAssetThumbnailStablePathKey(const AssetThumbnailRequest& reques
         request.dependencyStamp,
         request.colorSpaceMode,
         request.hdrMode
-    });
+    };
+    return parts;
+}
+
+std::string BuildAssetThumbnailStablePathKey(const std::vector<std::string>& commonParts)
+{
+    return HashParts(commonParts);
+}
+
+std::string BuildAssetThumbnailStablePathKey(const AssetThumbnailRequest& request)
+{
+    return BuildAssetThumbnailStablePathKey(BuildAssetThumbnailCommonKeyParts(request));
 }
 
 std::filesystem::path CacheRoot(const std::filesystem::path& projectRoot)
@@ -314,12 +584,44 @@ bool IsPathInside(const std::filesystem::path& candidate, const std::filesystem:
     return true;
 }
 
+std::optional<std::filesystem::path> TryWeaklyCanonicalEditorPathCached(
+    const std::filesystem::path& path,
+    CanonicalPathCache& cache)
+{
+    const auto key = MetadataCacheKey(path);
+    const auto found = cache.find(key);
+    if (found != cache.end())
+        return found->second;
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    g_canonicalPathAttemptCountForTesting.fetch_add(1u, std::memory_order_relaxed);
+#endif
+    auto canonical = TryWeaklyCanonicalEditorPath(path);
+    cache.emplace(key, canonical);
+    return canonical;
+}
+
 bool IsPhysicallyInside(
     const std::filesystem::path& candidate,
     const std::filesystem::path& root)
 {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    g_canonicalPathAttemptCountForTesting.fetch_add(2u, std::memory_order_relaxed);
+#endif
     const auto canonicalCandidate = TryWeaklyCanonicalEditorPath(candidate);
     const auto canonicalRoot = TryWeaklyCanonicalEditorPath(root);
+    return canonicalCandidate.has_value() &&
+        canonicalRoot.has_value() &&
+        IsPathInside(*canonicalCandidate, *canonicalRoot);
+}
+
+bool IsPhysicallyInside(
+    const std::filesystem::path& candidate,
+    const std::filesystem::path& root,
+    CanonicalPathCache& cache)
+{
+    const auto canonicalCandidate = TryWeaklyCanonicalEditorPathCached(candidate, cache);
+    const auto canonicalRoot = TryWeaklyCanonicalEditorPathCached(root, cache);
     return canonicalCandidate.has_value() &&
         canonicalRoot.has_value() &&
         IsPathInside(*canonicalCandidate, *canonicalRoot);
@@ -328,6 +630,14 @@ bool IsPhysicallyInside(
 bool IsCacheRootPhysicallyInsideProject(const std::filesystem::path& projectRoot)
 {
     return IsPhysicallyInside(CacheRoot(projectRoot), NormalizePath(projectRoot));
+}
+
+bool IsCacheRootPhysicallyInsideProject(
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& cacheRoot,
+    CanonicalPathCache& cache)
+{
+    return IsPhysicallyInside(cacheRoot, NormalizePath(projectRoot), cache);
 }
 
 bool IsCacheCandidateContained(
@@ -340,18 +650,160 @@ bool IsCacheCandidateContained(
         IsPhysicallyInside(candidate, root);
 }
 
+bool IsCacheCandidateContained(
+    const std::filesystem::path& candidate,
+    const std::filesystem::path& cacheRoot,
+    CanonicalPathCache& cache)
+{
+    return IsPathInside(candidate, cacheRoot) &&
+        IsPhysicallyInside(candidate, cacheRoot, cache);
+}
+
 bool AreCacheEntryPathsContained(
     const std::filesystem::path& projectRoot,
     const AssetThumbnailCacheEntry& entry)
 {
-    return IsCacheCandidateContained(projectRoot, entry.imagePath.parent_path()) &&
-        IsCacheCandidateContained(projectRoot, entry.imagePath) &&
-        IsCacheCandidateContained(projectRoot, entry.metadataPath.parent_path()) &&
-        IsCacheCandidateContained(projectRoot, entry.metadataPath);
+    const auto cacheRoot = CacheRoot(projectRoot);
+    CanonicalPathCache cache;
+    if (!IsCacheRootPhysicallyInsideProject(projectRoot, cacheRoot, cache))
+        return false;
+
+    return IsCacheCandidateContained(entry.imagePath.parent_path(), cacheRoot, cache) &&
+        IsCacheCandidateContained(entry.imagePath, cacheRoot, cache) &&
+        IsCacheCandidateContained(entry.metadataPath.parent_path(), cacheRoot, cache) &&
+        IsCacheCandidateContained(entry.metadataPath, cacheRoot, cache);
+}
+
+bool AreCacheEntryPathsLexicallyContained(
+    const std::filesystem::path& cacheRoot,
+    const AssetThumbnailCacheEntry& entry)
+{
+    return IsPathInside(entry.imagePath.parent_path(), cacheRoot) &&
+        IsPathInside(entry.imagePath, cacheRoot) &&
+        IsPathInside(entry.metadataPath.parent_path(), cacheRoot) &&
+        IsPathInside(entry.metadataPath, cacheRoot);
+}
+
+bool IsCacheRootPhysicallyInsideProjectCachedForRead(
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& cacheRoot,
+    const CacheEntryContainmentCacheEntry& cacheEntry)
+{
+    const auto key = CacheRootContainmentCacheKey(projectRoot, cacheRoot);
+    {
+        std::lock_guard<std::mutex> lock(CacheRootContainmentCacheMutex());
+        const auto found = CacheRootContainmentCache().find(key);
+        if (found != CacheRootContainmentCache().end() &&
+            found->second.projectRootStamp == cacheEntry.stamps[0] &&
+            found->second.cacheRootStamp == cacheEntry.stamps[1])
+        {
+            return found->second.contained;
+        }
+    }
+
+    CanonicalPathCache cache;
+    const bool contained = IsCacheRootPhysicallyInsideProject(projectRoot, cacheRoot, cache);
+    {
+        std::lock_guard<std::mutex> lock(CacheRootContainmentCacheMutex());
+        CacheRootContainmentCache()[key] = CacheRootContainmentCacheEntry {
+            cacheEntry.stamps[0],
+            cacheEntry.stamps[1],
+            contained
+        };
+    }
+    return contained;
+}
+
+std::optional<bool> TryValidateCacheEntryContainmentFromCacheableStamps(
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& cacheRoot,
+    const AssetThumbnailCacheEntry& entry,
+    const CacheEntryContainmentCacheEntry& cacheEntry)
+{
+    if (!std::all_of(
+            cacheEntry.stamps.begin(),
+            cacheEntry.stamps.end(),
+            CacheEntryContainmentStampIsCacheable))
+    {
+        return std::nullopt;
+    }
+
+    if (!AreCacheEntryPathsLexicallyContained(cacheRoot, entry))
+        return false;
+
+    return IsCacheRootPhysicallyInsideProjectCachedForRead(projectRoot, cacheRoot, cacheEntry);
+}
+
+bool AreCacheEntryPathsContainedCachedForRead(
+    const std::filesystem::path& projectRoot,
+    const AssetThumbnailCacheEntry& entry,
+    const std::string& telemetryPath)
+{
+    auto telemetryBegin = std::chrono::steady_clock::now();
+    const auto cacheRoot = CacheRoot(projectRoot);
+    const auto cacheKey = CacheEntryContainmentCacheKey(projectRoot, cacheRoot, entry);
+    RecordThumbnailCacheTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryContainmentKey,
+        telemetryBegin,
+        telemetryPath);
+    std::optional<CacheEntryContainmentCacheEntry> cachedEntry;
+    {
+        std::lock_guard<std::mutex> lock(CacheEntryContainmentCacheMutex());
+        const auto found = CacheEntryContainmentCache().find(cacheKey);
+        if (found != CacheEntryContainmentCache().end())
+            cachedEntry = found->second;
+    }
+    if (cachedEntry.has_value())
+    {
+        telemetryBegin = std::chrono::steady_clock::now();
+        if (const auto currentCacheEntry =
+                BuildCacheEntryContainmentCacheEntry(projectRoot, cacheRoot, entry, cachedEntry->contained);
+            currentCacheEntry.has_value() && *cachedEntry == *currentCacheEntry)
+        {
+            RecordThumbnailCacheTelemetry(
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryContainmentStamp,
+                telemetryBegin,
+                telemetryPath);
+            return cachedEntry->contained;
+        }
+        RecordThumbnailCacheTelemetry(
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryContainmentStamp,
+            telemetryBegin,
+            telemetryPath);
+    }
+
+    telemetryBegin = std::chrono::steady_clock::now();
+    auto refreshedCacheEntry = BuildCacheEntryContainmentCacheEntry(projectRoot, cacheRoot, entry, false);
+    RecordThumbnailCacheTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryContainmentStamp,
+        telemetryBegin,
+        telemetryPath);
+
+    telemetryBegin = std::chrono::steady_clock::now();
+    const auto fastContained = refreshedCacheEntry.has_value()
+        ? TryValidateCacheEntryContainmentFromCacheableStamps(projectRoot, cacheRoot, entry, *refreshedCacheEntry)
+        : std::nullopt;
+    const bool contained = fastContained.has_value()
+        ? *fastContained
+        : AreCacheEntryPathsContained(projectRoot, entry);
+    RecordThumbnailCacheTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryContainmentValidate,
+        telemetryBegin,
+        telemetryPath);
+    if (refreshedCacheEntry.has_value())
+    {
+        refreshedCacheEntry->contained = contained;
+        std::lock_guard<std::mutex> lock(CacheEntryContainmentCacheMutex());
+        CacheEntryContainmentCache()[cacheKey] = *refreshedCacheEntry;
+    }
+    return contained;
 }
 
 std::optional<nlohmann::json> LoadMetadata(const std::filesystem::path& path)
 {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    g_metadataFileLoadCountForTesting.fetch_add(1u, std::memory_order_relaxed);
+#endif
     std::ifstream input(path, std::ios::binary);
     if (!input)
         return std::nullopt;
@@ -360,6 +812,45 @@ std::optional<nlohmann::json> LoadMetadata(const std::filesystem::path& path)
     if (!root.is_object())
         return std::nullopt;
     return root;
+}
+
+std::optional<nlohmann::json> LoadMetadataCached(
+    const std::filesystem::path& path,
+    const std::filesystem::file_time_type lastWriteTime,
+    const uintmax_t byteSize,
+    const bool cacheable)
+{
+    if (!cacheable)
+        return LoadMetadata(path);
+
+    const auto key = NormalizePath(path).generic_string();
+    {
+        std::lock_guard<std::mutex> lock(MetadataCacheMutex());
+        const auto found = MetadataCache().find(key);
+        if (found != MetadataCache().end() &&
+            found->second.lastWriteTime == lastWriteTime &&
+            found->second.byteSize == byteSize)
+        {
+            return found->second.metadata;
+        }
+    }
+
+    auto metadata = LoadMetadata(path);
+    if (!metadata.has_value())
+        return std::nullopt;
+
+    {
+        std::lock_guard<std::mutex> lock(MetadataCacheMutex());
+        auto& cache = MetadataCache();
+        if (cache.size() >= 1024u)
+            cache.clear();
+        cache[key] = MetadataCacheEntry {
+            lastWriteTime,
+            byteSize,
+            *metadata
+        };
+    }
+    return metadata;
 }
 
 uint64_t FileSizeOrZero(const std::filesystem::path& path)
@@ -541,6 +1032,15 @@ bool CachedImageMatchesMetadata(
 
     const auto actualHash = HashFileForStorage(imagePath);
     return actualHash.has_value() && *actualHash == expectedHash;
+}
+
+bool CachedImageMetadataHasIdentity(const nlohmann::json& metadata)
+{
+    if (!metadata.contains("imageSize") || !metadata.contains("imageHash"))
+        return false;
+    if (metadata.value("imageSize", std::uintmax_t {}) == 0u)
+        return false;
+    return !metadata.value("imageHash", std::string {}).empty();
 }
 
 std::string FileStampForFreshness(const std::filesystem::path& path)
@@ -736,6 +1236,8 @@ bool WriteAssetThumbnailCacheFileForEntry(
         std::filesystem::remove(normalizedPath, error);
         return false;
     }
+    if (normalizedPath == entry.metadataPath)
+        InvalidateMetadataCacheEntry(normalizedPath);
     return true;
 }
 
@@ -745,6 +1247,17 @@ bool WriteAssetThumbnailCacheMetadataForEntry(
     const AssetThumbnailCacheStatus status,
     const std::string& diagnostic)
 {
+    if (status != AssetThumbnailCacheStatus::Fresh)
+    {
+        if (!AreCacheEntryPathsContained(metadataRequest.projectRoot, entry))
+            return false;
+
+        std::error_code removeError;
+        std::filesystem::remove(entry.imagePath, removeError);
+        if (removeError)
+            return false;
+    }
+
     nlohmann::json freshness = nlohmann::json::array();
     for (const auto& input : SortedFreshnessInputs(metadataRequest.freshnessInputs))
     {
@@ -796,23 +1309,62 @@ bool WriteAssetThumbnailCacheMetadataForEntry(
 }
 }
 
-std::string BuildAssetThumbnailCacheKey(const AssetThumbnailRequest& request)
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void ResetAssetThumbnailCacheCanonicalPathAttemptCountForTesting()
 {
-    std::vector<std::string> parts {
-        request.assetId.ToString(),
-        NormalizeEditorAssetPath(request.sourceAssetPath),
-        request.subAssetKey,
-        NormalizeEditorAssetPath(request.artifactPath),
-        KindToString(request.kind),
-        std::to_string(request.requestedSize),
-        request.previewRendererVersion,
-        request.settingsFingerprint,
-        request.dependencyStamp,
-        request.colorSpaceMode,
-        request.hdrMode
-    };
+    g_canonicalPathAttemptCountForTesting.store(0u, std::memory_order_relaxed);
+}
 
-    for (const auto& input : SortedFreshnessInputs(request.freshnessInputs))
+size_t GetAssetThumbnailCacheCanonicalPathAttemptCountForTesting()
+{
+    return g_canonicalPathAttemptCountForTesting.load(std::memory_order_relaxed);
+}
+
+void ResetAssetThumbnailCacheContainmentStampAttemptCountForTesting()
+{
+    g_containmentStampAttemptCountForTesting.store(0u, std::memory_order_relaxed);
+}
+
+size_t GetAssetThumbnailCacheContainmentStampAttemptCountForTesting()
+{
+    return g_containmentStampAttemptCountForTesting.load(std::memory_order_relaxed);
+}
+
+void ResetAssetThumbnailCacheMetadataFileLoadCountForTesting()
+{
+    g_metadataFileLoadCountForTesting.store(0u, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(MetadataCacheMutex());
+    MetadataCache().clear();
+}
+
+size_t GetAssetThumbnailCacheMetadataFileLoadCountForTesting()
+{
+    return g_metadataFileLoadCountForTesting.load(std::memory_order_relaxed);
+}
+
+size_t GetAssetThumbnailCacheMetadataCacheEntryCountForTesting()
+{
+    std::lock_guard<std::mutex> lock(MetadataCacheMutex());
+    return MetadataCache().size();
+}
+
+void ResetAssetThumbnailCacheEvaluationCountForTesting()
+{
+    g_cacheEvaluationCountForTesting.store(0u, std::memory_order_relaxed);
+}
+
+size_t GetAssetThumbnailCacheEvaluationCountForTesting()
+{
+    return g_cacheEvaluationCountForTesting.load(std::memory_order_relaxed);
+}
+#endif
+
+std::string BuildAssetThumbnailCacheKey(
+    std::vector<std::string> parts,
+    const std::vector<AssetThumbnailFreshnessInput>& freshnessInputs)
+{
+    parts.reserve(parts.size() + freshnessInputs.size() * 2u);
+    for (const auto& input : SortedFreshnessInputs(freshnessInputs))
     {
         parts.push_back(input.name);
         parts.push_back(input.stamp);
@@ -820,21 +1372,71 @@ std::string BuildAssetThumbnailCacheKey(const AssetThumbnailRequest& request)
     return HashParts(parts);
 }
 
-std::optional<AssetThumbnailCacheEntry> ResolveAssetThumbnailCacheEntry(
+std::string BuildAssetThumbnailCacheKey(const AssetThumbnailRequest& request)
+{
+    return BuildAssetThumbnailCacheKey(
+        BuildAssetThumbnailCommonKeyParts(request),
+        request.freshnessInputs);
+}
+
+std::optional<AssetThumbnailCacheEntry> BuildAssetThumbnailCacheEntryUnchecked(
     const AssetThumbnailRequest& request)
 {
     if (request.projectRoot.empty() || !request.assetId.IsValid())
         return std::nullopt;
 
-    const auto stableKey = BuildAssetThumbnailStablePathKey(request);
+    auto commonParts = BuildAssetThumbnailCommonKeyParts(request);
+    const auto stableKey = BuildAssetThumbnailStablePathKey(commonParts);
     const auto root = CacheRoot(request.projectRoot);
     const auto directory = root / stableKey.substr(0u, 2u);
     AssetThumbnailCacheEntry entry;
-    entry.cacheKey = BuildAssetThumbnailCacheKey(request);
+    entry.cacheKey = BuildAssetThumbnailCacheKey(std::move(commonParts), request.freshnessInputs);
     entry.imagePath = NormalizePath(directory / (entry.cacheKey + ".png"));
     entry.metadataPath = NormalizePath(directory / (entry.cacheKey + ".json"));
+    return entry;
+}
 
-    if (!AreCacheEntryPathsContained(request.projectRoot, entry))
+std::optional<AssetThumbnailCacheEntry> ResolveAssetThumbnailCacheEntryPathForRead(
+    const AssetThumbnailRequest& request)
+{
+    const auto telemetryPath = ThumbnailTelemetryPathForRequest(request);
+    auto telemetryBegin = std::chrono::steady_clock::now();
+    auto entry = BuildAssetThumbnailCacheEntryUnchecked(request);
+    RecordThumbnailCacheTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryBuild,
+        telemetryBegin,
+        telemetryPath);
+    if (!entry.has_value())
+        return std::nullopt;
+
+    if (!AreCacheEntryPathsLexicallyContained(CacheRoot(request.projectRoot), *entry))
+        return std::nullopt;
+    return entry;
+}
+
+std::optional<AssetThumbnailCacheEntry> ResolveAssetThumbnailCacheEntryForRead(
+    const AssetThumbnailRequest& request)
+{
+    auto entry = ResolveAssetThumbnailCacheEntryPathForRead(request);
+    if (!entry.has_value())
+        return std::nullopt;
+
+    const auto telemetryPath = ThumbnailTelemetryPathForRequest(request);
+    if (!AreCacheEntryPathsContainedCachedForRead(request.projectRoot, *entry, telemetryPath))
+    {
+        return std::nullopt;
+    }
+    return entry;
+}
+
+std::optional<AssetThumbnailCacheEntry> ResolveAssetThumbnailCacheEntry(
+    const AssetThumbnailRequest& request)
+{
+    auto entry = BuildAssetThumbnailCacheEntryUnchecked(request);
+    if (!entry.has_value())
+        return std::nullopt;
+
+    if (!AreCacheEntryPathsContained(request.projectRoot, *entry))
     {
         return std::nullopt;
     }
@@ -892,20 +1494,94 @@ AssetThumbnailCacheEvaluation EvaluateAssetThumbnailCache(
     const AssetThumbnailRequest& request,
     const AssetThumbnailCacheIntegrityMode integrityMode)
 {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    g_cacheEvaluationCountForTesting.fetch_add(1u, std::memory_order_relaxed);
+#endif
     AssetThumbnailCacheEvaluation result;
-    result.entry = ResolveAssetThumbnailCacheEntry(request);
+    auto telemetryBegin = std::chrono::steady_clock::now();
+    result.entry = ResolveAssetThumbnailCacheEntryPathForRead(request);
+    RecordThumbnailCacheEvaluationTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntry,
+        telemetryBegin,
+        request);
     if (!result.entry.has_value())
     {
         result.diagnostic = "thumbnail-cache-path-invalid";
         return result;
     }
 
+    std::optional<bool> fastImageExists;
+    bool fastImageStatHadError = false;
+    if (integrityMode == AssetThumbnailCacheIntegrityMode::Fast)
+    {
+        std::error_code imageError;
+        telemetryBegin = std::chrono::steady_clock::now();
+        fastImageExists = std::filesystem::is_regular_file(result.entry->imagePath, imageError);
+        fastImageStatHadError = static_cast<bool>(imageError);
+        RecordThumbnailCacheEvaluationTelemetry(
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateImageStat,
+            telemetryBegin,
+            request);
+        if (!fastImageStatHadError && *fastImageExists)
+        {
+            if (!AreCacheEntryPathsContainedCachedForRead(
+                    request.projectRoot,
+                    *result.entry,
+                    ThumbnailTelemetryPathForRequest(request)))
+            {
+                result.entry.reset();
+                result.diagnostic = "thumbnail-cache-path-invalid";
+                return result;
+            }
+            result.status = AssetThumbnailCacheStatus::Fresh;
+            return result;
+        }
+    }
+
     std::error_code error;
+    telemetryBegin = std::chrono::steady_clock::now();
     const bool metadataExists = std::filesystem::is_regular_file(result.entry->metadataPath, error);
+    uintmax_t metadataByteCount = 0u;
+    std::filesystem::file_time_type metadataLastWriteTime {};
+    bool metadataCacheable = false;
+    if (!error && metadataExists)
+    {
+        std::error_code sizeError;
+        metadataByteCount = std::filesystem::file_size(result.entry->metadataPath, sizeError);
+        if (sizeError)
+            metadataByteCount = 0u;
+        std::error_code timeError;
+        metadataLastWriteTime = std::filesystem::last_write_time(result.entry->metadataPath, timeError);
+        metadataCacheable = !sizeError && !timeError;
+    }
+    RecordThumbnailCacheEvaluationTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateMetadataStat,
+        telemetryBegin,
+        request);
     if (error || !metadataExists)
         return result;
 
-    const auto metadata = LoadMetadata(result.entry->metadataPath);
+    if (!AreCacheEntryPathsContainedCachedForRead(
+            request.projectRoot,
+            *result.entry,
+            ThumbnailTelemetryPathForRequest(request)))
+    {
+        result.entry.reset();
+        result.diagnostic = "thumbnail-cache-path-invalid";
+        return result;
+    }
+
+    telemetryBegin = std::chrono::steady_clock::now();
+    const auto metadata = LoadMetadataCached(
+        result.entry->metadataPath,
+        metadataLastWriteTime,
+        metadataByteCount,
+        metadataCacheable);
+    RecordThumbnailCacheEvaluationTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateMetadataLoad,
+        telemetryBegin,
+        request,
+        metadata.has_value() ? static_cast<size_t>(metadataByteCount) : 0u);
     if (!metadata.has_value())
     {
         result.status = AssetThumbnailCacheStatus::Stale;
@@ -924,33 +1600,70 @@ AssetThumbnailCacheEvaluation EvaluateAssetThumbnailCache(
         .value_or(AssetThumbnailCacheStatus::Missing);
     result.diagnostic = metadata->value("diagnostic", std::string {});
     if ((result.status == AssetThumbnailCacheStatus::Fresh ||
-            result.status == AssetThumbnailCacheStatus::Failed) &&
-        !MetadataFreshnessInputsAreCurrent(request, *metadata))
+            result.status == AssetThumbnailCacheStatus::Failed))
     {
-        result.status = AssetThumbnailCacheStatus::Stale;
-        result.diagnostic = "thumbnail-cache-freshness-stale";
-        return result;
+        telemetryBegin = std::chrono::steady_clock::now();
+        const bool freshnessCurrent =
+            MetadataFreshnessInputsAreCurrent(request, *metadata);
+        RecordThumbnailCacheEvaluationTelemetry(
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateFreshness,
+            telemetryBegin,
+            request,
+            request.freshnessInputs.size());
+        if (!freshnessCurrent)
+        {
+            result.status = AssetThumbnailCacheStatus::Stale;
+            result.diagnostic = "thumbnail-cache-freshness-stale";
+            return result;
+        }
     }
 
     if (result.status == AssetThumbnailCacheStatus::Failed)
         return result;
 
-    error.clear();
-    const bool imageExists = std::filesystem::is_regular_file(result.entry->imagePath, error);
-    if (error || !imageExists)
+    bool imageExists = false;
+    bool imageStatHadError = false;
+    if (fastImageExists.has_value())
+    {
+        imageExists = *fastImageExists;
+        imageStatHadError = fastImageStatHadError;
+    }
+    else
+    {
+        error.clear();
+        telemetryBegin = std::chrono::steady_clock::now();
+        imageExists = std::filesystem::is_regular_file(result.entry->imagePath, error);
+        imageStatHadError = static_cast<bool>(error);
+        RecordThumbnailCacheEvaluationTelemetry(
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateImageStat,
+            telemetryBegin,
+            request);
+    }
+    if (imageStatHadError || !imageExists)
     {
         result.status = AssetThumbnailCacheStatus::Missing;
         result.diagnostic.clear();
         return result;
     }
 
-    if (result.status == AssetThumbnailCacheStatus::Fresh &&
-        (!HasValidPngCacheHeader(result.entry->imagePath, request.requestedSize) ||
-         !CachedImageMatchesMetadata(result.entry->imagePath, *metadata, integrityMode)))
+    if (result.status == AssetThumbnailCacheStatus::Fresh)
     {
-        result.status = AssetThumbnailCacheStatus::Stale;
-        result.diagnostic = "thumbnail-cache-image-invalid";
-        return result;
+        telemetryBegin = std::chrono::steady_clock::now();
+        const bool imageValid =
+            integrityMode == AssetThumbnailCacheIntegrityMode::Fast
+                ? CachedImageMetadataHasIdentity(*metadata)
+                : (HasValidPngCacheHeader(result.entry->imagePath, request.requestedSize) &&
+                    CachedImageMatchesMetadata(result.entry->imagePath, *metadata, integrityMode));
+        RecordThumbnailCacheEvaluationTelemetry(
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateImageValidate,
+            telemetryBegin,
+            request);
+        if (!imageValid)
+        {
+            result.status = AssetThumbnailCacheStatus::Stale;
+            result.diagnostic = "thumbnail-cache-image-invalid";
+            return result;
+        }
     }
 
     if (result.status == AssetThumbnailCacheStatus::Missing ||

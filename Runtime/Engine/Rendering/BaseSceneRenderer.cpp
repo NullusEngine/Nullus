@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstring>
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -47,9 +48,9 @@ namespace NLS::Engine::Rendering
 {
 namespace
 {
-	template <typename Compare>
-	void SortSceneDrawables(BaseSceneRenderer::SceneDrawables& drawables, Compare compare)
-	{
+		template <typename Compare>
+		void SortSceneDrawables(BaseSceneRenderer::SceneDrawables& drawables, Compare compare)
+		{
 		std::stable_sort(
 			drawables.begin(),
 			drawables.end(),
@@ -59,13 +60,59 @@ namespace
 			});
 	}
 
-	struct LoadedSceneFallbackShader
-	{
-		NLS::Render::Resources::Shader* shader = nullptr;
-		std::string resourcePath;
-	};
+		struct LoadedSceneFallbackShader
+		{
+			NLS::Render::Resources::Shader* shader = nullptr;
+			std::string resourcePath;
+		};
 
-	std::string ToLowerGenericPath(std::string path)
+		struct VisibleMaterialTexturePumpState
+		{
+			size_t opaqueCursor = 0u;
+			size_t decalCursor = 0u;
+			size_t transparentCursor = 0u;
+			size_t opaqueScannedSinceLastRequest = 0u;
+			size_t decalScannedSinceLastRequest = 0u;
+			size_t transparentScannedSinceLastRequest = 0u;
+			size_t opaqueLastCount = 0u;
+			size_t decalLastCount = 0u;
+			size_t transparentLastCount = 0u;
+			bool lastPumpCompletedFullScan = false;
+		};
+
+		std::mutex& VisibleMaterialTexturePumpStatesMutex()
+		{
+			static std::mutex mutex;
+			return mutex;
+		}
+
+		std::unordered_map<const BaseSceneRenderer*, VisibleMaterialTexturePumpState>& VisibleMaterialTexturePumpStates()
+		{
+			static std::unordered_map<const BaseSceneRenderer*, VisibleMaterialTexturePumpState> states;
+			return states;
+		}
+
+		VisibleMaterialTexturePumpState GetVisibleMaterialTexturePumpState(const BaseSceneRenderer& renderer)
+		{
+			std::lock_guard lock(VisibleMaterialTexturePumpStatesMutex());
+			return VisibleMaterialTexturePumpStates()[&renderer];
+		}
+
+		void StoreVisibleMaterialTexturePumpState(
+			const BaseSceneRenderer& renderer,
+			const VisibleMaterialTexturePumpState& state)
+		{
+			std::lock_guard lock(VisibleMaterialTexturePumpStatesMutex());
+			VisibleMaterialTexturePumpStates()[&renderer] = state;
+		}
+
+		void ForgetVisibleMaterialTexturePumpState(const BaseSceneRenderer& renderer)
+		{
+			std::lock_guard lock(VisibleMaterialTexturePumpStatesMutex());
+			VisibleMaterialTexturePumpStates().erase(&renderer);
+		}
+
+		std::string ToLowerGenericPath(std::string path)
 	{
 		path = std::filesystem::path(path).generic_string();
 		std::transform(path.begin(), path.end(), path.begin(), [](const unsigned char character)
@@ -320,15 +367,83 @@ namespace
 		return false;
 	}
 
-	bool PumpOneVisibleMaterialTexture(BaseSceneRenderer::SceneDrawables& drawables)
-	{
-		for (auto& [_, drawable] : drawables)
+		struct VisibleMaterialTexturePumpBudget
 		{
-			if (drawable.material != nullptr && TryLoadOneMissingMaterialTexture(*drawable.material))
-				return true;
+			std::chrono::steady_clock::time_point deadline;
+			size_t inspectedMaterials = 0u;
+			size_t maxInspectedMaterials = 0u;
+		};
+
+		struct VisibleMaterialTexturePumpStepResult
+		{
+			bool requestedTexture = false;
+			bool completedFullScan = false;
+			size_t inspectedMaterials = 0u;
+		};
+
+		bool VisibleMaterialTexturePumpBudgetExpired(const VisibleMaterialTexturePumpBudget& budget)
+		{
+			return budget.inspectedMaterials >= budget.maxInspectedMaterials ||
+				std::chrono::steady_clock::now() >= budget.deadline;
 		}
-		return false;
-	}
+
+		VisibleMaterialTexturePumpStepResult PumpOneVisibleMaterialTexture(
+			BaseSceneRenderer::SceneDrawables& drawables,
+			size_t& cursor,
+			VisibleMaterialTexturePumpBudget& budget)
+		{
+			if (drawables.empty() || VisibleMaterialTexturePumpBudgetExpired(budget))
+				return { false, drawables.empty(), 0u };
+
+			cursor %= drawables.size();
+			const size_t startingCursor = cursor;
+			size_t inspectedThisStep = 0u;
+			do
+			{
+				if (VisibleMaterialTexturePumpBudgetExpired(budget))
+					return { false, false, inspectedThisStep };
+
+				auto& drawable = drawables[cursor].second;
+				cursor = (cursor + 1u) % drawables.size();
+				++budget.inspectedMaterials;
+				++inspectedThisStep;
+				if (drawable.material != nullptr && TryLoadOneMissingMaterialTexture(*drawable.material))
+					return { true, false, inspectedThisStep };
+			} while (cursor != startingCursor);
+
+			return { false, true, inspectedThisStep };
+		}
+
+		void AccumulateVisibleMaterialTexturePumpScan(
+			const size_t drawableCount,
+			const VisibleMaterialTexturePumpStepResult& result,
+			size_t& scannedSinceLastRequest,
+			size_t& lastCount)
+		{
+			if (lastCount != drawableCount)
+			{
+				scannedSinceLastRequest = 0u;
+				lastCount = drawableCount;
+			}
+			if (drawableCount == 0u)
+			{
+				scannedSinceLastRequest = 0u;
+				return;
+			}
+			if (result.requestedTexture)
+			{
+				scannedSinceLastRequest = 0u;
+				return;
+			}
+			if (result.completedFullScan)
+			{
+				scannedSinceLastRequest = drawableCount;
+				return;
+			}
+			scannedSinceLastRequest = std::min(
+				drawableCount,
+				scannedSinceLastRequest + result.inspectedMaterials);
+		}
 
 	void HashCombine(size_t& seed, const size_t value)
 	{
@@ -357,6 +472,8 @@ namespace
 		HashFloat(seed, camera.GetNear());
 		HashFloat(seed, camera.GetFar());
 		HashCombine(seed, static_cast<size_t>(camera.GetProjectionMode()));
+		for (const float value : camera.GetViewMatrix().data)
+			HashFloat(seed, value);
 		const auto hash = static_cast<uint64_t>(seed);
 		return hash != 0u ? hash : 1u;
 	}
@@ -553,20 +670,27 @@ BaseSceneRenderer::BaseSceneRenderer(Render::Context::Driver& p_driver)
 	m_sceneLightingProvider = std::make_unique<SceneLightingProvider>();
 }
 
-BaseSceneRenderer::~BaseSceneRenderer() = default;
+BaseSceneRenderer::~BaseSceneRenderer()
+{
+	ForgetVisibleMaterialTexturePumpState(*this);
+}
 
-void BaseSceneRenderer::PreloadSceneFallbackShader(NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+bool BaseSceneRenderer::PreloadSceneFallbackShader(
+	NLS::Core::ResourceManagement::ShaderManager& shaderManager,
+	const bool logWarningOnFailure)
 {
 	for (const auto& [resourcePath, shader] : shaderManager.GetResources())
 	{
 		if (shader != nullptr && IsDefaultSceneFallbackShader(*shader))
-			return;
+			return true;
 	}
 
 	if (TryLoadDefaultSceneFallbackShaderFromArtifactDatabase(shaderManager))
-		return;
+		return true;
 
-	NLS_LOG_WARNING("BaseSceneRenderer has no loaded StandardPBR Forward ShaderLab artifact fallback shader; scene objects without explicit materials may be skipped until a default material or imported shader artifact is loaded.");
+	if (logWarningOnFailure)
+		NLS_LOG_WARNING("BaseSceneRenderer has no loaded StandardPBR Forward ShaderLab artifact fallback shader; scene objects without explicit materials may be skipped until a default material or imported shader artifact is loaded.");
+	return false;
 }
 
 void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor)
@@ -581,6 +705,28 @@ void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameD
 	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
 
 	Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
+	if (!IsFrameActive())
+		return;
+
+	m_lastCullReasonDebugSnapshot = {};
+	if (const auto snapshot = BuildFrameSnapshot(p_frameDescriptor); snapshot.has_value())
+		SetPendingFrameSnapshot(snapshot.value());
+}
+
+void BaseSceneRenderer::BeginFrameForBackgroundPreview(const Render::Data::FrameDescriptor& p_frameDescriptor)
+{
+	NLS_PROFILE_SCOPE();
+	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
+	InvalidateLightGridCompileContextCache();
+	m_hasLastVisiblePickablePrimitiveDrawSources = false;
+	m_lastVisiblePickablePrimitiveDrawSources.clear();
+
+	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
+	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
+
+	Render::Core::CompositeRenderer::BeginFrameForBackgroundPreview(p_frameDescriptor);
+	if (!IsFrameActive())
+		return;
 
 	m_lastCullReasonDebugSnapshot = {};
 	if (const auto snapshot = BuildFrameSnapshot(p_frameDescriptor); snapshot.has_value())
@@ -659,6 +805,11 @@ uint64_t BaseSceneRenderer::GetCullReasonDebugSnapshotMaxEntries() const
 	return 0u;
 }
 
+std::vector<const Engine::GameObject*> BaseSceneRenderer::GetEditorInspectionRoots() const
+{
+	return {};
+}
+
 const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetLightGridGraphicsPassBindingSet() const
 {
 	static const std::shared_ptr<NLS::Render::RHI::RHIBindingSet> kNullBindingSet{};
@@ -670,11 +821,18 @@ const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetLi
 NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGridCompileContext(
 	const bool hasSkyboxTexture) const
 {
+	return BuildLightGridCompileContext(hasSkyboxTexture, false);
+}
+
+NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGridCompileContext(
+	const bool hasSkyboxTexture,
+	const bool suppressCompute) const
+{
 	NLS_PROFILE_SCOPE();
 	const auto frameSnapshot =
 		NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(GetFrameDescriptor());
 
-	if (!NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(m_driver))
+	if (!NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(m_driver) || suppressCompute)
 	{
 		if (m_lightGridPrepass != nullptr)
 			m_lightGridPrepass->EnsureFallbackGraphicsPassBindingSet(frameSnapshot, hasSkyboxTexture);
@@ -688,11 +846,29 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 	if (IsLightGridCompileContextCacheHit(frameSnapshot, hasSkyboxTexture))
 		return m_lightGridCompileContextCache.context;
 
-	const auto preparedComputeRequest = LightGridPrepass::BuildPreparedComputeRequest(
-		frameSnapshot,
-		GetLightGridPrepass(),
-		BuildLightGridFrameInputs(hasSkyboxTexture));
-	auto preparedComputeSource = LightGridPrepass::BuildPreparedComputeDispatchSource(preparedComputeRequest);
+	NLS::Render::FrameGraph::PreparedComputeDispatchSource preparedComputeSource;
+	try
+	{
+		const auto preparedComputeRequest = LightGridPrepass::BuildPreparedComputeRequest(
+			frameSnapshot,
+			GetLightGridPrepass(),
+			BuildLightGridFrameInputs(hasSkyboxTexture));
+		preparedComputeSource = LightGridPrepass::BuildPreparedComputeDispatchSource(preparedComputeRequest);
+	}
+	catch (const std::exception& exception)
+	{
+		if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
+		{
+			NLS_LOG_WARNING(
+				std::string("[BaseSceneRenderer] Light grid compile context falling back after exception: ") +
+				exception.what());
+		}
+	}
+	catch (...)
+	{
+		if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
+			NLS_LOG_WARNING("[BaseSceneRenderer] Light grid compile context falling back after unknown exception.");
+	}
 	if (GetLightGridGraphicsPassBindingSet() == nullptr && m_lightGridPrepass != nullptr)
 		m_lightGridPrepass->EnsureFallbackGraphicsPassBindingSet(frameSnapshot, hasSkyboxTexture);
 	auto graphicsPassBindingSet = GetLightGridGraphicsPassBindingSet();
@@ -755,14 +931,22 @@ BaseSceneRenderer::Material* BaseSceneRenderer::ResolveDefaultSceneMaterial()
 		m_sceneFallbackShaderInstanceId != shaderInstanceId ||
 		m_sceneFallbackShaderGeneration != shaderGeneration ||
 		m_sceneFallbackShaderResourcePath != fallbackShader.resourcePath)
-	{
-		m_sceneFallbackMaterial = std::make_unique<Render::Resources::Material>();
-		m_sceneFallbackMaterial->SetShader(fallbackShader.shader);
-		const_cast<std::string&>(m_sceneFallbackMaterial->path) = ":Generated/SceneFallbackMaterial";
-		m_sceneFallbackMaterial->SetRawParameter("_BaseColor", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
-		m_sceneFallbackMaterial->SetRawParameter("_Metallic", 0.0f);
-		m_sceneFallbackMaterial->SetRawParameter("_Roughness", 0.72f);
-		m_sceneFallbackMaterial->SetBlendable(false);
+		{
+			m_sceneFallbackMaterial = std::make_unique<Render::Resources::Material>();
+			m_sceneFallbackMaterial->SetShaderLabSourcePath(fallbackShader.shader->GetImportedArtifactSourcePath());
+			m_sceneFallbackMaterial->RegisterShaderLabPassShader(fallbackShader.shader);
+			const_cast<std::string&>(m_sceneFallbackMaterial->path) = ":Generated/SceneFallbackMaterial";
+			m_sceneFallbackMaterial->SetRawParameter("_BaseColor", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
+			m_sceneFallbackMaterial->SetRawParameter("_Metallic", 0.0f);
+			m_sceneFallbackMaterial->SetRawParameter("_Roughness", 0.72f);
+			m_sceneFallbackMaterial->SetRawParameter("u_Albedo", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
+			m_sceneFallbackMaterial->SetRawParameter("u_Metallic", 0.0f);
+			m_sceneFallbackMaterial->SetRawParameter("u_Roughness", 0.72f);
+			m_sceneFallbackMaterial->SetRawParameter("u_AmbientOcclusion", 1.0f);
+			m_sceneFallbackMaterial->SetRawParameter("u_EnableNormalMapping", 0.0f);
+			m_sceneFallbackMaterial->SetRawParameter("u_Emissive", Maths::Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+			m_sceneFallbackMaterial->SetRawParameter("u_Specular", Maths::Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+			m_sceneFallbackMaterial->SetBlendable(false);
 		m_sceneFallbackMaterial->SetBackfaceCulling(false);
 		m_sceneFallbackMaterial->SetFrontfaceCulling(false);
 		m_sceneFallbackMaterial->SetDepthTest(true);
@@ -968,6 +1152,16 @@ const SceneOcclusionHistory& BaseSceneRenderer::GetHZBOcclusionHistoryForTesting
 	return m_hzbOcclusionHistory;
 }
 
+void BaseSceneRenderer::SetLargeSceneSettings(const LargeSceneSettings& settings)
+{
+	m_largeSceneSettings = settings;
+}
+
+const LargeSceneSettings& BaseSceneRenderer::GetLargeSceneSettings() const
+{
+	return m_largeSceneSettings;
+}
+
 bool BaseSceneRenderer::HasLastVisiblePickablePrimitiveDrawSources() const
 {
 	return m_hasLastVisiblePickablePrimitiveDrawSources;
@@ -978,6 +1172,37 @@ BaseSceneRenderer::GetLastVisiblePickablePrimitiveDrawSources() const
 {
 	return m_lastVisiblePickablePrimitiveDrawSources;
 }
+
+bool BaseSceneRenderer::HasCompletedVisibleMaterialTexturePumpForReadback() const
+{
+	const auto texturePumpState = GetVisibleMaterialTexturePumpState(*this);
+	if (!texturePumpState.lastPumpCompletedFullScan)
+		return false;
+
+	if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+		return true;
+
+	const auto diagnostics =
+		NLS::Core::ResourceManagement::TextureManager::GetAsyncArtifactRequestDiagnostics();
+	return diagnostics.totalRequests == 0u &&
+		diagnostics.activeRequests == 0u &&
+		diagnostics.readyRequests == 0u &&
+		diagnostics.queuedRequests == 0u;
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+const Render::Data::DrawCallOptimizationStats& BaseSceneRenderer::GetLastDrawCallOptimizationStats() const
+{
+	return m_renderScene.GetLastDrawCallOptimizationStats();
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+const Render::Data::DrawCallOptimizationStats& BaseSceneRenderer::GetLastDrawCallOptimizationStatsForTesting() const
+{
+	return GetLastDrawCallOptimizationStats();
+}
+#endif
+#endif
 
 const SceneOcclusionFrameInput& BaseSceneRenderer::GetLastHZBOcclusionFrameInput() const
 {
@@ -1081,13 +1306,38 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	DrawEntity(element);
 }
 
-BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
-{
-	NLS_PROFILE_SCOPE();
-	if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
-		NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).PumpAsyncLoads(1u);
+	BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
+	{
+		NLS_PROFILE_SCOPE();
+		const bool logStartupParseSceneStages = []()
+		{
+			static bool shouldLog = true;
+			const bool result = shouldLog;
+			shouldLog = false;
+			return result;
+		}();
+		auto startupParseSceneStageBegin = std::chrono::steady_clock::now();
+		auto logStartupParseSceneStage =
+			[&startupParseSceneStageBegin, logStartupParseSceneStages](const char* stage)
+			{
+				if (!logStartupParseSceneStages)
+					return;
 
-	m_lastCullReasonDebugSnapshot = {};
+				const auto now = std::chrono::steady_clock::now();
+				NLS_LOG_INFO(
+					std::string("[Startup] BaseSceneRenderer::ParseScene stage ") +
+					stage +
+					" elapsedMs=" +
+					std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+						now - startupParseSceneStageBegin).count()));
+				startupParseSceneStageBegin = now;
+			};
+
+		if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+			NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).PumpAsyncLoads(1u);
+		logStartupParseSceneStage("PumpAsyncTextureLoads");
+
+		m_lastCullReasonDebugSnapshot = {};
 	auto previousHZBOcclusionPrimitiveInputs =
 		std::move(m_lastHZBOcclusionPrimitivePacketBuildResult.primitiveInputs);
 	m_lastHZBOcclusionPrimitivePacketBuildResult = {};
@@ -1112,7 +1362,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 
 	const auto occlusionSettings = [&]()
 	{
-		auto settings = LargeSceneSettings::Defaults();
+		auto settings = m_largeSceneSettings;
 		SceneOcclusionCapabilityRequest capabilityRequest;
 		capabilityRequest.opaqueDepthFormat =
 			static_cast<NLS::Render::RHI::TextureFormat>(ResolveDepthFormatKey(m_frameDescriptor));
@@ -1120,16 +1370,20 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		const auto support = device != nullptr
 			? SceneOcclusionSystem::ResolveCapabilities(*device, capabilityRequest)
 			: SceneOcclusionCapabilitySupport{};
-		settings.enableHZBOcclusion = support.backendSupported;
+		settings.enableHZBOcclusion =
+			settings.enableHZBOcclusion &&
+			support.backendSupported;
 		const auto diagnostics = NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver);
-		if (diagnostics.editorValidationDisableHZBOcclusion)
-		{
-			settings.enableHZBOcclusion = false;
-			if (diagnostics.logRenderDrawPath)
-				NLS_LOG_INFO("[BaseSceneRenderer][HZB] disabled by editor validation override");
-		}
-		return settings;
-	}();
+			if (diagnostics.editorValidationDisableHZBOcclusion)
+			{
+				settings.enableHZBOcclusion = false;
+				if (diagnostics.logRenderDrawPath)
+					NLS_LOG_INFO("[BaseSceneRenderer][HZB] disabled by editor validation override");
+			}
+			if (sceneDescriptor.suppressHZBOcclusion)
+				settings.enableHZBOcclusion = false;
+			return settings;
+		}();
 
 	SceneOcclusionFrameInput occlusionFrameInput;
 	occlusionFrameInput.enabled = occlusionSettings.enableHZBOcclusion;
@@ -1142,9 +1396,10 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 	occlusionFrameInput.projectionHash = HashMatrix(camera.GetProjectionMatrix());
 	occlusionFrameInput.jitterHash = 0u;
 	occlusionFrameInput.depthFormatKey = ResolveDepthFormatKey(m_frameDescriptor);
-	occlusionFrameInput.viewportWidth = static_cast<uint32_t>(m_frameDescriptor.renderWidth);
-	occlusionFrameInput.viewportHeight = static_cast<uint32_t>(m_frameDescriptor.renderHeight);
-	m_lastHZBOcclusionFrameInput = occlusionFrameInput;
+		occlusionFrameInput.viewportWidth = static_cast<uint32_t>(m_frameDescriptor.renderWidth);
+		occlusionFrameInput.viewportHeight = static_cast<uint32_t>(m_frameDescriptor.renderHeight);
+		m_lastHZBOcclusionFrameInput = occlusionFrameInput;
+		logStartupParseSceneStage("BuildOcclusionFrameInput");
 
 	std::unordered_map<uint64_t, std::vector<SceneOcclusionPrimitiveInput>> previousHZBOcclusionPrimitiveInputsByScene;
 	if (occlusionSettings.enableHZBOcclusion && !previousHZBOcclusionPrimitiveInputs.empty())
@@ -1183,11 +1438,12 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		occlusionPruneTelemetry.hzbHistoryPruneTimeNs += elapsedNs;
 	};
 
-	auto appendSceneDrawables = [&](
-		SceneSystem::Scene& scene,
-		RenderScene& renderScene,
+		auto appendSceneDrawables = [&](
+			SceneSystem::Scene& scene,
+			RenderScene& renderScene,
 		const bool includeSkyboxes,
-		const bool requireExplicitMaterialTextures)
+		const bool requireExplicitMaterialTextures,
+		const bool allowDefaultMaterialForUnresolvedExplicitMaterials)
 	{
 		RenderSceneSyncStats syncStats;
 		{
@@ -1195,11 +1451,13 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 			syncStats = renderScene.Synchronize(scene, {
 				ResolveDefaultSceneMaterial(),
 				overrideMaterial,
-				requireExplicitMaterialTextures,
-				&occlusionSettings
-			});
-		}
-		rebuiltCachedCommandCount += syncStats.rebuiltCachedCommandCount;
+					requireExplicitMaterialTextures,
+					allowDefaultMaterialForUnresolvedExplicitMaterials,
+					&occlusionSettings
+				});
+			}
+			logStartupParseSceneStage("SynchronizeRenderScene");
+			rebuiltCachedCommandCount += syncStats.rebuiltCachedCommandCount;
 		if (occlusionSettings.enableHZBOcclusion && !renderScene.GetLastRemovedPrimitiveHandles().empty())
 		{
 			const auto pruneStart = std::chrono::steady_clock::now();
@@ -1221,26 +1479,28 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		RenderSceneVisibleQueues retainedDrawables;
 		{
 			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::GatherVisibleCommands");
-			retainedDrawables = renderScene.GatherVisibleCommands({
-				frustum ? &frustum.value() : nullptr,
-				camera.GetPosition(),
-				camera.GetVisibleLayerMask(),
-				&occlusionSettings,
-				1.0f,
-				0u,
-				true,
-				false,
-				{},
-				ShouldPublishCullReasonDebugSnapshots(),
-				GetCullReasonDebugSnapshotMaxEntries(),
-				occlusionState.primitiveInputs != nullptr ? &occlusionState : nullptr,
-				&m_lastRepresentationResidency
-			});
-		}
-		const auto sceneStats = renderScene.GetLastDrawCallOptimizationStats();
-		renderScene.AppendPickablePrimitiveDrawSourcesForHandles(
-			renderScene.GetLastVisiblePrimitiveHandles(),
-			m_lastVisiblePickablePrimitiveDrawSources);
+			RenderSceneVisibilityOptions visibilityOptions;
+			visibilityOptions.frustum = frustum ? &frustum.value() : nullptr;
+			visibilityOptions.cameraPosition = camera.GetPosition();
+			visibilityOptions.visibleLayerMask = camera.GetVisibleLayerMask();
+			visibilityOptions.largeSceneSettings = &occlusionSettings;
+			visibilityOptions.lodBias = 1.0f;
+			visibilityOptions.lodHistoryViewKey = 0u;
+			visibilityOptions.allowHLOD = true;
+			visibilityOptions.inspectionRootObjects = GetEditorInspectionRoots();
+			visibilityOptions.editorInspectionView = !visibilityOptions.inspectionRootObjects.empty();
+			visibilityOptions.enableCullReasonDebugSnapshot = ShouldPublishCullReasonDebugSnapshots();
+			visibilityOptions.maxCullReasonDebugSnapshotEntries = GetCullReasonDebugSnapshotMaxEntries();
+			visibilityOptions.occlusion = occlusionState.primitiveInputs != nullptr ? &occlusionState : nullptr;
+				visibilityOptions.representationResidency = &m_lastRepresentationResidency;
+				retainedDrawables = renderScene.GatherVisibleCommands(visibilityOptions);
+			}
+			logStartupParseSceneStage("GatherVisibleCommands");
+			const auto sceneStats = renderScene.GetLastDrawCallOptimizationStats();
+			renderScene.AppendPickablePrimitiveDrawSourcesForHandles(
+				renderScene.GetLastVisiblePrimitiveHandles(),
+				m_lastVisiblePickablePrimitiveDrawSources);
+			logStartupParseSceneStage("AppendPickablePrimitiveDrawSources");
 		dynamicInstanceGroupCount += sceneStats.dynamicInstanceGroupCount;
 		largestInstanceGroupSize = std::max(largestInstanceGroupSize, sceneStats.largestInstanceGroupSize);
 		objectDataOverflowDroppedObjectCount += sceneStats.objectDataOverflowDroppedObjectCount;
@@ -1281,13 +1541,14 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 				m_lastHZBOcclusionPrimitivePacketBuildResult.primitiveInputs.end(),
 				packetBuild.primitiveInputs.begin(),
 				packetBuild.primitiveInputs.end());
-			m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.insert(
-				m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.end(),
-				packetBuild.primitivePackets.begin(),
-				packetBuild.primitivePackets.end());
-		}
-		{
-			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::RegisterStreamingDependencies");
+				m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.insert(
+					m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.end(),
+					packetBuild.primitivePackets.begin(),
+					packetBuild.primitivePackets.end());
+			}
+			logStartupParseSceneStage("BuildHZBObservationPackets");
+			{
+				NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::RegisterStreamingDependencies");
 			RegisterRuntimeStreamingDependencies(
 				m_streamingResidency,
 				renderScene.GetLastVisiblePrimitiveHandles(),
@@ -1302,12 +1563,13 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 				allSceneStreamingInput.visiblePrimitiveHandles.end(),
 				renderScene.GetLastVisiblePrimitiveHandles().begin(),
 				renderScene.GetLastVisiblePrimitiveHandles().end());
-			allSceneStreamingInput.representationStreamingInterest.insert(
-				allSceneStreamingInput.representationStreamingInterest.end(),
-				renderScene.GetLastRepresentationStreamingInterest().begin(),
-				renderScene.GetLastRepresentationStreamingInterest().end());
-		}
-		largeSceneTelemetry.hzbBuildTimeNs += hzbBuildTimeNs;
+				allSceneStreamingInput.representationStreamingInterest.insert(
+					allSceneStreamingInput.representationStreamingInterest.end(),
+					renderScene.GetLastRepresentationStreamingInterest().begin(),
+					renderScene.GetLastRepresentationStreamingInterest().end());
+			}
+			logStartupParseSceneStage("RegisterStreamingDependencies");
+			largeSceneTelemetry.hzbBuildTimeNs += hzbBuildTimeNs;
 		m_rendererStats.RecordLargeSceneTelemetry(largeSceneTelemetry);
 		if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
 		{
@@ -1373,14 +1635,26 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 					skyboxes.emplace_back(0.0f, std::move(drawable));
 				}
 			}
-		}
-	};
+			}
+		};
 
-		appendSceneDrawables(
-			sceneDescriptor.scene,
-			m_renderScene,
+		if (sceneDescriptor.skipSceneDrawables)
+		{
+			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::SkipSceneDrawables");
+			m_lastStreamingDependencyPins.clear();
+			m_lastRepresentationResidency = {};
+			m_rendererStats.RecordSceneParse(0u, 0u, 0u);
+			m_rendererStats.RecordDrawCallOptimizationStats({});
+			logStartupParseSceneStage("SkipSceneDrawables");
+			return {};
+		}
+
+			appendSceneDrawables(
+				sceneDescriptor.scene,
+				m_renderScene,
 			sceneDescriptor.includeSkyboxes,
-			sceneDescriptor.requireExplicitMaterialTextures);
+			sceneDescriptor.requireExplicitMaterialTextures,
+			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials);
 	for (auto it = m_additiveRenderScenes.begin(); it != m_additiveRenderScenes.end();)
 	{
 		const auto* cachedScene = it->first;
@@ -1407,7 +1681,12 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		if (!additiveScene)
 			continue;
 		auto& additiveRenderScene = m_additiveRenderScenes[additiveScene];
-		appendSceneDrawables(*additiveScene, additiveRenderScene, false, true);
+		appendSceneDrawables(
+			*additiveScene,
+			additiveRenderScene,
+			false,
+			true,
+			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials);
 	}
 	if (occlusionPruneTelemetry.hzbHistoryPruneTouchedHandleCount > 0u ||
 		occlusionPruneTelemetry.hzbHistoryPruneRemovedHandleCount > 0u ||
@@ -1416,29 +1695,51 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 	{
 		m_rendererStats.RecordLargeSceneTelemetry(occlusionPruneTelemetry);
 	}
-	const auto streamingCommitStart = std::chrono::steady_clock::now();
-	const auto allSceneStreamingPlan = m_streamingResidency.Plan(allSceneStreamingInput, occlusionSettings);
-	StreamingResidencyFramePins framePins;
-	framePins.pinnedDependencyIds =
-		NLS::Render::Context::DriverRendererAccess::CollectStreamingDependencyPins(m_driver);
-	const auto allSceneStreamingCommit = m_streamingResidency.Commit(
-		allSceneStreamingPlan,
-		occlusionSettings,
-		framePins);
-	MergeRepresentationResidencySnapshot(
-		currentFrameRepresentationResidency,
-		BuildRepresentationResidencySnapshotFromStreamingCommit(
-			allSceneStreamingPlan,
-			allSceneStreamingCommit));
-	NLS::Render::Data::LargeSceneTelemetry streamingTelemetry;
-	MergeStreamingTelemetry(streamingTelemetry, allSceneStreamingPlan, allSceneStreamingCommit);
-	streamingTelemetry.streamingCommitTimeNs += ElapsedNanoseconds(streamingCommitStart);
-	m_rendererStats.RecordLargeSceneTelemetry(streamingTelemetry);
-	m_lastStreamingDependencyPins = std::move(currentFrameStreamingDependencyPins);
-	m_lastRepresentationResidency = std::move(currentFrameRepresentationResidency);
+		const auto streamingCommitStart = std::chrono::steady_clock::now();
+		StreamingResidencyPlan allSceneStreamingPlan;
+		{
+			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::StreamingResidencyPlan");
+			allSceneStreamingPlan = m_streamingResidency.Plan(allSceneStreamingInput, occlusionSettings);
+		}
+		StreamingResidencyFramePins framePins;
+		{
+			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::CollectStreamingDependencyPins");
+			framePins.pinnedDependencyIds =
+				NLS::Render::Context::DriverRendererAccess::CollectStreamingDependencyPins(m_driver);
+		}
+		StreamingCommitResult allSceneStreamingCommit;
+		{
+			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::StreamingResidencyCommit");
+			allSceneStreamingCommit = m_streamingResidency.Commit(
+				allSceneStreamingPlan,
+				occlusionSettings,
+				framePins);
+		}
+		{
+			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::BuildRepresentationResidencySnapshot");
+			MergeRepresentationResidencySnapshot(
+				currentFrameRepresentationResidency,
+				BuildRepresentationResidencySnapshotFromStreamingCommit(
+					allSceneStreamingPlan,
+					allSceneStreamingCommit));
+		}
+		NLS::Render::Data::LargeSceneTelemetry streamingTelemetry;
+		{
+			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::MergeStreamingTelemetry");
+			MergeStreamingTelemetry(streamingTelemetry, allSceneStreamingPlan, allSceneStreamingCommit);
+		}
+		streamingTelemetry.streamingCommitTimeNs += ElapsedNanoseconds(streamingCommitStart);
+		m_rendererStats.RecordLargeSceneTelemetry(streamingTelemetry);
+			m_lastStreamingDependencyPins = std::move(currentFrameStreamingDependencyPins);
+			m_lastRepresentationResidency = std::move(currentFrameRepresentationResidency);
+			logStartupParseSceneStage("StreamingResidencyCommit");
 
-	SortSceneDrawables(decals, std::greater<float>{});
-	SortSceneDrawables(transparents, std::greater<float>{});
+			{
+				NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::SortSceneDrawables");
+				SortSceneDrawables(decals, std::greater<float>{});
+				SortSceneDrawables(transparents, std::greater<float>{});
+			}
+			logStartupParseSceneStage("SortSceneDrawables");
 
 	uint32_t nextObjectIndex = 0u;
 	auto reassignObjectIndices = [&nextObjectIndex, &objectDataOverflowDroppedObjectCount](auto& queue)
@@ -1468,18 +1769,75 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 			entry.second.template AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
 		}
 	};
-	reassignObjectIndices(opaques);
-	reassignObjectIndices(decals);
-	reassignObjectIndices(skyboxes);
-	reassignObjectIndices(transparents);
+		{
+			NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::ReassignObjectIndices");
+			reassignObjectIndices(opaques);
+			reassignObjectIndices(decals);
+			reassignObjectIndices(skyboxes);
+			reassignObjectIndices(transparents);
+		}
+			logStartupParseSceneStage("ReassignObjectIndices");
 
-	if (!PumpOneVisibleMaterialTexture(opaques) &&
-		!PumpOneVisibleMaterialTexture(decals))
-	{
-		PumpOneVisibleMaterialTexture(transparents);
-	}
+					if (!sceneDescriptor.suppressVisibleMaterialTextureRequests)
+					{
+						NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::PumpVisibleMaterialTextures");
+						VisibleMaterialTexturePumpBudget texturePumpBudget {
+							std::chrono::steady_clock::now() + std::chrono::milliseconds(2),
+							0u,
+							256u
+						};
+						auto texturePumpState = GetVisibleMaterialTexturePumpState(*this);
+						VisibleMaterialTexturePumpStepResult decalPump { false, decals.empty(), 0u };
+						VisibleMaterialTexturePumpStepResult transparentPump { false, transparents.empty(), 0u };
+						while (!VisibleMaterialTexturePumpBudgetExpired(texturePumpBudget))
+						{
+							const auto opaquePump = PumpOneVisibleMaterialTexture(
+								opaques,
+								texturePumpState.opaqueCursor,
+								texturePumpBudget);
+							decalPump = PumpOneVisibleMaterialTexture(
+								decals,
+								texturePumpState.decalCursor,
+								texturePumpBudget);
+							transparentPump = PumpOneVisibleMaterialTexture(
+								transparents,
+								texturePumpState.transparentCursor,
+								texturePumpBudget);
+							AccumulateVisibleMaterialTexturePumpScan(
+								opaques.size(),
+								opaquePump,
+								texturePumpState.opaqueScannedSinceLastRequest,
+								texturePumpState.opaqueLastCount);
+							AccumulateVisibleMaterialTexturePumpScan(
+								decals.size(),
+								decalPump,
+								texturePumpState.decalScannedSinceLastRequest,
+								texturePumpState.decalLastCount);
+							AccumulateVisibleMaterialTexturePumpScan(
+								transparents.size(),
+								transparentPump,
+								texturePumpState.transparentScannedSinceLastRequest,
+								texturePumpState.transparentLastCount);
+							if (!opaquePump.requestedTexture &&
+								!decalPump.requestedTexture &&
+								!transparentPump.requestedTexture)
+							{
+								break;
+							}
+						}
+						texturePumpState.lastPumpCompletedFullScan =
+							texturePumpState.opaqueScannedSinceLastRequest >= opaques.size() &&
+							texturePumpState.decalScannedSinceLastRequest >= decals.size() &&
+							texturePumpState.transparentScannedSinceLastRequest >= transparents.size();
+						StoreVisibleMaterialTexturePumpState(*this, texturePumpState);
+					}
+			logStartupParseSceneStage("PumpVisibleMaterialTextures");
 
-	SortSceneDrawables(skyboxes, std::less<float>{});
+			{
+				NLS_PROFILE_NAMED_SCOPE("BaseSceneRenderer::ParseScene::SortSkyboxes");
+				SortSceneDrawables(skyboxes, std::less<float>{});
+			}
+		logStartupParseSceneStage("SortSkyboxes");
 	m_rendererStats.RecordSceneParse(
 		static_cast<uint64_t>(opaques.size()),
 		static_cast<uint64_t>(decals.size() + transparents.size()),

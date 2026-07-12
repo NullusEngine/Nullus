@@ -10,11 +10,13 @@
 #include "Assets/ImportedPrefabRendererDependencyTemplates.h"
 #include "Assets/ModelTextureReferenceResolver.h"
 #include "Assets/NativeArtifactContainer.h"
+#include "Assets/SourceFileHashCache.h"
 #include "Core/ServiceLocator.h"
 #include "Debug/Logger.h"
 #include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Serialize/ObjectGraphBinaryCache.h"
 #include "Serialize/ObjectGraphReader.h"
 #include "Serialize/ObjectGraphWriter.h"
 
@@ -41,7 +43,7 @@ struct FastImportedPrefabLoadResult
 {
     std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab;
     std::optional<UnifiedPrefabLoadKey> key;
-    std::vector<ImportedPrefabRendererDependencyTemplate> rendererDependencyTemplates;
+    std::shared_ptr<const std::vector<ImportedPrefabRendererDependencyTemplate>> rendererDependencyTemplates;
     size_t prefabArtifactBytes = 0u;
     bool rendererDependencyMissing = false;
     std::string diagnosticCode;
@@ -89,13 +91,36 @@ struct ModelTextureMappingDependencyFingerprintCacheEntry
     uint64_t lastUsed = 0u;
 };
 
+struct ModelTextureMappingArtifactDatabaseLookupIndex
+{
+    std::vector<ModelTextureAssetCandidate> candidates;
+    std::unordered_map<std::string, std::vector<size_t>> sourcePathCandidates;
+    std::unordered_map<std::string, std::vector<size_t>> nameTokenCandidates;
+};
+
+struct ModelTextureMappingArtifactDatabaseTextureIndexCacheEntry
+{
+    std::string key;
+    std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex> index;
+    uint64_t lastUsed = 0u;
+};
+
+struct ModelTextureMappingDependencyFingerprintResult
+{
+    std::string fingerprint;
+    bool cacheable = false;
+};
+
 constexpr size_t kMaxImportedPrefabHotCacheEntries = 16u;
 constexpr size_t kMaxImportedPrefabHotCacheBytes = 64u * 1024u * 1024u;
-constexpr uint32_t kPersistentPreparedPrefabCacheSchemaVersion = 1u;
+constexpr uint32_t kPersistentPreparedPrefabCacheSchemaVersion = 7u;
 constexpr uint32_t kPreparedPrefabReflectionSchemaVersion = 1u;
 constexpr uint32_t kPreparedPrefabSerializationFormatVersion = 1u;
 constexpr uint32_t kPreparedPrefabDependencyManifestVersion = 1u;
-constexpr size_t kMaxModelTextureMappingDependencyFingerprintCacheEntries = 64u;
+constexpr size_t kMaxModelTextureMappingDependencyFingerprintCacheEntries = 512u;
+constexpr size_t kMaxModelTextureMappingArtifactDatabaseTextureIndexCacheEntries = 8u;
+constexpr uint32_t kPersistentModelTextureMappingArtifactDatabaseTextureIndexSchemaVersion = 1u;
+constexpr uintmax_t kMaxPersistentModelTextureMappingArtifactDatabaseTextureIndexCacheBytes = 4u * 1024u * 1024u;
 constexpr size_t kMaxPersistentPreparedPrefabCacheEntries = 512u;
 constexpr uintmax_t kMaxPersistentPreparedPrefabCacheBytes = 256u * 1024u * 1024u;
 constexpr size_t kPersistentPreparedPrefabCachePruneWriteInterval = 16u;
@@ -168,20 +193,6 @@ std::string DefaultGeneratedPrefabSubAssetKeyForAssetPath(const std::string& ass
     return "prefab:" + std::filesystem::path(assetPath).stem().generic_string();
 }
 
-std::string NormalizeGeneratedPrefabSubAssetKeyForAssetPath(
-    const std::string& assetPath,
-    std::string subAssetKey,
-    const NLS::Core::Assets::AssetType assetType)
-{
-    if (assetType != NLS::Core::Assets::AssetType::ModelScene)
-        return subAssetKey;
-
-    if (subAssetKey.empty() || subAssetKey.rfind("model:", 0u) == 0u)
-        return DefaultGeneratedPrefabSubAssetKeyForAssetPath(assetPath);
-
-    return subAssetKey;
-}
-
 std::string NormalizeProjectAssetPath(const std::string& assetPath)
 {
     if (assetPath.empty() || assetPath.front() == ':')
@@ -207,18 +218,6 @@ std::string FileStamp(const std::filesystem::path& path)
 
     const auto writeTimeTicks = static_cast<std::intmax_t>(writeTime.time_since_epoch().count());
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
-}
-
-std::string SourceFileContentHash(const std::filesystem::path& path)
-{
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream)
-        return {};
-
-    const std::vector<uint8_t> bytes{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
-    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
 }
 
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestForSource(
@@ -259,6 +258,13 @@ std::vector<ModelTextureMappingDependencyFingerprintCacheEntry>& ModelTextureMap
     return cache;
 }
 
+std::vector<ModelTextureMappingArtifactDatabaseTextureIndexCacheEntry>&
+ModelTextureMappingArtifactDatabaseTextureIndexCache()
+{
+    static std::vector<ModelTextureMappingArtifactDatabaseTextureIndexCacheEntry> cache;
+    return cache;
+}
+
 uint64_t& ModelTextureMappingDependencyFingerprintCacheUseCounter()
 {
     static uint64_t counter = 0u;
@@ -267,6 +273,24 @@ uint64_t& ModelTextureMappingDependencyFingerprintCacheUseCounter()
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
 size_t& ModelTextureMappingDependencyFingerprintScanCountForTestingStorage()
+{
+    static size_t count = 0u;
+    return count;
+}
+
+size_t& ModelTextureMappingDependencyArtifactDatabaseLoadCountForTestingStorage()
+{
+    static size_t count = 0u;
+    return count;
+}
+
+size_t& ModelTextureMappingDependencyMetaLoadCountForTestingStorage()
+{
+    static size_t count = 0u;
+    return count;
+}
+
+size_t& ModelTextureMappingDependencySourcePathFallbackCountForTestingStorage()
 {
     static size_t count = 0u;
     return count;
@@ -280,28 +304,48 @@ bool ParseModelTextureMappingDependencyValue(
 
 std::string BuildModelTextureMappingDependencyProjectStamp(
     const std::filesystem::path& projectRoot,
-    const std::string& dependencyValue)
+    const std::string& dependencyValue,
+    const std::string& artifactDatabaseDataStamp)
 {
     std::string query;
     std::string mode;
     (void)ParseModelTextureMappingDependencyValue(dependencyValue, query, mode);
 
-    const auto artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot);
-    const auto artifactDatabaseDataPath = artifactDatabasePath / "data.mdb";
-    std::string stamp = "artifactDb@" + FileStamp(artifactDatabaseDataPath);
+    std::string stamp = "artifactDb@" + artifactDatabaseDataStamp;
     if (mode == "source-path")
     {
         const auto sourcePath = (projectRoot / NormalizeEditorAssetPath(query)).lexically_normal();
         const auto metaPath = NLS::Core::Assets::GetAssetMetaPath(sourcePath);
         stamp += "|source@" + NormalizeEditorAssetPath(query) + "@" + FileStamp(sourcePath);
         stamp += "|meta@" + FileStamp(metaPath);
-        const auto meta = NLS::Core::Assets::AssetMeta::Load(metaPath);
-        if (meta.has_value() && meta->id.IsValid())
-        {
-            stamp += "|manifest@" + FileStamp(artifactDatabaseDataPath);
-        }
     }
     return stamp;
+}
+
+std::string BuildModelTextureMappingDependencyProjectStamp(
+    const std::filesystem::path& projectRoot,
+    const std::string& dependencyValue)
+{
+    const auto artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot);
+    return BuildModelTextureMappingDependencyProjectStamp(
+        projectRoot,
+        dependencyValue,
+        GetArtifactDatabaseDataFileStamp(artifactDatabasePath));
+}
+
+std::string BuildModelTextureMappingDependencyFingerprintCacheKey(
+    const std::filesystem::path& projectRoot,
+    const std::string& dependencyValue,
+    const std::string& targetPlatform,
+    const std::string& artifactDatabaseDataStamp)
+{
+    return projectRoot.lexically_normal().generic_string() +
+        "|" + dependencyValue +
+        "|" + targetPlatform +
+        "|" + BuildModelTextureMappingDependencyProjectStamp(
+            projectRoot,
+            dependencyValue,
+            artifactDatabaseDataStamp);
 }
 
 std::string BuildModelTextureMappingDependencyFingerprintCacheKey(
@@ -309,10 +353,12 @@ std::string BuildModelTextureMappingDependencyFingerprintCacheKey(
     const std::string& dependencyValue,
     const std::string& targetPlatform)
 {
-    return projectRoot.lexically_normal().generic_string() +
-        "|" + dependencyValue +
-        "|" + targetPlatform +
-        "|" + BuildModelTextureMappingDependencyProjectStamp(projectRoot, dependencyValue);
+    const auto artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot);
+    return BuildModelTextureMappingDependencyFingerprintCacheKey(
+        projectRoot,
+        dependencyValue,
+        targetPlatform,
+        GetArtifactDatabaseDataFileStamp(artifactDatabasePath));
 }
 
 std::optional<std::string> TryGetCachedModelTextureMappingDependencyFingerprint(
@@ -372,6 +418,236 @@ void StoreModelTextureMappingDependencyFingerprint(
     }
 }
 
+std::string BuildModelTextureMappingArtifactDatabaseTextureIndexCacheKey(
+    const std::filesystem::path& projectRoot,
+    const std::string& targetPlatform,
+    const std::string& artifactDatabaseDataStamp)
+{
+    return projectRoot.lexically_normal().generic_string() +
+        "|" +
+        targetPlatform +
+        "|artifactDb@" +
+        artifactDatabaseDataStamp;
+}
+
+std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex>
+TryGetCachedModelTextureMappingArtifactDatabaseTextureIndex(const std::string& cacheKey)
+{
+    std::lock_guard lock(ModelTextureMappingDependencyFingerprintCacheMutex());
+    auto& cache = ModelTextureMappingArtifactDatabaseTextureIndexCache();
+    auto& useCounter = ModelTextureMappingDependencyFingerprintCacheUseCounter();
+    const auto found = std::find_if(
+        cache.begin(),
+        cache.end(),
+        [&cacheKey](const ModelTextureMappingArtifactDatabaseTextureIndexCacheEntry& entry)
+        {
+            return entry.key == cacheKey;
+        });
+    if (found == cache.end())
+        return nullptr;
+
+    found->lastUsed = ++useCounter;
+    return found->index;
+}
+
+void StoreModelTextureMappingArtifactDatabaseTextureIndex(
+    std::string cacheKey,
+    std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex> index)
+{
+    if (index == nullptr)
+        return;
+
+    std::lock_guard lock(ModelTextureMappingDependencyFingerprintCacheMutex());
+    auto& cache = ModelTextureMappingArtifactDatabaseTextureIndexCache();
+    auto& useCounter = ModelTextureMappingDependencyFingerprintCacheUseCounter();
+    const auto found = std::find_if(
+        cache.begin(),
+        cache.end(),
+        [&cacheKey](const ModelTextureMappingArtifactDatabaseTextureIndexCacheEntry& entry)
+        {
+            return entry.key == cacheKey;
+        });
+    if (found != cache.end())
+    {
+        found->index = std::move(index);
+        found->lastUsed = ++useCounter;
+        return;
+    }
+
+    cache.push_back({std::move(cacheKey), std::move(index), ++useCounter});
+    while (cache.size() > kMaxModelTextureMappingArtifactDatabaseTextureIndexCacheEntries)
+    {
+        const auto oldest = std::min_element(
+            cache.begin(),
+            cache.end(),
+            [](const auto& lhs, const auto& rhs)
+            {
+                return lhs.lastUsed < rhs.lastUsed;
+            });
+        if (oldest == cache.end())
+            break;
+        cache.erase(oldest);
+    }
+}
+
+std::filesystem::path ModelTextureMappingArtifactDatabaseTextureIndexCachePath(
+    const std::filesystem::path& projectRoot)
+{
+    return projectRoot / "Library" / "ModelTextureMappingArtifactDatabaseTextureIndex.cache";
+}
+
+std::optional<std::string> JsonStringValue(
+    const nlohmann::json& object,
+    const char* key)
+{
+    const auto found = object.find(key);
+    if (found == object.end() || !found->is_string())
+        return std::nullopt;
+    return found->get<std::string>();
+}
+
+bool WriteJsonAtomically(
+    const std::filesystem::path& path,
+    const nlohmann::json& root)
+{
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+
+    const auto tempPath = path.string() + ".tmp";
+    {
+        std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+        if (!output.is_open())
+            return false;
+        output << root.dump(1);
+        if (!output.good())
+            return false;
+    }
+
+    std::filesystem::remove(path, error);
+    error.clear();
+    std::filesystem::rename(tempPath, path, error);
+    if (error)
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+    return true;
+}
+
+std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex> BuildModelTextureMappingArtifactDatabaseLookupIndex(
+    std::vector<ModelTextureAssetCandidate> candidates);
+
+std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex>
+TryLoadPersistentModelTextureMappingArtifactDatabaseTextureIndex(
+    const std::filesystem::path& projectRoot,
+    const std::string& targetPlatform,
+    const std::string& artifactDatabaseDataStamp)
+{
+    if (artifactDatabaseDataStamp.empty())
+        return nullptr;
+
+    try
+    {
+        const auto cachePath = ModelTextureMappingArtifactDatabaseTextureIndexCachePath(projectRoot);
+        std::error_code error;
+        const auto cacheSize = std::filesystem::file_size(cachePath, error);
+        if (error || cacheSize > kMaxPersistentModelTextureMappingArtifactDatabaseTextureIndexCacheBytes)
+            return nullptr;
+
+        std::ifstream input(
+            cachePath,
+            std::ios::binary);
+        if (!input.is_open())
+            return nullptr;
+
+        const auto root = nlohmann::json::parse(input, nullptr, false);
+        if (root.is_discarded() || !root.is_object())
+            return nullptr;
+        if (root.value("schemaVersion", 0u) !=
+            kPersistentModelTextureMappingArtifactDatabaseTextureIndexSchemaVersion)
+        {
+            return nullptr;
+        }
+        if (root.value("targetPlatform", std::string()) != targetPlatform ||
+            root.value("artifactDatabaseDataStamp", std::string()) != artifactDatabaseDataStamp)
+        {
+            return nullptr;
+        }
+
+        const auto entries = root.find("candidates");
+        if (entries == root.end() || !entries->is_array())
+            return nullptr;
+
+        std::vector<ModelTextureAssetCandidate> candidates;
+        candidates.reserve(entries->size());
+        for (const auto& item : *entries)
+        {
+            if (!item.is_object())
+                return nullptr;
+
+            const auto assetIdText = JsonStringValue(item, "assetId");
+            const auto editorPath = JsonStringValue(item, "editorPath");
+            if (!assetIdText.has_value() || !editorPath.has_value())
+                return nullptr;
+
+            const auto guid = NLS::Guid::TryParse(*assetIdText);
+            if (!guid.has_value() || !guid->IsValid())
+                return nullptr;
+
+            ModelTextureAssetCandidate candidate;
+            candidate.assetId = NLS::Core::Assets::AssetId(*guid);
+            candidate.subAssetKey = item.value("subAssetKey", std::string());
+            candidate.editorPath = *editorPath;
+            candidate.artifactPath = item.value("artifactPath", std::string());
+            candidate.displayName = item.value("displayName", std::string());
+            candidate.assetType = NLS::Core::Assets::AssetType::Texture;
+            candidate.imported = item.value("imported", true);
+            candidate.rootIndex = item.value("rootIndex", 0u);
+            candidate.artifactHashOrVersion = item.value("artifactHashOrVersion", std::string());
+            candidates.push_back(std::move(candidate));
+        }
+
+        return BuildModelTextureMappingArtifactDatabaseLookupIndex(std::move(candidates));
+    }
+    catch (const std::exception&)
+    {
+        return nullptr;
+    }
+}
+
+void StorePersistentModelTextureMappingArtifactDatabaseTextureIndex(
+    const std::filesystem::path& projectRoot,
+    const std::string& targetPlatform,
+    const std::string& artifactDatabaseDataStamp,
+    const ModelTextureMappingArtifactDatabaseLookupIndex& index)
+{
+    if (artifactDatabaseDataStamp.empty())
+        return;
+
+    nlohmann::json root = nlohmann::json::object();
+    root["schemaVersion"] = kPersistentModelTextureMappingArtifactDatabaseTextureIndexSchemaVersion;
+    root["targetPlatform"] = targetPlatform;
+    root["artifactDatabaseDataStamp"] = artifactDatabaseDataStamp;
+    root["candidates"] = nlohmann::json::array();
+    for (const auto& candidate : index.candidates)
+    {
+        nlohmann::json item = nlohmann::json::object();
+        item["assetId"] = candidate.assetId.ToString();
+        item["subAssetKey"] = candidate.subAssetKey;
+        item["editorPath"] = candidate.editorPath.lexically_normal().generic_string();
+        item["artifactPath"] = candidate.artifactPath.lexically_normal().generic_string();
+        item["displayName"] = candidate.displayName;
+        item["imported"] = candidate.imported;
+        item["rootIndex"] = candidate.rootIndex;
+        item["artifactHashOrVersion"] = candidate.artifactHashOrVersion;
+        root["candidates"].push_back(std::move(item));
+    }
+
+    (void)WriteJsonAtomically(
+        ModelTextureMappingArtifactDatabaseTextureIndexCachePath(projectRoot),
+        root);
+}
+
 bool ParseModelTextureMappingDependencyValue(
     const std::string& value,
     std::string& query,
@@ -391,6 +667,50 @@ bool ParseModelTextureMappingDependencyValue(
     return !query.empty() && (mode == "source-path" || mode == "name-search");
 }
 
+std::string NormalizeModelTextureMappingLookupKey(const std::filesystem::path& path)
+{
+    return ToLower(NormalizeEditorAssetPath(path));
+}
+
+void AddModelTextureMappingLookupEntry(
+    std::unordered_map<std::string, std::vector<size_t>>& lookup,
+    const std::string& key,
+    const size_t candidateIndex)
+{
+    if (key.empty())
+        return;
+
+    auto& indices = lookup[key];
+    if (std::find(indices.begin(), indices.end(), candidateIndex) == indices.end())
+        indices.push_back(candidateIndex);
+}
+
+std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex> BuildModelTextureMappingArtifactDatabaseLookupIndex(
+    std::vector<ModelTextureAssetCandidate> candidates)
+{
+    ModelTextureMappingArtifactDatabaseLookupIndex index;
+    index.candidates = std::move(candidates);
+    for (size_t candidateIndex = 0u; candidateIndex < index.candidates.size(); ++candidateIndex)
+    {
+        const auto& candidate = index.candidates[candidateIndex];
+        AddModelTextureMappingLookupEntry(
+            index.sourcePathCandidates,
+            NormalizeModelTextureMappingLookupKey(candidate.editorPath),
+            candidateIndex);
+
+        const auto path = std::filesystem::path(candidate.editorPath);
+        AddModelTextureMappingLookupEntry(
+            index.nameTokenCandidates,
+            NormalizeModelTextureMappingLookupKey(path.filename()),
+            candidateIndex);
+        AddModelTextureMappingLookupEntry(
+            index.nameTokenCandidates,
+            NormalizeModelTextureMappingLookupKey(path.stem()),
+            candidateIndex);
+    }
+    return std::make_shared<const ModelTextureMappingArtifactDatabaseLookupIndex>(std::move(index));
+}
+
 std::optional<ModelTextureAssetCandidate> BuildModelTextureMappingCandidateForEditorPath(
     const std::filesystem::path& projectRoot,
     const std::string& editorPath,
@@ -399,6 +719,9 @@ std::optional<ModelTextureAssetCandidate> BuildModelTextureMappingCandidateForEd
 {
     const auto normalizedEditorPath = NormalizeEditorAssetPath(editorPath);
     const auto absolutePath = (projectRoot / normalizedEditorPath).lexically_normal();
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++ModelTextureMappingDependencyMetaLoadCountForTestingStorage();
+#endif
     const auto meta = NLS::Core::Assets::AssetMeta::Load(
         NLS::Core::Assets::GetAssetMetaPath(absolutePath));
     if (!meta.has_value() ||
@@ -491,16 +814,37 @@ std::vector<ModelTextureAssetCandidate> BuildModelTextureMappingProjectTextureIn
     return candidates;
 }
 
-std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromArtifactDatabase(
+std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex> BuildModelTextureMappingArtifactDatabaseTextureIndex(
     const std::filesystem::path& projectRoot,
-    const std::string& query,
-    const std::string& mode,
     const std::string& targetPlatform)
 {
-    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
     const auto artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot);
+    const auto artifactDatabaseDataStamp = GetArtifactDatabaseDataFileStamp(artifactDatabasePath);
+    std::string cacheKey;
+    if (!artifactDatabaseDataStamp.empty())
+    {
+        cacheKey = BuildModelTextureMappingArtifactDatabaseTextureIndexCacheKey(
+            projectRoot,
+            targetPlatform,
+            artifactDatabaseDataStamp);
+        if (auto cached = TryGetCachedModelTextureMappingArtifactDatabaseTextureIndex(cacheKey))
+            return cached;
+        if (auto persistentCached = TryLoadPersistentModelTextureMappingArtifactDatabaseTextureIndex(
+                projectRoot,
+                targetPlatform,
+                artifactDatabaseDataStamp))
+        {
+            StoreModelTextureMappingArtifactDatabaseTextureIndex(cacheKey, persistentCached);
+            return persistentCached;
+        }
+    }
+
+    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
     if (!artifactDatabase.Load(artifactDatabasePath))
-        return std::nullopt;
+        return nullptr;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++ModelTextureMappingDependencyArtifactDatabaseLoadCountForTestingStorage();
+#endif
 
     std::unordered_map<std::string, const NLS::Core::Assets::ArtifactDatabaseRecord*> selectedTextureRecords;
     for (const auto& record : artifactDatabase.GetRecords())
@@ -509,21 +853,6 @@ std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromAr
             record.status != NLS::Core::Assets::ArtifactRecordStatus::UpToDate)
         {
             continue;
-        }
-
-        if (mode == "source-path")
-        {
-            if (!CaseInsensitiveMatch(NormalizeEditorAssetPath(record.sourcePath), NormalizeEditorAssetPath(query)))
-                continue;
-        }
-        else
-        {
-            const auto path = std::filesystem::path(record.sourcePath);
-            if (!CaseInsensitiveMatch(NormalizeEditorAssetPath(path.filename()), query) &&
-                !CaseInsensitiveMatch(NormalizeEditorAssetPath(path.stem()), query))
-            {
-                continue;
-            }
         }
 
         const auto selectionKey = record.sourceAssetId.ToString() + "\n" + record.subAssetKey;
@@ -546,22 +875,125 @@ std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromAr
         candidate.editorPath = NormalizeEditorAssetPath(record->sourcePath);
         candidate.subAssetKey = record->subAssetKey;
         candidate.artifactPath = record->artifactPath;
-        candidate.displayName = std::filesystem::path(record->sourcePath).stem().generic_string();
+        candidate.displayName = record->displayName.empty()
+            ? std::filesystem::path(record->sourcePath).stem().generic_string()
+            : record->displayName;
         candidate.assetType = NLS::Core::Assets::AssetType::Texture;
         candidate.imported = true;
         candidate.rootIndex = 0u;
         candidate.artifactHashOrVersion = record->contentHash;
-        candidate.nameQuery = mode == "name-search" ? query : std::string {};
+        candidates.push_back(std::move(candidate));
+    }
+    auto index = BuildModelTextureMappingArtifactDatabaseLookupIndex(std::move(candidates));
+    if (!cacheKey.empty())
+    {
+        StoreModelTextureMappingArtifactDatabaseTextureIndex(cacheKey, index);
+        StorePersistentModelTextureMappingArtifactDatabaseTextureIndex(
+            projectRoot,
+            targetPlatform,
+            artifactDatabaseDataStamp,
+            *index);
+    }
+    return index;
+}
+
+std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromArtifactDatabaseIndex(
+    const std::vector<ModelTextureAssetCandidate>& artifactDatabaseIndex,
+    const std::string& query,
+    const std::string& mode)
+{
+    std::vector<ModelTextureAssetCandidate> candidates;
+    for (auto candidate : artifactDatabaseIndex)
+    {
+        if (mode == "source-path")
+        {
+            if (!CaseInsensitiveMatch(
+                    NormalizeEditorAssetPath(candidate.editorPath),
+                    NormalizeEditorAssetPath(query)))
+            {
+                continue;
+            }
+        }
+        else
+        {
+            const auto path = std::filesystem::path(candidate.editorPath);
+            if (!CaseInsensitiveMatch(NormalizeEditorAssetPath(path.filename()), query) &&
+                !CaseInsensitiveMatch(NormalizeEditorAssetPath(path.stem()), query))
+            {
+                continue;
+            }
+            candidate.nameQuery = query;
+        }
+
         candidates.push_back(std::move(candidate));
     }
 
     if (candidates.empty())
         return std::nullopt;
-
     return BuildModelTextureMappingFingerprint(candidates);
 }
 
-std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintUncached(
+std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromArtifactDatabaseLookupIndex(
+    const ModelTextureMappingArtifactDatabaseLookupIndex& index,
+    const std::string& query,
+    const std::string& mode,
+    size_t* candidateScanCount)
+{
+    if (index.candidates.empty())
+        return std::nullopt;
+
+    const auto lookupKey = NormalizeModelTextureMappingLookupKey(query);
+    const auto& lookup = mode == "source-path"
+        ? index.sourcePathCandidates
+        : index.nameTokenCandidates;
+    const auto found = lookup.find(lookupKey);
+    if (found == lookup.end())
+        return std::nullopt;
+
+    std::vector<ModelTextureAssetCandidate> candidates;
+    candidates.reserve(found->second.size());
+    if (candidateScanCount != nullptr)
+        *candidateScanCount += found->second.size();
+    for (const auto candidateIndex : found->second)
+    {
+        if (candidateIndex >= index.candidates.size())
+            continue;
+
+        auto candidate = index.candidates[candidateIndex];
+        if (mode != "source-path")
+            candidate.nameQuery = query;
+        candidates.push_back(std::move(candidate));
+    }
+
+    if (candidates.empty())
+        return std::nullopt;
+    return BuildModelTextureMappingFingerprint(candidates);
+}
+
+std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromArtifactDatabase(
+    const std::filesystem::path& projectRoot,
+    const std::string& query,
+    const std::string& mode,
+    const std::string& targetPlatform)
+{
+    auto artifactDatabaseIndex = BuildModelTextureMappingArtifactDatabaseTextureIndex(
+        projectRoot,
+        targetPlatform);
+    if (!artifactDatabaseIndex)
+        return std::nullopt;
+    return ComputeModelTextureMappingDependencyFingerprintFromArtifactDatabaseLookupIndex(
+        *artifactDatabaseIndex,
+        query,
+        mode,
+        nullptr);
+}
+
+std::string ComputeModelTextureMappingDependencyFingerprintFromSourcePathFallback(
+    const std::filesystem::path& projectRoot,
+    const std::string& query,
+    const std::string& targetPlatform);
+
+std::optional<ModelTextureMappingDependencyFingerprintResult> ComputeModelTextureMappingDependencyFingerprintUncached(
     const std::filesystem::path& projectRoot,
     const std::string& query,
     const std::string& mode,
@@ -572,25 +1004,20 @@ std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintUncach
             projectRoot,
             query,
             mode,
-            targetPlatform);
+        targetPlatform);
         fromArtifactDatabase.has_value())
     {
-        return fromArtifactDatabase;
+        return ModelTextureMappingDependencyFingerprintResult {std::move(*fromArtifactDatabase), true};
     }
 
     if (mode == "source-path")
     {
-        std::vector<ModelTextureAssetCandidate> candidates;
-        if (auto candidate = BuildModelTextureMappingCandidateForEditorPath(
-                projectRoot,
-                query,
-                targetPlatform,
-                {});
-            candidate.has_value())
-        {
-            candidates.push_back(std::move(*candidate));
-        }
-        return BuildModelTextureMappingFingerprint(candidates);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        ++ModelTextureMappingDependencySourcePathFallbackCountForTestingStorage();
+#endif
+        return ModelTextureMappingDependencyFingerprintResult {
+            ComputeModelTextureMappingDependencyFingerprintFromSourcePathFallback(projectRoot, query, targetPlatform),
+            true};
     }
 
     std::vector<ModelTextureAssetCandidate> localProjectIndex;
@@ -609,7 +1036,7 @@ std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintUncach
         candidate.nameQuery = query;
         candidates.push_back(std::move(candidate));
     }
-    return BuildModelTextureMappingFingerprint(candidates);
+    return ModelTextureMappingDependencyFingerprintResult {BuildModelTextureMappingFingerprint(candidates), false};
 }
 
 std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromFallbackIndex(
@@ -627,6 +1054,24 @@ std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintFromFa
         }
         candidate.nameQuery = query;
         candidates.push_back(std::move(candidate));
+    }
+    return BuildModelTextureMappingFingerprint(candidates);
+}
+
+std::string ComputeModelTextureMappingDependencyFingerprintFromSourcePathFallback(
+    const std::filesystem::path& projectRoot,
+    const std::string& query,
+    const std::string& targetPlatform)
+{
+    std::vector<ModelTextureAssetCandidate> candidates;
+    if (auto candidate = BuildModelTextureMappingCandidateForEditorPath(
+            projectRoot,
+            query,
+            targetPlatform,
+            {});
+        candidate.has_value())
+    {
+        candidates.push_back(std::move(*candidate));
     }
     return BuildModelTextureMappingFingerprint(candidates);
 }
@@ -656,8 +1101,9 @@ std::optional<std::string> ComputeModelTextureMappingDependencyFingerprint(
         nullptr);
     if (fingerprint.has_value())
     {
-        StoreModelTextureMappingDependencyFingerprint(cacheKey, *fingerprint);
-        return fingerprint;
+        if (fingerprint->cacheable)
+            StoreModelTextureMappingDependencyFingerprint(cacheKey, fingerprint->fingerprint);
+        return fingerprint->fingerprint;
     }
     return std::nullopt;
 }
@@ -667,66 +1113,135 @@ std::vector<std::optional<std::string>> ComputeModelTextureMappingDependencyFing
     const std::vector<std::string>& dependencyValues,
     const std::string& targetPlatform)
 {
+    NLS::Base::Profiling::PerformanceStageScope batchScope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "ComputeModelTextureMappingDependencyFingerprintBatch",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
     std::vector<std::optional<std::string>> fingerprints;
     fingerprints.reserve(dependencyValues.size());
     std::optional<std::vector<ModelTextureAssetCandidate>> projectTextureIndex;
+    std::shared_ptr<const ModelTextureMappingArtifactDatabaseLookupIndex> artifactDatabaseLookupIndex;
+    bool triedArtifactDatabaseTextureIndex = false;
+    const auto artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot);
+    const auto artifactDatabaseDataStamp = GetArtifactDatabaseDataFileStamp(artifactDatabasePath);
+    size_t invalidDependencyCount = 0u;
+    size_t cacheHitCount = 0u;
+    size_t cacheMissCount = 0u;
+    size_t fingerprintCacheKeyBuildCount = 0u;
+    size_t artifactDatabaseHitCount = 0u;
+    size_t artifactDatabaseMissCount = 0u;
+    size_t artifactDatabaseCandidateScanCount = 0u;
+    size_t nameSearchFallbackCount = 0u;
+    size_t sourcePathFallbackCount = 0u;
+    size_t uncachedFallbackCount = 0u;
     for (const auto& dependencyValue : dependencyValues)
     {
         std::string query;
         std::string mode;
         if (!ParseModelTextureMappingDependencyValue(dependencyValue, query, mode))
         {
+            ++invalidDependencyCount;
             fingerprints.push_back(std::nullopt);
             continue;
         }
 
-        const auto cacheKey = BuildModelTextureMappingDependencyFingerprintCacheKey(
-            projectRoot,
-            dependencyValue,
-            targetPlatform);
-        if (auto cached = TryGetCachedModelTextureMappingDependencyFingerprint(cacheKey); cached.has_value())
+        if (!triedArtifactDatabaseTextureIndex)
         {
-            fingerprints.push_back(cached);
-            continue;
+            artifactDatabaseLookupIndex = BuildModelTextureMappingArtifactDatabaseTextureIndex(
+                projectRoot,
+                targetPlatform);
+            triedArtifactDatabaseTextureIndex = true;
         }
-
-        if (mode == "name-search")
+        if (artifactDatabaseLookupIndex)
         {
-            if (auto fromArtifactDatabase = ComputeModelTextureMappingDependencyFingerprintFromArtifactDatabase(
-                    projectRoot,
-                    query,
-                    mode,
-                    targetPlatform);
-                fromArtifactDatabase.has_value())
+            auto fromArtifactDatabase = ComputeModelTextureMappingDependencyFingerprintFromArtifactDatabaseLookupIndex(
+                *artifactDatabaseLookupIndex,
+                query,
+                mode,
+                &artifactDatabaseCandidateScanCount);
+            if (fromArtifactDatabase.has_value())
             {
-                StoreModelTextureMappingDependencyFingerprint(cacheKey, *fromArtifactDatabase);
+                ++artifactDatabaseHitCount;
                 fingerprints.push_back(std::move(fromArtifactDatabase));
                 continue;
             }
+            ++artifactDatabaseMissCount;
         }
+
+        std::string cacheKey;
+        auto ensureCacheKey = [&]() -> const std::string&
+        {
+            if (cacheKey.empty())
+            {
+                cacheKey = BuildModelTextureMappingDependencyFingerprintCacheKey(
+                    projectRoot,
+                    dependencyValue,
+                    targetPlatform,
+                    artifactDatabaseDataStamp);
+                ++fingerprintCacheKeyBuildCount;
+            }
+            return cacheKey;
+        };
+        if (auto cached = TryGetCachedModelTextureMappingDependencyFingerprint(ensureCacheKey()); cached.has_value())
+        {
+            ++cacheHitCount;
+            fingerprints.push_back(cached);
+            continue;
+        }
+        ++cacheMissCount;
 
         std::optional<std::string> fingerprint;
         if (mode == "name-search")
         {
+            ++nameSearchFallbackCount;
             if (!projectTextureIndex.has_value())
                 projectTextureIndex = BuildModelTextureMappingProjectTextureIndex(projectRoot, targetPlatform);
             fingerprint = ComputeModelTextureMappingDependencyFingerprintFromFallbackIndex(
                 query,
                 *projectTextureIndex);
         }
+        else if (mode == "source-path")
+        {
+            ++sourcePathFallbackCount;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            ++ModelTextureMappingDependencySourcePathFallbackCountForTestingStorage();
+#endif
+            fingerprint = ComputeModelTextureMappingDependencyFingerprintFromSourcePathFallback(
+                projectRoot,
+                query,
+                targetPlatform);
+            if (fingerprint.has_value())
+                StoreModelTextureMappingDependencyFingerprint(ensureCacheKey(), *fingerprint);
+        }
         else
         {
-            fingerprint = ComputeModelTextureMappingDependencyFingerprintUncached(
+            ++uncachedFallbackCount;
+            auto uncachedFingerprint = ComputeModelTextureMappingDependencyFingerprintUncached(
                 projectRoot,
                 query,
                 mode,
                 targetPlatform,
                 nullptr);
+            if (uncachedFingerprint.has_value())
+            {
+                if (uncachedFingerprint->cacheable)
+                    StoreModelTextureMappingDependencyFingerprint(ensureCacheKey(), uncachedFingerprint->fingerprint);
+                fingerprint = std::move(uncachedFingerprint->fingerprint);
+            }
         }
-        if (fingerprint.has_value())
-            StoreModelTextureMappingDependencyFingerprint(cacheKey, *fingerprint);
         fingerprints.push_back(std::move(fingerprint));
     }
+    batchScope.AddCounter("dependencyCount", dependencyValues.size());
+    batchScope.AddCounter("invalidDependencyCount", invalidDependencyCount);
+    batchScope.AddCounter("cacheHitCount", cacheHitCount);
+    batchScope.AddCounter("cacheMissCount", cacheMissCount);
+    batchScope.AddCounter("fingerprintCacheKeyBuildCount", fingerprintCacheKeyBuildCount);
+    batchScope.AddCounter("artifactDatabaseHitCount", artifactDatabaseHitCount);
+    batchScope.AddCounter("artifactDatabaseMissCount", artifactDatabaseMissCount);
+    batchScope.AddCounter("artifactDatabaseCandidateScanCount", artifactDatabaseCandidateScanCount);
+    batchScope.AddCounter("nameSearchFallbackCount", nameSearchFallbackCount);
+    batchScope.AddCounter("sourcePathFallbackCount", sourcePathFallbackCount);
+    batchScope.AddCounter("uncachedFallbackCount", uncachedFallbackCount);
     return fingerprints;
 }
 
@@ -748,6 +1263,30 @@ std::string Hex64(const uint64_t value)
     return stream.str();
 }
 
+std::string PreparedPrefabCacheBytesHash(const std::vector<uint8_t>& bytes)
+{
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes.data(), bytes.size());
+}
+
+std::string PreparedPrefabCacheTextDigest(const std::string& text)
+{
+    const auto* bytes = reinterpret_cast<const uint8_t*>(text.data());
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes, text.size()) +
+        ":bytes:" + std::to_string(text.size());
+}
+
+std::string PreparedPrefabCacheFilenameToken(std::string text)
+{
+    for (char& character : text)
+    {
+        const auto byte = static_cast<unsigned char>(character);
+        if (std::isalnum(byte) || character == '-' || character == '_')
+            continue;
+        character = '_';
+    }
+    return text.empty() ? std::string("empty") : std::move(text);
+}
+
 std::filesystem::path PersistentPreparedPrefabCachePath(
     const std::filesystem::path& projectRoot,
     const UnifiedPrefabLoadKey& key)
@@ -758,12 +1297,227 @@ std::filesystem::path PersistentPreparedPrefabCachePath(
         (Hex64(StableFnv1a64(key.runtimeCacheIdentity)) + ".json");
 }
 
+std::string PersistentPreparedPrefabCacheSidecarFilename(
+    const std::filesystem::path& cachePath,
+    const char* kind,
+    const std::string& contentHash)
+{
+    return cachePath.stem().generic_string() +
+        "." + kind +
+        "." + PreparedPrefabCacheFilenameToken(contentHash) +
+        ".objectgraphbin";
+}
+
+bool IsPreparedPrefabCacheSidecarExtension(const std::filesystem::path& path)
+{
+    return path.extension() == ".objectgraph" || path.extension() == ".objectgraphbin";
+}
+
+bool IsPreparedPrefabCacheSidecarFilenameSafe(const std::string& filename)
+{
+    if (filename.empty())
+        return false;
+    const std::filesystem::path path(filename);
+    return path == path.filename() && !path.is_absolute();
+}
+
+std::optional<std::string> ReadPreparedPrefabCacheTextFile(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (!error && size <= static_cast<uintmax_t>(std::numeric_limits<size_t>::max()))
+    {
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            return std::nullopt;
+
+        std::string text;
+        text.resize(static_cast<size_t>(size));
+        if (!text.empty())
+        {
+            input.read(text.data(), static_cast<std::streamsize>(text.size()));
+            if (input.gcount() != static_cast<std::streamsize>(text.size()))
+                return std::nullopt;
+        }
+        return text;
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+    return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+}
+
+std::optional<std::vector<uint8_t>> ReadPreparedPrefabCacheBinaryFile(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (!error && size <= static_cast<uintmax_t>(std::numeric_limits<size_t>::max()))
+    {
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            return std::nullopt;
+
+        std::vector<uint8_t> bytes(static_cast<size_t>(size));
+        if (!bytes.empty())
+        {
+            input.read(
+                reinterpret_cast<char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+            if (input.gcount() != static_cast<std::streamsize>(bytes.size()))
+                return std::nullopt;
+        }
+        return bytes;
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+}
+
+bool WritePreparedPrefabCacheTextFile(
+    const std::filesystem::path& path,
+    const std::string& text)
+{
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error)
+        return false;
+
+    const auto tempPath = path.string() + ".tmp";
+    {
+        std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+        if (!output)
+            return false;
+        output << text;
+    }
+
+    error.clear();
+    std::filesystem::rename(tempPath, path, error);
+    if (error)
+    {
+        std::filesystem::remove(path, error);
+        error.clear();
+        std::filesystem::rename(tempPath, path, error);
+    }
+    if (error)
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+    return true;
+}
+
+bool WritePreparedPrefabCacheBinaryFile(
+    const std::filesystem::path& path,
+    const std::vector<uint8_t>& bytes)
+{
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error)
+        return false;
+
+    const auto tempPath = path.string() + ".tmp";
+    {
+        std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+        if (!output)
+            return false;
+        if (!bytes.empty())
+        {
+            output.write(
+                reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+        }
+    }
+
+    error.clear();
+    std::filesystem::rename(tempPath, path, error);
+    if (error)
+    {
+        std::filesystem::remove(path, error);
+        error.clear();
+        std::filesystem::rename(tempPath, path, error);
+    }
+    if (error)
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+    return true;
+}
+
+std::optional<std::vector<uint8_t>> ReadPreparedPrefabCacheSidecarBytes(
+    const std::filesystem::path& cachePath,
+    const nlohmann::json& root,
+    const char* sidecarField,
+    const char* hashField,
+    NLS::Base::Profiling::PerformanceStageScope& scope,
+    const char* byteCounterName,
+    const char* stageName)
+{
+    NLS::Base::Profiling::PerformanceStageScope sidecarScope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        stageName,
+        NLS::Base::Profiling::PerformanceStageThread::Main);
+    const auto sidecar = root.find(sidecarField);
+    const auto hash = root.find(hashField);
+    if (sidecar == root.end() || !sidecar->is_string() ||
+        hash == root.end() || !hash->is_string())
+    {
+        return std::nullopt;
+    }
+
+    const auto& sidecarFilename = sidecar->get_ref<const std::string&>();
+    const auto& expectedHash = hash->get_ref<const std::string&>();
+    if (!IsPreparedPrefabCacheSidecarFilenameSafe(sidecarFilename) || expectedHash.empty())
+        return std::nullopt;
+
+    auto bytes = ReadPreparedPrefabCacheBinaryFile(cachePath.parent_path() / sidecarFilename);
+    if (!bytes.has_value())
+        return std::nullopt;
+    scope.AddCounter(byteCounterName, bytes->size());
+    sidecarScope.AddCounter(byteCounterName, bytes->size());
+    if (PreparedPrefabCacheBytesHash(*bytes) != expectedHash)
+        return std::nullopt;
+    return bytes;
+}
+
+void RemoveStalePreparedPrefabCacheSidecars(
+    const std::filesystem::path& cachePath,
+    const std::vector<std::string>& retainedFilenames)
+{
+    std::error_code error;
+    const auto cacheDirectory = cachePath.parent_path();
+    if (!std::filesystem::is_directory(cacheDirectory, error))
+        return;
+
+    const auto prefix = cachePath.stem().generic_string() + ".";
+    for (const auto& entry : std::filesystem::directory_iterator(cacheDirectory, error))
+    {
+        if (error)
+            return;
+        if (!entry.is_regular_file(error) || !IsPreparedPrefabCacheSidecarExtension(entry.path()))
+            continue;
+
+        const auto filename = entry.path().filename().generic_string();
+        if (filename.rfind(prefix, 0u) != 0u)
+            continue;
+        if (std::find(retainedFilenames.begin(), retainedFilenames.end(), filename) != retainedFilenames.end())
+            continue;
+
+        std::filesystem::remove(entry.path(), error);
+        error.clear();
+    }
+}
+
 std::string BuildUnifiedPrefabRuntimeCacheIdentity(const UnifiedPrefabLoadKey& key)
 {
     return key.artifactIdentity +
         "|manifest@" + key.stamps.manifestStamp +
         "|dependency@" + key.stamps.dependencyStamp +
         "|prefab@" + key.stamps.prefabArtifactStamp +
+        "|rendererReadiness@" + (key.rendererArtifactReadinessRequired ? "required" : "graph") +
         "|renderer@" + key.stamps.rendererArtifactStamp +
         "|importer@" + std::to_string(key.prefabImporterVersion) +
         "|reflection@" + std::to_string(key.reflectionSchemaVersion) +
@@ -788,45 +1542,61 @@ PreparedPrefabCacheFreshnessRecord BuildPreparedPrefabCacheFreshnessRecord(
     return record;
 }
 
+std::optional<std::string> ReadPreparedPrefabCacheStringValue(
+    const nlohmann::json& root,
+    const char* name)
+{
+    const auto found = root.find(name);
+    if (found == root.end() || !found->is_string())
+        return std::nullopt;
+    return found->get<std::string>();
+}
+
+std::optional<uint32_t> ReadPreparedPrefabCacheUIntValue(
+    const nlohmann::json& root,
+    const char* name)
+{
+    const auto found = root.find(name);
+    if (found == root.end())
+        return std::nullopt;
+    if (found->is_number_unsigned())
+    {
+        const auto value = found->get<uint64_t>();
+        if (value <= std::numeric_limits<uint32_t>::max())
+            return static_cast<uint32_t>(value);
+    }
+    else if (found->is_number_integer())
+    {
+        const auto value = found->get<int64_t>();
+        if (value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+            return static_cast<uint32_t>(value);
+    }
+    return std::nullopt;
+}
+
+bool PreparedPrefabCacheDigestMatches(
+    const nlohmann::json& root,
+    const char* name,
+    const std::string& expectedText)
+{
+    const auto digest = ReadPreparedPrefabCacheStringValue(root, name);
+    return digest.has_value() && *digest == PreparedPrefabCacheTextDigest(expectedText);
+}
+
 PreparedPrefabCacheFreshnessRecord ReadPreparedPrefabCacheFreshnessRecord(
     const nlohmann::json& root)
 {
-    const auto stringValue = [&root](const char* name) -> std::string
-    {
-        const auto found = root.find(name);
-        return found != root.end() && found->is_string() ? found->get<std::string>() : std::string {};
-    };
-    const auto uintValue = [&root](const char* name) -> uint32_t
-    {
-        const auto found = root.find(name);
-        if (found == root.end())
-            return 0u;
-        if (found->is_number_unsigned())
-        {
-            const auto value = found->get<uint64_t>();
-            return value <= std::numeric_limits<uint32_t>::max() ? static_cast<uint32_t>(value) : 0u;
-        }
-        if (found->is_number_integer())
-        {
-            const auto value = found->get<int64_t>();
-            return value >= 0 && value <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max())
-                ? static_cast<uint32_t>(value)
-                : 0u;
-        }
-        return 0u;
-    };
-
     PreparedPrefabCacheFreshnessRecord record;
-    record.schemaVersion = uintValue("schema");
-    record.runtimeCacheIdentity = stringValue("runtimeCacheIdentity");
-    record.manifestStamp = stringValue("manifestStamp");
-    record.dependencyStamp = stringValue("dependencyStamp");
-    record.prefabArtifactStamp = stringValue("prefabArtifactStamp");
-    record.rendererArtifactStamp = stringValue("rendererArtifactStamp");
-    record.prefabImporterVersion = uintValue("prefabImporterVersion");
-    record.reflectionSchemaVersion = uintValue("reflectionSchemaVersion");
-    record.serializationFormatVersion = uintValue("serializationFormatVersion");
-    record.dependencyManifestVersion = uintValue("dependencyManifestVersion");
+    record.schemaVersion = ReadPreparedPrefabCacheUIntValue(root, "schema").value_or(0u);
+    record.runtimeCacheIdentity = ReadPreparedPrefabCacheStringValue(root, "runtimeCacheIdentity").value_or(std::string {});
+    record.manifestStamp = ReadPreparedPrefabCacheStringValue(root, "manifestStamp").value_or(std::string {});
+    record.dependencyStamp = ReadPreparedPrefabCacheStringValue(root, "dependencyStamp").value_or(std::string {});
+    record.prefabArtifactStamp = ReadPreparedPrefabCacheStringValue(root, "prefabArtifactStamp").value_or(std::string {});
+    record.rendererArtifactStamp = ReadPreparedPrefabCacheStringValue(root, "rendererArtifactStamp").value_or(std::string {});
+    record.prefabImporterVersion = ReadPreparedPrefabCacheUIntValue(root, "prefabImporterVersion").value_or(0u);
+    record.reflectionSchemaVersion = ReadPreparedPrefabCacheUIntValue(root, "reflectionSchemaVersion").value_or(0u);
+    record.serializationFormatVersion = ReadPreparedPrefabCacheUIntValue(root, "serializationFormatVersion").value_or(0u);
+    record.dependencyManifestVersion = ReadPreparedPrefabCacheUIntValue(root, "dependencyManifestVersion").value_or(0u);
     return record;
 }
 
@@ -847,6 +1617,33 @@ bool IsPreparedPrefabCacheFresh(
         record.dependencyManifestVersion == expected.dependencyManifestVersion;
 }
 
+bool IsPreparedPrefabCacheFresh(
+    const nlohmann::json& root,
+    const UnifiedPrefabLoadKey& key)
+{
+    const auto expected = BuildPreparedPrefabCacheFreshnessRecord(key);
+    const auto schemaVersion = ReadPreparedPrefabCacheUIntValue(root, "schema");
+    const auto prefabImporterVersion = ReadPreparedPrefabCacheUIntValue(root, "prefabImporterVersion");
+    const auto reflectionSchemaVersion = ReadPreparedPrefabCacheUIntValue(root, "reflectionSchemaVersion");
+    const auto serializationFormatVersion = ReadPreparedPrefabCacheUIntValue(root, "serializationFormatVersion");
+    const auto dependencyManifestVersion = ReadPreparedPrefabCacheUIntValue(root, "dependencyManifestVersion");
+    return schemaVersion.has_value() &&
+        *schemaVersion == expected.schemaVersion &&
+        PreparedPrefabCacheDigestMatches(root, "runtimeCacheIdentityDigest", expected.runtimeCacheIdentity) &&
+        PreparedPrefabCacheDigestMatches(root, "manifestStampDigest", expected.manifestStamp) &&
+        PreparedPrefabCacheDigestMatches(root, "dependencyStampDigest", expected.dependencyStamp) &&
+        PreparedPrefabCacheDigestMatches(root, "prefabArtifactStampDigest", expected.prefabArtifactStamp) &&
+        PreparedPrefabCacheDigestMatches(root, "rendererArtifactStampDigest", expected.rendererArtifactStamp) &&
+        prefabImporterVersion.has_value() &&
+        *prefabImporterVersion == expected.prefabImporterVersion &&
+        reflectionSchemaVersion.has_value() &&
+        *reflectionSchemaVersion == expected.reflectionSchemaVersion &&
+        serializationFormatVersion.has_value() &&
+        *serializationFormatVersion == expected.serializationFormatVersion &&
+        dependencyManifestVersion.has_value() &&
+        *dependencyManifestVersion == expected.dependencyManifestVersion;
+}
+
 void PrunePersistentPreparedPrefabCacheDirectory(const std::filesystem::path& cacheDirectory)
 {
     struct CacheFile
@@ -854,6 +1651,7 @@ void PrunePersistentPreparedPrefabCacheDirectory(const std::filesystem::path& ca
         std::filesystem::path path;
         std::filesystem::file_time_type lastWriteTime {};
         uintmax_t size = 0u;
+        std::vector<std::filesystem::path> sidecars;
     };
 
     std::error_code error;
@@ -861,12 +1659,25 @@ void PrunePersistentPreparedPrefabCacheDirectory(const std::filesystem::path& ca
         return;
 
     std::vector<CacheFile> files;
+    std::vector<std::pair<std::filesystem::path, uintmax_t>> sidecars;
     uintmax_t retainedBytes = 0u;
     for (const auto& entry : std::filesystem::directory_iterator(cacheDirectory, error))
     {
         if (error)
             return;
-        if (!entry.is_regular_file(error) || entry.path().extension() != ".json")
+        if (!entry.is_regular_file(error))
+            continue;
+
+        if (IsPreparedPrefabCacheSidecarExtension(entry.path()))
+        {
+            const auto sidecarSize = entry.file_size(error);
+            if (!error)
+                sidecars.push_back({entry.path(), sidecarSize});
+            error.clear();
+            continue;
+        }
+
+        if (entry.path().extension() != ".json")
             continue;
 
         CacheFile file;
@@ -880,6 +1691,28 @@ void PrunePersistentPreparedPrefabCacheDirectory(const std::filesystem::path& ca
 
         retainedBytes += file.size;
         files.push_back(std::move(file));
+    }
+
+    std::unordered_map<std::string, size_t> cacheIndexByStem;
+    cacheIndexByStem.reserve(files.size());
+    for (size_t index = 0u; index < files.size(); ++index)
+        cacheIndexByStem[files[index].path.stem().generic_string()] = index;
+
+    for (const auto& [sidecarPath, sidecarSize] : sidecars)
+    {
+        const auto filename = sidecarPath.filename().generic_string();
+        const auto separator = filename.find('.');
+        if (separator == std::string::npos)
+            continue;
+
+        const auto owner = cacheIndexByStem.find(filename.substr(0u, separator));
+        if (owner == cacheIndexByStem.end())
+            continue;
+
+        auto& file = files[owner->second];
+        file.sidecars.push_back(sidecarPath);
+        file.size += sidecarSize;
+        retainedBytes += sidecarSize;
     }
 
     std::sort(
@@ -896,6 +1729,12 @@ void PrunePersistentPreparedPrefabCacheDirectory(const std::filesystem::path& ca
             retainedBytes > kMaxPersistentPreparedPrefabCacheBytes))
     {
         std::filesystem::remove(files[firstRetained].path, error);
+        error.clear();
+        for (const auto& sidecar : files[firstRetained].sidecars)
+        {
+            std::filesystem::remove(sidecar, error);
+            error.clear();
+        }
         retainedBytes -= std::min(retainedBytes, files[firstRetained].size);
         ++firstRetained;
     }
@@ -1127,11 +1966,19 @@ void PutImportedPrefabHotCache(
         return;
 
     auto rendererDependencyTemplates = result.rendererDependencyTemplates;
-    if (rendererDependencyTemplates.empty())
-        rendererDependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(*result.prefab);
+    if (key.rendererArtifactReadinessRequired &&
+        (!rendererDependencyTemplates || rendererDependencyTemplates->empty()))
+    {
+        rendererDependencyTemplates = std::make_shared<const std::vector<ImportedPrefabRendererDependencyTemplate>>(
+            BuildImportedPrefabRendererDependencyTemplates(*result.prefab));
+    }
+    else if (!rendererDependencyTemplates)
+    {
+        rendererDependencyTemplates = std::make_shared<const std::vector<ImportedPrefabRendererDependencyTemplate>>();
+    }
     const size_t estimatedBytes =
         EstimatePrefabHotCacheBytes(*result.prefab) +
-        EstimateRendererDependencyTemplateBytes(rendererDependencyTemplates) +
+        EstimateRendererDependencyTemplateBytes(*rendererDependencyTemplates) +
         result.prefabArtifactBytes;
     if (estimatedBytes > kMaxImportedPrefabHotCacheBytes)
         return;
@@ -1163,23 +2010,6 @@ void PutImportedPrefabHotCache(
     RememberImportedPrefabLoadedKey(result.prefab, key);
 }
 
-std::optional<FastImportedPrefabLoadResult> TryPromoteImportedPrefabGraphHotCache(
-    const UnifiedPrefabLoadKey& readyKey)
-{
-    auto graphKey = readyKey;
-    graphKey.stamps.rendererArtifactStamp.clear();
-    graphKey.rendererArtifactStamp.clear();
-    graphKey.runtimeCacheIdentity = BuildUnifiedPrefabRuntimeCacheIdentity(graphKey);
-
-    auto cached = TryGetImportedPrefabHotCache(graphKey);
-    if (!cached.has_value() || !cached->prefab)
-        return std::nullopt;
-
-    cached->key = readyKey;
-    PutImportedPrefabHotCache(readyKey, *cached);
-    return cached;
-}
-
 std::optional<FastImportedPrefabLoadResult> TryLoadPersistentPreparedPrefabCache(
     const std::filesystem::path& projectRoot,
     const UnifiedPrefabLoadKey& key,
@@ -1192,31 +2022,58 @@ std::optional<FastImportedPrefabLoadResult> TryLoadPersistentPreparedPrefabCache
 
     const auto begin = std::chrono::steady_clock::now();
     const auto cachePath = PersistentPreparedPrefabCachePath(projectRoot, key);
-    std::ifstream input(cachePath, std::ios::binary);
-    if (!input)
+    auto cacheText = ReadPreparedPrefabCacheTextFile(cachePath);
+    if (!cacheText.has_value())
     {
         loadScope.AddCounter("cacheMisses");
         return std::nullopt;
     }
 
-    const std::string cacheText((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    loadScope.AddCounter("diskByteCount", cacheText.size());
-    const auto root = nlohmann::json::parse(cacheText, nullptr, false);
+    loadScope.AddCounter("diskByteCount", cacheText->size());
+    nlohmann::json root;
+    {
+        NLS::Base::Profiling::PerformanceStageScope metadataParseScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "ParsePreparedPrefabCacheMetadata",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        metadataParseScope.AddCounter("diskByteCount", cacheText->size());
+        root = nlohmann::json::parse(*cacheText, nullptr, false);
+    }
     if (root.is_discarded() || !root.is_object())
     {
         loadScope.AddCounter("cacheMisses");
         return std::nullopt;
     }
 
-    if (!IsPreparedPrefabCacheFresh(ReadPreparedPrefabCacheFreshnessRecord(root), key))
+    if (!IsPreparedPrefabCacheFresh(root, key))
     {
         loadScope.AddCounter("cacheMisses");
         return std::nullopt;
     }
 
-    const auto graphText = root.value("graph", std::string {});
-    loadScope.AddCounter("prefabArtifactBytes", graphText.size());
-    auto document = NLS::Engine::Serialize::ObjectGraphReader::Read(graphText);
+    auto graphBytes = ReadPreparedPrefabCacheSidecarBytes(
+        cachePath,
+        root,
+        "graphSidecar",
+        "graphHash",
+        loadScope,
+        "prefabArtifactBytes",
+        "ReadPreparedPrefabCacheGraphSidecar");
+    if (!graphBytes.has_value())
+    {
+        loadScope.AddCounter("cacheMisses");
+        return std::nullopt;
+    }
+
+    std::optional<NLS::Engine::Serialize::ObjectGraphDocument> document;
+    {
+        NLS::Base::Profiling::PerformanceStageScope graphParseScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "DecodePreparedPrefabCacheGraph",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        graphParseScope.AddCounter("prefabArtifactBytes", graphBytes->size());
+        document = NLS::Engine::Serialize::ObjectGraphBinaryCache::Read(*graphBytes);
+    }
     if (!document.has_value())
     {
         loadScope.AddCounter("cacheMisses");
@@ -1273,60 +2130,146 @@ std::optional<FastImportedPrefabLoadResult> TryLoadPersistentPreparedPrefabCache
         }
     }
 
-    std::vector<ImportedPrefabRendererDependencyTemplate> rendererDependencyTemplates;
-    const bool hasRendererDependencyTemplatesField =
-        root.contains("rendererDependencyTemplates");
-    if (const auto templates = root.find("rendererDependencyTemplates");
-        templates != root.end() && templates->is_array())
+    const auto runtimeGraphFingerprintValue =
+        NLS::Engine::Assets::BuildPrefabRuntimeResolvedGraphFingerprint(*prefab);
+    const bool hasRuntimeResolvedGraphMetadata =
+        root.contains("runtimeResolvedGraphSidecar") ||
+        root.contains("runtimeResolvedGraphHash") ||
+        root.contains("runtimeResolvedGraphFingerprint");
+    if (hasRuntimeResolvedGraphMetadata)
     {
-        for (const auto& item : *templates)
+        const auto runtimeGraphFingerprintJson = root.find("runtimeResolvedGraphFingerprint");
+        if (runtimeGraphFingerprintJson == root.end() ||
+            !runtimeGraphFingerprintJson->is_string() ||
+            runtimeGraphFingerprintJson->get_ref<const std::string&>() != std::to_string(runtimeGraphFingerprintValue))
         {
-            if (!item.is_object())
-            {
-                loadScope.AddCounter("cacheMisses");
-                return std::nullopt;
-            }
-
-            const auto sourceObjectText = item.value("sourceObject", std::string {});
-            const auto sourceObjectGuid = NLS::Guid::TryParse(sourceObjectText);
-            if (!sourceObjectGuid.has_value())
-            {
-                loadScope.AddCounter("cacheMisses");
-                return std::nullopt;
-            }
-
-            ImportedPrefabRendererDependencyTemplate dependency;
-            dependency.sourceObject = NLS::Engine::Serialize::ObjectId(*sourceObjectGuid);
-            dependency.meshPath = item.value("meshPath", std::string {});
-            if (const auto materialPaths = item.find("materialPaths");
-                materialPaths != item.end() && materialPaths->is_array())
-            {
-                for (const auto& materialPath : *materialPaths)
-                {
-                    if (!materialPath.is_string())
-                    {
-                        loadScope.AddCounter("cacheMisses");
-                        return std::nullopt;
-                    }
-                    dependency.materialPaths.push_back(materialPath.get<std::string>());
-                }
-            }
-            rendererDependencyTemplates.push_back(std::move(dependency));
+            loadScope.AddCounter("cacheMisses");
+            return std::nullopt;
         }
-    }
 
-    auto diagnostics = prefab->Validate();
-    if (diagnostics.HasErrors())
+        auto runtimeGraphBytes = ReadPreparedPrefabCacheSidecarBytes(
+            cachePath,
+            root,
+            "runtimeResolvedGraphSidecar",
+            "runtimeResolvedGraphHash",
+            loadScope,
+            "runtimeResolvedGraphByteCount",
+            "ReadPreparedPrefabCacheRuntimeGraphSidecar");
+        if (!runtimeGraphBytes.has_value())
+        {
+            loadScope.AddCounter("cacheMisses");
+            return std::nullopt;
+        }
+
+        std::optional<NLS::Engine::Serialize::ObjectGraphDocument> runtimeDocument;
+        {
+            NLS::Base::Profiling::PerformanceStageScope runtimeGraphParseScope(
+                NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+                "DecodePreparedPrefabCacheRuntimeGraph",
+                NLS::Base::Profiling::PerformanceStageThread::Main);
+            runtimeGraphParseScope.AddCounter("runtimeResolvedGraphByteCount", runtimeGraphBytes->size());
+            runtimeDocument = NLS::Engine::Serialize::ObjectGraphBinaryCache::Read(*runtimeGraphBytes);
+        }
+        if (!runtimeDocument.has_value())
+        {
+            loadScope.AddCounter("cacheMisses");
+            return std::nullopt;
+        }
+
+        prefab->runtimeResolvedGraph =
+            std::make_shared<NLS::Engine::Serialize::ObjectGraphDocument>(std::move(*runtimeDocument));
+        prefab->runtimeResolvedGraphFingerprint = runtimeGraphFingerprintValue;
+        loadScope.AddCounter("runtimeResolvedGraphRestoredCount", 1u);
+    }
+    else if (prefab->generatedModelPrefab && !prefab->resolvedAssets.empty())
     {
         loadScope.AddCounter("cacheMisses");
         return std::nullopt;
     }
 
+    std::vector<ImportedPrefabRendererDependencyTemplate> rendererDependencyTemplates;
+    const bool rendererDependencyTemplatesRequired = key.rendererArtifactReadinessRequired;
+    const bool hasRendererDependencyTemplatesField =
+        root.contains("rendererDependencyTemplates");
+    if (rendererDependencyTemplatesRequired)
+    {
+        if (const auto templates = root.find("rendererDependencyTemplates");
+            templates != root.end())
+        {
+            if (!templates->is_array())
+            {
+                loadScope.AddCounter("cacheMisses");
+                return std::nullopt;
+            }
+
+            for (const auto& item : *templates)
+            {
+                if (!item.is_object())
+                {
+                    loadScope.AddCounter("cacheMisses");
+                    return std::nullopt;
+                }
+
+                const auto sourceObjectText = item.value("sourceObject", std::string {});
+                const auto sourceObjectGuid = NLS::Guid::TryParse(sourceObjectText);
+                if (!sourceObjectGuid.has_value())
+                {
+                    loadScope.AddCounter("cacheMisses");
+                    return std::nullopt;
+                }
+
+                ImportedPrefabRendererDependencyTemplate dependency;
+                dependency.sourceObject = NLS::Engine::Serialize::ObjectId(*sourceObjectGuid);
+                dependency.meshPath = item.value("meshPath", std::string {});
+                if (const auto materialPaths = item.find("materialPaths");
+                    materialPaths != item.end() && materialPaths->is_array())
+                {
+                    for (const auto& materialPath : *materialPaths)
+                    {
+                        if (!materialPath.is_string())
+                        {
+                            loadScope.AddCounter("cacheMisses");
+                            return std::nullopt;
+                        }
+                        dependency.materialPaths.push_back(materialPath.get<std::string>());
+                    }
+                }
+                rendererDependencyTemplates.push_back(std::move(dependency));
+            }
+        }
+    }
+    else if (hasRendererDependencyTemplatesField)
+    {
+        loadScope.AddCounter("rendererDependencyTemplatesSkippedCount", 1u);
+    }
+
+    const auto validationFingerprint =
+        NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(*prefab);
+    const auto cachedValidationFingerprint = root.find("validationFingerprint");
+    if (cachedValidationFingerprint != root.end() &&
+        cachedValidationFingerprint->is_string() &&
+        cachedValidationFingerprint->get<std::string>() == std::to_string(validationFingerprint))
+    {
+        prefab->validationFingerprint = validationFingerprint;
+        prefab->validationDiagnostics =
+            std::make_shared<const NLS::Engine::Serialize::SerializationDiagnosticList>();
+        loadScope.AddCounter("validationCachePrimedCount", 1u);
+    }
+    else
+    {
+        auto diagnostics = prefab->Validate(validationFingerprint);
+        if (diagnostics.HasErrors())
+        {
+            loadScope.AddCounter("cacheMisses");
+            return std::nullopt;
+        }
+    }
+
     FastImportedPrefabLoadResult result;
     result.prefab = std::move(prefab);
     result.key = key;
-    result.prefabArtifactBytes = graphText.size();
-    if (!hasRendererDependencyTemplatesField)
+    result.prefabArtifactBytes = graphBytes->size();
+    if (!hasRendererDependencyTemplatesField && rendererDependencyTemplatesRequired)
     {
         if (!allowSynthesizedRendererDependencyTemplates)
         {
@@ -1335,7 +2278,9 @@ std::optional<FastImportedPrefabLoadResult> TryLoadPersistentPreparedPrefabCache
         }
         rendererDependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(*result.prefab);
     }
-    result.rendererDependencyTemplates = std::move(rendererDependencyTemplates);
+    result.rendererDependencyTemplates =
+        std::make_shared<const std::vector<ImportedPrefabRendererDependencyTemplate>>(
+            std::move(rendererDependencyTemplates));
     loadScope.AddCounter("objectCount", result.prefab->graph.objects.size());
     loadScope.AddCounter("dependencyCount", result.prefab->resolvedAssets.size());
     loadScope.AddCounter("cacheHits");
@@ -1346,7 +2291,7 @@ std::optional<FastImportedPrefabLoadResult> TryLoadPersistentPreparedPrefabCache
     telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheHit;
     telemetry.elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - begin);
-    telemetry.byteCount = graphText.size();
+    telemetry.byteCount = graphBytes->size();
     telemetry.path = cachePath.generic_string();
     NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
     return result;
@@ -1367,14 +2312,21 @@ void StorePersistentPreparedPrefabCache(
     storeScope.AddCounter("objectCount", result.prefab->graph.objects.size());
     storeScope.AddCounter("dependencyCount", result.prefab->resolvedAssets.size());
 
+    const auto cachePath = PersistentPreparedPrefabCachePath(projectRoot, key);
+    const auto graphBytes = NLS::Engine::Serialize::ObjectGraphBinaryCache::Write(result.prefab->graph);
+    const auto graphHash = PreparedPrefabCacheBytesHash(graphBytes);
+    const auto graphSidecarFilename =
+        PersistentPreparedPrefabCacheSidecarFilename(cachePath, "graph", graphHash);
+    storeScope.AddCounter("prefabArtifactBytes", graphBytes.size());
+
     nlohmann::json root = nlohmann::json::object();
     const auto freshness = BuildPreparedPrefabCacheFreshnessRecord(key);
     root["schema"] = freshness.schemaVersion;
-    root["runtimeCacheIdentity"] = freshness.runtimeCacheIdentity;
-    root["manifestStamp"] = freshness.manifestStamp;
-    root["dependencyStamp"] = freshness.dependencyStamp;
-    root["prefabArtifactStamp"] = freshness.prefabArtifactStamp;
-    root["rendererArtifactStamp"] = freshness.rendererArtifactStamp;
+    root["runtimeCacheIdentityDigest"] = PreparedPrefabCacheTextDigest(freshness.runtimeCacheIdentity);
+    root["manifestStampDigest"] = PreparedPrefabCacheTextDigest(freshness.manifestStamp);
+    root["dependencyStampDigest"] = PreparedPrefabCacheTextDigest(freshness.dependencyStamp);
+    root["prefabArtifactStampDigest"] = PreparedPrefabCacheTextDigest(freshness.prefabArtifactStamp);
+    root["rendererArtifactStampDigest"] = PreparedPrefabCacheTextDigest(freshness.rendererArtifactStamp);
     root["prefabImporterVersion"] = freshness.prefabImporterVersion;
     root["reflectionSchemaVersion"] = freshness.reflectionSchemaVersion;
     root["serializationFormatVersion"] = freshness.serializationFormatVersion;
@@ -1382,10 +2334,12 @@ void StorePersistentPreparedPrefabCache(
     root["sourceAssetPath"] = key.source.sourceAssetPath;
     root["prefabSubAssetKey"] = key.source.prefabSubAssetKey;
     root["assetId"] = key.source.sourceAssetId.ToString();
-    root["graph"] = NLS::Engine::Serialize::ObjectGraphWriter::Write(result.prefab->graph);
+    root["graphSidecar"] = graphSidecarFilename;
+    root["graphHash"] = graphHash;
     root["resolvedAssets"] = nlohmann::json::array();
     root["baseChain"] = nlohmann::json::array();
-    root["rendererDependencyTemplates"] = nlohmann::json::array();
+    root["validationFingerprint"] = std::to_string(
+        NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(*result.prefab));
 
     for (const auto& resolved : result.prefab->resolvedAssets)
     {
@@ -1399,48 +2353,71 @@ void StorePersistentPreparedPrefabCache(
     for (const auto& base : result.prefab->baseChain)
         root["baseChain"].push_back(base.ToString());
 
-    auto rendererDependencyTemplates = result.rendererDependencyTemplates;
-    if (rendererDependencyTemplates.empty())
-        rendererDependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(*result.prefab);
-
-    for (const auto& dependency : rendererDependencyTemplates)
+    const auto runtimeGraphFingerprint =
+        NLS::Engine::Assets::BuildPrefabRuntimeResolvedGraphFingerprint(*result.prefab);
+    std::optional<std::vector<uint8_t>> runtimeGraphBytes;
+    std::optional<std::string> runtimeGraphSidecarFilename;
+    if (result.prefab->runtimeResolvedGraph &&
+        result.prefab->runtimeResolvedGraphFingerprint == runtimeGraphFingerprint)
     {
-        nlohmann::json item = nlohmann::json::object();
-        item["sourceObject"] = dependency.sourceObject.GetGuid().ToString();
-        item["meshPath"] = dependency.meshPath;
-        item["materialPaths"] = nlohmann::json::array();
-        for (const auto& materialPath : dependency.materialPaths)
-            item["materialPaths"].push_back(materialPath);
-        root["rendererDependencyTemplates"].push_back(std::move(item));
+        runtimeGraphBytes =
+            NLS::Engine::Serialize::ObjectGraphBinaryCache::Write(*result.prefab->runtimeResolvedGraph);
+        const auto runtimeGraphHash = PreparedPrefabCacheBytesHash(*runtimeGraphBytes);
+        runtimeGraphSidecarFilename =
+            PersistentPreparedPrefabCacheSidecarFilename(cachePath, "runtime", runtimeGraphHash);
+        root["runtimeResolvedGraphSidecar"] = *runtimeGraphSidecarFilename;
+        root["runtimeResolvedGraphHash"] = runtimeGraphHash;
+        root["runtimeResolvedGraphFingerprint"] = std::to_string(runtimeGraphFingerprint);
+        storeScope.AddCounter("runtimeResolvedGraphByteCount", runtimeGraphBytes->size());
+        storeScope.AddCounter("runtimeResolvedGraphStoredCount", 1u);
     }
 
-    const auto cachePath = PersistentPreparedPrefabCachePath(projectRoot, key);
+    if (key.rendererArtifactReadinessRequired)
+    {
+        root["rendererDependencyTemplates"] = nlohmann::json::array();
+        auto rendererDependencyTemplates = result.rendererDependencyTemplates;
+        if (!rendererDependencyTemplates || rendererDependencyTemplates->empty())
+        {
+            rendererDependencyTemplates = std::make_shared<const std::vector<ImportedPrefabRendererDependencyTemplate>>(
+                BuildImportedPrefabRendererDependencyTemplates(*result.prefab));
+        }
+
+        for (const auto& dependency : *rendererDependencyTemplates)
+        {
+            nlohmann::json item = nlohmann::json::object();
+            item["sourceObject"] = dependency.sourceObject.GetGuid().ToString();
+            item["meshPath"] = dependency.meshPath;
+            item["materialPaths"] = nlohmann::json::array();
+            for (const auto& materialPath : dependency.materialPaths)
+                item["materialPaths"].push_back(materialPath);
+            root["rendererDependencyTemplates"].push_back(std::move(item));
+        }
+    }
+
     std::error_code error;
     std::filesystem::create_directories(cachePath.parent_path(), error);
     if (error)
         return;
 
-    const auto tempPath = cachePath.string() + ".tmp";
+    if (!WritePreparedPrefabCacheBinaryFile(cachePath.parent_path() / graphSidecarFilename, graphBytes))
+        return;
+    if (runtimeGraphBytes.has_value() &&
+        runtimeGraphSidecarFilename.has_value() &&
+        !WritePreparedPrefabCacheBinaryFile(cachePath.parent_path() / *runtimeGraphSidecarFilename, *runtimeGraphBytes))
+    {
+        return;
+    }
+
     const auto cacheText = root.dump();
     storeScope.AddCounter("diskByteCount", cacheText.size());
-    {
-        std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
-        if (!output)
-            return;
+    if (!WritePreparedPrefabCacheTextFile(cachePath, cacheText))
+        return;
 
-        output << cacheText;
-    }
-
-    error.clear();
-    std::filesystem::rename(tempPath, cachePath, error);
-    if (error)
-    {
-        std::filesystem::remove(cachePath, error);
-        error.clear();
-        std::filesystem::rename(tempPath, cachePath, error);
-    }
-    if (!error)
-        MaybePrunePersistentPreparedPrefabCacheDirectory(cachePath.parent_path());
+    std::vector<std::string> retainedSidecars = {graphSidecarFilename};
+    if (runtimeGraphSidecarFilename.has_value())
+        retainedSidecars.push_back(*runtimeGraphSidecarFilename);
+    RemoveStalePreparedPrefabCacheSidecars(cachePath, retainedSidecars);
+    MaybePrunePersistentPreparedPrefabCacheDirectory(cachePath.parent_path());
 }
 
 std::string ToEditorAssetPathFromProjectRoot(
@@ -1506,12 +2483,33 @@ bool ManifestDependenciesAreCurrent(
     const std::filesystem::path& projectRoot,
     const std::filesystem::path& absoluteAssetPath)
 {
+    NLS::Base::Profiling::PerformanceStageScope scope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "ManifestDependenciesAreCurrent",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
+    const auto sourceHashContentReadsAtBegin = GetSourceFileHashContentReadCount();
+    size_t sourceHashDependencyCount = 0u;
+    size_t mappingDependencyCount = 0u;
+    size_t mappingFallbackFileStampCount = 0u;
+    const auto finish = [&](const bool current)
+    {
+        scope.AddCounter("dependencyCount", manifest.dependencies.size());
+        scope.AddCounter("sourceHashDependencyCount", sourceHashDependencyCount);
+        scope.AddCounter("mappingDependencyCount", mappingDependencyCount);
+        scope.AddCounter("mappingFallbackFileStampCount", mappingFallbackFileStampCount);
+        scope.AddCounter("current", current ? 1u : 0u);
+        scope.AddCounter(
+            "sourceHashContentReads",
+            GetSourceFileHashContentReadCount() - sourceHashContentReadsAtBegin);
+        return current;
+    };
+
     if (manifest.importerId != meta.importerId ||
         manifest.importerVersion != meta.importerVersion ||
         manifest.targetPlatform != "editor" ||
         !HasCurrentExternalTextureBuildPipelineDependency(manifest, meta.assetType))
     {
-        return false;
+        return finish(false);
     }
 
     const auto assetPath = ToEditorAssetPathFromProjectRoot(projectRoot, absoluteAssetPath);
@@ -1519,58 +2517,93 @@ bool ManifestDependenciesAreCurrent(
         projectRoot,
         NLS::Core::Assets::GetAssetMetaPath(absoluteAssetPath));
     std::vector<std::string> mappingDependencyValues;
-    mappingDependencyValues.reserve(manifest.dependencies.size());
-    for (const auto& dependency : manifest.dependencies)
     {
-        if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping)
-            mappingDependencyValues.push_back(dependency.value);
+        NLS::Base::Profiling::PerformanceStageScope collectMappingScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "CollectManifestMappingDependencies",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        mappingDependencyValues.reserve(manifest.dependencies.size());
+        for (const auto& dependency : manifest.dependencies)
+        {
+            if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping)
+            {
+                mappingDependencyValues.push_back(dependency.value);
+                ++mappingDependencyCount;
+            }
+        }
+        collectMappingScope.AddCounter("dependencyCount", manifest.dependencies.size());
+        collectMappingScope.AddCounter("mappingDependencyCount", mappingDependencyCount);
     }
-    const auto mappingFingerprints = ComputeModelTextureMappingDependencyFingerprints(
-        projectRoot,
-        mappingDependencyValues,
-        manifest.targetPlatform);
+    std::vector<std::optional<std::string>> mappingFingerprints;
+    {
+        NLS::Base::Profiling::PerformanceStageScope mappingScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "ComputeManifestMappingFingerprints",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        mappingScope.AddCounter("mappingDependencyCount", mappingDependencyValues.size());
+        mappingFingerprints = ComputeModelTextureMappingDependencyFingerprints(
+            projectRoot,
+            mappingDependencyValues,
+            manifest.targetPlatform);
+    }
     size_t mappingFingerprintIndex = 0u;
 
     bool checkedAsset = false;
     bool checkedMeta = false;
-    for (const auto& dependency : manifest.dependencies)
     {
-        if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::SourceFileHash)
+        NLS::Base::Profiling::PerformanceStageScope checkScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "CheckManifestDependencyRecords",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        for (const auto& dependency : manifest.dependencies)
         {
-            const auto normalizedValue = NormalizeEditorAssetPath(dependency.value);
-            if (normalizedValue == assetPath)
-                checkedAsset = true;
-
-            const auto dependencyPath = ResolveEditorManifestDependencyPath(projectRoot, dependency.value);
-            if (!dependencyPath.has_value() || dependency.hashOrVersion != SourceFileContentHash(*dependencyPath))
-                return false;
-            continue;
-        }
-
-        if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping)
-        {
-            const auto mappingFingerprint = mappingFingerprintIndex < mappingFingerprints.size()
-                ? mappingFingerprints[mappingFingerprintIndex++]
-                : std::optional<std::string> {};
-            if (mappingFingerprint.has_value())
+            if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::SourceFileHash)
             {
-                if (*mappingFingerprint != dependency.hashOrVersion)
-                    return false;
+                ++sourceHashDependencyCount;
+                const auto normalizedValue = NormalizeEditorAssetPath(dependency.value);
+                if (normalizedValue == assetPath)
+                    checkedAsset = true;
+
+                const auto dependencyPath = ResolveEditorManifestDependencyPath(projectRoot, dependency.value);
+                if (!dependencyPath.has_value() ||
+                    dependency.hashOrVersion != CachedSourceFileContentHash(projectRoot, *dependencyPath, false))
+                {
+                    FlushSourceFileHashCache(projectRoot);
+                    return finish(false);
+                }
                 continue;
             }
 
-            const auto normalizedValue = NormalizeEditorAssetPath(dependency.value);
-            if (normalizedValue == metaPath)
-                checkedMeta = true;
+            if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping)
+            {
+                const auto mappingFingerprint = mappingFingerprintIndex < mappingFingerprints.size()
+                    ? mappingFingerprints[mappingFingerprintIndex++]
+                    : std::optional<std::string> {};
+                if (mappingFingerprint.has_value())
+                {
+                    if (*mappingFingerprint != dependency.hashOrVersion)
+                        return finish(false);
+                    continue;
+                }
 
-            const auto dependencyPath = ResolveEditorManifestDependencyPath(projectRoot, dependency.value);
-            if (!dependencyPath.has_value() || dependency.hashOrVersion != FileStamp(*dependencyPath))
-                return false;
-            continue;
+                ++mappingFallbackFileStampCount;
+                const auto normalizedValue = NormalizeEditorAssetPath(dependency.value);
+                if (normalizedValue == metaPath)
+                    checkedMeta = true;
+
+                const auto dependencyPath = ResolveEditorManifestDependencyPath(projectRoot, dependency.value);
+                if (!dependencyPath.has_value() || dependency.hashOrVersion != FileStamp(*dependencyPath))
+                    return finish(false);
+                continue;
+            }
         }
+        checkScope.AddCounter("sourceHashDependencyCount", sourceHashDependencyCount);
+        checkScope.AddCounter("mappingDependencyCount", mappingDependencyCount);
+        checkScope.AddCounter("mappingFallbackFileStampCount", mappingFallbackFileStampCount);
     }
 
-    return checkedAsset && checkedMeta;
+    FlushSourceFileHashCache(projectRoot);
+    return finish(checkedAsset && checkedMeta);
 }
 
 bool IsPathInsideRoot(
@@ -1897,6 +2930,7 @@ UnifiedPrefabLoadKey BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::ImportedArtifact& prefabArtifact,
     const std::filesystem::path& prefabPath,
+    const bool rendererArtifactReadinessRequired,
     std::string rendererArtifactStamp)
 {
     UnifiedPrefabLoadKey key;
@@ -1905,6 +2939,7 @@ UnifiedPrefabLoadKey BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
     key.stamps.dependencyStamp = BuildDependencyManifestStamp(manifest);
     key.stamps.prefabArtifactStamp = BuildPrefabArtifactContentStamp(prefabArtifact, prefabPath);
     key.stamps.rendererArtifactStamp = std::move(rendererArtifactStamp);
+    key.rendererArtifactReadinessRequired = rendererArtifactReadinessRequired;
     key.manifestStamp = key.stamps.manifestStamp;
     key.dependencyStamp = key.stamps.dependencyStamp;
     key.prefabArtifactStamp = key.stamps.prefabArtifactStamp;
@@ -2128,30 +3163,6 @@ FastImportedPrefabLoadResult ValidateRendererManifestDependenciesReady(
     return {};
 }
 
-std::string ExpectedPrefabResolvedAssetType(const NLS::Core::Assets::ArtifactType type)
-{
-    using NLS::Core::Assets::ArtifactType;
-    switch (type)
-    {
-    case ArtifactType::Mesh: return "Mesh";
-    case ArtifactType::Material: return "Material";
-    case ArtifactType::Texture: return "Texture";
-    case ArtifactType::Skeleton: return "Skeleton";
-    case ArtifactType::Skin: return "Skin";
-    case ArtifactType::AnimationClip: return "AnimationClip";
-    case ArtifactType::MorphTarget: return "MorphTarget";
-    case ArtifactType::Model: return "Model";
-    case ArtifactType::Shader: return "Shader";
-    case ArtifactType::Scene: return "Scene";
-    case ArtifactType::Audio: return "Audio";
-    case ArtifactType::Prefab:
-    case ArtifactType::Unknown:
-    case ArtifactType::Count:
-        return {};
-    }
-    return {};
-}
-
 FastImportedPrefabLoadResult GeneratedModelRendererArtifactFilesExist(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const std::filesystem::path& projectRoot,
@@ -2319,11 +3330,19 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     const ImportedPrefabArtifactLoadMode loadMode = ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles)
 {
     FastImportedPrefabLoadResult result;
+    const auto fail = [&result](std::string code, std::string message)
+    {
+        result.diagnosticCode = std::move(code);
+        result.diagnosticMessage = std::move(message);
+        return result;
+    };
     const auto absolutePath = (projectRoot / std::filesystem::path(assetPath)).lexically_normal();
     const auto meta = NLS::Core::Assets::AssetMeta::Load(
         NLS::Core::Assets::GetAssetMetaPath(absolutePath));
     if (!meta.has_value() || !meta->id.IsValid())
-        return result;
+        return fail(
+            "imported-prefab-meta-missing",
+            "The source asset meta file is missing or has no valid asset id.");
     auto currentMeta = *meta;
     currentMeta.importerVersion = std::max(
         currentMeta.importerVersion,
@@ -2332,9 +3351,13 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     const auto artifactRoot = projectRoot / "Library" / "Artifacts";
     auto manifest = LoadFastManifest(projectRoot, currentMeta.id);
     if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
-        return result;
+        return fail(
+            "imported-prefab-manifest-missing",
+            "The imported asset manifest is missing or belongs to another source asset.");
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
-        return result;
+        return fail(
+            "imported-prefab-manifest-stale",
+            "The imported asset manifest dependencies are no longer current.");
 
     if (assetType == NLS::Core::Assets::AssetType::ModelScene &&
         loadMode == ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles)
@@ -2353,12 +3376,16 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     if (!prefabArtifact ||
         prefabArtifact->artifactType != NLS::Core::Assets::ArtifactType::Prefab)
     {
-        return result;
+        return fail(
+            "imported-prefab-subasset-missing",
+            "The requested prefab sub-asset is not present in the imported asset manifest.");
     }
 
     const auto prefabPath = ResolveManifestArtifactPath(projectRoot, artifactRoot, prefabArtifact->artifactPath);
     if (prefabPath.empty())
-        return result;
+        return fail(
+            "imported-prefab-artifact-missing",
+            "The prefab artifact file referenced by the manifest is missing.");
 
     const auto cacheKey = BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
         NormalizePrefabSourceIdentity(
@@ -2370,17 +3397,13 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         *manifest,
         *prefabArtifact,
         prefabPath,
+        IncludeRendererArtifactStamp(loadMode),
         IncludeRendererArtifactStamp(loadMode)
             ? BuildRendererArtifactStamp(*manifest, projectRoot, artifactRoot)
             : std::string {});
     result.key = cacheKey;
     if (auto cached = TryGetImportedPrefabHotCache(cacheKey); cached.has_value())
         return *cached;
-    if (IncludeRendererArtifactStamp(loadMode))
-    {
-        if (auto promoted = TryPromoteImportedPrefabGraphHotCache(cacheKey); promoted.has_value())
-            return *promoted;
-    }
     if (auto prepared = TryLoadPersistentPreparedPrefabCache(projectRoot, cacheKey); prepared.has_value())
     {
         PutImportedPrefabHotCache(cacheKey, *prepared);
@@ -2389,7 +3412,9 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
 
     const auto bytes = ReadAllBytes(prefabPath);
     if (bytes.empty())
-        return result;
+        return fail(
+            "imported-prefab-artifact-empty",
+            "The prefab artifact file could not be read or is empty.");
     result.prefabArtifactBytes = bytes.size();
 
     const auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
@@ -2397,9 +3422,13 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         NLS::Core::Assets::ArtifactType::Prefab,
         1u);
     if (!container.has_value())
-        return result;
+        return fail(
+            "imported-prefab-container-invalid",
+            "The prefab artifact file is not a valid native prefab artifact container.");
     if (container->payloadSize == 0u)
-        return result;
+        return fail(
+            "imported-prefab-payload-empty",
+            "The prefab artifact container has no prefab payload.");
 
     std::vector<NLS::Engine::Assets::PrefabResolvedAsset> resolvedAssets;
     for (const auto& artifact : manifest->subAssets)
@@ -2407,7 +3436,7 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Prefab)
             continue;
 
-        auto expectedType = ExpectedPrefabResolvedAssetType(artifact.artifactType);
+        auto expectedType = NLS::Engine::Assets::PrefabResolvedAssetTypeForArtifactType(artifact.artifactType);
 
         if (!expectedType.empty())
         {
@@ -2432,18 +3461,41 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         container->payloadSize);
     NLS::Core::Assets::RecordArtifactLoadTelemetry({
         NLS::Core::Assets::ArtifactLoadTelemetryStage::PrefabGraphLoad});
+    const auto validationProof = NLS::Engine::Assets::FindPrefabValidationProofFingerprint(
+        container->metadata.dependencies,
+        prefabSubAssetKey);
+    auto graphValidationResolvedAssets =
+        NLS::Engine::Assets::BuildPrefabValidationResolvedAssetsFromManifest(*manifest);
     auto importResult = NLS::Engine::Assets::ImportPrefabArtifact(
         payload,
         meta->id,
-        std::move(resolvedAssets));
+        std::move(resolvedAssets),
+        NLS::Engine::Assets::PrefabImportOptions {
+            .trustResolvedAssets = assetType == NLS::Core::Assets::AssetType::ModelScene,
+            .trustGraphValidation = assetType == NLS::Core::Assets::AssetType::ModelScene,
+            .trustedGraphValidationFingerprint = validationProof,
+            .trustedGraphValidationResolvedAssets = std::move(graphValidationResolvedAssets)
+        });
     if (importResult.diagnostics.HasErrors())
-        return result;
+        return fail(
+            "imported-prefab-import-failed",
+            "The prefab artifact payload failed to import.");
 
     auto prefab = std::make_shared<NLS::Engine::Assets::PrefabArtifact>(
         std::move(importResult.artifact));
     prefab->generatedModelPrefab = assetType == NLS::Core::Assets::AssetType::ModelScene;
     result.prefab = std::move(prefab);
-    result.rendererDependencyTemplates = BuildImportedPrefabRendererDependencyTemplates(*result.prefab);
+    if (cacheKey.rendererArtifactReadinessRequired)
+    {
+        result.rendererDependencyTemplates =
+            std::make_shared<const std::vector<ImportedPrefabRendererDependencyTemplate>>(
+                BuildImportedPrefabRendererDependencyTemplates(*result.prefab));
+    }
+    else
+    {
+        result.rendererDependencyTemplates =
+            std::make_shared<const std::vector<ImportedPrefabRendererDependencyTemplate>>();
+    }
     RememberImportedPrefabLoadedKey(result.prefab, cacheKey);
     PutImportedPrefabHotCache(cacheKey, result);
     StorePersistentPreparedPrefabCache(projectRoot, cacheKey, result);
@@ -2509,7 +3561,7 @@ EditorAssetDragDropBridgeResult MakePendingImportedPrefabResult(
     return result;
 }
 
-std::optional<ImportedAssetHandle> ResolveImportedAssetHandleForPreview(
+std::optional<ImportedAssetHandle> ResolveImportedAssetHandleForPayload(
     const std::filesystem::path& projectRoot,
     const EditorAssetDragPayload& payload)
 {
@@ -2626,12 +3678,26 @@ UnifiedPrefabLoadRequest MakeUnifiedPrefabLoadRequestForAsset(
 
 }
 
+std::string NormalizeGeneratedPrefabSubAssetKeyForAssetPath(
+    const std::string& assetPath,
+    std::string subAssetKey,
+    const NLS::Core::Assets::AssetType assetType)
+{
+    if (assetType != NLS::Core::Assets::AssetType::ModelScene)
+        return subAssetKey;
+
+    if (subAssetKey.empty() || subAssetKey.rfind("model:", 0u) == 0u)
+        return "prefab:" + std::filesystem::path(assetPath).stem().generic_string();
+
+    return subAssetKey;
+}
+
 EditorAssetDragDropBridge::EditorAssetDragDropBridge(std::filesystem::path projectAssetsPath)
     : m_projectAssetsPath(std::move(projectAssetsPath))
 {
 }
 
-std::optional<std::vector<ImportedPrefabRendererDependencyTemplate>>
+std::shared_ptr<const std::vector<ImportedPrefabRendererDependencyTemplate>>
 TryGetImportedPrefabRendererDependencyTemplates(const UnifiedPrefabLoadKey& key)
 {
     std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
@@ -2644,7 +3710,7 @@ TryGetImportedPrefabRendererDependencyTemplates(const UnifiedPrefabLoadKey& key)
         entry.lastUsed = cache.useCounter;
         return entry.result.rendererDependencyTemplates;
     }
-    return std::nullopt;
+    return nullptr;
 }
 
 std::optional<UnifiedPrefabLoadKey> TryGetImportedPrefabLoadKeyForArtifact(
@@ -2653,47 +3719,37 @@ std::optional<UnifiedPrefabLoadKey> TryGetImportedPrefabLoadKeyForArtifact(
     return FindRememberedImportedPrefabLoadedKey(prefab);
 }
 
-bool SchedulePreviewPrefabHotCachePreload(
-    EditorAssetDragPayload payload,
-    std::filesystem::path projectAssetsPath,
-    std::function<bool(std::function<void()>)> scheduleBackgroundTask)
-{
-    if (!scheduleBackgroundTask)
-        return false;
-    if (GetEditorAssetDragPayloadPath(payload).empty())
-        return false;
-
-    return scheduleBackgroundTask(
-        [payload = std::move(payload), projectAssetsPath = std::move(projectAssetsPath)]
-        {
-            try
-            {
-                EditorAssetDragDropBridge bridge(projectAssetsPath);
-                (void)bridge.PreloadPreviewPrefabHotCache(payload);
-            }
-            catch (const std::exception& exception)
-            {
-                NLS_LOG_WARNING(std::string("Imported prefab hot-cache preload failed: ") + exception.what());
-            }
-            catch (...)
-            {
-                NLS_LOG_WARNING("Imported prefab hot-cache preload failed with an unknown exception.");
-            }
-        });
-}
-
 #if defined(NLS_ENABLE_TEST_HOOKS)
 void ClearModelTextureMappingDependencyFingerprintCacheForTesting()
 {
     std::lock_guard lock(ModelTextureMappingDependencyFingerprintCacheMutex());
     ModelTextureMappingDependencyFingerprintCache().clear();
+    ModelTextureMappingArtifactDatabaseTextureIndexCache().clear();
     ModelTextureMappingDependencyFingerprintCacheUseCounter() = 0u;
     ModelTextureMappingDependencyFingerprintScanCountForTestingStorage() = 0u;
+    ModelTextureMappingDependencyArtifactDatabaseLoadCountForTestingStorage() = 0u;
+    ModelTextureMappingDependencyMetaLoadCountForTestingStorage() = 0u;
+    ModelTextureMappingDependencySourcePathFallbackCountForTestingStorage() = 0u;
 }
 
 size_t GetModelTextureMappingDependencyFingerprintScanCountForTesting()
 {
     return ModelTextureMappingDependencyFingerprintScanCountForTestingStorage();
+}
+
+size_t GetModelTextureMappingDependencyArtifactDatabaseLoadCountForTesting()
+{
+    return ModelTextureMappingDependencyArtifactDatabaseLoadCountForTestingStorage();
+}
+
+size_t GetModelTextureMappingDependencyMetaLoadCountForTesting()
+{
+    return ModelTextureMappingDependencyMetaLoadCountForTestingStorage();
+}
+
+size_t GetModelTextureMappingDependencySourcePathFallbackCountForTesting()
+{
+    return ModelTextureMappingDependencySourcePathFallbackCountForTestingStorage();
 }
 
 std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintForTesting(
@@ -2731,6 +3787,15 @@ size_t GetImportedPrefabHotCacheEntryCountForTesting()
 {
     std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
     return ImportedPrefabHotCacheState().entries.size();
+}
+
+bool ManifestDependenciesAreCurrentForTesting(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::AssetMeta& meta,
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& absoluteAssetPath)
+{
+    return ManifestDependenciesAreCurrent(manifest, meta, projectRoot, absoluteAssetPath);
 }
 
 PreparedPrefabCacheFreshnessRecord BuildPreparedPrefabCacheFreshnessRecordForTesting(
@@ -2816,12 +3881,103 @@ std::optional<UnifiedPrefabLoadKey> EditorAssetDragDropBridge::BuildUnifiedPrefa
         *manifest,
         *prefabArtifact,
         prefabPath,
+        IncludeRendererArtifactStamp(loadMode),
         IncludeRendererArtifactStamp(loadMode)
             ? BuildRendererArtifactStamp(*manifest, projectRoot, artifactRoot)
             : std::string {});
 }
 
+std::optional<UnifiedPrefabLoadKey> EditorAssetDragDropBridge::TryFindImportedPrefabHotCacheKey(
+    const std::string& assetPath,
+    const std::string& prefabSubAssetKey,
+    const NLS::Core::Assets::AssetId assetId,
+    const NLS::Core::Assets::AssetType assetType,
+    const UnifiedPrefabReadiness requiredReadiness) const
+{
+    auto source = NormalizePrefabSourceIdentity(
+        ProjectRoot(),
+        assetPath,
+        prefabSubAssetKey,
+        assetId,
+        assetType);
+    if (source.sourceAssetPath.empty() ||
+        source.prefabSubAssetKey.empty() ||
+        !source.sourceAssetId.IsValid() ||
+        source.assetType == NLS::Core::Assets::AssetType::Unknown)
+    {
+        return std::nullopt;
+    }
+
+    const bool rendererReadinessRequired =
+        requiredReadiness == UnifiedPrefabReadiness::MeshMaterialTextureReady;
+    std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
+    auto& cache = ImportedPrefabHotCacheState();
+    ++cache.useCounter;
+    for (auto it = cache.entries.rbegin(); it != cache.entries.rend(); ++it)
+    {
+        auto& entry = *it;
+        if (entry.key.source.sourceAssetPath != source.sourceAssetPath ||
+            entry.key.source.prefabSubAssetKey != source.prefabSubAssetKey ||
+            entry.key.source.sourceAssetId != source.sourceAssetId ||
+            entry.key.source.assetType != source.assetType ||
+            !entry.result.prefab ||
+            entry.result.prefab->assetId != source.sourceAssetId ||
+            entry.key.rendererArtifactReadinessRequired != rendererReadinessRequired ||
+            entry.key.runtimeCacheIdentity.empty())
+        {
+            continue;
+        }
+
+        entry.lastUsed = cache.useCounter;
+        return entry.key;
+    }
+
+    return std::nullopt;
+}
+
+bool EditorAssetDragDropBridge::IsImportedPrefabHotCacheKeyCurrent(
+    const std::string& assetPath,
+    const std::string& prefabSubAssetKey,
+    const NLS::Core::Assets::AssetId assetId,
+    const NLS::Core::Assets::AssetType assetType,
+    const UnifiedPrefabLoadKey& hotCacheKey) const
+{
+    if (assetPath.empty() ||
+        prefabSubAssetKey.empty() ||
+        !assetId.IsValid() ||
+        hotCacheKey.runtimeCacheIdentity.empty())
+    {
+        return false;
+    }
+
+    auto request = MakeUnifiedPrefabLoadRequestForAsset(
+        ProjectRoot(),
+        assetPath,
+        prefabSubAssetKey,
+        assetId,
+        assetType,
+        UnifiedPrefabLoadMode::FinalDrop,
+        UnifiedPrefabOwnerKind::SceneInstance,
+        assetPath);
+    request.requiredReadiness = UnifiedPrefabReadiness::MeshMaterialTextureReady;
+    request.allowPending = false;
+
+    const auto currentKey = BuildUnifiedPrefabLoadKey(request);
+    return currentKey.has_value() &&
+        currentKey->runtimeCacheIdentity == hotCacheKey.runtimeCacheIdentity;
+}
+
 bool EditorAssetDragDropBridge::PreloadPreparedPrefabHotCache(
+    const UnifiedPrefabLoadRequest& request) const
+{
+    if (TryPreloadExistingPreparedPrefabHotCache(request))
+        return true;
+
+    const auto loaded = LoadUnifiedPrefabShared(request);
+    return loaded.prefab != nullptr;
+}
+
+bool EditorAssetDragDropBridge::TryPreloadExistingPreparedPrefabHotCache(
     const UnifiedPrefabLoadRequest& request) const
 {
     const auto key = BuildUnifiedPrefabLoadKey(request);
@@ -2860,6 +4016,7 @@ UnifiedPrefabLoadResult EditorAssetDragDropBridge::LoadUnifiedPrefab(
 UnifiedPrefabSharedLoadResult EditorAssetDragDropBridge::LoadUnifiedPrefabShared(
     const UnifiedPrefabLoadRequest& request) const
 {
+    const auto begin = std::chrono::steady_clock::now();
     UnifiedPrefabSharedLoadResult result;
 
     const auto projectRoot = ProjectRoot();
@@ -2900,7 +4057,57 @@ UnifiedPrefabSharedLoadResult EditorAssetDragDropBridge::LoadUnifiedPrefabShared
         result.diagnosticCode = "prefab-load-pending";
         result.diagnosticMessage = "The requested prefab artifact is not ready for the requested load mode.";
     }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - begin);
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::PrefabUnifiedSharedLoad,
+        elapsed,
+        static_cast<size_t>(result.prefab != nullptr) +
+            (static_cast<size_t>(result.pending) << 1u) +
+            (static_cast<size_t>(result.rendererDependencyMissing) << 2u),
+        source.sourceAssetPath});
+    NLS::Core::Assets::CheckArtifactLoadBudget(
+        NLS::Core::Assets::ArtifactLoadBudgetKind::PrefabUnifiedSharedLoad,
+        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed),
+        source.sourceAssetPath);
     return result;
+}
+
+bool EditorAssetDragDropBridge::PreloadImportedAssetHandlePrefabHotCache(
+    const EditorAssetDragPayload& payload) const
+{
+    const auto begin = std::chrono::steady_clock::now();
+    const auto handle = ResolveImportedAssetHandleForPayload(ProjectRoot(), payload);
+    if (!handle.has_value())
+        return false;
+
+    auto request = MakeUnifiedPrefabLoadRequestForAsset(
+        ProjectRoot(),
+        handle->assetPath,
+        handle->prefabSubAssetKey,
+        handle->assetId,
+        handle->assetType,
+        UnifiedPrefabLoadMode::Prewarm,
+        UnifiedPrefabOwnerKind::AsyncJob,
+        handle->assetPath);
+    request.requiredReadiness = UnifiedPrefabReadiness::PrefabGraphOnly;
+    request.allowPending = false;
+    const bool graphPreloaded = PreloadPreparedPrefabHotCache(request);
+    request.requiredReadiness = UnifiedPrefabReadiness::MeshMaterialTextureReady;
+    const bool rendererPreloaded = PreloadPreparedPrefabHotCache(request);
+    const bool preloaded = rendererPreloaded || graphPreloaded;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - begin);
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::PrefabVisiblePrewarmLoad,
+        elapsed,
+        preloaded ? 1u : 0u,
+        handle->assetPath});
+    NLS::Core::Assets::CheckArtifactLoadBudget(
+        NLS::Core::Assets::ArtifactLoadBudgetKind::PrefabVisiblePrewarm,
+        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed),
+        handle->assetPath);
+    return preloaded;
 }
 
 std::string EditorAssetDragDropBridge::NormalizeResourcePath(const std::string& resourcePath) const
@@ -3026,6 +4233,7 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::InstantiateImportedAs
     const auto payloadKind = assetType == NLS::Core::Assets::AssetType::ModelScene
         ? DragPayloadKind::GeneratedModelPrefabAsset
         : DragPayloadKind::PrefabAsset;
+    const bool deferRendererResourceResolution = assetType == NLS::Core::Assets::AssetType::ModelScene;
     result.dragDrop = AssetDragDropWorkflow().Execute({
         {payloadKind, prefab.assetId, prefabSubAssetKey, nullptr, nullptr, nullptr, {}, &prefab, std::move(sharedPrefab)},
         {DropTargetKind::Hierarchy, &scene, parent, 0u, false},
@@ -3034,9 +4242,11 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::InstantiateImportedAs
         nullptr,
         prefabInstanceRegistry,
         {},
-        false,
+        deferRendererResourceResolution,
         true
     });
+    if (const auto key = TryGetImportedPrefabLoadKeyForArtifact(prefab); key.has_value())
+        result.dragDrop.rendererDependencyTemplates = TryGetImportedPrefabRendererDependencyTemplates(*key);
     return result;
 }
 
@@ -3384,6 +4594,111 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
     return dropResult;
 }
 
+EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::TryDropImportedAssetHandleFromHotCacheIntoHierarchy(
+    const std::string& assetPath,
+    const std::string& prefabSubAssetKey,
+    NLS::Core::Assets::AssetId assetId,
+    NLS::Core::Assets::AssetType assetType,
+    const UnifiedPrefabLoadKey& hotCacheKey,
+    NLS::Engine::SceneSystem::Scene& scene,
+    NLS::Core::Assets::AssetId sceneAssetId,
+    PrefabInstanceRegistry* prefabInstanceRegistry,
+    NLS::Engine::GameObject* parent,
+    ImportProgressTracker* progressTracker,
+    const bool allowGraphOnlyPreview) const
+{
+    EditorAssetDragDropBridgeResult result;
+    if (assetPath.empty() ||
+        prefabSubAssetKey.empty() ||
+        !assetId.IsValid() ||
+        (assetType != NLS::Core::Assets::AssetType::ModelScene &&
+            assetType != NLS::Core::Assets::AssetType::Prefab))
+    {
+        return result;
+    }
+
+    if (hotCacheKey.runtimeCacheIdentity.empty())
+        return result;
+    if (!hotCacheKey.rendererArtifactReadinessRequired && !allowGraphOnlyPreview)
+    {
+        result.handled = true;
+        result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
+        result.dragDrop.diagnostics.push_back({
+            "dragdrop-hot-cache-key-not-renderer-ready",
+            "Graph-only prefab hot-cache keys are only valid for transient Scene View preview."
+        });
+        return result;
+    }
+
+    auto source = NormalizePrefabSourceIdentity(
+        ProjectRoot(),
+        assetPath,
+        prefabSubAssetKey,
+        assetId,
+        assetType);
+    if (source.sourceAssetPath.empty() ||
+        hotCacheKey.source.sourceAssetPath != source.sourceAssetPath ||
+        hotCacheKey.source.prefabSubAssetKey != source.prefabSubAssetKey ||
+        hotCacheKey.source.sourceAssetId != source.sourceAssetId ||
+        hotCacheKey.source.assetType != source.assetType)
+    {
+        result.handled = true;
+        result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
+        result.dragDrop.diagnostics.push_back({
+            "dragdrop-hot-cache-key-mismatch",
+            "The dragged asset handle no longer matches the prefab hot-cache key."
+        });
+        return result;
+    }
+
+    if (hotCacheKey.rendererArtifactReadinessRequired &&
+        !IsImportedPrefabHotCacheKeyCurrent(
+            assetPath,
+            prefabSubAssetKey,
+            assetId,
+            assetType,
+            hotCacheKey))
+    {
+        result.handled = true;
+        result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
+        result.dragDrop.diagnostics.push_back({
+            "dragdrop-cached-artifact-stale",
+            "The cached prefab artifact is no longer current for this asset."
+        });
+        return result;
+    }
+
+    const auto cached = TryGetImportedPrefabHotCache(hotCacheKey);
+    if (!cached.has_value() || !cached->prefab)
+        return MakePendingImportedPrefabResult(
+            UnifiedPrefabSharedLoadResult {},
+            "dragdrop-prefab-hot-cache-pending",
+            "The dragged prefab is still loading in the background.");
+
+    if (cached->prefab->assetId != assetId)
+    {
+        result.handled = true;
+        result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
+        result.dragDrop.diagnostics.push_back({
+            "dragdrop-asset-identity-mismatch",
+            "The dragged asset handle no longer matches the cached prefab artifact."
+        });
+        return result;
+    }
+
+    return InstantiateImportedAsset(
+        *cached->prefab,
+        prefabSubAssetKey,
+        assetType,
+        scene,
+        sceneAssetId,
+        prefabInstanceRegistry,
+        parent,
+        progressTracker,
+        assetPath,
+        cached->prefab);
+}
+
 EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHandleIntoHierarchyBlocking(
     const EditorAssetDragPayload& payload,
     NLS::Engine::SceneSystem::Scene& scene,
@@ -3502,7 +4817,7 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArt
         result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
         result.dragDrop.diagnostics.push_back({
             "dragdrop-asset-identity-mismatch",
-            "The dragged asset handle no longer matches the cached preview prefab artifact."
+            "The dragged asset handle no longer matches the cached prefab artifact."
         });
         return result;
     }
@@ -3516,23 +4831,26 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArt
         std::move(prefabSubAssetKey),
         assetType);
 
-    if (!IsPreviewPrefabArtifactCurrent(
-        payload,
-        prefab,
-        UnifiedPrefabReadiness::MeshMaterialTextureReady))
+    if (assetType != NLS::Core::Assets::AssetType::ModelScene &&
+        assetType != NLS::Core::Assets::AssetType::Prefab)
+    {
+        return result;
+    }
+
+    if (!IsImportedPrefabArtifactCurrentForPayload(
+            ProjectRoot(),
+            payload,
+            prefab,
+            assetPath,
+            prefabSubAssetKey,
+            UnifiedPrefabReadiness::MeshMaterialTextureReady))
     {
         result.handled = true;
         result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
         result.dragDrop.diagnostics.push_back({
             "dragdrop-cached-artifact-stale",
-            "The cached preview prefab artifact is no longer current for this asset."
+            "The cached prefab artifact is no longer current for this asset."
         });
-        return result;
-    }
-
-    if (assetType != NLS::Core::Assets::AssetType::ModelScene &&
-        assetType != NLS::Core::Assets::AssetType::Prefab)
-    {
         return result;
     }
 
@@ -3551,146 +4869,6 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArt
         assetPath);
     progress.FinishForDragDropResult(dropResult.dragDrop);
     return dropResult;
-}
-
-std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryLoadPreviewPrefabArtifact(
-    const EditorAssetDragPayload& payload) const
-{
-    auto prefab = TryLoadPreviewPrefabArtifactShared(payload);
-    if (!prefab)
-        return std::nullopt;
-
-    return *prefab;
-}
-
-std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryLoadPreviewPrefabArtifactShared(
-    const EditorAssetDragPayload& payload) const
-{
-    const auto handle = ResolveImportedAssetHandleForPreview(ProjectRoot(), payload);
-    if (!handle.has_value())
-        return {};
-
-    auto request = MakeUnifiedPrefabLoadRequestForAsset(
-        ProjectRoot(),
-        handle->assetPath,
-        handle->prefabSubAssetKey,
-        handle->assetId,
-        handle->assetType,
-        UnifiedPrefabLoadMode::DragPreview,
-        UnifiedPrefabOwnerKind::PreviewScene,
-        handle->assetPath);
-    request.requiredReadiness = UnifiedPrefabReadiness::PrefabGraphOnly;
-    auto fastLoad = LoadUnifiedPrefabShared(request);
-    if (!fastLoad.prefab ||
-        fastLoad.prefab->assetId != handle->assetId)
-    {
-        return {};
-    }
-
-    return fastLoad.prefab;
-}
-
-std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryGetCachedPreviewPrefabArtifactShared(
-    const EditorAssetDragPayload& payload) const
-{
-    const auto handle = ResolveImportedAssetHandleForPreview(ProjectRoot(), payload);
-    if (!handle.has_value())
-        return {};
-
-    auto request = MakeUnifiedPrefabLoadRequestForAsset(
-        ProjectRoot(),
-        handle->assetPath,
-        handle->prefabSubAssetKey,
-        handle->assetId,
-        handle->assetType,
-        UnifiedPrefabLoadMode::DragPreview,
-        UnifiedPrefabOwnerKind::PreviewScene,
-        handle->assetPath);
-    request.requiredReadiness = UnifiedPrefabReadiness::PrefabGraphOnly;
-    const auto key = BuildUnifiedPrefabLoadKey(request);
-    if (!key.has_value())
-        return {};
-
-    const auto cached = TryGetImportedPrefabHotCache(*key);
-    if (!cached.has_value() || !cached->prefab || cached->prefab->assetId != handle->assetId)
-        return {};
-    return cached->prefab;
-}
-
-bool EditorAssetDragDropBridge::PreloadPreviewPrefabHotCache(
-    const EditorAssetDragPayload& payload) const
-{
-    const auto handle = ResolveImportedAssetHandleForPreview(ProjectRoot(), payload);
-    if (!handle.has_value())
-        return false;
-
-    auto request = MakeUnifiedPrefabLoadRequestForAsset(
-        ProjectRoot(),
-        handle->assetPath,
-        handle->prefabSubAssetKey,
-        handle->assetId,
-        handle->assetType,
-        UnifiedPrefabLoadMode::Prewarm,
-        UnifiedPrefabOwnerKind::AsyncJob,
-        handle->assetPath);
-    request.requiredReadiness = UnifiedPrefabReadiness::PrefabGraphOnly;
-    request.allowPending = false;
-    const auto loaded = LoadUnifiedPrefabShared(request);
-    return loaded.prefab != nullptr;
-}
-
-bool EditorAssetDragDropBridge::IsPreviewPrefabArtifactCurrent(
-    const EditorAssetDragPayload& payload,
-    const NLS::Engine::Assets::PrefabArtifact& prefab,
-    const UnifiedPrefabReadiness requiredReadiness) const
-{
-    auto assetPath = NormalizeResourcePath(GetEditorAssetDragPayloadPath(payload));
-    if (assetPath.empty())
-        return false;
-
-    const auto payloadAssetId = GetEditorAssetDragPayloadAssetId(payload);
-    if (!payloadAssetId.IsValid() || prefab.assetId != payloadAssetId)
-        return false;
-
-    auto prefabSubAssetKey = GetEditorAssetDragPayloadSubAssetKey(payload);
-    const auto assetType = prefab.generatedModelPrefab
-        ? NLS::Core::Assets::AssetType::ModelScene
-        : NLS::Core::Assets::InferAssetType(ProjectRoot() / assetPath);
-    prefabSubAssetKey = NormalizeGeneratedPrefabSubAssetKeyForAssetPath(
-        assetPath,
-        std::move(prefabSubAssetKey),
-        assetType);
-
-    if (!IsImportedPrefabArtifactCurrentForPayload(
-        ProjectRoot(),
-        payload,
-        prefab,
-        assetPath,
-        prefabSubAssetKey,
-        requiredReadiness))
-    {
-        return false;
-    }
-
-    const auto rememberedKey = FindRememberedImportedPrefabLoadedKey(prefab);
-    if (!rememberedKey.has_value())
-        return false;
-
-    auto request = MakeUnifiedPrefabLoadRequestForAsset(
-        ProjectRoot(),
-        assetPath,
-        prefabSubAssetKey,
-        prefab.assetId,
-        assetType,
-        UnifiedPrefabLoadMode::DragPreview,
-        UnifiedPrefabOwnerKind::PreviewScene,
-        assetPath);
-    if (requiredReadiness == UnifiedPrefabReadiness::PrefabGraphOnly)
-        request.requiredReadiness = UnifiedPrefabReadiness::PrefabGraphOnly;
-
-    const auto currentKey = BuildUnifiedPrefabLoadKey(request);
-    return currentKey.has_value() &&
-        currentKey->runtimeCacheIdentity == rememberedKey->runtimeCacheIdentity;
 }
 
 std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryLoadImportedPrefabArtifact(

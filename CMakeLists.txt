@@ -120,7 +120,25 @@ option(NLS_ENABLE_PROFILING "Enable Nullus shared profiling instrumentation" ON)
 option(NLS_ENABLE_TRACY "Enable Tracy profiler destination" OFF)
 option(NLS_ENABLE_TIMELINE_PROFILER "Enable TimelineProfiler editor destination" OFF)
 option(NLS_BUILD_TESTS "Build Nullus test targets" OFF)
-option(NLS_ENABLE_TEST_HOOKS "Expose test-only runtime hooks for NullusUnitTests" ${NLS_BUILD_TESTS})
+option(NLS_BUILD_PERFORMANCE_TESTS "Build Nullus performance and stress tests" OFF)
+set(NLS_ENABLE_TEST_HOOKS "AUTO" CACHE STRING "Expose test-only runtime hooks for Nullus tests: AUTO, ON, or OFF")
+set_property(CACHE NLS_ENABLE_TEST_HOOKS PROPERTY STRINGS AUTO ON OFF)
+string(TOUPPER "${NLS_ENABLE_TEST_HOOKS}" _nls_enable_test_hooks_mode)
+if(_nls_enable_test_hooks_mode STREQUAL "AUTO")
+    if(NLS_BUILD_TESTS OR NLS_BUILD_PERFORMANCE_TESTS)
+        set(_nls_enable_test_hooks_resolved ON)
+    else()
+        set(_nls_enable_test_hooks_resolved OFF)
+    endif()
+elseif(_nls_enable_test_hooks_mode MATCHES "^(ON|TRUE|YES|1)$")
+    set(_nls_enable_test_hooks_resolved ON)
+elseif(_nls_enable_test_hooks_mode MATCHES "^(OFF|FALSE|NO|0)$")
+    set(_nls_enable_test_hooks_resolved OFF)
+else()
+    message(FATAL_ERROR "NLS_ENABLE_TEST_HOOKS must be AUTO, ON, or OFF; got '${NLS_ENABLE_TEST_HOOKS}'.")
+endif()
+set(NLS_ENABLE_TEST_HOOKS ${_nls_enable_test_hooks_resolved})
+message(STATUS "Nullus test hooks: ${NLS_ENABLE_TEST_HOOKS} (mode: ${_nls_enable_test_hooks_mode})")
 option(NLS_BUILD_TRACY_PROFILER "Build Tracy GUI profiler tool" ${NLS_ENABLE_TRACY})
 option(NLS_ENABLE_PCH "Enable precompiled headers for supported C++ targets" ON)
 option(NLS_ENABLE_CXX_MODULES "Enable experimental C++20 modules pilot targets" OFF)
@@ -181,16 +199,95 @@ else()
     endif()
 endif()
 
+# Shared libraries are build artifacts, so keep them isolated from other CMake
+# build trees. Executable targets explicitly deploy this directory to App.
+set(NLS_RUNTIME_OUTPUT_PATH "${CMAKE_BINARY_DIR}/runtime/$<CONFIGURATION>")
+
+function(nls_configure_shared_runtime_output TARGET_NAME)
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
+        LIBRARY_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
+    )
+    get_target_property(_nls_runtime_target_type ${TARGET_NAME} TYPE)
+    if(_nls_runtime_target_type STREQUAL "SHARED_LIBRARY" OR
+       _nls_runtime_target_type STREQUAL "MODULE_LIBRARY")
+        set_property(GLOBAL APPEND PROPERTY NLS_SHARED_RUNTIME_TARGETS ${TARGET_NAME})
+    endif()
+endfunction()
+
+function(nls_register_external_runtime_file)
+    set(options)
+    set(oneValueArgs FILE_NAME PRODUCER_TARGET)
+    cmake_parse_arguments(NLS_EXTERNAL "${options}" "${oneValueArgs}" "" ${ARGN})
+    if(NLS_EXTERNAL_UNPARSED_ARGUMENTS OR
+       NOT NLS_EXTERNAL_FILE_NAME OR
+       NOT NLS_EXTERNAL_PRODUCER_TARGET)
+        message(FATAL_ERROR
+            "nls_register_external_runtime_file requires FILE_NAME and PRODUCER_TARGET")
+    endif()
+    if(NOT TARGET ${NLS_EXTERNAL_PRODUCER_TARGET})
+        message(FATAL_ERROR
+            "External runtime producer target does not exist: ${NLS_EXTERNAL_PRODUCER_TARGET}")
+    endif()
+
+    set_property(GLOBAL APPEND PROPERTY
+        NLS_EXTERNAL_RUNTIME_FILES "${NLS_EXTERNAL_FILE_NAME}")
+    set_property(GLOBAL APPEND PROPERTY
+        NLS_EXTERNAL_RUNTIME_PRODUCERS "${NLS_EXTERNAL_PRODUCER_TARGET}")
+endfunction()
+
 function(nls_copy_shared_runtime_to_target TARGET_NAME)
-    if(WIN32 AND NLS_USE_SHARED_LIBRARY)
+    if(NLS_USE_SHARED_LIBRARY)
+        set_property(GLOBAL APPEND PROPERTY NLS_SHARED_RUNTIME_CONSUMERS ${TARGET_NAME})
         add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${NLS_APP_OUTPUT_PATH}"
-                "$<TARGET_FILE_DIR:${TARGET_NAME}>"
+            COMMAND ${CMAKE_COMMAND}
+                "-DSTAGE_DIR=${NLS_RUNTIME_OUTPUT_PATH}"
+                "-DDEST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>"
+                "-DCONFIG=$<CONFIG>"
+                "-DEXPECTED_MANIFEST=${CMAKE_BINARY_DIR}/runtime-manifests/${TARGET_NAME}-$<CONFIG>.txt"
+                -P "${NLS_ROOT_DIR}/Tools/CMake/DeployRuntime.cmake"
             VERBATIM
-            COMMENT "Copying Nullus runtime DLLs for ${TARGET_NAME}"
+            COMMENT "Deploying Nullus runtime libraries for ${TARGET_NAME}"
         )
     endif()
+endfunction()
+
+function(nls_generate_shared_runtime_manifests)
+    if(NOT NLS_USE_SHARED_LIBRARY)
+        return()
+    endif()
+
+    get_property(_nls_runtime_targets GLOBAL PROPERTY NLS_SHARED_RUNTIME_TARGETS)
+    get_property(_nls_runtime_consumers GLOBAL PROPERTY NLS_SHARED_RUNTIME_CONSUMERS)
+    get_property(_nls_external_runtime_files GLOBAL PROPERTY NLS_EXTERNAL_RUNTIME_FILES)
+    get_property(_nls_external_runtime_producers GLOBAL PROPERTY NLS_EXTERNAL_RUNTIME_PRODUCERS)
+    list(REMOVE_DUPLICATES _nls_runtime_targets)
+    list(REMOVE_DUPLICATES _nls_runtime_consumers)
+    list(REMOVE_DUPLICATES _nls_external_runtime_files)
+    list(REMOVE_DUPLICATES _nls_external_runtime_producers)
+
+    set(_nls_expected_runtime_files "")
+    foreach(_nls_runtime_target IN LISTS _nls_runtime_targets)
+        string(APPEND _nls_expected_runtime_files "$<TARGET_FILE_NAME:${_nls_runtime_target}>\n")
+        get_target_property(_nls_runtime_target_type ${_nls_runtime_target} TYPE)
+        if(UNIX AND _nls_runtime_target_type STREQUAL "SHARED_LIBRARY")
+            string(APPEND _nls_expected_runtime_files "$<TARGET_SONAME_FILE_NAME:${_nls_runtime_target}>\n")
+            string(APPEND _nls_expected_runtime_files "$<TARGET_LINKER_FILE_NAME:${_nls_runtime_target}>\n")
+        endif()
+    endforeach()
+    foreach(_nls_external_runtime_file IN LISTS _nls_external_runtime_files)
+        string(APPEND _nls_expected_runtime_files "${_nls_external_runtime_file}\n")
+    endforeach()
+
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/runtime-manifests")
+    foreach(_nls_runtime_consumer IN LISTS _nls_runtime_consumers)
+        if(_nls_external_runtime_producers)
+            add_dependencies(${_nls_runtime_consumer} ${_nls_external_runtime_producers})
+        endif()
+        file(GENERATE
+            OUTPUT "${CMAKE_BINARY_DIR}/runtime-manifests/${_nls_runtime_consumer}-$<CONFIG>.txt"
+            CONTENT "${_nls_expected_runtime_files}")
+    endforeach()
 endfunction()
 
 function(nls_copy_app_assets_to_target TARGET_NAME)
@@ -315,6 +412,7 @@ add_subdirectory("ThirdParty")
 add_subdirectory("Tools")
 add_subdirectory("Runtime")
 add_subdirectory("Project")
-if(NLS_BUILD_TESTS)
+if(NLS_BUILD_TESTS OR NLS_BUILD_PERFORMANCE_TESTS)
     add_subdirectory("Tests")
 endif()
+nls_generate_shared_runtime_manifests()

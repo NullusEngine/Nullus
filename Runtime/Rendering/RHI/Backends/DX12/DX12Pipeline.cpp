@@ -396,8 +396,12 @@ namespace NLS::Render::Backend
 		}
 		else
 		{
-			for (size_t colorFormatIndex = 0; colorFormatIndex < colorFormatCount; ++colorFormatIndex)
-				psoDesc.RTVFormats[colorFormatIndex] = ToD3D12Format(m_desc.renderTargetLayout.colorFormats[colorFormatIndex]);
+				for (size_t colorFormatIndex = 0; colorFormatIndex < colorFormatCount; ++colorFormatIndex)
+				{
+					psoDesc.RTVFormats[colorFormatIndex] = NLS::Render::RHI::DX12::ToDXGIFormat(
+						m_desc.renderTargetLayout.colorFormats[colorFormatIndex],
+						m_desc.renderTargetLayout.GetColorSpace(colorFormatIndex));
+				}
 		}
 		psoDesc.DSVFormat = hasDepthAttachment
 			? ToD3D12Format(m_desc.renderTargetLayout.depthFormat)

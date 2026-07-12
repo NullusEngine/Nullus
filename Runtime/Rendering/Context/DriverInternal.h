@@ -14,8 +14,10 @@
 #include <vector>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Context/AsyncMeshRuntimeUpload.h"
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
+#include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Tooling/RenderDocCaptureController.h"
 #include "Rendering/UI/RHIImGuiOverlayRenderer.h"
@@ -24,6 +26,7 @@
 namespace NLS::Render::RHI
 {
     class RHIDevice;
+    class RHICompletionToken;
     class PipelineCache;
     struct DescriptorAllocatorStats;
     struct ResourceStateTrackerStats;
@@ -40,6 +43,50 @@ namespace NLS::Render::Context
     class DriverImpl
     {
     public:
+        struct PendingUiRgba8TextureUpload
+        {
+            uint64_t requestId = 0u;
+            uint32_t width = 0u;
+            uint32_t height = 0u;
+            std::vector<uint8_t> rgbaPixels;
+            std::string debugName;
+        };
+
+        struct CompletedUiRgba8TextureUpload
+        {
+            bool success = false;
+            std::shared_ptr<Render::RHI::RHITexture> texture;
+            std::shared_ptr<Render::RHI::RHITextureView> textureView;
+            uint32_t width = 0u;
+            uint32_t height = 0u;
+            std::string diagnostic;
+        };
+
+        struct RecordedUiRgba8TextureUpload
+        {
+            uint64_t requestId = 0u;
+            std::shared_ptr<Render::RHI::RHITexture> texture;
+            std::shared_ptr<Render::RHI::RHITextureView> textureView;
+            std::shared_ptr<Render::RHI::RHICompletionToken> completion;
+            uint32_t width = 0u;
+            uint32_t height = 0u;
+            size_t byteCount = 0u;
+            std::string debugName;
+        };
+
+        struct PendingMeshRuntimeUpload
+        {
+            uint64_t requestId = 0u;
+            MeshRuntimeUploadRequest request;
+        };
+
+        struct CompletedMeshRuntimeUpload
+        {
+            bool success = false;
+            std::unique_ptr<Render::Resources::Mesh> mesh;
+            std::string diagnostic;
+        };
+
         Render::Settings::EGraphicsBackend requestedGraphicsBackend = Render::Settings::EGraphicsBackend::NONE;
         Render::Data::PipelineState defaultPipelineState;
         Render::Data::PipelineState pipelineState;
@@ -76,6 +123,17 @@ namespace NLS::Render::Context
         uint64_t pendingUiOverlaySnapshotGeneration = 0u;
         Render::UI::RHIImGuiTextureRegistry uiTextureRegistry;
         Render::UI::RHIImGuiOverlayRenderer uiOverlayRenderer { &uiTextureRegistry };
+        mutable std::mutex pendingUiRgba8TextureUploadMutex;
+        uint64_t nextUiRgba8TextureUploadRequestId = 1u;
+        std::vector<PendingUiRgba8TextureUpload> pendingUiRgba8TextureUploads;
+        std::vector<RecordedUiRgba8TextureUpload> recordedUiRgba8TextureUploads;
+        std::unordered_map<uint64_t, CompletedUiRgba8TextureUpload> completedUiRgba8TextureUploads;
+        std::unordered_set<uint64_t> canceledUiRgba8TextureUploadRequestIds;
+        mutable std::mutex pendingMeshRuntimeUploadMutex;
+        uint64_t nextMeshRuntimeUploadRequestId = 1u;
+        std::vector<PendingMeshRuntimeUpload> pendingMeshRuntimeUploads;
+        std::unordered_map<uint64_t, CompletedMeshRuntimeUpload> completedMeshRuntimeUploads;
+        std::unordered_set<uint64_t> canceledMeshRuntimeUploadRequestIds;
         std::function<void()> swapchainWillResizeCallback;
         std::unique_ptr<ThreadedRenderingLifecycle> threadedLifecycle;
         bool threadedWorkersRunning = false;
@@ -85,8 +143,10 @@ namespace NLS::Render::Context
         std::mutex threadedWorkerWakeMutex;
         std::condition_variable threadedWorkerWake;
         std::atomic_uint64_t threadedWorkerWakeGeneration{ 0u };
+        std::atomic_bool backgroundPreviewPublicationRequested{ false };
         std::timed_mutex threadedRhiSubmissionMutex;
         std::unique_lock<std::timed_mutex> uiStandaloneFrameSubmissionLock;
+        std::unique_lock<std::timed_mutex> standaloneFrameSubmissionLock;
         std::atomic_bool uiStandaloneFramePending{ false };
         std::atomic_uint64_t uiStandaloneFramePendingUntilTickNs{ 0u };
         uint64_t nextThreadedFrameId = 1u;
@@ -218,6 +278,11 @@ namespace NLS::Render::Context
         NLS_RENDER_API void ReleaseRetiredUiTextureViewsForCompletedUiFrame(
             DriverImpl& impl,
             uint64_t fallbackCompletedFrameId);
+        NLS_RENDER_API size_t RecordPendingUiRgba8TextureUploads(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            Render::RHI::RHICommandBuffer& commandBuffer);
+        NLS_RENDER_API size_t RecordPendingMeshRuntimeUploads(DriverImpl& impl);
         NLS_RENDER_API std::vector<ParallelCommandWorkUnit> BuildParallelCommandWorkUnits(
             const RenderScenePackage& renderScenePackage,
             bool parallelRecordingReady,

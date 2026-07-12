@@ -160,7 +160,7 @@ The following formal RHI objects are implemented natively in Tier A backends:
 - HZB occlusion and async/readback-assisted history must be selected from `RHIDevice::GetCapabilities()` and texture-format capabilities, not from backend-name guesses.
 - Unsupported capability combinations must keep occlusion conservative: primitives stay visible and telemetry records the fallback reason.
 - Prepared compute dispatches that build or consume HZB resources must declare texture resource accesses, visibility transitions, dependency edges, and per-subresource ranges.
-- DX12 runtime evidence is recorded in `specs/large-scene-optimization/validation/hzb-occlusion-dx12.md`; non-DX12 backends still require separate RenderDoc or equivalent RHI-event evidence before enabling HZB occlusion.
+- DX12 runtime evidence and the current capture checklist are maintained in [HZBOcclusionValidation.md](HZBOcclusionValidation.md); non-DX12 backends still require separate RenderDoc or equivalent RHI-event evidence before enabling HZB occlusion.
 
 ### UE5 DX12 Alignment Status (2026-04-23)
 

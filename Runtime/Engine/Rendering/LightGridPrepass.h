@@ -231,6 +231,10 @@ namespace NLS::Engine::Rendering
             const PreparedFrameInputs& preparedFrameInputs,
             bool hasSkyboxTexture,
             PackedFrameData& outFrameData) const;
+        bool BuildFallbackFrameData(
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+            bool hasSkyboxTexture,
+            PackedFrameData& outFrameData) const;
 
     private:
         NLS::Render::Context::Driver& m_driver;

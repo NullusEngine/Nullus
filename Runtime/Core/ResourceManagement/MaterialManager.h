@@ -80,14 +80,16 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
                 options);
         }
 
-        void CancelAsyncArtifact(const std::string& p_path);
+        void CancelAsyncArtifact(const std::string& p_path, bool cancelableInterest = true);
         bool IsAsyncArtifactLoadPending(const std::string& p_path) const;
         bool IsAsyncArtifactLoadFailed(const std::string& p_path) const;
         void PumpAsyncLoads(size_t p_maxCompletions = 1u);
         void PumpAsyncLoadsForPaths(const std::unordered_set<std::string>& p_paths, size_t p_maxCompletions = 1u);
+        static AsyncArtifactRequestDiagnostics GetAsyncArtifactRequestDiagnostics();
 #if defined(NLS_ENABLE_TEST_HOOKS)
         static void ClearAsyncArtifactRequestStateForTesting();
         static bool WaitForAsyncArtifactWorkersForTesting(uint32_t timeoutMilliseconds = 5000u);
+        static size_t GetMaxPendingAsyncArtifactRequestCountForTesting();
         static size_t GetPendingAsyncArtifactRequestCountForTesting();
         static size_t GetTotalAsyncArtifactRequestCountForTesting();
         static size_t GetFailedAsyncArtifactRequestCountForTesting();

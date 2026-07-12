@@ -64,6 +64,9 @@ target_include_directories(
   )
 
 target_compile_definitions(NLS_Render PRIVATE NLS_RESOURCE_MANAGEMENT_EXPORT)
+target_compile_definitions(NLS_Render PRIVATE
+  NLS_DEVELOPMENT_ENGINE_ASSETS_ROOT="${NLS_ROOT_DIR}/App/Assets/Engine"
+)
 target_compile_definitions(NLS_Render PUBLIC
   NLS_HAS_ASSIMP_FBX_IMPORTER=$<OR:$<BOOL:${NLS_ENABLE_ASSIMP_FBX_IMPORTER}>,$<BOOL:${NLS_ASSIMP_BUILD_ALL_FORMATS}>>
 )

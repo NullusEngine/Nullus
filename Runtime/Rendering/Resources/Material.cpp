@@ -376,16 +376,25 @@ namespace
 		const NLS::Render::Resources::MaterialPipelineStateOverrides& overrides)
 	{
 		const auto colorFormats = overrides.GetColorFormats();
-		if (overrides.HasColorFormatsOverride())
-		{
-			desc.renderTargetLayout.colorFormats.assign(
-				colorFormats.begin(),
-				colorFormats.end());
+			if (overrides.HasColorFormatsOverride())
+			{
+				desc.renderTargetLayout.colorFormats.assign(
+					colorFormats.begin(),
+					colorFormats.end());
+				if (!overrides.HasColorSpacesOverride())
+					desc.renderTargetLayout.colorSpaces.clear();
 			const auto templateTarget = desc.blendState.renderTargets.empty()
 				? NLS::Render::RHI::RHIRenderTargetBlendStateDesc{}
 				: desc.blendState.renderTargets.front();
-			desc.blendState.renderTargets.assign(ResolveRenderTargetCount(desc), templateTarget);
-		}
+				desc.blendState.renderTargets.assign(ResolveRenderTargetCount(desc), templateTarget);
+			}
+			const auto colorSpaces = overrides.GetColorSpaces();
+			if (overrides.HasColorSpacesOverride())
+			{
+				desc.renderTargetLayout.colorSpaces.assign(
+					colorSpaces.begin(),
+					colorSpaces.end());
+			}
 		if (overrides.colorWrite.has_value())
 		{
 			desc.blendState.colorWrite = *overrides.colorWrite;
@@ -871,11 +880,16 @@ namespace NLS::Render::Resources
 		hashCombine(seed, depthFormat.has_value());
 		if (depthFormat.has_value())
 			hashCombine(seed, static_cast<uint32_t>(*depthFormat));
-		hashCombine(seed, HasColorFormatsOverride());
+			hashCombine(seed, HasColorFormatsOverride());
 		const auto formats = GetColorFormats();
 		hashCombine(seed, formats.size());
-		for (const auto format : formats)
-			hashCombine(seed, static_cast<uint32_t>(format));
+			for (const auto format : formats)
+				hashCombine(seed, static_cast<uint32_t>(format));
+			hashCombine(seed, HasColorSpacesOverride());
+			const auto spaces = GetColorSpaces();
+			hashCombine(seed, spaces.size());
+			for (const auto space : spaces)
+				hashCombine(seed, static_cast<uint32_t>(space));
 		hashCombine(seed, HasRenderTargetBlendStatesOverride());
 		const auto renderTargetBlendStates = GetRenderTargetBlendStates();
 		hashCombine(seed, renderTargetBlendStates.size());

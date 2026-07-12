@@ -6,16 +6,18 @@
 #include "Core/EditorLaunchArgs.h"
 #include "Debug/Logger.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include <chrono>
 #include <cstdio>
 #include <exception>
 #include <optional>
 using namespace NLS;
 
 int main(int argc, char** argv);
-static void TryRun(const std::string& projectPath, const std::string& projectName,
+static bool TryRun(const std::string& projectPath, const std::string& projectName,
                   std::optional<Render::Settings::EGraphicsBackend> backendOverride,
                   const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride,
-                  const std::optional<Render::Settings::EngineDiagnosticsSettings>& diagnosticsOverride);
+                  const std::optional<Render::Settings::EngineDiagnosticsSettings>& diagnosticsOverride,
+                  std::chrono::steady_clock::time_point launchBegin);
 
 namespace
 {
@@ -35,6 +37,7 @@ namespace
 
 int main(int argc, char** argv)
 {
+	const auto launchBegin = std::chrono::steady_clock::now();
 	const auto launchWorkingDirectory = std::filesystem::current_path();
 	std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
 
@@ -91,26 +94,25 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	if (ready)
-	{
-		TryRun(
-			projectPath,
-			projectName,
-			launchArgs.backendOverride,
-			launchArgs.hasRenderDocOverride
-				? std::optional<Render::Settings::RenderDocSettings>(launchArgs.renderDocSettings)
-				: std::nullopt,
-			launchArgs.hasDiagnosticsOverride
-				? std::optional<Render::Settings::EngineDiagnosticsSettings>(launchArgs.diagnosticsSettings)
-				: std::nullopt);
-	}
-	return EXIT_SUCCESS;
+	const bool ran = TryRun(
+		projectPath,
+		projectName,
+		launchArgs.backendOverride,
+		launchArgs.hasRenderDocOverride
+			? std::optional<Render::Settings::RenderDocSettings>(launchArgs.renderDocSettings)
+			: std::nullopt,
+		launchArgs.hasDiagnosticsOverride
+			? std::optional<Render::Settings::EngineDiagnosticsSettings>(launchArgs.diagnosticsSettings)
+			: std::nullopt,
+		launchBegin);
+	return ran ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-static void TryRun(const std::string& projectPath, const std::string& projectName,
+static bool TryRun(const std::string& projectPath, const std::string& projectName,
                    std::optional<Render::Settings::EGraphicsBackend> backendOverride,
                    const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride,
-                   const std::optional<Render::Settings::EngineDiagnosticsSettings>& diagnosticsOverride)
+                   const std::optional<Render::Settings::EngineDiagnosticsSettings>& diagnosticsOverride,
+                   const std::chrono::steady_clock::time_point launchBegin)
 {
 	auto errorEvent =
 		[](NLS::EDeviceError, std::string errMsg)
@@ -130,17 +132,30 @@ static void TryRun(const std::string& projectPath, const std::string& projectNam
 			backendOverride,
 			renderDocOverride,
 			diagnosticsOverride);
+		if (app->DidShowEditorWindow())
+		{
+			NLS_LOG_INFO(
+				"[Startup] EditorWindowShown elapsedMs=" +
+				std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - launchBegin).count()));
+		}
 		NLS::Context::Device::ErrorEvent -= listenerId;
 	}
 	catch (const std::exception& e)
 	{
 		std::fprintf(stderr, "[Editor::TryRun] std::exception: %s\n", e.what());
+		return false;
 	}
 	catch (...)
 	{
 		std::fprintf(stderr, "[Editor::TryRun] unknown exception\n");
+		return false;
 	}
 
 	if (app)
+	{
 		app->Run();
+		return true;
+	}
+	return false;
 }

@@ -28,73 +28,18 @@ endif()
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NULLUS_UNIT_TEST_FILES})
 source_group(TREE "${CMAKE_SOURCE_DIR}/Tests/Rendering" PREFIX "Rendering Tests" FILES ${NULLUS_RENDERING_TEST_FILES})
+source_group("Test Infrastructure" FILES "${CMAKE_SOURCE_DIR}/Tests/NullusTestMain.cpp")
 
 add_executable(NullusUnitTests
     ${NULLUS_UNIT_TEST_FILES}
     ${NULLUS_RENDERING_TEST_FILES}
+    "${CMAKE_SOURCE_DIR}/Tests/NullusTestMain.cpp"
 )
 
-target_compile_features(NullusUnitTests PRIVATE cxx_std_20)
-
-target_include_directories(NullusUnitTests PRIVATE
-    ${CMAKE_SOURCE_DIR}/Runtime
-    ${CMAKE_SOURCE_DIR}/Runtime/Base
-    ${CMAKE_SOURCE_DIR}/Runtime/Base/Reflection
-    ${CMAKE_SOURCE_DIR}/Runtime/Core
-    ${CMAKE_SOURCE_DIR}/Runtime/Engine
-    ${CMAKE_SOURCE_DIR}/Runtime/Math
-    ${CMAKE_SOURCE_DIR}/Runtime/Rendering
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen
-    ${CMAKE_SOURCE_DIR}/Project/Editor
-    ${CMAKE_SOURCE_DIR}/Project/Launcher
-    ${CMAKE_SOURCE_DIR}/Project/Game
-)
-
-target_compile_definitions(NullusUnitTests PRIVATE
-    NLS_ROOT_DIR="${CMAKE_SOURCE_DIR}"
-    NLS_BUILD_DIR="${CMAKE_BINARY_DIR}"
-    $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
-    $<$<BOOL:${NLS_ENABLE_TIMELINE_PROFILER}>:NLS_ENABLE_TIMELINE_PROFILER=1>
-    WITH_PROFILING=$<AND:$<BOOL:${WIN32}>,$<BOOL:${NLS_ENABLE_TIMELINE_PROFILER}>>
-)
-
-target_link_libraries(NullusUnitTests PRIVATE
-    gtest
-    NLS_Base
-    NLS_Core
-    NLS_Math
-    NLS_Render
-    NLS_UI
-    NLS_Engine
-    EditorProject
-    GameProject
-    LauncherProject
-    DirectXTex::DirectXTex
-)
-
-nls_target_precompile_headers(NullusUnitTests "${CMAKE_SOURCE_DIR}/Tests/NullusTestsPch.h")
-
-if(APPLE)
-    target_link_libraries(NullusUnitTests PRIVATE "-framework CoreServices")
-endif()
-
-if(WIN32)
-    target_link_libraries(NullusUnitTests PRIVATE Comctl32)
-endif()
-
-if(TARGET EditorProject_MetaGenerated)
-    add_dependencies(NullusUnitTests EditorProject_MetaGenerated)
-endif()
-
-set_target_properties(NullusUnitTests PROPERTIES
-    FOLDER Tests
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-)
-nls_copy_shared_runtime_to_target(NullusUnitTests)
-nls_copy_editor_resources_to_target(NullusUnitTests)
+nls_configure_test_target(NullusUnitTests)
 
 add_test(NAME NullusUnitTests COMMAND NullusUnitTests)
 set_tests_properties(NullusUnitTests PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    LABELS behavior
 )

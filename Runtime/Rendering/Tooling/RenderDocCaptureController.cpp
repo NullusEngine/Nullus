@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <unordered_set>
 #include <string_view>
@@ -67,21 +68,48 @@ namespace NLS::Render::Tooling
 			!waitingForTriggeredCapture;
 	}
 
-	uint32_t ResolveRenderDocQueuedCaptureInitialCountdown()
+	bool ShouldForceRenderDocCaptureFrameRender(
+		const bool available,
+		const bool captureQueued,
+		const bool manualCaptureActive,
+		const bool queuedCaptureActive,
+		const bool waitingForTriggeredCapture,
+		const bool presentationAlreadyCovered,
+		const bool coveredPresentationFrameCompleted,
+		const uint32_t presentCountdown)
 	{
-		return 2u;
+		return available &&
+			captureQueued &&
+			!manualCaptureActive &&
+			!queuedCaptureActive &&
+			!waitingForTriggeredCapture &&
+			(!presentationAlreadyCovered || coveredPresentationFrameCompleted) &&
+			presentCountdown <= 1u;
+	}
+
+	uint32_t ResolveRenderDocQueuedCaptureInitialCountdown(const bool nextExternalOutput)
+	{
+		return nextExternalOutput ? 1u : 2u;
 	}
 
 	RenderDocQueuedCaptureAction ResolveRenderDocQueuedCapturePreFrameAction(
 		const bool available,
 		const bool captureQueued,
 		const bool frameWillPresent,
+		const bool outputMayBePresentedLater,
+		const bool presentationAlreadyCovered,
+		const bool coveredPresentationFrameCompleted,
 		const uint32_t presentCountdown)
 	{
 		if (!available || !captureQueued)
 			return RenderDocQueuedCaptureAction::None;
+		if (presentationAlreadyCovered &&
+			(!coveredPresentationFrameCompleted || !outputMayBePresentedLater))
+		{
+			return RenderDocQueuedCaptureAction::None;
+		}
 		if (presentCountdown > 1)
-			return frameWillPresent
+			return frameWillPresent || outputMayBePresentedLater
 				? RenderDocQueuedCaptureAction::WaitForFutureFrame
 				: RenderDocQueuedCaptureAction::None;
 		return RenderDocQueuedCaptureAction::StartExplicitFrameCapture;
@@ -211,12 +239,15 @@ namespace
 		std::string pendingCaptureLabel;
 		void* captureDevice = nullptr;
 		void* captureWindow = nullptr;
+		mutable std::mutex stateMutex;
 		uint32_t presentCountdown = 0;
 		bool captureQueued = false;
 		bool manualCaptureActive = false;
 		bool queuedCaptureActive = false;
 		bool waitingForTriggeredCapture = false;
 		bool triggeredCaptureMayResolveBaselinePath = false;
+		bool presentationCoveredBySceneOutput = false;
+		bool coveredSceneOutputFrameCompleted = false;
 		std::unordered_set<std::string> knownCaptureFiles;
 
 #if defined(_WIN32)
@@ -674,6 +705,7 @@ namespace
 
 	bool RenderDocCaptureController::IsAvailable() const
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
 		return m_impl->IsAvailable();
 #else
@@ -681,13 +713,40 @@ namespace
 #endif
 	}
 
+	bool RenderDocCaptureController::ShouldForceCaptureFrameRender() const
+	{
+		std::lock_guard lock(m_impl->stateMutex);
+		return ShouldForceRenderDocCaptureFrameRender(
+			m_impl->IsAvailable(),
+			m_impl->captureQueued,
+			m_impl->manualCaptureActive,
+			m_impl->queuedCaptureActive,
+			m_impl->waitingForTriggeredCapture,
+			m_impl->presentationCoveredBySceneOutput,
+			m_impl->coveredSceneOutputFrameCompleted,
+			m_impl->presentCountdown);
+	}
+
 	bool RenderDocCaptureController::QueueCapture(const std::string& label)
 	{
+		return QueueCapture(label, ResolveRenderDocQueuedCaptureInitialCountdown());
+	}
+
+	bool RenderDocCaptureController::QueueCaptureForNextExternalOutput(const std::string& label)
+	{
+		return QueueCapture(label, ResolveRenderDocQueuedCaptureInitialCountdown(true));
+	}
+
+	bool RenderDocCaptureController::QueueCapture(
+		const std::string& label,
+		const uint32_t initialCountdown)
+	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
 		m_impl->EnsureApiConnected("QueueCapture");
 #endif
 		if (!CanQueueRenderDocCapture(
-				IsAvailable(),
+				m_impl->IsAvailable(),
 				m_impl->captureQueued,
 				m_impl->manualCaptureActive,
 				m_impl->queuedCaptureActive,
@@ -697,18 +756,21 @@ namespace
 			return false;
 		}
 
-		m_impl->presentCountdown = ResolveRenderDocQueuedCaptureInitialCountdown();
+		m_impl->presentCountdown = initialCountdown;
 		m_impl->pendingCaptureLabel = label;
 		m_impl->captureQueued = true;
+		m_impl->presentationCoveredBySceneOutput = false;
+		m_impl->coveredSceneOutputFrameCompleted = false;
 		NLS_LOG_INFO("RenderDoc queued next-frame capture: " + (label.empty() ? std::string("capture") : label));
 		return true;
 	}
 
 	bool RenderDocCaptureController::StartCapture()
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
 		m_impl->EnsureApiConnected("StartCapture");
-		if (!IsAvailable())
+		if (!m_impl->IsAvailable())
 			return false;
 
 		m_impl->PrepareCaptureMetadata(m_impl->pendingCaptureLabel);
@@ -723,8 +785,9 @@ namespace
 
 	bool RenderDocCaptureController::EndCapture()
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
-		if (!IsAvailable() || !m_impl->manualCaptureActive)
+		if (!m_impl->IsAvailable() || !m_impl->manualCaptureActive)
 			return false;
 
 		const bool ended = m_impl->api->EndFrameCapture(m_impl->captureDevice, m_impl->captureWindow) == 1;
@@ -732,26 +795,37 @@ namespace
 		m_impl->RefreshLatestCapturePath();
 		NLS_LOG_INFO(std::string("RenderDoc EndFrameCapture -> ") + (ended ? "success" : "failed"));
 		if (ended && m_impl->settings.autoOpenReplayUI)
-			OpenLatestCapture();
+			m_impl->OpenLatestCaptureFromImpl();
 		return ended;
 #else
 		return false;
 #endif
 	}
 
-	void RenderDocCaptureController::OnPreFrame(const bool frameWillPresent)
+	void RenderDocCaptureController::OnPreFrame(
+		const bool frameWillPresent,
+		const bool outputMayBePresentedLater)
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
 		const RenderDocQueuedCaptureAction action = ResolveRenderDocQueuedCapturePreFrameAction(
-			IsAvailable(),
+			m_impl->IsAvailable(),
 			m_impl->captureQueued,
 			frameWillPresent,
+			outputMayBePresentedLater,
+			m_impl->presentationCoveredBySceneOutput,
+			m_impl->coveredSceneOutputFrameCompleted,
 			m_impl->presentCountdown);
 		if (action == RenderDocQueuedCaptureAction::None)
 			return;
 		if (action == RenderDocQueuedCaptureAction::WaitForFutureFrame)
 		{
 			--m_impl->presentCountdown;
+			if (outputMayBePresentedLater)
+			{
+				m_impl->presentationCoveredBySceneOutput = true;
+				m_impl->coveredSceneOutputFrameCompleted = false;
+			}
 			return;
 		}
 
@@ -761,9 +835,17 @@ namespace
 		m_impl->api->StartFrameCapture(m_impl->captureDevice, m_impl->captureWindow);
 		m_impl->queuedCaptureActive = m_impl->api->IsFrameCapturing() == 1;
 		m_impl->waitingForTriggeredCapture = false;
+		if (outputMayBePresentedLater)
+		{
+			m_impl->presentationCoveredBySceneOutput = true;
+			m_impl->coveredSceneOutputFrameCompleted = false;
+		}
 		if (m_impl->queuedCaptureActive)
 		{
-			NLS_LOG_INFO("RenderDoc queued StartFrameCapture before presentable frame -> success");
+			NLS_LOG_INFO(
+				std::string("RenderDoc queued StartFrameCapture before ") +
+				(outputMayBePresentedLater ? "external scene output" : "presentable frame") +
+				" -> success");
 			return;
 		}
 
@@ -778,24 +860,27 @@ namespace
 
 	void RenderDocCaptureController::OnPostPresent()
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
-		if (IsAvailable() && m_impl->queuedCaptureActive)
+		if (m_impl->IsAvailable() && m_impl->queuedCaptureActive)
 		{
 			bool ended = m_impl->api->EndFrameCapture(m_impl->captureDevice, m_impl->captureWindow) == 1;
 			if (!ended)
 				ended = m_impl->api->EndFrameCapture(nullptr, nullptr) == 1;
 			m_impl->queuedCaptureActive = false;
+			m_impl->presentationCoveredBySceneOutput = false;
+			m_impl->coveredSceneOutputFrameCompleted = false;
 			if (ended)
 			{
 				m_impl->RefreshLatestCapturePath();
 				if (!m_impl->latestCapturePath.empty())
 				{
-					NLS_LOG_INFO(
-						std::string("RenderDoc queued EndFrameCapture after present -> success") +
-						", latest=\"" + m_impl->latestCapturePath + "\"");
-					if (m_impl->settings.autoOpenReplayUI)
-						OpenLatestCapture();
-				}
+						NLS_LOG_INFO(
+							std::string("RenderDoc queued EndFrameCapture after present -> success") +
+							", latest=\"" + m_impl->latestCapturePath + "\"");
+						if (m_impl->settings.autoOpenReplayUI)
+							m_impl->OpenLatestCaptureFromImpl();
+					}
 				else
 				{
 					m_impl->WaitForEndedCapturePath(
@@ -811,6 +896,8 @@ namespace
 		}
 
 		m_impl->ResolveTriggeredCaptureIfAvailable("after post-present");
+		m_impl->presentationCoveredBySceneOutput = false;
+		m_impl->coveredSceneOutputFrameCompleted = false;
 #endif
 	}
 
@@ -818,10 +905,13 @@ namespace
 		const bool frameWillPresent,
 		const bool outputMayBePresentedLater)
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
-		if (!IsAvailable())
+		if (!m_impl->IsAvailable())
 			return;
 		m_impl->ResolveTriggeredCaptureIfAvailable("after post-frame");
+		if (outputMayBePresentedLater && m_impl->presentationCoveredBySceneOutput)
+			m_impl->coveredSceneOutputFrameCompleted = true;
 		if (!m_impl->queuedCaptureActive ||
 			frameWillPresent ||
 			outputMayBePresentedLater)
@@ -838,12 +928,12 @@ namespace
 			m_impl->RefreshLatestCapturePath();
 			if (!m_impl->latestCapturePath.empty())
 			{
-				NLS_LOG_INFO(
-					std::string("RenderDoc queued EndFrameCapture after offscreen frame -> success") +
-					", latest=\"" + m_impl->latestCapturePath + "\"");
-				if (m_impl->settings.autoOpenReplayUI)
-					OpenLatestCapture();
-			}
+					NLS_LOG_INFO(
+						std::string("RenderDoc queued EndFrameCapture after offscreen frame -> success") +
+						", latest=\"" + m_impl->latestCapturePath + "\"");
+					if (m_impl->settings.autoOpenReplayUI)
+						m_impl->OpenLatestCaptureFromImpl();
+				}
 			else
 			{
 				m_impl->WaitForEndedCapturePath(
@@ -863,16 +953,19 @@ namespace
 
 	std::string RenderDocCaptureController::GetLatestCapturePath() const
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 		return m_impl->latestCapturePath;
 	}
 
 	std::string RenderDocCaptureController::GetCaptureDirectory() const
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 		return m_impl->settings.captureDirectory;
 	}
 
 	bool RenderDocCaptureController::OpenLatestCapture() const
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 		if (m_impl->latestCapturePath.empty())
 			return false;
 
@@ -887,21 +980,25 @@ namespace
 
 	bool RenderDocCaptureController::GetAutoOpenReplayUI() const
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 		return m_impl->settings.autoOpenReplayUI;
 	}
 
 	void RenderDocCaptureController::SetAutoOpenReplayUI(bool enabled)
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 		m_impl->settings.autoOpenReplayUI = enabled;
 	}
 
 	void RenderDocCaptureController::SetResolvedBackendName(const std::string& backendName)
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 		m_impl->resolvedBackendName = SanitizePathComponent(backendName);
 	}
 
 	void RenderDocCaptureController::SetCaptureTarget(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo)
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
 		m_impl->EnsureApiConnected("SetCaptureTarget");
 		m_impl->captureDevice = ResolveRenderDocCaptureDevice(nativeInfo);
@@ -920,6 +1017,7 @@ namespace
 
 	void RenderDocCaptureController::SetEnabled(bool enabled)
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 #if defined(_WIN32)
 		NLS_LOG_INFO("RenderDocCaptureController::SetEnabled: " + std::string(enabled ? "true" : "false"));
 		if (m_impl->settings.enabled == enabled)
@@ -961,6 +1059,8 @@ namespace
 				m_impl->triggeredCaptureBaselinePath.clear();
 				m_impl->triggeredCaptureBaselineCount = 0;
 				m_impl->captureQueued = false;
+				m_impl->presentationCoveredBySceneOutput = false;
+				m_impl->coveredSceneOutputFrameCompleted = false;
 				// Note: We keep the DLL loaded and API pointer intact
 				// so that disabling and re-enabling works without reloading
 			}
@@ -972,6 +1072,7 @@ namespace
 
 	bool RenderDocCaptureController::IsEnabled() const
 	{
+		std::lock_guard lock(m_impl->stateMutex);
 		return m_impl->settings.enabled;
 	}
 }

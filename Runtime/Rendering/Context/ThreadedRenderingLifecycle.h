@@ -22,6 +22,8 @@
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
+#include "Rendering/Settings/EPixelDataFormat.h"
+#include "Rendering/Settings/EPixelDataType.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::RHI
@@ -314,6 +316,31 @@ namespace NLS::Render::Context
         std::vector<LargeSceneCullReasonDebugEntry> entries;
     };
 
+    struct NLS_RENDER_API PostSubmitTextureReadbackState
+    {
+        mutable std::mutex mutex;
+        std::shared_ptr<RHI::RHICompletionToken> completion;
+        RHI::RHIReadbackStatusCode resultCode = RHI::RHIReadbackStatusCode::InvalidArgument;
+        std::string resultMessage;
+        bool beginAttempted = false;
+        bool beginInProgress = false;
+        bool beginSucceeded = false;
+    };
+
+    struct NLS_RENDER_API PostSubmitTextureReadbackRequest
+    {
+        std::shared_ptr<RHI::RHITexture> texture;
+        uint32_t x = 0u;
+        uint32_t y = 0u;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        Settings::EPixelDataFormat format = Settings::EPixelDataFormat::RGBA;
+        Settings::EPixelDataType type = Settings::EPixelDataType::UNSIGNED_BYTE;
+        void* destination = nullptr;
+        std::shared_ptr<PostSubmitTextureReadbackState> state;
+        std::shared_ptr<void> destinationKeepAlive;
+    };
+
     struct NLS_RENDER_API FrameSnapshot
     {
         uint64_t frameId = 0u;
@@ -344,6 +371,7 @@ namespace NLS::Render::Context
         LargeSceneCullReasonDebugSnapshot largeSceneCullReasonSnapshot;
         std::vector<uint64_t> streamingDependencyPins;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
+        std::vector<PostSubmitTextureReadbackRequest> postSubmitTextureReadbacks;
     };
 
     struct NLS_RENDER_API PostSubmitBufferReadbackState
@@ -416,6 +444,7 @@ namespace NLS::Render::Context
         std::shared_ptr<RHI::RHITexture> preferredReadbackTexture;
         uint64_t preferredReadbackTextureGeneration = 0u;
         std::vector<PostSubmitBufferReadbackRequest> postSubmitBufferReadbacks;
+        std::vector<PostSubmitTextureReadbackRequest> postSubmitTextureReadbacks;
         std::vector<uint64_t> streamingDependencyPins;
         uint64_t externalSceneOutputIdentity = 0u;
         std::vector<uint64_t> externalSceneOutputIdentities;
@@ -501,7 +530,8 @@ namespace NLS::Render::Context
         Unknown = 0,
         RendererPrepared,
         PreparedBuilderMissing,
-        SnapshotHarness
+        SnapshotHarness,
+        PreparedBuilderFailed
     };
 
     enum class RhiSubmissionAttribution : uint8_t
@@ -591,6 +621,9 @@ namespace NLS::Render::Context
     {
         std::function<RenderScenePackage(const FrameSnapshot& snapshot)> buildSnapshotHarnessRenderScenePackage;
         std::function<RenderScenePackage(const FrameSnapshot& snapshot)> buildPreparedBuilderMissingRenderScenePackage;
+        std::function<RenderScenePackage(
+            const FrameSnapshot& snapshot,
+            const std::string& diagnostic)> buildPreparedBuilderFailedRenderScenePackage;
     };
 
     class NLS_RENDER_API ThreadedRenderingLifecycle

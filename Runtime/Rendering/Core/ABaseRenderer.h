@@ -90,6 +90,9 @@ public:
 
     virtual void BeginFrame(const Data::FrameDescriptor& p_frameDescriptor);
     virtual void EndFrame();
+    static bool TryBeginGlobalFrameForBackgroundPreview();
+    static void EndGlobalFrameForBackgroundPreview();
+    virtual void BeginFrameForBackgroundPreview(const Data::FrameDescriptor& p_frameDescriptor);
 
     const Data::FrameDescriptor& GetFrameDescriptor() const;
     Context::Driver& GetDriver();
@@ -99,6 +102,8 @@ public:
     bool IsFrameActive() const;
     bool SupportsEditorPickingReadback() const;
     bool HasActiveReadbackSource() const;
+    void SetNextFramePostSubmitTextureReadback(Context::PostSubmitTextureReadbackRequest request);
+    bool WasLastThreadedFramePublished() const;
     bool IsRenderCoordinateInBounds(uint32_t p_x, uint32_t p_y) const;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateExplicitUniformBufferBindingSet(
         const NLS::Render::Buffers::UniformBuffer& buffer,
@@ -283,15 +288,20 @@ protected:
     PipelineState m_basePipelineState;
     bool m_isDrawing;
     bool m_frameActive = false;
+    bool m_globalFrameReleaseDeferred = false;
     bool m_recordedRenderPassActive = false;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_activePreparedPassBindingSet;
     std::optional<Context::FrameSnapshot> m_pendingFrameSnapshot;
     Context::PreparedRenderSceneBuilder m_pendingPreparedRenderSceneBuilder;
+    std::vector<Context::PostSubmitTextureReadbackRequest> m_nextFramePostSubmitTextureReadbacks;
+    bool m_lastThreadedFramePublished = false;
     std::vector<Context::RecordedDrawCommandInput> m_threadedRecordedDrawCommands;
     std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_activeRecordedPassColorViews;
     std::shared_ptr<NLS::Render::RHI::RHITextureView> m_activeRecordedPassDepthStencilView;
 
 private:
+    void BeginFrameInternal(const Data::FrameDescriptor& p_frameDescriptor, bool globalFrameAlreadyAcquired);
+
     struct PreparedRecordedDrawStaticBaseCacheKey
     {
         uint64_t deviceIdentity = 0u;

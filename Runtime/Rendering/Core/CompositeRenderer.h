@@ -30,6 +30,7 @@ public:
     CompositeRenderer& operator=(const CompositeRenderer&) = delete;
 
     virtual void BeginFrame(const Data::FrameDescriptor& p_frameDescriptor);
+    void BeginFrameForBackgroundPreview(const Data::FrameDescriptor& p_frameDescriptor) override;
     virtual void DrawFrame();
     virtual void EndFrame() override;
 

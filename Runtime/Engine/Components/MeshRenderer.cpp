@@ -17,13 +17,15 @@ using RenderMaterial = Render::Resources::Material;
 
 namespace
 {
-    size_t GetMaterialSlotCountFromIndex(const uint32_t materialIndex, const size_t maxSlotCount)
+    size_t GetMaterialSlotCountFromIndex(const uint32_t materialIndex)
     {
         if (materialIndex == std::numeric_limits<uint32_t>::max())
             return 1u;
 
-        const auto materialCount = static_cast<size_t>(materialIndex) + 1u;
-        return (std::min)(materialCount, maxSlotCount);
+        if (materialIndex >= MeshRenderer::kMaxMaterialCount)
+            return 1u;
+
+        return static_cast<size_t>(materialIndex) + 1u;
     }
 
     std::string NormalizeMaterialArtifactPath(const std::string& path)
@@ -49,9 +51,6 @@ namespace
 
 MeshRenderer::MeshRenderer()
 {
-    m_materials.fill(nullptr);
-    m_materialPaths.fill({});
-    m_failedMaterialPaths.fill({});
 }
 
 MeshRenderer::MeshRenderer(const MeshRenderer& other)
@@ -63,8 +62,8 @@ MeshRenderer::MeshRenderer(const MeshRenderer& other)
     , m_frustumBehaviour(other.m_frustumBehaviour)
     , m_transientRenderingSuppressed(false)
 {
-    m_materials.fill(nullptr);
-    m_failedMaterialPaths.fill({});
+    m_materials.resize((std::max)(other.m_materials.size(), other.m_materialPaths.size()), nullptr);
+    m_failedMaterialPaths.resize(m_materialPaths.size());
     m_owner = nullptr;
 }
 
@@ -75,9 +74,11 @@ MeshRenderer& MeshRenderer::operator=(const MeshRenderer& other)
 
     m_enabled = other.m_enabled;
     materials = other.materials;
-    m_materials.fill(nullptr);
+    m_materials.clear();
     m_materialPaths = other.m_materialPaths;
-    m_failedMaterialPaths.fill({});
+    m_materials.resize((std::max)(other.m_materials.size(), m_materialPaths.size()), nullptr);
+    m_failedMaterialPaths.clear();
+    m_failedMaterialPaths.resize(m_materialPaths.size());
     m_materialNames = other.m_materialNames;
     m_userMatrix = other.m_userMatrix;
     m_customBoundingSphere = other.m_customBoundingSphere;
@@ -121,7 +122,9 @@ void MeshRenderer::FillWithMaterial(RenderMaterial& p_material)
 {
     RemoveAllMaterials();
     const auto materialCount = GetExpectedMaterialSlotCount();
-    for (size_t i = 0; i < materialCount && i < m_materials.size(); ++i)
+    if (materialCount > 0u && !EnsureMaterialSlot(materialCount - 1u))
+        return;
+    for (size_t i = 0; i < materialCount; ++i)
     {
         m_materials[i] = &p_material;
         if (i < materials.size())
@@ -132,9 +135,9 @@ void MeshRenderer::FillWithMaterial(RenderMaterial& p_material)
     MarkRenderStateChanged();
 }
 
-void MeshRenderer::SetMaterialAtIndex(uint8_t p_index, RenderMaterial& p_material)
+void MeshRenderer::SetMaterialAtIndex(uint32_t p_index, RenderMaterial& p_material)
 {
-    if (p_index >= m_materials.size())
+    if (!EnsureMaterialSlot(p_index))
         return;
 
     m_materials[p_index] = &p_material;
@@ -145,9 +148,9 @@ void MeshRenderer::SetMaterialAtIndex(uint8_t p_index, RenderMaterial& p_materia
     MarkRenderStateChanged();
 }
 
-void MeshRenderer::SetResolvedMaterialFromReference(uint8_t p_index, RenderMaterial& p_material)
+void MeshRenderer::SetResolvedMaterialFromReference(uint32_t p_index, RenderMaterial& p_material)
 {
-    if (p_index >= m_materials.size())
+    if (!EnsureMaterialSlot(p_index))
         return;
 
     if (p_index < materials.size())
@@ -174,12 +177,12 @@ void MeshRenderer::SetResolvedMaterialFromReference(uint8_t p_index, RenderMater
     MarkRenderStateChanged();
 }
 
-RenderMaterial* MeshRenderer::GetMaterialAtIndex(uint8_t p_index)
+RenderMaterial* MeshRenderer::GetMaterialAtIndex(uint32_t p_index)
 {
     return p_index < m_materials.size() ? m_materials[p_index] : nullptr;
 }
 
-void MeshRenderer::RemoveMaterialAtIndex(uint8_t p_index)
+void MeshRenderer::RemoveMaterialAtIndex(uint32_t p_index)
 {
     if (p_index < m_materials.size())
     {
@@ -194,7 +197,7 @@ void MeshRenderer::RemoveMaterialAtIndex(uint8_t p_index)
 
 void MeshRenderer::RemoveMaterialByInstance(RenderMaterial& p_instance)
 {
-    for (uint8_t i = 0; i < m_materials.size(); ++i)
+    for (size_t i = 0; i < m_materials.size(); ++i)
     {
         if (m_materials[i] == &p_instance)
         {
@@ -210,7 +213,7 @@ void MeshRenderer::RemoveMaterialByInstance(RenderMaterial& p_instance)
 
 void MeshRenderer::RemoveAllMaterials()
 {
-    for (uint8_t i = 0; i < m_materials.size(); ++i)
+    for (size_t i = 0; i < m_materials.size(); ++i)
     {
         m_materials[i] = nullptr;
         if (i < materials.size())
@@ -239,6 +242,8 @@ uint64_t MeshRenderer::GetRenderRevision() const
 
 MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
 {
+    if (p_index >= kMaxMaterialCount)
+        return nullptr;
     if (p_index >= m_materialPaths.size())
         return nullptr;
 
@@ -280,7 +285,7 @@ MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
     return nullptr;
 }
 
-MeshRenderer::Material* MeshRenderer::ResolveMaterialAtIndex(const uint8_t p_index)
+MeshRenderer::Material* MeshRenderer::ResolveMaterialAtIndex(const uint32_t p_index)
 {
     return ResolveMaterialSlot(p_index);
 }
@@ -331,10 +336,13 @@ NLS::Array<NLS::Engine::Serialize::PPtr<MeshRenderer::Material>> MeshRenderer::G
 void MeshRenderer::SetMaterialPaths(const NLS::Array<std::string>& p_paths)
 {
     RemoveAllMaterials();
-    for (size_t index = 0; index < p_paths.size() && index < kMaxMaterialCount; ++index)
+    const auto slotCount = (std::min)(p_paths.size(), static_cast<size_t>(kMaxMaterialCount));
+    if (slotCount > 0u && !EnsureMaterialSlot(slotCount - 1u))
+        return;
+    if (materials.size() < slotCount)
+        materials.resize(slotCount);
+    for (size_t index = 0; index < slotCount; ++index)
     {
-        if (materials.size() <= index)
-            materials.resize(index + 1);
         materials[index] = {};
         m_materialPaths[index] = p_paths[index];
         m_failedMaterialPaths[index].clear();
@@ -344,21 +352,24 @@ void MeshRenderer::SetMaterialPaths(const NLS::Array<std::string>& p_paths)
     if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
         return;
 
-    for (size_t index = 0; index < p_paths.size() && index < kMaxMaterialCount; ++index)
+    for (size_t index = 0; index < slotCount; ++index)
     {
         if (p_paths[index].empty())
             continue;
 
         if (auto* material = NLS_SERVICE(Core::ResourceManagement::MaterialManager)[p_paths[index]])
-            SetMaterialAtIndex(static_cast<uint8_t>(index), *material);
+            SetMaterialAtIndex(static_cast<uint32_t>(index), *material);
     }
 }
 
 void MeshRenderer::SetMaterialPathHints(const NLS::Array<std::string>& p_paths)
 {
-    for (size_t index = 0; index < kMaxMaterialCount; ++index)
+    const auto slotCount = (std::min)(p_paths.size(), static_cast<size_t>(kMaxMaterialCount));
+    if (slotCount > 0u && !EnsureMaterialSlot(slotCount - 1u))
+        return;
+    for (size_t index = 0; index < slotCount; ++index)
     {
-        const std::string path = index < p_paths.size() ? p_paths[index] : std::string {};
+        const std::string& path = p_paths[index];
         if (m_materials[index] != nullptr && !MaterialArtifactPathMatches(m_materials[index]->path, path))
         {
             m_materials[index] = nullptr;
@@ -387,7 +398,10 @@ void MeshRenderer::SetMaterialReferences(const NLS::Array<NLS::Engine::Serialize
 {
     RemoveAllMaterials();
     materials = p_references;
-    for (size_t index = 0; index < p_references.size() && index < kMaxMaterialCount; ++index)
+    const auto slotCount = (std::min)(p_references.size(), static_cast<size_t>(kMaxMaterialCount));
+    if (slotCount > 0u && !EnsureMaterialSlot(slotCount - 1u))
+        return;
+    for (size_t index = 0; index < slotCount; ++index)
     {
         NLS::Engine::Serialize::ObjectIdentifier identifier;
         if (NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(p_references[index].GetInstanceID(), identifier))
@@ -413,7 +427,9 @@ void MeshRenderer::SetMaterialObjectIdentifiers(const NLS::Array<NLS::Engine::Se
 void MeshRenderer::FillEmptySlotsWithMaterial(RenderMaterial& p_material)
 {
     const auto materialCount = GetExpectedMaterialSlotCount();
-    for (size_t i = 0; i < materialCount && i < m_materials.size(); ++i)
+    if (materialCount > 0u && !EnsureMaterialSlot(materialCount - 1u))
+        return;
+    for (size_t i = 0; i < materialCount; ++i)
     {
         if (m_materials[i] == nullptr)
         {
@@ -454,7 +470,9 @@ void MeshRenderer::UpdateMaterialList()
         if (mesh == nullptr)
             return;
 
-        const auto materialSlotCount = GetMaterialSlotCountFromIndex(mesh->GetMaterialIndex(), m_materialNames.size());
+        const auto materialSlotCount = GetMaterialSlotCountFromIndex(mesh->GetMaterialIndex());
+        if (m_materialNames.size() < materialSlotCount)
+            m_materialNames.resize(materialSlotCount);
         for (size_t i = 0; i < materialSlotCount; ++i)
             m_materialNames[i] = "Material " + std::to_string(i);
         for (size_t i = materialSlotCount; i < m_materialNames.size(); ++i)
@@ -469,7 +487,7 @@ size_t MeshRenderer::GetExpectedMaterialSlotCount()
     {
         if (auto* mesh = meshFilter->ResolveMesh())
         {
-            return GetMaterialSlotCountFromIndex(mesh->GetMaterialIndex(), m_materialNames.size());
+            return GetMaterialSlotCountFromIndex(mesh->GetMaterialIndex());
         }
     }
 
@@ -481,6 +499,23 @@ size_t MeshRenderer::GetExpectedMaterialSlotCount()
     }
 
     return materialCount > 0 ? materialCount : 1;
+}
+
+bool MeshRenderer::EnsureMaterialSlot(const size_t p_index)
+{
+    if (p_index >= kMaxMaterialCount)
+        return false;
+
+    const auto requiredSize = p_index + 1u;
+    if (m_materials.size() < requiredSize)
+        m_materials.resize(requiredSize, nullptr);
+    if (m_materialPaths.size() < requiredSize)
+        m_materialPaths.resize(requiredSize);
+    if (m_failedMaterialPaths.size() < requiredSize)
+        m_failedMaterialPaths.resize(requiredSize);
+    if (m_materialNames.size() < requiredSize)
+        m_materialNames.resize(requiredSize);
+    return true;
 }
 
 void MeshRenderer::SetUserMatrixElement(uint32_t p_row, uint32_t p_column, float p_value)

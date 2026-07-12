@@ -104,6 +104,21 @@ namespace NLS::Engine::Rendering
 				key.depthWriteEligibilityGeneration == candidate.depthWriteEligibilityGeneration;
 		}
 
+		bool ShouldRecordOccludedObservation(
+			const SceneOcclusionHistory& history,
+			const SceneOcclusionFrameInput& frame,
+			const SceneOcclusionObservation& observation)
+		{
+			const auto existingOccludedFrame = history.FindOccludedFrame(observation.key);
+			if (!existingOccludedFrame.has_value())
+				return true;
+
+			const auto historyAge = frame.frameSerial >= *existingOccludedFrame
+				? frame.frameSerial - *existingOccludedFrame
+				: (std::numeric_limits<uint64_t>::max)();
+			return historyAge > frame.maxHistoryAge;
+		}
+
 		bool ProjectToPacketSample(
 			const SceneOcclusionPrimitivePacketBuildInput& input,
 			const Maths::Vector3& worldPoint,
@@ -814,8 +829,11 @@ namespace NLS::Engine::Rendering
 
 			if (observation.occluded)
 			{
-				history.RecordOccluded(observation.key, observation.frameSerial);
-				++stats.occludedPrimitiveCount;
+				if (ShouldRecordOccludedObservation(history, frame, observation))
+				{
+					history.RecordOccluded(observation.key, observation.frameSerial);
+					++stats.occludedPrimitiveCount;
+				}
 			}
 			else
 			{

@@ -272,16 +272,16 @@ TEST(PrefabEditorWorkflowTests, InstantiatesPrefabAndStoresSceneConnection)
     EXPECT_EQ(scene.GetGameObjects()[0], result.instance->instanceRoot);
 }
 
-TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesPreviewRootStructure)
+TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesExistingRootStructure)
 {
-    const std::string meshPath = "Library/Artifacts/PreviewCommitHero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
-    const std::string materialPath = "Library/Artifacts/PreviewCommitHero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b";
+    const std::string meshPath = "Library/Artifacts/ExistingCommitHero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
+    const std::string materialPath = "Library/Artifacts/ExistingCommitHero/8ca977f3a8a054ff6767e381b334be9e47456f725e02f84e11a3b5b1f3f4218b";
     const auto meshId = NLS::Engine::Serialize::AssetId(
         NLS::Guid::Parse("83838383-8383-4383-8383-838383838385"));
     const auto materialId = NLS::Engine::Serialize::AssetId(
         NLS::Guid::Parse("83838383-8383-4383-8383-838383838386"));
 
-    NLS::Engine::GameObject sourceRoot("PreviewCommitHero", "Model");
+    NLS::Engine::GameObject sourceRoot("ExistingCommitHero", "Model");
     auto* sourceMeshFilter = sourceRoot.AddComponent<NLS::Engine::Components::MeshFilter>();
     auto* sourceMeshRenderer = sourceRoot.AddComponent<NLS::Engine::Components::MeshRenderer>();
     ASSERT_NE(sourceMeshFilter, nullptr);
@@ -298,62 +298,62 @@ TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesPreviewRoo
                 NLS::Engine::Serialize::MakeLocalIdentifierInFile(materialId.GetGuid(), materialPath),
                 materialPath))
     });
-    auto* sourceChild = new NLS::Engine::GameObject("PreviewCommitChild", "ModelPart");
+    auto* sourceChild = new NLS::Engine::GameObject("ExistingCommitChild", "ModelPart");
     sourceChild->SetParent(sourceRoot);
 
     auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
         &sourceRoot,
         {},
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838384")),
-        "Assets/Prefabs/PreviewCommitHero.prefab"
+        "Assets/Prefabs/ExistingCommitHero.prefab"
     }).artifact;
     ASSERT_TRUE(artifact.has_value());
 
     NLS::Engine::SceneSystem::Scene scene;
-    auto& previewRoot = scene.CreateGameObject("PreviewCommitHero", "Model");
+    auto& existingRoot = scene.CreateGameObject("ExistingCommitHero", "Model");
 
     NLS::Editor::Assets::PrefabEditorWorkflow workflow;
     auto result = workflow.ConnectExistingPrefabInstance({
         &*artifact,
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838384")),
-        "prefab:PreviewCommitHero"
-    }, previewRoot);
+        "prefab:ExistingCommitHero"
+    }, existingRoot);
 
     ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
     ASSERT_TRUE(result.instance.has_value());
-    EXPECT_EQ(result.instance->instanceRoot, &previewRoot)
-        << "Scene View release must keep the same preview root instead of instantiating a replacement.";
-    EXPECT_NE(previewRoot.GetComponent<NLS::Engine::Components::MeshFilter>(), nullptr);
-    EXPECT_NE(previewRoot.GetComponent<NLS::Engine::Components::MeshRenderer>(), nullptr);
-    EXPECT_EQ(previewRoot.GetComponent<NLS::Engine::Components::MeshFilter>()->GetModelPath(), meshPath)
-        << "Committing an incomplete drag preview must preserve the prefab mesh reference hint so renderer resolution does not reload or lose tasks.";
-    const auto materialPaths = previewRoot.GetComponent<NLS::Engine::Components::MeshRenderer>()->GetMaterialPaths();
+    EXPECT_EQ(result.instance->instanceRoot, &existingRoot)
+        << "Scene View release must keep the same existing root instead of instantiating a replacement.";
+    EXPECT_NE(existingRoot.GetComponent<NLS::Engine::Components::MeshFilter>(), nullptr);
+    EXPECT_NE(existingRoot.GetComponent<NLS::Engine::Components::MeshRenderer>(), nullptr);
+    EXPECT_EQ(existingRoot.GetComponent<NLS::Engine::Components::MeshFilter>()->GetModelPath(), meshPath)
+        << "Committing an incomplete formal drag instance must preserve the prefab mesh reference hint so renderer resolution does not reload or lose tasks.";
+    const auto materialPaths = existingRoot.GetComponent<NLS::Engine::Components::MeshRenderer>()->GetMaterialPaths();
     ASSERT_EQ(materialPaths.size(), 1u);
     EXPECT_EQ(materialPaths.front(), materialPath)
-        << "Committing an incomplete drag preview must preserve material hints for the same live object instead of creating a second load path.";
-    auto* completedChild = FindChildByName(previewRoot, "PreviewCommitChild");
+        << "Committing an incomplete formal drag instance must preserve material hints for the same live object instead of creating a second load path.";
+    auto* completedChild = FindChildByName(existingRoot, "ExistingCommitChild");
     ASSERT_NE(completedChild, nullptr);
 
-    scene.AddGameObject(&previewRoot);
+    scene.AddGameObject(&existingRoot);
     EXPECT_NE(
         std::find(scene.GetGameObjects().begin(), scene.GetGameObjects().end(), completedChild),
         scene.GetGameObjects().end())
         << "Prefab completion must register newly restored children with the active scene for save and render traversal.";
     EXPECT_EQ(scene.GetFastAccessComponents().modelRenderers.size(), 1u);
 
-    ASSERT_NE(result.instance->sourceByInstanceObject.find(&previewRoot), result.instance->sourceByInstanceObject.end());
+    ASSERT_NE(result.instance->sourceByInstanceObject.find(&existingRoot), result.instance->sourceByInstanceObject.end());
     EXPECT_GE(result.instance->sourceByInstanceObject.size(), 2u)
         << "The connected instance must map the completed prefab hierarchy so renderer resolution can find mesh/material tasks.";
     EXPECT_FALSE(result.instance->sourceToInstance.empty());
 }
 
-TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstancePreservesPreviewTransientMesh)
+TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstancePreservesExistingTransientMesh)
 {
-    const std::string meshPath = "Library/Artifacts/PreviewCommitTransient/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
+    const std::string meshPath = "Library/Artifacts/ExistingCommitTransient/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb";
     const auto meshId = NLS::Engine::Serialize::AssetId(
         NLS::Guid::Parse("83838383-8383-4383-8383-838383838387"));
 
-    NLS::Engine::GameObject sourceRoot("PreviewCommitTransient", "Model");
+    NLS::Engine::GameObject sourceRoot("ExistingCommitTransient", "Model");
     auto* sourceMeshFilter = sourceRoot.AddComponent<NLS::Engine::Components::MeshFilter>();
     ASSERT_NE(sourceMeshFilter, nullptr);
     sourceMeshFilter->SetMeshReference(MakePPtr<NLS::Render::Resources::Mesh>(
@@ -366,35 +366,35 @@ TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstancePreservesPreviewTra
         &sourceRoot,
         {},
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838388")),
-        "Assets/Prefabs/PreviewCommitTransient.prefab"
+        "Assets/Prefabs/ExistingCommitTransient.prefab"
     }).artifact;
     ASSERT_TRUE(artifact.has_value());
 
     NLS::Engine::SceneSystem::Scene scene;
-    auto& previewRoot = scene.CreateGameObject("PreviewCommitTransient", "Model");
-    auto* previewMeshFilter = previewRoot.AddComponent<NLS::Engine::Components::MeshFilter>();
-    ASSERT_NE(previewMeshFilter, nullptr);
+    auto& existingRoot = scene.CreateGameObject("ExistingCommitTransient", "Model");
+    auto* existingMeshFilter = existingRoot.AddComponent<NLS::Engine::Components::MeshFilter>();
+    ASSERT_NE(existingMeshFilter, nullptr);
     auto transientMesh = std::shared_ptr<NLS::Render::Resources::Mesh>(
         new NLS::Render::Resources::Mesh({}, {}, 0u));
-    previewMeshFilter->SetResolvedTransientMeshFromReference(transientMesh);
+    existingMeshFilter->SetResolvedTransientMeshFromReference(transientMesh);
 
     auto result = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
         &*artifact,
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838388")),
-        "prefab:PreviewCommitTransient"
-    }, previewRoot);
+        "prefab:ExistingCommitTransient"
+    }, existingRoot);
 
     ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
     ASSERT_TRUE(result.instance.has_value());
-    EXPECT_EQ(result.instance->instanceRoot, &previewRoot);
-    ASSERT_NE(previewRoot.GetComponent<NLS::Engine::Components::MeshFilter>(), nullptr);
-    EXPECT_TRUE(previewRoot.GetComponent<NLS::Engine::Components::MeshFilter>()->HasResolvedTransientMesh())
-        << "Connecting the preview root must not overwrite a mesh already loaded during drag preview.";
+    EXPECT_EQ(result.instance->instanceRoot, &existingRoot);
+    ASSERT_NE(existingRoot.GetComponent<NLS::Engine::Components::MeshFilter>(), nullptr);
+    EXPECT_TRUE(existingRoot.GetComponent<NLS::Engine::Components::MeshFilter>()->HasResolvedTransientMesh())
+        << "Connecting the existing root must not overwrite a mesh already loaded during formal drag instance.";
 }
 
 TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesDuplicateNamedChildrenIndependently)
 {
-    NLS::Engine::GameObject sourceRoot("DuplicateChildPreview", "Model");
+    NLS::Engine::GameObject sourceRoot("DuplicateChildExisting", "Model");
     auto* firstChild = new NLS::Engine::GameObject("RepeatedPart", "ModelPart");
     firstChild->SetParent(sourceRoot);
     auto* secondChild = new NLS::Engine::GameObject("RepeatedPart", "ModelPart");
@@ -404,29 +404,29 @@ TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesDuplicateN
         &sourceRoot,
         {},
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838389")),
-        "Assets/Prefabs/DuplicateChildPreview.prefab"
+        "Assets/Prefabs/DuplicateChildExisting.prefab"
     }).artifact;
     ASSERT_TRUE(artifact.has_value());
 
     NLS::Engine::SceneSystem::Scene scene;
-    auto& previewRoot = scene.CreateGameObject("DuplicateChildPreview", "Model");
+    auto& existingRoot = scene.CreateGameObject("DuplicateChildExisting", "Model");
 
     auto result = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
         &*artifact,
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838389")),
-        "prefab:DuplicateChildPreview"
-    }, previewRoot);
+        "prefab:DuplicateChildExisting"
+    }, existingRoot);
 
     ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
     ASSERT_TRUE(result.instance.has_value());
-    EXPECT_EQ(CountChildrenByName(previewRoot, "RepeatedPart"), 2u)
-        << "Completing a preview root must not collapse same-name prefab siblings into one live child.";
+    EXPECT_EQ(CountChildrenByName(existingRoot, "RepeatedPart"), 2u)
+        << "Completing a existing root must not collapse same-name prefab siblings into one live child.";
     EXPECT_GE(result.instance->sourceByInstanceObject.size(), 3u);
 }
 
 TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesDuplicateSameTypeComponentsIndependently)
 {
-    NLS::Engine::GameObject sourceRoot("DuplicateComponentPreview", "Model");
+    NLS::Engine::GameObject sourceRoot("DuplicateComponentExisting", "Model");
     ASSERT_NE(sourceRoot.AddComponent<NLS::Engine::Components::LightComponent>(), nullptr);
     ASSERT_NE(sourceRoot.AddComponent<NLS::Engine::Components::LightComponent>(), nullptr);
 
@@ -434,43 +434,43 @@ TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesDuplicateS
         &sourceRoot,
         {},
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-83838383838a")),
-        "Assets/Prefabs/DuplicateComponentPreview.prefab"
+        "Assets/Prefabs/DuplicateComponentExisting.prefab"
     }).artifact;
     ASSERT_TRUE(artifact.has_value());
 
     NLS::Engine::SceneSystem::Scene scene;
-    auto& previewRoot = scene.CreateGameObject("DuplicateComponentPreview", "Model");
+    auto& existingRoot = scene.CreateGameObject("DuplicateComponentExisting", "Model");
 
     auto result = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
         &*artifact,
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-83838383838a")),
-        "prefab:DuplicateComponentPreview"
-    }, previewRoot);
+        "prefab:DuplicateComponentExisting"
+    }, existingRoot);
 
     ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
     ASSERT_TRUE(result.instance.has_value());
     const auto duplicateLightCount = static_cast<size_t>(std::count_if(
-        previewRoot.GetComponents().begin(),
-        previewRoot.GetComponents().end(),
+        existingRoot.GetComponents().begin(),
+        existingRoot.GetComponents().end(),
         [](const auto& component)
         {
             return component &&
                 component->GetType() == NLS_TYPEOF(NLS::Engine::Components::LightComponent);
         }));
     EXPECT_EQ(duplicateLightCount, 2u)
-        << "Completing a preview root must not map duplicate same-type source components onto one live component.";
+        << "Completing a existing root must not map duplicate same-type source components onto one live component.";
 }
 
 TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesMissingMaterialSlotsWithoutClearingLoadedSlot)
 {
-    const std::string firstMaterialPath = "Library/Artifacts/PreviewCommitPartialMaterials/dcae5a38be96376d6b06a1b70d9e3897ddfbe16937de85e3ffa05c78b878b351";
-    const std::string secondMaterialPath = "Library/Artifacts/PreviewCommitPartialMaterials/47ad399b45bcdda2bfbe6ee59e6a6e36ac148a09e62f7ec47862fae4f8e8c07a";
+    const std::string firstMaterialPath = "Library/Artifacts/ExistingCommitPartialMaterials/dcae5a38be96376d6b06a1b70d9e3897ddfbe16937de85e3ffa05c78b878b351";
+    const std::string secondMaterialPath = "Library/Artifacts/ExistingCommitPartialMaterials/47ad399b45bcdda2bfbe6ee59e6a6e36ac148a09e62f7ec47862fae4f8e8c07a";
     const auto firstMaterialId = NLS::Engine::Serialize::AssetId(
         NLS::Guid::Parse("83838383-8383-4383-8383-83838383838b"));
     const auto secondMaterialId = NLS::Engine::Serialize::AssetId(
         NLS::Guid::Parse("83838383-8383-4383-8383-83838383838c"));
 
-    NLS::Engine::GameObject sourceRoot("PartialMaterialPreview", "Model");
+    NLS::Engine::GameObject sourceRoot("PartialMaterialExisting", "Model");
     auto* sourceMeshRenderer = sourceRoot.AddComponent<NLS::Engine::Components::MeshRenderer>();
     ASSERT_NE(sourceMeshRenderer, nullptr);
     sourceMeshRenderer->SetMaterialReferences({
@@ -490,32 +490,32 @@ TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesMissingMat
         &sourceRoot,
         {},
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-83838383838d")),
-        "Assets/Prefabs/PartialMaterialPreview.prefab"
+        "Assets/Prefabs/PartialMaterialExisting.prefab"
     }).artifact;
     ASSERT_TRUE(artifact.has_value());
 
     NLS::Engine::SceneSystem::Scene scene;
-    auto& previewRoot = scene.CreateGameObject("PartialMaterialPreview", "Model");
-    auto* previewMeshRenderer = previewRoot.AddComponent<NLS::Engine::Components::MeshRenderer>();
-    ASSERT_NE(previewMeshRenderer, nullptr);
+    auto& existingRoot = scene.CreateGameObject("PartialMaterialExisting", "Model");
+    auto* existingMeshRenderer = existingRoot.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(existingMeshRenderer, nullptr);
     auto firstMaterial = std::make_unique<NLS::Render::Resources::Material>();
     firstMaterial->path = firstMaterialPath;
-    previewMeshRenderer->SetResolvedMaterialFromReference(0u, *firstMaterial);
+    existingMeshRenderer->SetResolvedMaterialFromReference(0u, *firstMaterial);
 
     auto result = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
         &*artifact,
         NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-83838383838d")),
-        "prefab:PartialMaterialPreview"
-    }, previewRoot);
+        "prefab:PartialMaterialExisting"
+    }, existingRoot);
 
     ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
     ASSERT_TRUE(result.instance.has_value());
-    ASSERT_EQ(previewMeshRenderer->GetMaterialAtIndex(0u), firstMaterial.get());
-    const auto materialPaths = previewMeshRenderer->GetMaterialPaths();
+    ASSERT_EQ(existingMeshRenderer->GetMaterialAtIndex(0u), firstMaterial.get());
+    const auto materialPaths = existingMeshRenderer->GetMaterialPaths();
     ASSERT_EQ(materialPaths.size(), 2u);
     EXPECT_EQ(materialPaths[0], firstMaterialPath);
     EXPECT_EQ(materialPaths[1], secondMaterialPath)
-        << "Partially loaded preview materials must still receive hints for not-yet-loaded slots.";
+        << "Partially loaded existing materials must still receive hints for not-yet-loaded slots.";
 }
 
 TEST(PrefabEditorWorkflowTests, RegistryTracksConnectedPrefabPresentationStates)

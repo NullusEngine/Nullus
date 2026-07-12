@@ -39,9 +39,19 @@ namespace
         return { color.x, color.y, color.z, 1.0f };
     }
 
+    Maths::Vector4 ResolveFrameClearColor(const Data::FrameDescriptor& frameDescriptor)
+    {
+        if (frameDescriptor.clearColorOverride.has_value())
+            return *frameDescriptor.clearColorOverride;
+        if (frameDescriptor.camera == nullptr)
+            return Core::DefaultOpaqueClearColor();
+        return ToOpaqueClearColor(frameDescriptor.camera->GetClearColor());
+    }
+
     struct AttachmentPipelineState
     {
         std::optional<RHI::TextureFormat> colorFormat;
+        std::optional<RHI::TextureColorSpace> colorSpace;
         std::optional<RHI::TextureFormat> depthFormat;
         std::optional<uint32_t> colorSampleCount;
         std::optional<uint32_t> depthSampleCount;
@@ -72,9 +82,15 @@ namespace
                         : nullptr;
 
         if (colorView != nullptr)
+        {
             state.colorFormat = colorView->GetDesc().format;
+            state.colorSpace = colorView->GetDesc().colorSpace;
+        }
         else if (colorTexture != nullptr)
+        {
             state.colorFormat = colorTexture->GetDesc().format;
+            state.colorSpace = colorTexture->GetDesc().colorSpace;
+        }
         if (colorTexture != nullptr)
             state.colorSampleCount = std::max(1u, colorTexture->GetDesc().sampleCount);
 
@@ -122,6 +138,11 @@ namespace
             const std::array<RHI::TextureFormat, 1u> colorFormats { *attachmentState.colorFormat };
             overrides.SetColorFormats(colorFormats);
         }
+        if (attachmentState.colorSpace.has_value())
+        {
+            const std::array<RHI::TextureColorSpace, 1u> colorSpaces { *attachmentState.colorSpace };
+            overrides.SetColorSpaces(colorSpaces);
+        }
 
         if (attachmentState.colorSampleCount.has_value())
             overrides.sampleCount = *attachmentState.colorSampleCount;
@@ -167,6 +188,12 @@ namespace
         {
             const std::array<RHI::TextureFormat, 1u> colorFormats { *attachmentState.colorFormat };
             overrides.SetColorFormats(colorFormats);
+        }
+
+        if (!overrides.HasColorSpacesOverride() && attachmentState.colorSpace.has_value())
+        {
+            const std::array<RHI::TextureColorSpace, 1u> colorSpaces { *attachmentState.colorSpace };
+            overrides.SetColorSpaces(colorSpaces);
         }
 
         if (!overrides.sampleCount.has_value() && attachmentState.colorSampleCount.has_value())
@@ -317,10 +344,23 @@ ABaseRenderer::~ABaseRenderer()
     Resources::Loaders::TextureLoader::Destroy(m_emptyTexture);
 }
 
-void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
+void ABaseRenderer::BeginFrameInternal(
+    const Data::FrameDescriptor& p_frameDescriptor,
+    bool globalFrameAlreadyAcquired)
 {
     NLS_PROFILE_SCOPE();
-    NLS_ASSERT(!s_isDrawing, "Cannot call BeginFrame() when previous frame hasn't finished.");
+    if (!globalFrameAlreadyAcquired)
+    {
+        bool expectedDrawing = false;
+        const bool beganGlobalFrame = s_isDrawing.compare_exchange_strong(expectedDrawing, true);
+        if (!beganGlobalFrame)
+        {
+            m_isDrawing = false;
+            m_frameActive = false;
+            m_globalFrameReleaseDeferred = true;
+            return;
+        }
+    }
     NLS_ASSERT(p_frameDescriptor.IsValid(), "Invalid FrameDescriptor!");
 
     m_frameDescriptor = p_frameDescriptor;
@@ -329,7 +369,9 @@ void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
     m_activeRecordedPassDepthStencilView.reset();
     m_pendingFrameSnapshot.reset();
     m_pendingPreparedRenderSceneBuilder = {};
+    m_lastThreadedFramePublished = false;
     m_frameActive = false;
+    m_globalFrameReleaseDeferred = globalFrameAlreadyAcquired;
     ++m_preparedRecordedDrawStaticBaseCacheFrame;
     InvalidateExplicitDeviceDependentCachesIfNeeded();
     TrimPreparedRecordedDrawStaticBaseCache(true);
@@ -363,7 +405,7 @@ void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
             p_frameDescriptor.camera->GetClearColorBuffer(),
             p_frameDescriptor.camera->GetClearDepthBuffer(),
             p_frameDescriptor.camera->GetClearStencilBuffer(),
-            ToOpaqueClearColor(p_frameDescriptor.camera->GetClearColor())
+            ResolveFrameClearColor(p_frameDescriptor)
         );
     }
 
@@ -371,7 +413,16 @@ void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 
     m_isDrawing = true;
     m_frameActive = true;
-    s_isDrawing.store(true);
+}
+
+void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
+{
+    BeginFrameInternal(p_frameDescriptor, false);
+}
+
+void ABaseRenderer::BeginFrameForBackgroundPreview(const Data::FrameDescriptor& p_frameDescriptor)
+{
+    BeginFrameInternal(p_frameDescriptor, true);
 }
 
 void ABaseRenderer::EndFrame()
@@ -379,8 +430,11 @@ void ABaseRenderer::EndFrame()
     NLS_PROFILE_SCOPE();
     if (!m_frameActive)
     {
+        const bool releaseGlobalFrame = !m_globalFrameReleaseDeferred;
         m_isDrawing = false;
-        s_isDrawing.store(false);
+        m_globalFrameReleaseDeferred = false;
+        if (releaseGlobalFrame)
+            s_isDrawing.store(false);
         return;
     }
     NLS_ASSERT(s_isDrawing, "Cannot call EndFrame() before calling BeginFrame()");
@@ -415,6 +469,22 @@ void ABaseRenderer::EndFrame()
 
     m_isDrawing = false;
     m_frameActive = false;
+    const bool releaseGlobalFrame = !m_globalFrameReleaseDeferred;
+    m_globalFrameReleaseDeferred = false;
+    if (releaseGlobalFrame)
+        s_isDrawing.store(false);
+}
+
+bool ABaseRenderer::TryBeginGlobalFrameForBackgroundPreview()
+{
+    bool expectedDrawing = false;
+    if (!s_isDrawing.compare_exchange_strong(expectedDrawing, true))
+        return false;
+    return true;
+}
+
+void ABaseRenderer::EndGlobalFrameForBackgroundPreview()
+{
     s_isDrawing.store(false);
 }
 
@@ -468,7 +538,8 @@ bool ABaseRenderer::TryPublishThreadedFrame()
             snapshot.value(),
             std::move(renderSceneBuilder),
             nullptr,
-            &publishedFrameId);
+            &publishedFrameId,
+            m_globalFrameReleaseDeferred);
         if (published)
             OnThreadedFramePublished(publishedFrameId);
         return published;
@@ -479,10 +550,14 @@ bool ABaseRenderer::TryPublishThreadedFrame()
 
 void ABaseRenderer::OnThreadedFramePublished(uint64_t)
 {
+    m_lastThreadedFramePublished = true;
+    m_nextFramePostSubmitTextureReadbacks.clear();
 }
 
 void ABaseRenderer::OnThreadedFramePublishFailed()
 {
+    m_lastThreadedFramePublished = false;
+    m_nextFramePostSubmitTextureReadbacks.clear();
 }
 
 Context::PreparedRenderSceneBuilder ABaseRenderer::BuildPreparedRenderSceneBuilder(
@@ -525,15 +600,27 @@ std::optional<NLS::Render::Context::FrameSnapshot> ABaseRenderer::BuildFrameSnap
     snapshot.externalOutputIdentities = externalOutputSummary.identities;
     snapshot.externalOutputTextureCount = externalOutputSummary.textureCount;
     const auto& camera = *frameDescriptor.camera;
-    const auto& clearColor = camera.GetClearColor();
-    snapshot.clearColor = Maths::Vector4(clearColor.x, clearColor.y, clearColor.z, 1.0f);
+    snapshot.clearColor = ResolveFrameClearColor(frameDescriptor);
     snapshot.clearColorBuffer = camera.GetClearColorBuffer();
     snapshot.clearDepthBuffer = camera.GetClearDepthBuffer();
     snapshot.clearStencilBuffer = camera.GetClearStencilBuffer();
     snapshot.hasGeometryFrustum = camera.GetGeometryFrustum() != nullptr;
     snapshot.hasLightFrustum = camera.GetLightFrustum() != nullptr;
     snapshot.recordedDrawCommands = m_threadedRecordedDrawCommands;
+    snapshot.postSubmitTextureReadbacks = m_nextFramePostSubmitTextureReadbacks;
     return snapshot;
+}
+
+void ABaseRenderer::SetNextFramePostSubmitTextureReadback(
+    Context::PostSubmitTextureReadbackRequest request)
+{
+    m_nextFramePostSubmitTextureReadbacks.clear();
+    m_nextFramePostSubmitTextureReadbacks.push_back(std::move(request));
+}
+
+bool ABaseRenderer::WasLastThreadedFramePublished() const
+{
+    return m_lastThreadedFramePublished;
 }
 
 NLS::Render::FrameGraph::FrameGraphExecutionContext ABaseRenderer::CreateFrameGraphExecutionContext() const

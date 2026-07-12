@@ -51,9 +51,12 @@
 #include "Rendering/RHI/Utils/PipelineCache/PipelineCache.h"
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
+#include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Components/LightComponent.h"
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "SceneSystem/Scene.h"
 #include "ImGui/imgui.h"
@@ -3173,7 +3176,7 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveRejectsDuplicateReso
     EXPECT_EQ(renderReadySlotState->renderScenePackage->visibleDrawCount, 2u);
 }
 
-TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesMissingPackageWhenBuilderThrows)
+TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolvePreservesFailureDiagnosticWhenBuilderThrows)
 {
     NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
 
@@ -3194,16 +3197,20 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesMissingPack
     ASSERT_TRUE(lifecycle.TryBeginNextRenderScene(&slotIndex, &claimedSnapshot));
     EXPECT_EQ(slotIndex, 0u);
 
-    bool missingFallbackCalled = false;
+    bool failureFallbackCalled = false;
+    std::string failureDiagnostic;
     NLS::Render::Context::RenderScenePreparingResolutionDesc resolutionDesc;
-    resolutionDesc.buildPreparedBuilderMissingRenderScenePackage =
-        [&missingFallbackCalled](const NLS::Render::Context::FrameSnapshot& missingSnapshot)
+    resolutionDesc.buildPreparedBuilderFailedRenderScenePackage =
+        [&failureFallbackCalled, &failureDiagnostic](
+            const NLS::Render::Context::FrameSnapshot& failedSnapshot,
+            const std::string& diagnostic)
         {
-            missingFallbackCalled = true;
+            failureFallbackCalled = true;
+            failureDiagnostic = diagnostic;
             NLS::Render::Context::RenderScenePackage package;
-            package.frameId = missingSnapshot.frameId;
-            package.renderWidth = missingSnapshot.renderWidth;
-            package.renderHeight = missingSnapshot.renderHeight;
+            package.frameId = failedSnapshot.frameId;
+            package.renderWidth = failedSnapshot.renderWidth;
+            package.renderHeight = failedSnapshot.renderHeight;
             package.visibleDrawCount = 0u;
             package.hasVisibleDraws = false;
             return package;
@@ -3212,14 +3219,15 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesMissingPack
     EXPECT_NO_THROW({
         EXPECT_TRUE(lifecycle.ResolveRenderScenePreparing(slotIndex, resolutionDesc));
     });
-    EXPECT_TRUE(missingFallbackCalled);
+    EXPECT_TRUE(failureFallbackCalled);
+    EXPECT_EQ(failureDiagnostic, "expected prepared builder failure");
 
     const auto renderReadySlotState = lifecycle.CopySlot(slotIndex);
     ASSERT_TRUE(renderReadySlotState.has_value());
     EXPECT_EQ(renderReadySlotState->stage, NLS::Render::Context::ThreadedFrameStage::RenderReady);
     EXPECT_EQ(
         renderReadySlotState->renderSceneAttribution,
-        NLS::Render::Context::RenderSceneAttribution::PreparedBuilderMissing);
+        NLS::Render::Context::RenderSceneAttribution::PreparedBuilderFailed);
     EXPECT_FALSE(renderReadySlotState->preparedRenderSceneBuilder.has_value());
     ASSERT_TRUE(renderReadySlotState->renderScenePackage.has_value());
     EXPECT_EQ(renderReadySlotState->renderScenePackage->frameId, 35u);
@@ -3228,7 +3236,7 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesMissingPack
     EXPECT_FALSE(renderReadySlotState->renderScenePackage->hasVisibleDraws);
 }
 
-TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesFallbackWhenMissingPackageBuilderThrows)
+TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesFallbackWhenFailurePackageBuilderThrows)
 {
     NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
 
@@ -3253,10 +3261,12 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesFallbackWhe
     EXPECT_EQ(lifecycle.CollectStreamingDependencyPins(), std::vector<uint64_t>({ 303u, 404u }));
 
     NLS::Render::Context::RenderScenePreparingResolutionDesc resolutionDesc;
-    resolutionDesc.buildPreparedBuilderMissingRenderScenePackage =
-        [](const NLS::Render::Context::FrameSnapshot&) -> NLS::Render::Context::RenderScenePackage
+    resolutionDesc.buildPreparedBuilderFailedRenderScenePackage =
+        [](
+            const NLS::Render::Context::FrameSnapshot&,
+            const std::string&) -> NLS::Render::Context::RenderScenePackage
         {
-            throw std::runtime_error("expected missing package failure");
+            throw std::runtime_error("expected failure package failure");
         };
 
     EXPECT_NO_THROW({
@@ -3268,7 +3278,7 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesFallbackWhe
     EXPECT_EQ(renderReadySlotState->stage, NLS::Render::Context::ThreadedFrameStage::RenderReady);
     EXPECT_EQ(
         renderReadySlotState->renderSceneAttribution,
-        NLS::Render::Context::RenderSceneAttribution::PreparedBuilderMissing);
+        NLS::Render::Context::RenderSceneAttribution::PreparedBuilderFailed);
     ASSERT_TRUE(renderReadySlotState->renderScenePackage.has_value());
     EXPECT_EQ(renderReadySlotState->renderScenePackage->frameId, 36u);
     EXPECT_EQ(renderReadySlotState->renderScenePackage->renderWidth, 640u);
@@ -3287,6 +3297,45 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveCompletesFallbackWhe
     ASSERT_TRUE(lifecycle.CompleteRhiSubmission(slotIndex, submissionFrame));
     ASSERT_TRUE(lifecycle.RetireFrame(slotIndex));
     EXPECT_TRUE(lifecycle.CollectStreamingDependencyPins().empty());
+}
+
+TEST(ThreadedRenderingLifecycleTests, PreparedBuilderResolveReportsUnknownNonStandardException)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 37u;
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrameBuilder(
+        snapshot,
+        []() -> NLS::Render::Context::RenderScenePackage
+        {
+            throw 37;
+        }));
+
+    size_t slotIndex = 99u;
+    ASSERT_TRUE(lifecycle.TryBeginNextRenderScene(&slotIndex, nullptr));
+
+    std::string failureDiagnostic;
+    NLS::Render::Context::RenderScenePreparingResolutionDesc resolutionDesc;
+    resolutionDesc.buildPreparedBuilderFailedRenderScenePackage =
+        [&failureDiagnostic](
+            const NLS::Render::Context::FrameSnapshot& failedSnapshot,
+            const std::string& diagnostic)
+        {
+            failureDiagnostic = diagnostic;
+            NLS::Render::Context::RenderScenePackage package;
+            package.frameId = failedSnapshot.frameId;
+            return package;
+        };
+
+    ASSERT_TRUE(lifecycle.ResolveRenderScenePreparing(slotIndex, resolutionDesc));
+    EXPECT_EQ(failureDiagnostic, "unknown exception");
+
+    const auto renderReadySlotState = lifecycle.CopySlot(slotIndex);
+    ASSERT_TRUE(renderReadySlotState.has_value());
+    EXPECT_EQ(
+        renderReadySlotState->renderSceneAttribution,
+        NLS::Render::Context::RenderSceneAttribution::PreparedBuilderFailed);
 }
 
 TEST(ThreadedRenderingLifecycleTests, SnapshotHarnessResolveCompletesFallbackWhenHarnessBuilderThrows)
@@ -6765,6 +6814,41 @@ TEST(ThreadedRenderingLifecycleTests, InRenderPassChildCommandRecordingReleasesD
     EXPECT_EQ(NLS::Render::Context::DriverTestAccess::GetRetainedThreadedSubmitResourceCount(driver), 0u);
 }
 
+TEST(ThreadedRenderingLifecycleTests, DriverRendererAccessWaitsForSubmittedGpuWorkFrameFences)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto pendingFence = std::make_shared<TestFence>();
+    auto signaledFence = std::make_shared<TestFence>();
+    signaledFence->signaled = true;
+    NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u).frameFence = pendingFence;
+    NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 1u).frameFence = signaledFence;
+
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::TryWaitForSubmittedGpuWork(driver));
+    EXPECT_EQ(pendingFence->waitCalls, 1u);
+    EXPECT_EQ(signaledFence->waitCalls, 0u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, DriverRendererAccessReportsSubmittedGpuWorkFenceTimeout)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto frameFence = std::make_shared<TestFence>();
+    frameFence->waitResults = { false };
+    NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u).frameFence = frameFence;
+
+    EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::TryWaitForSubmittedGpuWork(driver));
+    EXPECT_EQ(frameFence->waitCalls, 1u);
+}
+
 TEST(ThreadedRenderingLifecycleTests, InRenderPassChildCommandRecordingReleasesDeferredResourcesWithTimedOutSlotFrameIndex)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -9930,8 +10014,28 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesPreparedRend
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
 
     NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+    std::vector<NLS::Render::Geometry::Vertex> vertices(3u);
+    vertices[1].position[0] = 1.0f;
+    vertices[2].position[1] = 1.0f;
+    NLS::Render::Resources::Mesh sceneMesh(
+        vertices,
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+        {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* gbufferShader = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferShader(renderer);
+    ASSERT_NE(gbufferShader, nullptr);
+    NLS::Render::Resources::Material sceneMaterial;
+    sceneMaterial.SetShader(gbufferShader);
     NLS::Engine::SceneSystem::Scene scene;
-    scene.CreateGameObject("ModelActor").AddComponent<NLS::Engine::Components::MeshRenderer>();
+    auto& modelActor = scene.CreateGameObject("ModelActor");
+    auto* meshFilter = modelActor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    ASSERT_NE(meshFilter, nullptr);
+    meshFilter->SetMesh(&sceneMesh);
+    auto* meshRenderer = modelActor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshRenderer, nullptr);
+    meshRenderer->FillWithMaterial(sceneMaterial);
+    modelActor.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
     scene.CreateGameObject("LightActor").AddComponent<NLS::Engine::Components::LightComponent>();
     renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
         scene,

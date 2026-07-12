@@ -20,17 +20,19 @@ namespace
 			left.color[3] == right.color[3];
 	}
 
-	NLS::Render::RHI::RHITextureDesc CreateColorTextureDesc(
-		uint32_t width,
-		uint32_t height,
-		const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue& optimizedClearValue)
+		NLS::Render::RHI::RHITextureDesc CreateColorTextureDesc(
+			uint32_t width,
+			uint32_t height,
+			NLS::Render::RHI::TextureColorSpace colorSpace,
+			const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue& optimizedClearValue)
 	{
 		NLS::Render::RHI::RHITextureDesc desc{};
 		desc.extent.width = width;
 		desc.extent.height = height;
 		desc.extent.depth = 1;
-		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
-		desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+			desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+			desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+			desc.colorSpace = colorSpace;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled | NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
 		desc.optimizedClearValue = optimizedClearValue;
 		desc.debugName = "FramebufferColorTexture";
@@ -68,7 +70,11 @@ void NLS::Render::Buffers::Framebuffer::RetiredResourceSet::Reset()
 	depthStencilTexture.reset();
 }
 
-NLS::Render::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_height)
+NLS::Render::Buffers::Framebuffer::Framebuffer(
+	uint16_t p_width,
+	uint16_t p_height,
+	NLS::Render::RHI::TextureColorSpace colorSpace)
+	: m_colorSpace(colorSpace)
 {
 	if (p_width == 0u || p_height == 0u)
 		return;
@@ -81,7 +87,11 @@ NLS::Render::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_heig
 		return;
 	}
 
-	m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue));
+		m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(
+			p_width,
+			p_height,
+			m_colorSpace,
+			m_colorOptimizedClearValue));
 	if (m_explicitRenderTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer: Failed to create color texture");
@@ -163,7 +173,11 @@ void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_heig
 		return;
 	}
 
-	auto nextColorTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue));
+		auto nextColorTexture = device->CreateTexture(CreateColorTextureDesc(
+			p_width,
+			p_height,
+			m_colorSpace,
+			m_colorOptimizedClearValue));
 	if (nextColorTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer::Resize: Failed to recreate color texture");
@@ -222,8 +236,9 @@ std::shared_ptr<NLS::Render::RHI::RHITextureView> NLS::Render::Buffers::Framebuf
 	if (device == nullptr)
 		return nullptr;
 
-	NLS::Render::RHI::RHITextureViewDesc viewDesc{};
-	viewDesc.format = m_explicitRenderTexture->GetDesc().format;
+		NLS::Render::RHI::RHITextureViewDesc viewDesc{};
+		viewDesc.format = m_explicitRenderTexture->GetDesc().format;
+		viewDesc.colorSpace = m_explicitRenderTexture->GetDesc().colorSpace;
 	viewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
 	viewDesc.debugName = debugName.empty() ? "FramebufferColorView" : debugName;
 

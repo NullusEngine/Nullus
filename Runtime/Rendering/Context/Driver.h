@@ -85,6 +85,7 @@ private:
     friend struct DriverRendererAccess;
     friend struct DriverTestAccess;
     friend struct DriverUIAccess;
+    friend struct DriverResourceAccess;
     friend struct RenderThreadCoordinator;
     friend struct RhiThreadCoordinator;
 

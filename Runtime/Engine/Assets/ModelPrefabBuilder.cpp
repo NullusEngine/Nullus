@@ -10,6 +10,7 @@
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
 
 namespace NLS::Engine::Assets
@@ -114,6 +115,60 @@ const ImportedSceneNamedRecord* FindRecordBySourceKey(
         return record.sourceKey == sourceKey;
     });
     return found != records.end() ? &*found : nullptr;
+}
+
+struct GeneratedModelPrefabBuildContext
+{
+    std::unordered_map<std::string, const ImportedSceneNamedRecord*> meshesBySourceKey;
+    std::unordered_set<std::string> skinSourceKeys;
+    std::unordered_map<std::string, std::vector<std::string>> directMeshChildKeysByParent;
+    std::unordered_map<std::string, std::string> hlodProxySubAssetKeysByNode;
+};
+
+GeneratedModelPrefabBuildContext BuildGeneratedModelPrefabBuildContext(
+    const ImportedScene& scene,
+    const std::vector<ImportedSceneNode>& nodes,
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    GeneratedModelPrefabBuildContext context;
+    context.meshesBySourceKey.reserve(scene.meshes.size());
+    for (const auto& mesh : scene.meshes)
+    {
+        if (!mesh.sourceKey.empty())
+            context.meshesBySourceKey.emplace(mesh.sourceKey, &mesh);
+    }
+
+    context.skinSourceKeys.reserve(scene.skins.size());
+    for (const auto& skin : scene.skins)
+    {
+        if (!skin.sourceKey.empty())
+            context.skinSourceKeys.insert(skin.sourceKey);
+    }
+
+    for (const auto& node : nodes)
+    {
+        if (!node.parentKey.empty() && !node.meshKey.empty())
+            context.directMeshChildKeysByParent[node.parentKey].push_back(node.sourceKey);
+    }
+
+    for (const auto& [nodeSourceKey, childKeys] : context.directMeshChildKeysByParent)
+    {
+        if (childKeys.size() < 2u)
+            continue;
+
+        const auto proxySubAssetKey =
+            std::string(GeneratedModelPrefabHLODSchema::ProxySubAssetKeyPrefix) + nodeSourceKey;
+        const auto* proxyArtifact = manifest.FindSubAsset(proxySubAssetKey);
+        if (proxyArtifact == nullptr ||
+            proxyArtifact->artifactType != NLS::Core::Assets::ArtifactType::Mesh ||
+            proxyArtifact->artifactPath.empty())
+        {
+            continue;
+        }
+        context.hlodProxySubAssetKeysByNode.emplace(nodeSourceKey, proxySubAssetKey);
+    }
+
+    return context;
 }
 
 std::string SourceKeyOrName(const ImportedSceneNamedRecord& record)
@@ -273,19 +328,6 @@ PropertyValue MakeStringArray(const std::vector<std::string>& strings)
     return PropertyValue::Array(std::move(values));
 }
 
-std::vector<std::string> CollectDirectMeshChildKeys(
-    const std::vector<ImportedSceneNode>& nodes,
-    const std::string& parentKey)
-{
-    std::vector<std::string> childKeys;
-    for (const auto& candidate : nodes)
-    {
-        if (candidate.parentKey == parentKey && !candidate.meshKey.empty())
-            childKeys.push_back(candidate.sourceKey);
-    }
-    return childKeys;
-}
-
 PropertyValue MakeImportedHierarchyHLODMetadata(
     const ImportedSceneNode& node,
     const std::vector<std::string>& childKeys,
@@ -298,22 +340,6 @@ PropertyValue MakeImportedHierarchyHLODMetadata(
         {GeneratedModelPrefabHLODSchema::ChildrenField, MakeStringArray(childKeys)},
         {GeneratedModelPrefabHLODSchema::ProxySubAssetKeyField, PropertyValue::String(proxySubAssetKey)}
     });
-}
-
-std::string ResolveImportedHierarchyHLODProxySubAssetKey(
-    const NLS::Core::Assets::ArtifactManifest& manifest,
-    const std::string& nodeSourceKey)
-{
-    const auto proxySubAssetKey =
-        std::string(GeneratedModelPrefabHLODSchema::ProxySubAssetKeyPrefix) + nodeSourceKey;
-    const auto* proxyArtifact = manifest.FindSubAsset(proxySubAssetKey);
-    if (proxyArtifact == nullptr ||
-        proxyArtifact->artifactType != NLS::Core::Assets::ArtifactType::Mesh ||
-        proxyArtifact->artifactPath.empty())
-    {
-        return {};
-    }
-    return proxySubAssetKey;
 }
 
 PropertyValue Vector3FromValues(const std::vector<double>& values, const double x, const double y, const double z)
@@ -455,6 +481,7 @@ void AddRecordMapping(PrefabArtifact& artifact, const ObjectId& sourceObject)
 void AddGeneratedRecords(
     const ImportedScene& scene,
     const NLS::Core::Assets::ArtifactManifest& manifest,
+    const GeneratedModelPrefabBuildContext& buildContext,
     const ImportedSceneNode& node,
     const ObjectId& gameObjectId,
     const ObjectId& parentId,
@@ -469,7 +496,12 @@ void AddGeneratedRecords(
     std::vector<ObjectId> ownedChildIds = childIds;
 
     const auto hasMesh = !node.meshKey.empty();
-    const auto* meshRecord = hasMesh ? FindRecordBySourceKey(scene.meshes, node.meshKey) : nullptr;
+    const auto meshRecordIt = hasMesh
+        ? buildContext.meshesBySourceKey.find(node.meshKey)
+        : buildContext.meshesBySourceKey.end();
+    const auto* meshRecord = meshRecordIt != buildContext.meshesBySourceKey.end()
+        ? meshRecordIt->second
+        : nullptr;
     const auto splitPrimitiveMesh = meshRecord != nullptr && meshRecord->primitives.size() > 1u;
     const auto meshFilterId = MakeObjectId(scene, "component:" + node.sourceKey + ":mesh-filter");
     const auto meshRendererId = MakeObjectId(scene, "component:" + node.sourceKey + ":mesh-renderer");
@@ -487,12 +519,20 @@ void AddGeneratedRecords(
                 "node:" + node.sourceKey + ":primitive:" + std::to_string(primitiveIndex)));
         }
     }
-    const auto hlodChildKeys = !hasMesh
-        ? CollectDirectMeshChildKeys(scene.nodes, node.sourceKey)
-        : std::vector<std::string> {};
-    const auto hlodProxySubAssetKey = hlodChildKeys.size() >= 2u
-        ? ResolveImportedHierarchyHLODProxySubAssetKey(manifest, node.sourceKey)
-        : std::string {};
+    const std::vector<std::string>* hlodChildKeys = nullptr;
+    if (!hasMesh)
+    {
+        const auto childKeysIt = buildContext.directMeshChildKeysByParent.find(node.sourceKey);
+        if (childKeysIt != buildContext.directMeshChildKeysByParent.end())
+            hlodChildKeys = &childKeysIt->second;
+    }
+    std::string hlodProxySubAssetKey;
+    if (hlodChildKeys != nullptr && hlodChildKeys->size() >= 2u)
+    {
+        const auto proxyIt = buildContext.hlodProxySubAssetKeysByNode.find(node.sourceKey);
+        if (proxyIt != buildContext.hlodProxySubAssetKeysByNode.end())
+            hlodProxySubAssetKey = proxyIt->second;
+    }
     const auto hasHLODProxy = !hlodProxySubAssetKey.empty();
     const auto hlodProxyObjectId = hasHLODProxy
         ? MakeObjectId(scene, "node:" + node.sourceKey + ":hlod-proxy")
@@ -523,7 +563,7 @@ void AddGeneratedRecords(
     {
         gameObject.properties.push_back({
             GeneratedModelPrefabHLODSchema::PropertyName,
-            MakeImportedHierarchyHLODMetadata(node, hlodChildKeys, hlodProxySubAssetKey)
+            MakeImportedHierarchyHLODMetadata(node, *hlodChildKeys, hlodProxySubAssetKey)
         });
     }
 
@@ -565,6 +605,7 @@ void AddGeneratedRecords(
             AddGeneratedRecords(
                 scene,
                 manifest,
+                buildContext,
                 primitiveNode,
                 MakeObjectId(scene, "node:" + primitiveNode.sourceKey),
                 gameObjectId,
@@ -630,6 +671,9 @@ PrefabImportResult BuildGeneratedModelPrefab(
     const std::vector<GeneratedSceneSubAsset>&,
     const NLS::Core::Assets::ArtifactManifest& manifest)
 {
+    NLS::Base::Profiling::PerformanceStageScope buildStage(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "BuildGeneratedModelPrefab");
     PrefabImportResult result;
     result.artifact.assetId = scene.sourceAssetId;
     result.artifact.generatedModelPrefab = true;
@@ -656,6 +700,15 @@ PrefabImportResult BuildGeneratedModelPrefab(
     std::vector<ImportedSceneNode> nodes = scene.nodes;
     if (nodes.empty())
         nodes.push_back({"scene/root", scene.sceneKey.empty() ? std::string("Imported Model") : scene.sceneKey, "", "", ""});
+    const auto buildContext = BuildGeneratedModelPrefabBuildContext(scene, nodes, manifest);
+    buildStage.AddCounter("nodeCount", static_cast<uint64_t>(nodes.size()));
+    buildStage.AddCounter("meshIndexCount", static_cast<uint64_t>(buildContext.meshesBySourceKey.size()));
+    buildStage.AddCounter(
+        "directMeshChildParentIndexCount",
+        static_cast<uint64_t>(buildContext.directMeshChildKeysByParent.size()));
+    buildStage.AddCounter(
+        "hlodProxyIndexCount",
+        static_cast<uint64_t>(buildContext.hlodProxySubAssetKeysByNode.size()));
 
     std::unordered_map<std::string, ObjectId> nodeObjectIds;
     for (const auto& node : nodes)
@@ -699,6 +752,7 @@ PrefabImportResult BuildGeneratedModelPrefab(
         AddGeneratedRecords(
             scene,
             manifest,
+            buildContext,
             syntheticRoot,
             syntheticRootId,
             ObjectId(),
@@ -735,6 +789,7 @@ PrefabImportResult BuildGeneratedModelPrefab(
         AddGeneratedRecords(
             scene,
             manifest,
+            buildContext,
             displayNode,
             gameObjectId,
             parentId,
@@ -742,7 +797,7 @@ PrefabImportResult BuildGeneratedModelPrefab(
             result.artifact.graph,
             result.artifact);
 
-        if (!node.skinKey.empty() && FindRecordBySourceKey(scene.skins, node.skinKey) == nullptr)
+        if (!node.skinKey.empty() && buildContext.skinSourceKeys.find(node.skinKey) == buildContext.skinSourceKeys.end())
         {
             AddDiagnostic(
                 result.diagnostics,
@@ -752,8 +807,11 @@ PrefabImportResult BuildGeneratedModelPrefab(
     }
 
     const auto graphDiagnostics = result.artifact.Validate();
+    buildStage.AddCounter("objectCount", static_cast<uint64_t>(result.artifact.graph.objects.size()));
     for (const auto& diagnostic : graphDiagnostics.GetItems())
         result.diagnostics.Add(diagnostic);
+    if (!graphDiagnostics.HasErrors() && result.artifact.validationDiagnostics)
+        result.artifact.validationFingerprint = BuildPrefabArtifactValidationFingerprint(result.artifact);
 
     return result;
 }

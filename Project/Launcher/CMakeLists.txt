@@ -58,5 +58,6 @@ target_link_libraries(
   PRIVATE
     LauncherProject
 )
+nls_copy_shared_runtime_to_target(Launcher)
 
 nls_target_precompile_headers(Launcher "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")

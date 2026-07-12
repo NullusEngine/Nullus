@@ -13,6 +13,7 @@
 namespace NLS::Render::Context
 {
 class Driver;
+struct PostSubmitTextureReadbackState;
 }
 
 namespace NLS::Render::RHI
@@ -22,7 +23,14 @@ class RHICompletionToken;
 
 namespace NLS::Core::ResourceManagement
 {
+class MaterialManager;
+class MeshManager;
 class ShaderManager;
+}
+
+namespace NLS::Render::Resources
+{
+class Material;
 }
 
 namespace NLS::Editor::Assets
@@ -34,6 +42,16 @@ struct EditorThumbnailPreviewResult
     std::vector<uint8_t> rgbaPixels;
     uint32_t width = 0u;
     uint32_t height = 0u;
+    std::string diagnostic;
+    bool completedPendingReadback = false;
+    uint64_t rawVisibleDrawCount = 0u;
+    uint64_t submittedSceneDrawCount = 0u;
+};
+
+struct EditorThumbnailPreviewResourcePumpResult
+{
+    bool supported = false;
+    bool resourcesPending = false;
     std::string diagnostic;
 };
 
@@ -54,7 +72,10 @@ struct EditorThumbnailPreviewReadbackState
     std::shared_ptr<std::vector<uint8_t>> rgbaPixels;
     uint32_t width = 0u;
     uint32_t height = 0u;
+    uint64_t rawVisibleDrawCount = 0u;
+    uint64_t submittedSceneDrawCount = 0u;
     std::shared_ptr<NLS::Render::RHI::RHICompletionToken> completion;
+    std::shared_ptr<NLS::Render::Context::PostSubmitTextureReadbackState> postSubmitTextureReadbackState;
     std::shared_ptr<void> renderInputsKeepAlive;
 };
 
@@ -87,11 +108,16 @@ EditorThumbnailPreviewCameraDebugInfo BuildPrefabPreviewCameraDebugInfoForTestin
 
 NLS::Maths::Vector3 GetThumbnailPreviewKeyLightDirectionForTesting();
 float GetThumbnailPreviewKeyLightIntensityForTesting();
+size_t GetThumbnailPreviewKeyLightSampleCountForTesting();
+float GetThumbnailPreviewKeyLightAngularRadiusDegreesForTesting();
+float GetThumbnailPreviewKeyLightSampleIntensitySumForTesting();
 float GetThumbnailPreviewAmbientIntensityForTesting();
 size_t GetThumbnailPreviewMeshPumpBudgetForTesting();
 size_t GetThumbnailPreviewMaterialPumpBudgetForTesting();
 size_t GetThumbnailPreviewTexturePumpBudgetForTesting();
+size_t GetThumbnailPreviewPrefabResourceInspectionBudgetForTesting();
 size_t GetThumbnailPreviewPrefabDrawItemCapacityForTesting();
+std::string BuildThumbnailPreviewReadbackRequestKeyForTesting(const AssetThumbnailRequest& request);
 bool ThumbnailPreviewMeshPathUsesArtifactLoaderForTesting(const std::string& meshPath);
 std::string ResolveThumbnailPreviewMeshLoadPathForTesting(
     const AssetThumbnailRequest& request,
@@ -110,7 +136,36 @@ ThumbnailPreviewDefaultShaderSelectionForTesting SelectThumbnailPreviewDefaultSh
     NLS::Core::ResourceManagement::ShaderManager& shaderManager);
 bool ThumbnailPreviewSnapshotIsCompleteForGpuPrefabPreviewForTesting(
     const PreviewRenderableSnapshot& snapshot);
-#endif
+bool ShouldDeferPrefabPreviewForMeshReadinessForTesting(
+    size_t pendingMeshResourceCount,
+    bool resourcePlanTruncated);
+bool BindReadyMaterialPreviewTexturesForTesting(NLS::Render::Resources::Material& material);
+std::unique_ptr<NLS::Render::Resources::Material> CreateStablePreviewMaterialForTesting(
+    NLS::Render::Resources::Material& source);
+struct ThumbnailPreviewRenderStatsForTesting
+{
+    uint64_t rawVisibleDrawCount = 0u;
+    uint64_t submittedSceneDrawCount = 0u;
+};
+ThumbnailPreviewRenderStatsForTesting GetLastThumbnailPreviewRenderStatsForTesting();
+struct ThumbnailPreviewPrefabResourcePlanForTesting
+{
+    size_t drawItemCount = 0u;
+    size_t uniqueMeshLoadPathCount = 0u;
+    size_t uniqueMaterialLoadPathCount = 0u;
+    bool truncatedForPendingResources = false;
+};
+	ThumbnailPreviewPrefabResourcePlanForTesting BuildThumbnailPreviewPrefabResourcePlanForTesting(
+	    const AssetThumbnailRequest& request,
+	    const PreviewRenderableSnapshot& snapshot,
+	    size_t maxUnreadyDependencyAttempts = SIZE_MAX);
+	ThumbnailPreviewPrefabResourcePlanForTesting BuildThumbnailPreviewPrefabResourcePlanWithManagersForTesting(
+	    const AssetThumbnailRequest& request,
+	    const PreviewRenderableSnapshot& snapshot,
+	    NLS::Core::ResourceManagement::MeshManager& meshManager,
+	    NLS::Core::ResourceManagement::MaterialManager& materialManager,
+	    size_t maxUnreadyDependencyAttempts = SIZE_MAX);
+	#endif
 
 class EditorThumbnailPreviewRenderer
 {
@@ -122,6 +177,8 @@ public:
     EditorThumbnailPreviewRenderer& operator=(const EditorThumbnailPreviewRenderer&) = delete;
 
     bool Supports(const AssetThumbnailRequest& request) const;
+    bool PrewarmMaterialPreviewRenderPath(uint32_t requestedSize);
+    EditorThumbnailPreviewResourcePumpResult PumpResources(const AssetThumbnailRequest& request);
     EditorThumbnailPreviewResult Render(const AssetThumbnailRequest& request);
 
 private:
@@ -135,6 +192,7 @@ public:
     virtual ~IEditorThumbnailPreviewRenderer() = default;
 
     virtual bool Supports(const AssetThumbnailRequest& request) const = 0;
+    virtual EditorThumbnailPreviewResourcePumpResult PumpResources(const AssetThumbnailRequest& request);
     virtual EditorThumbnailPreviewResult Render(const AssetThumbnailRequest& request) = 0;
 };
 
@@ -144,6 +202,7 @@ public:
     explicit EditorThumbnailPreviewRendererAdapter(EditorThumbnailPreviewRenderer& renderer);
 
     bool Supports(const AssetThumbnailRequest& request) const override;
+    EditorThumbnailPreviewResourcePumpResult PumpResources(const AssetThumbnailRequest& request) override;
     EditorThumbnailPreviewResult Render(const AssetThumbnailRequest& request) override;
 
 private:

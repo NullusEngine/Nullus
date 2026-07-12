@@ -107,8 +107,23 @@ struct AssetThumbnailDiskCachePruneResult
 
 std::string BuildAssetThumbnailCacheKey(const AssetThumbnailRequest& request);
 
+std::optional<AssetThumbnailCacheEntry> ResolveAssetThumbnailCacheEntryPathForRead(
+    const AssetThumbnailRequest& request);
+
 std::optional<AssetThumbnailCacheEntry> ResolveAssetThumbnailCacheEntry(
     const AssetThumbnailRequest& request);
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void ResetAssetThumbnailCacheCanonicalPathAttemptCountForTesting();
+size_t GetAssetThumbnailCacheCanonicalPathAttemptCountForTesting();
+void ResetAssetThumbnailCacheContainmentStampAttemptCountForTesting();
+size_t GetAssetThumbnailCacheContainmentStampAttemptCountForTesting();
+void ResetAssetThumbnailCacheMetadataFileLoadCountForTesting();
+size_t GetAssetThumbnailCacheMetadataFileLoadCountForTesting();
+size_t GetAssetThumbnailCacheMetadataCacheEntryCountForTesting();
+void ResetAssetThumbnailCacheEvaluationCountForTesting();
+size_t GetAssetThumbnailCacheEvaluationCountForTesting();
+#endif
 
 bool IsAssetThumbnailCachePathContained(
     const std::filesystem::path& projectRoot,

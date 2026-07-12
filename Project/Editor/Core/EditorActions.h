@@ -5,6 +5,7 @@
 #include <Utils/PathParser.h>
 #include <functional>
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -27,6 +28,16 @@
 #define EDITOR_EVENT(target)                NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().target
 #define EDITOR_CONTEXT(instance)            NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().GetContext().instance
 #define EDITOR_PANEL(type, id)              NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().GetPanelsManager().GetPanelAs<type>(id)
+
+namespace NLS::Core::ResourceManagement
+{
+    class TextureManager;
+}
+
+namespace NLS::Render::Resources
+{
+    class Material;
+}
 
 namespace NLS::Editor::Core
 {
@@ -52,21 +63,49 @@ namespace NLS::Editor::Core
     {
         bool hideRootUntilRendererResourcesReady = false;
         bool keepRootRenderingSuppressedOnFailure = false;
+        bool allowProgressiveRevealBeforeAllResourcesReady = false;
         bool shareSceneLoadFrameBudget = false;
         bool shareMeshArtifactLoads = false;
+        std::shared_ptr<const std::vector<NLS::Editor::Assets::ImportedPrefabRendererDependencyTemplate>>
+            rendererDependencyTemplates;
         std::string progressTargetPlatform = kRendererResourceResolutionTargetPlatform;
         PrefabRendererResourceStreamingBudget streamingBudget =
             GetSceneLoadPrefabRendererResourceStreamingBudget();
     };
 
-    PrefabInstanceAssetResolutionOptions BuildImportedPrefabPreviewCommitResolutionOptions(
-        bool previewRenderableReady);
     PrefabInstanceAssetResolutionOptions BuildSceneLoadPrefabResourceResolutionOptions();
     bool ShouldRevealRendererResourceResolutionObjectBeforeAllReady(
-        bool rootRenderingSuppressedUntilRendererResourcesReady);
-		/**
-	* A set of editor actions
-	*/
+        bool rootRenderingSuppressedUntilRendererResourcesReady,
+        bool allowProgressiveRevealBeforeAllResourcesReady);
+
+    struct SceneLoadRendererResourceReadinessSnapshot
+    {
+        size_t activeStateCount = 0u;
+        size_t pendingTaskCount = 0u;
+        size_t pendingTextureLoadCount = 0u;
+
+        bool HasPendingResources() const
+        {
+            return pendingTaskCount != 0u || pendingTextureLoadCount != 0u;
+        }
+    };
+
+    // Main-thread snapshot. Registry membership and terminal-state filtering
+    // are evaluated once while holding the renderer-resolution registry lock.
+    SceneLoadRendererResourceReadinessSnapshot GetSceneLoadRendererResourceReadinessSnapshot();
+    size_t GetPendingSceneLoadRendererResourceResolutionTaskCount();
+    size_t GetPendingSceneLoadRendererResourceResolutionTextureLoadCount();
+    size_t GetVisibleSceneLoadRendererResourceResolutionObjectCount();
+    bool HasActiveSceneLoadRendererResourceResolution();
+    void CancelSceneLoadRendererResourceResolution();
+    bool BindCachedRendererResourceMaterialTexture(
+        NLS::Render::Resources::Material& material,
+        const std::string& uniformName,
+        const std::string& texturePath,
+        NLS::Core::ResourceManagement::TextureManager& textureManager);
+				/**
+			* A set of editor actions
+		*/
 	class EditorActions
 	{
 	public:
@@ -258,18 +297,9 @@ namespace NLS::Editor::Core
             Engine::GameObject* p_parent = nullptr,
             std::optional<Maths::Vector3> placementOverride = std::nullopt,
             PrefabInstancePreviewResourceHandoff previewResourceHandoff = {});
-        Engine::GameObject* CommitGameObjectFromImportedPrefabPreview(
-            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
-            std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab,
-            Engine::GameObject& previewRoot,
-            bool focusOnCreation = true,
-            Engine::GameObject* p_parent = nullptr,
-            std::optional<Maths::Vector3> placementOverride = std::nullopt,
-            PrefabInstancePreviewResourceHandoff previewResourceHandoff = {},
-            bool previewRenderableReady = true);
 
-		/**
-		* Destroy an GameObject from his scene
+			/**
+			* Destroy an GameObject from his scene
 		* @param p_focusOnCreation
 		* @param p_parent
 		*/

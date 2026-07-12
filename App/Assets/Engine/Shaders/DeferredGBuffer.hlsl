@@ -19,6 +19,8 @@ cbuffer MaterialConstants : register(b0, space2)
     float u_EnableNormalMapping;
     float4 u_Emissive;
     float4 u_Specular;
+    float4 u_MetallicMapChannel;
+    float4 u_RoughnessMapChannel;
 };
 
 Texture2D u_AlbedoMap : register(t0, space2);
@@ -88,8 +90,10 @@ GBufferOutput PSMain(VSOutput input)
     const float2 texCoord = input.TexCoord;
     const float4 albedoSample = u_AlbedoMap.Sample(u_LinearWrapSampler, texCoord);
     const float3 albedo = albedoSample.rgb * u_Albedo.rgb;
-    const float metallic = u_MetallicMap.Sample(u_LinearWrapSampler, texCoord).r * u_Metallic;
-    const float roughness = u_RoughnessMap.Sample(u_LinearWrapSampler, texCoord).r * u_Roughness;
+    const float metallic = u_Metallic *
+        dot(u_MetallicMap.Sample(u_LinearWrapSampler, texCoord), u_MetallicMapChannel);
+    const float roughness = u_Roughness *
+        dot(u_RoughnessMap.Sample(u_LinearWrapSampler, texCoord), u_RoughnessMapChannel);
     const float ao = u_AmbientOcclusionMap.Sample(u_LinearWrapSampler, texCoord).r * u_AmbientOcclusion;
     const float opacity = u_OpacityMap.Sample(u_LinearWrapSampler, texCoord).r;
     const float3 normalWS = ComputeNormal(input, texCoord);

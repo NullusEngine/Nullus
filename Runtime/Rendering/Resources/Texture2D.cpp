@@ -1,8 +1,10 @@
 #include <Image.h>
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <vector>
 
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIResource.h"
@@ -20,15 +22,38 @@ namespace
 			: NLS::Render::RHI::TextureColorSpace::Linear;
 	}
 
-	NLS::Render::RHI::TextureFilter ToRHITextureFilter(NLS::Render::Settings::ETextureFilteringMode mode)
-	{
-		return mode == NLS::Render::Settings::ETextureFilteringMode::LINEAR
-			? NLS::Render::RHI::TextureFilter::Linear
-			: NLS::Render::RHI::TextureFilter::Nearest;
-	}
+		NLS::Render::RHI::TextureFilter ToRHITextureFilter(NLS::Render::Settings::ETextureFilteringMode mode)
+		{
+			return mode == NLS::Render::Settings::ETextureFilteringMode::LINEAR
+				? NLS::Render::RHI::TextureFilter::Linear
+				: NLS::Render::RHI::TextureFilter::Nearest;
+		}
 
-	std::vector<uint8_t> ConvertImageToRGBA8(const NLS::Image& image)
-	{
+		std::chrono::microseconds NonZeroElapsedMicros(
+			const std::chrono::steady_clock::time_point begin,
+			const std::chrono::steady_clock::time_point end)
+		{
+			auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - begin);
+			if (elapsed.count() == 0)
+				elapsed = std::chrono::microseconds(1);
+			return elapsed;
+		}
+
+		void RecordTextureGpuUploadTelemetry(
+			const std::chrono::steady_clock::time_point begin,
+			const std::chrono::steady_clock::time_point end,
+			const size_t byteCount)
+		{
+			NLS::Core::Assets::RecordArtifactLoadTelemetry({
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUpload,
+				NonZeroElapsedMicros(begin, end),
+				byteCount,
+				{}
+			});
+		}
+
+			std::vector<uint8_t> ConvertImageToRGBA8(const NLS::Image& image)
+			{
 		const auto* source = image.GetData();
 		if (source == nullptr)
 			return {};
@@ -70,16 +95,49 @@ namespace
 			}
 		}
 
-		return converted;
+			return converted;
+		}
+
+		std::shared_ptr<NLS::Render::RHI::RHITexture> CreateUploadedRgba8Texture(
+			const uint32_t width,
+			const uint32_t height,
+			const void* uploadData,
+			const size_t uploadDataSize)
+		{
+			auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+			auto device = driver != nullptr
+				? NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver)
+				: nullptr;
+			if (device == nullptr || width == 0u || height == 0u || uploadData == nullptr || uploadDataSize == 0u)
+				return nullptr;
+
+			NLS::Render::RHI::RHITextureDesc desc{};
+			desc.extent.width = static_cast<uint16_t>(width);
+			desc.extent.height = static_cast<uint16_t>(height);
+			desc.extent.depth = 1u;
+			desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+			desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+			desc.colorSpace = NLS::Render::RHI::TextureColorSpace::Linear;
+			desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+			desc.debugName = "TextureResourceInitialUpload";
+
+			NLS::Render::RHI::RHITextureUploadDesc uploadDesc{};
+			uploadDesc.data = uploadData;
+			uploadDesc.dataSize = uploadDataSize;
+			uploadDesc.extent = desc.extent;
+			uploadDesc.rowPitch = NLS::Render::RHI::CalculateTextureRowPitch(desc.format, width);
+			uploadDesc.slicePitch = NLS::Render::RHI::CalculateTextureSlicePitch(desc.format, width, height, 1u);
+			uploadDesc.debugName = "TextureResourceInitialUpload";
+			return device->CreateTexture(desc, uploadDesc);
+		}
 	}
-}
 
 std::unique_ptr<Texture2D> Texture2D::WrapExternal(
 	const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource,
 	uint32_t inWidth,
 	uint32_t inHeight)
 {
-	auto texture = std::unique_ptr<Texture2D>(new Texture2D{});
+	auto texture = std::unique_ptr<Texture2D>(new Texture2D { SkipInitialTextureTag {} });
 	texture->WrapExternalInPlace(textureResource, inWidth, inHeight);
 	return texture;
 }
@@ -104,17 +162,28 @@ void Texture2D::SetTextureResource(const Image* image)
 	const uint32_t nextWidth = static_cast<uint32_t>(image->GetWidth());
 	const uint32_t nextHeight = static_cast<uint32_t>(image->GetHeight());
 
-	const auto uploadData = ConvertImageToRGBA8(*image);
-	if (uploadData.empty())
-		return;
+		const auto uploadData = ConvertImageToRGBA8(*image);
+		if (uploadData.empty())
+			return;
 
-	// For formal RHI texture, we need to recreate it with correct dimensions
-	// The initial CreateRHITexture() only creates a 1x1 placeholder
-	if (m_explicitTexture != nullptr)
-	{
-		if (!RecreateRHITextureIfNeeded(
-		    nextWidth,
-		    nextHeight,
+		if (m_explicitTexture == nullptr)
+		{
+			if (auto uploadedTexture = CreateUploadedRgba8Texture(
+					nextWidth,
+					nextHeight,
+					uploadData.data(),
+					uploadData.size()))
+			{
+				SetRHITexture(std::move(uploadedTexture));
+			}
+		}
+		else
+		{
+			// Default-constructed Texture2D starts with a 1x1 placeholder, so replace it
+			// with the requested dimensions before UI or material code creates views.
+			if (!RecreateRHITextureIfNeeded(
+			    nextWidth,
+			    nextHeight,
 		    NLS::Render::RHI::TextureFormat::RGBA8,
 		    ToRHITextureFilter(firstFilter),
 		    ToRHITextureFilter(secondFilter),
@@ -134,6 +203,35 @@ void Texture2D::SetTextureResource(const Image* image)
 	width = nextWidth;
 	height = nextHeight;
 	bitsPerPixel = 4;
+}
+
+bool Texture2D::SetRgba8TextureResource(
+	const void* pixels,
+	const size_t pixelBytes,
+	const uint32_t nextWidth,
+	const uint32_t nextHeight)
+{
+	if (nextWidth > UINT16_MAX || nextHeight > UINT16_MAX)
+		return false;
+	if (nextHeight != 0u && nextWidth > SIZE_MAX / static_cast<size_t>(nextHeight) / 4u)
+		return false;
+	const size_t expectedBytes = static_cast<size_t>(nextWidth) * static_cast<size_t>(nextHeight) * 4u;
+	if (pixels == nullptr || nextWidth == 0u || nextHeight == 0u || pixelBytes < expectedBytes)
+		return false;
+
+	if (auto uploadedTexture = CreateUploadedRgba8Texture(
+			nextWidth,
+			nextHeight,
+			pixels,
+			expectedBytes))
+	{
+		SetRHITexture(std::move(uploadedTexture));
+	}
+
+	width = nextWidth;
+	height = nextHeight;
+	bitsPerPixel = 4;
+	return m_explicitTexture != nullptr;
 }
 
 bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactData& artifact)
@@ -202,9 +300,12 @@ bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactDat
 	uploadDesc.slicePitch = artifact.mips.front().slicePitch;
 	uploadDesc.debugName = "TextureArtifactInitialUpload";
 
-	auto texture = device->CreateTexture(desc, uploadDesc);
-	if (texture == nullptr)
-		return false;
+		const auto uploadBegin = std::chrono::steady_clock::now();
+		auto texture = device->CreateTexture(desc, uploadDesc);
+		const auto uploadEnd = std::chrono::steady_clock::now();
+		RecordTextureGpuUploadTelemetry(uploadBegin, uploadEnd, uploadDataSize);
+		if (texture == nullptr)
+			return false;
 	SetRHITexture(std::move(texture));
 
 	applyArtifactMetadata();

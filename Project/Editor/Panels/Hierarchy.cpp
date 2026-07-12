@@ -81,19 +81,25 @@ bool ScheduleHierarchyImportedPrefabPreloadOnce(
 			return false;
 	}
 
-	const bool scheduled = NLS::Editor::Assets::SchedulePreviewPrefabHotCachePreload(
-		payload,
-		std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)),
-		[key](std::function<void()> task)
+	const auto projectAssetsPath = std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath));
+	const bool scheduled = EDITOR_EXEC(TrackOpportunisticBackgroundTask(
+		[payload, projectAssetsPath, key]
 		{
-			return EDITOR_EXEC(TrackOpportunisticBackgroundTask(
-				[task = std::move(task), key]
-				{
-					auto completion = HierarchyImportedPrefabPreloadGate().CompleteOnScopeExit(key);
-					if (task)
-						task();
-				}));
-			});
+			auto completion = HierarchyImportedPrefabPreloadGate().CompleteOnScopeExit(key);
+			try
+			{
+				NLS::Editor::Assets::EditorAssetDragDropBridge bridge(projectAssetsPath);
+				(void)bridge.PreloadImportedAssetHandlePrefabHotCache(payload);
+			}
+			catch (const std::exception& exception)
+			{
+				NLS_LOG_WARNING(std::string("Imported prefab hot-cache preload failed: ") + exception.what());
+			}
+			catch (...)
+			{
+				NLS_LOG_WARNING("Imported prefab hot-cache preload failed with an unknown exception.");
+			}
+		}));
 	if (!scheduled)
 	{
 		HierarchyImportedPrefabPreloadGate().End(key);
@@ -112,19 +118,8 @@ void DropAssetIntoHierarchy(
 		return;
 	}
 
-	NLS::Editor::Assets::EditorAssetDragDropBridge bridge(
-		std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)));
-	std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab;
-	if (!IsHierarchyImportedPrefabPreloadInFlight(payload))
-		prefab = bridge.TryGetCachedPreviewPrefabArtifactShared(payload);
-	if (!prefab)
-	{
-		(void)ScheduleHierarchyImportedPrefabPreloadOnce(payload);
-		(void)EDITOR_EXEC(CreateGameObjectFromAssetBlocking(payload, true, parent));
-		return;
-	}
-
-	(void)EDITOR_EXEC(CreateGameObjectFromImportedPrefabArtifact(payload, prefab, true, parent));
+	(void)ScheduleHierarchyImportedPrefabPreloadOnce(payload);
+	(void)EDITOR_EXEC(CreateGameObjectFromAssetNonBlocking(payload, true, parent));
 }
 
 void DropModelFileIntoHierarchy(

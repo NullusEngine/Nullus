@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <mutex>
@@ -14,6 +15,7 @@
 #include <Debug/Assertion.h>
 #include <Debug/Logger.h>
 
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Profiling/PerformanceStageStats.h"
 #include "Profiling/Profiler.h"
 #include "Rendering/Context/Driver.h"
@@ -42,6 +44,32 @@ namespace NLS::Render::Context
         constexpr auto kUiStandaloneFrameSubmissionLockWait = std::chrono::milliseconds(8);
         constexpr auto kUiStandaloneFramePendingLease = std::chrono::milliseconds(64);
         constexpr uint32_t kMinimumInRenderPassChildSlicesForParallelWorkers = 4u;
+        constexpr uint32_t kDx12TextureRowPitchAlignment = 256u;
+
+        uint32_t AlignTextureUploadPitch(const uint32_t value)
+        {
+            return (value + kDx12TextureRowPitchAlignment - 1u) &
+                ~(kDx12TextureRowPitchAlignment - 1u);
+        }
+
+        struct ScopedArtifactTelemetry
+        {
+            ::NLS::Core::Assets::ArtifactLoadTelemetryStage stage;
+            std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+            size_t byteCount = 0u;
+            std::string path;
+
+            ~ScopedArtifactTelemetry()
+            {
+                ::NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                    stage,
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - begin),
+                    byteCount,
+                    path
+                });
+            }
+        };
 
         Render::RHI::RHIFrameContext* GetCurrentFrameContext(DriverImpl& impl)
         {
@@ -126,7 +154,14 @@ namespace NLS::Render::Context
             const Render::RHI::RHIRenderTargetLayoutDesc& lhs,
             const Render::RHI::RHIRenderTargetLayoutDesc& rhs)
         {
-            return lhs.colorFormats == rhs.colorFormats &&
+            if (lhs.colorFormats != rhs.colorFormats)
+                return false;
+            for (size_t index = 0u; index < lhs.colorFormats.size(); ++index)
+            {
+                if (lhs.GetColorSpace(index) != rhs.GetColorSpace(index))
+                    return false;
+            }
+            return
                 lhs.hasDepth == rhs.hasDepth &&
                 (!lhs.hasDepth || lhs.depthFormat == rhs.depthFormat) &&
                 lhs.sampleCount == rhs.sampleCount;
@@ -144,12 +179,14 @@ namespace NLS::Render::Context
             Render::RHI::RHIRenderTargetLayoutDesc layout;
             uint32_t sampleCount = 0u;
             layout.colorFormats.reserve(passInput.colorAttachmentViews.size());
+            layout.colorSpaces.reserve(passInput.colorAttachmentViews.size());
             for (const auto& colorView : passInput.colorAttachmentViews)
             {
                 if (colorView == nullptr)
                     return std::nullopt;
 
                 layout.colorFormats.push_back(colorView->GetDesc().format);
+                layout.colorSpaces.push_back(colorView->GetDesc().colorSpace);
                 if (colorView->GetTexture() != nullptr)
                     sampleCount = std::max(sampleCount, colorView->GetTexture()->GetDesc().sampleCount);
             }
@@ -561,6 +598,69 @@ namespace NLS::Render::Context
                     impl,
                     result,
                     "RhiThreadCoordinator::BeginPostSubmitBufferReadbacks");
+            }
+        }
+
+        void BeginPostSubmitTextureReadbacks(
+            DriverImpl& impl,
+            const RenderScenePackage& renderScenePackage,
+            const bool submittedSuccessfully)
+        {
+            for (const auto& request : renderScenePackage.postSubmitTextureReadbacks)
+            {
+                if (request.state == nullptr)
+                    continue;
+
+                {
+                    std::lock_guard lock(request.state->mutex);
+                    if (request.state->beginAttempted || request.state->beginInProgress)
+                        continue;
+                    if (!submittedSuccessfully || impl.explicitDevice == nullptr ||
+                        request.texture == nullptr || request.destination == nullptr)
+                    {
+                        request.state->beginAttempted = true;
+                        request.state->beginSucceeded = false;
+                        request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+                        request.state->resultMessage = !submittedSuccessfully
+                            ? "threaded frame was not submitted successfully"
+                            : "post-submit texture readback input is unavailable";
+                        continue;
+                    }
+                    if (impl.deviceLostDetected.load(std::memory_order_acquire) ||
+                        impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+                    {
+                        request.state->beginAttempted = true;
+                        request.state->beginSucceeded = false;
+                        request.state->resultCode = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+                        request.state->resultMessage =
+                            "post-submit texture readback rejected because RHI device is lost or GPU work is quarantined";
+                        continue;
+                    }
+                    request.state->beginInProgress = true;
+                }
+
+                const auto result = impl.explicitDevice->BeginReadPixels(
+                    request.texture,
+                    request.x,
+                    request.y,
+                    request.width,
+                    request.height,
+                    request.format,
+                    request.type,
+                    request.destination);
+                {
+                    std::lock_guard lock(request.state->mutex);
+                    request.state->beginAttempted = true;
+                    request.state->beginInProgress = false;
+                    request.state->beginSucceeded = result.Succeeded();
+                    request.state->resultCode = result.code;
+                    request.state->resultMessage = result.message;
+                    request.state->completion = result.completion;
+                }
+                MarkReadbackDeviceLostIfNeeded(
+                    impl,
+                    result,
+                    "RhiThreadCoordinator::BeginPostSubmitTextureReadbacks");
             }
         }
 
@@ -1258,6 +1358,8 @@ namespace NLS::Render::Context
             {
                 return std::nullopt;
             }
+
+            (void)Detail::RecordPendingUiRgba8TextureUploads(impl, frameContext, commandBuffer);
 
             impl.uiOverlayRenderer.SetTextureRegistry(&impl.uiTextureRegistry);
             const auto prepareResult = impl.uiOverlayRenderer.PrepareFrameResources(
@@ -4472,7 +4574,11 @@ namespace NLS::Render::Context
             Render::FrameGraph::ResolveFrameReadbackTextureGeneration(&renderScenePackage, &frameContext);
 
         if (impl.renderDocCaptureController != nullptr)
-            impl.renderDocCaptureController->OnPreFrame(renderScenePackage.targetsSwapchain);
+        {
+            impl.renderDocCaptureController->OnPreFrame(
+                renderScenePackage.targetsSwapchain,
+                Render::FrameGraph::HasExternalSceneOutput(renderScenePackage));
+        }
 
         return &frameContext;
     }
@@ -4495,6 +4601,372 @@ namespace NLS::Render::Context
         ReleaseRetiredUiTextureViewsForCompletedFrame(impl, fallbackCompletedFrameId);
     }
 
+    size_t Detail::RecordPendingUiRgba8TextureUploads(
+        DriverImpl& impl,
+        Render::RHI::RHIFrameContext& frameContext,
+        Render::RHI::RHICommandBuffer& commandBuffer)
+    {
+        auto publishResult = [&impl](
+            uint64_t requestId,
+            size_t byteCount,
+            const std::string& debugName,
+            DriverImpl::CompletedUiRgba8TextureUpload result)
+        {
+            ScopedArtifactTelemetry publishTelemetry {
+                ::NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadPublish,
+                std::chrono::steady_clock::now(),
+                byteCount,
+                debugName
+            };
+
+            std::lock_guard lock(impl.pendingUiRgba8TextureUploadMutex);
+            if (impl.canceledUiRgba8TextureUploadRequestIds.erase(requestId) != 0u)
+                return;
+            impl.completedUiRgba8TextureUploads[requestId] = std::move(result);
+        };
+
+        struct ReadyUiRgba8TextureUpload
+        {
+            uint64_t requestId = 0u;
+            size_t byteCount = 0u;
+            std::string debugName;
+            DriverImpl::CompletedUiRgba8TextureUpload result;
+        };
+
+        std::vector<DriverImpl::RecordedUiRgba8TextureUpload> recordedUploads;
+        {
+            std::lock_guard lock(impl.pendingUiRgba8TextureUploadMutex);
+            recordedUploads.swap(impl.recordedUiRgba8TextureUploads);
+        }
+
+        std::vector<ReadyUiRgba8TextureUpload> readyUploads;
+        std::vector<DriverImpl::RecordedUiRgba8TextureUpload> stillPendingUploads;
+        for (auto& recorded : recordedUploads)
+        {
+            bool canceled = false;
+            {
+                std::lock_guard lock(impl.pendingUiRgba8TextureUploadMutex);
+                canceled = impl.canceledUiRgba8TextureUploadRequestIds.find(recorded.requestId) !=
+                    impl.canceledUiRgba8TextureUploadRequestIds.end();
+            }
+
+            const auto status = recorded.completion != nullptr
+                ? recorded.completion->Poll()
+                : Render::RHI::RHICompletionStatus{ Render::RHI::RHICompletionStatusCode::Success, {} };
+            if (status.code == Render::RHI::RHICompletionStatusCode::Pending)
+            {
+                stillPendingUploads.push_back(std::move(recorded));
+                continue;
+            }
+            if (canceled)
+            {
+                std::lock_guard lock(impl.pendingUiRgba8TextureUploadMutex);
+                impl.canceledUiRgba8TextureUploadRequestIds.erase(recorded.requestId);
+                continue;
+            }
+
+            DriverImpl::CompletedUiRgba8TextureUpload result;
+            result.success = status.Succeeded();
+            result.texture = status.Succeeded() ? std::move(recorded.texture) : nullptr;
+            result.textureView = status.Succeeded() ? std::move(recorded.textureView) : nullptr;
+            result.width = recorded.width;
+            result.height = recorded.height;
+            result.diagnostic = status.Succeeded()
+                ? std::string {}
+                : (status.message.empty()
+                    ? "UI RGBA8 texture upload did not complete successfully"
+                    : status.message);
+            readyUploads.push_back({
+                recorded.requestId,
+                recorded.byteCount,
+                std::move(recorded.debugName),
+                std::move(result)
+            });
+        }
+        if (!stillPendingUploads.empty())
+        {
+            std::lock_guard lock(impl.pendingUiRgba8TextureUploadMutex);
+            for (auto& recorded : stillPendingUploads)
+            {
+                impl.recordedUiRgba8TextureUploads.push_back(std::move(recorded));
+            }
+        }
+        for (auto& ready : readyUploads)
+        {
+            publishResult(
+                ready.requestId,
+                ready.byteCount,
+                ready.debugName,
+                std::move(ready.result));
+        }
+
+        if (impl.explicitDevice == nullptr ||
+            frameContext.uploadContext == nullptr ||
+            frameContext.frameFence == nullptr)
+        {
+            return 0u;
+        }
+
+        std::vector<DriverImpl::PendingUiRgba8TextureUpload> pendingUploads;
+        {
+            std::lock_guard lock(impl.pendingUiRgba8TextureUploadMutex);
+            pendingUploads.swap(impl.pendingUiRgba8TextureUploads);
+        }
+        if (pendingUploads.empty())
+            return 0u;
+
+        size_t recordedCount = 0u;
+        for (auto& request : pendingUploads)
+        {
+            const size_t sourceRowPitch = static_cast<size_t>(request.width) * 4u;
+            const size_t expectedBytes = sourceRowPitch * static_cast<size_t>(request.height);
+            const std::string debugName = request.debugName.empty()
+                ? "UiRgba8TextureUpload"
+                : request.debugName;
+            if (request.rgbaPixels.size() < expectedBytes || expectedBytes == 0u)
+            {
+                publishResult(request.requestId, expectedBytes, debugName, {
+                    false,
+                    nullptr,
+                    nullptr,
+                    request.width,
+                    request.height,
+                    "UI RGBA8 texture upload request has invalid pixel data"
+                });
+                continue;
+            }
+
+            ScopedArtifactTelemetry uploadTelemetry {
+                ::NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUpload,
+                std::chrono::steady_clock::now(),
+                expectedBytes,
+                debugName
+            };
+
+            std::shared_ptr<Render::RHI::RHITexture> texture;
+            std::shared_ptr<Render::RHI::RHITextureView> textureView;
+            {
+                ScopedArtifactTelemetry createTelemetry {
+                    ::NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadCreate,
+                    std::chrono::steady_clock::now(),
+                    expectedBytes,
+                    debugName
+                };
+
+                Render::RHI::RHITextureDesc textureDesc{};
+                textureDesc.extent.width = request.width;
+                textureDesc.extent.height = request.height;
+                textureDesc.extent.depth = 1u;
+                textureDesc.dimension = Render::RHI::TextureDimension::Texture2D;
+                textureDesc.format = Render::RHI::TextureFormat::RGBA8;
+                textureDesc.colorSpace = Render::RHI::TextureColorSpace::Linear;
+                textureDesc.usage =
+                    Render::RHI::TextureUsageFlags::Sampled |
+                    Render::RHI::TextureUsageFlags::CopyDst;
+                textureDesc.memoryUsage = Render::RHI::MemoryUsage::GPUOnly;
+                textureDesc.debugName = debugName;
+                texture = impl.explicitDevice->CreateTexture(textureDesc);
+            }
+            if (texture == nullptr)
+            {
+                publishResult(request.requestId, expectedBytes, debugName, {
+                    false,
+                    nullptr,
+                    nullptr,
+                    request.width,
+                    request.height,
+                    "failed to create UI RGBA8 texture"
+                });
+                continue;
+            }
+
+            uint32_t uploadRowPitch = 0u;
+            size_t uploadBytes = 0u;
+            std::vector<uint8_t> uploadPixels;
+            {
+                ScopedArtifactTelemetry preparePixelsTelemetry {
+                    ::NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadPreparePixels,
+                    std::chrono::steady_clock::now(),
+                    expectedBytes,
+                    debugName
+                };
+
+                uploadRowPitch = AlignTextureUploadPitch(static_cast<uint32_t>(sourceRowPitch));
+                uploadBytes = static_cast<size_t>(uploadRowPitch) * static_cast<size_t>(request.height);
+                uploadPixels.resize(uploadBytes, 0u);
+                for (uint32_t row = 0u; row < request.height; ++row)
+                {
+                    std::memcpy(
+                        uploadPixels.data() + static_cast<size_t>(row) * uploadRowPitch,
+                        request.rgbaPixels.data() + static_cast<size_t>(row) * sourceRowPitch,
+                        sourceRowPitch);
+                }
+            }
+
+            {
+                ScopedArtifactTelemetry viewTelemetry {
+                    ::NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadCreateView,
+                    std::chrono::steady_clock::now(),
+                    expectedBytes,
+                    debugName
+                };
+
+                Render::RHI::RHITextureViewDesc viewDesc;
+                viewDesc.viewType = Render::RHI::TextureViewType::Texture2D;
+                viewDesc.format = Render::RHI::TextureFormat::RGBA8;
+                viewDesc.colorSpace = Render::RHI::TextureColorSpace::Linear;
+                viewDesc.subresourceRange = { 0u, 1u, 0u, 1u };
+                viewDesc.debugName = debugName + "View";
+                textureView = impl.explicitDevice->CreateTextureView(texture, viewDesc);
+            }
+            if (textureView == nullptr)
+            {
+                publishResult(request.requestId, expectedBytes, debugName, {
+                    false,
+                    nullptr,
+                    nullptr,
+                    request.width,
+                    request.height,
+                    "failed to create UI RGBA8 texture view"
+                });
+                continue;
+            }
+
+            Render::RHI::UploadTextureRequest uploadRequest;
+            uploadRequest.destination = texture;
+            uploadRequest.data = uploadPixels.data();
+            uploadRequest.dataSize = uploadPixels.size();
+            uploadRequest.mipLevel = 0u;
+            uploadRequest.arrayLayer = 0u;
+            uploadRequest.rowPitch = uploadRowPitch;
+            uploadRequest.slicePitch = uploadRowPitch * request.height;
+            uploadRequest.extent = texture->GetDesc().extent;
+            uploadRequest.debugName = debugName;
+            Render::RHI::UploadBatchRequest uploadBatchRequest;
+            uploadBatchRequest.textureUploads.push_back(uploadRequest);
+            uploadBatchRequest.completionFence = frameContext.frameFence;
+            uploadBatchRequest.requireRecordedBackendWork = true;
+            uploadBatchRequest.debugName = debugName;
+            Render::RHI::UploadBatchSubmission uploadResult;
+            {
+                ScopedArtifactTelemetry submitTelemetry {
+                    ::NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadSubmit,
+                    std::chrono::steady_clock::now(),
+                    uploadBytes,
+                    debugName
+                };
+                uploadResult = frameContext.uploadContext->SubmitUploadBatch(
+                    commandBuffer,
+                    uploadBatchRequest);
+            }
+            if (!uploadResult.accepted)
+            {
+                publishResult(request.requestId, expectedBytes, debugName, {
+                    false,
+                    nullptr,
+                    nullptr,
+                    request.width,
+                    request.height,
+                    uploadResult.diagnostic.empty()
+                        ? "failed to record UI RGBA8 texture upload"
+                        : uploadResult.diagnostic
+                });
+                continue;
+            }
+
+            {
+                std::lock_guard lock(impl.pendingUiRgba8TextureUploadMutex);
+                impl.recordedUiRgba8TextureUploads.push_back({
+                    request.requestId,
+                    std::move(texture),
+                    std::move(textureView),
+                    std::move(uploadResult.completion),
+                    request.width,
+                    request.height,
+                    expectedBytes,
+                    debugName
+                });
+            }
+            ++recordedCount;
+        }
+
+        return recordedCount;
+    }
+
+    size_t Detail::RecordPendingMeshRuntimeUploads(DriverImpl& impl)
+    {
+        constexpr size_t kMaxUploadsPerFrame = 8u;
+        constexpr size_t kMaxUploadBytesPerFrame = 16u * 1024u * 1024u;
+
+        std::vector<DriverImpl::PendingMeshRuntimeUpload> pendingUploads;
+        {
+            std::lock_guard lock(impl.pendingMeshRuntimeUploadMutex);
+            pendingUploads.swap(impl.pendingMeshRuntimeUploads);
+        }
+        if (pendingUploads.empty())
+            return 0u;
+
+        size_t completedCount = 0u;
+        size_t consumedBytes = 0u;
+        std::vector<DriverImpl::PendingMeshRuntimeUpload> deferredUploads;
+        for (auto& pending : pendingUploads)
+        {
+            bool canceled = false;
+            {
+                std::lock_guard lock(impl.pendingMeshRuntimeUploadMutex);
+                canceled = impl.canceledMeshRuntimeUploadRequestIds.erase(pending.requestId) != 0u;
+            }
+            if (canceled)
+                continue;
+
+            const size_t requestBytes = pending.request.ByteSize();
+            if (completedCount >= kMaxUploadsPerFrame ||
+                (completedCount != 0u && consumedBytes + requestBytes > kMaxUploadBytesPerFrame))
+            {
+                deferredUploads.push_back(std::move(pending));
+                continue;
+            }
+
+            DriverImpl::CompletedMeshRuntimeUpload completed;
+            try
+            {
+                completed.mesh = std::make_unique<Render::Resources::Mesh>(
+                    pending.request.vertices,
+                    pending.request.indices,
+                    pending.request.materialIndex,
+                    Render::Resources::MeshBufferUploadMode::GpuOnly,
+                    pending.request.boundingSphere);
+                completed.success = completed.mesh != nullptr;
+                if (!completed.success)
+                    completed.diagnostic = "mesh runtime upload returned no resource";
+            }
+            catch (const std::exception& exception)
+            {
+                completed.diagnostic = exception.what();
+            }
+            catch (...)
+            {
+                completed.diagnostic = "mesh runtime upload failed with an unknown exception";
+            }
+
+            {
+                std::lock_guard lock(impl.pendingMeshRuntimeUploadMutex);
+                if (impl.canceledMeshRuntimeUploadRequestIds.erase(pending.requestId) == 0u)
+                    impl.completedMeshRuntimeUploads[pending.requestId] = std::move(completed);
+            }
+            consumedBytes += requestBytes;
+            ++completedCount;
+        }
+
+        if (!deferredUploads.empty())
+        {
+            std::lock_guard lock(impl.pendingMeshRuntimeUploadMutex);
+            for (auto& deferred : deferredUploads)
+                impl.pendingMeshRuntimeUploads.push_back(std::move(deferred));
+        }
+        return completedCount;
+    }
+
     void Detail::RecordThreadedRhiWork(
         DriverImpl& impl,
         Render::RHI::RHIFrameContext& frameContext,
@@ -4506,6 +4978,8 @@ namespace NLS::Render::Context
         NLS_PROFILE_SCOPE();
         if (submitPlan == nullptr || submissionFrame == nullptr)
             return;
+
+        (void)Detail::RecordPendingMeshRuntimeUploads(impl);
 
         if (frameContext.commandBuffer != nullptr)
         {
@@ -5154,6 +5628,10 @@ namespace NLS::Render::Context
                 submissionFrame->submittedSuccessfully,
                 submitPlan.lastComputeQueueCompletionSemaphore,
                 submitPlan.usedDedicatedComputeQueueSubmission);
+            BeginPostSubmitTextureReadbacks(
+                impl,
+                renderScenePackage,
+                submissionFrame->submittedSuccessfully);
         }
 
         if (impl.renderDocCaptureController != nullptr)
@@ -5445,6 +5923,11 @@ namespace NLS::Render::Context
         if (!CanBeginStandaloneExplicitFrameForImpl(*driver.m_impl))
             return false;
 
+        driver.m_impl->standaloneFrameSubmissionLock =
+            std::unique_lock<std::timed_mutex>(driver.m_impl->threadedRhiSubmissionMutex, std::defer_lock);
+        if (!driver.m_impl->standaloneFrameSubmissionLock.try_lock())
+            return false;
+
         auto& frameContext = driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
         ResetCurrentFrameQueueOperationTelemetry(*driver.m_impl);
         if (frameContext.frameFence != nullptr)
@@ -5455,6 +5938,7 @@ namespace NLS::Render::Context
                 frameContext.frameFence,
                 "RhiThreadCoordinator::BeginStandaloneExplicitFrame"))
             {
+                driver.m_impl->standaloneFrameSubmissionLock.unlock();
                 return false;
             }
             Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
@@ -5532,7 +6016,11 @@ namespace NLS::Render::Context
     {
         NLS_PROFILE_SCOPE();
         if (driver.m_impl->explicitDevice == nullptr || driver.m_impl->frameContexts.empty() || !driver.m_impl->explicitFrameActive)
+        {
+            if (driver.m_impl != nullptr && driver.m_impl->standaloneFrameSubmissionLock.owns_lock())
+                driver.m_impl->standaloneFrameSubmissionLock.unlock();
             return;
+        }
 
         auto& frameContext = driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
         if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
@@ -5662,6 +6150,8 @@ namespace NLS::Render::Context
             frameContext.explicitReadbackTextureGeneration);
         ++driver.m_impl->currentFrameIndex;
         driver.m_impl->explicitFrameActive = false;
+        if (driver.m_impl->standaloneFrameSubmissionLock.owns_lock())
+            driver.m_impl->standaloneFrameSubmissionLock.unlock();
     }
 
     bool RhiThreadCoordinator::TryExecuteNextThreadedSubmission(

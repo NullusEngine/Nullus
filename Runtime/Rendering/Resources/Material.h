@@ -65,7 +65,9 @@ namespace NLS::Render::Resources
 {
 struct MaterialPipelineStateOverrides
 {
-    static constexpr size_t kInlineColorFormatCapacity = 4u, kInlineRenderTargetBlendStateCapacity = 4u;
+    static constexpr size_t kInlineColorFormatCapacity = 4u;
+    static constexpr size_t kInlineColorSpaceCapacity = 4u;
+    static constexpr size_t kInlineRenderTargetBlendStateCapacity = 4u;
     std::optional<bool> depthWrite, colorWrite, blending, depthTest, hasDepthAttachment, culling, stencilTest;
     std::optional<bool> alphaToCoverage, independentBlend;
     std::optional<uint32_t> stencilWriteMask, sampleCount;
@@ -73,12 +75,17 @@ struct MaterialPipelineStateOverrides
     std::optional<Settings::ECullFace> cullFace;
     std::optional<RHI::TextureFormat> depthFormat;
     std::optional<std::vector<RHI::TextureFormat>> colorFormats;
+    std::optional<std::vector<RHI::TextureColorSpace>> colorSpaces;
     std::optional<std::vector<RHI::RHIRenderTargetBlendStateDesc>> renderTargetBlendStates;
     std::array<RHI::TextureFormat, kInlineColorFormatCapacity> inlineColorFormats {};
+    std::array<RHI::TextureColorSpace, kInlineColorSpaceCapacity> inlineColorSpaces {};
     std::array<RHI::RHIRenderTargetBlendStateDesc, kInlineRenderTargetBlendStateCapacity> inlineRenderTargetBlendStates {};
     size_t inlineColorFormatCount = 0u;
+    size_t inlineColorSpaceCount = 0u;
     size_t inlineRenderTargetBlendStateCount = 0u;
-    bool inlineColorFormatsSet = false, inlineRenderTargetBlendStatesSet = false;
+    bool inlineColorFormatsSet = false;
+    bool inlineColorSpacesSet = false;
+    bool inlineRenderTargetBlendStatesSet = false;
     void SetColorFormats(std::span<const RHI::TextureFormat> formats)
     {
         inlineColorFormatCount = 0u;
@@ -97,6 +104,25 @@ struct MaterialPipelineStateOverrides
     }
 
     bool HasColorFormatsOverride() const { return inlineColorFormatsSet || colorFormats.has_value(); }
+
+    void SetColorSpaces(std::span<const RHI::TextureColorSpace> spaces)
+    {
+        inlineColorSpaceCount = 0u;
+        inlineColorSpacesSet = true;
+        colorSpaces.reset();
+        if (spaces.size() <= inlineColorSpaces.size())
+        {
+            for (size_t i = 0u; i < spaces.size(); ++i)
+                inlineColorSpaces[i] = spaces[i];
+            inlineColorSpaceCount = spaces.size();
+            return;
+        }
+
+        colorSpaces = std::vector<RHI::TextureColorSpace>(spaces.begin(), spaces.end());
+        inlineColorSpacesSet = false;
+    }
+
+    bool HasColorSpacesOverride() const { return inlineColorSpacesSet || colorSpaces.has_value(); }
 
     void SetRenderTargetBlendStates(std::span<const RHI::RHIRenderTargetBlendStateDesc> states)
     {
@@ -140,6 +166,15 @@ struct MaterialPipelineStateOverrides
         return {};
     }
 
+    std::span<const RHI::TextureColorSpace> GetColorSpaces() const
+    {
+        if (colorSpaces.has_value())
+            return std::span<const RHI::TextureColorSpace>(*colorSpaces);
+        if (inlineColorSpacesSet)
+            return std::span<const RHI::TextureColorSpace>(inlineColorSpaces.data(), inlineColorSpaceCount);
+        return {};
+    }
+
     friend bool operator==(const MaterialPipelineStateOverrides& lhs, const MaterialPipelineStateOverrides& rhs)
     {
         return lhs.depthWrite == rhs.depthWrite &&
@@ -162,6 +197,12 @@ struct MaterialPipelineStateOverrides
                 lhs.GetColorFormats().begin(),
                 lhs.GetColorFormats().end(),
                 rhs.GetColorFormats().begin()) &&
+            lhs.HasColorSpacesOverride() == rhs.HasColorSpacesOverride() &&
+            lhs.GetColorSpaces().size() == rhs.GetColorSpaces().size() &&
+            std::equal(
+                lhs.GetColorSpaces().begin(),
+                lhs.GetColorSpaces().end(),
+                rhs.GetColorSpaces().begin()) &&
             lhs.HasRenderTargetBlendStatesOverride() == rhs.HasRenderTargetBlendStatesOverride() &&
             lhs.GetRenderTargetBlendStates().size() == rhs.GetRenderTargetBlendStates().size() &&
             std::equal(

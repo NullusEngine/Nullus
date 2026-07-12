@@ -107,6 +107,22 @@ TEST(DebugSceneLifecycleTests, SceneVisibilityRefreshPreservesEditorHelperDrawCo
     EXPECT_EQ(snapshot.visibleHelperDrawCount, 3u);
 }
 
+TEST(DebugSceneLifecycleTests, DeferredSceneRendererBuildsAggregateHelperInputOnNoSceneFastPath)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
+    const auto builderStart = source.find("DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder");
+    ASSERT_NE(builderStart, std::string::npos);
+    const auto builderEnd = source.find("const bool suppressLightGridCompute", builderStart);
+    ASSERT_NE(builderEnd, std::string::npos);
+
+    const auto builderBody = source.substr(builderStart, builderEnd - builderStart);
+    EXPECT_NE(
+        builderBody.find("BuildDeferredAggregateHelperPassInput(package)"),
+        std::string::npos)
+        << "The no-scene path must materialize snapshot-owned helper draws before frame-graph compilation.";
+}
+
 TEST(DebugSceneLifecycleTests, CullingOverlayItemsAreBuiltFromFrameSnapshotOnlyWhenEnabled)
 {
     NLS::Render::Context::FrameSnapshot snapshot;
@@ -176,6 +192,52 @@ TEST(DebugSceneLifecycleTests, SelectionHelpersRequireGameObjectPassAndSelectedG
     EXPECT_FALSE(OutlineRenderer::ShouldIncludeInThreadedFrame(false, &actor));
     EXPECT_FALSE(OutlineRenderer::ShouldIncludeInThreadedFrame(true, nullptr));
     EXPECT_TRUE(OutlineRenderer::ShouldIncludeInThreadedFrame(true, &actor));
+}
+
+TEST(DebugSceneLifecycleTests, DebugSceneViewOnlyPassesSkipWhenDebugDescriptorIsMissing)
+{
+    const auto debugRendererSource = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+    const auto debugPassStart = debugRendererSource.find("class DebugGameObjectRenderPass");
+    ASSERT_NE(debugPassStart, std::string::npos);
+    const auto debugDrawStart = debugRendererSource.find("virtual void Draw", debugPassStart);
+    ASSERT_NE(debugDrawStart, std::string::npos);
+    const auto debugDrawEnd = debugRendererSource.find("BuildThreadedPassInput", debugDrawStart);
+    ASSERT_NE(debugDrawEnd, std::string::npos);
+    const auto debugDrawBody = debugRendererSource.substr(debugDrawStart, debugDrawEnd - debugDrawStart);
+
+    const auto debugGuardPosition = debugDrawBody.find("HasDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>()");
+    const auto debugGetPosition = debugDrawBody.find("GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>()");
+    ASSERT_NE(debugGuardPosition, std::string::npos);
+    ASSERT_NE(debugGetPosition, std::string::npos);
+    EXPECT_LT(debugGuardPosition, debugGetPosition);
+
+    const auto pickingSource = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/PickingRenderPass.cpp");
+    const auto pickingDrawStart = pickingSource.find("void Editor::Rendering::PickingRenderPass::Draw");
+    ASSERT_NE(pickingDrawStart, std::string::npos);
+    const auto pickingDrawEnd = pickingSource.find("RenderPickingScene", pickingDrawStart);
+    ASSERT_NE(pickingDrawEnd, std::string::npos);
+    const auto pickingDrawBody = pickingSource.substr(pickingDrawStart, pickingDrawEnd - pickingDrawStart);
+
+    const auto pickingGuardPosition = pickingDrawBody.find("HasDescriptor<DebugSceneRenderer::DebugSceneDescriptor>()");
+    const auto pickingGetPosition = pickingDrawBody.find("GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>()");
+    ASSERT_NE(pickingGuardPosition, std::string::npos);
+    ASSERT_NE(pickingGetPosition, std::string::npos);
+    EXPECT_LT(pickingGuardPosition, pickingGetPosition);
+}
+
+TEST(DebugSceneLifecycleTests, EditorLargeSceneSettingsDisableHZBOcclusionByDefault)
+{
+    const auto header = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Settings/EditorSettings.h");
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Settings/EditorSettings.cpp");
+
+    ASSERT_FALSE(header.empty());
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(header.find("bool enableHZBOcclusion = false;"), std::string::npos);
+    EXPECT_NE(source.find("settings.enableHZBOcclusion = editor.enableHZBOcclusion;"), std::string::npos);
 }
 
 TEST(DebugSceneLifecycleTests, EditorHelperDrawsDoNotReceiveLightGridPassBindings)
@@ -402,7 +464,7 @@ TEST(DebugSceneLifecycleTests, CollectGarbagesDestroysMarkedChildSubtreeOnce)
     EXPECT_TRUE(scene.GetGameObjects().empty());
 }
 
-TEST(DebugSceneLifecycleTests, MeshRendererUpdateMaterialListClampsMeshMaterialSlotsToCapacity)
+TEST(DebugSceneLifecycleTests, MeshRendererUpdateMaterialListExpandsMeshMaterialSlotsAboveLegacyByteRange)
 {
     NLS::Engine::SceneSystem::Scene scene;
     auto& actor = scene.CreateGameObject("Renderer");
@@ -411,10 +473,11 @@ TEST(DebugSceneLifecycleTests, MeshRendererUpdateMaterialListClampsMeshMaterialS
     ASSERT_NE(meshFilter, nullptr);
     ASSERT_NE(meshRenderer, nullptr);
 
+    constexpr uint32_t kHighMaterialSlot = 300u;
     NLS::Render::Resources::Mesh mesh(
         std::vector<NLS::Render::Geometry::Vertex> {},
         std::vector<uint32_t> {},
-        static_cast<uint32_t>(NLS::Engine::Components::MeshRenderer::kMaxMaterialCount));
+        kHighMaterialSlot);
 
     meshFilter->SetMesh(&mesh);
     meshRenderer->UpdateMaterialList();
@@ -424,5 +487,5 @@ TEST(DebugSceneLifecycleTests, MeshRendererUpdateMaterialListClampsMeshMaterialS
     const auto& resolvedMaterials = meshRenderer->GetMaterials();
     EXPECT_EQ(
         std::count(resolvedMaterials.begin(), resolvedMaterials.end(), &fallbackMaterial),
-        static_cast<std::ptrdiff_t>(NLS::Engine::Components::MeshRenderer::kMaxMaterialCount));
+        static_cast<std::ptrdiff_t>(kHighMaterialSlot + 1u));
 }

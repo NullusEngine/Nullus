@@ -4581,6 +4581,61 @@ TEST(RendererFrameObjectBindingTests, LightGridFallbackGraphicsBindingSetUsesSha
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 
+TEST(RendererFrameObjectBindingTests, LightGridFallbackGraphicsBindingSetUsesCompactEmptyGridBuffers)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 11u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(16u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 1920u;
+    frameDescriptor.renderHeight = 1080u;
+    frameDescriptor.camera = &camera;
+
+    NLS::Engine::Rendering::LightGridPrepass lightGridPrepass(driver);
+    ASSERT_TRUE(lightGridPrepass.EnsureFallbackGraphicsPassBindingSet(frameDescriptor, false));
+
+    const auto findBuffer = [&](std::string_view debugName) -> const TestBuffer*
+    {
+        const auto found = std::find_if(
+            explicitDevice->buffers.begin(),
+            explicitDevice->buffers.end(),
+            [debugName](const std::shared_ptr<TestBuffer>& buffer)
+            {
+                return buffer != nullptr && buffer->GetDebugName() == debugName;
+            });
+        return found != explicitDevice->buffers.end() ? found->get() : nullptr;
+    };
+
+    const auto* forwardLocalLightBuffer = findBuffer("ForwardLocalLightBuffer");
+    const auto* numCulledLightsGridBuffer = findBuffer("NumCulledLightsGrid");
+    const auto* culledLightDataGridBuffer = findBuffer("CulledLightDataGrid");
+    ASSERT_NE(forwardLocalLightBuffer, nullptr);
+    ASSERT_NE(numCulledLightsGridBuffer, nullptr);
+    ASSERT_NE(culledLightDataGridBuffer, nullptr);
+    EXPECT_EQ(forwardLocalLightBuffer->GetDesc().size, sizeof(uint32_t));
+    EXPECT_EQ(numCulledLightsGridBuffer->GetDesc().size, 2u * sizeof(uint32_t));
+    EXPECT_EQ(culledLightDataGridBuffer->GetDesc().size, sizeof(uint32_t));
+
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
 TEST(RendererFrameObjectBindingTests, LightGridComputeBindingSetsUseShaderExpectedResourceNames)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -6202,8 +6257,26 @@ TEST(RendererFrameObjectBindingTests, DeferredThreadedOffscreenPackageCarriesExt
 
     NLS::Render::Buffers::Framebuffer outputBuffer(256u, 144u);
     NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+    NLS::Render::Resources::Mesh sceneMesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+        {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* gbufferShader = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferShader(renderer);
+    ASSERT_NE(gbufferShader, nullptr);
+    NLS::Render::Resources::Material sceneMaterial;
+    sceneMaterial.SetShader(gbufferShader);
 
     NLS::Engine::SceneSystem::Scene scene;
+    auto& meshActor = scene.CreateGameObject("MeshActor");
+    auto* meshFilter = meshActor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    ASSERT_NE(meshFilter, nullptr);
+    meshFilter->SetMesh(&sceneMesh);
+    auto* meshRenderer = meshActor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshRenderer, nullptr);
+    meshRenderer->FillWithMaterial(sceneMaterial);
+    meshActor.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
     scene.CreateGameObject("LightActor").AddComponent<NLS::Engine::Components::LightComponent>();
     renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
         scene,
@@ -6336,5 +6409,7 @@ TEST(RendererFrameObjectBindingTests, ForwardThreadedOffscreenPackageRegistersEx
     ASSERT_TRUE(retiredSlot->renderScenePackage.has_value());
     ASSERT_FALSE(retiredSlot->renderScenePackage->passCommandInputs.empty());
     ASSERT_FALSE(retiredSlot->renderScenePackage->extractedTextures.empty());
-    EXPECT_NE(retiredSlot->renderScenePackage->extractedTextures.front(), nullptr);
+    EXPECT_EQ(
+        retiredSlot->renderScenePackage->extractedTextures.front(),
+        outputBuffer.GetExplicitTextureHandle());
 }

@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Rendering/Resources/Material.h"
 
 namespace NLS::Render::Resources::Loaders
@@ -21,6 +22,8 @@ public:
         bool allowSourceAssetNativeContainer = false;
         std::filesystem::path artifactDatabasePath;
         std::string targetPlatform = "editor";
+        NLS::Core::Assets::ArtifactLoadTelemetryStage shaderPassLoadTelemetryStage =
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialShaderPassLoad;
     };
 
     /**
@@ -37,6 +40,14 @@ public:
     static Material* CreateFromSerializedPayload(
         const std::string& p_path,
         const std::string& p_xml,
+        const LoadOptions& options);
+    static std::vector<std::string> ResolveShaderLabPassArtifactPaths(
+        const std::string& materialPath,
+        const std::string& shaderSourcePath,
+        const LoadOptions& options);
+    static size_t PreloadShaderLabPassArtifacts(
+        const std::string& materialPath,
+        const std::string& shaderSourcePath,
         const LoadOptions& options);
     static std::string ReadSerializedPayload(const std::string& p_path);
 

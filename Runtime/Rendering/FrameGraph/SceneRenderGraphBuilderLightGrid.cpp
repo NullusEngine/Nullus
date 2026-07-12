@@ -29,8 +29,14 @@ namespace NLS::Render::FrameGraph
         PreparedComputeDispatchSource preparedComputeSource,
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> graphicsPassBindingSet)
     {
+        NLS::Render::Data::FrameDescriptor lightGridFrameDescriptor;
+        lightGridFrameDescriptor.renderWidth = frameDescriptor.renderWidth;
+        lightGridFrameDescriptor.renderHeight = frameDescriptor.renderHeight;
+        lightGridFrameDescriptor.camera = frameDescriptor.camera;
+        lightGridFrameDescriptor.clearColorOverride = frameDescriptor.clearColorOverride;
+
         LightGridCompileContext context;
-        context.frameDescriptor = frameDescriptor;
+        context.frameDescriptor = lightGridFrameDescriptor;
         context.preparedComputeSource = std::move(preparedComputeSource);
         context.forwardLightingResources = BuildForwardLightingResources();
         context.graphicsPassBindingSet = std::move(graphicsPassBindingSet);

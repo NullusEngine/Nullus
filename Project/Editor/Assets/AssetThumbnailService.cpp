@@ -1,5 +1,6 @@
 #include "Assets/AssetThumbnailService.h"
 
+#include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/ArtifactLoadTelemetry.h"
@@ -57,6 +58,13 @@
 #include <type_traits>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#endif
+
 namespace NLS::Editor::Assets
 {
 namespace
@@ -66,6 +74,156 @@ using AssetThumbnailCancelToken = std::weak_ptr<AssetThumbnailGenerationCancelTo
 using AssetThumbnailGenerator = AssetThumbnailServiceResult (*)(const AssetThumbnailRequest&, const AssetThumbnailCancelToken&);
 
 thread_local PerformanceStageThread g_thumbnailGenerationStageThread = PerformanceStageThread::Main;
+constexpr uint8_t kGpuPreviewVisibleAlphaThreshold = 8u;
+constexpr uint8_t kGpuPreviewLitLumaThreshold = 8u;
+
+std::string BuildThumbnailRequestTelemetryPath(const AssetBrowserItem& item)
+{
+    const auto& sourcePath = item.sourceAssetPath.empty()
+        ? item.projectRelativePath
+        : item.sourceAssetPath;
+    if (item.subAssetKey.empty())
+        return sourcePath;
+    return sourcePath + "|" + item.subAssetKey;
+}
+
+std::string BuildThumbnailRequestTelemetryPath(const AssetThumbnailRequest& request)
+{
+    if (request.subAssetKey.empty())
+        return request.sourceAssetPath;
+    return request.sourceAssetPath + "|" + request.subAssetKey;
+}
+
+std::string BuildThumbnailGpuPreviewRenderTelemetryPath(
+    const AssetThumbnailRequest& request,
+    const EditorThumbnailPreviewResult& preview,
+    const std::string_view diagnosticOverride = {})
+{
+    auto path = BuildThumbnailRequestTelemetryPath(request);
+    const auto diagnostic = diagnosticOverride.empty()
+        ? std::string_view(preview.diagnostic)
+        : diagnosticOverride;
+    if (!diagnostic.empty())
+    {
+        path += "|diag=";
+        path += diagnostic;
+    }
+
+    const size_t pixelCount = static_cast<size_t>(preview.width) * preview.height;
+    if (pixelCount > 0u && preview.rgbaPixels.size() >= pixelCount * 4u)
+    {
+        size_t visibleAlphaPixelCount = 0u;
+        size_t litRgbPixelCount = 0u;
+        uint8_t maxAlpha = 0u;
+        uint8_t maxLuma = 0u;
+        for (size_t pixel = 0u; pixel < pixelCount; ++pixel)
+        {
+            const auto offset = pixel * 4u;
+            const uint8_t r = preview.rgbaPixels[offset + 0u];
+            const uint8_t g = preview.rgbaPixels[offset + 1u];
+            const uint8_t b = preview.rgbaPixels[offset + 2u];
+            const uint8_t a = preview.rgbaPixels[offset + 3u];
+            const auto luma = static_cast<uint8_t>(
+                (static_cast<uint16_t>(r) * 77u +
+                    static_cast<uint16_t>(g) * 150u +
+                    static_cast<uint16_t>(b) * 29u) >> 8u);
+            maxAlpha = (std::max)(maxAlpha, a);
+            maxLuma = (std::max)(maxLuma, luma);
+            if (a > kGpuPreviewVisibleAlphaThreshold)
+                ++visibleAlphaPixelCount;
+            if (luma > kGpuPreviewLitLumaThreshold)
+                ++litRgbPixelCount;
+        }
+
+        path += "|pixels=" + std::to_string(pixelCount);
+        path += "|visibleAlpha=" + std::to_string(visibleAlphaPixelCount);
+        path += "|litRgb=" + std::to_string(litRgbPixelCount);
+        path += "|maxAlpha=" + std::to_string(maxAlpha);
+        path += "|maxLuma=" + std::to_string(maxLuma);
+    }
+    path += "|rawVisibleDraws=" + std::to_string(preview.rawVisibleDrawCount);
+    path += "|submittedDraws=" + std::to_string(preview.submittedSceneDrawCount);
+    return path;
+}
+
+void RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+    const std::string_view decision,
+    const AssetThumbnailRequest* request = nullptr,
+    const size_t count = 0u)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+        return;
+
+    std::string path(decision);
+    if (request != nullptr)
+    {
+        path += "|";
+        path += BuildThumbnailRequestTelemetryPath(*request);
+    }
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceGpuPreviewQueueDecision,
+        std::chrono::microseconds(0),
+        count,
+        std::move(path)
+    });
+}
+
+void RecordThumbnailRequestBuildTelemetry(
+    const NLS::Core::Assets::ArtifactLoadTelemetryStage stage,
+    const std::chrono::steady_clock::time_point begin,
+    const std::string& path)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+        return;
+
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        stage,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - begin),
+        0u,
+        path
+    });
+}
+
+class ScopedThumbnailRequestBuildTelemetry
+{
+public:
+    ScopedThumbnailRequestBuildTelemetry(
+        const NLS::Core::Assets::ArtifactLoadTelemetryStage stage,
+        const AssetBrowserItem& item,
+        const size_t byteCount = 0u) :
+        m_stage(stage),
+        m_byteCount(byteCount),
+        m_enabled(NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+    {
+        if (!m_enabled)
+            return;
+
+        m_path = BuildThumbnailRequestTelemetryPath(item);
+        m_begin = std::chrono::steady_clock::now();
+    }
+
+    ~ScopedThumbnailRequestBuildTelemetry()
+    {
+        if (!m_enabled)
+            return;
+
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            m_stage,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - m_begin),
+            m_byteCount,
+            m_path
+        });
+    }
+
+private:
+    NLS::Core::Assets::ArtifactLoadTelemetryStage m_stage;
+    size_t m_byteCount = 0u;
+    bool m_enabled = false;
+    std::chrono::steady_clock::time_point m_begin {};
+    std::string m_path;
+};
 
 template <typename Function>
 auto ScheduleThumbnailJobFuture(const char* debugName, Function&& function)
@@ -164,7 +322,7 @@ AssetThumbnailServiceResult GenerateTextureThumbnail(const AssetThumbnailRequest
 AssetThumbnailServiceResult GenerateMaterialThumbnail(const AssetThumbnailRequest& request, const AssetThumbnailCancelToken& cancelToken);
 AssetThumbnailServiceResult GenerateModelThumbnail(const AssetThumbnailRequest& request, const AssetThumbnailCancelToken& cancelToken);
 AssetThumbnailServiceResult GeneratePrefabThumbnail(const AssetThumbnailRequest& request, const AssetThumbnailCancelToken& cancelToken);
-bool CanFallbackPrefabPreviewToManifestMeshes(const AssetThumbnailRequest& request);
+bool ShouldRetryLegacyImportedPrefabBudgetFailure(const AssetThumbnailRequest& request);
 
 struct AssetThumbnailKindPolicy
 {
@@ -191,8 +349,9 @@ constexpr float kUnityMeshPreviewYawDegrees = -120.0f;
 constexpr float kUnityMeshPreviewPitchDegrees = 34.0f;
 constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
 constexpr size_t kMaxObsoleteThumbnailGenerationInFlightRequests = 2u;
+constexpr size_t kMaxCurrentThumbnailGenerationInFlightRequests = 2u;
 constexpr size_t kMaxThumbnailGenerationTotalInFlightSlots =
-    kMaxObsoleteThumbnailGenerationInFlightRequests + 1u;
+    kMaxObsoleteThumbnailGenerationInFlightRequests + kMaxCurrentThumbnailGenerationInFlightRequests;
 constexpr size_t kMaxPriorityThumbnailDequeueBurst = 4u;
 constexpr size_t kMaxQueuedThumbnailRequests = 512u;
 constexpr uint64_t kMaxSourceThumbnailImageBytes = 128ull * 1024ull * 1024ull;
@@ -279,6 +438,44 @@ bool CanGenerateThumbnail(const AssetThumbnailKind kind)
 {
     const auto* policy = PolicyForKind(kind);
     return policy != nullptr && policy->generator != nullptr;
+}
+
+bool IsPendingThumbnailState(const ThumbnailState state)
+{
+    return state == ThumbnailState::Queued ||
+        state == ThumbnailState::Preparing ||
+        state == ThumbnailState::WaitingForResources ||
+        state == ThumbnailState::Rendering ||
+        state == ThumbnailState::WaitingForGpu ||
+        state == ThumbnailState::Readback;
+}
+
+const char* ThumbnailStateTelemetryName(const ThumbnailState state)
+{
+    switch (state)
+    {
+    case ThumbnailState::Missing:
+        return "missing";
+    case ThumbnailState::Queued:
+        return "queued";
+    case ThumbnailState::Preparing:
+        return "preparing";
+    case ThumbnailState::WaitingForResources:
+        return "waiting-resources";
+    case ThumbnailState::Rendering:
+        return "rendering";
+    case ThumbnailState::WaitingForGpu:
+        return "waiting-gpu";
+    case ThumbnailState::Readback:
+        return "readback";
+    case ThumbnailState::Ready:
+        return "ready";
+    case ThumbnailState::Failed:
+        return "failed";
+    case ThumbnailState::Cancelled:
+        return "cancelled";
+    }
+    return "unknown";
 }
 
 bool SupportsGpuThumbnailPreview(const AssetThumbnailKind kind)
@@ -379,13 +576,27 @@ bool IsRetryableThumbnailFailureDiagnostic(
     const std::string& diagnostic)
 {
     if (diagnostic == kPrefabPreviewBudgetExceededDiagnostic)
-        return CanFallbackPrefabPreviewToManifestMeshes(request);
+        return ShouldRetryLegacyImportedPrefabBudgetFailure(request);
     return IsRetryableThumbnailFailureDiagnostic(diagnostic);
 }
 
 bool IsPendingThumbnailPreviewReadbackDiagnostic(const std::string& diagnostic)
 {
-    return diagnostic == "thumbnail-gpu-preview-readback-pending";
+    return diagnostic == "thumbnail-gpu-preview-readback-pending" ||
+        (diagnostic.rfind("thumbnail-gpu-preview-readback-failed:", 0u) == 0u &&
+            diagnostic.find("previous async readback has not been completed") != std::string::npos);
+}
+
+bool IsPendingThumbnailPreviewResourcesDiagnostic(const std::string& diagnostic)
+{
+    constexpr std::string_view kResourcesPendingDiagnostic = "thumbnail-gpu-preview-resources-pending";
+    if (diagnostic.size() < kResourcesPendingDiagnostic.size() ||
+        diagnostic.compare(0u, kResourcesPendingDiagnostic.size(), kResourcesPendingDiagnostic) != 0)
+    {
+        return false;
+    }
+    return diagnostic.size() == kResourcesPendingDiagnostic.size() ||
+        diagnostic[kResourcesPendingDiagnostic.size()] == '|';
 }
 
 bool MeshPreviewHeaderExceedsCpuLoadBudget(
@@ -681,7 +892,7 @@ std::string ToLowerAscii(std::string value)
     return value;
 }
 
-bool CanFallbackPrefabPreviewToManifestMeshes(const AssetThumbnailRequest& request)
+bool ShouldRetryLegacyImportedPrefabBudgetFailure(const AssetThumbnailRequest& request)
 {
     return request.kind == AssetThumbnailKind::PrefabPreview &&
         ToLowerAscii(std::filesystem::path(request.sourceAssetPath).extension().generic_string()) != ".prefab";
@@ -886,11 +1097,112 @@ const NLS::Render::Assets::TextureArtifactMip* SelectTextureThumbnailMip(
     return best;
 }
 
+bool ThumbnailPathHasReparsePoint(const std::filesystem::path& path)
+{
+#ifdef _WIN32
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u;
+#else
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path, error);
+    return !error && std::filesystem::is_symlink(status);
+#endif
+}
+
+bool PathStartsWithAssetsMount(const std::filesystem::path& normalizedAssetPath)
+{
+    const auto first = normalizedAssetPath.begin();
+    return first != normalizedAssetPath.end() && *first == "Assets";
+}
+
+std::optional<std::filesystem::path> TryResolveProjectRelativeThumbnailSourcePathFast(
+    const AssetThumbnailRequest& request)
+{
+    if (request.projectRoot.empty() || request.sourceAssetPath.empty())
+        return std::nullopt;
+
+    const auto normalizedAssetPath = std::filesystem::path(NormalizeEditorAssetPath(request.sourceAssetPath));
+    if (normalizedAssetPath.empty() ||
+        normalizedAssetPath == "." ||
+        normalizedAssetPath == ".." ||
+        normalizedAssetPath.is_absolute() ||
+        !PathStartsWithAssetsMount(normalizedAssetPath))
+    {
+        return std::nullopt;
+    }
+
+    const auto assetRoot = NLS::Core::Assets::NormalizeAssetPath(request.projectRoot / "Assets");
+    const auto candidate = NLS::Core::Assets::NormalizeAssetPath(request.projectRoot / normalizedAssetPath);
+    if (assetRoot.empty() ||
+        candidate.empty() ||
+        !IsPathInsideEditorAssetRoot(candidate, assetRoot))
+    {
+        return std::nullopt;
+    }
+
+    auto ancestor = candidate.parent_path();
+    while (!ancestor.empty() && IsPathInsideEditorAssetRoot(ancestor, assetRoot))
+    {
+        std::error_code error;
+        const bool exists = std::filesystem::exists(ancestor, error);
+        if (error || !exists)
+            return std::nullopt;
+        if (ThumbnailPathHasReparsePoint(ancestor))
+            return std::nullopt;
+        if (ancestor == assetRoot)
+            break;
+        const auto parent = ancestor.parent_path();
+        if (parent == ancestor)
+            return std::nullopt;
+        ancestor = parent;
+    }
+
+    std::error_code statusError;
+    (void)std::filesystem::symlink_status(candidate, statusError);
+    if (!statusError && ThumbnailPathHasReparsePoint(candidate))
+        return std::nullopt;
+    if (statusError)
+    {
+        std::error_code existsError;
+        if (std::filesystem::exists(candidate, existsError) || existsError)
+            return std::nullopt;
+    }
+
+    return candidate;
+}
+
 std::filesystem::path ResolveThumbnailSourcePath(const AssetThumbnailRequest& request)
 {
+    if (const auto fastPath = TryResolveProjectRelativeThumbnailSourcePathFast(request);
+        fastPath.has_value())
+    {
+        return *fastPath;
+    }
+
     return ResolveEditorAssetPath(
         MakeProjectEditorAssetRoots(request.projectRoot),
         request.sourceAssetPath);
+}
+
+std::filesystem::path ResolveThumbnailSourcePathCached(
+    const AssetThumbnailRequest& request,
+    AssetThumbnailRequestBuildContext* context)
+{
+    if (context == nullptr)
+        return ResolveThumbnailSourcePath(request);
+
+    const auto key = request.projectRoot.lexically_normal().generic_string() + "|" +
+        NormalizeEditorAssetPath(request.sourceAssetPath);
+    auto found = context->sourcePathsByProjectAndAssetPath.find(key);
+    if (found != context->sourcePathsByProjectAndAssetPath.end())
+        return found->second;
+
+    auto sourcePath = ResolveThumbnailSourcePath(request);
+    auto [inserted, insertedNew] =
+        context->sourcePathsByProjectAndAssetPath.emplace(key, std::move(sourcePath));
+    (void)insertedNew;
+    return inserted->second;
 }
 
 std::filesystem::path ResolveThumbnailArtifactPath(const AssetThumbnailRequest& request)
@@ -987,9 +1299,53 @@ std::string FileStamp(const std::filesystem::path& path)
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
-void AddSourceFreshnessInputs(AssetThumbnailRequest& request)
+std::string FileStampCached(
+    const std::filesystem::path& path,
+    AssetThumbnailRequestBuildContext* context)
 {
-    const auto sourcePath = ResolveThumbnailSourcePath(request);
+    if (context == nullptr)
+        return FileStamp(path);
+
+    const auto key = path.lexically_normal().generic_string();
+    auto found = context->fileStampsByPath.find(key);
+    if (found != context->fileStampsByPath.end())
+        return found->second;
+
+    auto stamp = FileStamp(path);
+    auto [inserted, insertedNew] = context->fileStampsByPath.emplace(key, std::move(stamp));
+    (void)insertedNew;
+    return inserted->second;
+}
+
+std::string ArtifactDatabaseStampCached(
+    const std::filesystem::path& projectRoot,
+    AssetThumbnailRequestBuildContext* context)
+{
+    if (context == nullptr)
+        return FileStamp(GetProjectArtifactDatabasePath(projectRoot) / "data.mdb");
+
+    if (!context->artifactDatabaseStampCached ||
+        context->artifactDatabaseProjectRoot != projectRoot)
+    {
+        context->artifactDatabaseProjectRoot = projectRoot;
+        context->artifactDatabasePath = GetProjectArtifactDatabasePath(projectRoot) / "data.mdb";
+        context->artifactDatabaseStamp = FileStamp(context->artifactDatabasePath);
+        context->artifactDatabaseStampCached = true;
+    }
+    return context->artifactDatabaseStamp;
+}
+
+void AddSourceFreshnessInputs(
+    AssetThumbnailRequest& request,
+    AssetThumbnailRequestBuildContext* context)
+{
+    const auto telemetryPath = BuildThumbnailRequestTelemetryPath(request);
+    auto telemetryBegin = std::chrono::steady_clock::now();
+    const auto sourcePath = ResolveThumbnailSourcePathCached(request, context);
+    RecordThumbnailRequestBuildTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessResolve,
+        telemetryBegin,
+        telemetryPath);
     if (sourcePath.empty())
     {
         request.freshnessInputs.push_back({"source-file", "missing"});
@@ -997,16 +1353,28 @@ void AddSourceFreshnessInputs(AssetThumbnailRequest& request)
         return;
     }
 
-    request.freshnessInputs.push_back({"source-file", FileStamp(sourcePath)});
+    telemetryBegin = std::chrono::steady_clock::now();
+    request.freshnessInputs.push_back({"source-file", FileStampCached(sourcePath, context)});
+    RecordThumbnailRequestBuildTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessFileStamp,
+        telemetryBegin,
+        telemetryPath);
+
+    telemetryBegin = std::chrono::steady_clock::now();
     request.freshnessInputs.push_back({
         "source-meta",
-        FileStamp(NLS::Core::Assets::GetAssetMetaPath(sourcePath))
+        FileStampCached(NLS::Core::Assets::GetAssetMetaPath(sourcePath), context)
     });
+    RecordThumbnailRequestBuildTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessMetaStamp,
+        telemetryBegin,
+        telemetryPath);
 }
 
 void AddArtifactFreshnessInputs(
     AssetThumbnailRequest& request,
-    const AssetBrowserItem& item)
+    const AssetBrowserItem& item,
+    AssetThumbnailRequestBuildContext* context)
 {
     const bool usesArtifactDatabase =
         item.kind == AssetBrowserItemKind::GeneratedSubAsset ||
@@ -1017,14 +1385,17 @@ void AddArtifactFreshnessInputs(
     {
         request.freshnessInputs.push_back({
             "artifact-db",
-            FileStamp(GetProjectArtifactDatabasePath(request.projectRoot) / "data.mdb")
+            ArtifactDatabaseStampCached(request.projectRoot, context)
         });
     }
 
     if (request.artifactPath.empty())
         return;
 
-    request.freshnessInputs.push_back({"artifact-file", FileStamp(ResolveThumbnailArtifactPath(request))});
+    request.freshnessInputs.push_back({
+        "artifact-file",
+        FileStampCached(ResolveThumbnailArtifactPath(request), context)
+    });
 }
 
 bool IsFileFreshnessInputStillCurrent(
@@ -1422,6 +1793,47 @@ std::optional<std::filesystem::path> ResolveSourceMaterialPathForPreview(
 bool IsGpuPreviewClearFrame(
     const std::vector<uint8_t>& rgbaPixels,
     const uint32_t width,
+    const uint32_t height,
+    const bool keepSubmittedDarkFrame = false)
+{
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    if (pixelCount == 0u || rgbaPixels.size() < pixelCount * 4u)
+        return true;
+
+    size_t visiblePixelCount = 0u;
+    size_t litPixelCount = 0u;
+    uint8_t maxLuma = 0u;
+    for (size_t pixel = 0u; pixel < pixelCount; ++pixel)
+    {
+        const auto offset = pixel * 4u;
+        const uint8_t a = rgbaPixels[offset + 3u];
+        if (a <= kGpuPreviewVisibleAlphaThreshold)
+            continue;
+
+        ++visiblePixelCount;
+        const uint8_t r = rgbaPixels[offset + 0u];
+        const uint8_t g = rgbaPixels[offset + 1u];
+        const uint8_t b = rgbaPixels[offset + 2u];
+        const auto luma = static_cast<uint8_t>(
+            (static_cast<uint16_t>(r) * 77u +
+                static_cast<uint16_t>(g) * 150u +
+                static_cast<uint16_t>(b) * 29u) >> 8u);
+        maxLuma = (std::max)(maxLuma, luma);
+        if (luma > kGpuPreviewLitLumaThreshold)
+            ++litPixelCount;
+    }
+    if (visiblePixelCount == 0u)
+        return true;
+    if (keepSubmittedDarkFrame)
+        return false;
+
+    const auto minimumLitPixels = (std::max<size_t>)(1u, pixelCount / 512u);
+    return maxLuma <= kGpuPreviewLitLumaThreshold || litPixelCount < minimumLitPixels;
+}
+
+bool IsGpuPreviewFullyTransparentFrame(
+    const std::vector<uint8_t>& rgbaPixels,
+    const uint32_t width,
     const uint32_t height)
 {
     const size_t pixelCount = static_cast<size_t>(width) * height;
@@ -1430,11 +1842,43 @@ bool IsGpuPreviewClearFrame(
 
     for (size_t pixel = 0u; pixel < pixelCount; ++pixel)
     {
-        const uint8_t a = rgbaPixels[pixel * 4u + 3u];
-        if (a != 0u)
+        if (rgbaPixels[pixel * 4u + 3u] > kGpuPreviewVisibleAlphaThreshold)
             return false;
     }
     return true;
+}
+
+enum class GpuPreviewClearFrameDisposition
+{
+    KeepPreview,
+    GenerateCpuFallback,
+    DeferEmptyFrame,
+    FailEmptyFrame
+};
+
+GpuPreviewClearFrameDisposition EvaluateGpuPreviewClearFrameDisposition(
+    const AssetThumbnailRequest& request,
+    const std::vector<uint8_t>& rgbaPixels,
+    const uint32_t width,
+    const uint32_t height,
+    const uint64_t submittedSceneDrawCount = 0u)
+{
+    const bool keepSubmittedDarkPrefabFrame =
+        request.kind == AssetThumbnailKind::PrefabPreview &&
+        submittedSceneDrawCount > 0u;
+    if (!IsGpuPreviewClearFrame(rgbaPixels, width, height, keepSubmittedDarkPrefabFrame))
+        return GpuPreviewClearFrameDisposition::KeepPreview;
+
+    if (IsGpuPreviewFullyTransparentFrame(rgbaPixels, width, height))
+        return GpuPreviewClearFrameDisposition::FailEmptyFrame;
+
+    if (request.kind == AssetThumbnailKind::PrefabPreview)
+        return GpuPreviewClearFrameDisposition::DeferEmptyFrame;
+
+    if (GeneratorForKind(request.kind) != nullptr)
+        return GpuPreviewClearFrameDisposition::GenerateCpuFallback;
+
+    return GpuPreviewClearFrameDisposition::FailEmptyFrame;
 }
 
 bool PreviewArtifactPathResolvesForRequest(
@@ -1583,6 +2027,31 @@ bool ShouldPromoteQueuedThumbnailRequest(
         ThumbnailRequestPriorityRank(current.priority);
 }
 
+std::optional<std::string> PopNextQueuedCacheKeyFrom(
+    std::deque<std::string>& queue,
+    size_t& priorityThumbnailDequeueStreak,
+    const bool countTowardsPriorityBurst)
+{
+    if (queue.empty())
+        return std::nullopt;
+
+    auto cacheKey = queue.front();
+    queue.pop_front();
+    if (countTowardsPriorityBurst)
+        ++priorityThumbnailDequeueStreak;
+    return cacheKey;
+}
+
+void RestoreDeferredCacheKeyToFront(
+    std::deque<std::string>& queue,
+    const std::string& cacheKey)
+{
+    queue.erase(
+        std::remove(queue.begin(), queue.end(), cacheKey),
+        queue.end());
+    queue.push_front(cacheKey);
+}
+
 void ConsumeThumbnailCacheWriteBudgetForFreshResult(
     ThumbnailGenerationBudget& budget,
     const bool consumeBudget)
@@ -1591,6 +2060,16 @@ void ConsumeThumbnailCacheWriteBudgetForFreshResult(
         return;
     if (budget.cacheWriteCountBudget > 0u && budget.cacheWriteCountBudget != SIZE_MAX)
         --budget.cacheWriteCountBudget;
+}
+
+void ConsumeThumbnailCountBudget(
+    size_t& budget,
+    const bool consumeBudget)
+{
+    if (!consumeBudget)
+        return;
+    if (budget > 0u && budget != SIZE_MAX)
+        --budget;
 }
 
 size_t EstimateThumbnailCpuPreparationBytes(const AssetThumbnailRequest& request)
@@ -1713,6 +2192,26 @@ AssetThumbnailRequest BuildResolvedThumbnailCacheRequest(
     return cacheRequest;
 }
 
+AssetThumbnailServiceResult BuildGpuPreviewEmptyFrameResult(
+    const AssetThumbnailRequest& request,
+    const AssetThumbnailCacheEvaluation& evaluation,
+    const AssetThumbnailRequest& previewRequest)
+{
+    auto result = BuildResultFromEvaluation(
+        request,
+        evaluation,
+        AssetThumbnailServiceStatus::Failed);
+    result.diagnostic = "thumbnail-gpu-preview-empty-frame";
+    const auto metadataRequest = BuildResolvedThumbnailCacheRequest(request, previewRequest);
+    WriteThumbnailMetadataForEvaluation(
+        request,
+        evaluation,
+        AssetThumbnailCacheStatus::Failed,
+        result.diagnostic,
+        &metadataRequest);
+    return result;
+}
+
 const std::optional<NLS::Core::Assets::ArtifactManifest>* LoadThumbnailArtifactManifestCached(
     const AssetThumbnailRequest& request,
     AssetThumbnailRequestBuildContext* context)
@@ -1779,7 +2278,7 @@ bool HasExtension(const std::filesystem::path& path, const char* extension)
 
 bool IsNativeMeshArtifactPath(const std::filesystem::path& path)
 {
-    return NLS::Render::Assets::ReadMeshArtifactHeaderPreview(path, 64u * 1024u).has_value();
+    return NLS::Render::Assets::IsMeshArtifactFile(path);
 }
 
 bool IsNativeTextureArtifactPath(const std::filesystem::path& path)
@@ -3329,6 +3828,12 @@ DownsampledThumbnail RenderMeshSetThumbnail(
             return (x - left.screen[0]) * (right.screen[1] - left.screen[1]) -
                 (y - left.screen[1]) * (right.screen[0] - left.screen[0]);
         };
+        const auto edgeCoverageTolerance = [](const MeshPreviewTriangle::Vertex& left, const MeshPreviewTriangle::Vertex& right)
+        {
+            const auto dx = right.screen[0] - left.screen[0];
+            const auto dy = right.screen[1] - left.screen[1];
+            return std::sqrt(dx * dx + dy * dy) * 0.70710677f;
+        };
         const auto area = edge(a, b, c.screen[0], c.screen[1]);
         if (std::abs(area) < 0.0001f)
             continue;
@@ -3336,6 +3841,9 @@ DownsampledThumbnail RenderMeshSetThumbnail(
         const auto material = triangle.materialIndex < materials.size()
             ? materials[triangle.materialIndex]
             : MaterialPreviewStyle {};
+        const auto w0Tolerance = edgeCoverageTolerance(b, c);
+        const auto w1Tolerance = edgeCoverageTolerance(c, a);
+        const auto w2Tolerance = edgeCoverageTolerance(a, b);
         for (int y = minY; y <= maxY; ++y)
         {
             for (int x = minX; x <= maxX; ++x)
@@ -3347,13 +3855,41 @@ DownsampledThumbnail RenderMeshSetThumbnail(
                 const auto w2 = edge(a, b, px, py);
                 const bool insidePositive = w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f;
                 const bool insideNegative = w0 <= 0.0f && w1 <= 0.0f && w2 <= 0.0f;
-                if (!insidePositive && !insideNegative)
+                const bool overlapsPositive =
+                    w0 >= -w0Tolerance &&
+                    w1 >= -w1Tolerance &&
+                    w2 >= -w2Tolerance;
+                const bool overlapsNegative =
+                    w0 <= w0Tolerance &&
+                    w1 <= w1Tolerance &&
+                    w2 <= w2Tolerance;
+                if (!insidePositive && !insideNegative && !overlapsPositive && !overlapsNegative)
                     continue;
 
                 const auto invArea = 1.0f / area;
-                const auto b0 = w0 * invArea;
-                const auto b1 = w1 * invArea;
-                const auto b2 = w2 * invArea;
+                auto b0 = w0 * invArea;
+                auto b1 = w1 * invArea;
+                auto b2 = w2 * invArea;
+                if (!insidePositive && !insideNegative)
+                {
+                    b0 = std::max(0.0f, b0);
+                    b1 = std::max(0.0f, b1);
+                    b2 = std::max(0.0f, b2);
+                    const auto barycentricSum = b0 + b1 + b2;
+                    if (barycentricSum > 0.0001f)
+                    {
+                        const auto invSum = 1.0f / barycentricSum;
+                        b0 *= invSum;
+                        b1 *= invSum;
+                        b2 *= invSum;
+                    }
+                    else
+                    {
+                        b0 = 1.0f / 3.0f;
+                        b1 = 1.0f / 3.0f;
+                        b2 = 1.0f / 3.0f;
+                    }
+                }
                 const auto depth = a.screen[2] * b0 + b.screen[2] * b1 + c.screen[2] * b2;
                 const auto depthIndex = static_cast<size_t>(y) * canvas.width + static_cast<size_t>(x);
                 if (depth >= depthBuffer[depthIndex])
@@ -3907,7 +4443,7 @@ AssetThumbnailServiceResult GeneratePrefabThumbnail(
             NLS::Core::Assets::ArtifactType::Prefab,
             1u))
     {
-        if (CanFallbackPrefabPreviewToManifestMeshes(previewRequest))
+        if (ShouldRetryLegacyImportedPrefabBudgetFailure(previewRequest))
         {
             const auto meshPaths = ResolveMeshArtifactPaths(previewRequest);
             if (!meshPaths.empty())
@@ -4435,16 +4971,26 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     AssetThumbnailRequestBuildContext* context)
 {
     NLS_PROFILE_NAMED_SCOPE("AssetThumbnailService::BuildRequestForItem");
-    if (projectRoot.empty() ||
-        item.kind == AssetBrowserItemKind::Folder ||
-        item.sourceAssetPath.empty())
     {
-        return std::nullopt;
+        ScopedThumbnailRequestBuildTelemetry validateTelemetry {
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestValidate,
+            item
+        };
+        if (projectRoot.empty() ||
+            item.kind == AssetBrowserItemKind::Folder ||
+            item.sourceAssetPath.empty())
+        {
+            return std::nullopt;
+        }
     }
 
     auto assetId = item.assetId;
     if (!assetId.IsValid())
     {
+        ScopedThumbnailRequestBuildTelemetry metaTelemetry {
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestMetaId,
+            item
+        };
         const auto metaAssetId = LoadSourceAssetIdFromMeta(projectRoot, item.sourceAssetPath);
         if (!metaAssetId.has_value())
             return std::nullopt;
@@ -4461,20 +5007,33 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     if ((request.subAssetKey.empty() || request.artifactPath.empty()) &&
         (context == nullptr || !context->deferManifestLookups))
     {
-        auto cachedManifest = LoadThumbnailArtifactManifestCached(request, context);
-        const auto localManifest = cachedManifest == nullptr
-            ? LoadThumbnailArtifactManifest(request)
-            : std::optional<NLS::Core::Assets::ArtifactManifest> {};
-        const auto& manifest = cachedManifest != nullptr ? *cachedManifest : localManifest;
-        if (manifest.has_value())
+        std::optional<NLS::Core::Assets::ArtifactManifest> localManifest;
+        const NLS::Core::Assets::ArtifactManifest* manifest = nullptr;
         {
-            if (const auto* artifact = FindThumbnailArtifactForItem(*manifest, item))
+            ScopedThumbnailRequestBuildTelemetry manifestTelemetry {
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestManifestLookup,
+                item
+            };
+            const auto* cachedManifest = LoadThumbnailArtifactManifestCached(request, context);
+            if (cachedManifest != nullptr)
             {
-                if (request.subAssetKey.empty())
-                    request.subAssetKey = artifact->subAssetKey;
-                if (request.artifactPath.empty())
-                    request.artifactPath = artifact->artifactPath;
+                if (cachedManifest->has_value())
+                    manifest = &**cachedManifest;
             }
+            else
+            {
+                localManifest = LoadThumbnailArtifactManifest(request);
+                if (localManifest.has_value())
+                    manifest = &*localManifest;
+            }
+        }
+        if (manifest != nullptr)
+        {
+            const auto* artifact = FindThumbnailArtifactForItem(*manifest, item);
+            if (artifact != nullptr && request.subAssetKey.empty())
+                request.subAssetKey = artifact->subAssetKey;
+            if (artifact != nullptr && request.artifactPath.empty())
+                request.artifactPath = artifact->artifactPath;
         }
     }
     if (request.subAssetKey.empty() &&
@@ -4499,27 +5058,52 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     request.requestedSize = request.kind == AssetThumbnailKind::Texture
         ? (std::min)(std::max(1u, requestedSize), kMaxTextureThumbnailGenerationSize)
         : std::max(1u, requestedSize);
-    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v3";
+    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v7";
     if (request.kind == AssetThumbnailKind::Texture)
     {
         request.settingsFingerprint = "asset-browser-thumbnail:v15-lowres-image-thumbnails";
     }
     else if (request.kind == AssetThumbnailKind::PrefabPreview)
     {
-        request.settingsFingerprint = "asset-browser-thumbnail:v22-prefab-mesh-set-preview";
+        request.settingsFingerprint = "asset-browser-thumbnail:v32-prefab-full-gpu-streaming";
     }
     else
     {
-        request.settingsFingerprint = "asset-browser-thumbnail:v19-gpu-preview-textured-materials";
+        request.settingsFingerprint = "asset-browser-thumbnail:v20-gpu-black-frame-fallback";
     }
-    request.freshnessInputs.push_back({
-        "item",
-        ItemFreshnessIdentity(item, assetId, request)
-    });
-    AddSourceFreshnessInputs(request);
-    AddArtifactFreshnessInputs(request, item);
-    request.dependencyStamp = BuildThumbnailDependencyStamp(request.freshnessInputs);
-    request.colorSpaceMode = "linear";
+    {
+        ScopedThumbnailRequestBuildTelemetry identityTelemetry {
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestItemIdentity,
+            item
+        };
+        request.freshnessInputs.push_back({
+            "item",
+            ItemFreshnessIdentity(item, assetId, request)
+        });
+    }
+    {
+        ScopedThumbnailRequestBuildTelemetry sourceFreshnessTelemetry {
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshness,
+            item
+        };
+        AddSourceFreshnessInputs(request, context);
+    }
+    {
+        ScopedThumbnailRequestBuildTelemetry artifactFreshnessTelemetry {
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestArtifactFreshness,
+            item
+        };
+        AddArtifactFreshnessInputs(request, item, context);
+    }
+    {
+        ScopedThumbnailRequestBuildTelemetry dependencyStampTelemetry {
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestDependencyStamp,
+            item,
+            request.freshnessInputs.size()
+        };
+        request.dependencyStamp = BuildThumbnailDependencyStamp(request.freshnessInputs);
+    }
+    request.colorSpaceMode = request.kind == AssetThumbnailKind::Texture ? "linear" : "srgb";
     request.hdrMode = "ldr";
     return request;
 }
@@ -4582,8 +5166,106 @@ AssetThumbnailServiceResult AssetThumbnailService::GetThumbnail(
 
     AssetThumbnailServiceResult result;
     result.fallbackIcon = FallbackIconForKind(request.kind);
+    const std::string requestTelemetryPath = BuildThumbnailRequestTelemetryPath(request);
 
+    std::string requestedCacheKey;
+    {
+        const auto stableLookupBegin = std::chrono::steady_clock::now();
+        requestedCacheKey = BuildAssetThumbnailCacheKey(request);
+        if (const auto stableIterator = m_stableThumbnailResultsByCacheKey.find(requestedCacheKey);
+            stableIterator != m_stableThumbnailResultsByCacheKey.end())
+        {
+            std::error_code imageError;
+            const bool imageStillExists =
+                !stableIterator->second.imagePath.empty() &&
+                std::filesystem::is_regular_file(stableIterator->second.imagePath, imageError) &&
+                !imageError;
+            if (imageStillExists && IsThumbnailRequestStillFresh(request))
+            {
+                RecordThumbnailRequestBuildTelemetry(
+                    NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestStableLookup,
+                    stableLookupBegin,
+                    requestTelemetryPath);
+                lookupScope.AddCounter("stableThumbnailResultHitCount");
+                if (stableIterator->second.cacheEntry.has_value())
+                    m_thumbnailStatesByCacheKey[stableIterator->second.cacheEntry->cacheKey] = ThumbnailState::Ready;
+                return stableIterator->second;
+            }
+            m_stableThumbnailResultsByCacheKey.erase(stableIterator);
+        }
+        RecordThumbnailRequestBuildTelemetry(
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestStableLookup,
+            stableLookupBegin,
+            requestTelemetryPath);
+    }
+
+    auto pendingStateIterator = m_thumbnailStatesByCacheKey.find(requestedCacheKey);
+    const bool hasActiveGpuReadbackState =
+        pendingStateIterator != m_thumbnailStatesByCacheKey.end() &&
+        (pendingStateIterator->second == ThumbnailState::WaitingForGpu ||
+            pendingStateIterator->second == ThumbnailState::Readback);
+    if (pendingStateIterator != m_thumbnailStatesByCacheKey.end() &&
+        IsPendingThumbnailState(pendingStateIterator->second))
+    {
+        const auto queueBegin = std::chrono::steady_clock::now();
+        auto queuedIterator = m_queuedRequestsByCacheKey.find(requestedCacheKey);
+        const bool adoptedInFlightRequest = AdoptMatchingInFlightRequest(requestedCacheKey);
+        if (adoptedInFlightRequest || queuedIterator != m_queuedRequestsByCacheKey.end() || hasActiveGpuReadbackState)
+        {
+            lookupScope.AddCounter("duplicateThumbnailRequestCount");
+            if (queuedIterator != m_queuedRequestsByCacheKey.end() &&
+                ShouldPromoteQueuedThumbnailRequest(queuedIterator->second, request))
+            {
+                lookupScope.AddCounter("coalescingPressure");
+                queuedIterator->second = request;
+                EnqueueQueuedCacheKey(requestedCacheKey, queuedIterator->second);
+            }
+            else if (queuedIterator != m_queuedRequestsByCacheKey.end())
+            {
+                lookupScope.AddCounter("coalescingPressure");
+            }
+            else if (hasActiveGpuReadbackState)
+            {
+                if (EnsureQueuedRequestCapacityFor(requestedCacheKey, request))
+                {
+                    m_queuedRequestsByCacheKey[requestedCacheKey] = request;
+                    EnqueueQueuedCacheKey(requestedCacheKey, request);
+                    RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                        "restore-active-gpu-state-queue",
+                        &request,
+                        m_queuedRequestsByCacheKey.size());
+                }
+            }
+            if (adoptedInFlightRequest && !hasActiveGpuReadbackState)
+                m_thumbnailStatesByCacheKey[requestedCacheKey] = ThumbnailState::Preparing;
+            result.cacheEntry = ResolveAssetThumbnailCacheEntryPathForRead(request);
+            result.status = AssetThumbnailServiceStatus::Pending;
+            RecordThumbnailRequestBuildTelemetry(
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestQueue,
+                queueBegin,
+                requestTelemetryPath);
+            return result;
+        }
+        if (HasDeferredGpuPreviewEmptyFrame(requestedCacheKey))
+        {
+            lookupScope.AddCounter("duplicateThumbnailRequestCount");
+            result.cacheEntry = ResolveAssetThumbnailCacheEntryPathForRead(request);
+            result.status = AssetThumbnailServiceStatus::Pending;
+            result.diagnostic = "thumbnail-gpu-preview-empty-frame";
+            RecordThumbnailRequestBuildTelemetry(
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestQueue,
+                queueBegin,
+                requestTelemetryPath);
+            return result;
+        }
+    }
+
+    auto cacheEvaluateBegin = std::chrono::steady_clock::now();
     const auto evaluation = EvaluateAssetThumbnailCache(request, AssetThumbnailCacheIntegrityMode::Fast);
+    RecordThumbnailRequestBuildTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestCacheEvaluate,
+        cacheEvaluateBegin,
+        requestTelemetryPath);
     result.cacheEntry = evaluation.entry;
     result.diagnostic = evaluation.diagnostic;
 
@@ -4594,6 +5276,8 @@ AssetThumbnailServiceResult AssetThumbnailService::GetThumbnail(
         m_thumbnailStatesByCacheKey[evaluation.entry->cacheKey] = ThumbnailState::Ready;
         result.status = AssetThumbnailServiceStatus::Fresh;
         result.imagePath = evaluation.entry->imagePath;
+        m_stableThumbnailResultsByCacheKey[evaluation.entry->cacheKey] = result;
+        m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(evaluation.entry->cacheKey);
         return result;
     }
     lookupScope.AddCounter("cacheMissCount");
@@ -4618,6 +5302,7 @@ AssetThumbnailServiceResult AssetThumbnailService::GetThumbnail(
 
     if (evaluation.entry.has_value())
     {
+        const auto queueBegin = std::chrono::steady_clock::now();
         const auto stateIterator = m_thumbnailStatesByCacheKey.find(evaluation.entry->cacheKey);
         const bool hasActiveGpuReadbackState =
             stateIterator != m_thumbnailStatesByCacheKey.end() &&
@@ -4629,6 +5314,10 @@ AssetThumbnailServiceResult AssetThumbnailService::GetThumbnail(
             if (!hasActiveGpuReadbackState)
                 m_thumbnailStatesByCacheKey[evaluation.entry->cacheKey] = ThumbnailState::Preparing;
             result.status = AssetThumbnailServiceStatus::Pending;
+            RecordThumbnailRequestBuildTelemetry(
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestQueue,
+                queueBegin,
+                requestTelemetryPath);
             return result;
         }
 
@@ -4641,6 +5330,10 @@ AssetThumbnailServiceResult AssetThumbnailService::GetThumbnail(
                 m_thumbnailStatesByCacheKey[evaluation.entry->cacheKey] = ThumbnailState::Cancelled;
                 result.status = AssetThumbnailServiceStatus::Fallback;
                 result.diagnostic = "thumbnail-generation-queue-full";
+                RecordThumbnailRequestBuildTelemetry(
+                    NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestQueue,
+                    queueBegin,
+                    requestTelemetryPath);
                 return result;
             }
             queuedIterator = m_queuedRequestsByCacheKey.emplace(evaluation.entry->cacheKey, request).first;
@@ -4657,6 +5350,10 @@ AssetThumbnailServiceResult AssetThumbnailService::GetThumbnail(
                     lookupScope.AddCounter("thumbnailQueueBackpressureCount");
                     result.status = AssetThumbnailServiceStatus::Fallback;
                     result.diagnostic = "thumbnail-generation-queue-full";
+                    RecordThumbnailRequestBuildTelemetry(
+                        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestQueue,
+                        queueBegin,
+                        requestTelemetryPath);
                     return result;
                 }
                 queuedIterator->second = request;
@@ -4665,6 +5362,10 @@ AssetThumbnailServiceResult AssetThumbnailService::GetThumbnail(
         }
         if (!hasActiveGpuReadbackState)
             m_thumbnailStatesByCacheKey[evaluation.entry->cacheKey] = ThumbnailState::Queued;
+        RecordThumbnailRequestBuildTelemetry(
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailServiceRequestQueue,
+            queueBegin,
+            requestTelemetryPath);
     }
     lookupScope.AddCounter("queueDepth", m_queuedRequestsByCacheKey.size());
     result.status = AssetThumbnailServiceStatus::Pending;
@@ -4718,7 +5419,7 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             return std::nullopt;
         }
         if (ShouldDeferBackgroundCpuThumbnailToPreviewRenderer(request.kind) &&
-            (!CanFallbackPrefabPreviewToManifestMeshes(request) ||
+            (!ShouldRetryLegacyImportedPrefabBudgetFailure(request) ||
                 m_resolvedPreviewRequestsByCacheKey.find(*cacheKey) != m_resolvedPreviewRequestsByCacheKey.end() ||
                 m_gpuDeferredHeavyPreviewCacheKeys.find(*cacheKey) != m_gpuDeferredHeavyPreviewCacheKeys.end()))
         {
@@ -4771,6 +5472,8 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             totalScope.AddCounter("thumbnailsGeneratedThisFrame");
         }
         m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+        m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*cacheKey);
+        m_gpuPreviewResourcePendingDeferredCacheKeys.erase(*cacheKey);
         return generated;
     }
 
@@ -4802,7 +5505,9 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
     totalScope.AddCounter("cpuPreparationByteBudgetRemaining", m_generationBudget.cpuPreparationByteBudget);
     totalScope.AddCounter("gpuUploadByteBudgetRemaining", m_generationBudget.gpuUploadByteBudget);
 
-    if (HasQueuedCacheKeys() && m_generationBudget.cacheWriteCountBudget == 0u)
+    if (HasQueuedCacheKeys() &&
+        m_generationBudget.cacheWriteCountBudget == 0u &&
+        !HasQueuedGpuPreviewReadback())
     {
         return std::nullopt;
     }
@@ -4818,9 +5523,9 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
     const size_t maxDeferredGpuPreviewScanPerCall = includeHeavyGpuPreviews
         ? kMaxDeferredHeavyGpuPreviewScanPerCall
         : kMaxDeferredLightGpuPreviewScanPerCall;
-    while (HasQueuedCacheKeys())
+    while (HasQueuedCacheKeys() || HasQueuedGpuPreviewReadback())
     {
-        const auto cacheKey = PopNextGpuPreviewCacheKey();
+        const auto cacheKey = PopNextGpuPreviewCacheKey(includeHeavyGpuPreviews);
         if (!cacheKey.has_value())
             break;
 
@@ -4829,8 +5534,16 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             continue;
 
         const auto request = requestIterator->second;
-        const bool pollingPendingReadback =
-            m_thumbnailStatesByCacheKey[*cacheKey] == ThumbnailState::WaitingForGpu;
+        const auto thumbnailStateIterator = m_thumbnailStatesByCacheKey.find(*cacheKey);
+        const auto thumbnailState = thumbnailStateIterator != m_thumbnailStatesByCacheKey.end()
+            ? thumbnailStateIterator->second
+            : ThumbnailState::Queued;
+        const bool pollingPendingReadback = thumbnailState == ThumbnailState::WaitingForGpu;
+        const bool pumpingPendingResources = thumbnailState == ThumbnailState::WaitingForResources;
+        RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+            std::string("dequeue-state=") + ThumbnailStateTelemetryName(thumbnailState),
+            &request,
+            m_queuedRequestsByCacheKey.size());
         if (!pollingPendingReadback &&
             !SupportsGpuThumbnailPreview(request))
         {
@@ -4907,6 +5620,86 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             continue;
         }
 
+        auto completeTerminalResourcePumpFailure = [&](const auto& pump, const auto& evaluation)
+            -> std::optional<AssetThumbnailServiceResult>
+        {
+            if (!pump.supported || pump.resourcesPending || pump.diagnostic.empty())
+                return std::nullopt;
+
+            auto result = BuildResultFromEvaluation(
+                request,
+                evaluation,
+                AssetThumbnailServiceStatus::Failed);
+            result.diagnostic = pump.diagnostic;
+            const auto metadataRequest = BuildResolvedThumbnailCacheRequest(request, previewRequest);
+            WriteThumbnailMetadataForEvaluation(
+                request,
+                evaluation,
+                AssetThumbnailCacheStatus::Failed,
+                result.diagnostic,
+                &metadataRequest);
+            m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Failed;
+            m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
+            m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+            m_gpuPreviewResourcePendingDeferredCacheKeys.erase(*cacheKey);
+            return result;
+        };
+
+        if (pumpingPendingResources)
+        {
+            const auto evaluation = EvaluateAssetThumbnailCache(request);
+            if (!evaluation.entry.has_value())
+            {
+                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Failed;
+                m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
+                m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+                RestoreDeferredCacheKeys(deferredCacheKeys);
+                return BuildResultFromEvaluation(request, evaluation, AssetThumbnailServiceStatus::Failed);
+            }
+            if (!IsThumbnailRequestStillFresh(request))
+            {
+                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Cancelled;
+                m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
+                m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+                RestoreDeferredCacheKeys(deferredCacheKeys);
+                return BuildStaleThumbnailRequestResult(request, evaluation);
+            }
+
+            const auto pumpTelemetryBegin = std::chrono::steady_clock::now();
+            const auto pump = previewRenderer.PumpResources(previewRequest);
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareResources,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - pumpTelemetryBegin),
+                0u,
+                BuildThumbnailGpuPreviewRenderTelemetryPath(previewRequest, {}) + "|pump-resources-call"
+            });
+            if (auto failed = completeTerminalResourcePumpFailure(pump, evaluation);
+                failed.has_value())
+            {
+                RestoreDeferredCacheKeys(deferredCacheKeys);
+                return failed;
+            }
+            if (pump.supported && pump.resourcesPending)
+            {
+                m_queuedRequestsByCacheKey[*cacheKey] = request;
+                if (!previewRequest.artifactPath.empty())
+                    m_resolvedPreviewRequestsByCacheKey[*cacheKey] = previewRequest;
+                EnqueueQueuedCacheKey(*cacheKey, request, true);
+                m_gpuPreviewResourcePendingDeferredCacheKeys.insert(*cacheKey);
+                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::WaitingForResources;
+                auto result = BuildResultFromEvaluation(
+                    request,
+                    evaluation,
+                    AssetThumbnailServiceStatus::Pending);
+                result.diagnostic = pump.diagnostic.empty()
+                    ? std::string("thumbnail-gpu-preview-resources-pending")
+                    : pump.diagnostic;
+                RestoreDeferredCacheKeys(deferredCacheKeys);
+                return result;
+            }
+        }
+
         if (!pollingPendingReadback &&
             (m_generationBudget.previewRenderCountBudget == 0u ||
                 m_generationBudget.readbackCountBudget == 0u))
@@ -4979,13 +5772,65 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             return BuildCancelledThumbnailRequestResult(request, evaluation);
         }
 
+        if (!pollingPendingReadback &&
+            !pumpingPendingResources &&
+            request.kind == AssetThumbnailKind::PrefabPreview)
+        {
+            const auto pumpTelemetryBegin = std::chrono::steady_clock::now();
+            const auto pump = previewRenderer.PumpResources(previewRequest);
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareResources,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - pumpTelemetryBegin),
+                0u,
+                BuildThumbnailGpuPreviewRenderTelemetryPath(previewRequest, {}) + "|pump-resources-call"
+            });
+            if (auto failed = completeTerminalResourcePumpFailure(pump, evaluation);
+                failed.has_value())
+            {
+                RestoreDeferredCacheKeys(deferredCacheKeys);
+                return failed;
+            }
+            if (pump.supported && pump.resourcesPending)
+            {
+                m_queuedRequestsByCacheKey[*cacheKey] = request;
+                if (!previewRequest.artifactPath.empty())
+                    m_resolvedPreviewRequestsByCacheKey[*cacheKey] = previewRequest;
+                EnqueueQueuedCacheKey(*cacheKey, request, true);
+                m_gpuPreviewResourcePendingDeferredCacheKeys.insert(*cacheKey);
+                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::WaitingForResources;
+                auto result = BuildResultFromEvaluation(
+                    request,
+                    evaluation,
+                    AssetThumbnailServiceStatus::Pending);
+                result.diagnostic = pump.diagnostic.empty()
+                    ? std::string("thumbnail-gpu-preview-resources-pending")
+                    : pump.diagnostic;
+                RestoreDeferredCacheKeys(deferredCacheKeys);
+                return result;
+            }
+        }
+
         NLS::Editor::Assets::EditorThumbnailPreviewResult preview;
         {
             NLS::Base::Profiling::PerformanceStageScope previewScope(
                 NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
                 "PreparePreviewAsset",
                 NLS::Base::Profiling::PerformanceStageThread::Main);
+            const auto previewTelemetryBegin = std::chrono::steady_clock::now();
             preview = previewRenderer.Render(previewRequest);
+            if (!preview.completedPendingReadback &&
+                !(pollingPendingReadback &&
+                    IsPendingThumbnailPreviewReadbackDiagnostic(preview.diagnostic)))
+            {
+                NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                    NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender,
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - previewTelemetryBegin),
+                    preview.rgbaPixels.size(),
+                    BuildThumbnailGpuPreviewRenderTelemetryPath(previewRequest, preview)
+                });
+            }
         }
         if (!pollingPendingReadback)
         {
@@ -4995,42 +5840,15 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
                 m_hasExplicitGenerationBudget);
         }
         if (!pollingPendingReadback &&
-            m_generationBudget.previewRenderCountBudget > 0u &&
-            m_generationBudget.previewRenderCountBudget != SIZE_MAX &&
             m_hasExplicitGenerationBudget)
         {
-            --m_generationBudget.previewRenderCountBudget;
+            ConsumeThumbnailCountBudget(m_generationBudget.previewRenderCountBudget, true);
         }
         if (preview.rgbaPixels.empty() || preview.width == 0u || preview.height == 0u)
         {
             const auto diagnostic = preview.diagnostic.empty()
                 ? std::string("thumbnail-gpu-preview-generation-failed")
                 : preview.diagnostic;
-            if (diagnostic == kPrefabPreviewBudgetExceededDiagnostic &&
-                CanFallbackPrefabPreviewToManifestMeshes(previewRequest))
-            {
-                RestoreDeferredCacheKeys(deferredCacheKeys);
-                const auto fallback = TryGenerateThumbnailForRequest(request, m_generationCancelToken);
-                if (fallback.status == AssetThumbnailServiceStatus::Fresh)
-                {
-                    ConsumeThumbnailCacheWriteBudgetForFreshResult(
-                        m_generationBudget,
-                        m_hasExplicitGenerationBudget);
-                    totalScope.AddCounter("thumbnailsGeneratedThisFrame");
-                    m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Ready;
-                    m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
-                    m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
-                }
-                else
-                {
-                    m_thumbnailStatesByCacheKey[*cacheKey] = fallback.status == AssetThumbnailServiceStatus::Pending
-                        ? ThumbnailState::Queued
-                        : ThumbnailState::Failed;
-                    if (fallback.status != AssetThumbnailServiceStatus::Pending)
-                        m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
-                }
-                return fallback;
-            }
             if (diagnostic == kPrefabPreviewBudgetExceededDiagnostic)
             {
                 auto result = BuildResultFromEvaluation(
@@ -5056,7 +5874,7 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
                 request,
                 evaluation,
                 retryableGpuFailure
-                    ? AssetThumbnailServiceStatus::Fallback
+                    ? AssetThumbnailServiceStatus::Pending
                     : AssetThumbnailServiceStatus::Failed);
             result.diagnostic = diagnostic;
             if (!retryableGpuFailure)
@@ -5073,22 +5891,44 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             {
                 if (!pollingPendingReadback &&
                     IsPendingThumbnailPreviewReadbackDiagnostic(diagnostic) &&
-                    m_generationBudget.readbackCountBudget > 0u &&
-                    m_generationBudget.readbackCountBudget != SIZE_MAX &&
                     m_hasExplicitGenerationBudget)
                 {
-                    --m_generationBudget.readbackCountBudget;
+                    ConsumeThumbnailCountBudget(m_generationBudget.readbackCountBudget, true);
                 }
                 m_queuedRequestsByCacheKey[*cacheKey] = request;
                 if (!previewRequest.artifactPath.empty())
                     m_resolvedPreviewRequestsByCacheKey[*cacheKey] = previewRequest;
-                EnqueueQueuedCacheKey(*cacheKey, request);
+                const bool resourcesPending = IsPendingThumbnailPreviewResourcesDiagnostic(diagnostic);
+                EnqueueQueuedCacheKey(*cacheKey, request, resourcesPending);
+                if (resourcesPending)
+                    m_gpuPreviewResourcePendingDeferredCacheKeys.insert(*cacheKey);
+                RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                    std::string("requeue-retryable=") + diagnostic,
+                    &request,
+                    m_queuedRequestsByCacheKey.size());
             }
+            const bool pendingReadbackFailure = IsPendingThumbnailPreviewReadbackDiagnostic(diagnostic);
             m_thumbnailStatesByCacheKey[*cacheKey] = retryableGpuFailure
-                ? (IsPendingThumbnailPreviewReadbackDiagnostic(diagnostic)
+                ? (pendingReadbackFailure
                     ? ThumbnailState::WaitingForGpu
-                    : ThumbnailState::Queued)
+                    : (IsPendingThumbnailPreviewResourcesDiagnostic(diagnostic)
+                        ? ThumbnailState::WaitingForResources
+                        : ThumbnailState::Queued))
                 : ThumbnailState::Failed;
+            if (pendingReadbackFailure)
+            {
+                m_gpuPreviewReadbackPendingCacheKeys.insert(*cacheKey);
+                m_gpuPreviewReadbackPendingRequestsByCacheKey[*cacheKey] = request;
+                RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                    "track-readback-pending",
+                    &request,
+                    m_gpuPreviewReadbackPendingCacheKeys.size());
+            }
+            else
+            {
+                m_gpuPreviewReadbackPendingCacheKeys.erase(*cacheKey);
+                m_gpuPreviewReadbackPendingRequestsByCacheKey.erase(*cacheKey);
+            }
             if (!retryableGpuFailure)
             {
                 m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
@@ -5097,28 +5937,101 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             RestoreDeferredCacheKeys(deferredCacheKeys);
             return result;
         }
-        if (IsGpuPreviewClearFrame(preview.rgbaPixels, preview.width, preview.height))
+        const auto clearFrameDisposition = EvaluateGpuPreviewClearFrameDisposition(
+            request,
+            preview.rgbaPixels,
+            preview.width,
+            preview.height,
+            preview.submittedSceneDrawCount);
+        const auto recordGpuPreviewTerminalDiagnostic = [&](const std::string& diagnostic)
         {
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender,
+                std::chrono::microseconds(0),
+                preview.rgbaPixels.size(),
+                BuildThumbnailGpuPreviewRenderTelemetryPath(
+                    previewRequest,
+                    preview,
+                    diagnostic)
+            });
+        };
+        if (clearFrameDisposition == GpuPreviewClearFrameDisposition::GenerateCpuFallback)
+        {
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                "completed-readback-disposition=cpu-fallback",
+                &request,
+                m_inFlightThumbnails.size());
+            recordGpuPreviewTerminalDiagnostic("thumbnail-gpu-preview-cpu-fallback");
+            RestoreDeferredCacheKeys(deferredCacheKeys);
+            const auto fallback = TryGenerateThumbnailForRequest(request, m_generationCancelToken);
+            if (fallback.status == AssetThumbnailServiceStatus::Fresh)
+            {
+                ConsumeThumbnailCacheWriteBudgetForFreshResult(
+                    m_generationBudget,
+                    m_hasExplicitGenerationBudget);
+                totalScope.AddCounter("thumbnailsGeneratedThisFrame");
+                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Ready;
+                m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
+                m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+                m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*cacheKey);
+            }
+            else
+            {
+                m_thumbnailStatesByCacheKey[*cacheKey] = fallback.status == AssetThumbnailServiceStatus::Pending
+                    ? ThumbnailState::Queued
+                    : ThumbnailState::Failed;
+                if (fallback.status != AssetThumbnailServiceStatus::Pending)
+                {
+                    m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
+                    m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+                    m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*cacheKey);
+                }
+            }
+            return fallback;
+        }
+        if (clearFrameDisposition == GpuPreviewClearFrameDisposition::DeferEmptyFrame)
+        {
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                "completed-readback-disposition=empty-frame",
+                &request,
+                m_inFlightThumbnails.size());
+            recordGpuPreviewTerminalDiagnostic("thumbnail-gpu-preview-empty-frame");
             auto result = BuildResultFromEvaluation(
                 request,
                 evaluation,
-                AssetThumbnailServiceStatus::Failed);
+                AssetThumbnailServiceStatus::Pending);
             result.diagnostic = "thumbnail-gpu-preview-empty-frame";
-            const auto metadataRequest = BuildResolvedThumbnailCacheRequest(request, previewRequest);
-            WriteThumbnailMetadataForEvaluation(
-                request,
-                evaluation,
-                AssetThumbnailCacheStatus::Failed,
-                result.diagnostic,
-                &metadataRequest);
-            m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Failed;
+            m_gpuPreviewEmptyFrameDeferredCacheKeys.insert(*cacheKey);
+            if (!previewRequest.artifactPath.empty())
+                m_resolvedPreviewRequestsByCacheKey[*cacheKey] = previewRequest;
+            m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Queued;
+            RestoreDeferredCacheKeys(deferredCacheKeys);
+            return result;
+        }
+        if (clearFrameDisposition == GpuPreviewClearFrameDisposition::FailEmptyFrame)
+        {
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                "completed-readback-disposition=empty-frame",
+                &request,
+                m_inFlightThumbnails.size());
+            recordGpuPreviewTerminalDiagnostic("thumbnail-gpu-preview-empty-frame");
+            auto result = BuildGpuPreviewEmptyFrameResult(request, evaluation, previewRequest);
+            m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*cacheKey);
             m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
             m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+            m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Failed;
             RestoreDeferredCacheKeys(deferredCacheKeys);
             return result;
         }
 
         RestoreDeferredCacheKeys(deferredCacheKeys);
+        if (preview.completedPendingReadback)
+        {
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                "completed-readback-disposition=cache-write",
+                &request,
+                m_inFlightThumbnails.size());
+        }
         const auto metadataRequest = BuildResolvedThumbnailCacheRequest(request, previewRequest);
         if (!m_generationCancelToken)
             m_generationCancelToken = std::make_shared<AssetThumbnailGenerationCancelToken>();
@@ -5132,11 +6045,9 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
         try
         {
             if (!pollingPendingReadback &&
-                m_generationBudget.readbackCountBudget > 0u &&
-                m_generationBudget.readbackCountBudget != SIZE_MAX &&
                 m_hasExplicitGenerationBudget)
             {
-                --m_generationBudget.readbackCountBudget;
+                ConsumeThumbnailCountBudget(m_generationBudget.readbackCountBudget, true);
             }
             if (!pollingPendingReadback)
             {
@@ -5165,11 +6076,20 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
                             "thumbnail-gpu-preview-generation-failed",
                             cancelToken,
                             &metadataRequest);
-                    })
-            });
+                    }),
+		                request,
+		                false
+		            });
             m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Readback;
+            m_gpuPreviewReadbackPendingCacheKeys.erase(*cacheKey);
+            m_gpuPreviewReadbackPendingRequestsByCacheKey.erase(*cacheKey);
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                "cache-write-start",
+                &request,
+                m_inFlightThumbnails.size());
             m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
             m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+            m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*cacheKey);
         }
         catch (...)
         {
@@ -5185,6 +6105,7 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Failed;
             m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
             m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+            m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*cacheKey);
             return result;
         }
         AssetThumbnailServiceResult pending = BuildResultFromEvaluation(
@@ -5242,7 +6163,15 @@ bool AssetThumbnailService::StartNextThumbnailGeneration(IEditorThumbnailPreview
         ++iterator;
     }
 
-    if (HasCurrentGenerationInFlightRequest() ||
+    const auto currentGenerationInFlightCount = CountCurrentGenerationInFlightRequests();
+    const auto obsoleteGenerationInFlightCount =
+        m_inFlightThumbnails.size() - currentGenerationInFlightCount;
+    const auto maxCurrentGenerationInFlightCount =
+        m_hasExplicitGenerationBudget && m_generationBudget.cacheWriteCountBudget != SIZE_MAX
+            ? (std::min)(kMaxCurrentThumbnailGenerationInFlightRequests, m_generationBudget.cacheWriteCountBudget)
+            : kMaxCurrentThumbnailGenerationInFlightRequests;
+    if (currentGenerationInFlightCount >= maxCurrentGenerationInFlightCount ||
+        obsoleteGenerationInFlightCount > kMaxObsoleteThumbnailGenerationInFlightRequests ||
         m_inFlightThumbnails.size() >= kMaxThumbnailGenerationTotalInFlightSlots)
     {
         return false;
@@ -5340,8 +6269,10 @@ bool AssetThumbnailService::StartNextThumbnailGeneration(IEditorThumbnailPreview
                         ScopedThumbnailGenerationStageThread backgroundStageThread(
                             PerformanceStageThread::Background);
                         return TryGenerateThumbnailForRequest(request, cancelToken);
-                    })
-            });
+                    }),
+	                request,
+	                false
+	            });
         }
         catch (...)
         {
@@ -5396,17 +6327,60 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::ConsumeComplet
         const bool currentGeneration = iterator->generation == m_generationSerial;
         if (result.status == AssetThumbnailServiceStatus::Fresh)
         {
-            ConsumeThumbnailCacheWriteBudgetForFreshResult(
-                m_generationBudget,
-                m_hasExplicitGenerationBudget);
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                "cache-write-complete=fresh",
+                &iterator->request,
+                m_inFlightThumbnails.size());
+            if (currentGeneration)
+            {
+                ConsumeThumbnailCacheWriteBudgetForFreshResult(
+                    m_generationBudget,
+                    m_hasExplicitGenerationBudget);
+            }
             m_thumbnailStatesByCacheKey[iterator->cacheKey] = ThumbnailState::Ready;
+            m_gpuPreviewReadbackPendingCacheKeys.erase(iterator->cacheKey);
+            m_gpuPreviewReadbackPendingRequestsByCacheKey.erase(iterator->cacheKey);
         }
         else if (result.status == AssetThumbnailServiceStatus::Pending)
+        {
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                std::string("cache-write-complete=pending|diag=") + result.diagnostic,
+                &iterator->request,
+                m_inFlightThumbnails.size());
             m_thumbnailStatesByCacheKey[iterator->cacheKey] = ThumbnailState::Queued;
+            if (iterator->requeueOnPending && currentGeneration)
+            {
+                m_queuedRequestsByCacheKey[iterator->cacheKey] = iterator->request;
+                EnqueueQueuedCacheKey(iterator->cacheKey, iterator->request);
+                if (IsPendingThumbnailPreviewReadbackDiagnostic(result.diagnostic))
+                {
+                    m_thumbnailStatesByCacheKey[iterator->cacheKey] = ThumbnailState::WaitingForGpu;
+                    m_gpuPreviewReadbackPendingCacheKeys.insert(iterator->cacheKey);
+                    m_gpuPreviewReadbackPendingRequestsByCacheKey[iterator->cacheKey] = iterator->request;
+                }
+            }
+        }
         else if (currentGeneration)
+        {
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                std::string("cache-write-complete=failed|diag=") + result.diagnostic,
+                &iterator->request,
+                m_inFlightThumbnails.size());
             m_thumbnailStatesByCacheKey[iterator->cacheKey] = ThumbnailState::Failed;
+            m_gpuPreviewReadbackPendingCacheKeys.erase(iterator->cacheKey);
+            m_gpuPreviewReadbackPendingRequestsByCacheKey.erase(iterator->cacheKey);
+            if (iterator->requeueOnPending)
+            {
+                m_resolvedPreviewRequestsByCacheKey.erase(iterator->cacheKey);
+                m_gpuDeferredHeavyPreviewCacheKeys.erase(iterator->cacheKey);
+            }
+        }
         else
+        {
             m_thumbnailStatesByCacheKey[iterator->cacheKey] = ThumbnailState::Cancelled;
+            m_gpuPreviewReadbackPendingCacheKeys.erase(iterator->cacheKey);
+            m_gpuPreviewReadbackPendingRequestsByCacheKey.erase(iterator->cacheKey);
+        }
         iterator = m_inFlightThumbnails.erase(iterator);
         if (currentGeneration)
             return result;
@@ -5419,32 +6393,45 @@ bool AssetThumbnailService::HasInFlightRequest() const
     return !m_inFlightThumbnails.empty();
 }
 
-bool AssetThumbnailService::HasCurrentGenerationInFlightRequest() const
+size_t AssetThumbnailService::CountCurrentGenerationInFlightRequests() const
 {
-    return std::any_of(
+    return static_cast<size_t>(std::count_if(
         m_inFlightThumbnails.begin(),
         m_inFlightThumbnails.end(),
         [this](const InFlightThumbnailRequest& request)
         {
             return request.generation == m_generationSerial &&
                 request.future.valid();
-        });
+        }));
 }
 
 size_t AssetThumbnailService::GetQueuedRequestCount() const
 {
-    return m_queuedRequestsByCacheKey.size();
+    size_t queuedRequestCount = m_queuedRequestsByCacheKey.size();
+    for (const auto& cacheKey : m_gpuPreviewReadbackPendingCacheKeys)
+    {
+        if (m_queuedRequestsByCacheKey.find(cacheKey) != m_queuedRequestsByCacheKey.end())
+            continue;
+        const auto stateIterator = m_thumbnailStatesByCacheKey.find(cacheKey);
+        if (stateIterator != m_thumbnailStatesByCacheKey.end() &&
+            stateIterator->second == ThumbnailState::WaitingForGpu)
+        {
+            ++queuedRequestCount;
+        }
+    }
+    return queuedRequestCount;
 }
 
 ThumbnailState AssetThumbnailService::GetThumbnailState(const AssetThumbnailRequest& request) const
 {
+    const auto cacheKey = BuildAssetThumbnailCacheKey(request);
+    const auto found = m_thumbnailStatesByCacheKey.find(cacheKey);
+    if (found != m_thumbnailStatesByCacheKey.end())
+        return found->second;
+
     const auto evaluation = EvaluateAssetThumbnailCache(request, AssetThumbnailCacheIntegrityMode::Fast);
     if (evaluation.entry.has_value())
     {
-        const auto found = m_thumbnailStatesByCacheKey.find(evaluation.entry->cacheKey);
-        if (found != m_thumbnailStatesByCacheKey.end())
-            return found->second;
-
         if (evaluation.status == AssetThumbnailCacheStatus::Fresh)
             return ThumbnailState::Ready;
         if (evaluation.status == AssetThumbnailCacheStatus::Failed)
@@ -5474,6 +6461,30 @@ bool AssetThumbnailService::HasQueuedCacheKeys() const
         !m_queuedCacheKeys.empty();
 }
 
+bool AssetThumbnailService::HasQueuedGpuPreviewReadback() const
+{
+    for (const auto& cacheKey : m_gpuPreviewReadbackPendingCacheKeys)
+    {
+        const auto stateIterator = m_thumbnailStatesByCacheKey.find(cacheKey);
+        if (stateIterator != m_thumbnailStatesByCacheKey.end() &&
+            stateIterator->second == ThumbnailState::WaitingForGpu)
+        {
+            return true;
+        }
+    }
+    for (const auto& [cacheKey, request] : m_queuedRequestsByCacheKey)
+    {
+        (void)request;
+        const auto stateIterator = m_thumbnailStatesByCacheKey.find(cacheKey);
+        if (stateIterator != m_thumbnailStatesByCacheKey.end() &&
+            stateIterator->second == ThumbnailState::WaitingForGpu)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool AssetThumbnailService::EnsureQueuedRequestCapacityFor(
     const std::string& cacheKey,
     const AssetThumbnailRequest& request)
@@ -5500,6 +6511,13 @@ bool AssetThumbnailService::DropQueuedRequestForBackpressure(
     {
         if (cacheKey == protectedCacheKey)
             continue;
+        const auto stateIterator = m_thumbnailStatesByCacheKey.find(cacheKey);
+        if (stateIterator != m_thumbnailStatesByCacheKey.end() &&
+            (stateIterator->second == ThumbnailState::WaitingForGpu ||
+                stateIterator->second == ThumbnailState::Readback))
+        {
+            continue;
+        }
         const auto rank = ThumbnailRequestPriorityRank(request.priority);
         if (rank > maxPriorityRank)
             continue;
@@ -5519,50 +6537,58 @@ bool AssetThumbnailService::DropQueuedRequestForBackpressure(
     m_queuedRequestsByCacheKey.erase(*victim);
     m_resolvedPreviewRequestsByCacheKey.erase(*victim);
     m_gpuDeferredHeavyPreviewCacheKeys.erase(*victim);
+    m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*victim);
+    m_gpuPreviewReadbackPendingCacheKeys.erase(*victim);
+    m_gpuPreviewReadbackPendingRequestsByCacheKey.erase(*victim);
     m_thumbnailStatesByCacheKey[*victim] = ThumbnailState::Cancelled;
+    m_gpuPreviewResourcePendingDeferredCacheKeys.erase(*victim);
     return true;
+}
+
+bool AssetThumbnailService::HasDeferredGpuPreviewEmptyFrame(const std::string& cacheKey) const
+{
+    return m_gpuPreviewEmptyFrameDeferredCacheKeys.find(cacheKey) !=
+        m_gpuPreviewEmptyFrameDeferredCacheKeys.end();
 }
 
 void AssetThumbnailService::EnqueueQueuedCacheKey(
     const std::string& cacheKey,
-    const AssetThumbnailRequest& request)
+    const AssetThumbnailRequest& request,
+    const bool atFront)
 {
+    m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(cacheKey);
+    m_gpuPreviewResourcePendingDeferredCacheKeys.erase(cacheKey);
     RemoveQueuedCacheKeyOccurrences(cacheKey);
+    const auto enqueue = [atFront, &cacheKey](auto& queue)
+    {
+        if (atFront)
+            queue.push_front(cacheKey);
+        else
+            queue.push_back(cacheKey);
+    };
     switch (request.priority)
     {
     case ThumbnailRequestPriority::Visible:
-        m_queuedVisibleCacheKeys.push_back(cacheKey);
+        enqueue(m_queuedVisibleCacheKeys);
         return;
     case ThumbnailRequestPriority::Inspector:
-        m_queuedInspectorCacheKeys.push_back(cacheKey);
+        enqueue(m_queuedInspectorCacheKeys);
         return;
     case ThumbnailRequestPriority::Prefetch:
-        m_queuedPrefetchCacheKeys.push_back(cacheKey);
+        enqueue(m_queuedPrefetchCacheKeys);
         return;
     case ThumbnailRequestPriority::Background:
         break;
     }
 
     if (ShouldPrioritizeThumbnailRequest(request))
-        m_queuedPriorityCacheKeys.push_back(cacheKey);
+        enqueue(m_queuedPriorityCacheKeys);
     else
-        m_queuedCacheKeys.push_back(cacheKey);
+        enqueue(m_queuedCacheKeys);
 }
 
 std::optional<std::string> AssetThumbnailService::PopNextQueuedCacheKey()
 {
-    auto popExplicitPriority = [this](std::deque<std::string>& queue)
-        -> std::optional<std::string>
-    {
-        if (queue.empty())
-            return std::nullopt;
-
-        auto cacheKey = queue.front();
-        queue.pop_front();
-        ++m_priorityThumbnailDequeueStreak;
-        return cacheKey;
-    };
-
     const bool hasExplicitPriority =
         !m_queuedVisibleCacheKeys.empty() ||
         !m_queuedInspectorCacheKeys.empty() ||
@@ -5571,17 +6597,17 @@ std::optional<std::string> AssetThumbnailService::PopNextQueuedCacheKey()
         (m_queuedCacheKeys.empty() ||
             m_priorityThumbnailDequeueStreak < kMaxPriorityThumbnailDequeueBurst))
     {
-        if (auto cacheKey = popExplicitPriority(m_queuedVisibleCacheKeys);
+        if (auto cacheKey = PopNextQueuedCacheKeyFrom(m_queuedVisibleCacheKeys, m_priorityThumbnailDequeueStreak, true);
             cacheKey.has_value())
         {
             return cacheKey;
         }
-        if (auto cacheKey = popExplicitPriority(m_queuedInspectorCacheKeys);
+        if (auto cacheKey = PopNextQueuedCacheKeyFrom(m_queuedInspectorCacheKeys, m_priorityThumbnailDequeueStreak, true);
             cacheKey.has_value())
         {
             return cacheKey;
         }
-        if (auto cacheKey = popExplicitPriority(m_queuedPrefetchCacheKeys);
+        if (auto cacheKey = PopNextQueuedCacheKeyFrom(m_queuedPrefetchCacheKeys, m_priorityThumbnailDequeueStreak, true);
             cacheKey.has_value())
         {
             return cacheKey;
@@ -5600,23 +6626,22 @@ std::optional<std::string> AssetThumbnailService::PopNextQueuedCacheKey()
 
     if (!m_queuedCacheKeys.empty())
     {
-        auto cacheKey = m_queuedCacheKeys.front();
-        m_queuedCacheKeys.pop_front();
+        auto cacheKey = PopNextQueuedCacheKeyFrom(m_queuedCacheKeys, m_priorityThumbnailDequeueStreak, false);
         m_priorityThumbnailDequeueStreak = 0u;
         return cacheKey;
     }
 
-    if (auto cacheKey = popExplicitPriority(m_queuedVisibleCacheKeys);
+    if (auto cacheKey = PopNextQueuedCacheKeyFrom(m_queuedVisibleCacheKeys, m_priorityThumbnailDequeueStreak, true);
         cacheKey.has_value())
     {
         return cacheKey;
     }
-    if (auto cacheKey = popExplicitPriority(m_queuedInspectorCacheKeys);
+    if (auto cacheKey = PopNextQueuedCacheKeyFrom(m_queuedInspectorCacheKeys, m_priorityThumbnailDequeueStreak, true);
         cacheKey.has_value())
     {
         return cacheKey;
     }
-    if (auto cacheKey = popExplicitPriority(m_queuedPrefetchCacheKeys);
+    if (auto cacheKey = PopNextQueuedCacheKeyFrom(m_queuedPrefetchCacheKeys, m_priorityThumbnailDequeueStreak, true);
         cacheKey.has_value())
     {
         return cacheKey;
@@ -5624,10 +6649,7 @@ std::optional<std::string> AssetThumbnailService::PopNextQueuedCacheKey()
 
     if (!m_queuedPriorityCacheKeys.empty())
     {
-        auto cacheKey = m_queuedPriorityCacheKeys.front();
-        m_queuedPriorityCacheKeys.pop_front();
-        ++m_priorityThumbnailDequeueStreak;
-        return cacheKey;
+        return PopNextQueuedCacheKeyFrom(m_queuedPriorityCacheKeys, m_priorityThumbnailDequeueStreak, true);
     }
 
     return std::nullopt;
@@ -5649,9 +6671,20 @@ void AssetThumbnailService::RemoveQueuedCacheKeyOccurrences(const std::string& c
     removeFromQueue(m_queuedCacheKeys);
 }
 
-std::optional<std::string> AssetThumbnailService::PopNextGpuPreviewCacheKey()
+std::optional<std::string> AssetThumbnailService::PopNextGpuPreviewCacheKey(
+    const bool includeHeavyGpuPreviews)
 {
-    auto popPendingReadback = [this](std::deque<std::string>& queue)
+    auto noteDequeuedCacheKey = [this](const bool countTowardsPriorityBurst)
+    {
+        if (countTowardsPriorityBurst)
+            ++m_priorityThumbnailDequeueStreak;
+        else
+            m_priorityThumbnailDequeueStreak = 0u;
+    };
+
+    auto popPendingReadback = [this, &noteDequeuedCacheKey](
+        std::deque<std::string>& queue,
+        const bool countTowardsPriorityBurst)
         -> std::optional<std::string>
     {
         for (auto iterator = queue.begin(); iterator != queue.end(); ++iterator)
@@ -5670,48 +6703,188 @@ std::optional<std::string> AssetThumbnailService::PopNextGpuPreviewCacheKey()
             auto cacheKey = *iterator;
             queue.erase(iterator);
             RemoveQueuedCacheKeyOccurrences(cacheKey);
-            ++m_priorityThumbnailDequeueStreak;
+            noteDequeuedCacheKey(countTowardsPriorityBurst);
             return cacheKey;
         }
         return std::nullopt;
     };
 
-    if (auto cacheKey = popPendingReadback(m_queuedVisibleCacheKeys);
+    auto popGpuPreview = [this, includeHeavyGpuPreviews, &noteDequeuedCacheKey](
+        std::deque<std::string>& queue,
+        const bool countTowardsPriorityBurst)
+        -> std::optional<std::string>
+    {
+        for (auto iterator = queue.begin(); iterator != queue.end(); ++iterator)
+        {
+            const auto requestIterator = m_queuedRequestsByCacheKey.find(*iterator);
+            if (requestIterator == m_queuedRequestsByCacheKey.end())
+                continue;
+
+            const auto& request = requestIterator->second;
+            if (!SupportsGpuThumbnailPreview(request))
+                continue;
+            const auto stateIterator = m_thumbnailStatesByCacheKey.find(*iterator);
+            if (stateIterator != m_thumbnailStatesByCacheKey.end() &&
+                stateIterator->second == ThumbnailState::WaitingForResources)
+            {
+                if (m_gpuPreviewResourcePendingDeferredCacheKeys.erase(*iterator) != 0u)
+                {
+                    const auto cacheKey = *iterator;
+                    queue.erase(iterator);
+                    queue.push_front(cacheKey);
+                    return std::nullopt;
+                }
+            }
+            if (!includeHeavyGpuPreviews &&
+                IsHeavyGpuThumbnailPreview(request.kind))
+            {
+                m_gpuDeferredHeavyPreviewCacheKeys.insert(*iterator);
+                continue;
+            }
+
+            auto cacheKey = *iterator;
+            queue.erase(iterator);
+            RemoveQueuedCacheKeyOccurrences(cacheKey);
+            noteDequeuedCacheKey(countTowardsPriorityBurst);
+            return cacheKey;
+        }
+        return std::nullopt;
+    };
+
+    for (auto iterator = m_gpuPreviewReadbackPendingCacheKeys.begin();
+        iterator != m_gpuPreviewReadbackPendingCacheKeys.end();)
+    {
+        const auto cacheKey = *iterator;
+        auto requestIterator = m_queuedRequestsByCacheKey.find(cacheKey);
+        const auto stateIterator = m_thumbnailStatesByCacheKey.find(cacheKey);
+        if (stateIterator != m_thumbnailStatesByCacheKey.end() &&
+            stateIterator->second == ThumbnailState::WaitingForGpu)
+        {
+            if (requestIterator == m_queuedRequestsByCacheKey.end())
+            {
+                const auto pendingRequestIterator =
+                    m_gpuPreviewReadbackPendingRequestsByCacheKey.find(cacheKey);
+                if (pendingRequestIterator != m_gpuPreviewReadbackPendingRequestsByCacheKey.end() &&
+                    EnsureQueuedRequestCapacityFor(cacheKey, pendingRequestIterator->second))
+                {
+                    requestIterator = m_queuedRequestsByCacheKey.emplace(
+                        cacheKey,
+                        pendingRequestIterator->second).first;
+                    EnqueueQueuedCacheKey(cacheKey, requestIterator->second);
+                    RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                        "restore-readback-pending-request",
+                        &requestIterator->second,
+                        m_queuedRequestsByCacheKey.size());
+                }
+            }
+            if (requestIterator == m_queuedRequestsByCacheKey.end())
+            {
+                RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                    "readback-pending-missing-request",
+                    nullptr,
+                    m_gpuPreviewReadbackPendingCacheKeys.size());
+                ++iterator;
+                continue;
+            }
+            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+                "dequeue-readback-pending",
+                &requestIterator->second,
+                m_gpuPreviewReadbackPendingCacheKeys.size());
+            iterator = m_gpuPreviewReadbackPendingCacheKeys.erase(iterator);
+            RemoveQueuedCacheKeyOccurrences(cacheKey);
+            noteDequeuedCacheKey(true);
+            return cacheKey;
+        }
+        RecordThumbnailGpuPreviewQueueDecisionTelemetry(
+            "readback-pending-stale-state",
+            nullptr,
+            m_gpuPreviewReadbackPendingCacheKeys.size());
+        iterator = m_gpuPreviewReadbackPendingCacheKeys.erase(iterator);
+        m_gpuPreviewReadbackPendingRequestsByCacheKey.erase(cacheKey);
+    }
+
+    if (auto cacheKey = popPendingReadback(m_queuedVisibleCacheKeys, true);
         cacheKey.has_value())
     {
         return cacheKey;
     }
-    if (auto cacheKey = popPendingReadback(m_queuedInspectorCacheKeys);
+    if (auto cacheKey = popPendingReadback(m_queuedInspectorCacheKeys, true);
         cacheKey.has_value())
     {
         return cacheKey;
     }
-    if (auto cacheKey = popPendingReadback(m_queuedPrefetchCacheKeys);
+    if (auto cacheKey = popPendingReadback(m_queuedPrefetchCacheKeys, true);
         cacheKey.has_value())
     {
         return cacheKey;
     }
-    if (auto cacheKey = popPendingReadback(m_queuedPriorityCacheKeys);
+    if (auto cacheKey = popPendingReadback(m_queuedPriorityCacheKeys, true);
         cacheKey.has_value())
     {
         return cacheKey;
     }
-    if (auto cacheKey = popPendingReadback(m_queuedCacheKeys);
+    if (auto cacheKey = popPendingReadback(m_queuedCacheKeys, false);
         cacheKey.has_value())
     {
         return cacheKey;
     }
 
-    return PopNextQueuedCacheKey();
+    if (auto cacheKey = popGpuPreview(m_queuedVisibleCacheKeys, true);
+        cacheKey.has_value())
+    {
+        return cacheKey;
+    }
+    if (auto cacheKey = popGpuPreview(m_queuedInspectorCacheKeys, true);
+        cacheKey.has_value())
+    {
+        return cacheKey;
+    }
+    if (auto cacheKey = popGpuPreview(m_queuedPrefetchCacheKeys, true);
+        cacheKey.has_value())
+    {
+        return cacheKey;
+    }
+    if (auto cacheKey = popGpuPreview(m_queuedPriorityCacheKeys, true);
+        cacheKey.has_value())
+    {
+        return cacheKey;
+    }
+    if (auto cacheKey = popGpuPreview(m_queuedCacheKeys, false);
+        cacheKey.has_value())
+    {
+        return cacheKey;
+    }
+
+    return std::nullopt;
 }
 
 void AssetThumbnailService::RestoreDeferredCacheKeys(std::vector<std::string>& deferredCacheKeys)
 {
-    for (const auto& deferred : deferredCacheKeys)
+    for (auto iterator = deferredCacheKeys.rbegin(); iterator != deferredCacheKeys.rend(); ++iterator)
     {
+        const auto& deferred = *iterator;
         const auto found = m_queuedRequestsByCacheKey.find(deferred);
-        if (found != m_queuedRequestsByCacheKey.end())
-            EnqueueQueuedCacheKey(deferred, found->second);
+        if (found == m_queuedRequestsByCacheKey.end())
+            continue;
+
+        switch (found->second.priority)
+        {
+        case ThumbnailRequestPriority::Visible:
+            RestoreDeferredCacheKeyToFront(m_queuedVisibleCacheKeys, deferred);
+            break;
+        case ThumbnailRequestPriority::Inspector:
+            RestoreDeferredCacheKeyToFront(m_queuedInspectorCacheKeys, deferred);
+            break;
+        case ThumbnailRequestPriority::Prefetch:
+            RestoreDeferredCacheKeyToFront(m_queuedPrefetchCacheKeys, deferred);
+            break;
+        case ThumbnailRequestPriority::Background:
+            if (ShouldPrioritizeThumbnailRequest(found->second))
+                RestoreDeferredCacheKeyToFront(m_queuedPriorityCacheKeys, deferred);
+            else
+                RestoreDeferredCacheKeyToFront(m_queuedCacheKeys, deferred);
+            break;
+        }
     }
     deferredCacheKeys.clear();
 }
@@ -5746,10 +6919,37 @@ void AssetThumbnailService::ClearPendingQueuedRequestsWithDiagnostics()
 
 void AssetThumbnailService::ClearPendingQueuedRequests()
 {
+    auto isActiveGpuReadbackCacheKey = [this](const std::string& cacheKey)
+    {
+        const auto stateIterator = m_thumbnailStatesByCacheKey.find(cacheKey);
+        return stateIterator != m_thumbnailStatesByCacheKey.end() &&
+            (stateIterator->second == ThumbnailState::WaitingForGpu ||
+                stateIterator->second == ThumbnailState::Readback);
+    };
+
+    std::vector<std::pair<std::string, AssetThumbnailRequest>> preservedGpuReadbackRequests;
+    preservedGpuReadbackRequests.reserve(m_queuedRequestsByCacheKey.size());
+    for (const auto& [cacheKey, request] : m_queuedRequestsByCacheKey)
+    {
+        if (isActiveGpuReadbackCacheKey(cacheKey))
+            preservedGpuReadbackRequests.emplace_back(cacheKey, request);
+    }
+
+    for (const auto& cacheKey : m_gpuPreviewEmptyFrameDeferredCacheKeys)
+    {
+        if (!isActiveGpuReadbackCacheKey(cacheKey))
+            m_thumbnailStatesByCacheKey[cacheKey] = ThumbnailState::Cancelled;
+    }
+    for (const auto& cacheKey : m_gpuPreviewResourcePendingDeferredCacheKeys)
+    {
+        if (!isActiveGpuReadbackCacheKey(cacheKey))
+            m_thumbnailStatesByCacheKey[cacheKey] = ThumbnailState::Cancelled;
+    }
     for (const auto& [cacheKey, request] : m_queuedRequestsByCacheKey)
     {
         (void)request;
-        m_thumbnailStatesByCacheKey[cacheKey] = ThumbnailState::Cancelled;
+        if (!isActiveGpuReadbackCacheKey(cacheKey))
+            m_thumbnailStatesByCacheKey[cacheKey] = ThumbnailState::Cancelled;
     }
     while (!m_queuedPriorityCacheKeys.empty())
         m_queuedPriorityCacheKeys.pop_front();
@@ -5762,9 +6962,31 @@ void AssetThumbnailService::ClearPendingQueuedRequests()
     while (!m_queuedCacheKeys.empty())
         m_queuedCacheKeys.pop_front();
     m_queuedRequestsByCacheKey.clear();
-    m_resolvedPreviewRequestsByCacheKey.clear();
+    for (auto iterator = m_resolvedPreviewRequestsByCacheKey.begin();
+        iterator != m_resolvedPreviewRequestsByCacheKey.end();)
+    {
+        if (isActiveGpuReadbackCacheKey(iterator->first))
+            ++iterator;
+        else
+            iterator = m_resolvedPreviewRequestsByCacheKey.erase(iterator);
+    }
     m_gpuDeferredHeavyPreviewCacheKeys.clear();
+    m_gpuPreviewEmptyFrameDeferredCacheKeys.clear();
+    m_gpuPreviewResourcePendingDeferredCacheKeys.clear();
+    for (auto iterator = m_gpuPreviewReadbackPendingRequestsByCacheKey.begin();
+        iterator != m_gpuPreviewReadbackPendingRequestsByCacheKey.end();)
+    {
+        if (isActiveGpuReadbackCacheKey(iterator->first))
+            ++iterator;
+        else
+            iterator = m_gpuPreviewReadbackPendingRequestsByCacheKey.erase(iterator);
+    }
     m_priorityThumbnailDequeueStreak = 0u;
+    for (const auto& [cacheKey, request] : preservedGpuReadbackRequests)
+    {
+        m_queuedRequestsByCacheKey[cacheKey] = request;
+        EnqueueQueuedCacheKey(cacheKey, request);
+    }
 }
 
 void AssetThumbnailService::SupersedeQueuedRequestsForGeneration(

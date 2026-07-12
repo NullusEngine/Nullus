@@ -154,6 +154,7 @@ struct PrefabInstantiateRequest
     bool deferAssetReferenceResolution = false;
     const NLS::Engine::Assets::PrefabArtifact* constPrefab = nullptr;
     bool synchronousAssetReferencePrewarm = false;
+    bool skipDeferredAssetReferenceCacheLookup = false;
 };
 
 struct PrefabOverrideDescriptor

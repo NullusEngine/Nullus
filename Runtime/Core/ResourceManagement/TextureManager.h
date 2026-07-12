@@ -6,6 +6,7 @@
 #include <Rendering/Resources/TextureCube.h>
 
 #include "Core/ResourceManagement/AResourceManager.h"
+#include <functional>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -84,23 +85,29 @@ namespace NLS::Core::ResourceManagement
 			return trimmedCount;
 		}
 
-		void CancelAsyncArtifact(const std::string& p_path);
+		void CancelAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = true);
 		bool IsAsyncArtifactLoadPending(const std::string& p_path) const;
 		bool IsAsyncArtifactLoadFailed(const std::string& p_path) const;
-		void PumpAsyncLoads(size_t p_maxCompletions = 1u);
-		void PumpAsyncLoadsForPaths(const std::unordered_set<std::string>& p_paths, size_t p_maxCompletions = 1u);
+			void PumpAsyncLoads(size_t p_maxCompletions = 1u);
+			void PumpAsyncLoadsForPaths(
+				const std::unordered_set<std::string>& p_paths,
+				size_t p_maxCompletions = 1u,
+				const std::function<bool()>& p_shouldStop = {});
+		static AsyncArtifactRequestDiagnostics GetAsyncArtifactRequestDiagnostics();
 
         static std::string ResolveResourcePath(const std::string& p_path);
 
 		static TextureCube* CreateCubeMap(const std::vector<std::string>& filePaths);
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
-			static void ClearAsyncArtifactRequestStateForTesting();
-			static bool WaitForAsyncArtifactWorkersForTesting(uint32_t p_timeoutMilliseconds = 5000u);
-			static size_t GetPendingAsyncArtifactRequestCountForTesting();
-			static size_t GetTotalAsyncArtifactRequestCountForTesting();
-			static size_t GetFailedAsyncArtifactRequestCountForTesting();
-			void ClearArtifactLookupIndexForTesting() const;
+				static void ClearAsyncArtifactRequestStateForTesting();
+				static bool WaitForAsyncArtifactWorkersForTesting(uint32_t p_timeoutMilliseconds = 5000u);
+				static size_t GetMaxPendingAsyncArtifactRequestCountForTesting();
+				static size_t GetPendingAsyncArtifactRequestCountForTesting();
+					static size_t GetTotalAsyncArtifactRequestCountForTesting();
+					static size_t GetFailedAsyncArtifactRequestCountForTesting();
+					static void SetBeforeAsyncArtifactCompletionForTesting(std::function<void()> p_callback);
+				void ClearArtifactLookupIndexForTesting() const;
 			size_t GetArtifactLookupIndexRebuildCountForTesting() const;
 #endif
 

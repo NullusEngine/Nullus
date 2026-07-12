@@ -24,6 +24,24 @@ inline std::string NormalizeEditorAssetPath(std::filesystem::path path)
     return path.lexically_normal().generic_string();
 }
 
+inline std::string NormalizeEditorProjectAssetPath(std::filesystem::path path)
+{
+    if (path.empty() || path.is_absolute())
+        return {};
+
+    const auto normalizedPath = path.lexically_normal();
+    for (const auto& part : normalizedPath)
+    {
+        if (part == "..")
+            return {};
+    }
+
+    const auto normalized = NormalizeEditorAssetPath(normalizedPath);
+    if (normalized == "Assets" || normalized.starts_with("Assets/"))
+        return normalized;
+    return {};
+}
+
 inline std::optional<std::filesystem::path> ResolveEditorManifestDependencyPath(
     const std::filesystem::path& projectRoot,
     const std::string& dependencyValue)

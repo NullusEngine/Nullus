@@ -15,7 +15,8 @@ namespace NLS::Render::Assets
 {
 namespace
 {
-constexpr std::string_view kUnboundShaderReference = "?";
+constexpr std::string_view kDefaultShaderLabMaterialShaderPath =
+    "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
 
 std::string ToLower(std::string value)
 {
@@ -64,6 +65,9 @@ std::string ResolveTextureResourcePath(
     {
         return NormalizeResourcePath(importedArtifact->second);
     }
+
+    if (context.deferredTextureSourceKeys.find(texture.sourceKey) != context.deferredTextureSourceKeys.end())
+        return {};
 
     if (texture.uri.empty() || IsDataUri(texture.uri))
         return {};
@@ -476,7 +480,7 @@ std::string TextureUniformPath(
 std::string ResolveMaterialShaderResourcePath(const MaterialConversionContext& context)
 {
     return context.shaderResourcePath.empty()
-        ? std::string(kUnboundShaderReference)
+        ? std::string(kDefaultShaderLabMaterialShaderPath)
         : context.shaderResourcePath;
 }
 
@@ -505,6 +509,17 @@ std::string SerializeMaterial(
     stream << "property _Metallic Float " << FormatDouble(GetScalarFactor(material, "Metallic", 0.0)) << "\n";
     stream << "property _Roughness Float " << FormatDouble(GetScalarFactor(material, "Roughness", 1.0)) << "\n";
     stream << "property _AmbientOcclusion Float " << FormatDouble(GetScalarFactor(material, "OcclusionStrength", 1.0)) << "\n";
+    const bool usesPackedMetallicRoughness = FindTextureSlot(material, "MetallicRoughness") != nullptr;
+    stream << "property _MetallicMapChannel Vector "
+        << (usesPackedMetallicRoughness
+            ? "0.000000 0.000000 1.000000 0.000000"
+            : "1.000000 0.000000 0.000000 0.000000")
+        << "\n";
+    stream << "property _RoughnessMapChannel Vector "
+        << (usesPackedMetallicRoughness
+            ? "0.000000 1.000000 0.000000 0.000000"
+            : "1.000000 0.000000 0.000000 0.000000")
+        << "\n";
     stream << "property _EmissiveColor Color "
         << FormatVec4(ToVec4(GetVectorFactor(material, "Emissive", {0.0, 0.0, 0.0, 1.0}), {0.0, 0.0, 0.0, 1.0})) << "\n";
     stream << "property _SpecularColor Color "
@@ -733,7 +748,12 @@ void ConvertParserChannels(
     if (const auto* specular = FindChannel(source, "specular"))
     {
         AddTextureSlot(scene, material, context, "Specular", specular->textureKey, MaterialTextureColorSpace::SRgb, source.sampler);
-        if (!specular->values.empty())
+        const bool ignoreFbxPbrCompatibilitySpecular =
+            sourceModel == MaterialSourceModel::FbxParserMaterial &&
+            FindTextureSlot(material, "Specular") == nullptr &&
+            (FindTextureSlot(material, "Metallic") != nullptr || FindTextureSlot(material, "Roughness") != nullptr) &&
+            IsIdentityColorFactor(specular->values);
+        if (!specular->values.empty() && !ignoreFbxPbrCompatibilitySpecular)
             AddFactor(material, "Specular", specular->values);
     }
     const bool hasRoughnessScalar = roughnessChannel && roughnessChannel->hasScalar;
@@ -749,10 +769,15 @@ void ConvertParserChannels(
             "material-invalid-roughness-scalar",
             "Parser material roughness scalar is outside the PBR [0, 1] range and was ignored.");
     }
-    if (const auto* metallic = FindChannel(source, "metallic");
-        metallic && metallic->hasScalar)
+    if (const auto* metallic = FindChannel(source, "metallic"))
     {
-        AddScalar(material, "Metallic", metallic->scalar);
+        const bool hasMetallicTexture = FindTextureSlot(material, "Metallic") != nullptr;
+        const bool useFbxTextureDefault =
+            sourceModel == MaterialSourceModel::FbxParserMaterial &&
+            hasMetallicTexture &&
+            (!metallic->hasScalar || std::fabs(metallic->scalar) <= 1e-6);
+        if (metallic->hasScalar || useFbxTextureDefault)
+            AddScalar(material, "Metallic", useFbxTextureDefault ? 1.0 : metallic->scalar);
     }
     if (const auto* occlusion = FindChannel(source, "occlusion");
         occlusion && occlusion->hasScalar)

@@ -393,10 +393,8 @@ function(nls_add_target)
       add_library(${TARGET_NAME} STATIC ${HEAD_FILES} ${SRC_FILES})
     endif()
 
-    set_target_properties(${TARGET_NAME} PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
-      FOLDER ${TARGET_CATEGORY}
-    )
+    nls_configure_shared_runtime_output(${TARGET_NAME})
+    set_target_properties(${TARGET_NAME} PROPERTIES FOLDER ${TARGET_CATEGORY})
 
     target_include_directories(
       ${TARGET_NAME}
@@ -440,10 +438,8 @@ function(nls_add_runtime_target)
       add_library(${TARGET_NAME} STATIC ${HEAD_FILES} ${SRC_FILES})
     endif()
 
-    set_target_properties(${TARGET_NAME} PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
-      FOLDER Runtime
-    )
+    nls_configure_shared_runtime_output(${TARGET_NAME})
+    set_target_properties(${TARGET_NAME} PROPERTIES FOLDER Runtime)
 
     target_include_directories(
       ${TARGET_NAME}

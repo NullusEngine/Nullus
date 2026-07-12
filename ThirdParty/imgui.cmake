@@ -51,9 +51,7 @@ else()
 endif()
 
 # 指定输出路径
-set_target_properties(ImGui PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
-)
+nls_configure_shared_runtime_output(ImGui)
 
 # 设置包含路径
 target_include_directories(

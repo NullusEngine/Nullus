@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <atomic>
 
 #include <Rendering/Core/CompositeRenderer.h>
 #include <Rendering/Data/Frustum.h>
@@ -18,6 +19,7 @@
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
 #include <Math/Quaternion.h>
 #include <Vector3.h>
+#include "Rendering/LargeSceneSettings.h"
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/RenderScene.h"
 #include "Rendering/SceneOcclusion.h"
@@ -83,19 +85,27 @@ namespace NLS::Engine::Rendering
 			SceneSystem::Scene& scene;
 			std::optional<Frustum> frustumOverride;
 			Material* overrideMaterial;
-			std::vector<SceneSystem::Scene*> additiveScenes;
-			bool includeSkyboxes = true;
-			bool requireExplicitMaterialTextures = false;
-		};
+				std::vector<SceneSystem::Scene*> additiveScenes;
+				bool includeSkyboxes = true;
+					bool requireExplicitMaterialTextures = false;
+					bool allowDefaultMaterialForUnresolvedExplicitMaterials = false;
+					bool skipSceneDrawables = false;
+					bool suppressVisibleMaterialTextureRequests = false;
+					bool suppressHZBOcclusion = false;
+					bool suppressLightGridCompute = false;
+				};
 
 		using SnapshotRenderScenePackageBuildMode = Render::Context::SnapshotRenderScenePackageBuildMode;
 
 		explicit BaseSceneRenderer(Driver& p_driver);
 		~BaseSceneRenderer() override;
 
-		static void PreloadSceneFallbackShader(NLS::Core::ResourceManagement::ShaderManager& shaderManager);
+		static bool PreloadSceneFallbackShader(
+			NLS::Core::ResourceManagement::ShaderManager& shaderManager,
+			bool logWarningOnFailure = true);
 
 		void BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor) override;
+		void BeginFrameForBackgroundPreview(const Render::Data::FrameDescriptor& p_frameDescriptor) override;
 
 		virtual void DrawModelWithSingleMaterial(
 			PipelineState p_pso,
@@ -106,17 +116,27 @@ namespace NLS::Engine::Rendering
 
 		SceneLightingProvider& GetSceneLightingProvider();
 		const SceneLightingProvider& GetSceneLightingProvider() const;
-		const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& GetLightGridGraphicsPassBindingSet() const;
-		NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
-			bool hasSkyboxTexture = false) const;
+		void SetLargeSceneSettings(const LargeSceneSettings& settings);
+		[[nodiscard]] const LargeSceneSettings& GetLargeSceneSettings() const;
+			const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& GetLightGridGraphicsPassBindingSet() const;
+			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
+				bool hasSkyboxTexture = false) const;
+			NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
+				bool hasSkyboxTexture,
+				bool suppressCompute) const;
 		bool HasPendingLightGridFrameInputs() const { return false; }
 		const SceneOcclusionPrimitivePacketBuildResult& GetLastHZBOcclusionPrimitivePacketBuildResult() const;
 		const SceneOcclusionHistory& GetHZBOcclusionHistoryForTesting() const;
 		[[nodiscard]] bool HasLastVisiblePickablePrimitiveDrawSources() const;
 		[[nodiscard]] const std::vector<ScenePickablePrimitiveDrawSource>&
 			GetLastVisiblePickablePrimitiveDrawSources() const;
+		[[nodiscard]] bool HasCompletedVisibleMaterialTexturePumpForReadback() const;
+				const Render::Data::DrawCallOptimizationStats& GetLastDrawCallOptimizationStats() const;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+				const Render::Data::DrawCallOptimizationStats& GetLastDrawCallOptimizationStatsForTesting() const;
+#endif
 
-	protected:
+		protected:
 		void RefreshSceneLightingDescriptor(SceneSystem::Scene& scene);
 		AllDrawables ParseScene();
 		std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
@@ -126,6 +146,7 @@ namespace NLS::Engine::Rendering
 			const AllDrawables& drawables);
 		virtual bool ShouldPublishCullReasonDebugSnapshots() const;
 		virtual uint64_t GetCullReasonDebugSnapshotMaxEntries() const;
+		virtual std::vector<const Engine::GameObject*> GetEditorInspectionRoots() const;
 		bool CaptureThreadedPreparedDraw(
 			PipelineState pso,
 			const Drawable& drawable,
@@ -196,17 +217,18 @@ namespace NLS::Engine::Rendering
 		std::unordered_map<SceneSystem::Scene*, RenderScene> m_additiveRenderScenes;
 		std::vector<ScenePickablePrimitiveDrawSource> m_lastVisiblePickablePrimitiveDrawSources;
 		bool m_hasLastVisiblePickablePrimitiveDrawSources = false;
-		mutable std::mutex m_lightGridCompileContextCacheMutex;
-		mutable LightGridCompileContextCache m_lightGridCompileContextCache;
-		mutable NLS::Render::Context::LargeSceneCullReasonDebugSnapshot m_lastCullReasonDebugSnapshot;
+			mutable std::mutex m_lightGridCompileContextCacheMutex;
+			mutable LightGridCompileContextCache m_lightGridCompileContextCache;
+			mutable NLS::Render::Context::LargeSceneCullReasonDebugSnapshot m_lastCullReasonDebugSnapshot;
 		SceneOcclusionPrimitivePacketBuildResult m_lastHZBOcclusionPrimitivePacketBuildResult;
 		SceneOcclusionFrameInput m_lastHZBOcclusionFrameInput;
 		SceneOcclusionHistory m_hzbOcclusionHistory;
 		SceneOcclusionObservationBatch m_hzbPendingOcclusionObservationBatch;
-		uint64_t m_hzbOcclusionFrameSerial = 0u;
-		SceneStreamingResidency m_streamingResidency;
-		RepresentationResidencySnapshot m_lastRepresentationResidency;
-		std::vector<uint64_t> m_lastStreamingDependencyPins;
-		uint64_t m_streamingResidencyFrameSerial = 0u;
+			uint64_t m_hzbOcclusionFrameSerial = 0u;
+			SceneStreamingResidency m_streamingResidency;
+			LargeSceneSettings m_largeSceneSettings;
+			RepresentationResidencySnapshot m_lastRepresentationResidency;
+			std::vector<uint64_t> m_lastStreamingDependencyPins;
+			uint64_t m_streamingResidencyFrameSerial = 0u;
 	};
 }

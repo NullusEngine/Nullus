@@ -1,7 +1,9 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
+#include <limits>
+#include <string>
+#include <vector>
 #include "Components/Component.h"
 #include "EngineDef.h"
 #include "Reflection/Array.h"
@@ -23,9 +25,9 @@ namespace NLS::Engine::Components
 
 
 		GENERATED_BODY()
-        static constexpr uint8_t kMaxMaterialCount = 0xFF;
+        static constexpr uint32_t kMaxMaterialCount = 65536u;
         using Material = Render::Resources::Material;
-        using MaterialList = std::array<Material*, kMaxMaterialCount>;
+        using MaterialList = std::vector<Material*>;
 
 		/**
 		* Defines how the model renderer bounding sphere should be interpreted
@@ -81,10 +83,10 @@ namespace NLS::Engine::Components
         FUNCTION()
         void FillWithMaterial(Material& p_material);
 
-        void SetMaterialAtIndex(uint8_t p_index, Material& p_material);
-        void SetResolvedMaterialFromReference(uint8_t p_index, Material& p_material);
-        Material* GetMaterialAtIndex(uint8_t p_index);
-        void RemoveMaterialAtIndex(uint8_t p_index);
+        void SetMaterialAtIndex(uint32_t p_index, Material& p_material);
+        void SetResolvedMaterialFromReference(uint32_t p_index, Material& p_material);
+        Material* GetMaterialAtIndex(uint32_t p_index);
+        void RemoveMaterialAtIndex(uint32_t p_index);
         void RemoveMaterialByInstance(Material& p_instance);
         void RemoveAllMaterials();
         void UpdateMaterialList();
@@ -118,7 +120,7 @@ namespace NLS::Engine::Components
 
         const MaterialList& GetMaterials() const;
         uint64_t GetRenderRevision() const;
-        Material* ResolveMaterialAtIndex(uint8_t p_index);
+        Material* ResolveMaterialAtIndex(uint32_t p_index);
         const MaterialList& ResolveMaterials();
 
 
@@ -126,13 +128,14 @@ namespace NLS::Engine::Components
 	private:
         void MarkRenderStateChanged();
         size_t GetExpectedMaterialSlotCount();
+        bool EnsureMaterialSlot(size_t p_index);
         Material* ResolveMaterialSlot(size_t p_index);
 
         NLS::Array<NLS::Engine::Serialize::PPtr<Material>> materials;
         MaterialList m_materials;
-        std::array<std::string, kMaxMaterialCount> m_materialPaths;
-        std::array<std::string, kMaxMaterialCount> m_failedMaterialPaths;
-        std::array<std::string, kMaxMaterialCount> m_materialNames;
+        std::vector<std::string> m_materialPaths;
+        std::vector<std::string> m_failedMaterialPaths;
+        std::vector<std::string> m_materialNames;
         Maths::Matrix4 m_userMatrix;
         Render::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
 		EFrustumBehaviour m_frustumBehaviour = EFrustumBehaviour::CULL_MODEL;

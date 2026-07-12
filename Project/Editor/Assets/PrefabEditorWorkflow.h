@@ -162,6 +162,7 @@ public:
     bool RemoveObjectMapping(const NLS::Engine::GameObject& object);
     void MarkAssetMissing(NLS::Core::Assets::AssetId assetId, bool missing);
     void MarkAssetMissing(NLS::Core::Assets::AssetId assetId, const std::string& prefabSubAssetKey, bool missing);
+    bool IsAssetMissing(NLS::Core::Assets::AssetId assetId, const std::string& prefabSubAssetKey) const;
     void MarkAssetPendingResources(NLS::Core::Assets::AssetId assetId, bool pending);
     void MarkAssetPendingResources(NLS::Core::Assets::AssetId assetId, const std::string& prefabSubAssetKey, bool pending);
     void MarkInstanceResourceFailure(const NLS::Engine::GameObject& instanceRoot, bool failed);
@@ -200,6 +201,7 @@ struct InstantiatePrefabRequest
     bool deferAssetReferenceResolution = false;
     const NLS::Engine::Assets::PrefabArtifact* constPrefab = nullptr;
     bool synchronousAssetReferencePrewarm = false;
+    bool skipDeferredAssetReferenceCacheLookup = false;
 };
 
 struct PrefabEditorOperationResult

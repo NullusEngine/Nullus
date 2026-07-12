@@ -32,7 +32,7 @@ namespace NLS::Engine::Rendering
 		bool enableSpatialIndex = true;
 		bool enableParallelVisibility = true;
 		bool enableLOD = true;
-		bool enableHLOD = true;
+		bool enableHLOD = false;
 		bool enableHZBOcclusion = false;
 		uint32_t maxVisibilityJobs = 0u;
 		size_t parallelVisibilityPrimitiveThreshold = 1024u;

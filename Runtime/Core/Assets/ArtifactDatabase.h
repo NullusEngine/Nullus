@@ -125,4 +125,11 @@ private:
     size_t m_indexRebuildCountForTesting = 0u;
     mutable std::string m_lastError;
 };
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+NLS_CORE_API void ResetArtifactDatabaseSaveAttemptCountForTesting();
+NLS_CORE_API size_t GetArtifactDatabaseSaveAttemptCountForTesting();
+NLS_CORE_API void SetArtifactDatabaseFailNextSaveForTesting(bool fail);
+NLS_CORE_API void SetArtifactDatabaseFailSaveAttemptForTesting(size_t attempt);
+#endif
 }

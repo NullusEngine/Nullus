@@ -58,5 +58,6 @@ target_link_libraries(
   PRIVATE
     GameProject
 )
+nls_copy_shared_runtime_to_target(Game)
 
 nls_target_precompile_headers(Game "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")

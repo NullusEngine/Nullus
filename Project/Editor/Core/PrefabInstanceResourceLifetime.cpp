@@ -102,11 +102,12 @@ namespace NLS::Editor::Core
                         return;
 
                     const auto materialPaths = meshRenderer->GetMaterialPaths();
-                    for (size_t index = 0u;
-                        index < NLS::Engine::Components::MeshRenderer::kMaxMaterialCount;
-                        ++index)
+                    const auto materialSlotCount = (std::max)(
+                        materialPaths.size(),
+                        meshRenderer->GetMaterials().size());
+                    for (size_t index = 0u; index < materialSlotCount; ++index)
                     {
-                        auto* material = meshRenderer->GetMaterialAtIndex(static_cast<uint8_t>(index));
+                        auto* material = meshRenderer->GetMaterialAtIndex(static_cast<uint32_t>(index));
                         const auto materialPath = index < materialPaths.size()
                             ? materialPaths[index]
                             : std::string {};

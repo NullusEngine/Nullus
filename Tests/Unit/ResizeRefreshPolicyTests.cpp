@@ -6,6 +6,7 @@
 TEST(ResizeRefreshPolicyTests, TicksImmediatelyWhenIdle)
 {
     EXPECT_TRUE(NLS::Editor::Core::ShouldTickResizeImmediately(
+        true,
         false,
         false,
         false));
@@ -16,12 +17,23 @@ TEST(ResizeRefreshPolicyTests, TicksImmediatelyWhilePollingEventsInsideOuterFram
     EXPECT_TRUE(NLS::Editor::Core::ShouldTickResizeImmediately(
         true,
         true,
+        true,
+        false));
+}
+
+TEST(ResizeRefreshPolicyTests, DefersNonNativeResizeCallbacksToMainLoop)
+{
+    EXPECT_FALSE(NLS::Editor::Core::ShouldTickResizeImmediately(
+        false,
+        false,
+        false,
         false));
 }
 
 TEST(ResizeRefreshPolicyTests, DefersWhenAlreadyRunningNonPollingFrameWork)
 {
     EXPECT_FALSE(NLS::Editor::Core::ShouldTickResizeImmediately(
+        true,
         true,
         false,
         false));
@@ -30,6 +42,7 @@ TEST(ResizeRefreshPolicyTests, DefersWhenAlreadyRunningNonPollingFrameWork)
 TEST(ResizeRefreshPolicyTests, DefersWhenResizeTickIsAlreadyRunning)
 {
     EXPECT_FALSE(NLS::Editor::Core::ShouldTickResizeImmediately(
+        true,
         false,
         true,
         true));

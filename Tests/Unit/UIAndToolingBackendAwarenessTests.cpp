@@ -315,6 +315,7 @@ TEST(UIAndToolingBackendAwarenessTests, QueuedRenderDocStartupCaptureUsesExplici
     using NLS::Render::Tooling::ResolveRenderDocQueuedCapturePreFrameAction;
 
     EXPECT_EQ(ResolveRenderDocQueuedCaptureInitialCountdown(), 2u);
+    EXPECT_EQ(ResolveRenderDocQueuedCaptureInitialCountdown(true), 1u);
     EXPECT_TRUE(CanQueueRenderDocCapture(true, false, false, false, false));
     EXPECT_FALSE(CanQueueRenderDocCapture(false, false, false, false, false));
     EXPECT_FALSE(CanQueueRenderDocCapture(true, true, false, false, false));
@@ -323,22 +324,66 @@ TEST(UIAndToolingBackendAwarenessTests, QueuedRenderDocStartupCaptureUsesExplici
     EXPECT_FALSE(CanQueueRenderDocCapture(true, false, false, false, true));
 
     EXPECT_EQ(
-        ResolveRenderDocQueuedCapturePreFrameAction(false, true, true, 1u),
+        ResolveRenderDocQueuedCapturePreFrameAction(false, true, true, false, false, false, 1u),
         RenderDocQueuedCaptureAction::None);
     EXPECT_EQ(
-        ResolveRenderDocQueuedCapturePreFrameAction(true, false, true, 1u),
+        ResolveRenderDocQueuedCapturePreFrameAction(true, false, true, false, false, false, 1u),
         RenderDocQueuedCaptureAction::None);
     EXPECT_EQ(
-        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, 2u),
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, false, false, false, 2u),
         RenderDocQueuedCaptureAction::None);
     EXPECT_EQ(
-        ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, 2u),
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, false, false, false, 2u),
         RenderDocQueuedCaptureAction::WaitForFutureFrame);
     EXPECT_EQ(
-        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, 1u),
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, false, false, false, 1u),
         RenderDocQueuedCaptureAction::StartExplicitFrameCapture);
     EXPECT_EQ(
-        ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, 1u),
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, false, false, false, 1u),
+        RenderDocQueuedCaptureAction::StartExplicitFrameCapture);
+}
+
+TEST(UIAndToolingBackendAwarenessTests, QueuedRenderDocCaptureForcesStaticViewRenderUntilCaptureStarts)
+{
+    using NLS::Render::Tooling::ShouldForceRenderDocCaptureFrameRender;
+
+    EXPECT_FALSE(ShouldForceRenderDocCaptureFrameRender(true, true, false, false, false, false, false, 300u));
+    EXPECT_FALSE(ShouldForceRenderDocCaptureFrameRender(true, true, false, false, false, false, false, 2u));
+    EXPECT_TRUE(ShouldForceRenderDocCaptureFrameRender(true, true, false, false, false, false, false, 1u));
+    EXPECT_FALSE(ShouldForceRenderDocCaptureFrameRender(false, true, false, false, false, false, false, 1u));
+    EXPECT_FALSE(ShouldForceRenderDocCaptureFrameRender(true, false, false, false, false, false, false, 1u));
+    EXPECT_FALSE(ShouldForceRenderDocCaptureFrameRender(true, true, true, false, false, false, false, 1u));
+    EXPECT_FALSE(ShouldForceRenderDocCaptureFrameRender(true, true, false, true, false, false, false, 1u));
+    EXPECT_FALSE(ShouldForceRenderDocCaptureFrameRender(true, true, false, false, true, false, false, 1u));
+    EXPECT_FALSE(ShouldForceRenderDocCaptureFrameRender(true, true, false, false, false, true, false, 1u));
+    EXPECT_TRUE(ShouldForceRenderDocCaptureFrameRender(true, true, false, false, false, true, true, 1u));
+}
+
+TEST(UIAndToolingBackendAwarenessTests, QueuedRenderDocCaptureStartsOnExternalSceneOutputBeforeUiOverlay)
+{
+    using NLS::Render::Tooling::RenderDocQueuedCaptureAction;
+    using NLS::Render::Tooling::ResolveRenderDocQueuedCapturePreFrameAction;
+
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, true, false, false, 2u),
+        RenderDocQueuedCaptureAction::WaitForFutureFrame);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, false, true, false, 1u),
+        RenderDocQueuedCaptureAction::None);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, false, true, false, 1u),
+        RenderDocQueuedCaptureAction::None);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, true, true, false, 1u),
+        RenderDocQueuedCaptureAction::None);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, true, false, false, 1u),
+        RenderDocQueuedCaptureAction::StartExplicitFrameCapture);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, false, true, true, 1u),
+        RenderDocQueuedCaptureAction::None);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, true, true, true, 1u),
         RenderDocQueuedCaptureAction::StartExplicitFrameCapture);
 }
 

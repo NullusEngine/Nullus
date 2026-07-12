@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -19,6 +20,7 @@
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/ArtifactWriter.h"
+#include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Assets/AssetImporterSettings.h"
@@ -28,6 +30,7 @@
 #include "Panels/AssetProperties.h"
 #include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Guid.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/ImportedScene.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
@@ -1115,6 +1118,14 @@ TEST(AssetImportPipelineTests, DefaultRegistrySelectsSceneImportersByExtension)
     EXPECT_EQ(registry.FindImporterForPath("Assets/Textures/Hero.png"), nullptr);
 }
 
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesMaterialTextureSlotArtifacts)
+{
+    EXPECT_GE(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        11u)
+        << "Model material artifacts before importer version 11 can miss ShaderLab texture slots such as _NormalMap.";
+}
+
 TEST(AssetImportPipelineTests, GeneratedSubAssetKeysAreDeterministicAcrossSourceOrder)
 {
     NLS::Render::Assets::ImportedScene first;
@@ -1755,6 +1766,322 @@ TEST(AssetImportPipelineTests, ArtifactWriterSkipsPhysicalCommitWhenContentBlobA
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetImportPipelineTests, ArtifactWriterRewritesSameSizeCorruptContentAddressedBlob)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeImportTestRoot();
+    const auto stagingRoot = root / "Staging";
+    const auto commitRoot = root / "Committed";
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = AssetId(NLS::Guid::Parse("abab1212-3434-4cac-8cac-acacacacacac"));
+    request.importerId = "model";
+    request.importerVersion = 5u;
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = "prefab:Root";
+    request.artifacts.push_back({
+        "prefab:Root",
+        ArtifactType::Prefab,
+        "prefab",
+        "Root",
+        "prefabs/root",
+        std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'}
+    });
+
+    ArtifactWriter writer(stagingRoot, commitRoot);
+    const auto firstResult = writer.WriteAndCommit(request, nullptr);
+    ASSERT_TRUE(firstResult.committed) << JoinDiagnosticSummaries(firstResult.diagnostics);
+    ASSERT_EQ(firstResult.manifest.subAssets.size(), 1u);
+
+    const auto storedPath = commitRoot / std::filesystem::path(firstResult.manifest.subAssets[0].artifactPath);
+    auto corrupted = ReadBinaryFile(storedPath);
+    ASSERT_FALSE(corrupted.empty());
+    corrupted.back() ^= 0x7Fu;
+    WriteBinaryFile(storedPath, corrupted);
+    ASSERT_EQ(std::filesystem::file_size(storedPath), corrupted.size());
+
+    const auto secondResult = writer.WriteAndCommit(request, nullptr);
+    ASSERT_TRUE(secondResult.committed) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    ASSERT_EQ(secondResult.manifest.subAssets.size(), 1u);
+    EXPECT_EQ(secondResult.manifest.subAssets[0].artifactPath, firstResult.manifest.subAssets[0].artifactPath);
+
+    const auto repairedBytes = ReadArtifactFile(commitRoot, secondResult.manifest.subAssets[0]);
+    const auto repairedContainer = ReadNativeArtifactContainer(repairedBytes, ArtifactType::Prefab, 1u);
+    ASSERT_TRUE(repairedContainer.has_value())
+        << "Content-addressed blobs must be validated by content, not only by same byte size.";
+    EXPECT_EQ(std::string(repairedContainer->payload.begin(), repairedContainer->payload.end()), "prefab");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ArtifactWriterReportsWriteAndCommitPerformanceCounters)
+{
+    using namespace NLS::Core::Assets;
+    using NLS::Base::Profiling::PerformanceStageDomain;
+    using NLS::Base::Profiling::PerformanceStageEntry;
+    using NLS::Base::Profiling::PerformanceStageStats;
+    using NLS::Base::Profiling::PerformanceStageStatsCapture;
+
+    const auto root = MakeImportTestRoot();
+    const auto stagingRoot = root / "Staging";
+    const auto commitRoot = root / "Committed";
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = AssetId(NLS::Guid::Parse("afafafaf-afaf-4afa-8faf-afafafafafaf"));
+    request.importerId = "model";
+    request.importerVersion = 5u;
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = "prefab:Root";
+    request.artifacts.push_back({
+        "prefab:Root",
+        ArtifactType::Prefab,
+        "prefab",
+        "Root",
+        "prefabs/root",
+        std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'}
+    });
+    request.artifacts.push_back({
+        "material:Body",
+        ArtifactType::Material,
+        "material",
+        "Body",
+        "materials/body",
+        std::vector<uint8_t>{'m', 'a', 't'}
+    });
+
+    ArtifactWriter writer(stagingRoot, commitRoot);
+    const auto firstResult = writer.WriteAndCommit(request, nullptr);
+    ASSERT_TRUE(firstResult.committed) << JoinDiagnosticSummaries(firstResult.diagnostics);
+
+    PerformanceStageStats stats;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        const auto secondResult = writer.WriteAndCommit(request, &firstResult.manifest);
+        ASSERT_TRUE(secondResult.committed) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    }
+
+    const auto snapshot = stats.Snapshot();
+    const auto stage = std::find_if(
+        snapshot.stages.begin(),
+        snapshot.stages.end(),
+        [](const PerformanceStageEntry& entry)
+        {
+            return entry.domain == PerformanceStageDomain::Prefab &&
+                entry.stageName == "WriteAndCommitArtifactPayloads";
+        });
+    ASSERT_NE(stage, snapshot.stages.end());
+    EXPECT_EQ(stage->counters.at("artifactCount"), 2u);
+    EXPECT_EQ(stage->counters.at("destinationAlreadyCurrentCount"), 2u);
+    EXPECT_EQ(stage->counters.at("stagedCount"), 0u);
+    EXPECT_EQ(stage->counters.at("commitPlanCount"), 0u);
+    EXPECT_EQ(stage->counters.at("committedMoveCount"), 0u);
+    EXPECT_EQ(stage->counters.at("contentPathReusedCount"), 2u);
+    EXPECT_EQ(stage->counters.at("contentPathHashedCount"), 0u);
+    EXPECT_EQ(stage->counters.at("storedPayloadBypassCount"), 2u);
+    EXPECT_EQ(stage->counters.at("storedPayloadBuiltCount"), 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ArtifactWriterRebuildsStoredPayloadWhenPayloadChanges)
+{
+    using namespace NLS::Core::Assets;
+    using NLS::Base::Profiling::PerformanceStageDomain;
+    using NLS::Base::Profiling::PerformanceStageEntry;
+    using NLS::Base::Profiling::PerformanceStageStats;
+    using NLS::Base::Profiling::PerformanceStageStatsCapture;
+
+    const auto root = MakeImportTestRoot();
+    const auto stagingRoot = root / "Staging";
+    const auto commitRoot = root / "Committed";
+
+    auto makeRequest = [](std::vector<uint8_t> payload)
+    {
+        ArtifactWriteRequest request;
+        request.sourceAssetId = AssetId(NLS::Guid::Parse("bfbfbfbf-bfbf-4bfb-8fbf-bfbfbfbfbfbf"));
+        request.importerId = "model";
+        request.importerVersion = 5u;
+        request.targetPlatform = "editor";
+        request.primarySubAssetKey = "material:Body";
+        request.artifacts.push_back({
+            "material:Body",
+            ArtifactType::Material,
+            "material",
+            "Body",
+            "materials/body",
+            std::move(payload)
+        });
+        return request;
+    };
+
+    ArtifactWriter writer(stagingRoot, commitRoot);
+    const auto firstResult = writer.WriteAndCommit(makeRequest({'o', 'l', 'd'}), nullptr);
+    ASSERT_TRUE(firstResult.committed) << JoinDiagnosticSummaries(firstResult.diagnostics);
+
+    ArtifactWriteResult secondResult;
+    PerformanceStageStats stats;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        secondResult = writer.WriteAndCommit(makeRequest({'n', 'e', 'w'}), &firstResult.manifest);
+    }
+    ASSERT_TRUE(secondResult.committed) << JoinDiagnosticSummaries(secondResult.diagnostics);
+    ASSERT_EQ(firstResult.manifest.subAssets.size(), 1u);
+    ASSERT_EQ(secondResult.manifest.subAssets.size(), 1u);
+    EXPECT_NE(firstResult.manifest.subAssets[0].artifactPath, secondResult.manifest.subAssets[0].artifactPath);
+
+    const auto secondBytes = ReadArtifactFile(commitRoot, secondResult.manifest.subAssets[0]);
+    const auto secondContainer = ReadNativeArtifactContainer(secondBytes, ArtifactType::Material, 1u);
+    ASSERT_TRUE(secondContainer.has_value());
+    EXPECT_EQ(std::string(secondContainer->payload.begin(), secondContainer->payload.end()), "new");
+
+    const auto snapshot = stats.Snapshot();
+    const auto stage = std::find_if(
+        snapshot.stages.begin(),
+        snapshot.stages.end(),
+        [](const PerformanceStageEntry& entry)
+        {
+            return entry.domain == PerformanceStageDomain::Prefab &&
+                entry.stageName == "WriteAndCommitArtifactPayloads";
+        });
+    ASSERT_NE(stage, snapshot.stages.end());
+    EXPECT_EQ(stage->counters.at("storedPayloadBypassCount"), 0u);
+    EXPECT_EQ(stage->counters.at("storedPayloadBuiltCount"), 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ArtifactWriterBypassesStoredPayloadForUnchangedNativePayloads)
+{
+    using namespace NLS::Core::Assets;
+    using NLS::Base::Profiling::PerformanceStageDomain;
+    using NLS::Base::Profiling::PerformanceStageEntry;
+    using NLS::Base::Profiling::PerformanceStageStats;
+    using NLS::Base::Profiling::PerformanceStageStatsCapture;
+
+    const auto root = MakeImportTestRoot();
+    const auto stagingRoot = root / "Staging";
+    const auto commitRoot = root / "Committed";
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = AssetId(NLS::Guid::Parse("cfcfcfcf-cfcf-4cfc-8fcf-cfcfcfcfcfcf"));
+    request.importerId = "model";
+    request.importerVersion = 5u;
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = "material:Body";
+
+    NativeArtifactMetadata sourceMetadata;
+    sourceMetadata.artifactType = ArtifactType::Material;
+    sourceMetadata.schemaName = "material";
+    sourceMetadata.schemaVersion = 1u;
+    sourceMetadata.sourceAssetId = request.sourceAssetId;
+    sourceMetadata.subAssetKey = "material:Body";
+    sourceMetadata.displayName = "Body";
+    sourceMetadata.importerId = request.importerId;
+    sourceMetadata.importerVersion = request.importerVersion;
+    sourceMetadata.targetPlatform = request.targetPlatform;
+    const auto nativePayload = WriteNativeArtifactContainer(
+        std::move(sourceMetadata),
+        std::vector<uint8_t>{'n', 'a', 't', 'i', 'v', 'e'});
+    ASSERT_FALSE(nativePayload.empty());
+
+    request.artifacts.push_back({
+        "material:Body",
+        ArtifactType::Material,
+        "material",
+        "Body",
+        "materials/body",
+        nativePayload
+    });
+
+    ArtifactWriter writer(stagingRoot, commitRoot);
+    const auto firstResult = writer.WriteAndCommit(request, nullptr);
+    ASSERT_TRUE(firstResult.committed) << JoinDiagnosticSummaries(firstResult.diagnostics);
+
+    PerformanceStageStats stats;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        const auto secondResult = writer.WriteAndCommit(request, &firstResult.manifest);
+        ASSERT_TRUE(secondResult.committed) << JoinDiagnosticSummaries(secondResult.diagnostics);
+        ASSERT_EQ(secondResult.manifest.subAssets.size(), 1u);
+        EXPECT_EQ(secondResult.manifest.subAssets[0].artifactPath, firstResult.manifest.subAssets[0].artifactPath);
+    }
+
+    const auto snapshot = stats.Snapshot();
+    const auto stage = std::find_if(
+        snapshot.stages.begin(),
+        snapshot.stages.end(),
+        [](const PerformanceStageEntry& entry)
+        {
+            return entry.domain == PerformanceStageDomain::Prefab &&
+                entry.stageName == "WriteAndCommitArtifactPayloads";
+        });
+    ASSERT_NE(stage, snapshot.stages.end());
+    EXPECT_EQ(stage->counters.at("storedPayloadBypassCount"), 1u);
+    EXPECT_EQ(stage->counters.at("storedPayloadBuiltCount"), 0u);
+    EXPECT_EQ(stage->counters.at("nativeContainerDirectHashCount"), 1u);
+    EXPECT_EQ(stage->counters.at("nativeContainerDirectReuseCount"), 1u);
+
+    const auto storedBytes = ReadArtifactFile(commitRoot, firstResult.manifest.subAssets[0]);
+    const auto storedContainer = ReadNativeArtifactContainer(storedBytes, ArtifactType::Material, 1u);
+    ASSERT_TRUE(storedContainer.has_value());
+    EXPECT_EQ(std::string(storedContainer->payload.begin(), storedContainer->payload.end()), "native");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ArtifactWriterRejectsCorruptNativePayloadBeforeReuseBypass)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeImportTestRoot();
+    const auto stagingRoot = root / "Staging";
+    const auto commitRoot = root / "Committed";
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = AssetId(NLS::Guid::Parse("caca3434-cfcf-4cfc-8fcf-cfcfcfcfcfcf"));
+    request.importerId = "model";
+    request.importerVersion = 5u;
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = "material:Body";
+
+    NativeArtifactMetadata sourceMetadata;
+    sourceMetadata.artifactType = ArtifactType::Material;
+    sourceMetadata.schemaName = "material";
+    sourceMetadata.schemaVersion = 1u;
+    sourceMetadata.sourceAssetId = request.sourceAssetId;
+    sourceMetadata.subAssetKey = "material:Body";
+    sourceMetadata.displayName = "Body";
+    sourceMetadata.importerId = request.importerId;
+    sourceMetadata.importerVersion = request.importerVersion;
+    sourceMetadata.targetPlatform = request.targetPlatform;
+    auto nativePayload = WriteNativeArtifactContainer(
+        std::move(sourceMetadata),
+        std::vector<uint8_t>{'n', 'a', 't', 'i', 'v', 'e'});
+    ASSERT_FALSE(nativePayload.empty());
+
+    request.artifacts.push_back({
+        "material:Body",
+        ArtifactType::Material,
+        "material",
+        "Body",
+        "materials/body",
+        nativePayload
+    });
+
+    ArtifactWriter writer(stagingRoot, commitRoot);
+    const auto firstResult = writer.WriteAndCommit(request, nullptr);
+    ASSERT_TRUE(firstResult.committed) << JoinDiagnosticSummaries(firstResult.diagnostics);
+
+    request.artifacts[0].payload.back() ^= 0x7Fu;
+    const auto corruptResult = writer.WriteAndCommit(request, &firstResult.manifest);
+    EXPECT_FALSE(corruptResult.committed)
+        << "Corrupt native-container inputs must not bypass stored payload build by trusting prefix metadata.";
+    EXPECT_TRUE(ContainsDiagnosticCode(corruptResult.diagnostics, "artifact-container-write-failed"));
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImportPipelineTests, NativeArtifactContainerViewPreservesValidationAndAvoidsPayloadCopy)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
@@ -1820,6 +2147,56 @@ TEST(AssetImportPipelineTests, NativeArtifactContainerViewPreservesValidationAnd
         ReadNativeArtifactContainerView(corruptedDependencyHash, ArtifactType::Prefab, 1u);
     EXPECT_FALSE(corruptDependencyHashView.has_value())
         << "The low-copy view must also keep native container dependency hash validation.";
+}
+
+TEST(AssetImportPipelineTests, NativeArtifactPayloadTextFromFileValidatesAndAvoidsPayloadVectorCopy)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+    using NLS::Core::Assets::ArtifactType;
+    using NLS::Core::Assets::ClearArtifactLoadTelemetry;
+    using NLS::Core::Assets::ReadNativeArtifactPayloadTextFromFile;
+    using NLS::Core::Assets::SnapshotArtifactLoadTelemetry;
+
+    const auto root = MakeImportTestRoot();
+    ScopedImportTestRoot cleanup(root);
+    const auto path = root / "Library" / "Artifacts" / "prefab.nasset";
+
+    const std::string payloadText = "NULLUS_OBJECT_GRAPH=1\nobject prefab\n";
+    const std::vector<uint8_t> payload(payloadText.begin(), payloadText.end());
+
+    NLS::Core::Assets::NativeArtifactMetadata metadata;
+    metadata.artifactType = ArtifactType::Prefab;
+    metadata.schemaName = "prefab";
+    metadata.schemaVersion = 1u;
+    metadata.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::ImporterVersion,
+        "scene-model",
+        "1"
+    });
+
+    const auto bytes = NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload);
+    ASSERT_FALSE(bytes.empty());
+    WriteBinaryFile(path, bytes);
+
+    ClearArtifactLoadTelemetry();
+    const auto payloadFromFile = ReadNativeArtifactPayloadTextFromFile(path, ArtifactType::Prefab, 1u);
+    ASSERT_TRUE(payloadFromFile.has_value());
+    EXPECT_EQ(payloadFromFile->payload, payloadText);
+    ASSERT_EQ(payloadFromFile->metadata.dependencies.size(), 1u);
+    EXPECT_EQ(payloadFromFile->metadata.dependencies[0].value, "scene-model");
+
+    const auto telemetry = SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(CountArtifactTelemetryStage(telemetry, ArtifactLoadTelemetryStage::NativeArtifactFileRead), 1u);
+    EXPECT_GE(CountArtifactTelemetryStage(telemetry, ArtifactLoadTelemetryStage::NativeContainerParseHash), 1u);
+    EXPECT_EQ(CountArtifactTelemetryStage(telemetry, ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy), 0u)
+        << "Prefab artifact loads should read text payloads directly instead of allocating a payload vector first.";
+
+    auto corrupted = bytes;
+    ASSERT_FALSE(corrupted.empty());
+    corrupted.back() ^= 0x7Fu;
+    WriteBinaryFile(path, corrupted);
+    EXPECT_FALSE(ReadNativeArtifactPayloadTextFromFile(path, ArtifactType::Prefab, 1u).has_value())
+        << "The direct text path must keep payload hash validation.";
 }
 
 TEST(AssetImportPipelineTests, NativeArtifactContainerViewRejectsMissingPayloadWithDiagnostics)
@@ -3490,6 +3867,19 @@ f 1/1/1 2/2/1 3/3/1
     meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
     DisableExternalModelTextureResolution(meta);
 
+    std::vector<std::string> progressMessages;
+    NLS::Editor::Assets::ImportProgressTracker progressTracker;
+    progressTracker.Subscribe(
+        [&progressMessages](const NLS::Editor::Assets::ImportProgressEvent& event)
+        {
+            progressMessages.push_back(event.message);
+        });
+    const auto progressJob = progressTracker.BeginJob(
+        meta.id,
+        "Assets/Models/Hero.obj",
+        "win64-dx12",
+        1u);
+
     const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
         sourcePath,
         root / "Staging",
@@ -3498,8 +3888,8 @@ f 1/1/1 2/2/1 3/3/1
         "Hero",
         "win64-dx12",
         nullptr,
-        nullptr,
-        {},
+        &progressTracker,
+        progressJob,
         std::filesystem::path("Models"),
         root,
         {}
@@ -3530,6 +3920,15 @@ f 1/1/1 2/2/1 3/3/1
     EXPECT_NE(
         payload.find("property _BaseColor Color 0.800000 0.700000 0.600000 0.650000"),
         std::string::npos);
+    const auto reusedFinalDependencies = std::find_if(
+        progressMessages.begin(),
+        progressMessages.end(),
+        [](const std::string& message)
+        {
+            return message.rfind("Reused final import dependencies |", 0u) == 0u;
+        });
+    ASSERT_NE(reusedFinalDependencies, progressMessages.end());
+    EXPECT_NE(reusedFinalDependencies->find("reused=1"), std::string::npos) << *reusedFinalDependencies;
 
     std::filesystem::remove_all(root);
 }
@@ -5438,6 +5837,141 @@ TEST(AssetImportPipelineTests, ExternalModelImportRecordsNameSearchCandidateFres
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetImportPipelineTests, ExternalModelImportScansProjectTextureNamesOnceForBatchNameSearch)
+{
+    const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
+    const auto& root = tempRoot.Path();
+    const auto sourcePath = root / "Assets" / "Models" / "BatchNameSearchHero.gltf";
+    const auto sourceTextureAPath = root / "Assets" / "Textures" / "SourceWoodA.png";
+    const auto sourceTextureBPath = root / "Assets" / "Textures" / "SourceWoodB.png";
+    const auto candidateAPath = root / "Assets" / "Shared" / "BatchWoodA.png";
+    const auto candidateBPath = root / "Assets" / "Shared" / "BatchWoodB.png";
+    WriteBinaryFile(sourceTextureAPath, TinyPng());
+    WriteBinaryFile(sourceTextureBPath, TinyPng());
+    WriteBinaryFile(candidateAPath, TinyPng());
+    WriteBinaryFile(candidateBPath, TinyPng());
+
+    const auto candidateAIdText = "2c2c2c2c-2c2c-42c2-82c2-2c2c2c2c2c2c";
+    const auto candidateBIdText = "2d2d2d2d-2d2d-42d2-82d2-2d2d2d2d2d2d";
+    WriteImportedTextureAssetForTest(
+        root,
+        candidateAPath,
+        candidateAIdText,
+        "editor",
+        "batch-name-search-a",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+    WriteImportedTextureAssetForTest(
+        root,
+        candidateBPath,
+        candidateBIdText,
+        "editor",
+        "batch-name-search-b",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "name": "BatchWoodA", "uri": "../Textures/SourceWoodA.png", "mimeType": "image/png" },
+                { "name": "BatchWoodB", "uri": "../Textures/SourceWoodB.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 },
+                { "source": 1 }
+            ],
+            "materials": [
+                {
+                    "name": "BodyA",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                },
+                {
+                    "name": "BodyB",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 1 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{
+                "name": "BodyMesh",
+                "primitives": [
+                    { "attributes": {}, "material": 0 },
+                    { "attributes": {}, "material": 1 }
+                ]
+            }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("2e2e2e2e-2e2e-42e2-82e2-2e2e2e2e2e2e"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureResolutionSettings;
+    textureResolutionSettings.autoImportMissingTextureFiles = false;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
+
+    std::vector<std::string> progressMessages;
+    NLS::Editor::Assets::ImportProgressTracker progressTracker;
+    progressTracker.Subscribe(
+        [&progressMessages](const NLS::Editor::Assets::ImportProgressEvent& event)
+        {
+            progressMessages.push_back(event.message);
+        });
+    const auto progressJob = progressTracker.BeginJob(
+        modelMeta.id,
+        "Assets/Models/BatchNameSearchHero.gltf",
+        "editor",
+        1u);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "BatchNameSearchHero",
+        "editor",
+        nullptr,
+        &progressTracker,
+        progressJob,
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* candidateADependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        "project|BatchWoodA|name-search");
+    ASSERT_NE(candidateADependency, nullptr);
+    EXPECT_NE(candidateADependency->hashOrVersion.find(candidateAIdText), std::string::npos);
+    const auto* candidateBDependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        "project|BatchWoodB|name-search");
+    ASSERT_NE(candidateBDependency, nullptr);
+    EXPECT_NE(candidateBDependency->hashOrVersion.find(candidateBIdText), std::string::npos);
+
+    const auto nameSearchProgress = std::find_if(
+        progressMessages.begin(),
+        progressMessages.end(),
+        [](const std::string& message)
+        {
+            return message.rfind("Resolved model texture name candidates |", 0u) == 0u;
+        });
+    ASSERT_NE(nameSearchProgress, progressMessages.end());
+    EXPECT_NE(nameSearchProgress->find("processed=2"), std::string::npos) << *nameSearchProgress;
+    EXPECT_NE(nameSearchProgress->find("total=2"), std::string::npos) << *nameSearchProgress;
+    EXPECT_NE(nameSearchProgress->find("candidates=2"), std::string::npos) << *nameSearchProgress;
+    EXPECT_NE(nameSearchProgress->find("scanCount=1"), std::string::npos) << *nameSearchProgress;
+}
+
 TEST(AssetImportPipelineTests, ExternalModelImportKeepsPreviousTextureResolutionReportWhenReimportFails)
 {
     const auto root = MakeImportTestRoot();
@@ -5551,6 +6085,253 @@ TEST(AssetImportPipelineTests, ExternalModelImportKeepsPreviousTextureResolution
     EXPECT_EQ(replacedReport->importerVersion, modelMeta.importerVersion);
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalGltfImportDefersExternalTexturePayloadReadsWhenProjectTextureResolutionIsEnabled)
+{
+    const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
+    const auto& root = tempRoot.Path();
+    const auto sourcePath = root / "Assets" / "Models" / "DeferredTexturePayloadHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "DeferredAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/DeferredAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("71717171-7171-4171-8171-717171717171"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureResolutionSettings;
+    textureResolutionSettings.autoImportMissingTextureFiles = true;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
+
+    std::vector<std::string> progressMessages;
+    NLS::Editor::Assets::ImportProgressTracker progressTracker;
+    progressTracker.Subscribe(
+        [&progressMessages](const NLS::Editor::Assets::ImportProgressEvent& event)
+        {
+            progressMessages.push_back(event.message);
+        });
+    const auto progressJob = progressTracker.BeginJob(
+        modelMeta.id,
+        "Assets/Models/DeferredTexturePayloadHero.gltf",
+        "editor",
+        1u);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "DeferredTexturePayloadHero",
+        "editor",
+        nullptr,
+        &progressTracker,
+        progressJob,
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+
+    const auto loadedPayloads = std::find_if(
+        progressMessages.begin(),
+        progressMessages.end(),
+        [](const std::string& message)
+        {
+            return message.rfind("Loaded texture payloads |", 0u) == 0u;
+        });
+    ASSERT_NE(loadedPayloads, progressMessages.end());
+    EXPECT_NE(loadedPayloads->find("bytes=0"), std::string::npos) << *loadedPayloads;
+    EXPECT_NE(loadedPayloads->find("externalFile=0/0"), std::string::npos) << *loadedPayloads;
+
+    const auto importedTextureMeta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(texturePath));
+    ASSERT_TRUE(importedTextureMeta.has_value());
+    EXPECT_EQ(importedTextureMeta->assetType, NLS::Core::Assets::AssetType::Texture);
+    ASSERT_EQ(result.autoImportedDependencies.size(), 1u);
+    const auto* importedTextureArtifact = result.autoImportedDependencies.front().manifest.FindPrimaryArtifact();
+    ASSERT_NE(importedTextureArtifact, nullptr);
+    const auto importedTextureArtifactPath = ResolveTestArtifactPath(root, importedTextureArtifact->artifactPath);
+    EXPECT_TRUE(std::filesystem::is_regular_file(importedTextureArtifactPath));
+}
+
+TEST(AssetImportPipelineTests, ExternalGltfImportDefersBulkProjectTextureAutoImport)
+{
+    const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
+    const auto& root = tempRoot.Path();
+    const auto sourcePath = root / "Assets" / "Models" / "BulkTextureHero.gltf";
+
+    std::ostringstream images;
+    std::ostringstream textures;
+    std::ostringstream materials;
+    constexpr size_t kTextureCount = 9u;
+    for (size_t index = 0u; index < kTextureCount; ++index)
+    {
+        const auto textureName = "BulkAlbedo" + std::to_string(index) + ".png";
+        WriteBinaryFile(root / "Assets" / "Textures" / textureName, TwoRowColorPng());
+
+        if (index > 0u)
+        {
+            images << ',';
+            textures << ',';
+            materials << ',';
+        }
+        images << "{ \"uri\": \"../Textures/" << textureName << "\", \"mimeType\": \"image/png\" }";
+        textures << "{ \"source\": " << index << " }";
+        materials <<
+            "{ \"name\": \"Body" << index << "\","
+            " \"pbrMetallicRoughness\": { \"baseColorTexture\": { \"index\": " << index << " } } }";
+    }
+
+    std::ostringstream gltf;
+    gltf <<
+        "{"
+        "\"asset\": { \"version\": \"2.0\" },"
+        "\"images\": [" << images.str() << "],"
+        "\"textures\": [" << textures.str() << "],"
+        "\"materials\": [" << materials.str() << "],"
+        "\"scene\": 0,"
+        "\"scenes\": [{ \"nodes\": [0] }],"
+        "\"meshes\": [{ \"name\": \"BodyMesh\", \"primitives\": [{ \"attributes\": {}, \"material\": 0 }] }],"
+        "\"nodes\": [{ \"name\": \"Root\", \"mesh\": 0 }]"
+        "}";
+    WriteTextFile(sourcePath, gltf.str());
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("72727272-7272-4272-8272-727272727272"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureResolutionSettings;
+    textureResolutionSettings.autoImportMissingTextureFiles = true;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
+
+    std::vector<std::string> progressMessages;
+    NLS::Editor::Assets::ImportProgressTracker progressTracker;
+    progressTracker.Subscribe(
+        [&progressMessages](const NLS::Editor::Assets::ImportProgressEvent& event)
+        {
+            progressMessages.push_back(event.message);
+        });
+    const auto progressJob = progressTracker.BeginJob(
+        modelMeta.id,
+        "Assets/Models/BulkTextureHero.gltf",
+        "editor",
+        1u);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "BulkTextureHero",
+        "editor",
+        nullptr,
+        &progressTracker,
+        progressJob,
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_TRUE(result.autoImportedDependencies.empty())
+        << "Bulk external texture resolution should keep the model import path bounded.";
+    for (size_t index = 0u; index < kTextureCount; ++index)
+    {
+        const auto texturePath =
+            root / "Assets" / "Textures" / ("BulkAlbedo" + std::to_string(index) + ".png");
+        EXPECT_FALSE(std::filesystem::exists(NLS::Core::Assets::GetAssetMetaPath(texturePath)));
+    }
+
+    const auto textureArtifactCount = std::count_if(
+        result.manifest.subAssets.begin(),
+        result.manifest.subAssets.end(),
+        [](const NLS::Core::Assets::ImportedArtifact& artifact)
+        {
+            return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+        });
+    EXPECT_EQ(textureArtifactCount, 0)
+        << "Bulk external glTF textures should not be synchronously decoded into model-local artifacts.";
+    size_t bulkTextureSourceHashDependencyCount = 0u;
+    size_t bulkTextureMappingDependencyCount = 0u;
+    for (const auto& dependency : result.manifest.dependencies)
+    {
+        if (dependency.value.find("BulkAlbedo") == std::string::npos)
+            continue;
+        if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::SourceFileHash)
+            ++bulkTextureSourceHashDependencyCount;
+        if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping)
+            ++bulkTextureMappingDependencyCount;
+    }
+    EXPECT_EQ(bulkTextureSourceHashDependencyCount, 0u)
+        << "Deferred texture contents are not imported into this model artifact and must not be hashed during prefab validation.";
+    EXPECT_EQ(bulkTextureMappingDependencyCount, kTextureCount)
+        << "Deferred texture path mappings still need to invalidate when those textures become imported project assets.";
+    for (const auto& artifact : result.manifest.subAssets)
+    {
+        if (artifact.artifactType != NLS::Core::Assets::ArtifactType::Material)
+            continue;
+
+        const auto materialPayload = ReadArtifactPayloadText(
+            root,
+            artifact,
+            NLS::Core::Assets::ArtifactType::Material,
+            1u);
+        EXPECT_EQ(materialPayload.find("BulkAlbedo"), std::string::npos)
+            << artifact.subAssetKey << "\n" << materialPayload;
+        EXPECT_EQ(materialPayload.find("property _BaseMap Texture2D"), std::string::npos)
+            << artifact.subAssetKey << "\n" << materialPayload;
+        EXPECT_NE(materialPayload.find("resourcePath= colorSpace=sRGB"), std::string::npos)
+            << artifact.subAssetKey << "\n" << materialPayload;
+    }
+
+    const auto deferredBulkAutoImport = std::find_if(
+        progressMessages.begin(),
+        progressMessages.end(),
+        [](const std::string& message)
+        {
+            return message.rfind("Deferred bulk project texture auto-import |", 0u) == 0u;
+        });
+    EXPECT_NE(deferredBulkAutoImport, progressMessages.end());
+
+    const auto deferredBulkTextureArtifacts = std::find_if(
+        progressMessages.begin(),
+        progressMessages.end(),
+        [](const std::string& message)
+        {
+            return message.rfind("Deferred bulk model-local texture artifacts |", 0u) == 0u;
+        });
+    EXPECT_NE(deferredBulkTextureArtifacts, progressMessages.end());
 }
 
 TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsTextureWithExistingMetaButMissingManifest)
@@ -8703,6 +9484,62 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxRawOpacity
         << "Importer version 8 artifacts can still miss FBX 3dsMax Parameters transparency/cutout maps.";
 }
 
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesPrefabValidationProofVersion9Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        9u)
+        << "Importer version 9 generated prefab artifacts can still carry path-sensitive validation proofs that block prepared runtime graph caching.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxUvOriginVersion11Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        11u)
+        << "Importer version 11 FBX mesh artifacts can sample shared textures with an inverted UV origin.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesGltfPackedMaterialChannelVersion12Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        12u)
+        << "Importer version 12 glTF materials can sample packed metallic and roughness values from the red channel.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxTexturedMetallicVersion13Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        13u)
+        << "Importer version 13 FBX materials can multiply authored metalness maps by Assimp's default zero factor.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxNearZeroMetallicVersion14Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        14u)
+        << "Importer version 14 FBX materials can preserve Assimp's near-zero metallic default and disable authored metalness maps.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxMissingMetallicFactorVersion15Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        15u)
+        << "Importer version 15 FBX materials can default a texture-only metalness channel to a zero multiplier.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxLegacySpecularVersion16Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        16u)
+        << "Importer version 16 FBX PBR materials can retain an untextured white legacy specular color and render too bright.";
+}
+
 #if !NLS_HAS_AUTODESK_FBX_SDK && NLS_HAS_ASSIMP_FBX_IMPORTER
 TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderFallsBackToAssimpWhenAutodeskSdkUnavailable)
 {
@@ -8924,6 +9761,26 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitAssimpFbxBuildsArtifac
     ASSERT_TRUE(mesh.has_value());
     EXPECT_FALSE(mesh->vertices.empty());
     EXPECT_FALSE(mesh->indices.empty());
+
+    NLS::Render::Resources::Parsers::AssimpParser uvReferenceParser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> uvReferenceMeshes;
+    std::vector<std::string> uvReferenceMaterials;
+    ASSERT_TRUE(uvReferenceParser.LoadModelData(
+        sourcePath.string(),
+        uvReferenceMeshes,
+        uvReferenceMaterials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE |
+            NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE |
+            NLS::Render::Resources::Parsers::EModelParserFlags::FLIP_UVS));
+    ASSERT_FALSE(uvReferenceMeshes.empty());
+    ASSERT_EQ(mesh->vertices.size(), uvReferenceMeshes.front().vertices.size());
+    for (size_t vertexIndex = 0u; vertexIndex < mesh->vertices.size(); ++vertexIndex)
+    {
+        EXPECT_FLOAT_EQ(
+            mesh->vertices[vertexIndex].texCoords[1],
+            uvReferenceMeshes.front().vertices[vertexIndex].texCoords[1])
+            << "FBX artifacts must normalize the UV origin so shared textures sample consistently with glTF.";
+    }
     const float maxMeshPosition = MaxAbsMeshPosition(*mesh);
     EXPECT_LT(maxMeshPosition, 2.0f)
         << "FBX import should preserve the same meter-scale convention as glTF imports.";
@@ -9553,4 +10410,303 @@ TEST(AssetImportPipelineTests, ArtifactLoadTelemetrySummarizesStageBaselineForPr
     ASSERT_NE(cacheHit, summary.end());
     EXPECT_EQ(cacheHit->recordCount, 1u);
     EXPECT_EQ(cacheHit->totalElapsed, std::chrono::microseconds(5));
+}
+
+TEST(AssetImportPipelineTests, ArtifactLoadTelemetryStageNameCoversThumbnailLatencyStages)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+    using NLS::Core::Assets::ArtifactLoadTelemetryStageName;
+
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender),
+        "ThumbnailGpuPreviewRender");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareResources),
+        "ThumbnailGpuPreviewPrepareResources");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareMaterialResources),
+        "ThumbnailGpuPreviewPrepareMaterialResources");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareSceneObjects),
+        "ThumbnailGpuPreviewPrepareSceneObjects");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpDependencies),
+        "ThumbnailGpuPreviewPumpDependencies");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMeshDependencies),
+        "ThumbnailGpuPreviewPumpMeshDependencies");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialDependencies),
+        "ThumbnailGpuPreviewPumpMaterialDependencies");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpTextureDependencies),
+        "ThumbnailGpuPreviewPumpTextureDependencies");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialPathBuild),
+        "ThumbnailGpuPreviewPumpMaterialPathBuild");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialPromote),
+        "ThumbnailGpuPreviewPumpMaterialPromote");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialReadyScan),
+        "ThumbnailGpuPreviewPumpMaterialReadyScan");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialFutureGet),
+        "ThumbnailGpuPreviewPumpMaterialFutureGet");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialRuntimeCreate),
+        "ThumbnailGpuPreviewPumpMaterialRuntimeCreate");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialShaderPassResolve),
+        "ThumbnailGpuPreviewPumpMaterialShaderPassResolve");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialShaderPassLoad),
+        "ThumbnailGpuPreviewPumpMaterialShaderPassLoad");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewBackgroundMaterialShaderPassLoad),
+        "ThumbnailGpuPreviewBackgroundMaterialShaderPassLoad");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialRegister),
+        "ThumbnailGpuPreviewPumpMaterialRegister");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRecord),
+        "ThumbnailGpuPreviewRecord");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewSubmit),
+        "ThumbnailGpuPreviewSubmit");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewDrain),
+        "ThumbnailGpuPreviewDrain");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewCleanup),
+        "ThumbnailGpuPreviewCleanup");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewReadback),
+        "ThumbnailGpuPreviewReadback");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPollReadback),
+        "ThumbnailGpuPreviewPollReadback");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureDecode),
+        "ThumbnailTextureDecode");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUploadEnqueue),
+        "ThumbnailTextureUploadEnqueue");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUpload),
+        "ThumbnailTextureUpload");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUploadCreate),
+        "ThumbnailTextureUploadCreate");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUploadPreparePixels),
+        "ThumbnailTextureUploadPreparePixels");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUploadSubmit),
+        "ThumbnailTextureUploadSubmit");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUploadCreateView),
+        "ThumbnailTextureUploadCreateView");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUploadPublish),
+        "ThumbnailTextureUploadPublish");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUploadResolveUiId),
+        "ThumbnailTextureUploadResolveUiId");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpConsumeCompleted),
+        "ThumbnailTexturePumpConsumeCompleted");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadPoll),
+        "ThumbnailTexturePumpPendingUploadPoll");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadConsumeResult),
+        "ThumbnailTexturePumpPendingUploadConsumeResult");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadResolveUiId),
+        "ThumbnailTexturePumpPendingUploadResolveUiId");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadWrapTexture),
+        "ThumbnailTexturePumpPendingUploadWrapTexture");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadCachePublish),
+        "ThumbnailTexturePumpPendingUploadCachePublish");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpReadyDecodePoll),
+        "ThumbnailTexturePumpReadyDecodePoll");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpReadyDecodeLoad),
+        "ThumbnailTexturePumpReadyDecodeLoad");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpStartDecodes),
+        "ThumbnailTexturePumpStartDecodes");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpBuildResidentSet),
+        "ThumbnailTexturePumpBuildResidentSet");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpSelectDecodeCandidates),
+        "ThumbnailTexturePumpSelectDecodeCandidates");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePumpScheduleDecodeJobs),
+        "ThumbnailTexturePumpScheduleDecodeJobs");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDraw),
+        "ThumbnailUiDraw");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGridVisibleRows),
+        "ThumbnailUiDrawGridVisibleRows");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGridItemInteractions),
+        "ThumbnailUiDrawGridItemInteractions");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGridItemThumbnail),
+        "ThumbnailUiDrawGridItemThumbnail");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGridItemLabel),
+        "ThumbnailUiDrawGridItemLabel");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSet),
+        "ThumbnailUiDrawVisibleSet");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHash),
+        "ThumbnailUiDrawVisibleSetHash");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetApply),
+        "ThumbnailUiDrawVisibleSetApply");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHotCacheFlush),
+        "ThumbnailUiDrawVisibleSetHotCacheFlush");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScope),
+        "ThumbnailUiDrawGenerationScope");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeSelectItems),
+        "ThumbnailUiDrawGenerationScopeSelectItems");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildKey),
+        "ThumbnailUiDrawGenerationScopeBuildKey");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeItemKey),
+        "ThumbnailUiDrawGenerationScopeItemKey");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeResultLookup),
+        "ThumbnailUiDrawGenerationScopeResultLookup");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequest),
+        "ThumbnailUiDrawGenerationScopeBuildRequest");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestValidate),
+        "ThumbnailUiDrawGenerationScopeBuildRequestValidate");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestMetaId),
+        "ThumbnailUiDrawGenerationScopeBuildRequestMetaId");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestManifestLookup),
+        "ThumbnailUiDrawGenerationScopeBuildRequestManifestLookup");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestItemIdentity),
+        "ThumbnailUiDrawGenerationScopeBuildRequestItemIdentity");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshness),
+        "ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshness");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessResolve),
+        "ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessResolve");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessFileStamp),
+        "ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessFileStamp");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessMetaStamp),
+        "ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessMetaStamp");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestArtifactFreshness),
+        "ThumbnailUiDrawGenerationScopeBuildRequestArtifactFreshness");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequestDependencyStamp),
+        "ThumbnailUiDrawGenerationScopeBuildRequestDependencyStamp");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeRequestPreview),
+        "ThumbnailUiDrawGenerationScopeRequestPreview");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailServiceRequestStableLookup),
+        "ThumbnailServiceRequestStableLookup");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailServiceRequestCacheEvaluate),
+        "ThumbnailServiceRequestCacheEvaluate");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailServiceRequestQueue),
+        "ThumbnailServiceRequestQueue");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTexturePump),
+        "ThumbnailTexturePump");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailTextureUploadDeferred),
+        "ThumbnailTextureUploadDeferred");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPump),
+        "ThumbnailUiPostDrawPump");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpConsumeCompleted),
+        "ThumbnailUiPostDrawPumpConsumeCompleted");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpCreatePreviewRenderer),
+        "ThumbnailUiPostDrawPumpCreatePreviewRenderer");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartLightGpu),
+        "ThumbnailUiPostDrawPumpStartLightGpu");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartHeavyGpu),
+        "ThumbnailUiPostDrawPumpStartHeavyGpu");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartBackground),
+        "ThumbnailUiPostDrawPumpStartBackground");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryBuild),
+        "ThumbnailCacheEvaluateResolveEntryBuild");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryContainmentKey),
+        "ThumbnailCacheEvaluateResolveEntryContainmentKey");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryContainmentStamp),
+        "ThumbnailCacheEvaluateResolveEntryContainmentStamp");
+    EXPECT_STREQ(
+        ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage::ThumbnailCacheEvaluateResolveEntryContainmentValidate),
+        "ThumbnailCacheEvaluateResolveEntryContainmentValidate");
+}
+
+TEST(AssetImportPipelineTests, ArtifactLoadTelemetryCanBeRuntimeEnabledForReleaseDiagnostics)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+    using NLS::Core::Assets::ClearArtifactLoadTelemetry;
+    using NLS::Core::Assets::IsArtifactLoadTelemetryEnabled;
+    using NLS::Core::Assets::RecordArtifactLoadTelemetry;
+    using NLS::Core::Assets::SetArtifactLoadTelemetryEnabled;
+    using NLS::Core::Assets::SnapshotArtifactLoadTelemetry;
+
+    const bool previous = IsArtifactLoadTelemetryEnabled();
+
+    SetArtifactLoadTelemetryEnabled(true);
+    ClearArtifactLoadTelemetry();
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::ThumbnailTextureDecode,
+        std::chrono::microseconds(15),
+        64u,
+        "enabled"});
+    EXPECT_EQ(SnapshotArtifactLoadTelemetry().size(), 1u);
+
+    SetArtifactLoadTelemetryEnabled(false);
+    ClearArtifactLoadTelemetry();
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::ThumbnailTextureDecode,
+        std::chrono::microseconds(20),
+        128u,
+        "disabled"});
+    EXPECT_TRUE(SnapshotArtifactLoadTelemetry().empty());
+
+    SetArtifactLoadTelemetryEnabled(true);
+    EXPECT_TRUE(SnapshotArtifactLoadTelemetry().empty())
+        << "ClearArtifactLoadTelemetry must clear stale records even while telemetry is disabled.";
+
+    SetArtifactLoadTelemetryEnabled(previous);
+    ClearArtifactLoadTelemetry();
 }

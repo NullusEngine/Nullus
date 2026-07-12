@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -28,23 +29,74 @@ struct AssetDatabaseRecord
     std::string subAssetKey;
     std::string artifactPath;
     NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
+    std::string displayName;
     bool mainAsset = false;
 };
 
-struct ObjectReferencePickerSubAssetSnapshot
+using EditorArtifactManifestMap =
+    std::unordered_map<NLS::Core::Assets::AssetId, NLS::Core::Assets::ArtifactManifest>;
+using EditorKnownCurrentAssetPathSet = std::unordered_set<std::string>;
+
+enum class EditorAssetSnapshotStatus
+{
+    Valid,
+    Error,
+    Count
+};
+
+struct EditorAssetSnapshotDiagnostic
+{
+    std::string code;
+    std::string offendingPath;
+    std::string reason;
+
+    bool Empty() const
+    {
+        return code.empty() && offendingPath.empty() && reason.empty();
+    }
+
+    bool operator==(const EditorAssetSnapshotDiagnostic&) const = default;
+};
+
+struct EditorSubAssetSnapshot
 {
     std::string subAssetKey;
     std::string artifactPath;
     NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
     std::string displayName;
+
+    bool operator==(const EditorSubAssetSnapshot&) const = default;
 };
 
-struct ObjectReferencePickerAssetSnapshot
+struct EditorAssetSnapshot
 {
     std::string sourceAssetPath;
     NLS::Core::Assets::AssetId assetId;
-    std::vector<ObjectReferencePickerSubAssetSnapshot> subAssets;
+    std::vector<EditorSubAssetSnapshot> subAssets;
+
+    bool operator==(const EditorAssetSnapshot&) const = default;
 };
+
+using ObjectReferencePickerSubAssetSnapshot = EditorSubAssetSnapshot;
+using ObjectReferencePickerAssetSnapshot = EditorAssetSnapshot;
+
+struct EditorAssetSnapshotIndex
+{
+    EditorAssetSnapshotStatus status = EditorAssetSnapshotStatus::Valid;
+    EditorAssetSnapshotDiagnostic diagnostic;
+    std::vector<EditorAssetSnapshot> assets;
+    std::unordered_map<std::string, size_t> assetIndexByCanonicalSourcePath;
+};
+
+struct FacadePublishedState
+{
+    std::shared_ptr<const EditorArtifactManifestMap> artifactManifests;
+    std::shared_ptr<const EditorKnownCurrentAssetPathSet> knownCurrentAssetPaths;
+    std::shared_ptr<const EditorAssetSnapshotIndex> snapshotIndex;
+};
+
+std::shared_ptr<const EditorAssetSnapshotIndex> BuildValidatedEditorAssetSnapshotIndex(
+    std::vector<EditorAssetSnapshot> assets);
 
 struct AssetPackMetadata
 {
@@ -85,6 +137,7 @@ public:
     AssetDatabaseFacade& operator=(AssetDatabaseFacade&& other) = delete;
 
     bool Refresh();
+    bool RefreshKnownSourceAssets(std::span<const std::filesystem::path> absoluteAssetPaths);
     bool ImportAsset(const std::string& assetPath);
     bool ImportAsset(const std::string& assetPath, ImportProgressTracker& progressTracker);
     bool ImportAsset(
@@ -109,6 +162,8 @@ public:
         const std::string& assetPath,
         ImportProgressTracker& progressTracker,
         size_t batchTotalAssets);
+    void BeginArtifactDatabaseFlushBatch();
+    bool EndArtifactDatabaseFlushBatch();
     void StartAssetEditing();
     bool StopAssetEditing();
 
@@ -144,6 +199,7 @@ public:
     bool IsReadOnlyAssetPath(const std::string& assetPath) const;
     bool IsArtifactManifestKnownCurrentForAssetPath(const std::string& assetPath) const;
     std::vector<std::string> GetKnownCurrentArtifactManifestAssetPaths() const;
+    std::shared_ptr<const FacadePublishedState> GetPublishedState() const;
     std::vector<ObjectReferencePickerAssetSnapshot> GetObjectReferencePickerAssetSnapshots() const;
     std::vector<ObjectReferencePickerAssetSnapshot> GetFreshObjectReferencePickerAssetSnapshots() const;
     std::shared_ptr<const std::vector<ObjectReferencePickerAssetSnapshot>> GetObjectReferencePickerAssetSnapshotsView() const;
@@ -184,14 +240,12 @@ public:
     bool IsForeignAsset(const AssetDatabaseRecord& asset) const;
     bool IsNativeAsset(const AssetDatabaseRecord& asset) const;
     std::filesystem::path GetArtifactRootForAssetPathForTesting(const std::string& assetPath) const;
-
     size_t GetQueuedImportCount() const;
     size_t GetCompletedImportCount() const;
     const NLS::Core::Assets::AssetDiagnostics& GetDiagnostics() const;
 
 private:
-    using ArtifactManifestMap =
-        std::unordered_map<NLS::Core::Assets::AssetId, NLS::Core::Assets::ArtifactManifest>;
+    using ArtifactManifestMap = EditorArtifactManifestMap;
 
     std::filesystem::path ResolveAssetPath(const std::string& assetPath) const;
     std::string ToEditorAssetPath(const std::filesystem::path& absolutePath) const;
@@ -200,6 +254,7 @@ private:
     std::optional<NLS::Core::Assets::AssetMeta> LoadMetaForPath(const std::string& assetPath) const;
     bool SaveMetaForPath(const std::string& assetPath, NLS::Core::Assets::AssetMeta meta);
     bool RefreshSourceDatabase();
+    bool RefreshKnownSourceAssetsInternal(std::span<const std::filesystem::path> absoluteAssetPaths);
     bool RefreshSingle(
         const std::string& assetPath,
         ImportProgressTracker* progressTracker = nullptr,
@@ -213,6 +268,10 @@ private:
     std::filesystem::path GetArtifactManifestPathForAssetPath(const std::filesystem::path& absolutePath) const;
     std::filesystem::path GetArtifactDatabasePathForAssetPath(const std::filesystem::path& absolutePath) const;
     void LoadPersistedArtifactManifests();
+    std::optional<NLS::Core::Assets::ArtifactManifest> LoadPersistedArtifactManifestForRecord(
+        const NLS::Core::Assets::SourceAssetRecord& record) const;
+    std::optional<NLS::Core::Assets::ArtifactManifest> LoadPreviousArtifactManifestForRecord(
+        const NLS::Core::Assets::SourceAssetRecord& record) const;
     void RefreshKnownCurrentArtifactManifestSnapshot();
     void UpdateKnownCurrentArtifactManifestForAssetPath(const std::string& assetPath);
     bool IsArtifactManifestCurrentForAssetPathUncached(const std::string& assetPath) const;
@@ -230,13 +289,21 @@ private:
         const NLS::Core::Assets::ArtifactManifest& manifest);
     void RemoveKnownCurrentArtifactManifestSnapshotForAssetPathLocked(const std::string& assetPath) const;
     void PruneStaleObjectReferencePickerSnapshots() const;
+    void PublishCurrentStateLocked() const;
     bool CanSaveArtifactManifestForAssetPath(const std::filesystem::path& absolutePath) const;
     bool SaveArtifactManifestForAssetPath(
         const std::filesystem::path& absolutePath,
-        const NLS::Core::Assets::ArtifactManifest& manifest);
+        const NLS::Core::Assets::ArtifactManifest& manifest,
+        bool deferFlush = false);
     bool EnsureStandardPbrShaderLabSourceAvailable();
-    bool SaveArtifactDatabaseManifest(const NLS::Core::Assets::ArtifactManifest& manifest);
+    bool SaveArtifactDatabaseManifest(
+        const NLS::Core::Assets::ArtifactManifest& manifest,
+        bool deferFlush = false);
     bool FlushArtifactDatabaseCache();
+    bool FlushArtifactDatabaseCache(std::span<const std::string> databaseKeys);
+    void PublishArtifactManifestToMemory(
+        NLS::Core::Assets::ArtifactManifest manifest,
+        bool markKnownCurrent = false);
     std::string MakeSubAssetKey(const AssetObjectRecord& asset) const;
     NLS::Core::Assets::ImportedArtifact MakeImportedArtifact(
         NLS::Core::Assets::AssetId owner,
@@ -259,7 +326,8 @@ private:
         std::filesystem::path path,
         std::string message);
     const ArtifactManifestMap& ManifestsBySource() const;
-    ArtifactManifestMap& MutableManifestsBySource();
+    ArtifactManifestMap& MutableManifestsBySource() const;
+    EditorKnownCurrentAssetPathSet& MutableKnownCurrentArtifactManifestAssetPaths() const;
     bool RejectRuntimeEditorApi(std::string apiName);
     bool IsEditorMode() const;
     bool ImportAsset(
@@ -283,16 +351,33 @@ private:
     NLS::Core::Assets::AssetDiagnostics m_diagnostics;
     std::unordered_map<std::string, NLS::Core::Assets::AssetId> m_idByEditorPath;
     std::unordered_map<NLS::Core::Assets::AssetId, std::string> m_editorPathById;
-    std::shared_ptr<ArtifactManifestMap> m_manifestsBySource;
+    mutable std::shared_ptr<ArtifactManifestMap> m_manifestsBySource;
+    mutable std::shared_ptr<const FacadePublishedState> m_publishedState;
+    mutable std::shared_ptr<const uint8_t> m_currentStateIdentity = std::make_shared<const uint8_t>(0u);
+    mutable std::shared_ptr<const uint8_t> m_publishedStateIdentity;
     mutable std::recursive_mutex m_manifestMutex;
-    std::unordered_map<std::string, NLS::Core::Assets::ArtifactDatabase> m_artifactDatabasesByPath;
+    mutable std::unordered_map<std::string, NLS::Core::Assets::ArtifactDatabase> m_artifactDatabasesByPath;
     std::unordered_set<std::string> m_dirtyArtifactDatabasePaths;
-    mutable std::unordered_set<std::string> m_knownCurrentArtifactManifestAssetPaths;
+    mutable std::shared_ptr<EditorKnownCurrentAssetPathSet> m_knownCurrentArtifactManifestAssetPaths;
     mutable std::shared_ptr<const std::vector<ObjectReferencePickerAssetSnapshot>> m_objectReferencePickerAssetSnapshots;
     mutable std::mutex m_artifactDatabaseCacheMutex;
     std::vector<std::string> m_queuedImports;
     bool m_assetEditing = false;
+    size_t m_artifactDatabaseFlushBatchDepth = 0u;
     bool m_knownCurrentArtifactManifestSnapshotDirty = false;
     size_t m_completedImports = 0u;
 };
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void ResetAssetDatabaseFullSourceRefreshCountForTesting();
+size_t GetAssetDatabaseFullSourceRefreshCountForTesting();
+void ResetAssetDatabaseLastKnownSourceRefreshAssetCountForTesting();
+size_t GetAssetDatabaseLastKnownSourceRefreshAssetCountForTesting();
+void ResetAssetDatabasePersistedManifestLoadCountForTesting();
+size_t GetAssetDatabasePersistedManifestLoadCountForTesting();
+void ResetAssetDatabaseArtifactManifestCurrentCheckCountForTesting();
+size_t GetAssetDatabaseArtifactManifestCurrentCheckCountForTesting();
+void ResetAssetDatabaseSourceFileContentHashReadCountForTesting();
+size_t GetAssetDatabaseSourceFileContentHashReadCountForTesting();
+#endif
 }

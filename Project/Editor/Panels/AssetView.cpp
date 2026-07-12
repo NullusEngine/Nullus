@@ -20,46 +20,6 @@ Editor::Panels::AssetView::AssetView
 	const UI::PanelWindowSettings& p_windowSettings
 ) : AViewControllable(p_title, p_opened, p_windowSettings)
 {
-	m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
-    SetRequiresRetiredFrameConsumption(true);
-	m_renderer->SetDebugDrawService(std::make_unique<Render::Debug::DebugDrawService>());
-
-	m_renderer->AddPass<Editor::Rendering::GridRenderPass>("Grid", Render::Settings::ERenderPassOrder::First);
-	m_renderer->AddPass<Render::Debug::DebugDrawPass>("Debug Draw", Render::Settings::ERenderPassOrder::Transparent + 2);
-
-	m_camera.SetFar(5000.0f);
-
-	auto& directionalLightGO = m_scene.CreateGameObject("Directional Light");
-    directionalLightGO.GetTransform()->SetLocalPosition({0.0f, 10.0f, 0.0f});
-    directionalLightGO.GetTransform()->SetLocalRotation(Maths::Quaternion::LookAt({-0.35f, -1.0f, 0.25f}, Maths::Vector3::Up));
-    auto directionalLight = directionalLightGO.AddComponent<Engine::Components::LightComponent>();
-    directionalLight->SetLightType(Render::Settings::ELightType::DIRECTIONAL);
-    directionalLight->SetIntensity(0.75f);
-
-	auto& ambientLightGo = m_scene.CreateGameObject("Ambient Light");
-    auto ambientLight = ambientLightGo.AddComponent<Engine::Components::LightComponent>();
-    ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
-    ambientLight->SetRadius(10000.0f);
-
-	m_assetActor = &m_scene.CreateGameObject("Asset");
-    m_meshFilter = m_assetActor->AddComponent<Engine::Components::MeshFilter>();
-    m_modelRenderer = m_assetActor->AddComponent<Engine::Components::MeshRenderer>();
-
-	m_cameraController.LockTargetGameObject(*m_assetActor);
-	
-	/* Default Material */
-	m_defaultMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Standard.hlsl"]);
-	m_defaultMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.f));
-	m_defaultMaterial.Set("u_Shininess", 100.0f);
-	m_defaultMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
-
-	/* Texture Material */
-	m_textureMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.hlsl"]);
-	m_textureMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.f));
-	m_textureMaterial.SetBackfaceCulling(false);
-	m_textureMaterial.SetBlendable(true);
-	m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
-
 	m_image->AddPlugin<UI::DDTarget<std::pair<std::string, UI::Widgets::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
 	{
 		std::string path = p_data.first;
@@ -77,6 +37,51 @@ Editor::Panels::AssetView::AssetView
 			break;
 		}
 	};
+}
+
+void Editor::Panels::AssetView::EnsureRenderer()
+{
+    if (m_renderer != nullptr)
+        return;
+
+    NLS_LOG_INFO("[Startup] Creating Asset View renderer");
+    m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
+    SetRequiresRetiredFrameConsumption(true);
+    m_renderer->SetDebugDrawService(std::make_unique<Render::Debug::DebugDrawService>());
+
+    m_renderer->AddPass<Editor::Rendering::GridRenderPass>("Grid", Render::Settings::ERenderPassOrder::First);
+    m_renderer->AddPass<Render::Debug::DebugDrawPass>("Debug Draw", Render::Settings::ERenderPassOrder::Transparent + 2);
+
+    m_camera.SetFar(5000.0f);
+
+    auto& directionalLightGO = m_scene.CreateGameObject("Directional Light");
+    directionalLightGO.GetTransform()->SetLocalPosition({0.0f, 10.0f, 0.0f});
+    directionalLightGO.GetTransform()->SetLocalRotation(Maths::Quaternion::LookAt({-0.35f, -1.0f, 0.25f}, Maths::Vector3::Up));
+    auto directionalLight = directionalLightGO.AddComponent<Engine::Components::LightComponent>();
+    directionalLight->SetLightType(Render::Settings::ELightType::DIRECTIONAL);
+    directionalLight->SetIntensity(0.75f);
+
+    auto& ambientLightGo = m_scene.CreateGameObject("Ambient Light");
+    auto ambientLight = ambientLightGo.AddComponent<Engine::Components::LightComponent>();
+    ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
+    ambientLight->SetRadius(10000.0f);
+
+    m_assetActor = &m_scene.CreateGameObject("Asset");
+    m_meshFilter = m_assetActor->AddComponent<Engine::Components::MeshFilter>();
+    m_modelRenderer = m_assetActor->AddComponent<Engine::Components::MeshRenderer>();
+
+    m_cameraController.LockTargetGameObject(*m_assetActor);
+
+    m_defaultMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Standard.hlsl"]);
+    m_defaultMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.f));
+    m_defaultMaterial.Set("u_Shininess", 100.0f);
+    m_defaultMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
+
+    m_textureMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.hlsl"]);
+    m_textureMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.f));
+    m_textureMaterial.SetBackfaceCulling(false);
+    m_textureMaterial.SetBlendable(true);
+    m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
 }
 
 NLS::Engine::SceneSystem::Scene* Editor::Panels::AssetView::GetScene()
@@ -103,11 +108,13 @@ void Editor::Panels::AssetView::SetResource(ViewableResource p_resource)
 void Editor::Panels::AssetView::ClearResource()
 {
 	m_resource = static_cast<Render::Resources::Texture2D*>(nullptr);
-	m_meshFilter->SetMesh(nullptr);
+    if (m_meshFilter != nullptr)
+	    m_meshFilter->SetMesh(nullptr);
 }
 
 void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture2D& p_texture)
 {
+    EnsureRenderer();
 	m_resource = &p_texture;
 	m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
 	m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One * 3.0f);
@@ -120,6 +127,7 @@ void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture2D& p_textu
 
 void Editor::Panels::AssetView::SetMesh(Render::Resources::Mesh& p_mesh)
 {
+    EnsureRenderer();
 	m_resource = &p_mesh;
     m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
     m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One);
@@ -131,6 +139,7 @@ void Editor::Panels::AssetView::SetMesh(Render::Resources::Mesh& p_mesh)
 
 void Editor::Panels::AssetView::SetMaterial(Render::Resources::Material& p_material)
 {
+    EnsureRenderer();
 	m_resource = &p_material;
     m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
     m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One);

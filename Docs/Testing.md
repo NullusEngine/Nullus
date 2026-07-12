@@ -4,20 +4,26 @@
 
 ## 测试模块
 
-- `Tests/Unit/NullusUnitTests` 是正式接入 `CTest` 的单元测试可执行文件。
+- `Tests/Unit/NullusUnitTests` 是正式接入 `CTest`、标签为 `behavior` 的单元测试可执行文件。
+- `Tests/Performance/NullusPerformanceTests` 是按需构建并注册到 `CTest`、标签为 `performance` 的性能和压力测试可执行文件。
 - `Tools/ReflectionTest` 保留为更轻量的反射冒烟验证工具。
+
+`NullusPerformanceTests` 默认既不会构建，也不会注册到 `CTest`。可重复、确定性的行为回归应继续放在
+`Tests/Unit`；性能测量、压力场景和真实资产负载应放在 `Tests/Performance`，避免默认行为测试受机器性能或
+本地资产状态影响。
 
 `NullusUnitTests` 当前覆盖：
 
+- 资产导入、数据库、artifact、prefab、缩略图和资源生命周期
+- 编辑器工作流、设置、快捷键、输入、面板和 UI/tooling 行为
+- 渲染、RHI、FrameGraph、shader/material、场景和可见性管线
+- JobSystem、profiling、序列化以及 Base、Core、Engine 的其它确定性行为
+
+反射和 MetaParser 是其中的专项重点，包括：
+
 - Base、Core、Engine 关键类型的运行时反射注册验证
 - `Runtime/*/Gen/MetaGenerated.h/.cpp` 生成内容验证
-- MetaParser 集成回归问题验证，这类问题通常只会在构建阶段暴露
-
-当前反射相关单元测试已经按桶拆分为：
-
-- 运行时注册桶：`ReflectionRuntimeCoreTests.cpp`、`ReflectionRuntimeEngineTests.cpp`
-- 生成产物桶：`MetaParserGenerationModuleTests.cpp`、`MetaParserGenerationEngineTests.cpp`、`MetaParserGenerationDataTests.cpp`
-- 共享装配 / 断言辅助：`ReflectionRuntimeTestFixture.h`、`ReflectionTestUtils.h`
+- MetaParser 集成回归验证，这类问题通常只会在构建阶段暴露
 
 `ReflectionTest` 当前负责：
 
@@ -33,11 +39,10 @@
 
 适合承载：
 
-- 更细粒度的运行时反射断言
-- 生成片段和模板行为断言
-- 外部反射、私有绑定、自动属性、显式属性等模式化回归
-- 需要明确失败定位的精确测试
-- 按桶继续扩展时，优先往现有 runtime / generation 分类里追加，而不是重新堆回一个混杂的大文件
+- 可重复、与机器性能无关的子系统行为和回归断言
+- 资产、编辑器、渲染、任务系统、场景、shader 和 UI 等模块的单元或集成契约
+- 更细粒度的运行时反射、生成片段、模板行为和模式化回归断言
+- 需要明确失败定位、可在默认 CI 中稳定运行的精确测试
 
 ### `ReflectionTest`
 
@@ -51,13 +56,19 @@
 
 ## 本地构建与测试
 
-Windows：
+### 默认行为测试
+
+Windows/MSVC 的默认行为测试工作流使用仓库根目录下的 `Build` 构建目录：
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Debug --target NullusUnitTests -- /m:4
-ctest --test-dir build -C Debug --output-on-failure
+cmake -S . -B Build -G "Visual Studio 17 2022" -A x64 -DNLS_BUILD_TESTS=ON
+cmake --build Build --config Debug --target NullusUnitTests ReflectionTest -- /m:4
+ctest --test-dir Build -C Debug -L behavior --output-on-failure
 ```
+
+`NLS_BUILD_PERFORMANCE_TESTS` 默认保持 `OFF`，因此上面的配置只注册确定性的 `behavior` 测试。
+`ReflectionTest` 会随命令一起构建，但它是独立的反射冒烟工具，不属于 `behavior` CTest 标签。
+Windows 路径大小写不敏感；上述默认行为测试工作流统一使用仓库现有输出路径约定中的 `Build` 写法。
 
 如果需要调整并行度，可显式传入 `/m:<jobs>`；使用 `build_windows.bat` 时默认会按
 `NUMBER_OF_PROCESSORS` 设置 MSBuild worker 数，也可设置 `NLS_BUILD_JOBS=<jobs>`
@@ -134,13 +145,63 @@ cmake -S . -B build-assimp-full -G "Visual Studio 17 2022" -A x64 -DNLS_ASSIMP_B
 - 启用窄开关后的 Assimp OBJ/FBX/glTF import-only：`10:22`
 - 启用窄开关后的 Assimp OBJ/FBX/glTF import-only + MSVC `/MP /EHsc`：`4:29`
 
-Linux / macOS：
+Linux / macOS 的等价工作流为：
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-ctest --test-dir build --output-on-failure
+cmake -S . -B Build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DNLS_BUILD_TESTS=ON
+cmake --build Build --target NullusUnitTests ReflectionTest
+ctest --test-dir Build -L behavior --output-on-failure
 ```
+
+### 按需性能测试
+
+性能测试使用独立构建目录，避免复用已配置为行为测试的缓存；性能测量统一使用 `Release`：
+
+```powershell
+cmake -S . -B Build-Performance -G "Visual Studio 17 2022" -A x64 -DNLS_BUILD_TESTS=OFF -DNLS_BUILD_PERFORMANCE_TESTS=ON
+cmake --build Build-Performance --config Release --target NullusPerformanceTests -- /m:4
+$env:NLS_PERFORMANCE_REPORT_DIR = (Join-Path (Get-Location) "Build-Performance/reports")
+ctest --test-dir Build-Performance -C Release -L performance --output-on-failure
+```
+
+Linux / macOS 的可执行示例为：
+
+```bash
+cmake -S . -B Build-Performance -G Ninja -DCMAKE_BUILD_TYPE=Release -DNLS_BUILD_TESTS=OFF -DNLS_BUILD_PERFORMANCE_TESTS=ON
+cmake --build Build-Performance --target NullusPerformanceTests
+export NLS_PERFORMANCE_REPORT_DIR="$PWD/Build-Performance/reports"
+ctest --test-dir Build-Performance -C Release -L performance --output-on-failure
+```
+
+`NLS_PERFORMANCE_REPORT_DIR` 是生成报告文件所必需的环境变量；以上示例将 `.txt` 报告写入仓库根目录下的
+`Build-Performance/reports`，目录不存在时测试会自动创建。未设置或设置为空时，测试仍会运行，但不会写出
+报告文件。`-C Release` 对 Visual Studio 等多配置生成器用于选择配置，对单配置生成器可保留为统一写法。
+
+性能测试目标中的合成工作负载随 `performance` 标签运行；真实资产基准仍保留额外的环境变量开关：
+
+- `NLS_RUN_NEWSPONZA_PREFAB_PERF=1`：启用当前 NewSponza prefab 导入、实例化和 prepared-cache 基准。
+- `NLS_RUN_PNG_IMPORT_PERF=1`：启用当前 NewSponza 独立 PNG 导入基准。
+
+未设置这些 `NLS_RUN_*_PERF` 开关时，对应真实资产用例会跳过；它们不是 CMake 配置选项。真实资产缺失时
+用例同样会跳过。需要比较耗时或生成性能报告时应使用 `Release` 构建，避免把 Debug 开销混入测量结果。
+
+NewSponza prefab 基准还提供两个可选的可复现性和缓存控制变量；它们不能替代上面的
+`NLS_RUN_NEWSPONZA_PREFAB_PERF=1` opt-in 运行开关：
+
+- `NLS_NEWSPONZA_FORCE_REIMPORT=1`：改走重导入路径而非常规导入路径，强制重新导入 NewSponza 资产。
+- `NLS_NEWSPONZA_RESET_PREPARED_PREFAB_CACHE=1`：在 prepared-cache restart 基准开始前删除
+  `TestProject/Library/PreparedPrefabCache`，用于测量明确的冷缓存起点。
+
+### 测试专用 hooks
+
+`NLS_ENABLE_TEST_HOOKS` 是缓存字符串，支持 `AUTO`、`ON`、`OFF`：
+
+- `AUTO`（默认）：当 `NLS_BUILD_TESTS` 或 `NLS_BUILD_PERFORMANCE_TESTS` 任一开启时启用 hooks；两者都关闭时禁用。
+- `ON`：无论是否构建测试目标都强制暴露测试专用 runtime hooks。
+- `OFF`：无论测试构建开关为何都禁用 hooks；依赖这些 hooks 的测试可能跳过相应检查。
+
+实现仍接受旧 Boolean 缓存常见的 `ON/TRUE/YES/1` 与 `OFF/FALSE/NO/0` 值。已有构建目录若把该项保存为
+Boolean，建议重新配置时传入 `-DNLS_ENABLE_TEST_HOOKS:STRING=AUTO`，迁移到当前三态语义。
 
 如果需要直接运行单元测试可执行文件：
 
@@ -149,7 +210,7 @@ ctest --test-dir build --output-on-failure
 
 ## CI 行为
 
-GitHub Actions 现在会在正常构建之后继续执行 `ctest`，覆盖以下平台：
+GitHub Actions 现在会在正常构建之后继续执行行为验证，覆盖以下平台：
 
 - Windows
 - Linux
@@ -159,6 +220,10 @@ GitHub Actions 现在会在正常构建之后继续执行 `ctest`，覆盖以下
 
 - 工程构建
 - `NullusUnitTests` 中的反射系统与 MetaParser 验证
+- `ReflectionTest` 反射冒烟验证
+
+默认 CI 只启用 `NLS_BUILD_TESTS`，不构建或注册 `NullusPerformanceTests`；性能、压力和真实资产负载需按
+上述 `performance` 工作流单独运行。
 
 ## 说明
 

@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <string>
@@ -35,6 +37,20 @@ namespace
     {
         auto* data = static_cast<AtomicCounterData*>(userData);
         data->counter->fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    struct BackgroundOrderData
+    {
+        std::mutex* mutex = nullptr;
+        std::vector<int>* order = nullptr;
+        int value = 0;
+    };
+
+    void RecordBackgroundOrder(void* userData)
+    {
+        auto* data = static_cast<BackgroundOrderData*>(userData);
+        std::lock_guard lock(*data->mutex);
+        data->order->push_back(data->value);
     }
 
     void ThrowingJob(void*)
@@ -284,10 +300,11 @@ TEST_F(JobSystemBackgroundTests, BackgroundJobExecutesAndCompletesThroughHandle)
     desc.userData = &data;
 
     auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
+    const auto completedHandle = handle;
     NLS::Base::Jobs::Complete(handle);
 
     EXPECT_EQ(counter.load(std::memory_order_acquire), 1);
-    EXPECT_TRUE(NLS::Base::Jobs::HasBeenSynced(handle));
+    EXPECT_TRUE(NLS::Base::Jobs::HasBeenSynced(completedHandle));
 }
 
 TEST_F(JobSystemBackgroundTests, BackgroundJobDebugNameIsOwnedAfterScheduleReturns)
@@ -2150,4 +2167,115 @@ TEST_F(JobSystemBackgroundTests, ForegroundCallbackDoesNotDeadlockCompletingBack
     EXPECT_TRUE(foregroundReturned.load(std::memory_order_acquire));
     NLS::Base::Jobs::Complete(background);
     EXPECT_EQ(backgroundCounter.load(std::memory_order_acquire), 1);
+}
+
+TEST_F(JobSystemBackgroundTests, HighPriorityBackgroundJobRunsBeforeEarlierNormalJob)
+{
+    NLS::Base::Jobs::JobSystemConfig config;
+    config.workerCount = 0u;
+    config.backgroundWorkerCount = 1u;
+    ASSERT_TRUE(NLS::Base::Jobs::InitializeJobSystem(config));
+
+    std::atomic<int> blockerStarted = 0;
+    std::atomic<int> blockerFinished = 0;
+    std::atomic<bool> releaseBlocker = false;
+    BlockingJobData blockerData{&blockerStarted, &blockerFinished, &releaseBlocker};
+    NLS::Base::Jobs::BackgroundJobDesc blockerDesc;
+    blockerDesc.function = BlockingBackgroundJob;
+    blockerDesc.userData = &blockerData;
+    auto blocker = NLS::Base::Jobs::ScheduleBackgroundJob(blockerDesc);
+    ASSERT_NE(blocker.id, 0u);
+    for (int attempt = 0; attempt < 200 && blockerStarted.load(std::memory_order_acquire) == 0; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_EQ(blockerStarted.load(std::memory_order_acquire), 1);
+
+    std::mutex orderMutex;
+    std::vector<int> order;
+    BackgroundOrderData normalData{&orderMutex, &order, 1};
+    BackgroundOrderData highData{&orderMutex, &order, 2};
+    BackgroundOrderData secondHighData{&orderMutex, &order, 3};
+
+    NLS::Base::Jobs::BackgroundJobDesc normalDesc;
+    normalDesc.function = RecordBackgroundOrder;
+    normalDesc.userData = &normalData;
+    auto normal = NLS::Base::Jobs::ScheduleBackgroundJob(normalDesc);
+    ASSERT_NE(normal.id, 0u);
+
+    NLS::Base::Jobs::BackgroundJobDesc highDesc;
+    highDesc.function = RecordBackgroundOrder;
+    highDesc.userData = &highData;
+    highDesc.priority = NLS::Base::Jobs::JobPriority::High;
+    auto high = NLS::Base::Jobs::ScheduleBackgroundJob(highDesc);
+    ASSERT_NE(high.id, 0u);
+
+    NLS::Base::Jobs::BackgroundJobDesc secondHighDesc;
+    secondHighDesc.function = RecordBackgroundOrder;
+    secondHighDesc.userData = &secondHighData;
+    secondHighDesc.priority = NLS::Base::Jobs::JobPriority::High;
+    auto secondHigh = NLS::Base::Jobs::ScheduleBackgroundJob(secondHighDesc);
+    ASSERT_NE(secondHigh.id, 0u);
+
+    releaseBlocker.store(true, std::memory_order_release);
+    NLS::Base::Jobs::CompleteNoClear(blocker);
+    NLS::Base::Jobs::CompleteNoClear(high);
+    NLS::Base::Jobs::CompleteNoClear(secondHigh);
+    NLS::Base::Jobs::CompleteNoClear(normal);
+
+    ASSERT_EQ(order.size(), 3u);
+    EXPECT_EQ(order[0], 2);
+    EXPECT_EQ(order[1], 3);
+    EXPECT_EQ(order[2], 1);
+}
+
+TEST_F(JobSystemBackgroundTests, HighPriorityBackgroundJobsYieldToAcceptedNormalWork)
+{
+    NLS::Base::Jobs::JobSystemConfig config;
+    config.workerCount = 0u;
+    config.backgroundWorkerCount = 1u;
+    ASSERT_TRUE(NLS::Base::Jobs::InitializeJobSystem(config));
+
+    std::atomic<int> blockerStarted = 0;
+    std::atomic<int> blockerFinished = 0;
+    std::atomic<bool> releaseBlocker = false;
+    BlockingJobData blockerData{&blockerStarted, &blockerFinished, &releaseBlocker};
+    NLS::Base::Jobs::BackgroundJobDesc blockerDesc;
+    blockerDesc.function = BlockingBackgroundJob;
+    blockerDesc.userData = &blockerData;
+    auto blocker = NLS::Base::Jobs::ScheduleBackgroundJob(blockerDesc);
+    ASSERT_NE(blocker.id, 0u);
+    for (int attempt = 0; attempt < 200 && blockerStarted.load(std::memory_order_acquire) == 0; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_EQ(blockerStarted.load(std::memory_order_acquire), 1);
+
+    std::mutex orderMutex;
+    std::vector<int> order;
+    BackgroundOrderData normalData{&orderMutex, &order, 1};
+    NLS::Base::Jobs::BackgroundJobDesc normalDesc;
+    normalDesc.function = RecordBackgroundOrder;
+    normalDesc.userData = &normalData;
+    auto normal = NLS::Base::Jobs::ScheduleBackgroundJob(normalDesc);
+    ASSERT_NE(normal.id, 0u);
+
+    std::array<BackgroundOrderData, 12u> highData;
+    std::array<NLS::Base::Jobs::JobHandle, 12u> highHandles;
+    for (size_t index = 0u; index < highData.size(); ++index)
+    {
+        highData[index] = {&orderMutex, &order, static_cast<int>(100u + index)};
+        NLS::Base::Jobs::BackgroundJobDesc highDesc;
+        highDesc.function = RecordBackgroundOrder;
+        highDesc.userData = &highData[index];
+        highDesc.priority = NLS::Base::Jobs::JobPriority::High;
+        highHandles[index] = NLS::Base::Jobs::ScheduleBackgroundJob(highDesc);
+        ASSERT_NE(highHandles[index].id, 0u);
+    }
+
+    releaseBlocker.store(true, std::memory_order_release);
+    NLS::Base::Jobs::CompleteNoClear(blocker);
+    for (auto& handle : highHandles)
+        NLS::Base::Jobs::CompleteNoClear(handle);
+    NLS::Base::Jobs::CompleteNoClear(normal);
+
+    const auto normalPosition = std::find(order.begin(), order.end(), 1);
+    ASSERT_NE(normalPosition, order.end());
+    EXPECT_LE(static_cast<size_t>(std::distance(order.begin(), normalPosition)), 8u);
 }

@@ -19,7 +19,11 @@ public:
      * @param p_width
      * @param p_height
      */
-    Framebuffer(uint16_t p_width = 0, uint16_t p_height = 0);
+    Framebuffer(
+        uint16_t p_width = 0,
+        uint16_t p_height = 0,
+        NLS::Render::RHI::TextureColorSpace colorSpace =
+            NLS::Render::RHI::TextureColorSpace::Linear);
 
     /**
      * Destructor
@@ -60,6 +64,8 @@ private:
 
     uint16_t m_width = 0;
     uint16_t m_height = 0;
+    NLS::Render::RHI::TextureColorSpace m_colorSpace =
+        NLS::Render::RHI::TextureColorSpace::Linear;
     NLS::Render::RHI::RHITextureDesc::OptimizedClearValue m_colorOptimizedClearValue =
         NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::Color();
 

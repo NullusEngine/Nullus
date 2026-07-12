@@ -59,6 +59,7 @@ struct ArtifactPayload
     std::string displayName;
     std::filesystem::path relativePath;
     std::vector<uint8_t> payload;
+    std::vector<AssetDependencyRecord> dependencies;
 };
 
 struct ArtifactWriteRequest

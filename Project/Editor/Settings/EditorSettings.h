@@ -2,6 +2,7 @@
 
 #include "Reflection/Macros.h"
 #include "Reflection/RuntimeMetaProperties.h"
+#include "Rendering/LargeSceneSettings.h"
 #include "Rendering/Settings/EngineDiagnosticsSettings.h"
 #include "Settings/EditorSettingsRegistry.h"
 #include "Project/Editor/Settings/EditorSettings.generated.h"
@@ -72,6 +73,46 @@ namespace NLS::Editor::Settings
 
 namespace NLS::Editor::Settings
 {
+    STRUCT(EditorLargeSceneSettingsObject)
+    {
+        GENERATED_BODY()
+        PROPERTY()
+        bool enableSpatialIndex = true;
+        PROPERTY()
+        bool enableParallelVisibility = true;
+        PROPERTY()
+        bool enableLOD = true;
+        PROPERTY()
+        bool enableHLOD = false;
+        PROPERTY()
+        bool enableHZBOcclusion = false;
+        PROPERTY()
+        int maxVisibilityJobs = 0;
+        PROPERTY()
+        int parallelVisibilityPrimitiveThreshold = 1024;
+        PROPERTY()
+        int parallelVisibilityPrimitivesPerTask = 128;
+        PROPERTY()
+        double staticRebuildDirtyRatio = 0.20;
+        PROPERTY()
+        int staticRebuildBudgetUs = 0;
+        PROPERTY()
+        int streamingCpuBudgetUs = 1000;
+        PROPERTY()
+        int streamingGpuUploadBudgetBytes = 16 * 1024 * 1024;
+        PROPERTY()
+        int streamingIoBudgetBytes = 32 * 1024 * 1024;
+        PROPERTY()
+        int streamingCpuMemoryBudgetBytes = 1024 * 1024 * 1024;
+        PROPERTY()
+        int streamingGpuMemoryBudgetBytes = 1024 * 1024 * 1024;
+        PROPERTY()
+        int maxOcclusionHistoryAge = 2;
+    };
+}
+
+namespace NLS::Editor::Settings
+{
 	/**
 	* Accessible from anywhere editor settings
 	*/
@@ -87,8 +128,10 @@ namespace NLS::Editor::Settings
         static EditorSceneToolSettingsObject& GetSceneToolSettingsObject();
         static EditorRenderingSettingsObject& GetRenderingSettingsObject();
         static EditorRuntimeSettingsObject& GetRuntimeSettingsObject();
+        static EditorLargeSceneSettingsObject& GetLargeSceneSettingsObject();
         static Render::Settings::RenderDocSettings BuildRenderDocSettings();
         static Render::Settings::EngineDiagnosticsSettings BuildDiagnosticsSettings();
+        static Engine::Rendering::LargeSceneSettings BuildLargeSceneSettings();
         static void RegisterSettingObjects(EditorSettingsRegistry& p_registry);
 	};
 }

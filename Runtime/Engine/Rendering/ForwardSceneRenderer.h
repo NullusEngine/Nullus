@@ -12,6 +12,7 @@ namespace NLS::Engine::Rendering
 		explicit ForwardSceneRenderer(NLS::Render::Context::Driver& p_driver);
 
 		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
+		void BeginFrameForBackgroundPreview(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
 		void DrawFrame() override;
 
 	protected:
@@ -21,6 +22,8 @@ namespace NLS::Engine::Rendering
 		virtual void DrawTransparents(NLS::Render::Data::PipelineState pso);
 
 	private:
+		void BeginSceneFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor, bool backgroundPreview);
+
 		void ExecuteCompiledGraphPass(
 			NLS::Render::Context::RenderPassCommandKind kind,
 			NLS::Render::Data::PipelineState pipelineState);

@@ -18,6 +18,7 @@
 #include "Panels/FrameInfo.h"
 #include "Panels/ProfilerPanel.h"
 #include "Panels/Console.h"
+#include "Panels/SceneView.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Panels/SceneViewPickingPolicy.h"
 #include "Profiling/Profiler.h"
@@ -678,6 +679,11 @@ TEST(PanelWindowHookTests, TimelineProfilerFrameBeginsBeforeApplicationFrameScop
     ASSERT_NE(resizeFrameScope, std::string::npos);
     EXPECT_LT(resizeProfilerFrameCall, resizeFrameScope)
         << "Native resize frames need the same TimelineProfiler frame boundary as normal editor frames.";
+    const auto resizeRunGuard = applicationSource.find("if (!IsRunning())", resizeProfilerFrameCall);
+    ASSERT_NE(resizeRunGuard, std::string::npos);
+    EXPECT_LT(resizeRunGuard, resizeFrameScope)
+        << "Validation trace export can request close from TickResizeFrame::BeginProfilerFrame; "
+           "resize rendering must not continue after that close request.";
 
     const auto runFunction = applicationSource.find("void Editor::Core::Application::Run()");
     const auto tickFrameCallInRun = applicationSource.find("TickFrame(clock.GetDeltaTime(), true)", runFunction);
@@ -692,6 +698,24 @@ TEST(PanelWindowHookTests, TimelineProfilerFrameBeginsBeforeApplicationFrameScop
     EXPECT_EQ(deferredResizeRunSegment.find("NLS_PROFILE_NAMED_SCOPE"), std::string::npos)
         << "Deferred resize flushing may call TickResizeFrame(), which starts a TimelineProfiler frame; "
            "it must not be wrapped by an already-open current-frame profiling scope.";
+
+    const auto runEditorFrameScope = applicationSource.find(
+        "NLS_PROFILE_NAMED_SCOPE(\"Application::RunEditorFrame\")",
+        editorPreUpdateScope);
+    ASSERT_NE(runEditorFrameScope, std::string::npos);
+    const auto postPollCloseGuard = applicationSource.find("if (!IsRunning())", editorPreUpdateScope);
+    ASSERT_NE(postPollCloseGuard, std::string::npos);
+    EXPECT_LT(postPollCloseGuard, runEditorFrameScope)
+        << "Window close requests from event polling must stop the normal frame before UI rendering.";
+
+    const auto normalResizeFollowUpScope = applicationSource.find(
+        "NLS_PROFILE_NAMED_SCOPE(\"Application::ResizeFollowUpFrame\")",
+        runEditorFrameScope);
+    ASSERT_NE(normalResizeFollowUpScope, std::string::npos);
+    const auto postEditorFrameCloseGuard = applicationSource.find("if (!IsRunning())", runEditorFrameScope);
+    ASSERT_NE(postEditorFrameCloseGuard, std::string::npos);
+    EXPECT_LT(postEditorFrameCloseGuard, normalResizeFollowUpScope)
+        << "A close request from the main editor frame must stop resize follow-up rendering.";
 
     const auto preUpdateFunction = editorSource.find("void Editor::Core::Editor::PreUpdate");
     ASSERT_NE(preUpdateFunction, std::string::npos);
@@ -747,6 +771,113 @@ TEST(PanelWindowHookTests, TimelineProfilerFlushesOpenCpuScopesBeforeFrameReset)
     EXPECT_LT(tickFrameFlushCall, profilerTick)
         << "Open CPU scopes must be closed before TimelineProfiler starts the next frame, otherwise "
            "stale events can pollute subsequent tests and captures.";
+}
+
+TEST(PanelWindowHookTests, StartupArtifactDbRefreshesOnlyWhenWatcherImportsChangedAssets)
+{
+    const auto applicationSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Application.cpp");
+
+    const auto startupBegin = applicationSource.find(
+        "RunBlockingStartupAssetPreimport(");
+    ASSERT_NE(startupBegin, std::string::npos);
+    const auto startupEnd = applicationSource.find("m_context.CompleteStartupProgress()", startupBegin);
+    ASSERT_NE(startupEnd, std::string::npos);
+    const auto startupBody = applicationSource.substr(startupBegin, startupEnd - startupBegin);
+
+    std::vector<size_t> refreshOffsets;
+    for (size_t searchFrom = 0u;;)
+    {
+        const auto refresh = startupBody.find("m_context.RefreshRuntimeAssetDatabaseFromArtifactDB()", searchFrom);
+        if (refresh == std::string::npos)
+            break;
+        refreshOffsets.push_back(refresh);
+        searchFrom = refresh + 1u;
+    }
+    ASSERT_EQ(refreshOffsets.size(), 3u)
+        << "Startup should retain one blocking refresh plus two conditional watcher refresh sites.";
+
+    const auto blockingRefresh = startupBody.find("m_context.RefreshRuntimeAssetDatabaseFromArtifactDB()");
+    ASSERT_NE(blockingRefresh, std::string::npos);
+    const auto blockingRefreshGuard = startupBody.rfind("startupPreimport.importedAssetCount > 0u", blockingRefresh);
+    ASSERT_NE(blockingRefreshGuard, std::string::npos)
+        << "A startup preimport pass that imports no assets must reuse the runtime asset database loaded "
+           "during Context startup instead of rebuilding the ArtifactDB manifest again.";
+
+    const auto startupWatcherResult = startupBody.find(
+        "const auto startupWatcherPreimport = runStartupWatcherPreimport");
+    ASSERT_NE(startupWatcherResult, std::string::npos);
+    const auto finalWatcherResult = startupBody.find(
+        "const auto finalStartupWatcherImport = m_editor->CompleteStartupWatcherPreimportGate");
+    ASSERT_NE(finalWatcherResult, std::string::npos);
+    EXPECT_NE(
+        startupBody.find("if (startupWatcherPreimport.requiresRuntimeAssetRefresh)", startupWatcherResult),
+        std::string::npos)
+        << "A clean watcher pass must not rebuild the runtime asset database before the first frame.";
+    EXPECT_NE(
+        startupBody.find("if (finalStartupWatcherImport.requiresRuntimeAssetRefresh)", finalWatcherResult),
+        std::string::npos)
+        << "A clean final watcher pass must not rebuild the runtime asset database before opening the editor.";
+    EXPECT_EQ(
+        startupBody.find("DeferStartupSceneViewRenderForNextFrame"),
+        std::string::npos)
+        << "Startup should render the Scene View before closing the native progress dialog so the opened editor "
+           "does not show a blank viewport while the deferred renderer builds its first visible frame.";
+
+    const auto assetBrowserSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/AssetBrowser.cpp");
+    const auto watcherPreimport = assetBrowserSource.find("AssetBrowser::RunStartupWatcherPreimport");
+    ASSERT_NE(watcherPreimport, std::string::npos);
+    const auto engineChangesBranch = assetBrowserSource.find("if (!engineAssetChanges.empty())", watcherPreimport);
+    ASSERT_NE(engineChangesBranch, std::string::npos);
+    const auto projectChangesBranch = assetBrowserSource.find("if (projectAssetChanges.empty())", engineChangesBranch);
+    ASSERT_NE(projectChangesBranch, std::string::npos);
+    const auto engineChangesBody = assetBrowserSource.substr(
+        engineChangesBranch,
+        projectChangesBranch - engineChangesBranch);
+    EXPECT_EQ(engineChangesBody.find("requiresRuntimeAssetRefresh = true"), std::string::npos)
+        << "Engine watcher startup noise, especially build-copied built-in assets, must refresh the UI only; "
+           "project asset changes are what require rebuilding the runtime asset database.";
+
+    std::vector<size_t> preloadOffsets;
+    for (size_t searchFrom = 0u;;)
+    {
+        const auto preload = startupBody.find("BaseSceneRenderer::PreloadSceneFallbackShader", searchFrom);
+        if (preload == std::string::npos)
+            break;
+        preloadOffsets.push_back(preload);
+        searchFrom = preload + 1u;
+    }
+    EXPECT_EQ(preloadOffsets.size(), refreshOffsets.size() + 1u)
+        << "StandardPBR may be imported by a later startup watcher pass; every ArtifactDB refresh site and "
+           "the cache-hit first-frame path must retry loading the scene fallback shader before rendering meshes.";
+    EXPECT_NE(startupBody.find("PreloadSceneFallbackShader(m_context.shaderManager, false)"), std::string::npos)
+        << "Early startup fallback attempts should be quiet because later watcher imports can still populate ArtifactDB.";
+    EXPECT_NE(startupBody.find("PreloadSceneFallbackShader(m_context.shaderManager);"), std::string::npos)
+        << "The final startup retry should keep the warning if StandardPBR is still unavailable.";
+
+    const auto firstEditorFrame = startupBody.find("RunEditorFrame(0.0f)");
+    ASSERT_NE(firstEditorFrame, std::string::npos);
+    const auto firstFrameFallbackRetry = startupBody.find(
+        "PreloadSceneFallbackShader(m_context.shaderManager, false)",
+        startupBody.find("RefreshProjectAssetBrowser"));
+    ASSERT_NE(firstFrameFallbackRetry, std::string::npos)
+        << "A cache-hit startup still needs a final quiet fallback retry before the first editor frame, "
+           "otherwise progressive scene-load meshes can render without the default material.";
+    EXPECT_LT(firstFrameFallbackRetry, firstEditorFrame);
+    for (const auto refresh : refreshOffsets)
+    {
+        const auto preload = startupBody.find("BaseSceneRenderer::PreloadSceneFallbackShader", refresh);
+        ASSERT_NE(preload, std::string::npos)
+            << "Every startup ArtifactDB refresh must be followed by a fallback shader preload retry.";
+        EXPECT_LT(refresh, preload);
+        if (refresh < firstEditorFrame)
+        {
+            EXPECT_LT(preload, firstEditorFrame)
+                << "The first visible editor frame should have retried the StandardPBR fallback after "
+                   "all startup imports that can populate ArtifactDB.";
+        }
+    }
 }
 
 TEST(PanelWindowHookTests, TimelineProfilerFixedArrayUsesFullDeclaredCapacity)
@@ -2166,6 +2297,23 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsAfterViewResize)
         true));
 }
 
+TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDoesNotDrainInitialResizeWithoutPriorInFlightFrame)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        true,
+        false,
+        true,
+        false,
+        false));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        true,
+        false,
+        true,
+        false,
+        true));
+}
+
 TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsOnlyForExplicitSynchronizationNeeds)
 {
     EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
@@ -2486,6 +2634,98 @@ TEST(PanelWindowHookTests, SceneViewStaticCacheAllowsHoverPickingFromExistingSam
         hoverPickingWantsSampleRefresh,
         true,
         true));
+}
+
+TEST(PanelWindowHookTests, SceneViewDoesNotDeferRenderForPendingSceneLoadRendererResources)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDeferSceneViewRenderForPendingSceneLoadResources(0u));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDeferSceneViewRenderForPendingSceneLoadResources(896u));
+}
+
+TEST(PanelWindowHookTests, SceneViewSkipsSceneDrawablesWhileSceneLoadResourcesDrain)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSkipSceneViewSceneDrawablesForPendingSceneLoadResources(0u));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldSkipSceneViewSceneDrawablesForPendingSceneLoadResources(896u));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldSkipSceneViewSceneDrawablesForPendingSceneLoadResources(896u, true));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSkipSceneViewSceneDrawablesForPendingSceneLoadResources(896u, true, 1u))
+        << "Once a placeholder frame has been published and at least one scene-load object is visible, "
+           "Scene View should render lightweight default-material drawables instead of staying visually empty.";
+}
+
+TEST(PanelWindowHookTests, SceneViewSuppressesLightGridComputeOnlyWhileSceneDrawablesAreSkipped)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSuppressSceneViewLightGridComputeForPendingSceneLoadResources(0u, false));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldSuppressSceneViewLightGridComputeForPendingSceneLoadResources(1u, true));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSuppressSceneViewLightGridComputeForPendingSceneLoadResources(896u, false))
+        << "Once progressive reveal starts drawing scene objects, Scene View must compute lighting instead of showing dark geometry.";
+}
+
+TEST(PanelWindowHookTests, SceneViewDoesNotForceRefreshWhileSceneLoadRendererResourcesDrain)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldForceSceneViewRenderForPendingSceneLoadResources(0u, true));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldForceSceneViewRenderForPendingSceneLoadResources(1u, false));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldForceSceneViewRenderForPendingSceneLoadResources(1u, true));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldForceSceneViewRenderForPendingSceneLoadResources(896u, true));
+}
+
+TEST(PanelWindowHookTests, SceneViewValidationReadbackWaitsUntilSceneLoadResourcesAreMeaningfullyVisible)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackSceneLoadResources(false, 0u, 0u));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackSceneLoadResources(false, 1u, 0u));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackSceneLoadResources(false, 896u, 1u))
+        << "A single revealed object can still be only a sliver of the scene, so validation should keep waiting.";
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackSceneLoadResources(false, 896u, 32u))
+        << "Validation readback should not capture a partially restored scene-load prefab.";
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackSceneLoadResources(true, 896u, 32u))
+        << "An active scene-load resolution should keep validation waiting until renderer resources finish.";
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackSceneLoadResources(true, 0u, 32u))
+        << "Validation must not read back from the narrow window after task queues drain but before scene-load resource resolution restores/reveals the root.";
+}
+
+TEST(PanelWindowHookTests, SceneViewValidationReadbackWaitsForStableFramesAfterSceneLoadResourcesDrain)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackAfterSceneLoadResources(false, 0u));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackAfterSceneLoadResources(false, 3u));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackAfterSceneLoadResources(true, 0u));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackAfterSceneLoadResources(true, 3u));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldWaitForSceneViewValidationReadbackAfterSceneLoadResources(true, 4u))
+        << "Scene-load validation readback should allow at least one post-reveal render/upload window before sampling the scene texture.";
+}
+
+TEST(PanelWindowHookTests, SceneViewValidationReadbackRejectsBlackFrames)
+{
+    EXPECT_EQ(
+        NLS::Editor::Panels::BuildSceneViewValidationReadbackStatus(0u, 0u),
+        "failed-empty-frame");
+    EXPECT_EQ(
+        NLS::Editor::Panels::BuildSceneViewValidationReadbackStatus(0u, 255u),
+        "failed-empty-frame");
+    EXPECT_EQ(
+        NLS::Editor::Panels::BuildSceneViewValidationReadbackStatus(1u, 1u),
+        "success");
+    EXPECT_EQ(
+        NLS::Editor::Panels::BuildSceneViewValidationReadbackStatus(1u, 255u, 1u),
+        "pending-texture-tail");
+}
+
+TEST(PanelWindowHookTests, SceneViewStaticCacheChangesWhileSceneLoadRendererResourcesDrain)
+{
+    const auto placeholderVersion =
+        NLS::Editor::Panels::BuildSceneViewSceneLoadResourceCacheVersion(896u, false);
+    const auto pendingDrawableVersion =
+        NLS::Editor::Panels::BuildSceneViewSceneLoadResourceCacheVersion(896u, true, 1u);
+    const auto drainedVersion =
+        NLS::Editor::Panels::BuildSceneViewSceneLoadResourceCacheVersion(0u, true, 1u);
+
+    EXPECT_NE(placeholderVersion, pendingDrawableVersion);
+    EXPECT_NE(pendingDrawableVersion, drainedVersion);
+    EXPECT_EQ(0u, drainedVersion);
+    EXPECT_NE(
+        NLS::Editor::Panels::BuildSceneViewSceneLoadResourceCacheVersion(896u, true, 1u),
+        NLS::Editor::Panels::BuildSceneViewSceneLoadResourceCacheVersion(896u, true, 2u));
+    EXPECT_NE(
+        NLS::Editor::Panels::BuildSceneViewSceneLoadResourceCacheVersion(896u, true),
+        NLS::Editor::Panels::BuildSceneViewSceneLoadResourceCacheVersion(128u, true));
 }
 
 TEST(PanelWindowHookTests, SceneViewHoverPickingCanBeBudgetedWithoutAffectingClickPicking)

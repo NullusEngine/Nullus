@@ -154,6 +154,61 @@ TEST(SceneOcclusionTests, ValidRecentHistoryCanCullPrimitive)
 	EXPECT_EQ(result.primitiveResults.front().fallbackReason, SceneOcclusionFallbackReason::None);
 }
 
+TEST(SceneOcclusionTests, RepeatedOccludedObservationsDoNotKeepHistoryAliveWithoutAVisibleProbe)
+{
+	SceneOcclusionHistory history;
+	auto input = MakeFrameInput();
+	input.frameSerial = 100u;
+	input.maxHistoryAge = 2u;
+	const auto primitive = MakePrimitive(MakeHandle(32u));
+	const auto key = SceneOcclusionSystem::BuildHistoryKey(input, primitive);
+	history.RecordOccluded(key, input.frameSerial);
+
+	auto nextFrame = input;
+	nextFrame.frameSerial = 101u;
+	const auto firstReuse = SceneOcclusionSystem::Evaluate(nextFrame, { primitive }, history);
+	ASSERT_EQ(firstReuse.primitiveResults.size(), 1u);
+	ASSERT_TRUE(firstReuse.primitiveResults.front().culledByOcclusion);
+	const auto firstReuseStats = SceneOcclusionSystem::ApplyObservationResults(
+		history,
+		nextFrame,
+		{ { key, nextFrame.frameSerial, true } });
+	EXPECT_EQ(firstReuseStats.occludedPrimitiveCount, 0u);
+
+	auto lastFreshFrame = input;
+	lastFreshFrame.frameSerial = 102u;
+	const auto secondReuse = SceneOcclusionSystem::Evaluate(lastFreshFrame, { primitive }, history);
+	ASSERT_EQ(secondReuse.primitiveResults.size(), 1u);
+	ASSERT_TRUE(secondReuse.primitiveResults.front().culledByOcclusion);
+	const auto secondReuseStats = SceneOcclusionSystem::ApplyObservationResults(
+		history,
+		lastFreshFrame,
+		{ { key, lastFreshFrame.frameSerial, true } });
+	EXPECT_EQ(secondReuseStats.occludedPrimitiveCount, 0u);
+
+	auto probeFrame = input;
+	probeFrame.frameSerial = 103u;
+	const auto probe = SceneOcclusionSystem::Evaluate(probeFrame, { primitive }, history);
+
+	ASSERT_EQ(probe.primitiveResults.size(), 1u);
+	EXPECT_FALSE(probe.primitiveResults.front().culledByOcclusion);
+	EXPECT_EQ(probe.primitiveResults.front().fallbackReason, SceneOcclusionFallbackReason::HistoryTooOld);
+	ASSERT_EQ(probe.visiblePrimitiveHandles.size(), 1u);
+	EXPECT_EQ(probe.visiblePrimitiveHandles.front(), primitive.handle);
+
+	const auto probeStats = SceneOcclusionSystem::ApplyObservationResults(
+		history,
+		probeFrame,
+		{ { key, probeFrame.frameSerial, true } });
+	EXPECT_EQ(probeStats.occludedPrimitiveCount, 1u);
+
+	auto refreshedFrame = input;
+	refreshedFrame.frameSerial = 104u;
+	const auto refreshed = SceneOcclusionSystem::Evaluate(refreshedFrame, { primitive }, history);
+	ASSERT_EQ(refreshed.primitiveResults.size(), 1u);
+	EXPECT_TRUE(refreshed.primitiveResults.front().culledByOcclusion);
+}
+
 TEST(SceneOcclusionTests, VisibleObservationClearsPreviousOccludedHistoryForSameKey)
 {
 	SceneOcclusionHistory history;
@@ -613,6 +668,35 @@ TEST(SceneOcclusionTests, BaseSceneRendererBuildsHZBPacketsFromRetainedObservati
 		normalizedBody.find(RemoveWhitespace(
 			"BuildHZBPrimitivePacketSources(hzbPrimitiveSnapshot, renderScene.GetLastVisiblePrimitiveHandles())")),
 		std::string::npos);
+}
+
+TEST(SceneOcclusionTests, DeferredSceneRendererPreparesHZBFrameResourcesOnlyWhenOcclusionIsEnabled)
+{
+	const auto source = ReadTextFile(
+		std::filesystem::path(NLS_ROOT_DIR) /
+		"Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
+	const auto normalizedSource = RemoveWhitespace(source);
+
+	EXPECT_NE(
+		normalizedSource.find(RemoveWhitespace(
+			"if (hzbOcclusionFrameInput.enabled)"
+			"{"
+			"{"
+			"NLS_PROFILE_NAMED_SCOPE(\"DeferredSceneRenderer::BeginFrame::PrepareHZBFrameResources\");"
+			"PrepareHZBFrameResources(BuildDeferredPreparedSceneResourceRequest());"
+			"m_threadedHZBPostSubmitReadback = BuildHZBPostSubmitReadbackRequest(true);"
+			"}")),
+		std::string::npos)
+		<< "Threaded deferred startup must not create HZB targets, pipelines, or binding sets when "
+		   "current large-scene settings have HZB occlusion disabled.";
+	EXPECT_NE(
+		normalizedSource.find(RemoveWhitespace(
+			"if (GetLastHZBOcclusionFrameInput().enabled &&"
+			"PrepareHZBFrameResources(deferredResourceRequest))"
+			"resourceRequest.hzbResources = BuildHZBFrameResourceRequest();")),
+		std::string::npos)
+		<< "FrameGraph deferred rendering must likewise only attach HZB resources for frames whose "
+		   "occlusion input is enabled.";
 }
 
 TEST(SceneOcclusionTests, BaseSceneRendererMovesPreviousHZBInputsInsteadOfCopyingLargeFrameVectors)

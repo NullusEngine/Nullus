@@ -175,6 +175,7 @@ struct AssetPreimportRequest
 {
     AssetPreimportReason reason = AssetPreimportReason::EditorStartup;
     std::vector<std::filesystem::path> changedPaths;
+    std::vector<std::string> candidateAssetPaths;
 };
 
 class AssetPreimportScheduler

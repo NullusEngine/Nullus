@@ -1,14 +1,40 @@
 #include "UI/Modules/Canvas.h"
 #include "UI/Panels/PanelViewportBar.h"
 
+#include "Debug/Logger.h"
 #include "ImGui/imgui.h"
 #include "Profiling/Profiler.h"
+
+#include <chrono>
 
 namespace NLS::UI
 {
 void Canvas::Draw()
 {
     NLS_PROFILE_SCOPE();
+    const bool logStartupDrawStages = []()
+    {
+        static bool shouldLog = true;
+        const bool result = shouldLog;
+        shouldLog = false;
+        return result;
+    }();
+    auto startupStageBegin = std::chrono::steady_clock::now();
+    auto logStartupDrawStage =
+        [&startupStageBegin, logStartupDrawStages](const std::string& stage)
+        {
+            if (!logStartupDrawStages)
+                return;
+
+            const auto now = std::chrono::steady_clock::now();
+            NLS_LOG_INFO(
+                "[Startup] Canvas::Draw stage " +
+                stage +
+                " elapsedMs=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - startupStageBegin).count()));
+            startupStageBegin = now;
+        };
+
     if (!m_panels.empty())
     {
         if (m_isDockspace)
@@ -25,6 +51,7 @@ void Canvas::Draw()
                     }
                 }
             }
+            logStartupDrawStage("RefreshViewportBars");
 
             {
                 NLS_PROFILE_NAMED_SCOPE("Canvas::DrawDockspace");
@@ -60,6 +87,7 @@ void Canvas::Draw()
 
                 ImGui::PopStyleVar(3);
             }
+            logStartupDrawStage("DrawDockspace");
         }
 
         {
@@ -67,9 +95,12 @@ void Canvas::Draw()
             for (auto& panel : m_panels)
             {
                 NLS_PROFILE_NAMED_SCOPE("Canvas::DrawPanel");
+                const auto panelName = panel.get().GetPanelID();
                 panel.get().Draw();
+                logStartupDrawStage("DrawPanel:" + panelName);
             }
         }
+        logStartupDrawStage("DrawPanels");
     }
 }
 

@@ -25,6 +25,16 @@ namespace NLS::Core::ResourceManagement
 
 	using ResourceLoadProgressCallback = std::function<void(const ResourceLoadProgress&)>;
 
+	struct AsyncArtifactRequestDiagnostics
+	{
+		size_t totalRequests = 0u;
+		size_t activeRequests = 0u;
+		size_t readyRequests = 0u;
+		size_t queuedRequests = 0u;
+		size_t failedRequests = 0u;
+		size_t maxActiveRequests = 0u;
+	};
+
 	class NLS_RESOURCE_MANAGEMENT_API ResourceLoadProgressScope
 	{
 	public:

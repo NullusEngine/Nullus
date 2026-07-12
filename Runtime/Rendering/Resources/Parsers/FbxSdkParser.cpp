@@ -1403,6 +1403,15 @@ bool LoadSceneData(
 				nextMeshIndex,
 				materialRegistry,
 				importedMeshes);
+
+		if (HasFlag(parserFlags, EModelParserFlags::FLIP_UVS))
+		{
+			for (auto& mesh : meshes)
+			{
+				for (auto& vertex : mesh.vertices)
+					vertex.texCoords[1] = 1.0f - vertex.texCoords[1];
+			}
+		}
 	}
 
 	LogFbxSdkImportTiming(

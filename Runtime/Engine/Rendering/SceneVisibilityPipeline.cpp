@@ -462,6 +462,7 @@ namespace
 		input.allowHLOD = options.allowHLOD;
 		input.editorInspectionView = options.editorInspectionView;
 		input.selectedPrimitiveHandles = options.selectedPrimitiveHandles;
+		input.forceInspectableHLODClusters = options.forceInspectableHLODClusters;
 
 		for (const auto& cluster : *representation.hlodClusters)
 		{

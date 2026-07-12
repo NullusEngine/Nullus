@@ -271,3 +271,29 @@ TEST(PerformanceStageStatsTests, FormatsBenchmarkReportWithStableBottleneckRanki
     EXPECT_NE(report.find("- DeserializeComponents total=600us calls=1"), std::string::npos);
     EXPECT_EQ(report.find("- ResolveDependencies total=300us calls=2"), std::string::npos);
 }
+
+TEST(PerformanceStageStatsTests, FormatsAssetImportDomain)
+{
+    PerformanceBenchmarkRun run;
+    run.scenarioName = "Texture/StandalonePngImport";
+    run.runType = PerformanceBenchmarkRunType::Baseline;
+    run.totalDuration = 42us;
+    run.stageStats.stages = {
+        {
+            PerformanceStageDomain::AssetImport,
+            "StandaloneTextureDecodeAndMip",
+            1u,
+            40us,
+            40us,
+            0us,
+            0us,
+            {},
+        },
+    };
+
+    const auto report = FormatPerformanceBenchmarkReport(run, 1u);
+
+    EXPECT_NE(
+        report.find("[AssetImport] StandaloneTextureDecodeAndMip callCount=1"),
+        std::string::npos);
+}

@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "Assets/ArtifactManifest.h"
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/NativeArtifactContainer.h"
 
 namespace
@@ -75,7 +76,7 @@ std::unordered_map<AsyncMaterialArtifactStateKey, AsyncMaterialArtifactRequest, 
 std::unordered_map<AsyncMaterialArtifactStateKey, FailedMaterialArtifactLoad, AsyncMaterialArtifactStateKeyHash> g_failedAsyncMaterialArtifacts;
 std::unordered_set<AsyncMaterialArtifactStateKey, AsyncMaterialArtifactStateKeyHash> g_cancelledAsyncMaterialArtifacts;
 std::atomic_size_t g_activeMaterialArtifactWorkers {0u};
-constexpr size_t kMaxPendingAsyncMaterialArtifactRequests = 8u;
+constexpr size_t kMaxPendingAsyncMaterialArtifactRequests = 32u;
 constexpr size_t kMaxQueuedAsyncMaterialArtifactRequests = 256u;
 
 struct TrackedMaterialArtifactPaths
@@ -333,6 +334,7 @@ MaterialArtifactLoadSubmission StartMaterialArtifactLoad(const AsyncMaterialArti
 	desc.userData = payload.get();
 	desc.cancelFunction = CancelMaterialArtifactJob;
 	desc.cancelUserData = payload.get();
+	desc.priority = NLS::Base::Jobs::JobPriority::High;
 	desc.debugName = "MaterialManager::AsyncArtifactLoad";
 
 	const auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
@@ -378,6 +380,7 @@ void PromoteQueuedMaterialArtifactLoads(
 {
 	for (;;)
 	{
+		const auto telemetryBegin = std::chrono::steady_clock::now();
 		if (CountActiveMaterialRequests() >= kMaxPendingAsyncMaterialArtifactRequests)
 			return;
 
@@ -390,6 +393,13 @@ void PromoteQueuedMaterialArtifactLoads(
 					return false;
 				return paths == nullptr || MaterialRequestMatchesAnyTrackedPath(entry.second, *paths);
 			});
+		NLS::Core::Assets::RecordArtifactLoadTelemetry({
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialPromote,
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - telemetryBegin),
+			g_asyncMaterialRequests.size(),
+			paths == nullptr ? std::string {} : std::string { "tracked-material-paths" }
+		});
 		if (found == g_asyncMaterialRequests.end())
 			return;
 
@@ -432,6 +442,7 @@ void PumpAsyncMaterialArtifactLoads(
 		{
 			std::lock_guard lock(g_asyncMaterialMutex);
 			PromoteQueuedMaterialArtifactLoads(manager, paths);
+			const auto readyScanTelemetryBegin = std::chrono::steady_clock::now();
 			auto found = std::find_if(
 				g_asyncMaterialRequests.begin(),
 				g_asyncMaterialRequests.end(),
@@ -444,6 +455,13 @@ void PumpAsyncMaterialArtifactLoads(
 					return entry.second.future.valid() &&
 						entry.second.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
 				});
+			NLS::Core::Assets::RecordArtifactLoadTelemetry({
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialReadyScan,
+				std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - readyScanTelemetryBegin),
+				g_asyncMaterialRequests.size(),
+				paths == nullptr ? std::string {} : std::string { "tracked-material-paths" }
+			});
 			if (found == g_asyncMaterialRequests.end())
 				return;
 
@@ -454,7 +472,15 @@ void PumpAsyncMaterialArtifactLoads(
 		std::string xml;
 		try
 		{
+			const auto futureGetTelemetryBegin = std::chrono::steady_clock::now();
 			xml = request.future.get();
+			NLS::Core::Assets::RecordArtifactLoadTelemetry({
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialFutureGet,
+				std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - futureGetTelemetryBegin),
+				xml.size(),
+				request.path
+			});
 		}
 		catch (const std::exception& exception)
 		{
@@ -509,39 +535,60 @@ void PumpAsyncMaterialArtifactLoads(
 			Material* material = nullptr;
 			try
 			{
+				const auto runtimeCreateTelemetryBegin = std::chrono::steady_clock::now();
 				material = MaterialLoader::CreateFromSerializedPayload(
 					request.realPath,
 					xml,
 					{ false, true });
-				if (material)
+				NLS::Core::Assets::RecordArtifactLoadTelemetry({
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialRuntimeCreate,
+					std::chrono::duration_cast<std::chrono::microseconds>(
+						std::chrono::steady_clock::now() - runtimeCreateTelemetryBegin),
+					xml.size(),
+					request.path
+				});
+				if (material && material->IsValid())
 				{
 					material->path = request.path;
+					const auto registerTelemetryBegin = std::chrono::steady_clock::now();
 					manager.RegisterResource(request.path, material);
+					NLS::Core::Assets::RecordArtifactLoadTelemetry({
+						NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialRegister,
+						std::chrono::duration_cast<std::chrono::microseconds>(
+							std::chrono::steady_clock::now() - registerTelemetryBegin),
+						1u,
+						request.path
+					});
 					material = nullptr;
 					std::lock_guard lock(g_asyncMaterialMutex);
 					g_failedAsyncMaterialArtifacts.erase({ request.owner, request.path });
 				}
-			else
-			{
-				std::lock_guard lock(g_asyncMaterialMutex);
-				if (request.retryCancelledCompletion &&
-					request.cancelableInterestCount + request.sharedInterestCount > 0u)
-				{
-					request.cancelled = std::make_shared<std::atomic_bool>(false);
-					request.jobHandle = {};
-					request.future = {};
-					request.retryCancelledCompletion = false;
-					g_failedAsyncMaterialArtifacts.erase({ request.owner, request.path });
-					g_asyncMaterialRequests.emplace(
-						AsyncMaterialArtifactStateKey{ request.owner, request.path },
-						std::move(request));
-				}
 				else
 				{
-					g_failedAsyncMaterialArtifacts[{ request.owner, request.path }] =
-						{ request.owner, request.realPath, request.writeTime };
+					if (material)
+					{
+						MaterialLoader::Destroy(material);
+						material = nullptr;
+					}
+					std::lock_guard lock(g_asyncMaterialMutex);
+					if (request.retryCancelledCompletion &&
+						request.cancelableInterestCount + request.sharedInterestCount > 0u)
+					{
+						request.cancelled = std::make_shared<std::atomic_bool>(false);
+						request.jobHandle = {};
+						request.future = {};
+						request.retryCancelledCompletion = false;
+						g_failedAsyncMaterialArtifacts.erase({ request.owner, request.path });
+						g_asyncMaterialRequests.emplace(
+							AsyncMaterialArtifactStateKey{ request.owner, request.path },
+							std::move(request));
+					}
+					else
+					{
+						g_failedAsyncMaterialArtifacts[{ request.owner, request.path }] =
+							{ request.owner, request.realPath, request.writeTime };
+					}
 				}
-			}
 			}
 			catch (const std::exception& exception)
 			{
@@ -904,20 +951,22 @@ Material* MaterialManager::RequestAsyncArtifactForPreview(const std::string& pat
 	return RequestAsyncArtifact(path, cancelableInterest);
 }
 
-void MaterialManager::CancelAsyncArtifact(const std::string& path)
+void MaterialManager::CancelAsyncArtifact(const std::string& path, const bool cancelableInterest)
 {
-	if (path.empty())
-		return;
+    if (path.empty())
+        return;
 
 	const auto realPath = ResolveResourcePath(path);
 	std::lock_guard lock(g_asyncMaterialMutex);
 	if (auto found = FindAsyncMaterialRequestByEquivalentArtifactPath(g_asyncMaterialRequests, *this, path, realPath);
-		found != g_asyncMaterialRequests.end())
-	{
-		if (found->second.cancelableInterestCount > 0u)
-			--found->second.cancelableInterestCount;
-		if (found->second.cancelableInterestCount == 0u && found->second.sharedInterestCount == 0u)
-		{
+            found != g_asyncMaterialRequests.end())
+    {
+        if (cancelableInterest && found->second.cancelableInterestCount > 0u)
+            --found->second.cancelableInterestCount;
+        if (!cancelableInterest && found->second.sharedInterestCount > 0u)
+            --found->second.sharedInterestCount;
+        if (found->second.cancelableInterestCount == 0u && found->second.sharedInterestCount == 0u)
+        {
 			if (found->second.cancelled)
 				found->second.cancelled->store(true, std::memory_order_release);
 			if (!found->second.future.valid())
@@ -954,8 +1003,29 @@ bool MaterialManager::IsAsyncArtifactLoadFailed(const std::string& path) const
 	std::lock_guard lock(g_asyncMaterialMutex);
 	auto failed = FindFailedMaterialLoadByEquivalentArtifactPath(g_failedAsyncMaterialArtifacts, *this, path, realPath);
 	return failed != g_failedAsyncMaterialArtifacts.end() &&
-		ArtifactPathMatchesResolvedPath(failed->second.realPath, realPath) &&
-		failed->second.writeTime == writeTime;
+			ArtifactPathMatchesResolvedPath(failed->second.realPath, realPath) &&
+			failed->second.writeTime == writeTime;
+}
+
+AsyncArtifactRequestDiagnostics MaterialManager::GetAsyncArtifactRequestDiagnostics()
+{
+	std::lock_guard lock(g_asyncMaterialMutex);
+	AsyncArtifactRequestDiagnostics diagnostics;
+	diagnostics.totalRequests = g_asyncMaterialRequests.size();
+	diagnostics.activeRequests = CountActiveMaterialRequests();
+	diagnostics.failedRequests = g_failedAsyncMaterialArtifacts.size();
+	diagnostics.maxActiveRequests = kMaxPendingAsyncMaterialArtifactRequests;
+	for (const auto& [_, request] : g_asyncMaterialRequests)
+	{
+		if (!request.future.valid())
+		{
+			++diagnostics.queuedRequests;
+			continue;
+		}
+		if (request.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+			++diagnostics.readyRequests;
+	}
+	return diagnostics;
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -1003,7 +1073,12 @@ size_t MaterialManager::GetPendingAsyncArtifactRequestCountForTesting()
 		[](const auto& entry)
 		{
 			return entry.second.future.valid();
-		}));
+			}));
+}
+
+size_t MaterialManager::GetMaxPendingAsyncArtifactRequestCountForTesting()
+{
+	return kMaxPendingAsyncMaterialArtifactRequests;
 }
 
 size_t MaterialManager::GetTotalAsyncArtifactRequestCountForTesting()
@@ -1030,7 +1105,15 @@ void MaterialManager::PumpAsyncLoadsForPaths(
 {
 	if (paths.empty())
 		return;
+	const auto pathBuildTelemetryBegin = std::chrono::steady_clock::now();
 	const auto trackedPaths = BuildTrackedMaterialArtifactPaths(paths);
+	NLS::Core::Assets::RecordArtifactLoadTelemetry({
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialPathBuild,
+		std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now() - pathBuildTelemetryBegin),
+		paths.size(),
+		std::string { "tracked-material-paths" }
+	});
 	PumpAsyncMaterialArtifactLoads(*this, maxCompletions, &trackedPaths);
 }
 

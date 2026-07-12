@@ -16,6 +16,8 @@ namespace NLS::Render::FrameGraph
 {
     namespace
     {
+        constexpr std::string_view kDeferredAggregateHelperPassName = "EditorHelperPass";
+
         bool IsDeferredScenePassKind(const NLS::Render::Context::RenderPassCommandKind kind)
         {
             return GetDeferredScenePassExecutionKind(kind) != DeferredScenePassExecutionKind::Unknown;
@@ -1125,7 +1127,7 @@ namespace NLS::Render::FrameGraph
             return passInputs;
         }
 
-        std::optional<NLS::Render::Context::RenderPassCommandInput> BuildDeferredAggregateHelperPassInput(
+        std::optional<NLS::Render::Context::RenderPassCommandInput> BuildDeferredAggregateHelperPassInputForSceneSlices(
             const NLS::Render::Context::RenderScenePackage& package,
             const uint64_t opaqueDrawCount,
             const uint64_t decalDrawCount,
@@ -1161,7 +1163,7 @@ namespace NLS::Render::FrameGraph
 
             NLS::Render::Context::RenderPassCommandInput passInput;
             passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
-            passInput.debugName = "EditorHelperPass";
+            passInput.debugName = kDeferredAggregateHelperPassName;
             passInput.queueType = NLS::Render::RHI::QueueType::Graphics;
             passInput.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
             passInput.drawCount = static_cast<uint64_t>(helperDrawCount);
@@ -1317,8 +1319,7 @@ namespace NLS::Render::FrameGraph
                 recordedDrawCount > helperBegin
                     ? recordedDrawCount - helperBegin
                     : 0u;
-            if (remainingHelperDraws > 0u &&
-                (!canSliceHelperDraws || remainingHelperDraws > package.helperDrawCount))
+            if (remainingHelperDraws > 0u && !canSliceHelperDraws)
             {
                 throw std::invalid_argument(
                     "Deferred recorded draw slicing leaves commands outside declared scene pass counts.");
@@ -1678,6 +1679,19 @@ namespace NLS::Render::FrameGraph
         return resources;
     }
 
+    std::optional<NLS::Render::Context::RenderPassCommandInput>
+        BuildDeferredAggregateHelperPassInput(
+            const NLS::Render::Context::RenderScenePackage& package)
+    {
+        return BuildDeferredAggregateHelperPassInputForSceneSlices(
+            package,
+            0u,
+            0u,
+            0u,
+            0u,
+            true);
+    }
+
     DeferredGraphSceneResourceRequest BuildDeferredGraphSceneResourceRequest(
         ::FrameGraph& frameGraph,
         FrameGraphBlackboard& blackboard,
@@ -1939,7 +1953,8 @@ namespace NLS::Render::FrameGraph
         std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs,
         const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata,
         const DeferredPreparedQueuedDrawCounts queuedDrawCounts,
-        const PreparedComputeDispatchSource& hzbSource)
+        const PreparedComputeDispatchSource& hzbSource,
+        const ExternalSceneOutputAttachments* externalOutputAttachments)
     {
         NLS_PROFILE_SCOPE();
         const auto opaqueDrawCount = package.opaqueDrawCount;
@@ -1960,13 +1975,24 @@ namespace NLS::Render::FrameGraph
             lightingDrawCount,
             queuedDrawCounts.transparentDrawCount,
             canSlicePostLightingRecordedDraws);
-        const bool canSliceHelperDraws = std::any_of(
+        const auto aggregateHelperMetadataCount = std::count_if(
             appendedPassMetadata.begin(),
             appendedPassMetadata.end(),
             [](const ThreadedRenderScenePassMetadata& metadata)
             {
-                return metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Helper;
+                return metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Helper &&
+                    metadata.graphPassName != nullptr &&
+                    std::string_view(metadata.graphPassName) == kDeferredAggregateHelperPassName;
             });
+        const auto explicitAggregateHelperInputCount = std::count_if(
+            appendedPassInputs.begin(),
+            appendedPassInputs.end(),
+            [](const NLS::Render::Context::RenderPassCommandInput& input)
+            {
+                return input.debugName == kDeferredAggregateHelperPassName;
+            });
+        const bool canSliceHelperDraws =
+            aggregateHelperMetadataCount > explicitAggregateHelperInputCount;
         if (HasCompleteDeferredPreparedSceneResources(resources, lightGridContext.frameDescriptor))
         {
             ValidateDeferredRecordedDrawSliceBoundaries(
@@ -2020,13 +2046,18 @@ namespace NLS::Render::FrameGraph
             scenePassMetadata.end());
 
         Detail::ResolvePreparedLightGridPassBindings(package, lightGridContext);
+        const bool hasExplicitExternalOutputAttachments = externalOutputAttachments != nullptr;
+        const auto explicitExternalOutputAttachments =
+            hasExplicitExternalOutputAttachments
+                ? *externalOutputAttachments
+                : ExternalSceneOutputAttachments{};
         return CompileAndApplyThreadedRenderSceneExecution(
             package,
             lightGridContext.frameDescriptor,
             -1,
             -1,
             scenePassMetadata,
-            [&package, &resources, &appendedPassInputs, &appendedPassMetadata, &mergedComputeSource, &lightGridContext, opaqueDrawCount, decalDrawCount, lightingDrawCount, transparentDrawCount, canSlicePostLightingRecordedDraws](const auto& compiledPasses) mutable
+            [&package, &resources, &appendedPassInputs, &appendedPassMetadata, &mergedComputeSource, &lightGridContext, hasExplicitExternalOutputAttachments, explicitExternalOutputAttachments, opaqueDrawCount, decalDrawCount, lightingDrawCount, transparentDrawCount, canSlicePostLightingRecordedDraws](const auto& compiledPasses) mutable
             {
                 std::vector<CompiledThreadedRenderSceneGraphPass> deferredCompiledPasses;
                 deferredCompiledPasses.reserve(compiledPasses.size());
@@ -2054,7 +2085,7 @@ namespace NLS::Render::FrameGraph
                     transparentDrawCount,
                     resources);
                 const auto aggregateHelperPassInput =
-                    BuildDeferredAggregateHelperPassInput(
+                    BuildDeferredAggregateHelperPassInputForSceneSlices(
                         package,
                         opaqueDrawCount,
                         decalDrawCount,
@@ -2076,12 +2107,16 @@ namespace NLS::Render::FrameGraph
                 }
                 if (!package.targetsSwapchain)
                 {
+                    const auto resolvedOutputAttachments =
+                        hasExplicitExternalOutputAttachments
+                            ? explicitExternalOutputAttachments
+                            : ResolveExternalSceneOutputAttachments(
+                                lightGridContext.frameDescriptor,
+                                "DeferredOutputColorView",
+                                "DeferredOutputDepthView");
                     ApplyExternalSceneOutputAttachments(
                         passInputs,
-                        ResolveExternalSceneOutputAttachments(
-                            lightGridContext.frameDescriptor,
-                            "DeferredOutputColorView",
-                            "DeferredOutputDepthView"),
+                        resolvedOutputAttachments,
                         {
                             NLS::Render::Context::RenderPassCommandKind::Lighting,
                             NLS::Render::Context::RenderPassCommandKind::Transparent,

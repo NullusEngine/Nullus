@@ -73,6 +73,32 @@ TEST(EditorSettingsPersistenceTests, SavesAndLoadsLightGridRenderingSetting)
     rendering.enableLightGrid = true;
 }
 
+TEST(EditorSettingsPersistenceTests, SavesAndLoadsLargeSceneSettings)
+{
+    auto path = MakeTempSettingsPath("large-scene.json");
+    auto registry = MakeRegistry();
+
+    auto& largeScene = NLS::Editor::Settings::EditorSettings::GetLargeSceneSettingsObject();
+    largeScene = {};
+    largeScene.enableSpatialIndex = false;
+    largeScene.enableHLOD = true;
+    largeScene.maxVisibilityJobs = 6;
+    largeScene.streamingCpuBudgetUs = 2222;
+    largeScene.streamingGpuMemoryBudgetBytes = 300 * 1024 * 1024;
+
+    ASSERT_TRUE(NLS::Editor::Settings::EditorSettingsPersistence::Save(path, registry));
+
+    largeScene = {};
+    ASSERT_TRUE(NLS::Editor::Settings::EditorSettingsPersistence::Load(path, registry));
+
+    EXPECT_FALSE(largeScene.enableSpatialIndex);
+    EXPECT_TRUE(largeScene.enableHLOD);
+    EXPECT_EQ(largeScene.maxVisibilityJobs, 6);
+    EXPECT_EQ(largeScene.streamingCpuBudgetUs, 2222);
+    EXPECT_EQ(largeScene.streamingGpuMemoryBudgetBytes, 300 * 1024 * 1024);
+    largeScene = {};
+}
+
 TEST(EditorSettingsPersistenceTests, SavesAndLoadsPowerSavingIdlePacingSetting)
 {
     auto path = MakeTempSettingsPath("power-saving-idle-pacing.json");

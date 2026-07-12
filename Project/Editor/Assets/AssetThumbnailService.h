@@ -25,6 +25,12 @@ class IEditorThumbnailPreviewRenderer;
 struct AssetThumbnailRequestBuildContext
 {
     std::unordered_map<std::string, std::optional<NLS::Core::Assets::ArtifactManifest>> artifactManifestsByAssetId;
+    std::unordered_map<std::string, std::string> fileStampsByPath;
+    std::unordered_map<std::string, std::filesystem::path> sourcePathsByProjectAndAssetPath;
+    std::filesystem::path artifactDatabaseProjectRoot;
+    std::filesystem::path artifactDatabasePath;
+    std::string artifactDatabaseStamp;
+    bool artifactDatabaseStampCached = false;
     bool deferManifestLookups = false;
 };
 
@@ -113,6 +119,7 @@ public:
     [[nodiscard]] ThumbnailGenerationBudget GetThumbnailGenerationBudget() const;
     void ClearQueuedRequests();
     void SupersedeQueuedRequestsForGeneration(const std::string& generationFingerprint);
+    bool HasQueuedGpuPreviewReadback() const;
 
 private:
     struct InFlightThumbnailRequest
@@ -121,20 +128,26 @@ private:
         uint64_t generation = 0u;
         std::shared_ptr<AssetThumbnailGenerationCancelToken> cancelToken;
         std::future<AssetThumbnailServiceResult> future;
+        AssetThumbnailRequest request;
+        bool requeueOnPending = false;
     };
 
     void WaitForInFlightRequests();
     void ClearPendingQueuedRequests();
     void ClearPendingQueuedRequestsWithDiagnostics();
-    bool HasCurrentGenerationInFlightRequest() const;
+    size_t CountCurrentGenerationInFlightRequests() const;
     bool AdoptMatchingInFlightRequest(const std::string& cacheKey);
     bool StartNextThumbnailGeneration(IEditorThumbnailPreviewRenderer* previewRenderer);
     bool HasQueuedCacheKeys() const;
     bool EnsureQueuedRequestCapacityFor(const std::string& cacheKey, const AssetThumbnailRequest& request);
     bool DropQueuedRequestForBackpressure(const std::string& protectedCacheKey, uint32_t maxPriorityRank);
-    void EnqueueQueuedCacheKey(const std::string& cacheKey, const AssetThumbnailRequest& request);
+    bool HasDeferredGpuPreviewEmptyFrame(const std::string& cacheKey) const;
+    void EnqueueQueuedCacheKey(
+        const std::string& cacheKey,
+        const AssetThumbnailRequest& request,
+        bool atFront = false);
     std::optional<std::string> PopNextQueuedCacheKey();
-    std::optional<std::string> PopNextGpuPreviewCacheKey();
+    std::optional<std::string> PopNextGpuPreviewCacheKey(bool includeHeavyGpuPreviews);
     void RestoreDeferredCacheKeys(std::vector<std::string>& deferredCacheKeys);
     void RemoveQueuedCacheKeyOccurrences(const std::string& cacheKey);
 
@@ -145,7 +158,12 @@ private:
     std::deque<std::string> m_queuedCacheKeys;
     std::unordered_map<std::string, AssetThumbnailRequest> m_queuedRequestsByCacheKey;
     std::unordered_map<std::string, AssetThumbnailRequest> m_resolvedPreviewRequestsByCacheKey;
+    std::unordered_map<std::string, AssetThumbnailServiceResult> m_stableThumbnailResultsByCacheKey;
     std::unordered_set<std::string> m_gpuDeferredHeavyPreviewCacheKeys;
+    std::unordered_set<std::string> m_gpuPreviewEmptyFrameDeferredCacheKeys;
+    std::unordered_set<std::string> m_gpuPreviewResourcePendingDeferredCacheKeys;
+    std::unordered_set<std::string> m_gpuPreviewReadbackPendingCacheKeys;
+    std::unordered_map<std::string, AssetThumbnailRequest> m_gpuPreviewReadbackPendingRequestsByCacheKey;
     std::unordered_map<std::string, ThumbnailState> m_thumbnailStatesByCacheKey;
     std::string m_generationFingerprint;
     uint64_t m_generationSerial = 0u;

@@ -114,6 +114,25 @@ namespace
         return BuildFallbackRenderScenePackage(snapshot);
     }
 
+    RenderScenePackage BuildPreparedBuilderFailedRenderScenePackage(
+        const FrameSnapshot& snapshot,
+        const RenderScenePreparingResolutionDesc& resolutionDesc,
+        const std::string& diagnostic)
+    {
+        if (resolutionDesc.buildPreparedBuilderFailedRenderScenePackage)
+        {
+            try
+            {
+                return resolutionDesc.buildPreparedBuilderFailedRenderScenePackage(snapshot, diagnostic);
+            }
+            catch (...)
+            {
+            }
+        }
+
+        return BuildFallbackRenderScenePackage(snapshot);
+    }
+
     RenderScenePackage BuildSnapshotHarnessRenderScenePackage(
         const FrameSnapshot& snapshot,
         const RenderScenePreparingResolutionDesc& resolutionDesc)
@@ -421,7 +440,14 @@ namespace
         const RHI::RHIRenderTargetLayoutDesc& lhs,
         const RHI::RHIRenderTargetLayoutDesc& rhs)
     {
-        return lhs.colorFormats == rhs.colorFormats &&
+        if (lhs.colorFormats != rhs.colorFormats)
+            return false;
+        for (size_t index = 0u; index < lhs.colorFormats.size(); ++index)
+        {
+            if (lhs.GetColorSpace(index) != rhs.GetColorSpace(index))
+                return false;
+        }
+        return
             lhs.hasDepth == rhs.hasDepth &&
             (!lhs.hasDepth || lhs.depthFormat == rhs.depthFormat) &&
             lhs.sampleCount == rhs.sampleCount;
@@ -967,15 +993,21 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
             renderScenePackage = renderSceneBuilder();
             attribution = RenderSceneAttribution::RendererPrepared;
         }
-        catch (const std::exception&)
+        catch (const std::exception& exception)
         {
-            renderScenePackage = BuildPreparedBuilderMissingRenderScenePackage(snapshot, resolutionDesc);
-            attribution = RenderSceneAttribution::PreparedBuilderMissing;
+            renderScenePackage = BuildPreparedBuilderFailedRenderScenePackage(
+                snapshot,
+                resolutionDesc,
+                exception.what());
+            attribution = RenderSceneAttribution::PreparedBuilderFailed;
         }
         catch (...)
         {
-            renderScenePackage = BuildPreparedBuilderMissingRenderScenePackage(snapshot, resolutionDesc);
-            attribution = RenderSceneAttribution::PreparedBuilderMissing;
+            renderScenePackage = BuildPreparedBuilderFailedRenderScenePackage(
+                snapshot,
+                resolutionDesc,
+                "unknown exception");
+            attribution = RenderSceneAttribution::PreparedBuilderFailed;
         }
     }
     else if (resolutionDesc.buildPreparedBuilderMissingRenderScenePackage)

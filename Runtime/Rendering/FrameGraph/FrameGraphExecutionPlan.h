@@ -1548,27 +1548,26 @@ namespace NLS::Render::FrameGraph
 		return compiledPasses;
 	}
 
-	inline OutputRenderPassExecutionDesc BuildOutputRenderPassExecutionDesc(
-		const Data::FrameDescriptor& frame,
-		const ThreadedRenderScenePassMetadata& metadata)
-	{
+		inline OutputRenderPassExecutionDesc BuildOutputRenderPassExecutionDesc(
+			const Data::FrameDescriptor& frame,
+			const ThreadedRenderScenePassMetadata& metadata)
+		{
 		OutputRenderPassExecutionDesc desc;
 		desc.renderWidth = frame.renderWidth;
 		desc.renderHeight = frame.renderHeight;
 
-		if (metadata.execution.useFrameClearState && frame.camera != nullptr)
-		{
-			desc.clearColor = frame.camera->GetClearColorBuffer();
-			desc.clearDepth = frame.camera->GetClearDepthBuffer();
-			desc.clearStencil = frame.camera->GetClearStencilBuffer();
-			desc.clearValue = {
-				frame.camera->GetClearColor().x,
-				frame.camera->GetClearColor().y,
-				frame.camera->GetClearColor().z,
-				1.0f
-			};
-			return desc;
-		}
+			if (metadata.execution.useFrameClearState && frame.camera != nullptr)
+			{
+				desc.clearColor = frame.camera->GetClearColorBuffer();
+				desc.clearDepth = frame.camera->GetClearDepthBuffer();
+				desc.clearStencil = frame.camera->GetClearStencilBuffer();
+				desc.clearValue = frame.clearColorOverride.value_or(Maths::Vector4{
+					frame.camera->GetClearColor().x,
+					frame.camera->GetClearColor().y,
+					frame.camera->GetClearColor().z,
+					1.0f});
+				return desc;
+			}
 
 		desc.clearColor = metadata.execution.clearColor;
 		desc.clearDepth = metadata.execution.clearDepth;

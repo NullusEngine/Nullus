@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -31,10 +32,53 @@ constexpr uint32_t kTextureArtifactContainerSchemaVersion = 4u;
 constexpr uint32_t kLegacyTextureArtifactContainerSchemaVersion = 3u;
 constexpr uint64_t kTextureArtifactHeaderBytes = 64u;
 constexpr uint64_t kLegacyTextureArtifactHeaderBytes = 32u;
-constexpr uint64_t kTextureArtifactMipRecordBytes = 36u;
-constexpr uint64_t kTextureArtifactSubresourceRecordBytes = 48u;
+	constexpr uint64_t kTextureArtifactMipRecordBytes = 36u;
+	constexpr uint64_t kTextureArtifactSubresourceRecordBytes = 48u;
 
-struct TextureArtifactHeader
+    std::chrono::microseconds ElapsedTextureArtifactMicros(
+        const std::chrono::steady_clock::time_point begin,
+        const std::chrono::steady_clock::time_point end)
+    {
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - begin);
+        if (elapsed.count() == 0)
+            elapsed = std::chrono::microseconds(1);
+        return elapsed;
+    }
+
+    void RecordTextureArtifactTelemetry(
+        const NLS::Core::Assets::ArtifactLoadTelemetryStage stage,
+        const std::chrono::steady_clock::time_point begin,
+        const std::chrono::steady_clock::time_point end,
+        const size_t byteCount,
+        const std::filesystem::path& path)
+    {
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            stage,
+            ElapsedTextureArtifactMicros(begin, end),
+            byteCount,
+            path.generic_string()
+        });
+    }
+
+    struct ScopedTextureArtifactTelemetry
+    {
+        NLS::Core::Assets::ArtifactLoadTelemetryStage stage;
+        std::chrono::steady_clock::time_point begin;
+        size_t byteCount = 0u;
+        std::filesystem::path path;
+
+        ~ScopedTextureArtifactTelemetry()
+        {
+            RecordTextureArtifactTelemetry(
+                stage,
+                begin,
+                std::chrono::steady_clock::now(),
+                byteCount,
+                path);
+        }
+	};
+
+	struct TextureArtifactHeader
 {
     uint32_t magic = kTextureArtifactMagic;
     uint32_t version = kTextureArtifactVersion;
@@ -704,8 +748,12 @@ std::optional<TextureArtifactData> DeserializeTextureArtifactInternal(
     if (bytes == nullptr)
         return std::nullopt;
 
-    NLS::Core::Assets::RecordArtifactLoadTelemetry({
-        NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize});
+    const ScopedTextureArtifactTelemetry deserializeTelemetry {
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize,
+        std::chrono::steady_clock::now(),
+        bytes->size(),
+        {}
+    };
 
     auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
         *bytes,
@@ -940,11 +988,6 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
     {
         return std::nullopt;
     }
-    NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
-    telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead;
-    telemetry.path = path.generic_string();
-    NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
-
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
         return std::nullopt;
@@ -970,12 +1013,22 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
                 input.seekg(0, std::ios::beg);
                 if (!input)
                     return std::nullopt;
+                const auto fileReadBegin = std::chrono::steady_clock::now();
                 if (!bytes->empty())
                     input.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(bytes->size()));
+                const auto fileReadEnd = std::chrono::steady_clock::now();
                 if (isCancelled())
                     return std::nullopt;
                 if (input.gcount() == static_cast<std::streamsize>(bytes->size()))
+                {
+                    RecordTextureArtifactTelemetry(
+                        NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
+                        fileReadBegin,
+                        fileReadEnd,
+                        bytes->size(),
+                        path);
                     return DeserializeTextureArtifactInternal(std::move(bytes), true);
+                }
                 return std::nullopt;
             }
         }
@@ -988,6 +1041,7 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
 
     auto bytes = std::make_shared<std::vector<uint8_t>>();
     std::array<char, 64u * 1024u> buffer {};
+    const auto fileReadBegin = std::chrono::steady_clock::now();
     while (input)
     {
         if (isCancelled())
@@ -1001,9 +1055,17 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
         const auto* begin = reinterpret_cast<const uint8_t*>(buffer.data());
         bytes->insert(bytes->end(), begin, begin + static_cast<size_t>(readCount));
     }
+    const auto fileReadEnd = std::chrono::steady_clock::now();
     if (isCancelled())
         return std::nullopt;
 
+    const auto byteCount = bytes->size();
+    RecordTextureArtifactTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
+        fileReadBegin,
+        fileReadEnd,
+        byteCount,
+        path);
     return DeserializeTextureArtifactInternal(std::move(bytes), true);
 }
 

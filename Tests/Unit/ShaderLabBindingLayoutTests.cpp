@@ -2,6 +2,7 @@
 
 #include "Rendering/ShaderLab/ShaderLabBindingLayout.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -248,4 +249,67 @@ TEST(ShaderLabBindingLayoutTests, BuiltInStandardPbrDeclaresMaterialResourcesInM
     const auto compileSource = NLS::Render::ShaderLab::BuildShaderLabHlslForCompile(forward);
     for (const auto& textureName : textureNames)
         EXPECT_NE(compileSource.find(textureName), std::string::npos) << textureName;
+}
+
+TEST(ShaderLabBindingLayoutTests, BuiltInStandardPbrForwardConsumesMeshTangentFrameAndLightGrid)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader");
+
+    ASSERT_FALSE(source.empty());
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(source, "StandardPBR.shader");
+    ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    ASSERT_FALSE(parsed.asset.subShaders.empty());
+    ASSERT_FALSE(parsed.asset.subShaders.front().passes.empty());
+
+    const auto& forward = parsed.asset.subShaders.front().passes.front();
+    ASSERT_EQ(forward.tags.values.at("LightMode"), "Forward");
+    const auto compileSource = NLS::Render::ShaderLab::BuildShaderLabHlslForCompile(forward);
+
+    const std::string requiredTokens[] = {
+        "float3 normalOS : NORMAL;",
+        "float3 tangentOS : TEXCOORD1;",
+        "float3 bitangentOS : TEXCOORD2;",
+        "float3 positionWS : TEXCOORD1;",
+        "float3 normalWS : TEXCOORD2;",
+        "float3 tangentWS : TEXCOORD3;",
+        "float3 bitangentWS : TEXCOORD4;",
+        "#include \"LightGridCommon.hlsli\"",
+        "StructuredBuffer<uint> u_ForwardLocalLightBuffer : register(t0, space1);",
+        "StructuredBuffer<uint> u_NumCulledLightsGrid : register(t1, space1);",
+        "StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);",
+        "NLSAccumulateClusteredLightingPBR("
+    };
+    for (const auto& token : requiredTokens)
+        EXPECT_NE(compileSource.find(token), std::string::npos) << token;
+}
+
+TEST(ShaderLabBindingLayoutTests, BuiltInStandardPbrImportsNormalMapMaterialVariant)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders" / "ShaderLab" / "StandardPBR.shader");
+
+    ASSERT_FALSE(source.empty());
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(source, "StandardPBR.shader");
+    ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    ASSERT_FALSE(parsed.asset.subShaders.empty());
+    ASSERT_FALSE(parsed.asset.subShaders.front().passes.empty());
+
+    const auto& forward = parsed.asset.subShaders.front().passes.front();
+    const auto normalMapVariant = std::find_if(
+        forward.multiCompiles.begin(),
+        forward.multiCompiles.end(),
+        [](const NLS::Render::ShaderLab::ShaderLabKeywordPragma& pragma)
+        {
+            const auto hasOffVariant =
+                std::find(pragma.keywords.begin(), pragma.keywords.end(), "_") != pragma.keywords.end();
+            const auto hasNormalMapVariant =
+                std::find(pragma.keywords.begin(), pragma.keywords.end(), "_NORMALMAP") != pragma.keywords.end();
+            return hasOffVariant && hasNormalMapVariant;
+        });
+
+    EXPECT_NE(normalMapVariant, forward.multiCompiles.end())
+        << "Imported StandardPBR artifacts must contain the _NORMALMAP keyword hash used by model materials.";
 }

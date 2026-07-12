@@ -38,7 +38,7 @@ bool MeshArtifactPathExists(const std::string& path)
     const auto resolvedPath = Core::ResourceManagement::MeshManager::ResolveResourcePath(path);
     return !resolvedPath.empty() &&
         std::filesystem::is_regular_file(resolvedPath, error) &&
-        NLS::Render::Assets::ReadMeshArtifactHeaderPreview(resolvedPath, 64u * 1024u).has_value();
+        NLS::Render::Assets::IsMeshArtifactFile(resolvedPath);
 }
 
 Render::Resources::Mesh* TryLoadCanonicalPrimitiveMesh(
@@ -327,10 +327,25 @@ void MeshFilter::SetMeshReference(NLS::Engine::Serialize::PPtr<Mesh> p_reference
 
 void MeshFilter::SetMeshObjectIdentifier(const NLS::Engine::Serialize::ObjectIdentifier& p_identifier)
 {
+    SetMeshObjectIdentifierInternal(p_identifier, true);
+}
+
+void MeshFilter::SetDeferredMeshObjectIdentifierHint(const NLS::Engine::Serialize::ObjectIdentifier& p_identifier)
+{
+    SetMeshObjectIdentifierInternal(p_identifier, false);
+}
+
+void MeshFilter::SetMeshObjectIdentifierInternal(
+    const NLS::Engine::Serialize::ObjectIdentifier& p_identifier,
+    const bool notify)
+{
     m_transientMesh.reset();
     mesh = NLS::Engine::Serialize::PPtr<Mesh>(
         NLS::Engine::Serialize::PersistentManager::Instance().ObjectIdentifierToInstanceID(p_identifier));
-    SetModelPathHint(p_identifier.guid.IsValid() ? p_identifier.filePath : std::string {});
+    m_meshPath = p_identifier.guid.IsValid() ? p_identifier.filePath : std::string {};
+    m_failedMeshPath.clear();
+    if (notify)
+        NotifyMeshChanged();
 }
 
 void MeshFilter::SetModelPath(const std::string& p_path)

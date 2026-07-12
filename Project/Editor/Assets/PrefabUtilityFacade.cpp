@@ -1357,8 +1357,10 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     request.prefabAssetId = prefabAssetId;
     request.prefabSubAssetKey = prefabSubAssetKey;
     request.sceneAssetId = sceneAssetId;
-    request.deferAssetReferenceResolution = false;
-    request.synchronousAssetReferencePrewarm = true;
+    const bool deferGeneratedModelResources = sourcePrefab->generatedModelPrefab;
+    request.deferAssetReferenceResolution = deferGeneratedModelResources;
+    request.synchronousAssetReferencePrewarm = !deferGeneratedModelResources;
+    request.skipDeferredAssetReferenceCacheLookup = deferGeneratedModelResources;
 
     auto instantiate = ConvertResult(PrefabEditorWorkflow().InstantiatePrefab({
         request.prefab,
@@ -1367,7 +1369,8 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
         request.sceneAssetId,
         request.deferAssetReferenceResolution,
         request.constPrefab,
-        request.synchronousAssetReferencePrewarm
+        request.synchronousAssetReferencePrewarm,
+        request.skipDeferredAssetReferenceCacheLookup
     }, scene));
 
     if (instantiate.status != PrefabOperationStatus::Committed || !instantiate.instance.has_value())
@@ -1376,7 +1379,8 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     instantiate.instance->UseSharedSourcePrefab(sourcePrefab);
     instantiate.instance->generatedReadOnly = prefabInstance.generatedReadOnly || sourcePrefab->generatedModelPrefab;
     instantiate.instance->localPatches = prefabInstance.modifications;
-    instantiate.instance->preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(sourcePrefab->graph);
+    if (!deferGeneratedModelResources)
+        instantiate.instance->preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(sourcePrefab->graph);
     instantiate.instance->preservedResolvedAssets = sourcePrefab->resolvedAssets;
     RemoveSceneLocalAddedObjectMappings(*instantiate.instance, prefabInstance);
 
@@ -1503,11 +1507,17 @@ PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(
             continue;
         }
 
-        auto instantiationPrefab = *prefab;
-        MaterializePrefabInstanceModificationsForInstantiation(instantiationPrefab.graph, prefabInstance);
+        std::optional<NLS::Engine::Assets::PrefabArtifact> instantiationPrefab;
+        const auto* connectPrefab = prefab.get();
+        if (!prefabInstance.addedObjects.empty() || !prefabInstance.modifications.empty())
+        {
+            instantiationPrefab = *prefab;
+            MaterializePrefabInstanceModificationsForInstantiation(instantiationPrefab->graph, prefabInstance);
+            connectPrefab = &*instantiationPrefab;
+        }
 
         InstantiatePrefabRequest request;
-        request.constPrefab = &instantiationPrefab;
+        request.constPrefab = connectPrefab;
         request.prefabAssetId = prefabAssetId;
         request.prefabSubAssetKey = prefabSubAssetKey;
         request.sceneAssetId = sceneAssetId;
@@ -1806,7 +1816,8 @@ PrefabOperationResult PrefabUtilityFacade::InstantiatePrefab(
         request.sceneAssetId,
         request.deferAssetReferenceResolution,
         request.constPrefab,
-        request.synchronousAssetReferencePrewarm
+        request.synchronousAssetReferencePrewarm,
+        request.skipDeferredAssetReferenceCacheLookup
     }, scene));
 }
 

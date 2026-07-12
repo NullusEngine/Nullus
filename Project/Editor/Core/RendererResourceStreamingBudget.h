@@ -14,20 +14,30 @@ namespace NLS::Editor::Core
         size_t textureCompletionsPerFrame = 0u;
         size_t meshBindsPerFrame = 0u;
         size_t maxInflightMeshLoads = 0u;
+        size_t maxSharedSceneLoadMeshLoads = 0u;
     };
 
-    inline constexpr PrefabRendererResourceStreamingBudget kDragPreviewPrefabRendererResourceStreamingBudget {
+    inline constexpr PrefabRendererResourceStreamingBudget kInteractivePrefabRendererResourceStreamingBudget {
         std::chrono::milliseconds(12),
         64u,
         32u,
         32u,
         64u,
         32u,
+        64u,
         64u
     };
 
-    inline constexpr PrefabRendererResourceStreamingBudget kSceneLoadPrefabRendererResourceStreamingBudget =
-        kDragPreviewPrefabRendererResourceStreamingBudget;
+    inline constexpr PrefabRendererResourceStreamingBudget kSceneLoadPrefabRendererResourceStreamingBudget {
+        std::chrono::milliseconds(18),
+        64u,
+        32u,
+        32u,
+        32u,
+        192u,
+        256u,
+        384u
+    };
 
     inline constexpr PrefabRendererResourceStreamingBudget kPrefabRendererResourceStreamingBudget =
         kSceneLoadPrefabRendererResourceStreamingBudget;
@@ -37,9 +47,9 @@ namespace NLS::Editor::Core
         return kSceneLoadPrefabRendererResourceStreamingBudget;
     }
 
-    inline constexpr PrefabRendererResourceStreamingBudget GetDragPreviewPrefabRendererResourceStreamingBudget()
+    inline constexpr PrefabRendererResourceStreamingBudget GetInteractivePrefabRendererResourceStreamingBudget()
     {
-        return kDragPreviewPrefabRendererResourceStreamingBudget;
+        return kInteractivePrefabRendererResourceStreamingBudget;
     }
 
     inline constexpr auto kPrefabRendererResourceStreamingFrameBudget =

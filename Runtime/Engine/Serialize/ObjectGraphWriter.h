@@ -15,6 +15,22 @@ namespace NLS::Engine::Serialize
     public:
         static std::string Write(const ObjectGraphDocument& document)
         {
+            return WriteDocument(document).dump(4) + "\n";
+        }
+
+        static std::string WriteCompact(const ObjectGraphDocument& document)
+        {
+            return WriteDocument(document).dump();
+        }
+
+        static nlohmann::json WriteValueForRuntimeMetadata(const PropertyValue& value)
+        {
+            return WriteValue(value);
+        }
+
+    private:
+        static nlohmann::json WriteDocument(const ObjectGraphDocument& document)
+        {
             nlohmann::json root;
             root["format"] = document.format;
             root["version"] = document.version;
@@ -47,15 +63,9 @@ namespace NLS::Engine::Serialize
                     root["prefabInstances"].push_back(WritePrefabInstance(prefabInstance));
             }
 
-            return root.dump(4) + "\n";
+            return root;
         }
 
-        static nlohmann::json WriteValueForRuntimeMetadata(const PropertyValue& value)
-        {
-            return WriteValue(value);
-        }
-
-    private:
         static nlohmann::json WriteObject(const ObjectRecord& object)
         {
             nlohmann::json json;

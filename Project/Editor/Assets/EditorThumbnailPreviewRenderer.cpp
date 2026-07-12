@@ -20,6 +20,8 @@
 #include "Engine/Assets/PrefabAsset.h"
 #include "Engine/Rendering/SceneRendererFactory.h"
 #include "GameObject.h"
+#include "Jobs/BackgroundJobQueue.h"
+#include "Jobs/JobSystem.h"
 #include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -37,11 +39,15 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <deque>
 #include <filesystem>
+#include <future>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -55,13 +61,47 @@ EditorThumbnailPreviewReadbackPollResult PollEditorThumbnailPreviewReadback(
     const NLS::Render::Context::Driver* driver)
 {
     EditorThumbnailPreviewReadbackPollResult result;
-    if (!state.active || state.completion == nullptr)
+    if (!state.active)
         return result;
 
     NLS::Render::RHI::RHICompletionStatusCode completionCode =
         NLS::Render::RHI::RHICompletionStatusCode::Pending;
     std::string completionMessage;
-    if (driver != nullptr)
+    bool hasTerminalPostSubmitResult = false;
+    if (state.postSubmitTextureReadbackState != nullptr)
+    {
+        std::lock_guard lock(state.postSubmitTextureReadbackState->mutex);
+        if (!state.postSubmitTextureReadbackState->beginAttempted ||
+            state.postSubmitTextureReadbackState->beginInProgress)
+        {
+            result.status = EditorThumbnailPreviewReadbackPollStatus::Pending;
+            return result;
+        }
+
+        completionMessage = state.postSubmitTextureReadbackState->resultMessage;
+        if (!state.postSubmitTextureReadbackState->beginSucceeded)
+        {
+            hasTerminalPostSubmitResult = true;
+            completionCode =
+                state.postSubmitTextureReadbackState->resultCode == NLS::Render::RHI::RHIReadbackStatusCode::DeviceLost
+                    ? NLS::Render::RHI::RHICompletionStatusCode::DeviceLost
+                    : NLS::Render::RHI::RHICompletionStatusCode::Failed;
+        }
+        else
+        {
+            state.completion = state.postSubmitTextureReadbackState->completion;
+            if (state.completion == nullptr)
+            {
+                hasTerminalPostSubmitResult = true;
+                completionCode = NLS::Render::RHI::RHICompletionStatusCode::Success;
+            }
+        }
+    }
+
+    if (!hasTerminalPostSubmitResult && state.completion == nullptr)
+        return result;
+
+    if (!hasTerminalPostSubmitResult && driver != nullptr)
     {
         const auto polled = NLS::Render::Context::DriverRendererAccess::PollReadbackCompletion(
             *driver,
@@ -88,7 +128,7 @@ EditorThumbnailPreviewReadbackPollResult PollEditorThumbnailPreviewReadback(
             completionCode = NLS::Render::RHI::RHICompletionStatusCode::Failed;
         }
     }
-    else
+    else if (!hasTerminalPostSubmitResult)
     {
         const auto status = state.completion->Poll();
         completionCode = status.code;
@@ -106,6 +146,8 @@ EditorThumbnailPreviewReadbackPollResult PollEditorThumbnailPreviewReadback(
     {
         result.preview.width = state.width;
         result.preview.height = state.height;
+        result.preview.rawVisibleDrawCount = state.rawVisibleDrawCount;
+        result.preview.submittedSceneDrawCount = state.submittedSceneDrawCount;
         if (state.rgbaPixels != nullptr)
             result.preview.rgbaPixels = std::move(*state.rgbaPixels);
     }
@@ -154,8 +196,15 @@ constexpr float kUnityPrefabPreviewPitchDegrees = -36.0f;
 constexpr float kUnityMaterialPreviewDistance = 5.0f;
 constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
 const NLS::Maths::Vector3 kThumbnailPreviewKeyLightDirection{0.35f, -0.72f, 0.60f};
-constexpr float kThumbnailPreviewKeyLightIntensity = 0.75f;
-constexpr float kThumbnailPreviewAmbientIntensity = 0.24f;
+constexpr float kThumbnailPreviewKeyLightIntensity = 0.70f;
+constexpr float kThumbnailPreviewMainLightIntensity = 0.52f;
+constexpr float kThumbnailPreviewFillLightIntensity = 0.18f;
+constexpr float kThumbnailPreviewKeyLightAngularRadiusDegrees = 55.0f;
+constexpr std::array<const char*, 2> kThumbnailPreviewKeyLightNames {
+    "Thumbnail Preview Key Light",
+    "Thumbnail Preview Fill Light"
+};
+constexpr float kThumbnailPreviewAmbientIntensity = 0.10f;
 constexpr size_t kMaxGpuPreviewNativeArtifactFileBytes = 16u * 1024u * 1024u;
 constexpr size_t kMaxGpuPreviewStructurePayloadBytes = 2u * 1024u * 1024u;
 constexpr size_t kMaxGpuPreviewPrefabPayloadBytes = 8u * 1024u * 1024u;
@@ -166,13 +215,38 @@ constexpr size_t kMaxGpuPreviewPrefabDrawItems = 1024u;
 constexpr size_t kMaxGpuPreviewMeshVertices = 240000u;
 constexpr size_t kMaxGpuPreviewMeshIndices = 720000u;
 constexpr size_t kMaxPreviewRenderableSnapshotCacheEntries = 64u;
+constexpr size_t kMaxPendingPrefabPreviewPreparations = 8u;
 constexpr size_t kThumbnailPreviewMeshPumpCompletionsPerFrame = 8u;
-constexpr size_t kThumbnailPreviewMaterialPumpCompletionsPerFrame = 8u;
+constexpr size_t kThumbnailPreviewMaterialPumpCompletionsPerFrame = 1u;
 constexpr size_t kThumbnailPreviewTexturePumpCompletionsPerFrame = 8u;
+constexpr size_t kThumbnailPreviewPrefabResourceInspectionsPerTypePerFrame = 32u;
 constexpr size_t kMaxRetiredPreviewReadbacks = 32u;
 constexpr const char* kGpuPreviewMeshBudgetExceededDiagnostic = "thumbnail-model-preview-budget-exceeded";
 constexpr const char* kGpuPreviewMaterialBudgetExceededDiagnostic = "thumbnail-material-preview-budget-exceeded";
 constexpr const char* kGpuPreviewPrefabBudgetExceededDiagnostic = "thumbnail-prefab-preview-budget-exceeded";
+
+struct ThumbnailPreviewKeyLightSample
+{
+    NLS::Maths::Vector3 direction;
+    float intensity = 0.0f;
+};
+
+const std::array<ThumbnailPreviewKeyLightSample, 2>& ThumbnailPreviewKeyLightSamples()
+{
+    static const auto samples = []
+    {
+        const auto center = kThumbnailPreviewKeyLightDirection.Normalised();
+        const auto right = NLS::Maths::Vector3::Cross(NLS::Maths::Vector3::Up, center).Normalised();
+        const auto radius = kThumbnailPreviewKeyLightAngularRadiusDegrees * kDegreesToRadians;
+        return std::array<ThumbnailPreviewKeyLightSample, 2> {
+            ThumbnailPreviewKeyLightSample {center, kThumbnailPreviewMainLightIntensity},
+            ThumbnailPreviewKeyLightSample {
+                (center * std::cos(radius) - right * std::sin(radius)).Normalised(),
+                kThumbnailPreviewFillLightIntensity}
+        };
+    }();
+    return samples;
+}
 
 std::string ToGenericPath(const std::filesystem::path& path)
 {
@@ -186,15 +260,36 @@ std::optional<NLS::Core::Assets::ArtifactManifest> LoadManifest(const AssetThumb
 
 std::string BuildPreviewReadbackRequestKey(const AssetThumbnailRequest& request)
 {
-    return std::to_string(static_cast<int>(request.kind)) + "|" +
-        request.assetId.ToString() + "|" +
-        request.subAssetKey + "|" +
-        std::to_string(request.requestedSize) + "|" +
-        request.settingsFingerprint + "|" +
-        request.dependencyStamp + "|" +
-        request.previewRendererVersion + "|" +
-        request.artifactPath + "|" +
-        request.sourceAssetPath;
+    std::string key;
+    key.reserve(256u + request.freshnessInputs.size() * 48u);
+    key += "preview-readback:v2|";
+    key += ToGenericPath(request.projectRoot);
+    key += '|';
+    key += std::to_string(static_cast<int>(request.kind));
+    key += '|';
+    key += request.assetId.ToString();
+    key += '|';
+    key += request.subAssetKey;
+    key += '|';
+    key += std::to_string(request.requestedSize);
+    key += '|';
+    key += request.settingsFingerprint;
+    key += '|';
+    key += request.dependencyStamp;
+    key += '|';
+    key += request.previewRendererVersion;
+    key += '|';
+    key += request.artifactPath;
+    key += '|';
+    key += request.sourceAssetPath;
+    for (const auto& [name, value] : request.freshnessInputs)
+    {
+        key += "|fresh:";
+        key += name;
+        key += '=';
+        key += value;
+    }
+    return key;
 }
 
 std::string BuildPreviewSnapshotCacheKey(const AssetThumbnailRequest& request)
@@ -284,7 +379,7 @@ std::vector<std::filesystem::path> ResolveMeshArtifactPaths(const AssetThumbnail
     {
         if (auto resolved = ResolveArtifactPath(request, request.artifactPath);
             resolved.has_value() &&
-            NLS::Render::Assets::ReadMeshArtifactHeaderPreview(*resolved, 64u * 1024u).has_value())
+            NLS::Render::Assets::IsMeshArtifactFile(*resolved))
         {
             paths.push_back(*resolved);
         }
@@ -564,13 +659,13 @@ bool ShouldLoadPreviewMeshThroughArtifactLoader(const std::string& meshPath)
 
     std::error_code error;
     return std::filesystem::is_regular_file(meshPath, error) &&
-        NLS::Render::Assets::ReadMeshArtifactHeaderPreview(meshPath, 64u * 1024u).has_value();
+        NLS::Render::Assets::IsMeshArtifactFile(meshPath);
 }
 
-bool MaterialTextureDependenciesReady(
+bool BindReadyMaterialPreviewTextures(
     NLS::Render::Resources::Material& material,
-    const std::unordered_set<std::string>& activeTextureInterests,
-    std::unordered_set<std::string>* requestedTexturePaths)
+    const std::unordered_set<std::string>& activeTextureInterests = {},
+    std::unordered_set<std::string>* requestedTexturePaths = nullptr)
 {
     const auto& texturePaths = material.GetTextureResourcePaths();
     if (texturePaths.empty())
@@ -586,9 +681,8 @@ bool MaterialTextureDependenciesReady(
         if (path.empty())
             continue;
 
-        const auto uniform = uniforms.find(name);
         NLS::Render::Resources::Texture2D* texture = nullptr;
-        if (uniform != uniforms.end())
+        if (const auto uniform = uniforms.find(name); uniform != uniforms.end())
         {
             if (const auto* value = std::any_cast<NLS::Render::Resources::Texture2D*>(&uniform->second);
                 value != nullptr)
@@ -602,8 +696,14 @@ bool MaterialTextureDependenciesReady(
         const auto genericPath = ToGenericPath(path);
         if (requestedTexturePaths != nullptr && !genericPath.empty())
             requestedTexturePaths->insert(genericPath);
-        if (activeTextureInterests.find(genericPath) == activeTextureInterests.end())
-            (void)textureManager.RequestAsyncArtifact(path, true);
+        texture = textureManager.GetArtifactResource(path, false);
+        if (texture == nullptr && activeTextureInterests.find(genericPath) == activeTextureInterests.end())
+            texture = textureManager.RequestAsyncArtifact(path, true);
+        if (texture != nullptr && texture->GetTextureHandle() != nullptr)
+        {
+            material.SetRawParameter(name, texture);
+            continue;
+        }
         ready = false;
     }
     return ready;
@@ -669,53 +769,19 @@ NLS::Render::Resources::Shader* ResolveThumbnailPreviewDefaultShader(
 
     if (resourcePath != nullptr)
         resourcePath->clear();
-    const auto& projectAssetsPath = shaderManager.ProjectAssetsRoot();
-    if (projectAssetsPath.empty())
-        return nullptr;
-
-    auto projectRoot = std::filesystem::path(projectAssetsPath).lexically_normal();
-    if (projectRoot.filename().generic_string().empty())
-        projectRoot = projectRoot.parent_path();
-    if (ToLowerGenericPath(projectRoot.filename().generic_string()) == "assets")
-        projectRoot = projectRoot.parent_path();
-    if (projectRoot.empty())
-        return nullptr;
-
-    NLS::Core::Assets::ArtifactDatabase database;
-    if (!database.Load(projectRoot / "Library" / "ArtifactDB"))
-        return nullptr;
-
-    std::vector<std::string> candidateArtifactPaths;
-    database.VisitRecords([&candidateArtifactPaths](const NLS::Core::Assets::ArtifactDatabaseRecord& record)
-    {
-        if (record.status == NLS::Core::Assets::ArtifactRecordStatus::UpToDate &&
-            record.artifactType == NLS::Core::Assets::ArtifactType::Shader &&
-            record.targetPlatform == "editor" &&
-            !record.artifactPath.empty() &&
-            IsStandardPbrSourcePath(record.sourcePath) &&
-            IsStandardPbrForwardSubAssetKey(record.subAssetKey))
-        {
-            candidateArtifactPaths.push_back(std::filesystem::path(record.artifactPath).lexically_normal().generic_string());
-        }
-    });
-
-    for (const auto& candidate : candidateArtifactPaths)
-    {
-        auto* shader = shaderManager.GetResource(candidate, true);
-        if (shader != nullptr && IsThumbnailPreviewDefaultShader(*shader))
-        {
-            if (resourcePath != nullptr)
-                *resourcePath = candidate;
-            return shader;
-        }
-    }
-
     return nullptr;
 }
 
 bool PreviewSnapshotIsCompleteForGpuPrefabPreview(const PreviewRenderableSnapshot& snapshot)
 {
     return snapshot.expectedDrawItemCount <= snapshot.drawItems.size();
+}
+
+bool ShouldDeferPrefabPreviewForMeshReadiness(
+    const size_t pendingMeshResourceCount,
+    const bool resourcePlanTruncated)
+{
+    return pendingMeshResourceCount != 0u || resourcePlanTruncated;
 }
 
 NLS::Render::Resources::Mesh* ResolvePreviewMesh(
@@ -789,6 +855,388 @@ std::string ResolvePreviewMaterialLoadPath(
     return materialLoadPath.has_value()
         ? ToGenericPath(*materialLoadPath)
         : genericMaterialPath;
+}
+
+struct PrefabPreviewResourcePlanDrawItem
+{
+    size_t drawItemIndex = SIZE_MAX;
+    std::string meshLoadPath;
+    std::vector<std::string> materialLoadPaths;
+};
+
+struct PrefabPreviewResourcePlan
+{
+    std::vector<PrefabPreviewResourcePlanDrawItem> drawItems;
+    std::unordered_set<std::string> meshLoadPaths;
+    std::unordered_set<std::string> materialLoadPaths;
+    std::string diagnostic;
+    bool truncatedForPendingResources = false;
+};
+
+PrefabPreviewResourcePlan BuildPrefabPreviewResourcePlan(
+    const AssetThumbnailRequest& request,
+    const PreviewRenderableSnapshot& snapshot,
+    NLS::Core::ResourceManagement::MeshManager* meshManager = nullptr,
+    NLS::Core::ResourceManagement::MaterialManager* materialManager = nullptr,
+    size_t maxUnreadyDependencyAttempts = SIZE_MAX)
+{
+    PrefabPreviewResourcePlan plan;
+    plan.drawItems.reserve(snapshot.drawItems.size());
+
+    std::unordered_map<std::string, std::optional<std::filesystem::path>> meshBudgetPathByKey;
+    std::unordered_map<std::string, std::optional<std::filesystem::path>> materialBudgetPathByKey;
+    std::unordered_set<std::string> checkedMaterialBudgetPaths;
+
+    auto makeDependencyKey = [](const std::string& genericPath, const NLS::Core::Assets::AssetId& assetId)
+    {
+        return genericPath + "|" + assetId.ToString();
+    };
+
+    size_t unreadyDependencyAttempts = 0u;
+    auto canIncludeDependency = [&unreadyDependencyAttempts, maxUnreadyDependencyAttempts](const bool ready)
+    {
+        if (ready)
+            return true;
+        if (unreadyDependencyAttempts >= maxUnreadyDependencyAttempts)
+            return false;
+        ++unreadyDependencyAttempts;
+        return true;
+    };
+
+    for (size_t drawItemIndex = 0u; drawItemIndex < snapshot.drawItems.size(); ++drawItemIndex)
+    {
+        const auto& drawItem = snapshot.drawItems[drawItemIndex];
+        PrefabPreviewResourcePlanDrawItem planned;
+        planned.drawItemIndex = drawItemIndex;
+
+        const auto genericMeshPath = ToGenericPath(drawItem.meshPath);
+        const auto meshKey = makeDependencyKey(genericMeshPath, drawItem.meshAssetId);
+        auto meshBudgetPathIterator = meshBudgetPathByKey.find(meshKey);
+        if (meshBudgetPathIterator == meshBudgetPathByKey.end())
+        {
+            auto meshBudgetPath = ResolvePrefabPreviewMeshBudgetPath(request, genericMeshPath);
+            if (!meshBudgetPath.has_value())
+                meshBudgetPath = ResolvePrefabDependencyArtifactBudgetPath(
+                    request,
+                    drawItem.meshAssetId,
+                    genericMeshPath);
+            meshBudgetPathIterator = meshBudgetPathByKey.emplace(meshKey, std::move(meshBudgetPath)).first;
+        }
+        planned.meshLoadPath = meshBudgetPathIterator->second.has_value()
+            ? ToGenericPath(*meshBudgetPathIterator->second)
+            : genericMeshPath;
+        const bool meshReady = planned.meshLoadPath.empty() ||
+            meshManager == nullptr ||
+            meshManager->GetResource(planned.meshLoadPath, false) != nullptr;
+        if (!canIncludeDependency(meshReady))
+        {
+            plan.truncatedForPendingResources = true;
+            return plan;
+        }
+        if (!planned.meshLoadPath.empty())
+            plan.meshLoadPaths.insert(planned.meshLoadPath);
+
+        planned.materialLoadPaths.reserve(drawItem.materialPaths.size());
+        for (size_t materialIndex = 0u; materialIndex < drawItem.materialPaths.size(); ++materialIndex)
+        {
+            const auto genericMaterialPath = ToGenericPath(drawItem.materialPaths[materialIndex]);
+            if (genericMaterialPath.empty())
+            {
+                planned.materialLoadPaths.emplace_back();
+                continue;
+            }
+
+            const auto materialAssetId = materialIndex < drawItem.materialAssetIds.size()
+                ? drawItem.materialAssetIds[materialIndex]
+                : NLS::Core::Assets::AssetId {};
+            const auto materialKey = makeDependencyKey(genericMaterialPath, materialAssetId);
+            auto materialBudgetPathIterator = materialBudgetPathByKey.find(materialKey);
+            if (materialBudgetPathIterator == materialBudgetPathByKey.end())
+            {
+                auto materialBudgetPath = ResolvePrefabPreviewMaterialBudgetPath(request, genericMaterialPath);
+                if (!materialBudgetPath.has_value())
+                {
+                    materialBudgetPath = ResolvePrefabDependencyArtifactBudgetPath(
+                        request,
+                        materialAssetId,
+                        genericMaterialPath);
+                }
+                materialBudgetPathIterator = materialBudgetPathByKey.emplace(
+                    materialKey,
+                    std::move(materialBudgetPath)).first;
+            }
+            if (materialBudgetPathIterator->second.has_value())
+            {
+                const auto budgetPathKey = ToGenericPath(*materialBudgetPathIterator->second);
+                if (checkedMaterialBudgetPaths.insert(budgetPathKey).second &&
+                    MaterialArtifactExceedsGpuPreviewBudget(*materialBudgetPathIterator->second))
+                {
+                    plan.diagnostic = kGpuPreviewMaterialBudgetExceededDiagnostic;
+                    return plan;
+                }
+            }
+            auto materialLoadPath = materialBudgetPathIterator->second.has_value()
+                ? ToGenericPath(*materialBudgetPathIterator->second)
+                : genericMaterialPath;
+            const bool materialReady = materialLoadPath.empty() ||
+                materialManager == nullptr ||
+                materialManager->GetResource(materialLoadPath, false) != nullptr;
+            (void)materialReady;
+            if (!materialLoadPath.empty())
+                plan.materialLoadPaths.insert(materialLoadPath);
+            planned.materialLoadPaths.push_back(std::move(materialLoadPath));
+        }
+
+        plan.drawItems.push_back(std::move(planned));
+    }
+
+    return plan;
+}
+
+struct PrefabPreviewResourcePumpState
+{
+    std::deque<std::string> unresolvedMeshPaths;
+    std::deque<std::string> unresolvedMaterialPaths;
+    std::unordered_set<std::string> meshPathsToPump;
+    std::unordered_set<std::string> materialPathsToPump;
+    std::unordered_set<std::string> requestedTexturePaths;
+    std::unordered_map<std::string, NLS::Render::Resources::Mesh*> resolvedMeshes;
+    std::unordered_map<std::string, NLS::Render::Resources::Material*> resolvedMaterials;
+    std::unordered_map<
+        std::string,
+        NLS::Core::ResourceManagement::ResourceHandle<NLS::Render::Resources::Mesh>> meshHandles;
+    std::unordered_map<
+        std::string,
+        NLS::Core::ResourceManagement::ResourceHandle<NLS::Render::Resources::Material>> materialHandles;
+    const NLS::Core::ResourceManagement::MeshManager* meshManager = nullptr;
+    const NLS::Core::ResourceManagement::MaterialManager* materialManager = nullptr;
+    NLS::Core::ResourceManagement::ResourceLifetimeRegistry* resourceLifetimeRegistry = nullptr;
+    std::string ownerToken;
+    bool resourcePlanTruncated = false;
+    std::string terminalDiagnostic;
+};
+
+struct PreparedPrefabPreview
+{
+    PreviewRenderableSnapshot snapshot;
+    PrefabPreviewResourcePlan resourcePlan;
+    mutable PrefabPreviewResourcePumpState resourcePumpState;
+    std::string diagnostic;
+};
+
+void ResetPrefabPreviewResourcePumpStateForManagers(
+    PrefabPreviewResourcePumpState& state,
+    const PrefabPreviewResourcePlan& resourcePlan,
+    const NLS::Core::ResourceManagement::MeshManager& meshManager,
+    const NLS::Core::ResourceManagement::MaterialManager& materialManager,
+    NLS::Core::ResourceManagement::ResourceLifetimeRegistry* resourceLifetimeRegistry,
+    std::string ownerToken)
+{
+    if (state.meshManager == &meshManager &&
+        state.materialManager == &materialManager &&
+        state.resourceLifetimeRegistry == resourceLifetimeRegistry)
+    {
+        return;
+    }
+
+    state.unresolvedMeshPaths.clear();
+    state.unresolvedMaterialPaths.clear();
+    for (const auto& path : resourcePlan.meshLoadPaths)
+    {
+        if (!path.empty())
+            state.unresolvedMeshPaths.push_back(path);
+    }
+    for (const auto& path : resourcePlan.materialLoadPaths)
+    {
+        if (!path.empty())
+            state.unresolvedMaterialPaths.push_back(path);
+    }
+    state.meshPathsToPump.clear();
+    state.materialPathsToPump.clear();
+    state.requestedTexturePaths.clear();
+    state.resolvedMeshes.clear();
+    state.resolvedMaterials.clear();
+    state.meshHandles.clear();
+    state.materialHandles.clear();
+    state.resourcePlanTruncated = resourcePlan.truncatedForPendingResources;
+    state.terminalDiagnostic.clear();
+    state.meshManager = &meshManager;
+    state.materialManager = &materialManager;
+    state.resourceLifetimeRegistry = resourceLifetimeRegistry;
+    state.ownerToken = std::move(ownerToken);
+}
+
+bool PrefabArtifactExceedsGpuPreviewComplexityBudget(
+    const NLS::Engine::Assets::PrefabArtifact& prefab);
+
+PreparedPrefabPreview PreparePrefabPreviewInBackground(const AssetThumbnailRequest& request)
+{
+    PreparedPrefabPreview prepared;
+    const auto telemetryBegin = std::chrono::steady_clock::now();
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(request.projectRoot));
+    auto prefab = database.LoadPrefabArtifactByAssetId(request.assetId, request.subAssetKey);
+    if (!prefab.has_value())
+    {
+        prepared.diagnostic = "thumbnail-gpu-preview-prefab-load-failed";
+    }
+    else if (PrefabArtifactExceedsGpuPreviewComplexityBudget(*prefab))
+    {
+        prepared.diagnostic = kGpuPreviewPrefabBudgetExceededDiagnostic;
+    }
+    else
+    {
+        prepared.snapshot = BuildPreviewRenderableSnapshot(*prefab);
+        if (prepared.snapshot.drawItems.empty())
+        {
+            prepared.diagnostic = "thumbnail-gpu-preview-prefab-renderer-missing";
+        }
+        else if (!PreviewSnapshotIsCompleteForGpuPrefabPreview(prepared.snapshot) ||
+            prepared.snapshot.drawItems.size() > kMaxGpuPreviewPrefabDrawItems)
+        {
+            prepared.diagnostic = kGpuPreviewPrefabBudgetExceededDiagnostic;
+        }
+        else
+        {
+            prepared.resourcePlan = BuildPrefabPreviewResourcePlan(request, prepared.snapshot);
+            prepared.diagnostic = prepared.resourcePlan.diagnostic;
+            for (const auto& path : prepared.resourcePlan.meshLoadPaths)
+            {
+                if (!path.empty())
+                    prepared.resourcePumpState.unresolvedMeshPaths.push_back(path);
+            }
+            for (const auto& path : prepared.resourcePlan.materialLoadPaths)
+            {
+                if (!path.empty())
+                    prepared.resourcePumpState.unresolvedMaterialPaths.push_back(path);
+            }
+            prepared.resourcePumpState.meshPathsToPump.reserve(
+                kThumbnailPreviewPrefabResourceInspectionsPerTypePerFrame);
+            prepared.resourcePumpState.materialPathsToPump.reserve(
+                kThumbnailPreviewPrefabResourceInspectionsPerTypePerFrame);
+            prepared.resourcePumpState.resolvedMeshes.reserve(
+                prepared.resourcePlan.meshLoadPaths.size());
+            prepared.resourcePumpState.resolvedMaterials.reserve(
+                prepared.resourcePlan.materialLoadPaths.size());
+            prepared.resourcePumpState.resourcePlanTruncated =
+                prepared.resourcePlan.truncatedForPendingResources;
+        }
+    }
+
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareSceneObjects,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - telemetryBegin),
+        prepared.snapshot.drawItems.size(),
+        request.sourceAssetPath + "|" + request.subAssetKey + "|background-prepare"
+    });
+    return prepared;
+}
+
+std::future<PreparedPrefabPreview> SchedulePrefabPreviewPreparation(
+    const AssetThumbnailRequest& request)
+{
+    struct JobState
+    {
+        std::promise<PreparedPrefabPreview> promise;
+        AssetThumbnailRequest request;
+    };
+
+    auto state = std::make_unique<JobState>();
+    state->request = request;
+    auto future = state->promise.get_future();
+    auto* statePtr = state.release();
+
+    NLS::Base::Jobs::BackgroundJobDesc desc {};
+    desc.userData = statePtr;
+    desc.debugName = "EditorThumbnailPreviewRenderer.PreparePrefab";
+    desc.priority = NLS::Base::Jobs::JobPriority::High;
+    desc.function = [](void* userData)
+    {
+        std::unique_ptr<JobState> ownedState(static_cast<JobState*>(userData));
+        try
+        {
+            ownedState->promise.set_value(PreparePrefabPreviewInBackground(ownedState->request));
+        }
+        catch (...)
+        {
+            ownedState->promise.set_exception(std::current_exception());
+        }
+    };
+    desc.cancelUserData = statePtr;
+    desc.cancelFunction = [](void* userData)
+    {
+        std::unique_ptr<JobState> ownedState(static_cast<JobState*>(userData));
+        try
+        {
+            throw std::runtime_error("prefab thumbnail preparation cancelled before execution");
+        }
+        catch (...)
+        {
+            ownedState->promise.set_exception(std::current_exception());
+        }
+    };
+
+    const auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
+    if (handle.id == 0u)
+    {
+        std::unique_ptr<JobState> ownedState(statePtr);
+        throw std::runtime_error("prefab thumbnail preparation scheduling rejected");
+    }
+    return future;
+}
+
+template <typename ResourceManager>
+std::unordered_set<std::string> CollectPendingPreviewDependencyPaths(
+    const std::unordered_set<std::string>& paths,
+    const ResourceManager& manager)
+{
+    std::unordered_set<std::string> pending;
+    pending.reserve(paths.size());
+    for (const auto& path : paths)
+    {
+        if (!path.empty() && manager.IsAsyncArtifactLoadPending(path))
+            pending.insert(path);
+    }
+    return pending;
+}
+
+template <typename ResourceManager>
+size_t CountFailedPreviewDependencyPaths(
+    const std::unordered_set<std::string>& paths,
+    const ResourceManager& manager)
+{
+    size_t failedCount = 0u;
+    for (const auto& path : paths)
+    {
+        if (!path.empty() && manager.IsAsyncArtifactLoadFailed(path))
+            ++failedCount;
+    }
+    return failedCount;
+}
+
+std::string BuildThumbnailGpuPreviewResourcesPendingDiagnostic(
+    const size_t meshCount,
+    const size_t materialCount,
+    const size_t textureCount,
+    const bool truncated,
+    const size_t failedMeshCount = 0u,
+    const size_t failedMaterialCount = 0u,
+    const size_t failedTextureCount = 0u)
+{
+    return std::string("thumbnail-gpu-preview-resources-pending") +
+        "|mesh=" + std::to_string(meshCount) +
+        "|material=" + std::to_string(materialCount) +
+        "|texture=" + std::to_string(textureCount) +
+        "|truncated=" + (truncated ? "1" : "0") +
+        "|meshFailed=" + std::to_string(failedMeshCount) +
+        "|materialFailed=" + std::to_string(failedMaterialCount) +
+        "|textureFailed=" + std::to_string(failedTextureCount);
+}
+
+std::string BuildThumbnailGpuPreviewMeshLoadFailedDiagnostic(const size_t failedMeshCount)
+{
+    return std::string("thumbnail-gpu-preview-mesh-load-failed") +
+        "|meshFailed=" + std::to_string(failedMeshCount);
 }
 
 std::optional<std::filesystem::path> ResolvePrefabDependencyArtifactBudgetPath(
@@ -947,6 +1395,14 @@ std::unique_ptr<NLS::Render::Resources::Material> CreateStablePreviewMaterial(
         material->SetRawParameter(name, value);
     for (const auto& [name, path] : source.GetTextureResourcePaths())
         material->SetTextureResourcePath(name, path);
+    for (const auto& keyword : source.GetShaderLabKeywordNames())
+        material->EnableKeyword(keyword);
+    if (source.HasExplicitShaderLabSourcePath())
+    {
+        material->SetShaderLabSourcePath(source.GetShaderLabSourcePath());
+        auto* forwardShader = source.ResolveShaderForLightMode("Forward");
+        material->RegisterShaderLabPassShader(forwardShader != nullptr ? forwardShader : source.GetShader());
+    }
     material->SetSurfaceMode(source.GetSurfaceMode());
     material->SetBlendable(source.IsBlendable());
     material->SetBackfaceCulling(source.HasBackfaceCulling());
@@ -1002,10 +1458,24 @@ void PruneGlobalRetiredPreviewReadbacks()
     }
 }
 
-void RetirePreviewReadback(EditorThumbnailPreviewReadbackState&& readback)
+bool WaitForRetiredPreviewReadbacksBeforeStartingReadback()
+{
+    std::lock_guard lock(RetiredPreviewReadbackMutex());
+    auto& readbacks = RetiredPreviewReadbacks();
+    for (auto iterator = readbacks.begin(); iterator != readbacks.end();)
+    {
+        if (iterator->completion == nullptr || iterator->completion->Poll().IsComplete())
+            iterator = readbacks.erase(iterator);
+        else
+            ++iterator;
+    }
+    return readbacks.empty();
+}
+
+bool RetirePreviewReadback(EditorThumbnailPreviewReadbackState&& readback)
 {
     if (!readback.active || readback.completion == nullptr || readback.rgbaPixels == nullptr)
-        return;
+        return true;
 
     std::lock_guard lock(RetiredPreviewReadbackMutex());
     auto& readbacks = RetiredPreviewReadbacks();
@@ -1017,12 +1487,26 @@ void RetirePreviewReadback(EditorThumbnailPreviewReadbackState&& readback)
             ++iterator;
     }
     while (readbacks.size() >= kMaxRetiredPreviewReadbacks)
-        readbacks.pop_front();
+    {
+        auto completed = std::find_if(
+            readbacks.begin(),
+            readbacks.end(),
+            [](EditorThumbnailPreviewReadbackState& retired)
+            {
+                return retired.completion == nullptr || retired.completion->Poll().IsComplete();
+            });
+        if (completed == readbacks.end())
+            return false;
+        readbacks.erase(completed);
+    }
     readbacks.push_back(std::move(readback));
+    return true;
 }
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
+ThumbnailPreviewRenderStatsForTesting g_lastThumbnailPreviewRenderStatsForTesting;
+
 EditorThumbnailPreviewCameraDebugInfo BuildPrefabPreviewCameraDebugInfoForTesting(
     const NLS::Maths::Vector3& boundsMin,
     const NLS::Maths::Vector3& boundsMax,
@@ -1052,6 +1536,26 @@ float GetThumbnailPreviewKeyLightIntensityForTesting()
     return kThumbnailPreviewKeyLightIntensity;
 }
 
+size_t GetThumbnailPreviewKeyLightSampleCountForTesting()
+{
+    return ThumbnailPreviewKeyLightSamples().size();
+}
+
+float GetThumbnailPreviewKeyLightAngularRadiusDegreesForTesting()
+{
+    const auto& samples = ThumbnailPreviewKeyLightSamples();
+    return NLS::Maths::Vector3::AngleBetween(samples[0].direction, samples[1].direction) /
+        kDegreesToRadians;
+}
+
+float GetThumbnailPreviewKeyLightSampleIntensitySumForTesting()
+{
+    float intensity = 0.0f;
+    for (const auto& sample : ThumbnailPreviewKeyLightSamples())
+        intensity += sample.intensity;
+    return intensity;
+}
+
 float GetThumbnailPreviewAmbientIntensityForTesting()
 {
     return kThumbnailPreviewAmbientIntensity;
@@ -1072,9 +1576,19 @@ size_t GetThumbnailPreviewTexturePumpBudgetForTesting()
     return kThumbnailPreviewTexturePumpCompletionsPerFrame;
 }
 
+size_t GetThumbnailPreviewPrefabResourceInspectionBudgetForTesting()
+{
+    return kThumbnailPreviewPrefabResourceInspectionsPerTypePerFrame;
+}
+
 size_t GetThumbnailPreviewPrefabDrawItemCapacityForTesting()
 {
     return kMaxGpuPreviewPrefabDrawItems;
+}
+
+std::string BuildThumbnailPreviewReadbackRequestKeyForTesting(const AssetThumbnailRequest& request)
+{
+    return BuildPreviewReadbackRequestKey(request);
 }
 
 bool ThumbnailPreviewMeshPathUsesArtifactLoaderForTesting(const std::string& meshPath)
@@ -1114,6 +1628,64 @@ bool ThumbnailPreviewSnapshotIsCompleteForGpuPrefabPreviewForTesting(
 {
     return PreviewSnapshotIsCompleteForGpuPrefabPreview(snapshot);
 }
+
+bool ShouldDeferPrefabPreviewForMeshReadinessForTesting(
+    const size_t pendingMeshResourceCount,
+    const bool resourcePlanTruncated)
+{
+    return ShouldDeferPrefabPreviewForMeshReadiness(
+        pendingMeshResourceCount,
+        resourcePlanTruncated);
+}
+
+ThumbnailPreviewRenderStatsForTesting GetLastThumbnailPreviewRenderStatsForTesting()
+{
+    return g_lastThumbnailPreviewRenderStatsForTesting;
+}
+
+ThumbnailPreviewPrefabResourcePlanForTesting BuildThumbnailPreviewPrefabResourcePlanForTesting(
+    const AssetThumbnailRequest& request,
+    const PreviewRenderableSnapshot& snapshot,
+    const size_t maxUnreadyDependencyAttempts)
+{
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    auto* meshManagerForBudget = maxUnreadyDependencyAttempts == SIZE_MAX ? nullptr : &meshManager;
+    auto* materialManagerForBudget = maxUnreadyDependencyAttempts == SIZE_MAX ? nullptr : &materialManager;
+    const auto plan = BuildPrefabPreviewResourcePlan(
+        request,
+        snapshot,
+        meshManagerForBudget,
+        materialManagerForBudget,
+        maxUnreadyDependencyAttempts);
+    return {
+        plan.drawItems.size(),
+        plan.meshLoadPaths.size(),
+        plan.materialLoadPaths.size(),
+        plan.truncatedForPendingResources
+    };
+}
+
+ThumbnailPreviewPrefabResourcePlanForTesting BuildThumbnailPreviewPrefabResourcePlanWithManagersForTesting(
+    const AssetThumbnailRequest& request,
+    const PreviewRenderableSnapshot& snapshot,
+    NLS::Core::ResourceManagement::MeshManager& meshManager,
+    NLS::Core::ResourceManagement::MaterialManager& materialManager,
+    const size_t maxUnreadyDependencyAttempts)
+{
+    const auto plan = BuildPrefabPreviewResourcePlan(
+        request,
+        snapshot,
+        &meshManager,
+        &materialManager,
+        maxUnreadyDependencyAttempts);
+    return {
+        plan.drawItems.size(),
+        plan.meshLoadPaths.size(),
+        plan.materialLoadPaths.size(),
+        plan.truncatedForPendingResources
+    };
+}
 #endif
 
 class EditorThumbnailPreviewRenderer::Impl
@@ -1121,7 +1693,9 @@ class EditorThumbnailPreviewRenderer::Impl
 public:
     explicit Impl(NLS::Render::Context::Driver& driver)
         : m_driver(driver)
-        , m_renderer(NLS::Engine::Rendering::CreateSceneRenderer(driver))
+        , m_renderer(NLS::Engine::Rendering::CreateSceneRenderer(
+              driver,
+              NLS::Engine::Rendering::SceneRendererKind::Forward))
     {
         auto& cameraObject = m_scene.CreateEditorTransientGameObject("Thumbnail Preview Camera");
         m_camera = cameraObject.AddComponent<NLS::Engine::Components::CameraComponent>();
@@ -1130,12 +1704,17 @@ public:
         m_camera->SetFrustumGeometryCulling(false);
         m_camera->SetFrustumLightCulling(false);
 
-        auto& directional = m_scene.CreateEditorTransientGameObject("Thumbnail Preview Key Light");
-        directional.GetTransform()->SetLocalRotation(
-            Maths::Quaternion::LookAt(kThumbnailPreviewKeyLightDirection, Maths::Vector3::Up));
-        auto* light = directional.AddComponent<NLS::Engine::Components::LightComponent>();
-        light->SetLightType(NLS::Render::Settings::ELightType::DIRECTIONAL);
-        light->SetIntensity(kThumbnailPreviewKeyLightIntensity);
+        const auto& keyLightSamples = ThumbnailPreviewKeyLightSamples();
+        for (size_t index = 0u; index < keyLightSamples.size(); ++index)
+        {
+            const auto& sample = keyLightSamples[index];
+            auto& directional = m_scene.CreateEditorTransientGameObject(kThumbnailPreviewKeyLightNames[index]);
+            directional.GetTransform()->SetLocalRotation(
+                Maths::Quaternion::LookAt(sample.direction, Maths::Vector3::Up));
+            auto* light = directional.AddComponent<NLS::Engine::Components::LightComponent>();
+            light->SetLightType(NLS::Render::Settings::ELightType::DIRECTIONAL);
+            light->SetIntensity(sample.intensity);
+        }
 
         auto& ambient = m_scene.CreateEditorTransientGameObject("Thumbnail Preview Ambient");
         auto* ambientLight = ambient.AddComponent<NLS::Engine::Components::LightComponent>();
@@ -1148,10 +1727,12 @@ public:
 
     ~Impl()
     {
+        NLS::Render::Context::DriverRendererAccess::CancelBackgroundPreviewPublicationRequest(m_driver);
         NLS::Render::Context::DriverRendererAccess::DrainThreadedRendering(m_driver);
+        m_pendingReadback.renderInputsKeepAlive.reset();
         RetirePendingReadback();
         ReleaseTextureInterests();
-        ClearPreviewObjects();
+        ClearPreviewObjects(false);
         PruneGlobalRetiredPreviewReadbacks();
     }
 
@@ -1160,6 +1741,205 @@ public:
         return request.kind == AssetThumbnailKind::MaterialSphere ||
             request.kind == AssetThumbnailKind::ModelPreview ||
             request.kind == AssetThumbnailKind::PrefabPreview;
+    }
+
+    bool PrewarmMaterialPreviewRenderPath(const uint32_t requestedSize)
+    {
+        PruneGlobalRetiredPreviewReadbacks();
+        if (m_pendingReadback.active)
+            return false;
+        if (m_renderer == nullptr || m_camera == nullptr || m_camera->GetCamera() == nullptr)
+            return false;
+        const auto threadedTelemetry =
+            NLS::Render::Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(m_driver);
+        if (threadedTelemetry.has_value() && threadedTelemetry->inFlightFrameCount != 0u)
+            return false;
+        if (!EDITOR_CONTEXT(editorResources))
+            return false;
+
+        auto* sphere = EDITOR_CONTEXT(editorResources)->GetMesh("Sphere");
+        if (sphere == nullptr)
+            return false;
+
+        auto& defaultMaterial = DefaultMaterial();
+        if (!defaultMaterial.HasShader())
+            return false;
+
+        EditorThumbnailPreviewResult result;
+        result.width = std::max(1u, requestedSize);
+        result.height = result.width;
+
+        AssetThumbnailRequest warmupRequest;
+        warmupRequest.kind = AssetThumbnailKind::MaterialSphere;
+        warmupRequest.requestedSize = result.width;
+        warmupRequest.sourceAssetPath = "Assets";
+        warmupRequest.subAssetKey = "material-preview-render-warmup";
+
+        m_activeRequestKey = BuildPreviewReadbackRequestKey(warmupRequest);
+        ClearPreviewObjects(false);
+        m_materialPreviewMaterial = CreateStablePreviewMaterial(defaultMaterial);
+        EnsureMaterialPreviewObject(*sphere, *m_materialPreviewMaterial);
+        ConfigureMaterialCamera(result.width, result.height);
+        RenderCurrentPreviewScene(warmupRequest, result);
+        if (result.diagnostic != "thumbnail-gpu-preview-readback-pending")
+            ClearPreviewObjects(false);
+        return !result.rgbaPixels.empty() ||
+            result.diagnostic == "thumbnail-gpu-preview-readback-pending";
+    }
+
+    EditorThumbnailPreviewResourcePumpResult PumpResources(const AssetThumbnailRequest& request)
+    {
+        EditorThumbnailPreviewResourcePumpResult result;
+        const auto requestKey = BuildPreviewReadbackRequestKey(request);
+        m_activeRequestKey = requestKey;
+        if (!m_textureInterestRequestKey.empty() && m_textureInterestRequestKey != requestKey)
+            ReleaseTextureInterests();
+
+        if (!Supports(request))
+        {
+            result.diagnostic = "thumbnail-gpu-preview-kind-unsupported";
+            return result;
+        }
+        result.supported = true;
+        if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MeshManager>() ||
+            !NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
+        {
+            result.diagnostic = "thumbnail-gpu-preview-resource-managers-unavailable";
+            return result;
+        }
+
+        auto& previewMeshManager = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager);
+        auto& previewMaterialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
+        auto* previewTextureManager = NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>()
+            ? &NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager)
+            : nullptr;
+        if (request.kind == AssetThumbnailKind::PrefabPreview &&
+            request.assetId.IsValid() &&
+            !request.subAssetKey.empty())
+        {
+            std::string preparedDiagnostic;
+            const auto prepared = ResolvePreparedPrefabPreview(request, preparedDiagnostic);
+            if (prepared == nullptr)
+            {
+                result.resourcesPending =
+                    preparedDiagnostic.rfind("thumbnail-gpu-preview-resources-pending", 0u) == 0u;
+                result.diagnostic = preparedDiagnostic.empty()
+                    ? std::string("thumbnail-gpu-preview-resources-pending:prefab-prepare=1")
+                    : preparedDiagnostic;
+                return result;
+            }
+            auto* pumpState = FindPrefabPreviewResourcePumpState(
+                BuildPreviewSnapshotCacheKey(request));
+            if (pumpState == nullptr)
+            {
+                result.diagnostic = "thumbnail-gpu-preview-prefab-pump-state-missing";
+                return result;
+            }
+            auto* resourceLifetimeRegistry =
+                NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>()
+                    ? &EDITOR_CONTEXT(resourceLifetimeRegistry)
+                    : nullptr;
+            ResetPrefabPreviewResourcePumpStateForManagers(
+                *pumpState,
+                prepared->resourcePlan,
+                previewMeshManager,
+                previewMaterialManager,
+                resourceLifetimeRegistry,
+                "thumbnail-preview:" + BuildPreviewSnapshotCacheKey(request));
+            return PumpPreparedPrefabResources(
+                request,
+                *pumpState,
+                previewMeshManager,
+                previewMaterialManager);
+        }
+        const auto requestedResourcePaths = CollectRequestedPreviewResourcePaths(request);
+        const auto pumpTelemetryBegin = std::chrono::steady_clock::now();
+        const auto pendingMeshPaths = CollectPendingPreviewDependencyPaths(
+            requestedResourcePaths.meshPaths,
+            previewMeshManager);
+        const auto pendingMaterialPaths = CollectPendingPreviewDependencyPaths(
+            requestedResourcePaths.materialPaths,
+            previewMaterialManager);
+        const auto failedMeshPathCount = CountFailedPreviewDependencyPaths(
+            requestedResourcePaths.meshPaths,
+            previewMeshManager);
+        const auto failedMaterialPathCount = CountFailedPreviewDependencyPaths(
+            requestedResourcePaths.materialPaths,
+            previewMaterialManager);
+        size_t pendingTexturePathCount = 0u;
+        size_t failedTexturePathCount = 0u;
+        const auto meshPumpTelemetryBegin = std::chrono::steady_clock::now();
+        previewMeshManager.PumpAsyncLoadsForPaths(
+            pendingMeshPaths,
+            kThumbnailPreviewMeshPumpCompletionsPerFrame);
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMeshDependencies,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - meshPumpTelemetryBegin),
+            pendingMeshPaths.size(),
+            request.sourceAssetPath + "|" + request.subAssetKey
+        });
+        const auto materialPumpTelemetryBegin = std::chrono::steady_clock::now();
+        previewMaterialManager.PumpAsyncLoadsForPaths(
+            pendingMaterialPaths,
+            kThumbnailPreviewMaterialPumpCompletionsPerFrame);
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialDependencies,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - materialPumpTelemetryBegin),
+            pendingMaterialPaths.size(),
+            request.sourceAssetPath + "|" + request.subAssetKey
+        });
+        if (previewTextureManager != nullptr)
+        {
+            auto texturePumpPaths = requestedResourcePaths.texturePaths;
+            texturePumpPaths.insert(m_textureInterestPaths.begin(), m_textureInterestPaths.end());
+            const auto pendingTexturePaths = CollectPendingPreviewDependencyPaths(
+                texturePumpPaths,
+                *previewTextureManager);
+            pendingTexturePathCount = pendingTexturePaths.size();
+            failedTexturePathCount = CountFailedPreviewDependencyPaths(
+                texturePumpPaths,
+                *previewTextureManager);
+            const auto texturePumpTelemetryBegin = std::chrono::steady_clock::now();
+            previewTextureManager->PumpAsyncLoadsForPaths(
+                pendingTexturePaths,
+                kThumbnailPreviewTexturePumpCompletionsPerFrame);
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpTextureDependencies,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - texturePumpTelemetryBegin),
+                pendingTexturePathCount,
+                request.sourceAssetPath + "|" + request.subAssetKey
+            });
+        }
+        if (result.resourcesPending && result.diagnostic.empty())
+        {
+            result.diagnostic = BuildThumbnailGpuPreviewResourcesPendingDiagnostic(
+                pendingMeshPaths.size(),
+                pendingMaterialPaths.size(),
+                pendingTexturePathCount,
+                false,
+                failedMeshPathCount,
+                failedMaterialPathCount,
+                failedTexturePathCount);
+        }
+        auto pumpTelemetryPath = request.sourceAssetPath + "|" + request.subAssetKey;
+        if (result.resourcesPending && !result.diagnostic.empty())
+            pumpTelemetryPath += "|diag=" + result.diagnostic;
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpDependencies,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - pumpTelemetryBegin),
+            pendingMeshPaths.size() +
+                pendingMaterialPaths.size() +
+                pendingTexturePathCount +
+                failedMeshPathCount +
+                failedMaterialPathCount +
+                failedTexturePathCount,
+            std::move(pumpTelemetryPath)
+        });
+        return result;
     }
 
     PreviewResourcePathSet CollectRequestedPreviewResourcePaths(const AssetThumbnailRequest& request)
@@ -1186,23 +1966,16 @@ public:
             return paths;
         }
 
-        const auto snapshotCacheKey = BuildPreviewSnapshotCacheKey(request);
-        PreviewRenderableSnapshot snapshot;
-        if (!TryGetPreviewSnapshotFromCache(snapshotCacheKey, snapshot))
+        const auto prepared = TryGetPreparedPrefabPreviewFromCache(BuildPreviewSnapshotCacheKey(request));
+        if (prepared == nullptr)
             return paths;
 
-        for (const auto& drawItem : snapshot.drawItems)
-        {
-            const auto meshPath = ToGenericPath(drawItem.meshPath);
-            if (!meshPath.empty())
-                paths.meshPaths.insert(meshPath);
-            for (const auto& materialPath : drawItem.materialPaths)
-            {
-                const auto genericMaterialPath = ToGenericPath(materialPath);
-                if (!genericMaterialPath.empty())
-                    paths.materialPaths.insert(genericMaterialPath);
-            }
-        }
+        paths.meshPaths.insert(
+            prepared->resourcePlan.meshLoadPaths.begin(),
+            prepared->resourcePlan.meshLoadPaths.end());
+        paths.materialPaths.insert(
+            prepared->resourcePlan.materialLoadPaths.begin(),
+            prepared->resourcePlan.materialLoadPaths.end());
         return paths;
     }
 
@@ -1220,16 +1993,28 @@ public:
         {
             if (m_pendingReadback.requestKey != readbackRequestKey)
             {
-                RetirePendingReadback();
+                if (!RetirePendingReadback())
+                {
+                    result.diagnostic = "thumbnail-gpu-preview-readback-pending";
+                    return result;
+                }
                 ReleaseTextureInterests();
-                ClearPreviewObjects();
+                ClearPreviewObjects(false);
             }
             else
             {
+                const auto pollTelemetryBegin = std::chrono::steady_clock::now();
                 const auto polled = PollEditorThumbnailPreviewReadback(
                     m_pendingReadback,
                     readbackRequestKey,
                     &m_driver);
+                NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                    NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPollReadback,
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - pollTelemetryBegin),
+                    static_cast<size_t>(m_pendingReadback.width) * static_cast<size_t>(m_pendingReadback.height) * 4u,
+                    request.sourceAssetPath + "|" + request.subAssetKey
+                });
                 if (polled.status == EditorThumbnailPreviewReadbackPollStatus::Pending)
                 {
                     result.diagnostic = "thumbnail-gpu-preview-readback-pending";
@@ -1238,14 +2023,16 @@ public:
                 if (polled.status == EditorThumbnailPreviewReadbackPollStatus::Ready)
                 {
                     ReleaseTextureInterests();
-                    ClearPreviewObjects();
-                    return polled.preview;
+                    ClearPreviewObjects(false);
+                    auto readyPreview = polled.preview;
+                    readyPreview.completedPendingReadback = true;
+                    return readyPreview;
                 }
                 if (polled.status == EditorThumbnailPreviewReadbackPollStatus::Failed ||
                     polled.status == EditorThumbnailPreviewReadbackPollStatus::DeviceLost)
                 {
                     ReleaseTextureInterests();
-                    ClearPreviewObjects();
+                    ClearPreviewObjects(false);
                     result.diagnostic = "thumbnail-gpu-preview-readback-failed:" + polled.preview.diagnostic;
                     return result;
                 }
@@ -1270,29 +2057,27 @@ public:
             result.diagnostic = "thumbnail-gpu-preview-resource-managers-unavailable";
             return result;
         }
+        if (request.kind != AssetThumbnailKind::MaterialSphere)
+            DeactivateMaterialPreviewObject();
 
-        auto& previewMeshManager = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager);
-        auto& previewMaterialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
-        auto* previewTextureManager = NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>()
-            ? &NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager)
-            : nullptr;
-        const auto requestedResourcePaths = CollectRequestedPreviewResourcePaths(request);
-        previewMeshManager.PumpAsyncLoadsForPaths(
-            requestedResourcePaths.meshPaths,
-            kThumbnailPreviewMeshPumpCompletionsPerFrame);
-        previewMaterialManager.PumpAsyncLoadsForPaths(
-            requestedResourcePaths.materialPaths,
-            kThumbnailPreviewMaterialPumpCompletionsPerFrame);
-        if (previewTextureManager != nullptr)
+        const auto resourcePump = PumpResources(request);
+        if (!resourcePump.supported)
         {
-            auto texturePumpPaths = requestedResourcePaths.texturePaths;
-            texturePumpPaths.insert(m_textureInterestPaths.begin(), m_textureInterestPaths.end());
-            previewTextureManager->PumpAsyncLoadsForPaths(
-                texturePumpPaths,
-                kThumbnailPreviewTexturePumpCompletionsPerFrame);
+            result.diagnostic = resourcePump.diagnostic;
+            return result;
+        }
+        if (resourcePump.resourcesPending)
+        {
+            result.diagnostic = resourcePump.diagnostic;
+            return result;
+        }
+        if (!resourcePump.diagnostic.empty())
+        {
+            result.diagnostic = resourcePump.diagnostic;
+            return result;
         }
 
-        ClearPreviewObjects();
+        ClearPreviewObjects(false);
 
         if (request.kind == AssetThumbnailKind::MaterialSphere)
             return RenderMaterialSphere(request, result);
@@ -1311,7 +2096,7 @@ public:
             {
                 return result;
             }
-            ClearPreviewObjects();
+            ClearPreviewObjects(false);
             return result;
         }
 
@@ -1324,12 +2109,15 @@ public:
 
         std::vector<NLS::Render::Resources::Material*> materials;
         Bounds combinedBounds;
+        if (!DefaultMaterialReady(result))
+            return result;
         {
             NLS::Base::Profiling::PerformanceStageScope resourcesScope(
                 NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
                 "PreparePreviewResources",
                 NLS::Base::Profiling::PerformanceStageThread::Main);
             resourcesScope.AddCounter("dependencyResourceCount", meshPaths.size());
+            const auto telemetryBegin = std::chrono::steady_clock::now();
 
             auto& meshManager = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager);
             if (request.kind == AssetThumbnailKind::PrefabPreview)
@@ -1350,17 +2138,18 @@ public:
 
             for (const auto& meshPath : meshPaths)
             {
-                if (MeshArtifactExceedsGpuPreviewBudget(meshPath))
+                if (request.kind != AssetThumbnailKind::PrefabPreview &&
+                    MeshArtifactExceedsGpuPreviewBudget(meshPath))
                 {
                     result.diagnostic = kGpuPreviewMeshBudgetExceededDiagnostic;
-                    ClearPreviewObjects();
+                    ClearPreviewObjects(false);
                     return result;
                 }
                 auto* mesh = meshManager.GetResource(ToGenericPath(meshPath), false);
                 if (mesh == nullptr)
                 {
                     result.diagnostic = "thumbnail-gpu-preview-resources-pending";
-                    ClearPreviewObjects();
+                    ClearPreviewObjects(false);
                     return result;
                 }
 
@@ -1377,20 +2166,27 @@ public:
                 else
                 {
                     renderer->FillEmptySlotsWithMaterial(DefaultMaterial());
-                    for (size_t slot = 0u; slot < materials.size() && slot < NLS::Engine::Components::MeshRenderer::kMaxMaterialCount; ++slot)
+                    for (size_t slot = 0u; slot < materials.size(); ++slot)
                     {
                         if (materials[slot] != nullptr)
-                            renderer->SetMaterialAtIndex(static_cast<uint8_t>(slot), *materials[slot]);
+                            renderer->SetMaterialAtIndex(static_cast<uint32_t>(slot), *materials[slot]);
                     }
                 }
                 IncludeBounds(combinedBounds, mesh->GetBounds());
             }
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareResources,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - telemetryBegin),
+                meshPaths.size(),
+                request.sourceAssetPath + "|" + request.subAssetKey
+            });
         }
 
         if (m_previewObjects.empty() || !combinedBounds.valid)
         {
             result.diagnostic = "thumbnail-gpu-preview-mesh-load-failed";
-            ClearPreviewObjects();
+            ClearPreviewObjects(false);
             return result;
         }
 
@@ -1398,7 +2194,7 @@ public:
         RenderCurrentPreviewScene(request, result);
 
         if (result.diagnostic != "thumbnail-gpu-preview-readback-pending")
-            ClearPreviewObjects();
+            ClearPreviewObjects(false);
         return result;
     }
 
@@ -1425,33 +2221,242 @@ private:
     struct PreviewSnapshotCacheEntry
     {
         std::string key;
-        PreviewRenderableSnapshot snapshot;
+        std::shared_ptr<const PreparedPrefabPreview> prepared;
         uint64_t lastUsed = 0u;
     };
 
-    bool TryGetPreviewSnapshotFromCache(
-        const std::string& key,
-        PreviewRenderableSnapshot& snapshot)
+    struct PendingPrefabPreviewPreparation
     {
-        ++m_previewSnapshotCacheClock;
+        std::string key;
+        std::future<PreparedPrefabPreview> future;
+    };
+
+    PrefabPreviewResourcePumpState* FindPrefabPreviewResourcePumpState(const std::string& key)
+    {
         for (auto& entry : m_previewSnapshotCache)
         {
-            if (entry.key != key)
-                continue;
-
-            entry.lastUsed = m_previewSnapshotCacheClock;
-            snapshot = entry.snapshot;
-            return true;
+            if (entry.key == key)
+                return &entry.prepared->resourcePumpState;
         }
-        return false;
+        return nullptr;
     }
 
-    void StorePreviewSnapshotInCache(
-        std::string key,
-        const PreviewRenderableSnapshot& snapshot)
+    EditorThumbnailPreviewResourcePumpResult PumpPreparedPrefabResources(
+        const AssetThumbnailRequest& request,
+        PrefabPreviewResourcePumpState& state,
+        NLS::Core::ResourceManagement::MeshManager& meshManager,
+        NLS::Core::ResourceManagement::MaterialManager& materialManager)
     {
-        if (key.empty() || snapshot.drawItems.empty())
-            return;
+        EditorThumbnailPreviewResourcePumpResult result;
+        result.supported = true;
+        const auto telemetryBegin = std::chrono::steady_clock::now();
+        size_t inspectedResourceCount = 0u;
+        auto finalize = [&](EditorThumbnailPreviewResourcePumpResult finalized)
+        {
+            auto telemetryPath = request.sourceAssetPath + "|" + request.subAssetKey +
+                "|bounded-prefab-resource-inspections";
+            if (!finalized.diagnostic.empty())
+                telemetryPath += "|diag=" + finalized.diagnostic;
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpDependencies,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - telemetryBegin),
+                inspectedResourceCount,
+                std::move(telemetryPath)
+            });
+            return finalized;
+        };
+
+        if (!state.terminalDiagnostic.empty())
+        {
+            result.diagnostic = state.terminalDiagnostic;
+            return finalize(std::move(result));
+        }
+
+        state.meshPathsToPump.clear();
+        const auto meshInspectionCount = (std::min)(
+            state.unresolvedMeshPaths.size(),
+            kThumbnailPreviewPrefabResourceInspectionsPerTypePerFrame);
+        inspectedResourceCount += meshInspectionCount;
+        for (size_t index = 0u; index < meshInspectionCount; ++index)
+        {
+            auto path = std::move(state.unresolvedMeshPaths.front());
+            state.unresolvedMeshPaths.pop_front();
+
+            auto* mesh = meshManager.GetResource(path, false);
+            if (mesh != nullptr)
+            {
+                state.resolvedMeshes[path] = mesh;
+                if (state.resourceLifetimeRegistry != nullptr)
+                {
+                    state.meshHandles.insert_or_assign(
+                        path,
+                        meshManager.AcquireMeshHandle(
+                            *state.resourceLifetimeRegistry,
+                            state.ownerToken,
+                            path,
+                            NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind::Preview));
+                }
+                continue;
+            }
+            if (meshManager.IsAsyncArtifactLoadFailed(path))
+            {
+                state.terminalDiagnostic = BuildThumbnailGpuPreviewMeshLoadFailedDiagnostic(1u);
+                break;
+            }
+
+            const bool pending = meshManager.IsAsyncArtifactLoadPending(path);
+            if (!pending)
+                mesh = ResolvePreviewMesh(meshManager, path);
+            if (mesh != nullptr)
+            {
+                state.resolvedMeshes[path] = mesh;
+                if (state.resourceLifetimeRegistry != nullptr)
+                {
+                    state.meshHandles.insert_or_assign(
+                        path,
+                        meshManager.AcquireMeshHandle(
+                            *state.resourceLifetimeRegistry,
+                            state.ownerToken,
+                            path,
+                            NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind::Preview));
+                }
+                continue;
+            }
+            if (meshManager.IsAsyncArtifactLoadFailed(path))
+            {
+                state.terminalDiagnostic = BuildThumbnailGpuPreviewMeshLoadFailedDiagnostic(1u);
+                break;
+            }
+
+            state.unresolvedMeshPaths.push_back(path);
+            if (meshManager.IsAsyncArtifactLoadPending(path))
+                state.meshPathsToPump.insert(std::move(path));
+        }
+
+        if (!state.meshPathsToPump.empty())
+        {
+            meshManager.PumpAsyncLoadsForPaths(
+                state.meshPathsToPump,
+                kThumbnailPreviewMeshPumpCompletionsPerFrame);
+            for (const auto& path : state.meshPathsToPump)
+            {
+                if (!meshManager.IsAsyncArtifactLoadFailed(path))
+                    continue;
+                state.terminalDiagnostic = BuildThumbnailGpuPreviewMeshLoadFailedDiagnostic(1u);
+                break;
+            }
+        }
+        if (!state.terminalDiagnostic.empty())
+        {
+            result.diagnostic = state.terminalDiagnostic;
+            return finalize(std::move(result));
+        }
+
+        state.materialPathsToPump.clear();
+        const auto materialInspectionCount = (std::min)(
+            state.unresolvedMaterialPaths.size(),
+            kThumbnailPreviewPrefabResourceInspectionsPerTypePerFrame);
+        inspectedResourceCount += materialInspectionCount;
+        for (size_t index = 0u; index < materialInspectionCount; ++index)
+        {
+            auto path = std::move(state.unresolvedMaterialPaths.front());
+            state.unresolvedMaterialPaths.pop_front();
+
+            auto* material = materialManager.GetResource(path, false);
+            if (material == nullptr && materialManager.IsAsyncArtifactLoadFailed(path))
+            {
+                state.resolvedMaterials[path] = nullptr;
+                continue;
+            }
+            const bool pending = material == nullptr && materialManager.IsAsyncArtifactLoadPending(path);
+            if (material == nullptr && !pending)
+                material = ResolvePreviewMaterial(materialManager, path);
+            if (material == nullptr)
+            {
+                if (!materialManager.IsAsyncArtifactLoadFailed(path))
+                {
+                    state.unresolvedMaterialPaths.push_back(path);
+                    if (materialManager.IsAsyncArtifactLoadPending(path))
+                        state.materialPathsToPump.insert(std::move(path));
+                }
+                else
+                {
+                    state.resolvedMaterials[path] = nullptr;
+                }
+                continue;
+            }
+
+            state.resolvedMaterials[path] = material;
+            if (state.resourceLifetimeRegistry != nullptr)
+            {
+                state.materialHandles.insert_or_assign(
+                    path,
+                    materialManager.AcquireMaterialHandle(
+                        *state.resourceLifetimeRegistry,
+                        state.ownerToken,
+                        path,
+                        NLS::Core::ResourceManagement::ResourceLifetimeOwnerKind::Preview));
+            }
+
+            state.requestedTexturePaths.clear();
+            (void)BindReadyMaterialPreviewTextures(
+                *material,
+                m_textureInterestPaths,
+                &state.requestedTexturePaths);
+            TrackRequestedTextureInterests(state.requestedTexturePaths);
+        }
+        if (!state.materialPathsToPump.empty())
+        {
+            materialManager.PumpAsyncLoadsForPaths(
+                state.materialPathsToPump,
+                kThumbnailPreviewMaterialPumpCompletionsPerFrame);
+        }
+
+        if (!state.terminalDiagnostic.empty())
+        {
+            result.diagnostic = state.terminalDiagnostic;
+            return finalize(std::move(result));
+        }
+
+        result.resourcesPending = ShouldDeferPrefabPreviewForMeshReadiness(
+            state.unresolvedMeshPaths.size(),
+            state.resourcePlanTruncated);
+        if (result.resourcesPending)
+        {
+            result.diagnostic = BuildThumbnailGpuPreviewResourcesPendingDiagnostic(
+                state.unresolvedMeshPaths.size(),
+                state.unresolvedMaterialPaths.size(),
+                0u,
+                state.resourcePlanTruncated);
+        }
+
+        return finalize(std::move(result));
+    }
+
+    std::shared_ptr<const PreparedPrefabPreview> TryGetPreparedPrefabPreviewFromCache(
+        const std::string& key)
+    {
+        ++m_previewSnapshotCacheClock;
+        for (auto& entry : m_previewSnapshotCache)
+        {
+            if (entry.key != key)
+                continue;
+
+            entry.lastUsed = m_previewSnapshotCacheClock;
+            return entry.prepared;
+        }
+        return nullptr;
+    }
+
+    std::shared_ptr<const PreparedPrefabPreview> StorePreparedPrefabPreviewInCache(
+        std::string key,
+        PreparedPrefabPreview prepared)
+    {
+        if (key.empty() || prepared.snapshot.drawItems.empty() || !prepared.diagnostic.empty())
+            return nullptr;
+
+        auto sharedPrepared = std::make_shared<const PreparedPrefabPreview>(std::move(prepared));
 
         ++m_previewSnapshotCacheClock;
         for (auto& entry : m_previewSnapshotCache)
@@ -1459,9 +2464,9 @@ private:
             if (entry.key != key)
                 continue;
 
-            entry.snapshot = snapshot;
+            entry.prepared = sharedPrepared;
             entry.lastUsed = m_previewSnapshotCacheClock;
-            return;
+            return sharedPrepared;
         }
 
         if (m_previewSnapshotCache.size() >= kMaxPreviewRenderableSnapshotCacheEntries)
@@ -1479,9 +2484,115 @@ private:
 
         m_previewSnapshotCache.push_back({
             std::move(key),
-            snapshot,
+            sharedPrepared,
             m_previewSnapshotCacheClock
         });
+        return sharedPrepared;
+    }
+
+    size_t PruneCompletedPrefabPreviewPreparations(const std::string& activeKey)
+    {
+        size_t prunedCount = 0u;
+        for (auto iterator = m_pendingPrefabPreviewPreparations.begin();
+            iterator != m_pendingPrefabPreviewPreparations.end();)
+        {
+            if (iterator->key == activeKey ||
+                (iterator->future.valid() &&
+                    iterator->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+            {
+                ++iterator;
+                continue;
+            }
+
+            iterator = m_pendingPrefabPreviewPreparations.erase(iterator);
+            ++prunedCount;
+        }
+        return prunedCount;
+    }
+
+    std::shared_ptr<const PreparedPrefabPreview> ResolvePreparedPrefabPreview(
+        const AssetThumbnailRequest& request,
+        std::string& diagnostic)
+    {
+        const auto cacheKey = BuildPreviewSnapshotCacheKey(request);
+        if (auto cached = TryGetPreparedPrefabPreviewFromCache(cacheKey))
+            return cached;
+
+        auto pending = std::find_if(
+            m_pendingPrefabPreviewPreparations.begin(),
+            m_pendingPrefabPreviewPreparations.end(),
+            [&cacheKey](const PendingPrefabPreviewPreparation& entry)
+            {
+                return entry.key == cacheKey;
+            });
+        if (pending != m_pendingPrefabPreviewPreparations.end())
+        {
+            if (pending->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            {
+                diagnostic = "thumbnail-gpu-preview-resources-pending:prefab-prepare=1";
+                return nullptr;
+            }
+
+            auto future = std::move(pending->future);
+            m_pendingPrefabPreviewPreparations.erase(pending);
+            try
+            {
+                auto prepared = future.get();
+                diagnostic = prepared.diagnostic;
+                if (!diagnostic.empty())
+                    return nullptr;
+                return StorePreparedPrefabPreviewInCache(cacheKey, std::move(prepared));
+            }
+            catch (const std::exception& exception)
+            {
+                diagnostic = std::string("thumbnail-gpu-preview-prefab-prepare-failed:") + exception.what();
+                return nullptr;
+            }
+            catch (...)
+            {
+                diagnostic = "thumbnail-gpu-preview-prefab-prepare-failed";
+                return nullptr;
+            }
+        }
+
+        const auto pruneBegin = std::chrono::steady_clock::now();
+        const auto prunedPreparationCount = PruneCompletedPrefabPreviewPreparations(cacheKey);
+        if (prunedPreparationCount != 0u)
+        {
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareSceneObjects,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - pruneBegin),
+                prunedPreparationCount,
+                request.sourceAssetPath + "|" + request.subAssetKey + "|pruned-obsolete-preparations"
+            });
+        }
+
+        if (!NLS::Base::Jobs::IsJobSystemInitialized())
+        {
+            diagnostic = "thumbnail-gpu-preview-resources-pending:prefab-prepare-job-system=0";
+            return nullptr;
+        }
+
+        if (m_pendingPrefabPreviewPreparations.size() >= kMaxPendingPrefabPreviewPreparations)
+        {
+            diagnostic = "thumbnail-gpu-preview-resources-pending:prefab-prepare-capacity=1";
+            return nullptr;
+        }
+
+        try
+        {
+            m_pendingPrefabPreviewPreparations.push_back({
+                cacheKey,
+                SchedulePrefabPreviewPreparation(request)
+            });
+            diagnostic = "thumbnail-gpu-preview-resources-pending:prefab-prepare=1";
+        }
+        catch (const std::exception& exception)
+        {
+            diagnostic = std::string("thumbnail-gpu-preview-prefab-prepare-schedule-failed:") + exception.what();
+        }
+        return nullptr;
     }
 
     EditorThumbnailPreviewResult RenderMaterialSphere(
@@ -1502,27 +2613,68 @@ private:
 
         auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
         NLS::Render::Resources::Material* material = nullptr;
+        std::unordered_set<std::string> requestedTexturePaths;
+        NLS::Render::Resources::Mesh* sphere = nullptr;
+        bool texturesReady = false;
         {
             NLS::Base::Profiling::PerformanceStageScope resourcesScope(
                 NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
                 "PreparePreviewResources",
-            NLS::Base::Profiling::PerformanceStageThread::Main);
+                NLS::Base::Profiling::PerformanceStageThread::Main);
             resourcesScope.AddCounter("dependencyResourceCount", materialPaths.size());
-            material = ResolvePreviewMaterial(materialManager, ToGenericPath(materialPaths.front()));
+            const auto telemetryBegin = std::chrono::steady_clock::now();
+            {
+                const auto materialTelemetryBegin = std::chrono::steady_clock::now();
+                material = ResolvePreviewMaterial(materialManager, ToGenericPath(materialPaths.front()));
+                if (material != nullptr)
+                {
+                    texturesReady = BindReadyMaterialPreviewTextures(
+                        *material,
+                        m_textureInterestPaths,
+                        &requestedTexturePaths);
+                    TrackRequestedTextureInterests(requestedTexturePaths);
+                }
+                NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                    NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareMaterialResources,
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - materialTelemetryBegin),
+                    materialPaths.size(),
+                    request.sourceAssetPath + "|" + request.subAssetKey
+                });
+            }
+            if (material != nullptr && texturesReady && EDITOR_CONTEXT(editorResources))
+                sphere = EDITOR_CONTEXT(editorResources)->GetMesh("Sphere");
+            if (material != nullptr && texturesReady && sphere != nullptr)
+            {
+                const auto sceneObjectsTelemetryBegin = std::chrono::steady_clock::now();
+                m_materialPreviewMaterial = CreateStablePreviewMaterial(*material);
+                EnsureMaterialPreviewObject(*sphere, *m_materialPreviewMaterial);
+                NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                    NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareSceneObjects,
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - sceneObjectsTelemetryBegin),
+                    1u,
+                    request.sourceAssetPath + "|" + request.subAssetKey
+                });
+            }
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareResources,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - telemetryBegin),
+                materialPaths.size(),
+                request.sourceAssetPath + "|" + request.subAssetKey
+            });
         }
         if (material == nullptr)
         {
             result.diagnostic = "thumbnail-gpu-preview-resources-pending";
             return result;
         }
-        std::unordered_set<std::string> requestedTexturePaths;
-        if (!MaterialTextureDependenciesReady(*material, m_textureInterestPaths, &requestedTexturePaths))
+        if (!texturesReady)
         {
-            TrackRequestedTextureInterests(requestedTexturePaths);
             result.diagnostic = "thumbnail-gpu-preview-resources-pending";
             return result;
         }
-        TrackRequestedTextureInterests(requestedTexturePaths);
 
         if (!EDITOR_CONTEXT(editorResources))
         {
@@ -1530,29 +2682,46 @@ private:
             return result;
         }
 
-        auto* sphere = EDITOR_CONTEXT(editorResources)->GetMesh("Sphere");
         if (sphere == nullptr)
         {
             result.diagnostic = "thumbnail-gpu-preview-material-sphere-missing";
             return result;
         }
 
-        m_materialPreviewMaterial = CreateStablePreviewMaterial(*material);
-
-        auto& object = m_scene.CreateEditorTransientGameObject("Thumbnail Preview Material Sphere");
-        m_previewObjects.push_back(&object);
-        auto* filter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
-        auto* renderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
-        filter->SetMesh(sphere);
-        renderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED);
-        renderer->FillEmptySlotsWithMaterial(DefaultMaterial());
-        renderer->SetMaterialAtIndex(0u, *m_materialPreviewMaterial);
-
         ConfigureMaterialCamera(result.width, result.height);
         RenderCurrentPreviewScene(request, result);
         if (result.diagnostic != "thumbnail-gpu-preview-readback-pending")
-            ClearPreviewObjects();
+            ClearPreviewObjects(false);
         return result;
+    }
+
+    void EnsureMaterialPreviewObject(
+        NLS::Render::Resources::Mesh& sphere,
+        NLS::Render::Resources::Material& material)
+    {
+        if (m_materialPreviewObject == nullptr ||
+            m_materialPreviewMeshFilter == nullptr ||
+            m_materialPreviewMeshRenderer == nullptr)
+        {
+            auto& object = m_scene.CreateEditorTransientGameObject("Thumbnail Preview Material Sphere");
+            m_materialPreviewObject = &object;
+            m_materialPreviewMeshFilter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
+            m_materialPreviewMeshRenderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
+            m_materialPreviewMeshRenderer->SetFrustumBehaviour(
+                NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED);
+            m_materialPreviewMeshRenderer->FillEmptySlotsWithMaterial(DefaultMaterial());
+            object.SetActive(false);
+        }
+
+        m_materialPreviewMeshFilter->SetMesh(&sphere);
+        m_materialPreviewMeshRenderer->SetMaterialAtIndex(0u, material);
+        m_materialPreviewObject->SetActive(true);
+    }
+
+    void DeactivateMaterialPreviewObject()
+    {
+        if (m_materialPreviewObject != nullptr)
+            m_materialPreviewObject->SetActive(false);
     }
 
     bool RenderPrefabPreview(
@@ -1570,202 +2739,125 @@ private:
             return false;
         }
 
-        const auto snapshotCacheKey = BuildPreviewSnapshotCacheKey(request);
-        PreviewRenderableSnapshot snapshot;
-        const bool snapshotCacheHit = TryGetPreviewSnapshotFromCache(snapshotCacheKey, snapshot);
-        if (!snapshotCacheHit)
+        const auto prepared = TryGetPreparedPrefabPreviewFromCache(BuildPreviewSnapshotCacheKey(request));
+        if (prepared == nullptr)
         {
-            AssetDatabaseFacade database(MakeProjectEditorAssetRoots(request.projectRoot));
-            auto prefab = database.LoadPrefabArtifactByAssetId(request.assetId, request.subAssetKey);
-            if (!prefab.has_value())
-            {
-                result.diagnostic = "thumbnail-gpu-preview-prefab-load-failed";
-                return false;
-            }
-            if (PrefabArtifactExceedsGpuPreviewComplexityBudget(*prefab))
-            {
-                result.diagnostic = kGpuPreviewPrefabBudgetExceededDiagnostic;
-                return false;
-            }
-
-            snapshot = BuildPreviewRenderableSnapshot(*prefab);
-        }
-        if (snapshot.drawItems.empty())
-        {
-            result.diagnostic = "thumbnail-gpu-preview-prefab-renderer-missing";
+            result.diagnostic = "thumbnail-gpu-preview-resources-pending:prefab-prepare=1";
             return false;
         }
-        if (!PreviewSnapshotIsCompleteForGpuPrefabPreview(snapshot))
+        const auto& snapshot = prepared->snapshot;
+        const auto& resourcePlan = prepared->resourcePlan;
+        const auto& resourceState = prepared->resourcePumpState;
+        if (!resourceState.terminalDiagnostic.empty())
         {
-            result.diagnostic = kGpuPreviewPrefabBudgetExceededDiagnostic;
+            result.diagnostic = resourceState.terminalDiagnostic;
+            ClearPreviewObjects(false);
             return false;
         }
-        if (snapshot.drawItems.size() > kMaxGpuPreviewPrefabDrawItems)
+        if (ShouldDeferPrefabPreviewForMeshReadiness(
+                resourceState.unresolvedMeshPaths.size(),
+                resourceState.resourcePlanTruncated))
         {
-            result.diagnostic = kGpuPreviewPrefabBudgetExceededDiagnostic;
+            result.diagnostic = BuildThumbnailGpuPreviewResourcesPendingDiagnostic(
+                resourceState.unresolvedMeshPaths.size(),
+                resourceState.unresolvedMaterialPaths.size(),
+                0u,
+                resourceState.resourcePlanTruncated);
+            ClearPreviewObjects(false);
             return false;
         }
-        if (!snapshotCacheHit)
-            StorePreviewSnapshotInCache(snapshotCacheKey, snapshot);
-
-        struct ResolvedPreviewDrawItem
+        if (!DefaultMaterialReady(result))
         {
-            const PreviewDrawItem* drawItem = nullptr;
-            NLS::Render::Resources::Mesh* mesh = nullptr;
-            std::vector<NLS::Render::Resources::Material*> materials;
-        };
+            ClearPreviewObjects(false);
+            return false;
+        }
 
         Bounds combinedBounds;
-        std::vector<ResolvedPreviewDrawItem> resolvedDrawItems;
-        resolvedDrawItems.reserve(snapshot.drawItems.size());
-        bool resourcesPending = false;
-        size_t pendingResourceCount = 0u;
+        NLS::Base::Profiling::PerformanceStageScope resourcesScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
+            "PreparePreviewResources",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        const auto telemetryBegin = std::chrono::steady_clock::now();
+        resourcesScope.AddCounter(
+            "dependencyResourceCount",
+            resourcePlan.meshLoadPaths.size() + resourcePlan.materialLoadPaths.size());
+        resourcesScope.AddCounter("drawItemCount", resourcePlan.drawItems.size());
+        resourcesScope.AddCounter("uniqueMeshLoadPathCount", resourcePlan.meshLoadPaths.size());
+        resourcesScope.AddCounter("uniqueMaterialLoadPathCount", resourcePlan.materialLoadPaths.size());
+
+        for (const auto& planned : resourcePlan.drawItems)
         {
-            NLS::Base::Profiling::PerformanceStageScope resourcesScope(
-                NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
-                "PreparePreviewResources",
-                NLS::Base::Profiling::PerformanceStageThread::Main);
-            resourcesScope.AddCounter("dependencyResourceCount", snapshot.drawItems.size());
-
-            auto& meshManager = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager);
-            auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
-            for (const auto& drawItem : snapshot.drawItems)
-            {
-                ResolvedPreviewDrawItem resolved;
-                resolved.drawItem = &drawItem;
-
-                const auto genericMeshPath = ToGenericPath(drawItem.meshPath);
-                auto meshBudgetPath = ResolvePrefabPreviewMeshBudgetPath(request, genericMeshPath);
-                if (!meshBudgetPath.has_value())
-                    meshBudgetPath = ResolvePrefabDependencyArtifactBudgetPath(
-                        request,
-                        drawItem.meshAssetId,
-                        genericMeshPath);
-                if (meshBudgetPath.has_value() && MeshArtifactExceedsGpuPreviewBudget(*meshBudgetPath))
-                {
-                    result.diagnostic = kGpuPreviewMeshBudgetExceededDiagnostic;
-                    ClearPreviewObjects();
-                    return false;
-                }
-
-                const auto meshLoadPath = ResolvePreviewMeshLoadPath(
-                    request,
-                    genericMeshPath,
-                    drawItem.meshAssetId);
-                auto* mesh = ResolvePreviewMesh(meshManager, meshLoadPath);
-                if (mesh == nullptr)
-                {
-                    resourcesPending = true;
-                    ++pendingResourceCount;
-                }
-                resolved.mesh = mesh;
-
-                resolved.materials.reserve(drawItem.materialPaths.size());
-                for (size_t materialIndex = 0u; materialIndex < drawItem.materialPaths.size(); ++materialIndex)
-                {
-                    const auto& materialPath = drawItem.materialPaths[materialIndex];
-                    const auto genericMaterialPath = ToGenericPath(materialPath);
-                    if (genericMaterialPath.empty())
-                    {
-                        resolved.materials.push_back(nullptr);
-                        continue;
-                    }
-
-                    auto materialBudgetPath = ResolvePrefabPreviewMaterialBudgetPath(request, genericMaterialPath);
-                    if (!materialBudgetPath.has_value() && materialIndex < drawItem.materialAssetIds.size())
-                    {
-                        materialBudgetPath = ResolvePrefabDependencyArtifactBudgetPath(
-                            request,
-                            drawItem.materialAssetIds[materialIndex],
-                            genericMaterialPath);
-                    }
-                    if (materialBudgetPath.has_value() && MaterialArtifactExceedsGpuPreviewBudget(*materialBudgetPath))
-                    {
-                        result.diagnostic = kGpuPreviewMaterialBudgetExceededDiagnostic;
-                        ClearPreviewObjects();
-                        return false;
-                    }
-
-                    const auto materialAssetId = materialIndex < drawItem.materialAssetIds.size()
-                        ? drawItem.materialAssetIds[materialIndex]
-                        : NLS::Core::Assets::AssetId {};
-                    const auto materialLoadPath = ResolvePreviewMaterialLoadPath(
-                        request,
-                        genericMaterialPath,
-                        materialAssetId);
-                    auto* material = ResolvePreviewMaterial(materialManager, materialLoadPath);
-                    if (material == nullptr)
-                    {
-                        resourcesPending = true;
-                        ++pendingResourceCount;
-                    }
-                    else
-                    {
-                        std::unordered_set<std::string> requestedTexturePaths;
-                        if (!MaterialTextureDependenciesReady(*material, m_textureInterestPaths, &requestedTexturePaths))
-                        {
-                            TrackRequestedTextureInterests(requestedTexturePaths);
-                            resourcesPending = true;
-                            ++pendingResourceCount;
-                        }
-                        else
-                        {
-                            TrackRequestedTextureInterests(requestedTexturePaths);
-                        }
-                    }
-                    resolved.materials.push_back(material);
-                }
-
-                resolvedDrawItems.push_back(std::move(resolved));
-            }
-            resourcesScope.AddCounter("pendingResourceCount", pendingResourceCount);
-        }
-
-        if (resourcesPending)
-        {
-            result.diagnostic = "thumbnail-gpu-preview-resources-pending";
-            ClearPreviewObjects();
-            return false;
-        }
-
-        for (const auto& resolved : resolvedDrawItems)
-        {
-            if (resolved.drawItem == nullptr || resolved.mesh == nullptr)
+            if (planned.drawItemIndex >= snapshot.drawItems.size())
                 continue;
+
+            NLS::Render::Resources::Mesh* mesh = nullptr;
+            if (const auto handle = resourceState.meshHandles.find(planned.meshLoadPath);
+                handle != resourceState.meshHandles.end())
+            {
+                mesh = handle->second.Get();
+            }
+            else if (const auto resolved = resourceState.resolvedMeshes.find(planned.meshLoadPath);
+                resolved != resourceState.resolvedMeshes.end())
+            {
+                mesh = resolved->second;
+            }
+            if (mesh == nullptr)
+            {
+                result.diagnostic = "thumbnail-gpu-preview-resources-pending:resolved-mesh-cache=1";
+                ClearPreviewObjects(false);
+                return false;
+            }
+            const auto& drawItem = snapshot.drawItems[planned.drawItemIndex];
 
             auto& object = m_scene.CreateEditorTransientGameObject("Thumbnail Preview Prefab Draw Item");
             m_previewObjects.push_back(&object);
-            object.GetTransform()->SetLocalPosition(resolved.drawItem->localPosition);
-            object.GetTransform()->SetLocalRotation(resolved.drawItem->localRotation);
-            object.GetTransform()->SetLocalScale(resolved.drawItem->localScale);
+            object.GetTransform()->SetLocalPosition(drawItem.localPosition);
+            object.GetTransform()->SetLocalRotation(drawItem.localRotation);
+            object.GetTransform()->SetLocalScale(drawItem.localScale);
             auto* filter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
             auto* renderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
-            filter->SetMesh(resolved.mesh);
+            filter->SetMesh(mesh);
             renderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED);
             renderer->FillEmptySlotsWithMaterial(DefaultMaterial());
-            for (size_t slot = 0u;
-                slot < resolved.materials.size() &&
-                slot < NLS::Engine::Components::MeshRenderer::kMaxMaterialCount;
-                ++slot)
+            for (size_t slot = 0u; slot < planned.materialLoadPaths.size(); ++slot)
             {
-                if (resolved.materials[slot] != nullptr)
-                    renderer->SetMaterialAtIndex(static_cast<uint8_t>(slot), *resolved.materials[slot]);
+                const auto& materialPath = planned.materialLoadPaths[slot];
+                NLS::Render::Resources::Material* material = nullptr;
+                if (const auto handle = resourceState.materialHandles.find(materialPath);
+                    handle != resourceState.materialHandles.end())
+                {
+                    material = handle->second.Get();
+                }
+                else if (const auto resolved = resourceState.resolvedMaterials.find(materialPath);
+                    resolved != resourceState.resolvedMaterials.end())
+                {
+                    material = resolved->second;
+                }
+                if (material != nullptr)
+                    renderer->SetMaterialAtIndex(static_cast<uint32_t>(slot), *material);
             }
 
-            IncludeWorldBounds(combinedBounds, resolved.mesh->GetBounds(), object.GetTransform()->GetWorldMatrix());
+            IncludeWorldBounds(combinedBounds, mesh->GetBounds(), object.GetTransform()->GetWorldMatrix());
         }
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPrepareResources,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - telemetryBegin),
+            resourcePlan.drawItems.size(),
+            request.sourceAssetPath + "|" + request.subAssetKey + "|resolved-resource-cache"
+        });
 
         if (!combinedBounds.valid)
         {
             result.diagnostic = "thumbnail-gpu-preview-prefab-mesh-load-failed";
-            ClearPreviewObjects();
+            ClearPreviewObjects(false);
             return false;
         }
 
         ConfigurePrefabCamera(combinedBounds, result.width, result.height);
         RenderCurrentPreviewScene(request, result);
         if (result.diagnostic != "thumbnail-gpu-preview-readback-pending")
-            ClearPreviewObjects();
+            ClearPreviewObjects(false);
         return !result.rgbaPixels.empty();
     }
 
@@ -1773,10 +2865,33 @@ private:
         const AssetThumbnailRequest& request,
         EditorThumbnailPreviewResult& result)
     {
+        if (!NLS::Render::Core::ABaseRenderer::TryBeginGlobalFrameForBackgroundPreview())
+        {
+            result.rgbaPixels.clear();
+            result.diagnostic = "thumbnail-gpu-preview-render-busy";
+            return;
+        }
+        struct GlobalFrameGuard
+        {
+            ~GlobalFrameGuard()
+            {
+                NLS::Render::Core::ABaseRenderer::EndGlobalFrameForBackgroundPreview();
+            }
+        } globalFrameGuard;
+
+        if (request.kind == AssetThumbnailKind::PrefabPreview &&
+            std::getenv("NLS_THUMBNAIL_RENDERDOC_CAPTURE") != nullptr)
+        {
+            (void)NLS::Render::Context::DriverUIAccess::QueueRenderDocCaptureForNextExternalOutput(
+                m_driver,
+                "PrefabThumbnail");
+        }
+
         NLS::Base::Profiling::PerformanceStageScope recordScope(
             NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
             "RecordPreviewRender",
             NLS::Base::Profiling::PerformanceStageThread::Main);
+        const auto recordTelemetryBegin = std::chrono::steady_clock::now();
 
         m_framebuffer.Resize(
             static_cast<uint16_t>(result.width),
@@ -1795,19 +2910,112 @@ private:
         frameDescriptor.renderWidth = static_cast<uint16_t>(result.width);
         frameDescriptor.renderHeight = static_cast<uint16_t>(result.height);
         frameDescriptor.camera = m_camera->GetCamera();
+        frameDescriptor.clearColorOverride = NLS::Maths::Vector4(0.0f, 0.0f, 0.0f, 0.0f);
         NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &m_framebuffer);
 
-        m_renderer->BeginFrame(frameDescriptor);
+        const bool usesThreadedRendering =
+            NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+        EditorThumbnailPreviewReadbackState threadedReadback;
+        if (usesThreadedRendering)
+        {
+            auto readbackTexture = m_framebuffer.GetExplicitTextureHandle();
+            if (readbackTexture == nullptr)
+            {
+                result.diagnostic = "thumbnail-gpu-preview-readback-texture-unavailable";
+                return;
+            }
+            if (!WaitForRetiredPreviewReadbacksBeforeStartingReadback())
+            {
+                result.diagnostic = "thumbnail-gpu-preview-readback-pending";
+                return;
+            }
+
+            threadedReadback.active = true;
+            threadedReadback.requestKey = BuildPreviewReadbackRequestKey(request);
+            threadedReadback.width = result.width;
+            threadedReadback.height = result.height;
+            threadedReadback.rgbaPixels = std::make_shared<std::vector<uint8_t>>(
+                static_cast<size_t>(result.width) * result.height * 4u,
+                0u);
+            threadedReadback.postSubmitTextureReadbackState =
+                std::make_shared<NLS::Render::Context::PostSubmitTextureReadbackState>();
+
+            NLS::Render::Context::PostSubmitTextureReadbackRequest readbackRequest;
+            readbackRequest.texture = std::move(readbackTexture);
+            readbackRequest.width = result.width;
+            readbackRequest.height = result.height;
+            readbackRequest.format = NLS::Render::Settings::EPixelDataFormat::RGBA;
+            readbackRequest.type = NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE;
+            readbackRequest.destination = threadedReadback.rgbaPixels->data();
+            readbackRequest.state = threadedReadback.postSubmitTextureReadbackState;
+            readbackRequest.destinationKeepAlive = threadedReadback.rgbaPixels;
+            m_renderer->SetNextFramePostSubmitTextureReadback(std::move(readbackRequest));
+        }
+
+        m_renderer->BeginFrameForBackgroundPreview(frameDescriptor);
+        if (!m_renderer->IsFrameActive())
+        {
+            m_renderer->EndFrame();
+            result.rgbaPixels.clear();
+            result.diagnostic = "thumbnail-gpu-preview-render-busy";
+            return;
+        }
+        struct RendererFrameGuard
+        {
+            NLS::Render::Core::ABaseRenderer* renderer = nullptr;
+            ~RendererFrameGuard()
+            {
+                if (renderer != nullptr && renderer->IsFrameActive())
+                    renderer->EndFrame();
+            }
+        } rendererFrameGuard { m_renderer.get() };
         m_renderer->DrawFrame();
+        {
+            const auto& drawStats = m_renderer->GetLastDrawCallOptimizationStats();
+            result.rawVisibleDrawCount = drawStats.rawVisibleObjectCount;
+            result.submittedSceneDrawCount = drawStats.submittedSceneDrawCount;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            g_lastThumbnailPreviewRenderStatsForTesting.rawVisibleDrawCount =
+                drawStats.rawVisibleObjectCount;
+            g_lastThumbnailPreviewRenderStatsForTesting.submittedSceneDrawCount =
+                drawStats.submittedSceneDrawCount;
+#endif
+        }
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRecord,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - recordTelemetryBegin),
+            static_cast<size_t>(result.width) * static_cast<size_t>(result.height) * 4u,
+            request.sourceAssetPath + "|" + request.subAssetKey
+        });
         {
             NLS::Base::Profiling::PerformanceStageScope submitScope(
                 NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
                 "SubmitPreviewRender",
                 NLS::Base::Profiling::PerformanceStageThread::Main);
+            const auto submitTelemetryBegin = std::chrono::steady_clock::now();
             m_renderer->EndFrame();
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewSubmit,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - submitTelemetryBegin),
+            static_cast<size_t>(result.width) * static_cast<size_t>(result.height) * 4u,
+            request.sourceAssetPath + "|" + request.subAssetKey
+        });
         }
-        if (!NLS::Render::Context::DriverRendererAccess::TryDrainThreadedRendering(m_driver, false))
+        if (usesThreadedRendering)
         {
+            if (!m_renderer->WasLastThreadedFramePublished())
+            {
+                result.rgbaPixels.clear();
+                result.diagnostic = "thumbnail-gpu-preview-render-busy";
+                return;
+            }
+
+            threadedReadback.rawVisibleDrawCount = result.rawVisibleDrawCount;
+            threadedReadback.submittedSceneDrawCount = result.submittedSceneDrawCount;
+            threadedReadback.renderInputsKeepAlive = CapturePreviewRenderInputsKeepAlive();
+            m_pendingReadback = std::move(threadedReadback);
             result.diagnostic = "thumbnail-gpu-preview-readback-pending";
             return;
         }
@@ -1815,9 +3023,28 @@ private:
         auto readbackTexture = m_framebuffer.GetExplicitTextureHandle();
         if (readbackTexture == nullptr)
             readbackTexture = NLS::Render::Context::DriverRendererAccess::ResolveReadbackTexture(m_driver);
+        BeginPreviewReadback(
+            request,
+            std::move(readbackTexture),
+            CapturePreviewRenderInputsKeepAlive(),
+            result);
+    }
+
+    void BeginPreviewReadback(
+        const AssetThumbnailRequest& request,
+        std::shared_ptr<NLS::Render::RHI::RHITexture> readbackTexture,
+        std::shared_ptr<void> renderInputsKeepAlive,
+        EditorThumbnailPreviewResult& result)
+    {
         if (readbackTexture == nullptr)
         {
             result.diagnostic = "thumbnail-gpu-preview-readback-texture-unavailable";
+            return;
+        }
+        if (!WaitForRetiredPreviewReadbacksBeforeStartingReadback())
+        {
+            result.rgbaPixels.clear();
+            result.diagnostic = "thumbnail-gpu-preview-readback-pending";
             return;
         }
 
@@ -1831,6 +3058,7 @@ private:
                 NLS::Base::Profiling::PerformanceStageDomain::Thumbnail,
                 "ReadbackPreview",
                 NLS::Base::Profiling::PerformanceStageThread::Main);
+            const auto readbackTelemetryBegin = std::chrono::steady_clock::now();
             readback = NLS::Render::Context::DriverRendererAccess::BeginReadPixels(
                 m_driver,
                 readbackTexture,
@@ -1841,6 +3069,13 @@ private:
                 NLS::Render::Settings::EPixelDataFormat::RGBA,
                 NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
                 readbackPixels->data());
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewReadback,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - readbackTelemetryBegin),
+                static_cast<size_t>(result.width) * static_cast<size_t>(result.height) * 4u,
+                request.sourceAssetPath + "|" + request.subAssetKey
+            });
         }
         if (!readback.Succeeded())
         {
@@ -1859,14 +3094,17 @@ private:
         pendingReadback.requestKey = readbackRequestKey;
         pendingReadback.width = result.width;
         pendingReadback.height = result.height;
+        pendingReadback.rawVisibleDrawCount = result.rawVisibleDrawCount;
+        pendingReadback.submittedSceneDrawCount = result.submittedSceneDrawCount;
         pendingReadback.rgbaPixels = std::move(readbackPixels);
         pendingReadback.completion = readback.completion;
-        pendingReadback.renderInputsKeepAlive = CapturePreviewRenderInputsKeepAlive();
+        pendingReadback.renderInputsKeepAlive = std::move(renderInputsKeepAlive);
 
         auto polled = PollEditorThumbnailPreviewReadback(pendingReadback, readbackRequestKey, &m_driver);
         if (polled.status == EditorThumbnailPreviewReadbackPollStatus::Ready)
         {
             result = std::move(polled.preview);
+            result.completedPendingReadback = true;
             return;
         }
         if (polled.status == EditorThumbnailPreviewReadbackPollStatus::Pending)
@@ -1880,17 +3118,29 @@ private:
         result.diagnostic = "thumbnail-gpu-preview-readback-failed:" + polled.preview.diagnostic;
     }
 
-    void ClearPreviewObjects()
+    void ClearPreviewObjects(const bool drainThreadedRendering)
     {
-        NLS::Render::Context::DriverRendererAccess::DrainThreadedRendering(m_driver);
+        const auto cleanupTelemetryBegin = std::chrono::steady_clock::now();
+        const size_t previewObjectCount = m_previewObjects.size();
+        if (drainThreadedRendering)
+            NLS::Render::Context::DriverRendererAccess::DrainThreadedRendering(m_driver);
         for (auto* object : m_previewObjects)
         {
             if (object != nullptr)
                 (void)m_scene.DestroyGameObject(*object);
         }
         m_previewObjects.clear();
+        DeactivateMaterialPreviewObject();
+        ClearMaterialPreviewRendererBinding();
         m_materialPreviewMaterial.reset();
         m_scene.CollectGarbages();
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewCleanup,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - cleanupTelemetryBegin),
+            previewObjectCount,
+            m_activeRequestKey
+        });
     }
 
     void TrackRequestedTextureInterests(const std::unordered_set<std::string>& requestedPaths)
@@ -1920,24 +3170,41 @@ private:
 
     std::shared_ptr<void> CapturePreviewRenderInputsKeepAlive()
     {
-        if (m_previewObjects.empty() && m_materialPreviewMaterial == nullptr)
+        if (m_previewObjects.empty() &&
+            m_materialPreviewObject == nullptr &&
+            m_materialPreviewMaterial == nullptr)
             return nullptr;
 
         auto keepAlive = std::make_shared<PreviewRenderInputsKeepAlive>();
         keepAlive->scene = &m_scene;
         keepAlive->objects = std::move(m_previewObjects);
         m_previewObjects.clear();
+        if (m_materialPreviewObject != nullptr)
+        {
+            keepAlive->objects.push_back(m_materialPreviewObject);
+            m_materialPreviewObject = nullptr;
+            m_materialPreviewMeshFilter = nullptr;
+            m_materialPreviewMeshRenderer = nullptr;
+        }
         keepAlive->material = std::move(m_materialPreviewMaterial);
         return keepAlive;
     }
 
-    void RetirePendingReadback()
+    void ClearMaterialPreviewRendererBinding()
+    {
+        if (m_materialPreviewMeshRenderer != nullptr)
+            m_materialPreviewMeshRenderer->RemoveMaterialAtIndex(0u);
+    }
+
+    bool RetirePendingReadback()
     {
         if (!m_pendingReadback.active)
-            return;
+            return true;
 
-        RetirePreviewReadback(std::move(m_pendingReadback));
+        if (!RetirePreviewReadback(std::move(m_pendingReadback)))
+            return false;
         m_pendingReadback = {};
+        return true;
     }
 
     bool CollectRenderableBounds(
@@ -1978,7 +3245,7 @@ private:
                     continue;
 
                 std::unordered_set<std::string> requestedTexturePaths;
-                if (!MaterialTextureDependenciesReady(*material, m_textureInterestPaths, &requestedTexturePaths))
+                if (!BindReadyMaterialPreviewTextures(*material, m_textureInterestPaths, &requestedTexturePaths))
                 {
                     TrackRequestedTextureInterests(requestedTexturePaths);
                     result.diagnostic = "thumbnail-gpu-preview-resources-pending";
@@ -2006,13 +3273,30 @@ private:
             auto& shaderManager = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager);
             if (auto* shader = ResolveThumbnailPreviewDefaultShader(shaderManager))
             {
-                m_defaultMaterial.SetShader(shader);
+                m_defaultMaterial.SetShaderLabSourcePath(shader->GetImportedArtifactSourcePath());
+                m_defaultMaterial.RegisterShaderLabPassShader(shader);
                 m_defaultMaterial.SetRawParameter("_BaseColor", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
                 m_defaultMaterial.SetRawParameter("_Metallic", 0.0f);
                 m_defaultMaterial.SetRawParameter("_Roughness", 0.72f);
+                m_defaultMaterial.SetRawParameter("_AmbientOcclusion", 1.0f);
+                m_defaultMaterial.SetRawParameter("u_Albedo", Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
+                m_defaultMaterial.SetRawParameter("u_Metallic", 0.0f);
+                m_defaultMaterial.SetRawParameter("u_Roughness", 0.72f);
+                m_defaultMaterial.SetRawParameter("u_AmbientOcclusion", 1.0f);
+                m_defaultMaterial.SetRawParameter("u_EnableNormalMapping", 0.0f);
+                m_defaultMaterial.SetRawParameter("u_Emissive", Maths::Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+                m_defaultMaterial.SetRawParameter("u_Specular", Maths::Vector4(0.0f, 0.0f, 0.0f, 1.0f));
             }
         }
         return m_defaultMaterial;
+    }
+
+    bool DefaultMaterialReady(EditorThumbnailPreviewResult& result)
+    {
+        if (DefaultMaterial().HasShader())
+            return true;
+        result.diagnostic = "thumbnail-gpu-preview-resources-pending";
+        return false;
     }
 
     void ConfigureCamera(const Bounds& bounds, const uint32_t width, const uint32_t height)
@@ -2076,15 +3360,23 @@ private:
     std::unique_ptr<NLS::Engine::Rendering::BaseSceneRenderer> m_renderer;
     NLS::Engine::SceneSystem::Scene m_scene;
     NLS::Engine::Components::CameraComponent* m_camera = nullptr;
-    NLS::Render::Buffers::Framebuffer m_framebuffer;
+    NLS::Render::Buffers::Framebuffer m_framebuffer {
+        0u,
+        0u,
+        NLS::Render::RHI::TextureColorSpace::SRGB
+    };
     NLS::Render::Resources::Material m_defaultMaterial;
     std::unique_ptr<NLS::Render::Resources::Material> m_materialPreviewMaterial;
+    NLS::Engine::GameObject* m_materialPreviewObject = nullptr;
+    NLS::Engine::Components::MeshFilter* m_materialPreviewMeshFilter = nullptr;
+    NLS::Engine::Components::MeshRenderer* m_materialPreviewMeshRenderer = nullptr;
     std::vector<NLS::Engine::GameObject*> m_previewObjects;
     EditorThumbnailPreviewReadbackState m_pendingReadback;
     std::string m_activeRequestKey;
     std::unordered_set<std::string> m_textureInterestPaths;
     std::string m_textureInterestRequestKey;
     std::vector<PreviewSnapshotCacheEntry> m_previewSnapshotCache;
+    std::vector<PendingPrefabPreviewPreparation> m_pendingPrefabPreviewPreparations;
     uint64_t m_previewSnapshotCacheClock = 0u;
 };
 
@@ -2100,10 +3392,34 @@ bool EditorThumbnailPreviewRenderer::Supports(const AssetThumbnailRequest& reque
     return m_impl != nullptr && m_impl->Supports(request);
 }
 
+bool EditorThumbnailPreviewRenderer::PrewarmMaterialPreviewRenderPath(const uint32_t requestedSize)
+{
+    return m_impl != nullptr && m_impl->PrewarmMaterialPreviewRenderPath(requestedSize);
+}
+
+EditorThumbnailPreviewResourcePumpResult EditorThumbnailPreviewRenderer::PumpResources(
+    const AssetThumbnailRequest& request)
+{
+    return m_impl != nullptr ? m_impl->PumpResources(request) : EditorThumbnailPreviewResourcePumpResult {};
+}
+
 EditorThumbnailPreviewResult EditorThumbnailPreviewRenderer::Render(const AssetThumbnailRequest& request)
 {
     return m_impl != nullptr ? m_impl->Render(request) : EditorThumbnailPreviewResult {};
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+bool BindReadyMaterialPreviewTexturesForTesting(NLS::Render::Resources::Material& material)
+{
+    return BindReadyMaterialPreviewTextures(material);
+}
+
+std::unique_ptr<NLS::Render::Resources::Material> CreateStablePreviewMaterialForTesting(
+    NLS::Render::Resources::Material& source)
+{
+    return CreateStablePreviewMaterial(source);
+}
+#endif
 
 EditorThumbnailPreviewRendererAdapter::EditorThumbnailPreviewRendererAdapter(
     EditorThumbnailPreviewRenderer& renderer)
@@ -2116,9 +3432,21 @@ bool EditorThumbnailPreviewRendererAdapter::Supports(const AssetThumbnailRequest
     return m_renderer.Supports(request);
 }
 
+EditorThumbnailPreviewResourcePumpResult EditorThumbnailPreviewRendererAdapter::PumpResources(
+    const AssetThumbnailRequest& request)
+{
+    return m_renderer.PumpResources(request);
+}
+
 EditorThumbnailPreviewResult EditorThumbnailPreviewRendererAdapter::Render(
     const AssetThumbnailRequest& request)
 {
     return m_renderer.Render(request);
+}
+
+EditorThumbnailPreviewResourcePumpResult IEditorThumbnailPreviewRenderer::PumpResources(
+    const AssetThumbnailRequest&)
+{
+    return {};
 }
 }

@@ -1,9 +1,12 @@
 #include "Assets/ArtifactWriter.h"
 #include "Assets/NativeArtifactContainer.h"
+#include "Profiling/PerformanceStageStats.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <fstream>
+#include <optional>
 #include <set>
 namespace NLS::Core::Assets
 {
@@ -14,6 +17,7 @@ struct CommitPlan
     std::filesystem::path sourcePath;
     std::filesystem::path destinationPath;
     std::filesystem::path backupPath;
+    bool destinationExists = false;
     bool destinationBackedUp = false;
     bool destinationMayContainReplacement = false;
     bool replacementMoved = false;
@@ -22,6 +26,8 @@ struct CommitPlan
 struct StagedArtifact
 {
     std::filesystem::path relativePath;
+    bool destinationExists = false;
+    bool destinationIsDirectory = false;
 };
 
 bool IsSafeRelativePath(const std::filesystem::path& path)
@@ -77,46 +83,37 @@ bool HasUnsafeRootRelationship(
         IsSameOrNestedPath(committedRoot, stagingRoot);
 }
 
-bool FilesHaveSameBytes(
-    const std::filesystem::path& left,
-    const std::filesystem::path& right,
+bool ExistingContentAddressedBlobMatchesExpectedPayload(
+    const std::filesystem::path& path,
+    const std::vector<uint8_t>& expectedPayload,
     std::error_code& error)
 {
     error.clear();
-    const auto leftSize = std::filesystem::file_size(left, error);
-    if (error)
+    const auto fileSize = std::filesystem::file_size(path, error);
+    if (error || fileSize != expectedPayload.size())
         return false;
 
-    const auto rightSize = std::filesystem::file_size(right, error);
-    if (error || leftSize != rightSize)
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
         return false;
 
-    std::ifstream leftStream(left, std::ios::binary);
-    std::ifstream rightStream(right, std::ios::binary);
-    if (!leftStream || !rightStream)
+    std::array<char, 64u * 1024u> buffer {};
+    size_t offset = 0u;
+    while (offset < expectedPayload.size())
     {
-        error.clear();
-        return false;
-    }
-
-    std::array<char, 64 * 1024> leftBuffer {};
-    std::array<char, 64 * 1024> rightBuffer {};
-    while (leftStream && rightStream)
-    {
-        leftStream.read(leftBuffer.data(), static_cast<std::streamsize>(leftBuffer.size()));
-        rightStream.read(rightBuffer.data(), static_cast<std::streamsize>(rightBuffer.size()));
-        if (leftStream.gcount() != rightStream.gcount())
+        const auto remaining = expectedPayload.size() - offset;
+        const auto chunkSize = std::min(buffer.size(), remaining);
+        input.read(buffer.data(), static_cast<std::streamsize>(chunkSize));
+        if (input.gcount() != static_cast<std::streamsize>(chunkSize))
             return false;
-        if (!std::equal(
-                leftBuffer.begin(),
-                leftBuffer.begin() + leftStream.gcount(),
-                rightBuffer.begin()))
-        {
-            return false;
-        }
-    }
 
-    return leftStream.eof() && rightStream.eof();
+        const auto* expectedBegin = reinterpret_cast<const char*>(expectedPayload.data() + offset);
+        if (!std::equal(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(chunkSize), expectedBegin))
+            return false;
+
+        offset += chunkSize;
+    }
+    return true;
 }
 
 void AddError(
@@ -135,9 +132,15 @@ void AddError(
     });
 }
 
-std::string ComputeArtifactContentHash(const std::vector<uint8_t>& content)
+std::string ComputeArtifactContentHash(const std::filesystem::path& finalRelativePath)
 {
-    return "sha256:" + BuildArtifactStorageFileName(content.data(), content.size());
+    return "sha256:" + finalRelativePath.filename().generic_string();
+}
+
+uint64_t ToMicroseconds(const std::chrono::steady_clock::duration duration)
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
 }
 
 const char* SchemaNameForArtifactType(const ArtifactType artifactType)
@@ -189,6 +192,116 @@ uint32_t SchemaVersionForArtifactType(const ArtifactType artifactType)
     return 1u;
 }
 
+std::vector<AssetDependencyRecord> BuildStoredArtifactDependencies(
+    const ArtifactWriteRequest& request,
+    const ArtifactPayload& artifact)
+{
+    std::vector<AssetDependencyRecord> dependencies = request.dependencies;
+    dependencies.insert(
+        dependencies.end(),
+        artifact.dependencies.begin(),
+        artifact.dependencies.end());
+    return dependencies;
+}
+
+NativeArtifactMetadata BuildStoredArtifactMetadata(
+    const ArtifactWriteRequest& request,
+    const ArtifactPayload& artifact,
+    std::vector<AssetDependencyRecord> dependencies)
+{
+    NativeArtifactMetadata metadata;
+    metadata.artifactType = artifact.artifactType;
+    metadata.schemaName = artifact.loaderId.empty()
+        ? SchemaNameForArtifactType(artifact.artifactType)
+        : artifact.loaderId;
+    metadata.schemaVersion = SchemaVersionForArtifactType(artifact.artifactType);
+    metadata.sourceAssetId = request.sourceAssetId;
+    metadata.subAssetKey = artifact.subAssetKey;
+    metadata.displayName = artifact.displayName;
+    metadata.importerId = request.importerId;
+    metadata.importerVersion = request.importerVersion;
+    metadata.targetPlatform = request.targetPlatform;
+    metadata.dependencies = std::move(dependencies);
+    return metadata;
+}
+
+bool AssetDependencyRecordEquals(
+    const AssetDependencyRecord& lhs,
+    const AssetDependencyRecord& rhs)
+{
+    return lhs.kind == rhs.kind &&
+        lhs.value == rhs.value &&
+        lhs.hashOrVersion == rhs.hashOrVersion;
+}
+
+bool AssetDependencyRecordsEqual(
+    const std::vector<AssetDependencyRecord>& lhs,
+    const std::vector<AssetDependencyRecord>& rhs)
+{
+    return lhs.size() == rhs.size() &&
+        std::equal(
+            lhs.begin(),
+            lhs.end(),
+            rhs.begin(),
+            AssetDependencyRecordEquals);
+}
+
+bool NativeArtifactMetadataEquals(
+    const NativeArtifactMetadata& lhs,
+    const NativeArtifactMetadata& rhs)
+{
+    return lhs.artifactType == rhs.artifactType &&
+        lhs.schemaName == rhs.schemaName &&
+        lhs.schemaVersion == rhs.schemaVersion &&
+        lhs.sourceAssetId == rhs.sourceAssetId &&
+        lhs.subAssetKey == rhs.subAssetKey &&
+        lhs.displayName == rhs.displayName &&
+        lhs.importerId == rhs.importerId &&
+        lhs.importerVersion == rhs.importerVersion &&
+        lhs.targetPlatform == rhs.targetPlatform &&
+        lhs.payloadHash == rhs.payloadHash &&
+        lhs.dependencyHash == rhs.dependencyHash &&
+        AssetDependencyRecordsEqual(lhs.dependencies, rhs.dependencies);
+}
+
+struct ArtifactPayloadIdentity
+{
+    std::string payloadHash;
+    uint64_t payloadSize = 0u;
+    std::optional<NativeArtifactMetadata> nativeContainerMetadata;
+};
+
+struct StoredPayloadReuseProbeStats
+{
+    uint64_t nativeContainerDirectHashCount = 0u;
+    uint64_t nativeContainerDirectReuseCount = 0u;
+};
+
+std::optional<ArtifactPayloadIdentity> BuildArtifactPayloadIdentity(const ArtifactPayload& artifact)
+{
+    if (IsNativeArtifactContainer(artifact.payload))
+    {
+        const auto view = ReadNativeArtifactContainerView(
+            artifact.payload,
+            artifact.artifactType,
+            SchemaVersionForArtifactType(artifact.artifactType));
+        if (!view.has_value())
+            return std::nullopt;
+
+        return ArtifactPayloadIdentity {
+            view->metadata.payloadHash,
+            static_cast<uint64_t>(view->payloadSize),
+            std::move(view->metadata)
+        };
+    }
+
+    return ArtifactPayloadIdentity {
+        ComputeNativeArtifactPayloadHash(artifact.payload),
+        static_cast<uint64_t>(artifact.payload.size()),
+        std::nullopt
+    };
+}
+
 std::vector<uint8_t> BuildStoredArtifactPayload(
     const ArtifactWriteRequest& request,
     const ArtifactPayload& artifact)
@@ -205,19 +318,10 @@ std::vector<uint8_t> BuildStoredArtifactPayload(
         rawPayload = std::move(parsed->payload);
     }
 
-    NativeArtifactMetadata metadata;
-    metadata.artifactType = artifact.artifactType;
-    metadata.schemaName = artifact.loaderId.empty()
-        ? SchemaNameForArtifactType(artifact.artifactType)
-        : artifact.loaderId;
-    metadata.schemaVersion = SchemaVersionForArtifactType(artifact.artifactType);
-    metadata.sourceAssetId = request.sourceAssetId;
-    metadata.subAssetKey = artifact.subAssetKey;
-    metadata.displayName = artifact.displayName;
-    metadata.importerId = request.importerId;
-    metadata.importerVersion = request.importerVersion;
-    metadata.targetPlatform = request.targetPlatform;
-    metadata.dependencies = request.dependencies;
+    auto metadata = BuildStoredArtifactMetadata(
+        request,
+        artifact,
+        BuildStoredArtifactDependencies(request, artifact));
     return WriteNativeArtifactContainer(std::move(metadata), rawPayload);
 }
 
@@ -242,6 +346,94 @@ std::filesystem::path BuildPortableArtifactPath(
         return portable.lexically_normal();
     }
     return finalRelativePath.lexically_normal();
+}
+
+std::optional<std::filesystem::path> TryReusePreviousContentAddressedPathWithoutStoredPayload(
+    const ArtifactWriteRequest& request,
+    const ArtifactPayload& artifact,
+    const ArtifactManifest* previousSuccessfulManifest,
+    const std::filesystem::path& committedRoot,
+    StoredPayloadReuseProbeStats* stats)
+{
+    if (previousSuccessfulManifest == nullptr)
+        return std::nullopt;
+
+    const auto* previous = previousSuccessfulManifest->FindSubAsset(artifact.subAssetKey);
+    if (previous == nullptr ||
+        previous->sourceAssetId != request.sourceAssetId ||
+        previous->artifactType != artifact.artifactType ||
+        previous->loaderId != artifact.loaderId ||
+        previous->targetPlatform != request.targetPlatform ||
+        previous->displayName != artifact.displayName ||
+        previous->contentHash.rfind("sha256:", 0u) != 0u)
+    {
+        return std::nullopt;
+    }
+
+    const auto previousFileName = previous->contentHash.substr(7u);
+    if (!IsArtifactStorageFileName(previousFileName))
+        return std::nullopt;
+
+    const auto previousRelativePath = BuildArtifactStorageRelativePath(previousFileName);
+    if (previousRelativePath.empty())
+        return std::nullopt;
+
+    const auto normalizedPreviousPath = std::filesystem::path(previous->artifactPath).lexically_normal();
+    if (normalizedPreviousPath.filename() != previousFileName)
+        return std::nullopt;
+
+    const auto payloadIdentity = BuildArtifactPayloadIdentity(artifact);
+    if (!payloadIdentity.has_value())
+        return std::nullopt;
+
+    auto currentMetadata = BuildStoredArtifactMetadata(
+        request,
+        artifact,
+        BuildStoredArtifactDependencies(request, artifact));
+    currentMetadata.payloadHash = payloadIdentity->payloadHash;
+    currentMetadata.dependencyHash = ComputeNativeArtifactDependencyHash(currentMetadata.dependencies);
+
+    if (payloadIdentity->nativeContainerMetadata.has_value() &&
+        NativeArtifactMetadataEquals(*payloadIdentity->nativeContainerMetadata, currentMetadata))
+    {
+        if (stats != nullptr)
+            ++stats->nativeContainerDirectHashCount;
+
+        const auto currentFileName = BuildArtifactStorageFileName(
+            artifact.payload.data(),
+            artifact.payload.size());
+        if (currentFileName == previousFileName)
+        {
+            std::error_code currentError;
+            if (!ExistingContentAddressedBlobMatchesExpectedPayload(
+                    committedRoot / previousRelativePath,
+                    artifact.payload,
+                    currentError))
+            {
+                return std::nullopt;
+            }
+
+            if (stats != nullptr)
+                ++stats->nativeContainerDirectReuseCount;
+            return previousRelativePath;
+        }
+    }
+
+    const auto destinationPath = committedRoot / previousRelativePath;
+    constexpr uint64_t kMaxReuseProbeMetadataBytes = 1024ull * 1024ull;
+    const auto previousPrefix = ReadNativeArtifactPayloadPrefixFromFile(
+        destinationPath,
+        artifact.artifactType,
+        SchemaVersionForArtifactType(artifact.artifactType),
+        0u,
+        kMaxReuseProbeMetadataBytes);
+    if (!previousPrefix.has_value() || previousPrefix->payloadSize != payloadIdentity->payloadSize)
+        return std::nullopt;
+
+    if (!NativeArtifactMetadataEquals(previousPrefix->metadata, currentMetadata))
+        return std::nullopt;
+
+    return previousRelativePath;
 }
 
 void MoveOrCopyFile(
@@ -371,6 +563,31 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
         return result;
     }
 
+    NLS::Base::Profiling::PerformanceStageScope writeScope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "WriteAndCommitArtifactPayloads",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
+    writeScope.AddCounter("artifactCount", request.artifacts.size());
+
+    uint64_t buildStoredPayloadMs = 0u;
+    uint64_t contentPathMs = 0u;
+    uint64_t existingCheckMs = 0u;
+    uint64_t stagingWriteMs = 0u;
+    uint64_t commitPlanMs = 0u;
+    uint64_t commitMoveMs = 0u;
+    uint64_t storedPayloadReuseProbeMs = 0u;
+    uint64_t destinationAlreadyCurrentCount = 0u;
+    uint64_t stagedCount = 0u;
+    uint64_t duplicateStagedPathCount = 0u;
+    uint64_t commitPlanCount = 0u;
+    uint64_t committedMoveCount = 0u;
+    uint64_t contentPathReusedCount = 0u;
+    uint64_t contentPathHashedCount = 0u;
+    uint64_t storedPayloadBypassCount = 0u;
+    uint64_t storedPayloadBuiltCount = 0u;
+    uint64_t nativeContainerDirectHashCount = 0u;
+    uint64_t nativeContainerDirectReuseCount = 0u;
+
     ArtifactManifest nextManifest;
     nextManifest.sourceAssetId = request.sourceAssetId;
     nextManifest.importerId = request.importerId;
@@ -381,6 +598,7 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
 
     std::vector<StagedArtifact> stagedArtifacts;
     stagedArtifacts.reserve(request.artifacts.size());
+    std::set<std::filesystem::path> stagedRelativePaths;
     for (const auto& artifact : request.artifacts)
     {
         if (cancelIfRequested())
@@ -402,20 +620,53 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
             return result;
         }
 
-        const auto storedPayload = BuildStoredArtifactPayload(request, artifact);
-        if (storedPayload.empty())
+        std::filesystem::path finalRelativePath;
+        std::vector<uint8_t> storedPayload;
+        bool destinationExists = false;
+        bool destinationIsDirectory = false;
+        bool destinationAlreadyCurrent = false;
+        const auto reuseProbeStart = std::chrono::steady_clock::now();
+        StoredPayloadReuseProbeStats reuseProbeStats;
+        auto reusedWithoutStoredPayload = TryReusePreviousContentAddressedPathWithoutStoredPayload(
+            request,
+            artifact,
+            previousSuccessfulManifest,
+            committedRoot,
+            &reuseProbeStats);
+        storedPayloadReuseProbeMs += ToMicroseconds(std::chrono::steady_clock::now() - reuseProbeStart);
+        nativeContainerDirectHashCount += reuseProbeStats.nativeContainerDirectHashCount;
+        nativeContainerDirectReuseCount += reuseProbeStats.nativeContainerDirectReuseCount;
+        if (reusedWithoutStoredPayload)
         {
-            AddError(
-                result,
-                request.sourceAssetId,
-                artifact.relativePath,
-                "artifact-container-write-failed",
-                "Artifact payload could not be serialized into a native artifact container.");
-            std::filesystem::remove_all(stagingRoot, error);
-            return result;
+            finalRelativePath = std::move(*reusedWithoutStoredPayload);
+            ++contentPathReusedCount;
+            ++storedPayloadBypassCount;
+            ++destinationAlreadyCurrentCount;
+            destinationAlreadyCurrent = true;
         }
+        else
+        {
+            const auto buildStoredPayloadStart = std::chrono::steady_clock::now();
+            storedPayload = BuildStoredArtifactPayload(request, artifact);
+            ++storedPayloadBuiltCount;
+            buildStoredPayloadMs += ToMicroseconds(std::chrono::steady_clock::now() - buildStoredPayloadStart);
+            if (storedPayload.empty())
+            {
+                AddError(
+                    result,
+                    request.sourceAssetId,
+                    artifact.relativePath,
+                    "artifact-container-write-failed",
+                    "Artifact payload could not be serialized into a native artifact container.");
+                std::filesystem::remove_all(stagingRoot, error);
+                return result;
+            }
 
-        const auto finalRelativePath = BuildContentAddressedArtifactRelativePathFromStoredPayload(storedPayload);
+            const auto contentPathStart = std::chrono::steady_clock::now();
+            finalRelativePath = BuildContentAddressedArtifactRelativePathFromStoredPayload(storedPayload);
+            contentPathMs += ToMicroseconds(std::chrono::steady_clock::now() - contentPathStart);
+            ++contentPathHashedCount;
+        }
         if (!IsSafeRelativePath(finalRelativePath))
         {
             AddError(
@@ -429,30 +680,60 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
         }
 
         const auto stagedPath = stagingRoot / finalRelativePath;
-        std::filesystem::create_directories(stagedPath.parent_path(), error);
-        if (error)
+        const auto destinationPath = committedRoot / finalRelativePath;
+        if (!destinationAlreadyCurrent)
         {
-            AddError(result, request.sourceAssetId, stagedPath, "artifact-directory-create-failed", error.message());
-            std::filesystem::remove_all(stagingRoot, error);
-            return result;
+            const auto existingCheckStart = std::chrono::steady_clock::now();
+            const auto destinationStatus = std::filesystem::status(destinationPath, error);
+            destinationExists = !error && std::filesystem::exists(destinationStatus);
+            destinationIsDirectory = !error && std::filesystem::is_directory(destinationStatus);
+            destinationAlreadyCurrent =
+                !error &&
+                std::filesystem::is_regular_file(destinationStatus) &&
+                ExistingContentAddressedBlobMatchesExpectedPayload(destinationPath, storedPayload, error);
+            existingCheckMs += ToMicroseconds(std::chrono::steady_clock::now() - existingCheckStart);
+            error.clear();
+
+            if (destinationAlreadyCurrent)
+                ++destinationAlreadyCurrentCount;
         }
 
-        std::ofstream output(stagedPath, std::ios::binary | std::ios::trunc);
-        if (!output)
+        const bool shouldStage = !destinationAlreadyCurrent && stagedRelativePaths.insert(finalRelativePath).second;
+        if (!destinationAlreadyCurrent && !shouldStage)
+            ++duplicateStagedPathCount;
+
+        if (shouldStage)
         {
-            AddError(result, request.sourceAssetId, stagedPath, "artifact-write-failed", "Artifact payload could not be opened for writing.");
-            std::filesystem::remove_all(stagingRoot, error);
-            return result;
-        }
-        output.write(
-            reinterpret_cast<const char*>(storedPayload.data()),
-            static_cast<std::streamsize>(storedPayload.size()));
-        output.close();
-        if (!output)
-        {
-            AddError(result, request.sourceAssetId, stagedPath, "artifact-write-failed", "Artifact payload write did not complete successfully.");
-            std::filesystem::remove_all(stagingRoot, error);
-            return result;
+            const auto stagingWriteStart = std::chrono::steady_clock::now();
+            std::filesystem::create_directories(stagedPath.parent_path(), error);
+            if (error)
+            {
+                AddError(result, request.sourceAssetId, stagedPath, "artifact-directory-create-failed", error.message());
+                std::filesystem::remove_all(stagingRoot, error);
+                return result;
+            }
+
+            std::ofstream output(stagedPath, std::ios::binary | std::ios::trunc);
+            if (!output)
+            {
+                AddError(result, request.sourceAssetId, stagedPath, "artifact-write-failed", "Artifact payload could not be opened for writing.");
+                std::filesystem::remove_all(stagingRoot, error);
+                return result;
+            }
+            output.write(
+                reinterpret_cast<const char*>(storedPayload.data()),
+                static_cast<std::streamsize>(storedPayload.size()));
+            output.close();
+            if (!output)
+            {
+                AddError(result, request.sourceAssetId, stagedPath, "artifact-write-failed", "Artifact payload write did not complete successfully.");
+                std::filesystem::remove_all(stagingRoot, error);
+                return result;
+            }
+
+            stagedArtifacts.push_back({ finalRelativePath, destinationExists, destinationIsDirectory });
+            stagingWriteMs += ToMicroseconds(std::chrono::steady_clock::now() - stagingWriteStart);
+            ++stagedCount;
         }
 
         if (cancelIfRequested())
@@ -469,10 +750,9 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
         imported.loaderId = artifact.loaderId;
         imported.targetPlatform = request.targetPlatform;
         imported.artifactPath = BuildPortableArtifactPath(committedRoot, finalRelativePath).generic_string();
-        imported.contentHash = ComputeArtifactContentHash(storedPayload);
+        imported.contentHash = ComputeArtifactContentHash(finalRelativePath);
         imported.displayName = artifact.displayName;
         nextManifest.subAssets.push_back(std::move(imported));
-        stagedArtifacts.push_back({ finalRelativePath });
     }
 
     std::filesystem::create_directories(committedRoot, error);
@@ -486,6 +766,7 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
     std::vector<CommitPlan> commitPlans;
     commitPlans.reserve(stagedArtifacts.size());
     std::set<std::filesystem::path> plannedRelativePaths;
+    const auto commitPlanStart = std::chrono::steady_clock::now();
     for (const auto& artifact : stagedArtifacts)
     {
         if (!plannedRelativePaths.insert(artifact.relativePath).second)
@@ -501,7 +782,7 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
             return result;
         }
 
-        if (std::filesystem::is_directory(destinationPath, error))
+        if (artifact.destinationIsDirectory)
         {
             AddError(
                 result,
@@ -514,26 +795,25 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
         }
         error.clear();
 
-        if (std::filesystem::exists(destinationPath, error) &&
-            FilesHaveSameBytes(sourcePath, destinationPath, error))
-        {
-            continue;
-        }
-        error.clear();
-
         commitPlans.push_back({
             sourcePath,
             destinationPath,
-            backupRoot / artifact.relativePath
+            backupRoot / artifact.relativePath,
+            artifact.destinationExists
         });
+        ++commitPlanCount;
     }
+    commitPlanMs += ToMicroseconds(std::chrono::steady_clock::now() - commitPlanStart);
 
-    std::filesystem::create_directories(backupRoot, error);
-    if (error)
+    if (!commitPlans.empty())
     {
-        AddError(result, request.sourceAssetId, backupRoot, "artifact-backup-create-failed", error.message());
-        std::filesystem::remove_all(stagingRoot, error);
-        return result;
+        std::filesystem::create_directories(backupRoot, error);
+        if (error)
+        {
+            AddError(result, request.sourceAssetId, backupRoot, "artifact-backup-create-failed", error.message());
+            std::filesystem::remove_all(stagingRoot, error);
+            return result;
+        }
     }
 
     for (auto& plan : commitPlans)
@@ -546,8 +826,9 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
             return result;
         }
 
-        if (std::filesystem::exists(plan.destinationPath, error))
+        if (plan.destinationExists)
         {
+            const auto commitMoveStart = std::chrono::steady_clock::now();
             std::filesystem::create_directories(plan.backupPath.parent_path(), error);
             if (error)
             {
@@ -568,10 +849,13 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
                 return result;
             }
             plan.destinationBackedUp = true;
+            commitMoveMs += ToMicroseconds(std::chrono::steady_clock::now() - commitMoveStart);
         }
 
         plan.destinationMayContainReplacement = true;
+        const auto commitMoveStart = std::chrono::steady_clock::now();
         MoveOrCopyFile(plan.sourcePath, plan.destinationPath, error);
+        commitMoveMs += ToMicroseconds(std::chrono::steady_clock::now() - commitMoveStart);
         if (error)
         {
             AddError(result, request.sourceAssetId, plan.destinationPath, "artifact-commit-failed", error.message());
@@ -581,10 +865,29 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
             return result;
         }
         plan.replacementMoved = true;
+        ++committedMoveCount;
     }
 
     std::filesystem::remove_all(stagingRoot, error);
     std::filesystem::remove_all(backupRoot, error);
+    writeScope.AddCounter("buildStoredPayloadMs", buildStoredPayloadMs / 1000u);
+    writeScope.AddCounter("contentPathMs", contentPathMs / 1000u);
+    writeScope.AddCounter("existingCheckMs", existingCheckMs / 1000u);
+    writeScope.AddCounter("stagingWriteMs", stagingWriteMs / 1000u);
+    writeScope.AddCounter("commitPlanMs", commitPlanMs / 1000u);
+    writeScope.AddCounter("commitMoveMs", commitMoveMs / 1000u);
+    writeScope.AddCounter("storedPayloadReuseProbeMs", storedPayloadReuseProbeMs / 1000u);
+    writeScope.AddCounter("destinationAlreadyCurrentCount", destinationAlreadyCurrentCount);
+    writeScope.AddCounter("stagedCount", stagedCount);
+    writeScope.AddCounter("duplicateStagedPathCount", duplicateStagedPathCount);
+    writeScope.AddCounter("commitPlanCount", commitPlanCount);
+    writeScope.AddCounter("committedMoveCount", committedMoveCount);
+    writeScope.AddCounter("contentPathReusedCount", contentPathReusedCount);
+    writeScope.AddCounter("contentPathHashedCount", contentPathHashedCount);
+    writeScope.AddCounter("storedPayloadBypassCount", storedPayloadBypassCount);
+    writeScope.AddCounter("storedPayloadBuiltCount", storedPayloadBuiltCount);
+    writeScope.AddCounter("nativeContainerDirectHashCount", nativeContainerDirectHashCount);
+    writeScope.AddCounter("nativeContainerDirectReuseCount", nativeContainerDirectReuseCount);
     result.committed = true;
     result.manifest = std::move(nextManifest);
     return result;

@@ -401,6 +401,8 @@ std::string DomainToString(const PerformanceStageDomain domain)
         return "Prefab";
     case PerformanceStageDomain::Thumbnail:
         return "Thumbnail";
+    case PerformanceStageDomain::AssetImport:
+        return "AssetImport";
     case PerformanceStageDomain::Unknown:
     default:
         return "Unknown";

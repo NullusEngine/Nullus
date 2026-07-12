@@ -835,9 +835,9 @@ void ApplyDeferredAssetReferenceHintsIfMissing(
 
             if (path.empty() && index < existingPaths.size())
                 path = existingPaths[index];
-            if (path.empty() && index < NLS::Engine::Components::MeshRenderer::kMaxMaterialCount)
+            if (path.empty())
             {
-                if (auto* material = meshRenderer.GetMaterialAtIndex(static_cast<uint8_t>(index));
+                if (auto* material = meshRenderer.GetMaterialAtIndex(static_cast<uint32_t>(index));
                     material != nullptr)
                 {
                     path = material->path;
@@ -1984,6 +1984,14 @@ void PrefabInstanceRegistry::MarkAssetMissing(
         m_missingPrefabSources.erase(key);
 }
 
+bool PrefabInstanceRegistry::IsAssetMissing(
+    NLS::Core::Assets::AssetId assetId,
+    const std::string& prefabSubAssetKey) const
+{
+    const auto key = MakePrefabSourceStateKey(assetId, prefabSubAssetKey);
+    return !key.empty() && m_missingPrefabSources.find(key) != m_missingPrefabSources.end();
+}
+
 void PrefabInstanceRegistry::MarkAssetPendingResources(
     NLS::Core::Assets::AssetId assetId,
     const bool pending)
@@ -2237,6 +2245,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::InstantiatePrefab(
     NLS::Engine::Serialize::LoadPolicy loadPolicy;
     loadPolicy.deferAssetReferenceResolution = request.deferAssetReferenceResolution;
     loadPolicy.synchronousAssetReferencePrewarm = request.synchronousAssetReferencePrewarm;
+    loadPolicy.skipDeferredAssetReferenceCacheLookup = request.skipDeferredAssetReferenceCacheLookup;
     auto instantiateResult = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, scene, loadPolicy);
     if (instantiateResult.diagnostics.HasErrors())
     {

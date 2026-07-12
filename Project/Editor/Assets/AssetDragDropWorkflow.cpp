@@ -1,5 +1,6 @@
 #include "Assets/AssetDragDropWorkflow.h"
 
+#include "Assets/ShaderLabMaterialDefaults.h"
 #include "Components/MeshRenderer.h"
 #include "Serialize/ObjectGraphWriter.h"
 
@@ -307,13 +308,7 @@ AssetDragDropResult AssetDragDropWorkflow::CreateMaterialFromTextureAndAssign(
     materialAsset.name = materialName;
     materialAsset.artifactType = NLS::Core::Assets::ArtifactType::Material;
     materialAsset.loaderId = "material";
-    materialAsset.serializedPayload =
-        "shaderLabMaterialVersion=1\n"
-        "shader=?\n"
-        "surfaceMode=Opaque\n"
-        "alphaMode=Opaque\n"
-        "doubleSided=true\n"
-        "depthWrite=true\n"
+    materialAsset.serializedPayload = BuildDefaultShaderLabMaterialPayload() +
         "property _BaseMap Texture2D " + request.payload.assetId.ToString() + "#" +
         (request.payload.subAssetKey.empty() ? std::string("texture:Main") : request.payload.subAssetKey) + "\n";
     if (!request.assetDatabase->CreateAsset(materialAsset, materialPath))

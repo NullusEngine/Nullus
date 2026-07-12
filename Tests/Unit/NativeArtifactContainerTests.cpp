@@ -69,6 +69,29 @@ TEST(NativeArtifactContainerTests, WritesMagicHeaderMetadataAndPayloadHash)
     EXPECT_EQ(parsed->payload, payload);
 }
 
+TEST(NativeArtifactContainerTests, RoundTripsPrefabValidationDependency)
+{
+    NativeArtifactMetadata metadata;
+    metadata.artifactType = ArtifactType::Prefab;
+    metadata.schemaName = "prefab";
+    metadata.schemaVersion = 1u;
+    metadata.dependencies.push_back({
+        AssetDependencyKind::PrefabValidation,
+        "prefab:main",
+        "123456789"
+    });
+
+    const auto payload = MakePayload();
+    const auto bytes = WriteNativeArtifactContainer(metadata, payload);
+    const auto parsed = ReadNativeArtifactContainer(bytes, ArtifactType::Prefab, 1u);
+
+    ASSERT_TRUE(parsed.has_value());
+    ASSERT_EQ(parsed->metadata.dependencies.size(), 1u);
+    EXPECT_EQ(parsed->metadata.dependencies[0].kind, AssetDependencyKind::PrefabValidation);
+    EXPECT_EQ(parsed->metadata.dependencies[0].value, "prefab:main");
+    EXPECT_EQ(parsed->metadata.dependencies[0].hashOrVersion, "123456789");
+}
+
 TEST(NativeArtifactContainerTests, RejectsPayloadTampering)
 {
     NativeArtifactMetadata metadata;

@@ -27,6 +27,8 @@ namespace NLS::Render::Resources::Loaders
 		static Shader* CreateBuiltInHlsl(const std::string& p_filePath);
 		static Shader* CreateBuiltInHlsl(const std::string& p_filePath, const std::string& p_projectAssetsPath);
 		static void SetDefaultProjectAssetsPath(const std::string& p_projectAssetsPath);
+		static void SetTrustedBuiltInShaderEngineAssetsPath(const std::string& p_engineAssetsPath);
+		static std::string ResolveTrustedBuiltInEngineShaderPath(const std::string& p_fileName);
 
 		static std::string GetCacheDatabasePath(
 			const std::string& p_filePath,

@@ -1,5 +1,5 @@
 shaderLabMaterialVersion=1
-shader=?
+shader=Assets/Engine/Shaders/ShaderLab/StandardPBR.shader
 name=Default
 sourceSubAsset=material:Default
 workflow=engine-default

@@ -32,6 +32,7 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include "Serialize/ObjectGraphDocument.h"
 #include "Serialize/ObjectGraphWriter.h"
+#include "Tests/Unit/Support/DeterministicTextureRhiDevice.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -173,6 +174,28 @@ NLS::Render::Context::Driver& EnsureThumbnailPerformanceTestDriver()
     }());
     NLS::Core::ServiceLocator::Provide(*driver);
     return *driver;
+}
+
+struct DeterministicThumbnailGpuTestContext
+{
+    NLS::Render::Context::Driver& driver;
+    std::shared_ptr<NLS::Tests::DeterministicTextureRhiDevice> device;
+};
+
+DeterministicThumbnailGpuTestContext EnsureDeterministicThumbnailGpuTestDriver()
+{
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>([]()
+    {
+        NLS::Render::Settings::DriverSettings settings;
+        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+        settings.enableExplicitRHI = false;
+        settings.enableThreadedRendering = false;
+        return settings;
+    }());
+    static auto device = std::make_shared<NLS::Tests::DeterministicTextureRhiDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(*driver, device);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    return { *driver, device };
 }
 
 NLS::Render::Context::Driver& EnsureThumbnailPerformanceGpuTestDriver()
@@ -540,6 +563,33 @@ public:
             0u, 255u, 0u, 0u,
             0u, 0u, 255u, 0u,
             255u, 255u, 255u, 0u
+        };
+        return result;
+    }
+
+    size_t renderCount = 0u;
+};
+
+class OpaqueBlackPreviewRenderer final : public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
+{
+public:
+    bool Supports(const NLS::Editor::Assets::AssetThumbnailRequest& request) const override
+    {
+        return request.kind == NLS::Editor::Assets::AssetThumbnailKind::PrefabPreview;
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewResult Render(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        ++renderCount;
+        NLS::Editor::Assets::EditorThumbnailPreviewResult result;
+        result.width = 2u;
+        result.height = 2u;
+        result.rgbaPixels = {
+            0u, 0u, 0u, 255u,
+            0u, 0u, 0u, 255u,
+            0u, 0u, 0u, 255u,
+            0u, 0u, 0u, 255u
         };
         return result;
     }
@@ -1251,6 +1301,42 @@ TEST(AssetThumbnailBehaviorTests, GpuPreviewRejectsFullyTransparentReadbackEvenW
     EXPECT_FALSE(service.HasInFlightRequest());
     EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Failed);
     EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Failed);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailBehaviorTests, OpaqueBlackPrefabPreviewDefersUntilScopeCancellation)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    auto request = MakeGpuPreviewRequest(root);
+    request.sourceAssetPath = "Assets/Prefabs/Dark.prefab";
+    request.subAssetKey.clear();
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.previewRendererVersion = "opaque-black-prefab-preview:v1";
+
+    OpaqueBlackPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto deferred = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(deferred.has_value());
+    EXPECT_EQ(deferred->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(deferred->diagnostic, "thumbnail-gpu-preview-empty-frame");
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing)
+        << "A deferred opaque frame must not write failed cache metadata.";
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u)
+        << "A deferred opaque frame is retained for a later scope, not left pumpable.";
+
+    EXPECT_FALSE(service.GenerateNextThumbnail(renderer, true).has_value());
+    EXPECT_EQ(renderer.renderCount, 1u)
+        << "A deferred opaque frame must not hot-retry in the same generation.";
+
+    service.SupersedeQueuedRequestsForGeneration("opaque-black-prefab-cancelled-scope");
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Cancelled);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
 
     std::filesystem::remove_all(root);
 }
@@ -2855,7 +2941,8 @@ TEST(AssetThumbnailBehaviorTests, TextureManagerSharedRequestRevivesCanceledInFl
 #else
     using namespace NLS::Core::ResourceManagement;
 
-    EnsureThumbnailPerformanceGpuTestDriver();
+    const auto gpu = EnsureDeterministicThumbnailGpuTestDriver();
+    const size_t textureCreateCallsBeforeRequest = gpu.device->textureCreateCalls;
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
     const auto root = MakeThumbnailPerformanceRoot();
@@ -2879,6 +2966,9 @@ TEST(AssetThumbnailBehaviorTests, TextureManagerSharedRequestRevivesCanceledInFl
 
     EXPECT_TRUE(textureManager.IsResourceRegistered(texturePath.string()))
         << "A commit/shared request must not inherit a hover cancellation that arrived before pump consumed the worker result.";
+    EXPECT_GT(gpu.device->textureCreateCalls, textureCreateCallsBeforeRequest)
+        << "Revival must complete the runtime texture upload through the deterministic explicit device.";
+    EXPECT_TRUE(gpu.device->lastUploadHadData);
     EXPECT_FALSE(textureManager.IsAsyncArtifactLoadPending(texturePath.string()));
 
     TextureManager::ClearAsyncArtifactRequestStateForTesting();
@@ -2895,7 +2985,8 @@ TEST(AssetThumbnailBehaviorTests, TextureManagerCancelableRequestRevivesCanceled
 #else
     using namespace NLS::Core::ResourceManagement;
 
-    EnsureThumbnailPerformanceGpuTestDriver();
+    const auto gpu = EnsureDeterministicThumbnailGpuTestDriver();
+    const size_t textureCreateCallsBeforeRequest = gpu.device->textureCreateCalls;
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
     const auto root = MakeThumbnailPerformanceRoot();
@@ -2918,6 +3009,9 @@ TEST(AssetThumbnailBehaviorTests, TextureManagerCancelableRequestRevivesCanceled
 
     EXPECT_TRUE(textureManager.IsResourceRegistered(texturePath.string()))
         << "A renewed hover request must not inherit the previous hover cancellation.";
+    EXPECT_GT(gpu.device->textureCreateCalls, textureCreateCallsBeforeRequest)
+        << "Revival must complete the runtime texture upload through the deterministic explicit device.";
+    EXPECT_TRUE(gpu.device->lastUploadHadData);
     EXPECT_FALSE(textureManager.IsAsyncArtifactLoadPending(texturePath.string()));
     EXPECT_FALSE(textureManager.IsAsyncArtifactLoadFailed(texturePath.string()));
 

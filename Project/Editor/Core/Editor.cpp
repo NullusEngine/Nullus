@@ -213,7 +213,54 @@ std::string FormatTelemetryDurationMs(const std::chrono::microseconds elapsed)
     return stream.str();
 }
 
-std::string BuildThumbnailTelemetrySummaryReport()
+struct ArtifactTelemetryReportSummaries
+{
+    std::vector<NLS::Core::Assets::ArtifactLoadTelemetryStageSummary> pathSummaries;
+    std::vector<NLS::Core::Assets::ArtifactLoadTelemetryStageSummary> stageTotals;
+};
+
+ArtifactTelemetryReportSummaries BuildArtifactTelemetryReportSummaries(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStageSummary;
+
+    ArtifactTelemetryReportSummaries result;
+    result.pathSummaries.reserve(records.size());
+    std::unordered_map<uint8_t, std::unordered_map<std::string, size_t>> pathSummaryIndices;
+    std::unordered_map<uint8_t, size_t> stageTotalIndices;
+    const auto addRecord = [](ArtifactLoadTelemetryStageSummary& summary, const auto& record)
+    {
+        ++summary.recordCount;
+        summary.totalElapsed += record.elapsed;
+        summary.totalBytes += record.byteCount;
+    };
+    for (const auto& record : records)
+    {
+        const auto stageKey = static_cast<uint8_t>(record.stage);
+        auto& indicesForStage = pathSummaryIndices[stageKey];
+        const auto [pathIndex, insertedPath] = indicesForStage.emplace(
+            record.path,
+            result.pathSummaries.size());
+        if (insertedPath)
+        {
+            result.pathSummaries.push_back({ record.stage, record.path });
+        }
+        addRecord(result.pathSummaries[pathIndex->second], record);
+
+        const auto [stageIndex, insertedStage] = stageTotalIndices.emplace(
+            stageKey,
+            result.stageTotals.size());
+        if (insertedStage)
+        {
+            result.stageTotals.push_back({ record.stage, {} });
+        }
+        addRecord(result.stageTotals[stageIndex->second], record);
+    }
+    return result;
+}
+
+std::string BuildThumbnailTelemetrySummaryReportFromRecords(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
     using NLS::Core::Assets::ArtifactLoadTelemetryStageName;
@@ -228,15 +275,18 @@ std::string BuildThumbnailTelemetrySummaryReport()
         std::string slowestPath;
     };
 
-    const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
-    const auto summaries = NLS::Core::Assets::SummarizeArtifactLoadTelemetry();
-    auto allStageTotals = summaries;
+    auto reportSummaries = BuildArtifactTelemetryReportSummaries(records);
+    auto& summaries = reportSummaries.pathSummaries;
+    auto& allStageTotals = reportSummaries.stageTotals;
     std::sort(
         allStageTotals.begin(),
         allStageTotals.end(),
         [](const auto& left, const auto& right)
         {
-            return left.totalElapsed > right.totalElapsed;
+            if (left.totalElapsed != right.totalElapsed)
+                return left.totalElapsed > right.totalElapsed;
+            return std::string_view(ArtifactLoadTelemetryStageName(left.stage)) <
+                std::string_view(ArtifactLoadTelemetryStageName(right.stage));
         });
 
     std::unordered_map<uint8_t, StageAggregate> stageAggregates;
@@ -266,7 +316,10 @@ std::string BuildThumbnailTelemetrySummaryReport()
         stageTotals.end(),
         [](const StageAggregate& left, const StageAggregate& right)
         {
-            return left.totalElapsed > right.totalElapsed;
+            if (left.totalElapsed != right.totalElapsed)
+                return left.totalElapsed > right.totalElapsed;
+            return std::string_view(ArtifactLoadTelemetryStageName(left.stage)) <
+                std::string_view(ArtifactLoadTelemetryStageName(right.stage));
         });
 
     std::vector<NLS::Core::Assets::ArtifactLoadTelemetryStageSummary> thumbnailBuckets;
@@ -281,7 +334,13 @@ std::string BuildThumbnailTelemetrySummaryReport()
         thumbnailBuckets.end(),
         [](const auto& left, const auto& right)
         {
-            return left.totalElapsed > right.totalElapsed;
+            if (left.totalElapsed != right.totalElapsed)
+                return left.totalElapsed > right.totalElapsed;
+            const auto leftStage = std::string_view(ArtifactLoadTelemetryStageName(left.stage));
+            const auto rightStage = std::string_view(ArtifactLoadTelemetryStageName(right.stage));
+            if (leftStage != rightStage)
+                return leftStage < rightStage;
+            return left.path < right.path;
         });
 
     const auto thumbnailDrawOutcomes =
@@ -409,6 +468,12 @@ std::string BuildThumbnailTelemetrySummaryReport()
             << '\n';
     }
     return report.str();
+}
+
+std::string BuildThumbnailTelemetrySummaryReport()
+{
+    const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    return BuildThumbnailTelemetrySummaryReportFromRecords(records);
 }
 
 void WriteThumbnailTelemetrySummaryIfRequested(
@@ -589,6 +654,15 @@ void WritePrefabDragProxyValidationSummaryIfRequested(
     output.close();
     if (logSuccess)
         NLS_LOG_INFO("Wrote prefab drag proxy validation summary: " + outputPath.generic_string());
+}
+}
+
+namespace Editor::Core::Testing
+{
+std::string BuildThumbnailTelemetrySummaryReportForTesting(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records)
+{
+    return BuildThumbnailTelemetrySummaryReportFromRecords(records);
 }
 }
 

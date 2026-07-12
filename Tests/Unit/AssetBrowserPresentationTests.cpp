@@ -41,6 +41,12 @@ void DrawAssetBrowserSegmentPanel(
     bool hovered,
     ImDrawFlags cornerFlags);
 
+namespace NLS::Editor::Core::Testing
+{
+std::string BuildThumbnailTelemetrySummaryReportForTesting(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records);
+}
+
 void AssetBrowserRasterTestCallback(const ImDrawList*, const ImDrawCmd*)
 {
 }
@@ -2761,13 +2767,64 @@ TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryReportsGridDrawOutc
 
 TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryIncludesGlobalArtifactStageTotals)
 {
-    const auto source = ReadSourceText(RepoPath("Project/Editor/Core/Editor.cpp"));
-    const auto body = ExtractFunctionBody(source, "std::string BuildThumbnailTelemetrySummaryReport()");
+    using namespace std::chrono_literals;
+    using NLS::Core::Assets::ArtifactLoadTelemetryRecord;
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
 
-    EXPECT_NE(body.find("Artifact stage totals"), std::string::npos)
-        << "Startup and scene-load validation need non-thumbnail artifact stages such as texture read, CPU deserialize, runtime create, and GPU upload.";
-    EXPECT_NE(body.find("allStageTotals"), std::string::npos)
-        << "The export should keep the existing thumbnail section but also summarize all ArtifactLoadTelemetry stages.";
+    const std::vector<ArtifactLoadTelemetryRecord> records {
+        { ArtifactLoadTelemetryStage::GpuUpload, 1500us, 10u, "texture-a" },
+        { ArtifactLoadTelemetryStage::GpuUpload, 500us, 14u, "texture-b" },
+        { ArtifactLoadTelemetryStage::CpuDeserialize, 2000us, 7u, "mesh-a" },
+        { ArtifactLoadTelemetryStage::CacheHit, 2000us, 3u, "cache-a" },
+        { ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender, 300us, 4u, "prefab-a" },
+        { ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender, 200us, 6u, "prefab-b" }
+    };
+
+    const auto report = NLS::Editor::Core::Testing::BuildThumbnailTelemetrySummaryReportForTesting(records);
+    EXPECT_EQ(
+        report.find("- GpuUpload records=2 totalMs=2.000 totalBytes=24"),
+        report.rfind("- GpuUpload records=2 totalMs=2.000 totalBytes=24"))
+        << "One stage total must combine every path exactly once.";
+    EXPECT_NE(
+        report.find("ThumbnailGpuPreviewRender path=prefab-a records=1"),
+        std::string::npos);
+    EXPECT_NE(
+        report.find("ThumbnailGpuPreviewRender path=prefab-b records=1"),
+        std::string::npos);
+
+    const auto cacheHit = report.find("- CacheHit records=1 totalMs=2.000 totalBytes=3");
+    const auto cpuDeserialize = report.find("- CpuDeserialize records=1 totalMs=2.000 totalBytes=7");
+    const auto gpuUpload = report.find("- GpuUpload records=2 totalMs=2.000 totalBytes=24");
+    ASSERT_NE(cacheHit, std::string::npos);
+    ASSERT_NE(cpuDeserialize, std::string::npos);
+    ASSERT_NE(gpuUpload, std::string::npos);
+    EXPECT_LT(cacheHit, cpuDeserialize);
+    EXPECT_LT(cpuDeserialize, gpuUpload)
+        << "Equal elapsed totals must use the stage name as a deterministic tie-break.";
+}
+
+TEST(AssetBrowserPresentationTests, TextureRevivalTestsUseBackendNeutralExplicitDevice)
+{
+    const auto source = ReadSourceText(RepoPath("Tests/Unit/AssetThumbnailBehaviorTests.cpp"));
+    const auto helper = ExtractFunctionBody(
+        source,
+        "DeterministicThumbnailGpuTestContext EnsureDeterministicThumbnailGpuTestDriver()");
+    const auto sharedRevival = ExtractFunctionBody(
+        source,
+        "TEST(AssetThumbnailBehaviorTests, TextureManagerSharedRequestRevivesCanceledInFlightArtifactBeforePump)");
+    const auto cancelableRevival = ExtractFunctionBody(
+        source,
+        "TEST(AssetThumbnailBehaviorTests, TextureManagerCancelableRequestRevivesCanceledInFlightArtifactBeforePump)");
+
+    EXPECT_NE(helper.find("EGraphicsBackend::NONE"), std::string::npos);
+    EXPECT_NE(helper.find("DriverTestAccess::SetExplicitDevice"), std::string::npos);
+    EXPECT_EQ(helper.find("defined(_WIN32)"), std::string::npos);
+    EXPECT_EQ(helper.find("defined(__APPLE__)"), std::string::npos);
+    EXPECT_EQ(helper.find("defined(__linux__)"), std::string::npos);
+    EXPECT_NE(sharedRevival.find("EnsureDeterministicThumbnailGpuTestDriver"), std::string::npos);
+    EXPECT_NE(cancelableRevival.find("EnsureDeterministicThumbnailGpuTestDriver"), std::string::npos);
+    EXPECT_EQ(sharedRevival.find("EnsureThumbnailPerformanceGpuTestDriver"), std::string::npos);
+    EXPECT_EQ(cancelableRevival.find("EnsureThumbnailPerformanceGpuTestDriver"), std::string::npos);
 }
 
 TEST(AssetBrowserPresentationTests, PendingThumbnailResultDoesNotReplaceFreshVisibleResult)

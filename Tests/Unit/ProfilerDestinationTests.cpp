@@ -156,6 +156,27 @@ protected:
         NLS::Base::Profiling::Profiler::ResetForTesting();
     }
 };
+
+class ScopedProfilerDestinationRegistration final
+{
+public:
+    explicit ScopedProfilerDestinationRegistration(NLS::Base::Profiling::IProfilerDestination& destination)
+        : m_destination(destination)
+    {
+        NLS::Base::Profiling::Profiler::RegisterDestination(m_destination);
+    }
+
+    ~ScopedProfilerDestinationRegistration()
+    {
+        NLS::Base::Profiling::Profiler::UnregisterDestination(m_destination);
+    }
+
+    ScopedProfilerDestinationRegistration(const ScopedProfilerDestinationRegistration&) = delete;
+    ScopedProfilerDestinationRegistration& operator=(const ScopedProfilerDestinationRegistration&) = delete;
+
+private:
+    NLS::Base::Profiling::IProfilerDestination& m_destination;
+};
 }
 
 TEST_F(ProfilerDestinationTest, RegistersAndRoutesScopeToAvailableDestination)
@@ -163,7 +184,7 @@ TEST_F(ProfilerDestinationTest, RegistersAndRoutesScopeToAvailableDestination)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    BaseProfiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     BaseProfiler::SetEnabled(true);
 
     const auto scope = BaseProfiler::BeginScope("Destination Scope", __FUNCTION__);
@@ -186,8 +207,8 @@ TEST_F(ProfilerDestinationTest, RoutesScopeToEveryAvailableDestination)
 
     RecordingProfilerDestination first(ProfilerDestinationId::Tracy);
     RecordingProfilerDestination second(ProfilerDestinationId::Timeline);
-    BaseProfiler::RegisterDestination(first);
-    BaseProfiler::RegisterDestination(second);
+    ScopedProfilerDestinationRegistration firstRegistration(first);
+    ScopedProfilerDestinationRegistration secondRegistration(second);
     BaseProfiler::SetEnabled(true);
 
     const auto scope = BaseProfiler::BeginScope("Shared Scope", __FUNCTION__);
@@ -206,7 +227,7 @@ TEST_F(ProfilerDestinationTest, UnregisteredDestinationStopsReceivingScopeEvents
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    BaseProfiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     BaseProfiler::SetEnabled(true);
 
     EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 1u);
@@ -226,13 +247,13 @@ TEST_F(ProfilerDestinationTest, ScopeEndOnlyRoutesToDestinationsThatAcceptedBegi
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination earlyDestination;
-    BaseProfiler::RegisterDestination(earlyDestination);
+    ScopedProfilerDestinationRegistration earlyRegistration(earlyDestination);
     BaseProfiler::SetEnabled(true);
 
     const auto scope = BaseProfiler::BeginScope("In Flight Scope", __FUNCTION__);
 
     RecordingProfilerDestination lateDestination;
-    BaseProfiler::RegisterDestination(lateDestination);
+    ScopedProfilerDestinationRegistration lateRegistration(lateDestination);
 
     BaseProfiler::EndScope(scope);
 
@@ -247,7 +268,7 @@ TEST_F(ProfilerDestinationTest, RegisterThreadLabelsSubsequentScopeEvents)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    BaseProfiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     BaseProfiler::SetEnabled(true);
     BaseProfiler::RegisterThread("Render Thread");
 
@@ -267,8 +288,8 @@ TEST_F(ProfilerDestinationTest, GpuScopeRoutesOnlyToGpuCapableDestinations)
     RecordingProfilerDestination gpuCapable(ProfilerDestinationId::Timeline);
     gpuCapable.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_GPUScopes;
 
-    BaseProfiler::RegisterDestination(cpuOnly);
-    BaseProfiler::RegisterDestination(gpuCapable);
+    ScopedProfilerDestinationRegistration cpuOnlyRegistration(cpuOnly);
+    ScopedProfilerDestinationRegistration gpuCapableRegistration(gpuCapable);
     BaseProfiler::SetEnabled(true);
     BaseProfiler::RegisterThread("RHI Thread");
 
@@ -301,7 +322,7 @@ TEST_F(ProfilerDestinationTest, LateRegisteredTimelineDestinationReceivesLastGpu
 
     RecordingProfilerDestination timeline(ProfilerDestinationId::Timeline);
     timeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
-    BaseProfiler::RegisterDestination(timeline);
+    ScopedProfilerDestinationRegistration timelineRegistration(timeline);
 
     EXPECT_EQ(timeline.gpuContextInitializeCalls, 1);
     EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
@@ -313,7 +334,7 @@ TEST_F(ProfilerDestinationTest, RegisteredTimelineDestinationReceivesGpuContextB
 
     RecordingProfilerDestination timeline(ProfilerDestinationId::Timeline);
     timeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
-    BaseProfiler::RegisterDestination(timeline);
+    ScopedProfilerDestinationRegistration timelineRegistration(timeline);
     BaseProfiler::SetEnabled(true);
 
     int fakeDevice = 0;
@@ -337,7 +358,7 @@ TEST_F(ProfilerDestinationTest, ReplaysGpuContextWhenDestinationBecomesAvailable
     timeline.m_state.enabled = false;
     timeline.m_state.availability = ProfilerAvailability::Disabled;
     timeline.m_state.capabilities = ProfilerCapability_None;
-    BaseProfiler::RegisterDestination(timeline);
+    ScopedProfilerDestinationRegistration timelineRegistration(timeline);
     BaseProfiler::SetEnabled(true);
 
     int fakeDevice = 0;
@@ -384,7 +405,7 @@ TEST_F(ProfilerDestinationTest, ClearingGpuContextOnlyRemovesMatchingNativeDevic
 
     RecordingProfilerDestination timeline(ProfilerDestinationId::Timeline);
     timeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
-    BaseProfiler::RegisterDestination(timeline);
+    ScopedProfilerDestinationRegistration timelineRegistration(timeline);
 
     EXPECT_EQ(timeline.gpuContextInitializeCalls, 1);
     EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
@@ -393,7 +414,7 @@ TEST_F(ProfilerDestinationTest, ClearingGpuContextOnlyRemovesMatchingNativeDevic
 
     RecordingProfilerDestination lateTimeline(ProfilerDestinationId::Timeline);
     lateTimeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
-    BaseProfiler::RegisterDestination(lateTimeline);
+    ScopedProfilerDestinationRegistration lateTimelineRegistration(lateTimeline);
 
     EXPECT_EQ(lateTimeline.gpuContextInitializeCalls, 0);
 }
@@ -403,7 +424,7 @@ TEST_F(ProfilerDestinationTest, ResetForTestingClearsDestinationsAndCounters)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    BaseProfiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     BaseProfiler::SetEnabled(true);
     const auto scope = BaseProfiler::BeginScope("Before Reset", __FUNCTION__);
     BaseProfiler::EndScope(scope);
@@ -420,7 +441,7 @@ TEST_F(ProfilerDestinationTest, DisabledProfilerDoesNotCallDestinations)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    BaseProfiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     BaseProfiler::SetEnabled(false);
 
     const auto scope = BaseProfiler::BeginScope("Disabled Scope", __FUNCTION__);
@@ -525,7 +546,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkRecordsFrameMaintenanceScopeThroughB
     TimelineProfilerSink timeline;
     timeline.SetRecordingEnabled(true);
     ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
-    BaseProfiler::RegisterDestination(timeline);
+    ScopedProfilerDestinationRegistration timelineRegistration(timeline);
     BaseProfiler::SetEnabled(true);
 
     const size_t before = timeline.CountRecordedEventsForTesting("TimelineProfiler::TickFrame", true);
@@ -550,7 +571,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkFlushesRealBaseProfilerScopesAcrossF
     TimelineProfilerSink timeline;
     timeline.SetRecordingEnabled(true);
     ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
-    BaseProfiler::RegisterDestination(timeline);
+    ScopedProfilerDestinationRegistration timelineRegistration(timeline);
     BaseProfiler::SetEnabled(true);
 
     const auto parentScope = BaseProfiler::BeginScope(kParentName, __FUNCTION__);
@@ -1045,8 +1066,8 @@ TEST_F(ProfilerDestinationTest, UnavailableDestinationDoesNotBlockAvailableDesti
 
     UnavailableProfilerDestination unavailable;
     RecordingProfilerDestination available;
-    BaseProfiler::RegisterDestination(unavailable);
-    BaseProfiler::RegisterDestination(available);
+    ScopedProfilerDestinationRegistration unavailableRegistration(unavailable);
+    ScopedProfilerDestinationRegistration availableRegistration(available);
     BaseProfiler::SetEnabled(true);
 
     const auto scope = BaseProfiler::BeginScope("Fallback Scope", __FUNCTION__);

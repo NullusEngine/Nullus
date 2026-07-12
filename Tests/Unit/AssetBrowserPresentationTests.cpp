@@ -106,9 +106,12 @@ std::string ReadSourceText(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
     EXPECT_TRUE(input.is_open()) << "Failed to open source file: " << path.string();
-    return std::string(
+    std::string source {
         std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>());
+        std::istreambuf_iterator<char>()
+    };
+    source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
+    return source;
 }
 
 std::string ExtractFunctionBody(const std::string& source, std::string_view functionNeedle)

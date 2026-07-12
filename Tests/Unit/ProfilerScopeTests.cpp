@@ -73,6 +73,27 @@ protected:
         NLS::Base::Profiling::Profiler::ResetForTesting();
     }
 };
+
+class ScopedProfilerDestinationRegistration final
+{
+public:
+    explicit ScopedProfilerDestinationRegistration(NLS::Base::Profiling::IProfilerDestination& destination)
+        : m_destination(destination)
+    {
+        NLS::Base::Profiling::Profiler::RegisterDestination(m_destination);
+    }
+
+    ~ScopedProfilerDestinationRegistration()
+    {
+        NLS::Base::Profiling::Profiler::UnregisterDestination(m_destination);
+    }
+
+    ScopedProfilerDestinationRegistration(const ScopedProfilerDestinationRegistration&) = delete;
+    ScopedProfilerDestinationRegistration& operator=(const ScopedProfilerDestinationRegistration&) = delete;
+
+private:
+    NLS::Base::Profiling::IProfilerDestination& m_destination;
+};
 }
 
 TEST_F(ProfilerScopeTest, ScopedObjectEndsScopeWhenLeavingBlock)
@@ -80,7 +101,7 @@ TEST_F(ProfilerScopeTest, ScopedObjectEndsScopeWhenLeavingBlock)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(true);
 
     {
@@ -101,7 +122,7 @@ TEST_F(ProfilerScopeTest, DefaultScopeMacroUsesCallingFunctionName)
 
 #if defined(NLS_ENABLE_PROFILING)
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(true);
 
     {
@@ -123,7 +144,7 @@ TEST_F(ProfilerScopeTest, DefaultScopeMacroCanBeUsedTwiceInOneScope)
 
 #if defined(NLS_ENABLE_PROFILING)
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(true);
 
     NLS_PROFILE_SCOPE();
@@ -142,7 +163,7 @@ TEST_F(ProfilerScopeTest, EmptyExplicitNameFallsBackToCallingFunctionName)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(true);
 
     {
@@ -159,7 +180,7 @@ TEST_F(ProfilerScopeTest, NestedScopesTrackDepthPerThread)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(true);
 
     {
@@ -187,7 +208,7 @@ TEST_F(ProfilerScopeTest, ScopesFromMultipleThreadsAreAccepted)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(true);
 
     {
@@ -237,7 +258,7 @@ TEST_F(ProfilerScopeTest, GpuScopedObjectEndsScopeWhenLeavingBlock)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(true);
 
     {
@@ -258,7 +279,7 @@ TEST_F(ProfilerScopeTest, DefaultGpuScopeMacroUsesCallingFunctionName)
 
 #if defined(NLS_ENABLE_PROFILING)
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(true);
 
     {
@@ -279,7 +300,7 @@ TEST_F(ProfilerScopeTest, DisabledGpuScopeDoesNotCallDestination)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
     Profiler::SetEnabled(false);
 
     {

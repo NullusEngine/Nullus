@@ -41,6 +41,7 @@ public:
         const std::filesystem::path& assetPath,
         bool readOnly = false,
         std::span<const SourceAssetRoot> mountedRoots = {});
+    bool RemoveSourceAsset(const std::filesystem::path& assetPath);
 
     const std::vector<SourceAssetRecord>& GetRecords() const;
     const AssetDiagnostics& GetDiagnostics() const;
@@ -66,6 +67,7 @@ private:
         const std::filesystem::directory_entry& entry,
         bool readOnly,
         std::span<const SourceAssetRoot> mountedRoots = {});
+    void RebuildIndexes();
 
     std::vector<SourceAssetRecord> m_records;
     AssetDiagnostics m_diagnostics;

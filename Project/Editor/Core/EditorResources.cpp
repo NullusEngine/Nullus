@@ -401,8 +401,6 @@ void Editor::Core::EditorResources::PreloadStartupResources()
     GetShader("Grid");
     GetShader("Billboard");
     GetShader("DebugLitColor");
-    GetShader("SelectionOutlineMask");
-    GetShader("SelectionOutlineComposite");
 
     GetMesh("Plane");
     GetMesh("Vertical_Plane");

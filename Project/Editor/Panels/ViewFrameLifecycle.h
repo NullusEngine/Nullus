@@ -69,10 +69,13 @@ namespace NLS::Editor::Panels
         const bool requiresRetiredFrameConsumption,
         const bool requiresImmediateReadback,
         const bool resizedViewThisFrame = false,
-        const bool requiresSynchronizedPresentation = false)
+        const bool requiresSynchronizedPresentation = false,
+        const bool hadInFlightFrameBeforeRender = true)
     {
         return requiresRetiredFrameConsumption &&
-            (requiresImmediateReadback || resizedViewThisFrame || requiresSynchronizedPresentation);
+            (requiresImmediateReadback ||
+                requiresSynchronizedPresentation ||
+                (resizedViewThisFrame && hadInFlightFrameBeforeRender));
     }
 
     inline bool DidThreadedFramePublishAdvance(

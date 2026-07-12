@@ -352,6 +352,21 @@ int PreimportAssetPriority(const std::string& assetPath)
     }
 }
 
+void SortPreimportableAssetPaths(std::vector<std::string>& assets)
+{
+    std::sort(
+        assets.begin(),
+        assets.end(),
+        [](const std::string& lhs, const std::string& rhs)
+        {
+            const auto lhsPriority = PreimportAssetPriority(lhs);
+            const auto rhsPriority = PreimportAssetPriority(rhs);
+            if (lhsPriority != rhsPriority)
+                return lhsPriority < rhsPriority;
+            return lhs < rhs;
+        });
+}
+
 std::vector<std::string> CollectPreimportableAssets(AssetDatabaseFacade& database)
 {
     std::vector<std::string> assets = database.FindAssets("type:model-scene", {});
@@ -372,17 +387,7 @@ std::vector<std::string> CollectPreimportableAssets(AssetDatabaseFacade& databas
                 return database.IsReadOnlyAssetPath(assetPath);
             }),
         assets.end());
-    std::sort(
-        assets.begin(),
-        assets.end(),
-        [](const std::string& lhs, const std::string& rhs)
-        {
-            const auto lhsPriority = PreimportAssetPriority(lhs);
-            const auto rhsPriority = PreimportAssetPriority(rhs);
-            if (lhsPriority != rhsPriority)
-                return lhsPriority < rhsPriority;
-            return lhs < rhs;
-        });
+    SortPreimportableAssetPaths(assets);
     assets.erase(std::unique(assets.begin(), assets.end()), assets.end());
     return assets;
 }
@@ -588,9 +593,16 @@ AssetPreimportPlan AssetPreimportScheduler::BuildPlan(
     const AssetPreimportRequest& request) const
 {
     AssetPreimportPlan plan;
-    for (const auto& assetPath : CollectPreimportableAssets(database))
+    auto assets = request.candidateAssetPaths.empty()
+        ? CollectPreimportableAssets(database)
+        : request.candidateAssetPaths;
+    SortPreimportableAssetPaths(assets);
+    assets.erase(std::unique(assets.begin(), assets.end()), assets.end());
+    for (const auto& assetPath : assets)
     {
         if (!IsPreimportableAsset(assetPath))
+            continue;
+        if (database.IsReadOnlyAssetPath(assetPath))
             continue;
 
         if (request.reason == AssetPreimportReason::FileWatcherChanged &&
@@ -668,6 +680,10 @@ bool AssetPreimportScheduler::RunAlreadyPlanned(
     }
 
     const auto batchTotalAssets = std::max<size_t>(pendingAssetPaths.size(), 1u);
+    const bool batchArtifactDatabaseFlush = pendingAssetPaths.size() > 1u;
+    if (batchArtifactDatabaseFlush)
+        database.BeginArtifactDatabaseFlushBatch();
+
     bool allSucceeded = true;
     for (const auto& assetPath : pendingAssetPaths)
     {
@@ -677,6 +693,10 @@ bool AssetPreimportScheduler::RunAlreadyPlanned(
         if (!imported)
             allSucceeded = false;
     }
+
+    if (batchArtifactDatabaseFlush && !database.EndArtifactDatabaseFlushBatch())
+        allSucceeded = false;
+
     return allSucceeded;
 }
 

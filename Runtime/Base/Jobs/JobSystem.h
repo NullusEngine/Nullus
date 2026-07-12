@@ -17,6 +17,7 @@ namespace NLS::Base::Jobs
     NLS_BASE_API void ShutdownJobSystem(JobSystemShutdownMode mode = JobSystemShutdownMode::DrainAcceptedWork);
     NLS_BASE_API bool IsJobSystemInitialized();
     NLS_BASE_API uint32_t GetJobWorkerCount();
+    NLS_BASE_API uint32_t GetBackgroundJobWorkerCount();
 
     NLS_BASE_API bool ExecuteOneJobQueueJob();
 

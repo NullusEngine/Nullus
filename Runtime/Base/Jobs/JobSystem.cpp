@@ -295,13 +295,14 @@ bool TryInitializeJobSystem(const JobSystemConfig& config)
 
     g_diagnosticsEnabled = config.enableDiagnostics;
     const uint32_t resolvedWorkerCount = ResolveWorkerCount(config.workerCount);
+    const uint32_t resolvedBackgroundWorkerCount = ResolveWorkerCount(config.backgroundWorkerCount);
     auto jobQueue = std::make_shared<JobQueue>();
     if (!jobQueue->Start(resolvedWorkerCount))
     {
         g_diagnosticsEnabled = false;
         return false;
     }
-    if (!Internal::StartBackgroundJobQueue(config.backgroundWorkerCount))
+    if (!Internal::StartBackgroundJobQueue(resolvedBackgroundWorkerCount))
     {
         jobQueue->Shutdown(JobSystemShutdownMode::Immediate);
         g_diagnosticsEnabled = false;
@@ -385,6 +386,16 @@ uint32_t GetJobWorkerCount()
 {
     std::lock_guard lock(g_jobSystemMutex);
     return g_workerCount;
+}
+
+uint32_t GetBackgroundJobWorkerCount()
+{
+    {
+        std::lock_guard lock(g_jobSystemMutex);
+        if (!g_initialized || g_shutdownInProgress)
+            return 0u;
+    }
+    return Internal::GetBackgroundJobWorkerCount();
 }
 
 bool ExecuteOneJobQueueJob()

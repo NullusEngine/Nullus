@@ -19,7 +19,8 @@ enum class PerformanceStageDomain : uint8_t
 {
     Unknown = 0u,
     Prefab,
-    Thumbnail
+    Thumbnail,
+    AssetImport
 };
 
 enum class PerformanceStageThread : uint8_t

@@ -26,11 +26,24 @@ namespace NLS::Render::Tooling
 		bool manualCaptureActive,
 		bool queuedCaptureActive,
 		bool waitingForTriggeredCapture);
-	NLS_RENDER_API uint32_t ResolveRenderDocQueuedCaptureInitialCountdown();
+	NLS_RENDER_API bool ShouldForceRenderDocCaptureFrameRender(
+		bool available,
+		bool captureQueued,
+		bool manualCaptureActive,
+		bool queuedCaptureActive,
+		bool waitingForTriggeredCapture,
+		bool presentationAlreadyCovered,
+		bool coveredPresentationFrameCompleted,
+		uint32_t presentCountdown);
+	NLS_RENDER_API uint32_t ResolveRenderDocQueuedCaptureInitialCountdown(
+		bool nextExternalOutput = false);
 	NLS_RENDER_API RenderDocQueuedCaptureAction ResolveRenderDocQueuedCapturePreFrameAction(
 		bool available,
 		bool captureQueued,
 		bool frameWillPresent,
+		bool outputMayBePresentedLater,
+		bool presentationAlreadyCovered,
+		bool coveredPresentationFrameCompleted,
 		uint32_t presentCountdown);
 
 	class NLS_RENDER_API RenderDocCaptureController final
@@ -40,10 +53,12 @@ namespace NLS::Render::Tooling
 		~RenderDocCaptureController();
 
 		bool IsAvailable() const;
+		bool ShouldForceCaptureFrameRender() const;
 		bool QueueCapture(const std::string& label = {});
+		bool QueueCaptureForNextExternalOutput(const std::string& label = {});
 		bool StartCapture();
 		bool EndCapture();
-		void OnPreFrame(bool frameWillPresent = true);
+		void OnPreFrame(bool frameWillPresent = true, bool outputMayBePresentedLater = false);
 		void OnPrePresent();
 		void OnPostPresent();
 		void OnPostFrame(bool frameWillPresent, bool outputMayBePresentedLater);
@@ -62,6 +77,8 @@ namespace NLS::Render::Tooling
 		bool IsEnabled() const;
 
 	private:
+		bool QueueCapture(const std::string& label, uint32_t initialCountdown);
+
 		struct Impl;
 		std::unique_ptr<Impl> m_impl;
 	};

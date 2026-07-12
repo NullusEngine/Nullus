@@ -52,8 +52,69 @@ const Maths::Vector4 kSelectedOutlineColor{ 1.0f, 1.0f, 0.0f, 1.0f };
 constexpr float kDefaultOutlineWidth = 2.5f;
 constexpr float kSelectedOutlineWidth = 5.0f;
 
+uint32_t Editor::Rendering::SubmitPrefabDragProxyDebugPrimitives(
+    NLS::Render::Debug::DebugDrawService& debugDrawService,
+    const Editor::Rendering::DebugSceneRenderer::PrefabDragProxyDescriptor& descriptor)
+{
+    debugDrawService.SetEnabled(true);
+    debugDrawService.SetCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::General, true);
+
+    const float size = std::max(0.1f, descriptor.size);
+    const float halfSize = size * 0.5f;
+    uint32_t submitted = 0u;
+
+    NLS::Render::Debug::DebugDrawSubmitOptions boxOptions;
+    boxOptions.category = NLS::Render::Debug::DebugDrawCategory::General;
+    boxOptions.style.color = { 0.1f, 0.85f, 1.0f };
+    boxOptions.style.lineWidth = 2.0f;
+    boxOptions.style.depthMode = NLS::Render::Debug::DebugDrawDepthMode::AlwaysOnTop;
+
+    if (NLS::Render::Debug::SubmitBox(
+            debugDrawService,
+            descriptor.position,
+            Maths::Quaternion::Identity,
+            { size, size, size },
+            boxOptions))
+    {
+        ++submitted;
+    }
+
+    NLS::Render::Debug::DebugDrawSubmitOptions axisOptions = boxOptions;
+    axisOptions.style.lineWidth = 1.5f;
+    const auto& center = descriptor.position;
+    if (debugDrawService.SubmitLine(
+            center + Maths::Vector3 { -halfSize, 0.0f, 0.0f },
+            center + Maths::Vector3 { halfSize, 0.0f, 0.0f },
+            axisOptions))
+    {
+        ++submitted;
+    }
+    if (debugDrawService.SubmitLine(
+            center + Maths::Vector3 { 0.0f, -halfSize, 0.0f },
+            center + Maths::Vector3 { 0.0f, halfSize, 0.0f },
+            axisOptions))
+    {
+        ++submitted;
+    }
+    if (debugDrawService.SubmitLine(
+            center + Maths::Vector3 { 0.0f, 0.0f, -halfSize },
+            center + Maths::Vector3 { 0.0f, 0.0f, halfSize },
+            axisOptions))
+    {
+        ++submitted;
+    }
+
+    return submitted;
+}
+
 namespace
 {
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions MakeEditorDeferredRendererConstructionOptions()
+    {
+        NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+        return options;
+    }
+
     bool ShouldLogEditorHelperDiagnostics(const NLS::Render::Context::Driver& driver)
     {
         return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
@@ -557,10 +618,7 @@ public:
 	DebugGameObjectRenderPass(Render::Core::CompositeRenderer& p_renderer)
         : Render::Core::ARenderPass(p_renderer)
         , m_debugModelRenderer(p_renderer)
-        , m_outlineRenderer(p_renderer, m_debugModelRenderer)
-        , m_selectionOutlineMaskRenderer(p_renderer)
 	{
-		
 	}
 
     const std::vector<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInputs() const
@@ -583,12 +641,14 @@ public:
 
     void CommitPendingSelectionOutlineMaskCache(uint64_t publishedFrameId)
     {
-        m_selectionOutlineMaskRenderer.CommitPendingCachedMask(publishedFrameId);
+        if (m_selectionOutlineMaskRenderer != nullptr)
+            m_selectionOutlineMaskRenderer->CommitPendingCachedMask(publishedFrameId);
     }
 
     void DiscardPendingSelectionOutlineMaskCache()
     {
-        m_selectionOutlineMaskRenderer.DiscardPendingCachedMask();
+        if (m_selectionOutlineMaskRenderer != nullptr)
+            m_selectionOutlineMaskRenderer->DiscardPendingCachedMask();
     }
 
     bool ManagesOwnRenderPass() const override { return true; }
@@ -600,13 +660,27 @@ protected:
         m_preparedThreadedPassMetadata.clear();
     }
 
-	virtual void Draw(Render::Data::PipelineState p_pso) override
-	{
-		auto& debugSceneDescriptor = m_renderer.GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>();
-        auto* selectedGameObject = debugSceneDescriptor.selectedGameObject;
-
-		if (selectedGameObject == nullptr)
+    virtual void Draw(Render::Data::PipelineState p_pso) override
+    {
+        if (!m_renderer.HasDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>())
             return;
+
+        auto& debugSceneDescriptor = m_renderer.GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>();
+        auto* selectedGameObject = debugSceneDescriptor.selectedGameObject;
+        const auto* prefabDragProxy = debugSceneDescriptor.prefabDragProxy.has_value()
+            ? &*debugSceneDescriptor.prefabDragProxy
+            : nullptr;
+
+        if (selectedGameObject == nullptr)
+        {
+            if (prefabDragProxy != nullptr)
+            {
+                Editor::Rendering::SubmitPrefabDragProxyDebugPrimitives(
+                    GetDebugDrawService(),
+                    *prefabDragProxy);
+            }
+            return;
+        }
 
         const bool usesThreadedRendering =
             NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver());
@@ -625,6 +699,12 @@ protected:
             const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
             const auto& debugDrawItems = PrepareDebugGameObjectDebugDrawItems(*selectedGameObject, debugSettings);
             ApplyDebugDrawSettings(debugSettings);
+            if (prefabDragProxy != nullptr)
+            {
+                Editor::Rendering::SubmitPrefabDragProxyDebugPrimitives(
+                    GetDebugDrawService(),
+                    *prefabDragProxy);
+            }
             if (ShouldSubmitDebugGameObjectElements(debugSettings))
             {
                 NLS_PROFILE_NAMED_SCOPE("DebugGameObject::DrawDebugElements");
@@ -643,7 +723,7 @@ protected:
                 return;
             }
 
-            if (!m_outlineRenderer.PrepareOutlineDrawItems(debugDrawItems))
+            if (!GetOutlineRenderer().PrepareOutlineDrawItems(debugDrawItems))
                 return;
 
             const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
@@ -656,10 +736,10 @@ protected:
             if (!startedRenderPass)
                 return;
 
-            m_outlineRenderer.DrawPreparedOutline(kSelectedOutlineColor, kSelectedOutlineWidth);
+            GetOutlineRenderer().DrawPreparedOutline(kSelectedOutlineColor, kSelectedOutlineWidth);
             m_renderer.EndOutputRenderPass(startedRenderPass);
+			}
 		}
-	}
 
     static bool ShouldSubmitDebugGameObjectElements(
         const Editor::Settings::EditorDebugDrawSettingsObject& debugSettings)
@@ -955,6 +1035,20 @@ private:
         return *debugDrawService;
     }
 
+    Editor::Rendering::OutlineRenderer& GetOutlineRenderer()
+    {
+        if (m_outlineRenderer == nullptr)
+            m_outlineRenderer = std::make_unique<Editor::Rendering::OutlineRenderer>(m_renderer, m_debugModelRenderer);
+        return *m_outlineRenderer;
+    }
+
+    Editor::Rendering::SelectionOutlineMaskRenderer& GetSelectionOutlineMaskRenderer()
+    {
+        if (m_selectionOutlineMaskRenderer == nullptr)
+            m_selectionOutlineMaskRenderer = std::make_unique<Editor::Rendering::SelectionOutlineMaskRenderer>(m_renderer);
+        return *m_selectionOutlineMaskRenderer;
+    }
+
     void SubmitLine(
         const Maths::Vector3& start,
         const Maths::Vector3& end,
@@ -1059,7 +1153,7 @@ private:
             return missingDepthOutput;
         }
 
-        auto maskOutput = m_selectionOutlineMaskRenderer.BuildPreparedOutput(
+        auto maskOutput = GetSelectionOutlineMaskRenderer().BuildPreparedOutput(
             debugDrawItems,
             kDefaultOutlineColor,
             kSelectedOutlineColor,
@@ -1116,7 +1210,7 @@ private:
         passInput.usesDepthStencilAttachment = true;
         passInput.writesDepthStencilAttachment = true;
 
-        m_outlineRenderer.CaptureOutlineDrawCommands(
+        GetOutlineRenderer().CaptureOutlineDrawCommands(
             debugDrawItems,
             kSelectedOutlineColor,
             kSelectedOutlineWidth,
@@ -1138,15 +1232,15 @@ private:
 
 private:
     Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
-    Editor::Rendering::OutlineRenderer m_outlineRenderer;
-    Editor::Rendering::SelectionOutlineMaskRenderer m_selectionOutlineMaskRenderer;
+    std::unique_ptr<Editor::Rendering::OutlineRenderer> m_outlineRenderer;
+    std::unique_ptr<Editor::Rendering::SelectionOutlineMaskRenderer> m_selectionOutlineMaskRenderer;
     Editor::Rendering::DebugGameObjectDebugDrawItems m_debugDrawScratchItems;
     std::vector<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInputs;
     std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> m_preparedThreadedPassMetadata;
 };
 
 Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::Driver& p_driver) :
-	Engine::Rendering::DeferredSceneRenderer(p_driver)
+		Engine::Rendering::DeferredSceneRenderer(p_driver, MakeEditorDeferredRendererConstructionOptions())
 {
     SetDebugDrawService(std::make_unique<NLS::Render::Debug::DebugDrawService>());
 
@@ -1293,6 +1387,23 @@ uint64_t Editor::Rendering::DebugSceneRenderer::GetCullReasonDebugSnapshotMaxEnt
     return m_cullingOverlayOptions.enabled ? m_cullingOverlayOptions.maxItems : 0u;
 }
 
+std::vector<const Engine::GameObject*> Editor::Rendering::DebugSceneRenderer::GetEditorInspectionRoots() const
+{
+    std::vector<const Engine::GameObject*> roots;
+    if (!HasDescriptor<DebugSceneDescriptor>())
+        return roots;
+
+    const auto& descriptor = GetDescriptor<DebugSceneDescriptor>();
+    if (descriptor.selectedGameObject != nullptr)
+        roots.push_back(descriptor.selectedGameObject);
+    if (descriptor.highlightedGameObject != nullptr &&
+        descriptor.highlightedGameObject != descriptor.selectedGameObject)
+    {
+        roots.push_back(descriptor.highlightedGameObject);
+    }
+    return roots;
+}
+
 bool Editor::Rendering::ShouldPublishDebugSceneCullReasonSnapshots(
     const DebugSceneRenderer::CullingOverlayOptions& options)
 {
@@ -1374,6 +1485,11 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
     const bool hasSkyboxTexture =
         HasDescriptor<DeferredSceneDescriptor>() &&
         GetDescriptor<DeferredSceneDescriptor>().hasSkyboxTexture;
+    const bool includeDeferredSceneExecution =
+        snapshot.visibleOpaqueDrawCount > 0u ||
+        snapshot.visibleDecalDrawCount > 0u ||
+        snapshot.visibleTransparentDrawCount > 0u ||
+        snapshot.visibleSkyboxDrawCount > 0u;
 
     return BuildDeferredPreparedRenderSceneBuilder(
         snapshot,
@@ -1383,5 +1499,6 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
         std::move(preferredReadbackTexture),
         preferredReadbackTextureGeneration,
         additionalRenderTargetUseCount,
-        GetThreadedHZBPostSubmitReadbackForPreparedBuilder());
+        GetThreadedHZBPostSubmitReadbackForPreparedBuilder(),
+        includeDeferredSceneExecution);
 }

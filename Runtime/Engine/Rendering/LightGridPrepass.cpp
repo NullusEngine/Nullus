@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <string_view>
 
@@ -27,6 +28,7 @@ namespace
 {
     constexpr uint32_t kLightWordStride = 16u;
     constexpr float kDefaultAmbientFloor = 0.05f;
+    constexpr uint64_t kMaxLightGridBufferElementCount = 16ull * 1024ull * 1024ull;
 
     template<typename TValue>
     void AppendValueBytes(std::vector<uint8_t>& bytes, const TValue& value)
@@ -289,7 +291,12 @@ namespace NLS::Engine::Rendering
     {
         NLS_PROFILE_SCOPE();
         m_computeDispatchInputs.clear();
-        const auto preparedCacheKey = BuildPreparedResourceCacheKey(frameDescriptor, preparedFrameInputs);
+        auto& frameData = m_frameScratch;
+        if (!BuildFrameData(frameDescriptor, preparedFrameInputs, preparedFrameInputs.hasSkyboxTexture, frameData))
+        {
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: frame data could not be built.");
+            return false;
+        }
 
         auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver);
         if (device == nullptr)
@@ -310,13 +317,7 @@ namespace NLS::Engine::Rendering
             return false;
         }
 
-        auto& frameData = m_frameScratch;
-        if (!BuildFrameData(frameDescriptor, preparedFrameInputs, preparedFrameInputs.hasSkyboxTexture, frameData))
-        {
-            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: frame data could not be built.");
-            return false;
-        }
-
+        const auto preparedCacheKey = BuildPreparedResourceCacheKey(frameDescriptor, preparedFrameInputs);
         if (preparedCacheKey.has_value() && TryReusePreparedResources(preparedCacheKey.value(), frameData.forwardLightData))
             return true;
 
@@ -630,10 +631,8 @@ namespace NLS::Engine::Rendering
         if (!EnsureGraphicsBindingLayout())
             return false;
 
-        PreparedFrameInputs fallbackInputs;
-        fallbackInputs.hasSkyboxTexture = hasSkyboxTexture;
         PackedFrameData frameData;
-        if (!BuildFrameData(frameDescriptor, fallbackInputs, hasSkyboxTexture, frameData))
+        if (!BuildFallbackFrameData(frameDescriptor, hasSkyboxTexture, frameData))
             return false;
 
         NLS::Render::RHI::RHIBufferDesc constantsDesc;
@@ -768,11 +767,29 @@ namespace NLS::Engine::Rendering
             return {};
         }
 
-        if (!lightGridPrepass->Prepare(preparedComputeRequest.frameDescriptor, preparedFrameInputs.value()))
+        try
+        {
+            if (!lightGridPrepass->Prepare(preparedComputeRequest.frameDescriptor, preparedFrameInputs.value()))
+            {
+                LogLightGridHotPathFailure(
+                    lightGridPrepass->m_driver,
+                    "LightGridPrepass::BuildPreparedComputeDispatchSource failed: LightGridPrepass::Prepare returned false.");
+                return {};
+            }
+        }
+        catch (const std::exception& exception)
         {
             LogLightGridHotPathFailure(
                 lightGridPrepass->m_driver,
-                "LightGridPrepass::BuildPreparedComputeDispatchSource failed: LightGridPrepass::Prepare returned false.");
+                std::string("LightGridPrepass::BuildPreparedComputeDispatchSource failed: exception during prepare: ") +
+                    exception.what());
+            return {};
+        }
+        catch (...)
+        {
+            LogLightGridHotPathFailure(
+                lightGridPrepass->m_driver,
+                "LightGridPrepass::BuildPreparedComputeDispatchSource failed: unknown exception during prepare.");
             return {};
         }
         return lightGridPrepass->GetPreparedComputeDispatchSource();
@@ -980,6 +997,37 @@ namespace NLS::Engine::Rendering
             frameDescriptor.camera->GetNear(),
             frameDescriptor.camera->GetFar() + 10.0f,
             gridDimensions.z);
+        uint64_t clusterCount = 0u;
+        uint64_t culledLightLinksCount = 0u;
+        uint64_t numCulledLightsGridCount = 0u;
+        uint64_t culledLightDataGridCount = 0u;
+        if (!TryCalculateLightGridBufferElementCounts(
+            m_settings,
+            gridDimensions,
+            NLS::Engine::Rendering::GetLightLinkStride(),
+            NLS::Engine::Rendering::GetNumCulledLightsGridStride(),
+            kMaxLightGridBufferElementCount,
+            clusterCount,
+            culledLightLinksCount,
+            numCulledLightsGridCount,
+            culledLightDataGridCount))
+        {
+            LogLightGridHotPathFailure(
+                m_driver,
+                "LightGridPrepass::BuildFrameData failed: light grid buffer element counts exceeded startup safety budget renderWidth=" +
+                    std::to_string(frameDescriptor.renderWidth) +
+                    " renderHeight=" +
+                    std::to_string(frameDescriptor.renderHeight) +
+                    " grid=(" +
+                    std::to_string(gridDimensions.x) +
+                    "," +
+                    std::to_string(gridDimensions.y) +
+                    "," +
+                    std::to_string(gridDimensions.z) +
+                    ") maxLightsPerCluster=" +
+                    std::to_string(m_settings.maxLightsPerCluster));
+            return false;
+        }
 
         outFrameData.forwardLightData.gridParams = {
             static_cast<float>(gridDimensions.x),
@@ -1011,13 +1059,78 @@ namespace NLS::Engine::Rendering
         for (const auto& light : preparedFrameInputs.lights)
             PackCapturedLight(light, outFrameData.forwardLocalLightData);
 
-        const uint32_t clusterCount = gridDimensions.x * gridDimensions.y * gridDimensions.z;
-        outFrameData.startOffsetGrid.resize(clusterCount);
-        outFrameData.culledLightLinks.resize(clusterCount * m_settings.maxLightsPerCluster * NLS::Engine::Rendering::GetLightLinkStride());
+        outFrameData.startOffsetGrid.resize(static_cast<size_t>(clusterCount));
+        outFrameData.culledLightLinks.resize(static_cast<size_t>(culledLightLinksCount));
         outFrameData.linkCounter.resize(1u);
         outFrameData.compactCounter.resize(1u);
-        outFrameData.numCulledLightsGrid.resize(clusterCount * NLS::Engine::Rendering::GetNumCulledLightsGridStride());
-        outFrameData.culledLightDataGrid.resize(clusterCount * m_settings.maxLightsPerCluster);
+        outFrameData.numCulledLightsGrid.resize(static_cast<size_t>(numCulledLightsGridCount));
+        outFrameData.culledLightDataGrid.resize(static_cast<size_t>(culledLightDataGridCount));
+        return true;
+    }
+
+    bool LightGridPrepass::BuildFallbackFrameData(
+        const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+        const bool hasSkyboxTexture,
+        PackedFrameData& outFrameData) const
+    {
+        if (frameDescriptor.camera == nullptr)
+        {
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::BuildFallbackFrameData failed: frame descriptor camera is null.");
+            return false;
+        }
+
+        outFrameData = {};
+        outFrameData.forwardLightData.viewMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetViewMatrix());
+        outFrameData.forwardLightData.projectionMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetProjectionMatrix());
+        const auto viewProjection = frameDescriptor.camera->GetProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
+        outFrameData.forwardLightData.inverseViewProjection = NLS::Maths::Matrix4::Transpose(NLS::Maths::Matrix4::Inverse(viewProjection));
+        outFrameData.forwardLightData.clipToView = NLS::Maths::Matrix4::Transpose(
+            NLS::Maths::Matrix4::Inverse(frameDescriptor.camera->GetProjectionMatrix()));
+        outFrameData.forwardLightData.cameraWorldPositionNearPlane = {
+            frameDescriptor.camera->GetPosition().x,
+            frameDescriptor.camera->GetPosition().y,
+            frameDescriptor.camera->GetPosition().z,
+            frameDescriptor.camera->GetNear()
+        };
+        outFrameData.forwardLightData.renderSizeFarPlane = {
+            static_cast<float>(frameDescriptor.renderWidth),
+            static_cast<float>(frameDescriptor.renderHeight),
+            1.0f / static_cast<float>(frameDescriptor.renderWidth == 0u ? 1u : frameDescriptor.renderWidth),
+            frameDescriptor.camera->GetFar()
+        };
+        const auto zParams = CalculateLightGridZParams(
+            frameDescriptor.camera->GetNear(),
+            frameDescriptor.camera->GetFar() + 10.0f,
+            1u);
+
+        outFrameData.forwardLightData.gridParams = {
+            1.0f,
+            1.0f,
+            1.0f,
+            static_cast<float>(m_settings.maxLightsPerCluster)
+        };
+        outFrameData.forwardLightData.lightingParams = {
+            0.0f,
+            0.15f,
+            kDefaultAmbientFloor,
+            hasSkyboxTexture ? 1.0f : 0.0f
+        };
+        outFrameData.forwardLightData.zParams = {
+            zParams.x,
+            zParams.y,
+            zParams.z,
+            m_settings.linkedListCulling ? 1.0f : 0.0f
+        };
+        outFrameData.forwardLightData.pixelParams = {
+            static_cast<float>(m_settings.lightGridPixelSize),
+            1.0f / static_cast<float>(frameDescriptor.renderHeight == 0u ? 1u : frameDescriptor.renderHeight),
+            0.0f,
+            0.0f
+        };
+
+        outFrameData.forwardLocalLightData.assign(1u, 0u);
+        outFrameData.numCulledLightsGrid.assign(NLS::Engine::Rendering::GetNumCulledLightsGridStride(), 0u);
+        outFrameData.culledLightDataGrid.assign(1u, 0u);
         return true;
     }
 }

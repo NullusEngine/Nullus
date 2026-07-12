@@ -375,6 +375,42 @@ TEST(AssetPrefabPipelineTests, PrefabArtifactTracksBaseChainResolvedAssetsAndIns
         nullptr);
 }
 
+TEST(AssetPrefabPipelineTests, ValidationFingerprintIgnoresResolvedArtifactPath)
+{
+    NLS::Engine::Assets::PrefabArtifact artifact;
+    artifact.graph.format = "Nullus.ObjectGraph.Prefab";
+    artifact.graph.version = 1;
+    artifact.graph.documentId = NLS::Guid::NewDeterministic("ValidationFingerprintPathContract");
+    artifact.graph.root = NLS::Engine::Serialize::ObjectId(
+        NLS::Guid::NewDeterministic("ValidationFingerprintPathContract.Root"));
+
+    const auto materialId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("51515151-5151-4151-8151-515151515151"));
+    artifact.resolvedAssets.push_back({
+        materialId,
+        "Material",
+        "material:Hero",
+        "Library/Artifacts/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    });
+
+    auto differentPath = artifact;
+    differentPath.resolvedAssets.front().artifactPath =
+        "Library/Artifacts/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    auto differentSubAsset = artifact;
+    differentSubAsset.resolvedAssets.front().subAssetKey = "material:Villain";
+
+    EXPECT_EQ(
+        NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(artifact),
+        NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(differentPath));
+    EXPECT_NE(
+        NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(artifact),
+        NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(differentSubAsset));
+    EXPECT_NE(
+        NLS::Engine::Assets::BuildPrefabRuntimeResolvedGraphFingerprint(artifact),
+        NLS::Engine::Assets::BuildPrefabRuntimeResolvedGraphFingerprint(differentPath));
+}
+
 TEST(AssetPrefabPipelineTests, PrefabArtifactValidationUsesObjectGraphDiagnostics)
 {
     NLS::Engine::Assets::PrefabArtifact artifact;
@@ -1048,7 +1084,7 @@ TEST(AssetPrefabPipelineTests, InstantiatesPrefabArtifactWithStableSourceToInsta
     }
 }
 
-TEST(AssetPrefabPipelineTests, RepeatedPrefabInstantiationKeepsHotPathIndexedAndInstancesIndependent)
+TEST(AssetPrefabPipelineTests, RepeatedPrefabInstantiationKeepsHotPathCompiledAndInstancesIndependent)
 {
     NLS::Engine::GameObject root("Crate", "Prop");
     root.AddComponent<NLS::Engine::Components::LightComponent>()->SetIntensity(2.0f);
@@ -1106,6 +1142,14 @@ TEST(AssetPrefabPipelineTests, RepeatedPrefabInstantiationKeepsHotPathIndexedAnd
     }
 
     const auto snapshot = stats.Snapshot();
+    const auto* preparePlan = FindPrefabStage(snapshot, "PrepareInstantiatePlan");
+    ASSERT_NE(preparePlan, nullptr);
+    EXPECT_EQ(preparePlan->callCount, 2u);
+    ASSERT_TRUE(preparePlan->counters.contains("instantiatePlanBuildCount"));
+    ASSERT_TRUE(preparePlan->counters.contains("instantiatePlanCacheHitCount"));
+    EXPECT_EQ(preparePlan->counters.at("instantiatePlanBuildCount"), 1u);
+    EXPECT_EQ(preparePlan->counters.at("instantiatePlanCacheHitCount"), 1u);
+
     const auto* createComponents = FindPrefabStage(snapshot, "CreateComponents");
     ASSERT_NE(createComponents, nullptr);
     EXPECT_EQ(createComponents->callCount, 2u);
@@ -1117,10 +1161,8 @@ TEST(AssetPrefabPipelineTests, RepeatedPrefabInstantiationKeepsHotPathIndexedAnd
     EXPECT_EQ(deserialize->callCount, 2u);
     ASSERT_TRUE(deserialize->counters.contains("indexedRecordLookupCount"));
     ASSERT_TRUE(deserialize->counters.contains("linearRecordLookupCount"));
-    EXPECT_GE(
-        createComponents->counters.at("indexedRecordLookupCount") +
-            deserialize->counters.at("indexedRecordLookupCount"),
-        first.sourceToInstance.size() + second.sourceToInstance.size());
+    EXPECT_EQ(createComponents->counters.at("indexedRecordLookupCount"), 0u);
+    EXPECT_EQ(deserialize->counters.at("indexedRecordLookupCount"), 0u);
     EXPECT_EQ(createComponents->counters.at("linearRecordLookupCount"), 0u);
     EXPECT_EQ(deserialize->counters.at("linearRecordLookupCount"), 0u);
 }
@@ -1588,15 +1630,48 @@ TEST(AssetPrefabPipelineTests, BuildsGeneratedModelPrefabHierarchyWithRendererAs
         "material-hash"
     });
 
-    auto result = NLS::Engine::Assets::BuildGeneratedModelPrefab(
-        scene,
-        NLS::Render::Assets::GenerateSceneSubAssets(scene),
-        manifest);
+    NLS::Base::Profiling::PerformanceStageStats buildStats;
+    NLS::Engine::Assets::PrefabImportResult result;
+    {
+        NLS::Base::Profiling::PerformanceStageStatsCapture capture(buildStats);
+        result = NLS::Engine::Assets::BuildGeneratedModelPrefab(
+            scene,
+            NLS::Render::Assets::GenerateSceneSubAssets(scene),
+            manifest);
+    }
 
     ASSERT_FALSE(result.diagnostics.HasErrors());
+    const auto buildSnapshot = buildStats.Snapshot();
+    const auto* buildStage = FindPrefabStage(buildSnapshot, "BuildGeneratedModelPrefab");
+    ASSERT_NE(buildStage, nullptr);
+    ASSERT_TRUE(buildStage->counters.contains("nodeCount"));
+    EXPECT_EQ(buildStage->counters.at("nodeCount"), 2u);
+    ASSERT_TRUE(buildStage->counters.contains("meshIndexCount"));
+    EXPECT_EQ(buildStage->counters.at("meshIndexCount"), 1u);
+    ASSERT_TRUE(buildStage->counters.contains("directMeshChildParentIndexCount"));
+    EXPECT_EQ(buildStage->counters.at("directMeshChildParentIndexCount"), 1u);
+    const auto* buildValidationStage = FindPrefabStage(buildSnapshot, "ValidatePrefabArtifact");
+    ASSERT_NE(buildValidationStage, nullptr);
+    ASSERT_TRUE(buildValidationStage->counters.contains("resolvedAssetIndexKeyCount"));
+    EXPECT_GT(buildValidationStage->counters.at("resolvedAssetIndexKeyCount"), 0u);
+    ASSERT_TRUE(buildValidationStage->counters.contains("resolvedAssetReferenceLookupCount"));
+    EXPECT_GT(buildValidationStage->counters.at("resolvedAssetReferenceLookupCount"), 0u);
     EXPECT_EQ(result.artifact.graph.format, "Nullus.ObjectGraph.Prefab");
     EXPECT_TRUE(result.artifact.assetId.IsValid());
     EXPECT_FALSE(result.artifact.graph.Validate().HasErrors());
+    const auto validationFingerprint =
+        NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(result.artifact);
+    NLS::Base::Profiling::PerformanceStageStats validationStats;
+    {
+        NLS::Base::Profiling::PerformanceStageStatsCapture capture(validationStats);
+        EXPECT_FALSE(result.artifact.Validate(validationFingerprint).HasErrors());
+    }
+    const auto validationSnapshot = validationStats.Snapshot();
+    const auto* validationStage = FindPrefabStage(validationSnapshot, "ValidatePrefabArtifact");
+    ASSERT_NE(validationStage, nullptr);
+    ASSERT_TRUE(validationStage->counters.contains("validationCacheHitCount"));
+    EXPECT_EQ(validationStage->counters.at("validationCacheHitCount"), 1u)
+        << "Generated prefab builders should cache the artifact-validation fingerprint used by import proof attachment.";
 
     const auto* hero = FindRecord(result.artifact.graph, "Hero", "NLS::Engine::GameObject");
     ASSERT_NE(hero, nullptr);
@@ -2001,6 +2076,50 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheHitSkipsPrefabGra
     }
     ASSERT_EQ(cacheFileCount, 1u);
     ASSERT_FALSE(cachePath.empty());
+    std::ifstream cacheInput(cachePath, std::ios::binary);
+    ASSERT_TRUE(cacheInput.is_open());
+    auto cacheJson = nlohmann::json::parse(cacheInput, nullptr, false);
+    cacheInput.close();
+    ASSERT_FALSE(cacheJson.is_discarded());
+    ASSERT_FALSE(cacheJson.contains("graph"))
+        << "Prepared cache metadata should not embed large ObjectGraph strings.";
+    EXPECT_FALSE(cacheJson.contains("runtimeCacheIdentity"))
+        << "Prepared cache metadata should store freshness digests instead of the large runtime cache identity string.";
+    EXPECT_FALSE(cacheJson.contains("manifestStamp"))
+        << "Prepared cache metadata should store freshness digests instead of the large manifest stamp string.";
+    EXPECT_FALSE(cacheJson.contains("dependencyStamp"))
+        << "Prepared cache metadata should store freshness digests instead of the large dependency stamp string.";
+    ASSERT_TRUE(cacheJson["runtimeCacheIdentityDigest"].is_string());
+    ASSERT_TRUE(cacheJson["manifestStampDigest"].is_string());
+    ASSERT_TRUE(cacheJson["dependencyStampDigest"].is_string());
+    ASSERT_TRUE(cacheJson["prefabArtifactStampDigest"].is_string());
+    ASSERT_TRUE(cacheJson["rendererArtifactStampDigest"].is_string());
+    ASSERT_TRUE(cacheJson["graphSidecar"].is_string());
+    ASSERT_TRUE(cacheJson["graphHash"].is_string());
+    EXPECT_FALSE(cacheJson.contains("rendererDependencyTemplates"))
+        << "Graph-only prepared cache metadata should not parse/store renderer dependency templates.";
+    const auto graphSidecarPath =
+        cachePath.parent_path() / cacheJson["graphSidecar"].get_ref<const std::string&>();
+    EXPECT_TRUE(std::filesystem::is_regular_file(graphSidecarPath));
+    ASSERT_FALSE(cacheJson.contains("runtimeResolvedGraph"))
+        << "Prepared cache metadata should not embed runtime-resolved ObjectGraph strings.";
+    ASSERT_TRUE(cacheJson["runtimeResolvedGraphSidecar"].is_string());
+    ASSERT_TRUE(cacheJson["runtimeResolvedGraphHash"].is_string());
+    const auto runtimeGraphSidecarPath =
+        cachePath.parent_path() / cacheJson["runtimeResolvedGraphSidecar"].get_ref<const std::string&>();
+    EXPECT_TRUE(std::filesystem::is_regular_file(runtimeGraphSidecarPath));
+    std::ifstream graphSidecarInput(graphSidecarPath, std::ios::binary);
+    ASSERT_TRUE(graphSidecarInput.is_open());
+    char firstGraphByte = '\0';
+    graphSidecarInput.read(&firstGraphByte, 1);
+    EXPECT_NE(firstGraphByte, '{')
+        << "Prepared cache graph sidecars should use the binary ObjectGraph cache format, not JSON text.";
+    std::ifstream runtimeGraphSidecarInput(runtimeGraphSidecarPath, std::ios::binary);
+    ASSERT_TRUE(runtimeGraphSidecarInput.is_open());
+    char firstRuntimeGraphByte = '\0';
+    runtimeGraphSidecarInput.read(&firstRuntimeGraphByte, 1);
+    EXPECT_NE(firstRuntimeGraphByte, '{')
+        << "Prepared cache runtime graph sidecars should use the binary ObjectGraph cache format, not JSON text.";
 
     NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
     ASSERT_EQ(NLS::Editor::Assets::GetImportedPrefabHotCacheEntryCountForTesting(), 0u);
@@ -2014,6 +2133,12 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheHitSkipsPrefabGra
     EXPECT_EQ(preparedLoad.prefab->graph.root, coldLoad.prefab->graph.root);
     EXPECT_EQ(preparedLoad.prefab->graph.objects.size(), coldLoad.prefab->graph.objects.size());
     EXPECT_EQ(preparedLoad.prefab->resolvedAssets.size(), coldLoad.prefab->resolvedAssets.size());
+    ASSERT_NE(coldLoad.prefab->runtimeResolvedGraph, nullptr);
+    ASSERT_NE(preparedLoad.prefab->runtimeResolvedGraph, nullptr)
+        << "Prepared prefab cache hits should restore the runtime-resolved graph so editor restart loads do not pay the first-instance ResolveExternalReferences cost again.";
+    EXPECT_EQ(
+        preparedLoad.prefab->runtimeResolvedGraphFingerprint,
+        coldLoad.prefab->runtimeResolvedGraphFingerprint);
 
     const auto preparedRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_TRUE(ContainsArtifactTelemetryStagePath(
@@ -2023,6 +2148,90 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheHitSkipsPrefabGra
         << "The editor-restart hit must come from Library/PreparedPrefabCache, not the L1 hot cache.";
     EXPECT_EQ(CountArtifactTelemetryStage(preparedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 0u)
         << "An editor-restart L1 miss should reuse Library/PreparedPrefabCache instead of reparsing .nprefab.";
+#endif
+}
+
+TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsStaleRuntimeResolvedGraph)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to clear the imported prefab L1 hot cache.";
+#else
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+
+    const ScopedPrefabPipelineTempRoot tempRoot("nullus_pipeline_l2_prepared_runtime_graph_stale");
+    const auto& root = tempRoot.Path();
+    WriteTextFile(
+        root / "Assets" / "Models" / "PipelinePreparedRuntimeGraphStaleHero.gltf",
+        MakeSingleMeshGltf("PipelinePreparedRuntimeGraphStaleHeroRoot"));
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/PipelinePreparedRuntimeGraphStaleHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/PipelinePreparedRuntimeGraphStaleHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    NLS::Editor::Assets::UnifiedPrefabLoadRequest request;
+    request.source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+        root,
+        "Assets/Models/PipelinePreparedRuntimeGraphStaleHero.gltf",
+        "prefab:PipelinePreparedRuntimeGraphStaleHero",
+        assetId,
+        NLS::Core::Assets::AssetType::ModelScene);
+    request.loadMode = NLS::Editor::Assets::UnifiedPrefabLoadMode::SceneRestore;
+    request.ownerKind = NLS::Editor::Assets::UnifiedPrefabOwnerKind::SceneInstance;
+    request.ownerScopeId = "scene:pipeline-prepared-runtime-graph-stale";
+    request.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::PrefabGraphOnly;
+    request.allowPending = false;
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto coldLoad = bridge.LoadUnifiedPrefabShared(request);
+    ASSERT_NE(coldLoad.prefab, nullptr);
+    ASSERT_NE(coldLoad.prefab->runtimeResolvedGraph, nullptr);
+
+    const auto cacheRoot = root / "Library" / "PreparedPrefabCache";
+    std::filesystem::path cachePath;
+    size_t cacheFileCount = 0u;
+    for (const auto& entry : std::filesystem::directory_iterator(cacheRoot))
+    {
+        if (entry.is_regular_file() && entry.path().extension() == ".json")
+        {
+            ++cacheFileCount;
+            cachePath = entry.path();
+        }
+    }
+    ASSERT_EQ(cacheFileCount, 1u);
+    ASSERT_FALSE(cachePath.empty());
+
+    std::ifstream cacheInput(cachePath, std::ios::binary);
+    ASSERT_TRUE(cacheInput.is_open());
+    auto cacheJson = nlohmann::json::parse(cacheInput, nullptr, false);
+    cacheInput.close();
+    ASSERT_FALSE(cacheJson.is_discarded());
+    ASSERT_TRUE(cacheJson.is_object());
+    ASSERT_TRUE(cacheJson.contains("runtimeResolvedGraphSidecar"));
+    ASSERT_TRUE(cacheJson.contains("runtimeResolvedGraphFingerprint"));
+    cacheJson["runtimeResolvedGraphFingerprint"] = "stale-runtime-resolved-graph-fingerprint";
+    {
+        std::ofstream cacheOutput(cachePath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(cacheOutput.is_open());
+        cacheOutput << cacheJson.dump();
+    }
+
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+    ASSERT_EQ(NLS::Editor::Assets::GetImportedPrefabHotCacheEntryCountForTesting(), 0u);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    const auto reloaded = bridge.LoadUnifiedPrefabShared(request);
+    ASSERT_NE(reloaded.prefab, nullptr);
+    const auto reloadRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_FALSE(ContainsArtifactTelemetryStagePath(
+        reloadRecords,
+        ArtifactLoadTelemetryStage::CacheHit,
+        cachePath))
+        << "A stale runtime-resolved graph entry must be rejected instead of accepted as an L2 hit.";
+    EXPECT_GE(CountArtifactTelemetryStage(reloadRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 1u)
+        << "A rejected prepared prefab runtime graph must fall back to loading the source prefab artifact.";
 #endif
 }
 
@@ -2083,8 +2292,8 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsStaleFresh
     cacheInput.close();
     ASSERT_FALSE(cacheJson.is_discarded());
     ASSERT_TRUE(cacheJson.is_object());
-    ASSERT_TRUE(cacheJson.contains("prefabArtifactStamp"));
-    cacheJson["prefabArtifactStamp"] = "stale-prefab-artifact-stamp";
+    ASSERT_TRUE(cacheJson.contains("prefabArtifactStampDigest"));
+    cacheJson["prefabArtifactStampDigest"] = "stale-prefab-artifact-stamp-digest";
     {
         std::ofstream cacheOutput(cachePath, std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(cacheOutput.is_open());
@@ -2166,7 +2375,7 @@ TEST(AssetPrefabPipelineTests, EditorRestartPreparedPrefabCacheRejectsMalformedF
     ASSERT_FALSE(cacheJson.is_discarded());
     ASSERT_TRUE(cacheJson.is_object());
     cacheJson["schema"] = "wrong-type";
-    cacheJson["runtimeCacheIdentity"] = nlohmann::json::array();
+    cacheJson["runtimeCacheIdentityDigest"] = nlohmann::json::array();
     cacheJson["prefabImporterVersion"] =
         static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1ull;
     cacheJson["reflectionSchemaVersion"] = -1;
@@ -2484,6 +2693,154 @@ TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathMappingFallbackTracksText
     EXPECT_NE(*second, *first);
     EXPECT_NE(second->find("hash:exact-v2"), std::string::npos);
     EXPECT_EQ(NLS::Editor::Assets::GetModelTextureMappingDependencyFingerprintScanCountForTesting(), 0u);
+
+#endif
+}
+
+TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathMappingKeyAvoidsMetaContentParse)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required for prepared prefab cache counters.";
+#else
+    const ScopedPrefabPipelineTempRoot tempRoot("nullus_prepared_mapping_meta_stamp");
+    const auto& root = tempRoot.Path();
+    const auto textureGuid = NLS::Guid::Parse("16161616-1616-4616-8616-161616161616");
+    const auto textureAssetId = NLS::Core::Assets::AssetId(textureGuid);
+    const auto texturePath = root / "Assets" / "Textures" / "StampedBaseColor.png";
+    const auto metaPath = root / "Assets" / "Textures" / "StampedBaseColor.png.meta";
+    WriteTextFile(texturePath, "png");
+    auto textureMeta = NLS::Core::Assets::AssetMeta::CreateForAsset(texturePath);
+    textureMeta.id = textureAssetId;
+    textureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    textureMeta.importerId = "texture";
+    textureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(textureMeta.Save(metaPath));
+
+    NLS::Core::Assets::ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureAssetId;
+    textureManifest.importerId = "texture";
+    textureManifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back({
+        textureAssetId,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        "editor",
+        LibraryArtifactPath("abababababababababababababababababababababababababababababababab"),
+        "hash:stamped-v1",
+        "StampedBaseColor"
+    });
+    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
+    artifactDatabase.UpsertManifest(
+        textureManifest,
+        "Assets/Textures/StampedBaseColor.png",
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
+
+    NLS::Editor::Assets::ClearModelTextureMappingDependencyFingerprintCacheForTesting();
+    const auto dependencyValue =
+        NLS::Editor::Assets::MakeModelTextureMappingDependencyValue(
+            "Assets/Textures/StampedBaseColor.png",
+            "source-path");
+
+    const auto first = NLS::Editor::Assets::ComputeModelTextureMappingDependencyFingerprintForTesting(
+        root,
+        dependencyValue,
+        "editor");
+    ASSERT_TRUE(first.has_value());
+    EXPECT_NE(first->find("hash:stamped-v1"), std::string::npos);
+    EXPECT_EQ(NLS::Editor::Assets::GetModelTextureMappingDependencyMetaLoadCountForTesting(), 0u)
+        << "Source-path cache keys only need the .meta file stamp; parsing every meta file is redundant.";
+    EXPECT_EQ(NLS::Editor::Assets::GetModelTextureMappingDependencyArtifactDatabaseLoadCountForTesting(), 1u);
+
+    WriteTextFile(metaPath, "invalid-meta-content-with-new-size");
+    const auto second = NLS::Editor::Assets::ComputeModelTextureMappingDependencyFingerprintForTesting(
+        root,
+        dependencyValue,
+        "editor");
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(*second, *first);
+    EXPECT_EQ(NLS::Editor::Assets::GetModelTextureMappingDependencyMetaLoadCountForTesting(), 0u);
+    EXPECT_EQ(NLS::Editor::Assets::GetModelTextureMappingDependencyArtifactDatabaseLoadCountForTesting(), 1u)
+        << "Changing the .meta stamp must invalidate the fingerprint cache, but the unchanged ArtifactDB texture index can still be reused.";
+
+#endif
+}
+
+TEST(AssetPrefabPipelineTests, PreparedPrefabSourcePathFallbackFingerprintIsCached)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required for prepared prefab cache counters.";
+#else
+    const ScopedPrefabPipelineTempRoot tempRoot("nullus_prepared_mapping_source_path_fallback_cache");
+    const auto& root = tempRoot.Path();
+    const auto textureGuid = NLS::Guid::Parse("17171717-1717-4717-8717-171717171717");
+    const auto textureAssetId = NLS::Core::Assets::AssetId(textureGuid);
+    const auto referencedTexturePath = root / "Assets" / "Textures" / "ReferencedBaseColor.png";
+    const auto referencedMetaPath = root / "Assets" / "Textures" / "ReferencedBaseColor.png.meta";
+    WriteTextFile(referencedTexturePath, "png");
+    auto textureMeta = NLS::Core::Assets::AssetMeta::CreateForAsset(referencedTexturePath);
+    textureMeta.id = textureAssetId;
+    textureMeta.assetType = NLS::Core::Assets::AssetType::Texture;
+    textureMeta.importerId = "texture";
+    textureMeta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    ASSERT_TRUE(textureMeta.Save(referencedMetaPath));
+
+    NLS::Core::Assets::ArtifactManifest textureManifest;
+    textureManifest.sourceAssetId = textureAssetId;
+    textureManifest.importerId = "texture";
+    textureManifest.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::Texture);
+    textureManifest.targetPlatform = "editor";
+    textureManifest.primarySubAssetKey = "texture:main";
+    textureManifest.subAssets.push_back({
+        textureAssetId,
+        "texture:main",
+        NLS::Core::Assets::ArtifactType::Texture,
+        "texture",
+        "editor",
+        LibraryArtifactPath("acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"),
+        "hash:source-path-fallback-v1",
+        "ReferencedBaseColor"
+    });
+    NLS::Core::Assets::ArtifactDatabase artifactDatabase;
+    artifactDatabase.UpsertManifest(
+        textureManifest,
+        "Assets/Textures/IndexedDifferentName.png",
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(artifactDatabase.Save(root / "Library" / "ArtifactDB"));
+
+    NLS::Editor::Assets::ClearModelTextureMappingDependencyFingerprintCacheForTesting();
+    const auto dependencyValue =
+        NLS::Editor::Assets::MakeModelTextureMappingDependencyValue(
+            "Assets/Textures/ReferencedBaseColor.png",
+            "source-path");
+
+    const auto first = NLS::Editor::Assets::ComputeModelTextureMappingDependencyFingerprintForTesting(
+        root,
+        dependencyValue,
+        "editor");
+    ASSERT_TRUE(first.has_value());
+    EXPECT_NE(first->find("hash:source-path-fallback-v1"), std::string::npos);
+    EXPECT_EQ(
+        NLS::Editor::Assets::GetModelTextureMappingDependencySourcePathFallbackCountForTesting(),
+        1u);
+
+    const auto second = NLS::Editor::Assets::ComputeModelTextureMappingDependencyFingerprintForTesting(
+        root,
+        dependencyValue,
+        "editor");
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(*second, *first);
+    EXPECT_EQ(
+        NLS::Editor::Assets::GetModelTextureMappingDependencySourcePathFallbackCountForTesting(),
+        1u)
+        << "source-path fallback fingerprints are safe to cache because the key includes source, meta, and ArtifactDB stamps.";
 
 #endif
 }

@@ -6,6 +6,7 @@
 #include "Profiling/Profiler.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -28,6 +29,50 @@ std::vector<ObjectReferencePickerEntry> g_objectReferencePickerEntries;
 ObjectReferencePickerEntriesProvider g_objectReferencePickerEntriesProvider;
 bool g_objectReferencePickerEntriesDirty = false;
 constexpr uint64_t kMaxDisplayNameArtifactProbeBytes = 1024ull * 1024ull;
+constexpr uint64_t kAssetBrowserScopeFingerprintOffset = 1469598103934665603ull;
+constexpr uint64_t kAssetBrowserScopeFingerprintPrime = 1099511628211ull;
+
+void AppendAssetBrowserKeyUint64(std::string& key, const uint64_t value)
+{
+    char buffer[20];
+    const auto [end, error] = std::to_chars(std::begin(buffer), std::end(buffer), value);
+    if (error == std::errc {})
+    {
+        key.append(buffer, end);
+        return;
+    }
+
+    key += std::to_string(value);
+}
+
+void AppendAssetBrowserScopeFingerprintByte(uint64_t& hash, const uint8_t value)
+{
+    hash ^= value;
+    hash *= kAssetBrowserScopeFingerprintPrime;
+}
+
+void AppendAssetBrowserScopeFingerprintUint64(uint64_t& hash, const uint64_t value)
+{
+    for (uint32_t byteIndex = 0u; byteIndex < 8u; ++byteIndex)
+    {
+        AppendAssetBrowserScopeFingerprintByte(
+            hash,
+            static_cast<uint8_t>((value >> (byteIndex * 8u)) & 0xffu));
+    }
+}
+
+void AppendAssetBrowserScopeFingerprintString(uint64_t& hash, const std::string_view value)
+{
+    AppendAssetBrowserScopeFingerprintUint64(hash, static_cast<uint64_t>(value.size()));
+    for (const char character : value)
+        AppendAssetBrowserScopeFingerprintByte(hash, static_cast<uint8_t>(character));
+}
+
+void AppendAssetBrowserScopeFingerprintAssetId(uint64_t& hash, const NLS::Core::Assets::AssetId& assetId)
+{
+    for (const uint8_t byte : assetId.GetGuid().GetBytes())
+        AppendAssetBrowserScopeFingerprintByte(hash, byte);
+}
 
 bool IsInspectorReferenceableSubAsset(const NLS::Core::Assets::ArtifactType p_type)
 {
@@ -332,6 +377,11 @@ std::unordered_map<std::string, std::string> BuildGeneratedSubAssetDisplayNameOv
 
     for (const auto& record : records)
     {
+        if (!record.displayName.empty())
+        {
+            overrides[record.subAssetKey] = record.displayName;
+            continue;
+        }
         if (record.artifactType != NLS::Core::Assets::ArtifactType::Texture)
             continue;
 
@@ -934,11 +984,11 @@ constexpr bool AssetBrowserItemTypeDescriptorsAreExhaustive()
 static_assert(AssetBrowserItemTypeDescriptorsAreExhaustive());
 
 constexpr std::array<AssetBrowserRefreshReasonDescriptor, kAssetBrowserRefreshReasonCount> kAssetBrowserRefreshReasonDescriptors {{
-    { AssetBrowserRefreshReason::InitialBuild, { true, true, true } },
-    { AssetBrowserRefreshReason::AssetDatabaseMutation, { true, true, true } },
-    { AssetBrowserRefreshReason::AssetDatabaseReady, { false, false, true } },
-    { AssetBrowserRefreshReason::FolderSelection, { false, true, true } },
-    { AssetBrowserRefreshReason::FilterChange, { false, false, false } }
+    { AssetBrowserRefreshReason::InitialBuild, { true, true, true, true } },
+    { AssetBrowserRefreshReason::AssetDatabaseMutation, { true, true, true, true } },
+    { AssetBrowserRefreshReason::AssetDatabaseReady, { false, false, true, false } },
+    { AssetBrowserRefreshReason::FolderSelection, { false, true, true, true } },
+    { AssetBrowserRefreshReason::FilterChange, { false, false, false, false } }
 }};
 
 constexpr bool AssetBrowserRefreshReasonDescriptorsAreExhaustive()
@@ -964,6 +1014,73 @@ constexpr bool AssetBrowserRefreshReasonDescriptorsAreExhaustive()
 }
 
 static_assert(AssetBrowserRefreshReasonDescriptorsAreExhaustive());
+}
+
+std::optional<AssetBrowserActionIdentity> BuildAssetBrowserActionIdentity(
+    const AssetBrowserItem& item)
+{
+    const auto& sourcePath = item.sourceAssetPath.empty()
+        ? item.projectRelativePath
+        : item.sourceAssetPath;
+    const auto canonicalSourcePath = sourcePath.empty()
+        ? std::string {}
+        : NormalizeEditorProjectAssetPath(NormalizeAssetBrowserProjectRelativePath(sourcePath));
+    if (canonicalSourcePath.empty())
+        return std::nullopt;
+
+    AssetBrowserActionIdentity identity;
+    identity.kind = item.kind;
+    identity.canonicalSourcePath = canonicalSourcePath;
+    switch (item.kind)
+    {
+    case AssetBrowserItemKind::Folder:
+        return identity;
+    case AssetBrowserItemKind::SourceAsset:
+        if (!item.assetId.IsValid())
+            return std::nullopt;
+        identity.assetId = item.assetId;
+        return identity;
+    case AssetBrowserItemKind::GeneratedSubAsset:
+        if (!item.assetId.IsValid() || item.subAssetKey.empty())
+            return std::nullopt;
+        identity.assetId = item.assetId;
+        identity.subAssetKey = item.subAssetKey;
+        return identity;
+    }
+    return std::nullopt;
+}
+
+bool AssetBrowserItemMatchesActionIdentity(
+    const AssetBrowserItem& item,
+    const AssetBrowserActionIdentity& identity)
+{
+    if (item.kind != identity.kind)
+        return false;
+    const auto& sourcePath = item.sourceAssetPath.empty()
+        ? item.projectRelativePath
+        : item.sourceAssetPath;
+    if (sourcePath != identity.canonicalSourcePath &&
+        NormalizeEditorProjectAssetPath(NormalizeAssetBrowserProjectRelativePath(sourcePath)) !=
+            identity.canonicalSourcePath)
+    {
+        return false;
+    }
+
+    switch (item.kind)
+    {
+    case AssetBrowserItemKind::Folder:
+        return !identity.assetId.IsValid() && identity.subAssetKey.empty();
+    case AssetBrowserItemKind::SourceAsset:
+        return item.assetId.IsValid() &&
+            item.assetId == identity.assetId &&
+            identity.subAssetKey.empty();
+    case AssetBrowserItemKind::GeneratedSubAsset:
+        return item.assetId.IsValid() &&
+            item.assetId == identity.assetId &&
+            !item.subAssetKey.empty() &&
+            item.subAssetKey == identity.subAssetKey;
+    }
+    return false;
 }
 
 std::string NormalizeAssetBrowserProjectRelativePath(std::string path)
@@ -1147,27 +1264,20 @@ AssetBrowserRect ComputeAssetBrowserThumbnailRect(
     return result;
 }
 
-bool ShouldDrawAssetBrowserThumbnailLetterboxBackground(const AssetBrowserItemType type)
-{
-    return type == AssetBrowserItemType::Texture;
-}
-
 std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
     const std::vector<AssetBrowserItem>& items,
-    const std::unordered_set<std::string>& expandedSourceAssets,
-    const std::unordered_map<std::string, size_t>& generatedSubAssetCountHints)
+    const std::unordered_set<std::string>& expandedSourceAssets)
 {
     NLS_PROFILE_NAMED_SCOPE("AssetBrowserPresentation::BuildDisplayItems");
-    struct SubAssetRange
-    {
-        size_t begin = 0u;
-        size_t count = 0u;
-    };
 
-    std::unordered_map<std::string, SubAssetRange> subAssetsBySource;
-    subAssetsBySource.reserve(items.size());
-    std::vector<size_t> subAssetIndices;
-    subAssetIndices.reserve(items.size());
+	struct SubAssetGroup
+	{
+		uint64_t groupId = 0u;
+		std::vector<size_t> itemIndices;
+	};
+	std::unordered_map<std::string, SubAssetGroup> subAssetsBySource;
+	subAssetsBySource.reserve(items.size());
+	uint64_t nextGroupId = 1u;
 
     for (size_t index = 0u; index < items.size(); ++index)
     {
@@ -1175,11 +1285,17 @@ std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
         if (item.kind != AssetBrowserItemKind::GeneratedSubAsset)
             continue;
 
-        auto& range = subAssetsBySource[item.sourceAssetPath];
-        if (range.count == 0u)
-            range.begin = subAssetIndices.size();
-        ++range.count;
-        subAssetIndices.push_back(index);
+        const auto sourceKey = item.sourceAssetPath.empty()
+            ? std::string {}
+            : NormalizeEditorProjectAssetPath(
+                NormalizeAssetBrowserProjectRelativePath(item.sourceAssetPath));
+		if (!sourceKey.empty())
+		{
+			auto [group, inserted] = subAssetsBySource.try_emplace(sourceKey);
+			if (inserted)
+				group->second.groupId = nextGroupId++;
+			group->second.itemIndices.push_back(index);
+		}
     }
 
     std::vector<AssetBrowserDisplayItem> displayItems;
@@ -1196,30 +1312,31 @@ std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
         const auto sourcePath = item.sourceAssetPath.empty()
             ? item.projectRelativePath
             : item.sourceAssetPath;
-        const bool expanded = expandedSourceAssets.find(sourcePath) != expandedSourceAssets.end();
-        const auto subAssets = subAssetsBySource.find(sourcePath);
-        const auto countHint = generatedSubAssetCountHints.find(sourcePath);
+        const auto sourceKey = sourcePath.empty()
+            ? std::string {}
+            : NormalizeEditorProjectAssetPath(
+                NormalizeAssetBrowserProjectRelativePath(sourcePath));
+        const bool expanded = expandedSourceAssets.find(sourcePath) != expandedSourceAssets.end() ||
+            (!sourceKey.empty() && expandedSourceAssets.find(sourceKey) != expandedSourceAssets.end());
+        const auto subAssets = subAssetsBySource.find(sourceKey);
         displayItem.expanded = expanded;
-        displayItem.childCount = subAssets == subAssetsBySource.end()
-            ? (countHint == generatedSubAssetCountHints.end()
-                ? (item.hasGeneratedSubAssets ? 1u : 0u)
-                : countHint->second)
-            : (std::max)(
-                subAssets->second.count,
-                countHint == generatedSubAssetCountHints.end() ? 0u : countHint->second);
+		displayItem.childCount = subAssets == subAssetsBySource.end()
+			? 0u
+			: subAssets->second.itemIndices.size();
 
         displayItems.push_back(std::move(displayItem));
 
         if (!expanded || subAssets == subAssetsBySource.end())
             continue;
 
-        for (size_t childOffset = 0u; childOffset < subAssets->second.count; ++childOffset)
-        {
-            const auto& candidate = items[subAssetIndices[subAssets->second.begin + childOffset]];
+		for (const auto childIndex : subAssets->second.itemIndices)
+		{
+            const auto& candidate = items[childIndex];
 
-            AssetBrowserDisplayItem child;
-            child.item = candidate;
-            child.subAsset = true;
+			AssetBrowserDisplayItem child;
+			child.item = candidate;
+			child.groupId = subAssets->second.groupId;
+			child.subAsset = true;
             displayItems.push_back(std::move(child));
         }
     }
@@ -1227,72 +1344,164 @@ std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
     return displayItems;
 }
 
-std::vector<AssetBrowserDisplayItem> BuildProgressiveAssetBrowserDisplayItems(
-    const std::vector<AssetBrowserDisplayItem>& displayItems,
-    const std::unordered_map<std::string, size_t>& generatedSubAssetRevealCounts,
-    const size_t maxGeneratedSubAssetPlaceholdersPerSource)
+bool ShouldShowAssetBrowserSubAssetDisclosure(const AssetBrowserDisplayItem& displayItem)
 {
-    NLS_PROFILE_NAMED_SCOPE("AssetBrowserPresentation::BuildProgressiveDisplayItems");
-    std::vector<AssetBrowserDisplayItem> progressiveItems;
-    progressiveItems.reserve(displayItems.size());
-    std::string currentExpandedSourcePath;
-    size_t currentChildCount = 0u;
-    size_t currentRevealCount = 0u;
-    size_t emittedChildCount = 0u;
+    return !displayItem.subAsset &&
+        displayItem.item.kind == AssetBrowserItemKind::SourceAsset &&
+        (displayItem.childCount > 0u || displayItem.item.hasGeneratedSubAssets);
+}
 
-    auto appendMissingChildPlaceholders = [&]()
+std::vector<AssetBrowserDisplayItem> BuildFilteredAssetBrowserDisplayItems(
+    const std::vector<AssetBrowserItem>& items,
+    const std::unordered_set<std::string>& expandedSourceAssets,
+    const std::string& searchQuery,
+    const AssetBrowserItemType typeFilter)
+{
+    AssetBrowserBuildOptions filterOptions;
+    filterOptions.includeGeneratedSubAssets = true;
+    filterOptions.searchQuery = searchQuery;
+    filterOptions.typeFilter = typeFilter;
+
+    std::unordered_map<std::string, std::vector<const AssetBrowserItem*>> childrenBySource;
+    childrenBySource.reserve(items.size());
+    for (const auto& item : items)
     {
-        if (currentExpandedSourcePath.empty() || currentChildCount <= emittedChildCount)
-            return;
-        const auto placeholderCount = (std::min)(
-            currentChildCount - emittedChildCount,
-            maxGeneratedSubAssetPlaceholdersPerSource);
-        for (size_t placeholderIndex = 0u; placeholderIndex < placeholderCount; ++placeholderIndex)
-        {
-            AssetBrowserDisplayItem placeholder;
-            placeholder.subAsset = true;
-            placeholder.loadingPlaceholder = true;
-            progressiveItems.push_back(std::move(placeholder));
-        }
-    };
-
-    for (const auto& displayItem : displayItems)
-    {
-        if (!displayItem.subAsset)
-        {
-            appendMissingChildPlaceholders();
-            progressiveItems.push_back(displayItem);
-            currentExpandedSourcePath.clear();
-            currentChildCount = 0u;
-            currentRevealCount = 0u;
-            emittedChildCount = 0u;
-            if (displayItem.expanded && displayItem.childCount > 0u)
-            {
-                currentExpandedSourcePath = displayItem.item.sourceAssetPath.empty()
-                    ? displayItem.item.projectRelativePath
-                    : displayItem.item.sourceAssetPath;
-                currentChildCount = displayItem.childCount;
-                if (const auto found = generatedSubAssetRevealCounts.find(currentExpandedSourcePath);
-                    found != generatedSubAssetRevealCounts.end())
-                {
-                    currentRevealCount = (std::min)(found->second, currentChildCount);
-                }
-            }
+        if (item.kind != AssetBrowserItemKind::GeneratedSubAsset)
             continue;
-        }
-
-        if (currentExpandedSourcePath.empty())
-            continue;
-        if (emittedChildCount >= currentRevealCount)
-            continue;
-
-        progressiveItems.push_back(displayItem);
-        ++emittedChildCount;
+        const auto sourceKey = item.sourceAssetPath.empty()
+            ? std::string {}
+            : NormalizeEditorProjectAssetPath(
+                NormalizeAssetBrowserProjectRelativePath(item.sourceAssetPath));
+        if (!sourceKey.empty())
+            childrenBySource[sourceKey].push_back(&item);
     }
 
-    appendMissingChildPlaceholders();
+    std::vector<AssetBrowserItem> filteredGroups;
+    filteredGroups.reserve(items.size());
+    for (const auto& item : items)
+    {
+        if (item.kind == AssetBrowserItemKind::GeneratedSubAsset)
+            continue;
 
-    return progressiveItems;
+        const auto sourcePath = item.sourceAssetPath.empty()
+            ? item.projectRelativePath
+            : item.sourceAssetPath;
+        const auto sourceKey = sourcePath.empty()
+            ? std::string {}
+            : NormalizeEditorProjectAssetPath(
+                NormalizeAssetBrowserProjectRelativePath(sourcePath));
+        const auto children = childrenBySource.find(sourceKey);
+
+        std::vector<const AssetBrowserItem*> matchingChildren;
+        if (children != childrenBySource.end())
+        {
+            matchingChildren.reserve(children->second.size());
+            for (const auto* child : children->second)
+            {
+                if (child != nullptr && MatchesAssetBrowserBuildOptions(*child, filterOptions))
+                    matchingChildren.push_back(child);
+            }
+        }
+
+        if (!MatchesAssetBrowserBuildOptions(item, filterOptions) && matchingChildren.empty())
+            continue;
+
+        filteredGroups.push_back(item);
+        for (const auto* child : matchingChildren)
+            filteredGroups.push_back(*child);
+    }
+
+    return BuildAssetBrowserDisplayItems(filteredGroups, expandedSourceAssets);
+}
+
+AssetBrowserPresentationBundle BuildAssetBrowserPresentationBundle(
+    std::vector<AssetBrowserItem> rootItems,
+    const EditorAssetSnapshotIndex* snapshotIndex,
+    const AssetBrowserBuildOptions& options)
+{
+    NLS_PROFILE_NAMED_SCOPE("AssetBrowserPresentation::BuildPresentationBundle");
+
+    std::vector<AssetBrowserItem> presentationItems;
+    presentationItems.reserve(rootItems.size());
+    for (const auto& item : rootItems)
+    {
+        if (item.kind == AssetBrowserItemKind::GeneratedSubAsset)
+            continue;
+        presentationItems.push_back(item);
+        if (!options.includeGeneratedSubAssets ||
+            item.kind != AssetBrowserItemKind::SourceAsset ||
+            snapshotIndex == nullptr ||
+            snapshotIndex->status != EditorAssetSnapshotStatus::Valid)
+        {
+            continue;
+        }
+
+        const auto& sourcePath = item.sourceAssetPath.empty()
+            ? item.projectRelativePath
+            : item.sourceAssetPath;
+        const auto sourceKey = sourcePath.empty()
+            ? std::string {}
+            : NormalizeEditorProjectAssetPath(
+                NormalizeAssetBrowserProjectRelativePath(sourcePath));
+        const auto snapshot = snapshotIndex->assetIndexByCanonicalSourcePath.find(sourceKey);
+        if (sourceKey.empty() ||
+            snapshot == snapshotIndex->assetIndexByCanonicalSourcePath.end() ||
+            snapshot->second >= snapshotIndex->assets.size())
+        {
+            continue;
+        }
+
+        const auto& snapshotValue = snapshotIndex->assets[snapshot->second];
+        if (!item.assetId.IsValid() || snapshotValue.assetId != item.assetId)
+            continue;
+
+        for (const auto& subAsset : snapshotValue.subAssets)
+        {
+            const auto itemType = AssetBrowserGeneratedArtifactItemType(subAsset.artifactType);
+            if (!itemType.has_value() || subAsset.subAssetKey.empty())
+                continue;
+
+            AssetBrowserItem child;
+            child.displayName = subAsset.displayName.empty()
+                ? MakeSubAssetDisplayName(subAsset.subAssetKey)
+                : subAsset.displayName;
+            child.projectRelativePath = sourceKey + "::" + subAsset.subAssetKey;
+            child.sourceAssetPath = sourceKey;
+            child.artifactPath = subAsset.artifactPath;
+            child.kind = AssetBrowserItemKind::GeneratedSubAsset;
+            child.type = *itemType;
+            child.assetId = snapshotValue.assetId;
+            child.subAssetKey = subAsset.subAssetKey;
+            child.dragResourcePath = sourceKey;
+            child.selectionResourcePath = sourceKey + "#" + subAsset.subAssetKey;
+            child.artifactType = subAsset.artifactType;
+            child.generatedReadOnly = true;
+            presentationItems.push_back(std::move(child));
+        }
+    }
+
+    AssetBrowserPresentationBundle bundle;
+    bundle.rootItems = std::move(rootItems);
+    bundle.displayItems = BuildFilteredAssetBrowserDisplayItems(
+        presentationItems,
+        options.expandedSourceAssets,
+        options.searchQuery,
+        options.typeFilter);
+    bundle.visibleItems.reserve(bundle.displayItems.size());
+    for (const auto& displayItem : bundle.displayItems)
+        bundle.visibleItems.push_back(displayItem.item);
+    return bundle;
+}
+
+bool ShouldPublishPartialAssetBrowserDisplayRebuild(
+    const size_t processedSinceLastPublish,
+    const bool interactive)
+{
+    constexpr size_t kNonInteractivePartialPublishStep = 64u;
+    constexpr size_t kInteractivePartialPublishStep = 256u;
+    return processedSinceLastPublish >= (interactive
+        ? kInteractivePartialPublishStep
+        : kNonInteractivePartialPublishStep);
 }
 
 std::optional<AssetBrowserDisplayItemRange> ResolveAssetBrowserExpandedSubAssetRange(
@@ -1319,6 +1528,80 @@ std::optional<AssetBrowserDisplayItemRange> ResolveAssetBrowserExpandedSubAssetR
     return range;
 }
 
+namespace
+{
+bool AssetBrowserDisplayItemsShareGroup(
+    const AssetBrowserDisplayItem& left,
+    const AssetBrowserDisplayItem& right)
+{
+    return left.groupId != 0u && left.groupId == right.groupId;
+}
+
+std::vector<AssetBrowserGroupSegment> ResolveAssetBrowserGroupSegments(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    const size_t begin,
+    const size_t end,
+    const bool rowBoundariesAreSegmentEdges)
+{
+    std::vector<AssetBrowserGroupSegment> segments;
+    size_t index = begin;
+    while (index < end)
+    {
+		if (displayItems[index].groupId == 0u)
+        {
+            ++index;
+            continue;
+        }
+
+        const size_t segmentBegin = index++;
+        while (index < end && AssetBrowserDisplayItemsShareGroup(
+            displayItems[index - 1u], displayItems[index]))
+        {
+            ++index;
+        }
+
+        AssetBrowserGroupSegment segment;
+        segment.range = {segmentBegin, index - segmentBegin};
+        segment.trueSegmentStart = rowBoundariesAreSegmentEdges ||
+            segmentBegin == 0u ||
+            !AssetBrowserDisplayItemsShareGroup(
+                displayItems[segmentBegin - 1u], displayItems[segmentBegin]);
+        segment.trueSegmentEnd = rowBoundariesAreSegmentEdges ||
+            index == displayItems.size() ||
+            !AssetBrowserDisplayItemsShareGroup(
+                displayItems[index - 1u], displayItems[index]);
+        segments.push_back(segment);
+    }
+    return segments;
+}
+}
+
+std::vector<AssetBrowserGroupSegment> ResolveAssetBrowserGridRowGroupSegments(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    const size_t rowBegin,
+    const size_t columnCount)
+{
+    if (rowBegin >= displayItems.size() || columnCount == 0u)
+        return {};
+    const auto remaining = displayItems.size() - rowBegin;
+    const auto rowEnd = rowBegin + (std::min)(columnCount, remaining);
+    return ResolveAssetBrowserGroupSegments(displayItems, rowBegin, rowEnd, true);
+}
+
+std::vector<AssetBrowserGroupSegment> ResolveAssetBrowserVisibleListGroupSegments(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    const size_t visibleBegin,
+    const size_t visibleEnd)
+{
+    if (visibleBegin >= displayItems.size() || visibleBegin >= visibleEnd)
+        return {};
+    return ResolveAssetBrowserGroupSegments(
+        displayItems,
+        visibleBegin,
+        (std::min)(displayItems.size(), visibleEnd),
+        false);
+}
+
 AssetBrowserRefreshPlan BuildAssetBrowserRefreshPlan(const AssetBrowserRefreshReason reason)
 {
     const auto index = static_cast<size_t>(reason);
@@ -1331,6 +1614,43 @@ AssetBrowserRefreshPlan BuildAssetBrowserRefreshPlan(const AssetBrowserRefreshRe
             return descriptor.plan;
     }
     return {};
+}
+
+void ResetAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state)
+{
+    if (state.status == AssetBrowserAsyncRefreshStatus::Closed)
+        return;
+    state.status = AssetBrowserAsyncRefreshStatus::Idle;
+    state.diagnostic.clear();
+}
+
+void BeginAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state)
+{
+    if (state.status == AssetBrowserAsyncRefreshStatus::Closed)
+        return;
+    state.status = AssetBrowserAsyncRefreshStatus::Loading;
+    state.diagnostic.clear();
+}
+
+void CompleteAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state)
+{
+    if (state.status == AssetBrowserAsyncRefreshStatus::Closed)
+        return;
+    state.status = AssetBrowserAsyncRefreshStatus::Success;
+    state.diagnostic.clear();
+}
+
+void FailAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state, std::string diagnostic)
+{
+    if (state.status == AssetBrowserAsyncRefreshStatus::Closed)
+        return;
+    state.status = AssetBrowserAsyncRefreshStatus::Failure;
+    state.diagnostic = std::move(diagnostic);
+}
+
+void CloseAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state)
+{
+    state.status = AssetBrowserAsyncRefreshStatus::Closed;
 }
 
 void EnqueueAssetBrowserExternalDroppedFiles(
@@ -1461,6 +1781,31 @@ bool AssetBrowserSourceAssetCanHaveGeneratedSubAssets(const std::string& sourceA
             NLS::Utils::PathParser::GetFileType(sourceAssetPath)));
 }
 
+std::optional<AssetBrowserItemType> AssetBrowserGeneratedArtifactItemType(
+    const NLS::Core::Assets::ArtifactType artifactType)
+{
+    using NLS::Core::Assets::ArtifactType;
+    switch (artifactType)
+    {
+    case ArtifactType::Prefab: return AssetBrowserItemType::Prefab;
+    case ArtifactType::Mesh: return AssetBrowserItemType::Mesh;
+    case ArtifactType::Material: return AssetBrowserItemType::Material;
+    case ArtifactType::Texture: return AssetBrowserItemType::Texture;
+    case ArtifactType::Shader: return AssetBrowserItemType::Shader;
+    case ArtifactType::Unknown:
+    case ArtifactType::Model:
+    case ArtifactType::Skeleton:
+    case ArtifactType::Skin:
+    case ArtifactType::AnimationClip:
+    case ArtifactType::MorphTarget:
+    case ArtifactType::Scene:
+    case ArtifactType::Audio:
+    case ArtifactType::Count:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 const std::array<AssetBrowserItemType, kAssetBrowserItemTypeCount>& AssetBrowserItemTypeFilterOptions()
 {
     static const std::array<AssetBrowserItemType, kAssetBrowserItemTypeCount> options = []
@@ -1478,56 +1823,70 @@ std::string BuildAssetBrowserThumbnailGenerationScopeKey(
     const uint32_t requestedSize,
     const std::vector<AssetBrowserItem>& visibleItems)
 {
-    auto appendPart = [](std::ostringstream& stream, const std::string& value)
-    {
-        stream << value.size() << ':' << value << '|';
-    };
-
-    std::ostringstream stream;
-    stream << "folder=";
-    appendPart(stream, NormalizeAssetBrowserProjectRelativePath(selectedFolder));
-    stream << "size=" << requestedSize << '|';
-    stream << "count=" << visibleItems.size() << '|';
+    uint64_t fingerprint = kAssetBrowserScopeFingerprintOffset;
+    AppendAssetBrowserScopeFingerprintString(
+        fingerprint,
+        NormalizeAssetBrowserProjectRelativePath(selectedFolder));
+    AppendAssetBrowserScopeFingerprintUint64(fingerprint, requestedSize);
+    AppendAssetBrowserScopeFingerprintUint64(fingerprint, static_cast<uint64_t>(visibleItems.size()));
     for (const auto& item : visibleItems)
     {
-        stream << "kind=" << static_cast<int>(item.kind) << '|';
-        stream << "type=" << static_cast<int>(item.type) << '|';
-        stream << "artifact=" << static_cast<int>(item.artifactType) << '|';
-        appendPart(stream, item.projectRelativePath);
-        appendPart(stream, item.sourceAssetPath);
-        appendPart(stream, item.subAssetKey);
-        appendPart(stream, item.assetId.ToString());
+        AppendAssetBrowserScopeFingerprintUint64(fingerprint, static_cast<uint64_t>(item.kind));
+        AppendAssetBrowserScopeFingerprintUint64(fingerprint, static_cast<uint64_t>(item.type));
+        AppendAssetBrowserScopeFingerprintUint64(fingerprint, static_cast<uint64_t>(item.artifactType));
+        AppendAssetBrowserScopeFingerprintString(fingerprint, item.projectRelativePath);
+        AppendAssetBrowserScopeFingerprintString(fingerprint, item.sourceAssetPath);
+        AppendAssetBrowserScopeFingerprintString(fingerprint, item.subAssetKey);
+        AppendAssetBrowserScopeFingerprintAssetId(fingerprint, item.assetId);
     }
-    return stream.str();
+
+    std::string key;
+    key.reserve(96u);
+    key += "thumbscope:v2:size=";
+    key += std::to_string(requestedSize);
+    key += ":count=";
+    key += std::to_string(visibleItems.size());
+    key += ":hash=";
+    key += std::to_string(fingerprint);
+    return key;
 }
 
 std::string BuildAssetBrowserThumbnailItemKey(
     const AssetBrowserItem& item,
     const uint32_t requestedSize)
 {
-    auto appendIdentity = [&item, requestedSize](std::string& key)
+    (void)requestedSize;
+    auto appendIdentity = [&item](std::string& key)
     {
-        key += "#";
-        key += std::to_string(requestedSize);
-        key += "|kind=";
-        key += std::to_string(static_cast<int>(item.kind));
+        key += "#kind=";
+        AppendAssetBrowserKeyUint64(key, static_cast<uint64_t>(item.kind));
         key += "|type=";
-        key += std::to_string(static_cast<int>(item.type));
+        AppendAssetBrowserKeyUint64(key, static_cast<uint64_t>(item.type));
         key += "|artifact=";
-        key += std::to_string(static_cast<int>(item.artifactType));
+        AppendAssetBrowserKeyUint64(key, static_cast<uint64_t>(item.artifactType));
+        if (item.assetId.IsValid())
+        {
+            key += "|asset=";
+            key += item.assetId.ToString();
+        }
     };
 
     if (item.kind == AssetBrowserItemKind::GeneratedSubAsset && !item.subAssetKey.empty())
     {
-        std::string key = item.sourceAssetPath.empty()
+        const auto& baseKey = item.sourceAssetPath.empty()
             ? item.projectRelativePath
             : item.sourceAssetPath;
+        std::string key;
+        key.reserve(baseKey.size() + item.subAssetKey.size() + 48u);
+        key += baseKey;
         key += "::";
         key += item.subAssetKey;
         appendIdentity(key);
         return key;
     }
-    std::string key = item.projectRelativePath;
+    std::string key;
+    key.reserve(item.projectRelativePath.size() + 48u);
+    key += item.projectRelativePath;
     appendIdentity(key);
     return key;
 }
@@ -1551,15 +1910,36 @@ AssetBrowserThumbnailGenerationScopeDecision EvaluateAssetBrowserThumbnailGenera
     return decision;
 }
 
+AssetBrowserPostDrawThumbnailPumpPermissions PlanAssetBrowserPostDrawThumbnailPump(
+    const AssetBrowserPostDrawThumbnailPumpInput& input)
+{
+    // Heavy prefab/model previews are only enabled by the post-draw pump after the current visible scope is queued.
+    if (input.interactive)
+        return {};
+    return {
+        input.nowSeconds >= input.lightDeferredUntilSeconds,
+        input.nowSeconds >= input.heavyDeferredUntilSeconds
+    };
+}
+
 AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
     const AssetBrowserHeavyGpuThumbnailPumpInput& input)
 {
     AssetBrowserHeavyGpuThumbnailPumpDecision decision;
+    if (input.hasQueuedReadback)
+    {
+        decision.shouldPump =
+            !input.interactive &&
+            input.hasQueuedWork &&
+            input.hasPreviewRenderer;
+        return decision;
+    }
+
     if (!input.allowHeavyGpuPreview ||
+        input.interactive ||
         !input.hasQueuedWork ||
-        input.hasInFlightWork ||
         !input.hasPreviewRenderer ||
-        input.interactive)
+        input.sceneLoadRendererResourcesPending)
     {
         return decision;
     }
@@ -1575,9 +1955,10 @@ AssetBrowserLightGpuThumbnailPumpDecision PlanAssetBrowserLightGpuThumbnailPump(
 {
     AssetBrowserLightGpuThumbnailPumpDecision decision;
     if (!input.allowGpuPreviewStart ||
+        input.interactive ||
         !input.hasQueuedWork ||
         !input.hasPreviewRenderer ||
-        input.interactive)
+        input.standardPbrShaderPassPrewarmPending)
     {
         return decision;
     }
@@ -1602,7 +1983,6 @@ AssetBrowserThumbnailPumpDecision PlanAssetBrowserThumbnailPump(
     }
 
     decision.shouldStartBackgroundWork =
-        !input.hasInFlightWork &&
         input.interactiveStartsThisFrame < input.maxInteractiveStartsPerFrame;
     return decision;
 }
@@ -1611,7 +1991,9 @@ AssetBrowserCachedThumbnailTexturePumpDecision PlanAssetBrowserCachedThumbnailTe
     const AssetBrowserCachedThumbnailTexturePumpInput& input)
 {
     AssetBrowserCachedThumbnailTexturePumpDecision decision;
-    if (input.queuedTextureLoads == 0u && input.inFlightDecodes == 0u)
+    if (input.queuedTextureLoads == 0u &&
+        input.inFlightDecodes == 0u &&
+        input.pendingTextureUploads == 0u)
         return decision;
 
     if (!input.interactive)
@@ -1622,6 +2004,32 @@ AssetBrowserCachedThumbnailTexturePumpDecision PlanAssetBrowserCachedThumbnailTe
 
     decision.shouldPump = input.interactiveStartsThisFrame < input.maxInteractiveStartsPerFrame;
     return decision;
+}
+
+bool ShouldContinueAssetBrowserThumbnailTextureUploads(
+    const AssetBrowserThumbnailTextureUploadBudgetInput& input)
+{
+    if (input.maxUploadsPerFrame == 0u)
+        return false;
+    if (input.uploadedThisFrame >= input.maxUploadsPerFrame)
+        return false;
+    if (input.maxPollsPerFrame > 0u && input.polledThisFrame >= input.maxPollsPerFrame)
+        return false;
+    if (input.maxElapsedMicroseconds > 0u && input.elapsedMicroseconds >= input.maxElapsedMicroseconds)
+        return false;
+    return true;
+}
+
+bool ShouldContinueAssetBrowserThumbnailRequests(
+    const AssetBrowserThumbnailRequestBudgetInput& input)
+{
+    if (input.maxRequestsPerFrame == 0u)
+        return false;
+    if (input.requestedThisFrame >= input.maxRequestsPerFrame)
+        return false;
+    if (input.maxElapsedMicroseconds > 0u && input.elapsedMicroseconds >= input.maxElapsedMicroseconds)
+        return false;
+    return true;
 }
 
 AssetBrowserFolderNode BuildProjectAssetFolderTree(const std::filesystem::path& projectRootOrAssetsRoot)
@@ -1913,12 +2321,11 @@ std::vector<AssetBrowserItem> SelectAssetBrowserThumbnailGenerationItems(
     const std::vector<AssetBrowserItem>& visibleItems,
     const bool visibleItemsKnown)
 {
-    (void)currentFolderItems;
     if (!visibleItemsKnown)
         return {};
 
     std::vector<AssetBrowserItem> items;
-    items.reserve(visibleItems.size());
+    items.reserve(visibleItems.size() + currentFolderItems.size());
     std::unordered_set<std::string> selectedKeys;
     auto addItem = [&items, &selectedKeys](const AssetBrowserItem& item)
     {
@@ -1930,6 +2337,12 @@ std::vector<AssetBrowserItem> SelectAssetBrowserThumbnailGenerationItems(
 
     for (const auto& visible : visibleItems)
         addItem(visible);
+    for (const auto& item : currentFolderItems)
+    {
+        if (item.kind == AssetBrowserItemKind::GeneratedSubAsset)
+            continue;
+        addItem(item);
+    }
     return items;
 }
 
@@ -2113,7 +2526,6 @@ std::optional<EditorAssetDragPayload> MakeAssetBrowserItemDragPayload(
         artifactType == NLS::Core::Assets::ArtifactType::Prefab;
     const bool imported = item.kind == AssetBrowserItemKind::GeneratedSubAsset ||
         !item.subAssetKey.empty();
-    const bool previewPrefabReady = generatedModelPrefab;
     return MakeEditorAssetDragPayload(
         item.dragResourcePath,
         item.assetId,
@@ -2121,7 +2533,6 @@ std::optional<EditorAssetDragPayload> MakeAssetBrowserItemDragPayload(
         artifactType,
         generatedModelPrefab,
         imported,
-        previewPrefabReady,
         item.kind == AssetBrowserItemKind::GeneratedSubAsset);
 }
 
@@ -2250,7 +2661,6 @@ std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntriesFromSna
                     subAsset.artifactType,
                     false,
                     true,
-                    false,
                     true)
             });
         }
@@ -2311,7 +2721,6 @@ std::vector<ObjectReferencePickerEntry> BuildObjectReferencePickerEntries(
                         subAsset.artifactType,
                         false,
                         true,
-                        false,
                         true)
                 });
             }

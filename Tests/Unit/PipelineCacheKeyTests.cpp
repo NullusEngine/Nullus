@@ -178,6 +178,19 @@ TEST(PipelineCacheKeyTests, GraphicsKeyChangesWhenRenderTargetLayoutChanges)
     EXPECT_NE(baseKey.hash, changedKey.hash);
 }
 
+TEST(PipelineCacheKeyTests, GraphicsKeyChangesWhenColorAttachmentColorSpaceChanges)
+{
+    auto baseDesc = MakeGraphicsDesc();
+    baseDesc.renderTargetLayout.colorSpaces = { NLS::Render::RHI::TextureColorSpace::Linear };
+    auto changedDesc = baseDesc;
+    changedDesc.renderTargetLayout.colorSpaces = { NLS::Render::RHI::TextureColorSpace::SRGB };
+
+    const auto baseKey = NLS::Render::RHI::BuildGraphicsPipelineCacheKey(baseDesc);
+    const auto changedKey = NLS::Render::RHI::BuildGraphicsPipelineCacheKey(changedDesc);
+
+    EXPECT_NE(baseKey.hash, changedKey.hash);
+}
+
 TEST(PipelineCacheKeyTests, ShaderArtifactToolchainFingerprintIncludesProfileCacheKeyAndArtifactPath)
 {
     NLS::Render::ShaderCompiler::ShaderCompilationOutput output;

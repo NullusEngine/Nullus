@@ -31,6 +31,13 @@ namespace
 		return std::find(handles.begin(), handles.end(), handle) != handles.end();
 	}
 
+	bool ContainsClusterHandle(
+		const std::vector<SceneHLODClusterHandle>& handles,
+		const SceneHLODClusterHandle handle)
+	{
+		return std::find(handles.begin(), handles.end(), handle) != handles.end();
+	}
+
 	bool IsProxyCompatible(const HLODClusterRecord& cluster)
 	{
 		if (!HasFlag(cluster.compatibilityFlags, HLODCompatibilityFlags::ProxySafe) &&
@@ -68,6 +75,13 @@ HLODSelectionResult SceneHLODSystem::SelectCluster(
 		result.screenRelativeSize > cluster.activationScreenRelativeSize ||
 		!IsProxyCompatible(cluster))
 	{
+		return result;
+	}
+
+	if (input.editorInspectionView &&
+		ContainsClusterHandle(input.forceInspectableHLODClusters, cluster.clusterHandle))
+	{
+		result.inspectableChildPrimitives = cluster.childPrimitives;
 		return result;
 	}
 

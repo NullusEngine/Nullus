@@ -43,8 +43,11 @@ namespace NLS::Render::Settings
         std::string editorValidationExclusiveView;
         std::string editorValidationSelectGameObject;
         std::string editorValidationSceneCamera;
-        std::string editorValidationCreateAsset;
-        std::string editorValidationSceneReadbackOutput;
+	        std::string editorValidationCreateAsset;
+	        std::string editorValidationAssetBrowserFolder;
+	        std::string editorValidationSceneReadbackOutput;
         std::string editorValidationSceneReadbackSummary;
+        std::string editorValidationPrefabDragProxySummaryOutput;
+        std::string editorThumbnailTelemetrySummaryOutput;
     };
 }

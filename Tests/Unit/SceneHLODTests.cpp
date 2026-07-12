@@ -124,3 +124,27 @@ TEST(SceneHLODTests, EditorSelectedChildrenOverrideSuppressionPerView)
 	EXPECT_EQ(result.suppressedChildPrimitives[1], cluster.childPrimitives[2]);
 	EXPECT_EQ(result.inspectableChildPrimitives, input.selectedPrimitiveHandles);
 }
+
+TEST(SceneHLODTests, EditorInspectableClusterKeepsAllChildrenVisible)
+{
+	const auto cluster = MakeCluster();
+	ASSERT_TRUE(cluster.proxyPrimitive.has_value());
+	RepresentationResidencySnapshot residency;
+	residency.MarkHLODProxyReady(*cluster.proxyPrimitive);
+	for (const auto& child : cluster.childPrimitives)
+		residency.MarkReady(child);
+
+	SceneHLODViewInput input;
+	input.cameraPosition = { 0.0f, 0.0f, 0.0f };
+	input.allowHLOD = true;
+	input.editorInspectionView = true;
+	input.forceInspectableHLODClusters = { cluster.clusterHandle };
+
+	const auto result = SceneHLODSystem::SelectCluster(input, cluster, residency);
+
+	EXPECT_FALSE(result.usesProxy);
+	EXPECT_FALSE(result.proxyPrimitive.has_value());
+	EXPECT_TRUE(result.suppressedChildPrimitives.empty())
+		<< "Selecting an imported prefab or HLOD root in the editor must keep the generated children inspectable.";
+	EXPECT_EQ(result.inspectableChildPrimitives, cluster.childPrimitives);
+}

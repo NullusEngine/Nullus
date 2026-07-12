@@ -32,9 +32,10 @@ namespace NLS::Editor::Panels
 		);
 
 		/**
-		* Returns the scene used by this view
-		*/
+		 * Returns the scene used by this view
+		 */
 		virtual Engine::SceneSystem::Scene* GetScene();
+        void EnsureRenderer() override;
 
 		/**
 		* Defines the resource to preview
@@ -74,9 +75,9 @@ namespace NLS::Editor::Panels
         Render::Resources::Material m_defaultMaterial;
         Render::Resources::Material m_textureMaterial;
 
-        Engine::GameObject* m_assetActor;
-        Engine::Components::MeshFilter* m_meshFilter;
-        Engine::Components::MeshRenderer* m_modelRenderer;
+        Engine::GameObject* m_assetActor = nullptr;
+        Engine::Components::MeshFilter* m_meshFilter = nullptr;
+        Engine::Components::MeshRenderer* m_modelRenderer = nullptr;
 		ViewableResource m_resource;
         Engine::SceneSystem::Scene m_scene;
 	};

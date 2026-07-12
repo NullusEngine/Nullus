@@ -42,17 +42,12 @@ std::array<uint8_t, 32u> Sha256(const uint8_t* bytes, const size_t byteCount)
         0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
     };
 
-    std::vector<uint8_t> padded;
-    padded.reserve(byteCount + 72u);
-    if (bytes != nullptr && byteCount > 0u)
-        padded.insert(padded.end(), bytes, bytes + byteCount);
-    padded.push_back(0x80u);
-    while ((padded.size() % 64u) != 56u)
-        padded.push_back(0u);
-
     const uint64_t bitCount = static_cast<uint64_t>(byteCount) * 8ull;
-    for (int shift = 56; shift >= 0; shift -= 8)
-        padded.push_back(static_cast<uint8_t>((bitCount >> shift) & 0xffu));
+    const size_t remainderAfterOne = (byteCount + 1u) % 64u;
+    const size_t zeroPaddingBytes = remainderAfterOne <= 56u
+        ? 56u - remainderAfterOne
+        : 64u + 56u - remainderAfterOne;
+    const size_t paddedSize = byteCount + 1u + zeroPaddingBytes + 8u;
 
     uint32_t h0 = 0x6a09e667u;
     uint32_t h1 = 0xbb67ae85u;
@@ -63,17 +58,37 @@ std::array<uint8_t, 32u> Sha256(const uint8_t* bytes, const size_t byteCount)
     uint32_t h6 = 0x1f83d9abu;
     uint32_t h7 = 0x5be0cd19u;
 
-    for (size_t offset = 0u; offset < padded.size(); offset += 64u)
+    for (size_t offset = 0u; offset < paddedSize; offset += 64u)
     {
+        std::array<uint8_t, 64u> block {};
+        for (size_t index = 0u; index < block.size(); ++index)
+        {
+            const size_t byteIndex = offset + index;
+            if (byteIndex < byteCount)
+            {
+                block[index] = bytes[byteIndex];
+            }
+            else if (byteIndex == byteCount)
+            {
+                block[index] = 0x80u;
+            }
+            else if (byteIndex >= paddedSize - 8u)
+            {
+                const size_t lengthByteIndex = byteIndex - (paddedSize - 8u);
+                const int shift = static_cast<int>((7u - lengthByteIndex) * 8u);
+                block[index] = static_cast<uint8_t>((bitCount >> shift) & 0xffu);
+            }
+        }
+
         std::array<uint32_t, 64u> words {};
         for (size_t index = 0u; index < 16u; ++index)
         {
-            const size_t base = offset + index * 4u;
+            const size_t base = index * 4u;
             words[index] =
-                (static_cast<uint32_t>(padded[base]) << 24u) |
-                (static_cast<uint32_t>(padded[base + 1u]) << 16u) |
-                (static_cast<uint32_t>(padded[base + 2u]) << 8u) |
-                static_cast<uint32_t>(padded[base + 3u]);
+                (static_cast<uint32_t>(block[base]) << 24u) |
+                (static_cast<uint32_t>(block[base + 1u]) << 16u) |
+                (static_cast<uint32_t>(block[base + 2u]) << 8u) |
+                static_cast<uint32_t>(block[base + 3u]);
         }
         for (size_t index = 16u; index < 64u; ++index)
         {

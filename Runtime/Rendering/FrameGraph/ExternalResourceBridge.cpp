@@ -265,21 +265,25 @@ namespace NLS::Render::FrameGraph
     NLS::Render::Data::FrameDescriptor CaptureExternalSceneOutputSnapshot(
         const NLS::Render::Data::FrameDescriptor& frame)
     {
-        auto snapshot = frame;
+        NLS::Render::Data::FrameDescriptor snapshot;
+        snapshot.renderWidth = frame.renderWidth;
+        snapshot.renderHeight = frame.renderHeight;
+        snapshot.camera = frame.camera;
+        snapshot.clearColorOverride = frame.clearColorOverride;
         auto* outputBuffer = ResolveExternalSceneOutputFramebuffer(frame);
         if (outputBuffer == nullptr)
+        {
+            snapshot.outputColorTexture = frame.outputColorTexture;
+            snapshot.outputDepthStencilTexture = frame.outputDepthStencilTexture;
+            snapshot.outputColorView = frame.outputColorView;
+            snapshot.outputDepthStencilView = frame.outputDepthStencilView;
             return snapshot;
+        }
 
-        if (snapshot.outputColorTexture == nullptr)
-            snapshot.outputColorTexture = outputBuffer->GetExplicitTextureHandle();
-        if (snapshot.outputDepthStencilTexture == nullptr)
-            snapshot.outputDepthStencilTexture = outputBuffer->GetExplicitDepthStencilTextureHandle();
-        if (snapshot.outputColorView == nullptr)
-            snapshot.outputColorView = outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView");
-        if (snapshot.outputDepthStencilView == nullptr)
-            snapshot.outputDepthStencilView = outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView");
-
-        snapshot.outputBuffer = nullptr;
+        snapshot.outputColorTexture = outputBuffer->GetExplicitTextureHandle();
+        snapshot.outputDepthStencilTexture = outputBuffer->GetExplicitDepthStencilTextureHandle();
+        snapshot.outputColorView = outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView");
+        snapshot.outputDepthStencilView = outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView");
         return snapshot;
     }
 

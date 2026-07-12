@@ -24,6 +24,7 @@ namespace
     constexpr uint64_t kBackgroundHandleBit = 1ull << 63u;
     constexpr size_t kRetiredBackgroundHandleHistoryLimit = 4096u;
     constexpr uint32_t kMaxBackgroundWorkerCount = 64u;
+    constexpr uint32_t kMaxConsecutiveHighPriorityJobs = 8u;
     std::atomic<uint32_t> g_nextBackgroundQueueGeneration{1u};
 
     uint32_t AllocateBackgroundQueueGeneration()
@@ -156,6 +157,12 @@ namespace
             return true;
         }
 
+        uint32_t GetWorkerCount()
+        {
+            std::lock_guard lock(m_mutex);
+            return static_cast<uint32_t>(m_workers.size());
+        }
+
         void Shutdown(const JobSystemShutdownMode mode)
         {
             std::vector<BackgroundJobTerminalCallback> cancelCallbacks;
@@ -169,8 +176,11 @@ namespace
 
                 while (true)
                 {
+                    WakeDependencyReadyJobs();
+                    HelpDependencies();
+
                     {
-                        std::lock_guard lock(m_mutex);
+                        std::unique_lock lock(m_mutex);
                         const bool unfinished = std::any_of(
                             m_jobs.begin(),
                             m_jobs.end(),
@@ -185,11 +195,9 @@ namespace
 
                         if (!unfinished)
                             break;
-                    }
 
-                    WakeDependencyReadyJobs();
-                    HelpDependencies();
-                    std::this_thread::yield();
+                        m_workAvailable.wait_for(lock, std::chrono::milliseconds(100));
+                    }
                 }
             }
 
@@ -253,7 +261,9 @@ namespace
 
             {
                 std::lock_guard lock(m_mutex);
-                m_readyJobs.clear();
+                m_highPriorityReadyJobs.clear();
+                m_normalPriorityReadyJobs.clear();
+                m_consecutiveHighPriorityJobs = 0u;
                 ClearContinuationsLocked();
                 m_jobs.clear();
                 m_shutdownRequested = false;
@@ -369,7 +379,7 @@ namespace
                         job->desc.debugName,
                         nullptr,
                         desc.dependency.id == 0u ? 0u : 1u);
-                    m_readyJobs.push_back(job->id);
+                    QueueReadyJobLocked(job->id);
                     notifyWorker = true;
                 }
                 else if (dependencyStatus == JobCompletionStatus::Cancelled ||
@@ -1183,7 +1193,7 @@ namespace
                             job->desc.debugName,
                             nullptr,
                             job->desc.dependency.id == 0u ? 0u : 1u);
-                        m_readyJobs.push_back(id);
+                        QueueReadyJobLocked(id);
                         wokeJob = true;
                     }
                     else if (dependencyStatus == JobCompletionStatus::Cancelled ||
@@ -1309,7 +1319,7 @@ namespace
                             job->desc.debugName,
                             nullptr,
                             job->desc.dependency.id == 0u ? 0u : 1u);
-                        m_readyJobs.push_back(job->id);
+                        QueueReadyJobLocked(job->id);
                         wokeJob = true;
                     }
                     else if (dependencyStatus == JobCompletionStatus::Cancelled ||
@@ -1346,12 +1356,29 @@ namespace
             NotifyForegroundDependencyChangedIfNeeded(notifyForegroundDependency);
         }
 
+        void QueueReadyJobLocked(const uint64_t id)
+        {
+            const auto found = m_jobs.find(id);
+            if (found != m_jobs.end() && found->second != nullptr &&
+                found->second->desc.priority == JobPriority::High)
+                m_highPriorityReadyJobs.push_back(id);
+            else
+                m_normalPriorityReadyJobs.push_back(id);
+        }
+
         std::shared_ptr<BackgroundJob> PopJobLocked()
         {
-            while (!m_readyJobs.empty())
+            while (!m_highPriorityReadyJobs.empty() || !m_normalPriorityReadyJobs.empty())
             {
-                const uint64_t id = m_readyJobs.front();
-                m_readyJobs.pop_front();
+                const bool selectNormal =
+                    !m_normalPriorityReadyJobs.empty() &&
+                    (m_highPriorityReadyJobs.empty() ||
+                        m_consecutiveHighPriorityJobs >= kMaxConsecutiveHighPriorityJobs);
+                auto& readyJobs = selectNormal
+                    ? m_normalPriorityReadyJobs
+                    : m_highPriorityReadyJobs;
+                const uint64_t id = readyJobs.front();
+                readyJobs.pop_front();
                 const auto found = m_jobs.find(id);
                 if (found == m_jobs.end() || found->second == nullptr)
                     continue;
@@ -1360,6 +1387,10 @@ namespace
                 if (job->state == BackgroundJobState::Queued)
                 {
                     job->state = BackgroundJobState::Running;
+                    if (selectNormal || m_normalPriorityReadyJobs.empty())
+                        m_consecutiveHighPriorityJobs = 0u;
+                    else
+                        ++m_consecutiveHighPriorityJobs;
                     return job;
                 }
             }
@@ -1384,7 +1415,7 @@ namespace
                             std::chrono::milliseconds(100),
                             [this]
                             {
-                                return m_shutdownRequested || !m_readyJobs.empty() || m_dependencyChanged;
+                                return m_shutdownRequested || HasReadyJobLocked() || m_dependencyChanged;
                             });
                         m_dependencyChanged = false;
                     }
@@ -1394,11 +1425,11 @@ namespace
                             lock,
                             [this]
                             {
-                                return m_shutdownRequested || !m_readyJobs.empty() || HasDependencyWaiterLocked();
+                                return m_shutdownRequested || HasReadyJobLocked() || HasDependencyWaiterLocked();
                             });
                     }
 
-                    if (m_shutdownRequested && m_readyJobs.empty())
+                    if (m_shutdownRequested && !HasReadyJobLocked())
                         return;
 
                     job = PopJobLocked();
@@ -1479,7 +1510,14 @@ namespace
         std::unordered_map<uint64_t, uint32_t> m_retiredGenerations;
         std::unordered_map<uint64_t, JobCompletionStatus> m_retiredStatuses;
         std::deque<uint64_t> m_retiredOrder;
-        std::deque<uint64_t> m_readyJobs;
+        bool HasReadyJobLocked() const
+        {
+            return !m_highPriorityReadyJobs.empty() || !m_normalPriorityReadyJobs.empty();
+        }
+
+        std::deque<uint64_t> m_highPriorityReadyJobs;
+        std::deque<uint64_t> m_normalPriorityReadyJobs;
+        uint32_t m_consecutiveHighPriorityJobs = 0u;
         std::deque<Continuation> m_continuations;
         std::deque<Continuation> m_readyContinuations;
         std::vector<std::thread> m_workers;
@@ -1565,6 +1603,12 @@ namespace Internal
             g_backgroundQueue = std::move(queue);
         }
         return true;
+    }
+
+    uint32_t GetBackgroundJobWorkerCount()
+    {
+        auto queue = GetBackgroundQueue();
+        return queue != nullptr ? queue->GetWorkerCount() : 0u;
     }
 
     void ShutdownBackgroundJobQueue(const JobSystemShutdownMode mode)

@@ -42,7 +42,8 @@ enum class AssetDependencyKind
     NestedPrefab,
     PrefabOverrideTarget,
     RuntimeComponentCapability,
-    RawPackageFile
+    RawPackageFile,
+    PrefabValidation
 };
 
 struct AssetDependencyRecord

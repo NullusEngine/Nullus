@@ -154,9 +154,17 @@ namespace NLS::Render::RHI
     struct NLS_RENDER_API RHIRenderTargetLayoutDesc
     {
         std::vector<TextureFormat> colorFormats;
+        std::vector<TextureColorSpace> colorSpaces;
         TextureFormat depthFormat = TextureFormat::Depth24Stencil8;
         bool hasDepth = false;
         uint32_t sampleCount = 1;
+
+        TextureColorSpace GetColorSpace(const size_t index) const
+        {
+            return index < colorSpaces.size()
+                ? colorSpaces[index]
+                : TextureColorSpace::Linear;
+        }
     };
 
     struct NLS_RENDER_API RHIGraphicsPipelineDesc

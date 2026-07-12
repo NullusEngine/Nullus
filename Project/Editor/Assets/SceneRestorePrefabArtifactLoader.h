@@ -25,7 +25,9 @@ namespace NLS::Editor::Assets
         const std::string& subAssetKey,
         NLS::Core::Assets::AssetId assetId,
         const std::filesystem::path& absoluteSourcePath,
-        const std::string& sceneOwnerScope)
+        const std::string& sceneOwnerScope,
+        const bool allowRepairReimport = true,
+        const bool requireRendererArtifacts = true)
     {
         auto loadRequest = MakeSceneRestoreUnifiedPrefabLoadRequest(
             NormalizePrefabSourceIdentity(
@@ -34,6 +36,11 @@ namespace NLS::Editor::Assets
                 subAssetKey,
                 assetId),
             sceneOwnerScope);
+        if (!requireRendererArtifacts)
+        {
+            loadRequest.requiredReadiness = UnifiedPrefabReadiness::PrefabGraphOnly;
+            loadRequest.allowPending = false;
+        }
         auto unifiedLoad = prefabArtifactLoader.LoadUnifiedPrefabShared(loadRequest);
         auto artifact = std::move(unifiedLoad.prefab);
 
@@ -41,7 +48,8 @@ namespace NLS::Editor::Assets
             NLS::Core::Assets::InferAssetType(absoluteSourcePath) == NLS::Core::Assets::AssetType::ModelScene;
         const bool shouldRepairGeneratedModelRestore =
             requiresRendererReadyRestore &&
-            !artifact;
+            !artifact &&
+            allowRepairReimport;
         if (!shouldRepairGeneratedModelRestore)
             return artifact;
 

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -21,6 +22,7 @@
 #include "Engine/Assets/ModelPrefabBuilder.h"
 #include "Jobs/JobSystem.h"
 #include "Rendering/EngineDrawableDescriptor.h"
+#include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Rendering/LargeSceneSettings.h"
 #include "Rendering/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Data/DrawableInstanceCount.h"
@@ -243,18 +245,7 @@ namespace
 		}
 	}
 
-	bool TexturePathMatchesDeclaredPath(
-		const NLS::Render::Resources::Texture2D& texture,
-		const std::string& declaredPath)
-	{
-		if (declaredPath.empty())
-			return true;
-		if (texture.path == declaredPath)
-			return true;
-		return NormalizeResourcePathKey(texture.path) == NormalizeResourcePathKey(declaredPath);
-	}
-
-	void BuildDeclaredTextureResourceIndex(
+		void BuildDeclaredTextureResourceIndex(
 		NLS::Core::ResourceManagement::TextureManager& textureManager,
 		RenderSceneDeclaredTextureLookupCache& cache,
 		RenderSceneSyncStats& stats)
@@ -323,8 +314,21 @@ namespace
 		return nullptr;
 	}
 
+	bool TexturePathMatchesDeclaredPath(
+		const NLS::Render::Resources::Texture2D& texture,
+		const std::string& declaredPath)
+	{
+		return declaredPath.empty() ||
+			texture.path == declaredPath ||
+			NormalizeResourcePathKey(texture.path) == NormalizeResourcePathKey(declaredPath);
+	}
+
 	bool HasResolvedDeclaredMaterialTextures(const NLS::Render::Resources::Material& material)
 	{
+		NLS::Core::ResourceManagement::TextureManager* textureManager = nullptr;
+		if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+			textureManager = &NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
+
 		for (const auto& [uniformName, texturePath] : material.GetTextureResourcePaths())
 		{
 			if (texturePath.empty())
@@ -334,9 +338,20 @@ namespace
 			if (parameter == nullptr || parameter->type() != typeid(NLS::Render::Resources::Texture2D*))
 				return false;
 
-			const auto* texture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
-			if (texture == nullptr || !TexturePathMatchesDeclaredPath(*texture, texturePath))
+			const auto* boundTexture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
+			if (boundTexture == nullptr || boundTexture->GetTextureHandle() == nullptr)
 				return false;
+
+			if (textureManager != nullptr)
+			{
+				const auto* currentTexture = textureManager->GetArtifactResource(texturePath, false);
+				if (currentTexture == nullptr || boundTexture != currentTexture)
+					return false;
+			}
+			else if (!TexturePathMatchesDeclaredPath(*boundTexture, texturePath))
+			{
+				return false;
+			}
 		}
 		return true;
 	}
@@ -356,18 +371,17 @@ namespace
 			if (texturePath.empty())
 				continue;
 
+				auto* texture = FindCachedDeclaredTexture(textureManager, texturePath, cache, stats);
+				if (texture == nullptr || texture->GetTextureHandle() == nullptr)
+					continue;
+
 			const auto* parameter = material.GetParameterBlock().TryGet(uniformName);
 			if (parameter != nullptr &&
-				parameter->type() == typeid(NLS::Render::Resources::Texture2D*))
+				parameter->type() == typeid(NLS::Render::Resources::Texture2D*) &&
+				std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter) == texture)
 			{
-				const auto* texture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
-				if (texture != nullptr && TexturePathMatchesDeclaredPath(*texture, texturePath))
-					continue;
-			}
-
-			auto* texture = FindCachedDeclaredTexture(textureManager, texturePath, cache, stats);
-			if (texture == nullptr)
 				continue;
+			}
 
 			material.Set<NLS::Render::Resources::Texture2D*>(uniformName, texture);
 			boundAny = true;
@@ -669,6 +683,14 @@ namespace
 
 }
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+bool HasResolvedDeclaredMaterialTexturesForTesting(
+	const NLS::Render::Resources::Material& material)
+{
+	return HasResolvedDeclaredMaterialTextures(material);
+}
+#endif
+
 struct RenderScene::RepresentationRegistry
 {
 	std::vector<LODGroupRecord> lodGroups;
@@ -848,11 +870,12 @@ bool RenderScene::PrimitiveInputStamp::operator==(const PrimitiveInputStamp& oth
 			meshContentRevision == other.meshContentRevision &&
 			materialInstanceId == other.materialInstanceId &&
 			materialParameterRevision == other.materialParameterRevision &&
-			materialRenderStateRevision == other.materialRenderStateRevision &&
-			explicitMaterialTexturesResolved == other.explicitMaterialTexturesResolved &&
-			requireExplicitMaterialTextures == other.requireExplicitMaterialTextures &&
-			ownerAlive == other.ownerAlive &&
-			ownerActive == other.ownerActive;
+				materialRenderStateRevision == other.materialRenderStateRevision &&
+				explicitMaterialTexturesResolved == other.explicitMaterialTexturesResolved &&
+				requireExplicitMaterialTextures == other.requireExplicitMaterialTextures &&
+				allowDefaultMaterialForUnresolvedExplicitMaterials == other.allowDefaultMaterialForUnresolvedExplicitMaterials &&
+				ownerAlive == other.ownerAlive &&
+				ownerActive == other.ownerActive;
 }
 
 RenderSceneSyncStats RenderScene::Synchronize(
@@ -885,6 +908,14 @@ RenderSceneSyncStats RenderScene::Synchronize(
 				continue;
 			auto* owner = meshRenderer->gameobject();
 			if (owner == nullptr || !owner->IsAlive())
+			{
+				const auto found = m_primitiveIndexByMeshRenderer.find(meshRenderer);
+				if (found != m_primitiveIndexByMeshRenderer.end())
+					TombstonePrimitive(found->second, stats);
+				continue;
+			}
+
+			if (meshRenderer->IsTransientRenderingSuppressed())
 			{
 				const auto found = m_primitiveIndexByMeshRenderer.find(meshRenderer);
 				if (found != m_primitiveIndexByMeshRenderer.end())
@@ -1239,18 +1270,14 @@ void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& 
 	}
 	m_importedHierarchyHLODClusterHandles.clear();
 
-	std::unordered_map<std::string, std::vector<ScenePrimitiveHandle>> primitivesBySourceKey;
-	primitivesBySourceKey.reserve(m_livePrimitiveCount);
-	for (const auto& primitive : m_primitives)
+	struct ImportedHierarchyHLODScope
 	{
-		if (!primitive.occupied || primitive.tombstoned || primitive.owner == nullptr)
-			continue;
+		const Engine::GameObject* root = nullptr;
+		ImportedHierarchyHLODMetadata metadata;
+		std::unordered_map<std::string, std::vector<ScenePrimitiveHandle>> primitivesBySourceKey;
+	};
 
-		const auto& sourceKey = primitive.owner->GetSourceObjectKey();
-		if (!sourceKey.empty())
-			primitivesBySourceKey[sourceKey].push_back(primitive.handle);
-	}
-
+	std::vector<ImportedHierarchyHLODScope> scopes;
 	for (const auto* gameObject : scene.GetGameObjects())
 	{
 		if (gameObject == nullptr || gameObject->GetLargeSceneHLODMetadata().empty())
@@ -1261,12 +1288,45 @@ void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& 
 		if (!metadata.has_value())
 			continue;
 
+		scopes.push_back({ gameObject, *metadata, {} });
+	}
+
+	std::unordered_map<const Engine::GameObject*, size_t> scopeIndicesByRoot;
+	scopeIndicesByRoot.reserve(scopes.size());
+	for (size_t index = 0u; index < scopes.size(); ++index)
+	{
+		scopeIndicesByRoot[scopes[index].root] = index;
+		scopes[index].primitivesBySourceKey.reserve(m_livePrimitiveCount);
+	}
+
+	for (const auto& primitive : m_primitives)
+	{
+		if (!primitive.occupied || primitive.tombstoned || primitive.owner == nullptr)
+			continue;
+		const auto& sourceKey = primitive.owner->GetSourceObjectKey();
+		if (sourceKey.empty())
+			continue;
+
+		for (const Engine::GameObject* ownerOrAncestor = primitive.owner;
+			ownerOrAncestor != nullptr;
+			ownerOrAncestor = ownerOrAncestor->GetParent())
+		{
+			const auto foundScope = scopeIndicesByRoot.find(ownerOrAncestor);
+			if (foundScope != scopeIndicesByRoot.end())
+				scopes[foundScope->second].primitivesBySourceKey[sourceKey].push_back(primitive.handle);
+		}
+	}
+
+	for (const auto& scope : scopes)
+	{
+		const auto& metadata = scope.metadata;
+		const auto& primitivesBySourceKey = scope.primitivesBySourceKey;
 		HLODClusterRecord cluster;
 		cluster.clusterHandle = {};
 		cluster.activationScreenRelativeSize = 0.03f;
 		cluster.compatibilityFlags = HLODCompatibilityFlags::OpaqueOnly | HLODCompatibilityFlags::ProxySafe;
 
-		for (const auto& childKey : metadata->children)
+		for (const auto& childKey : metadata.children)
 		{
 			const auto foundChildren = primitivesBySourceKey.find(childKey);
 			if (foundChildren == primitivesBySourceKey.end())
@@ -1275,29 +1335,32 @@ void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& 
 				cluster.childPrimitives.push_back(handle);
 		}
 
-		const auto foundProxy = primitivesBySourceKey.find(metadata->proxySubAssetKey);
+		const auto foundProxy = primitivesBySourceKey.find(metadata.proxySubAssetKey);
 		if (foundProxy != primitivesBySourceKey.end() && !foundProxy->second.empty())
 			cluster.proxyPrimitive = foundProxy->second.front();
 
 		if (cluster.childPrimitives.empty() || !cluster.proxyPrimitive.has_value())
 			continue;
 
-		Maths::Vector3 center {};
-		float radius = 0.0f;
-		uint32_t sampledChildCount = 0u;
+		std::optional<NLS::Render::Geometry::Bounds> clusterWorldBounds;
 		for (const auto child : cluster.childPrimitives)
 		{
 			if (!IsPrimitiveHandleLive(child))
 				continue;
 			const auto& primitive = m_primitives[child.index];
-			center += primitive.modelBoundingSphere.position;
-			radius = std::max(radius, primitive.modelBoundingSphere.radius);
-			++sampledChildCount;
+			const auto childWorldBounds =
+				NLS::Render::Geometry::TransformBounds(primitive.modelBounds, primitive.worldMatrix);
+			if (clusterWorldBounds.has_value())
+				clusterWorldBounds = NLS::Render::Geometry::UnionBounds(*clusterWorldBounds, childWorldBounds);
+			else
+				clusterWorldBounds = childWorldBounds;
 		}
-		if (sampledChildCount > 0u)
-			center /= static_cast<float>(sampledChildCount);
-		cluster.worldReferencePoint = center;
-		cluster.worldSize = std::max(radius * 2.0f, 1.0f);
+		if (!clusterWorldBounds.has_value())
+			continue;
+		cluster.worldReferencePoint = clusterWorldBounds->center;
+		cluster.worldSize = std::max(
+			std::max(clusterWorldBounds->size.x, clusterWorldBounds->size.y),
+			std::max(clusterWorldBounds->size.z, 1.0f));
 
 		const auto handle = RegisterHLODCluster(cluster);
 		m_importedHierarchyHLODClusterHandles.push_back(handle);
@@ -1830,9 +1893,11 @@ RenderScene::PrimitiveInputStamp RenderScene::BuildPrimitiveInputStamp(
 	stamp.meshFilter = stamp.owner != nullptr ? stamp.owner->GetComponent<Components::MeshFilter>() : nullptr;
 	stamp.meshFilterRenderRevision = stamp.meshFilter != nullptr ? stamp.meshFilter->GetRenderRevision() : 0u;
 	stamp.meshRendererRenderRevision = meshRenderer.GetRenderRevision();
-	stamp.mesh = stamp.meshFilter != nullptr ? stamp.meshFilter->ResolveMesh() : primitive.mesh;
-	stamp.meshContentRevision = stamp.mesh != nullptr ? stamp.mesh->GetContentRevision() : 0u;
-	stamp.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
+		stamp.mesh = stamp.meshFilter != nullptr ? stamp.meshFilter->ResolveMesh() : primitive.mesh;
+		stamp.meshContentRevision = stamp.mesh != nullptr ? stamp.mesh->GetContentRevision() : 0u;
+		stamp.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
+		stamp.allowDefaultMaterialForUnresolvedExplicitMaterials =
+			options.allowDefaultMaterialForUnresolvedExplicitMaterials;
 
 	NLS::Render::Resources::Material* material = nullptr;
 	if (options.overrideMaterial != nullptr && options.overrideMaterial->IsValid())
@@ -1841,9 +1906,7 @@ RenderScene::PrimitiveInputStamp RenderScene::BuildPrimitiveInputStamp(
 	}
 		else if (stamp.mesh != nullptr)
 		{
-			const auto materialIndex = stamp.mesh->GetMaterialIndex();
-			if (materialIndex < Components::MeshRenderer::kMaxMaterialCount)
-				material = meshRenderer.ResolveMaterialAtIndex(static_cast<uint8_t>(materialIndex));
+			material = meshRenderer.ResolveMaterialAtIndex(stamp.mesh->GetMaterialIndex());
 		}
 	if (material == nullptr && options.defaultMaterial != nullptr && options.defaultMaterial->IsValid())
 		material = options.defaultMaterial;
@@ -1869,22 +1932,29 @@ bool RenderScene::CanReuseSynchronizedPrimitive(
 	if (primitive.owner == nullptr ||
 		primitive.meshRenderer == nullptr ||
 		primitive.mesh == nullptr ||
-		primitive.cachedCommands.empty() ||
-		std::any_of(
-			primitive.cachedCommands.begin(),
-			primitive.cachedCommands.end(),
-			[](const CachedCommandSlot& slot)
-			{
-				return !slot.valid;
-			}))
+		primitive.cachedCommands.empty())
 	{
 		return false;
 	}
 	for (const auto& slot : primitive.cachedCommands)
 	{
-		if (slot.command.material != nullptr &&
-			!slot.command.material->GetTextureResourcePaths().empty() &&
-			!HasResolvedDeclaredMaterialTextures(*slot.command.material))
+		if (!slot.valid ||
+			slot.stamp.mesh != stamp.mesh ||
+			slot.stamp.material == nullptr ||
+			slot.stamp.material != slot.command.material ||
+			slot.stamp.materialInstanceId != stamp.materialInstanceId ||
+			slot.stamp.materialParameterRevision != stamp.materialParameterRevision ||
+			slot.stamp.materialRenderStateRevision != stamp.materialRenderStateRevision)
+		{
+			return false;
+		}
+	}
+	for (const auto& slot : primitive.cachedCommands)
+	{
+		auto* material = slot.stamp.material;
+		if (material != nullptr &&
+			!material->GetTextureResourcePaths().empty() &&
+			!HasResolvedDeclaredMaterialTextures(*material))
 		{
 			return false;
 		}
@@ -1927,13 +1997,13 @@ NLS::Render::Resources::Material* RenderScene::ResolveMaterialForMesh(
 	if (options.overrideMaterial != nullptr && options.overrideMaterial->IsValid())
 		return options.overrideMaterial;
 
-	if (primitive.meshRenderer != nullptr && mesh.GetMaterialIndex() < Components::MeshRenderer::kMaxMaterialCount)
+	if (primitive.meshRenderer != nullptr)
 	{
 		const auto materialPaths = primitive.meshRenderer->GetMaterialPaths();
 		const bool hasExplicitMaterialPath = mesh.GetMaterialIndex() < materialPaths.size() &&
 			!materialPaths[mesh.GetMaterialIndex()].empty();
 
-		if (auto* material = primitive.meshRenderer->ResolveMaterialAtIndex(static_cast<uint8_t>(mesh.GetMaterialIndex()));
+		if (auto* material = primitive.meshRenderer->ResolveMaterialAtIndex(mesh.GetMaterialIndex());
 			material != nullptr && material->IsValid())
 		{
 			if (hasExplicitMaterialPath)
@@ -1947,9 +2017,9 @@ NLS::Render::Resources::Material* RenderScene::ResolveMaterialForMesh(
 			return material;
 		}
 
-		if (hasExplicitMaterialPath)
-			return nullptr;
-	}
+			if (hasExplicitMaterialPath && !options.allowDefaultMaterialForUnresolvedExplicitMaterials)
+				return nullptr;
+		}
 
 	return options.defaultMaterial != nullptr && options.defaultMaterial->IsValid()
 		? options.defaultMaterial
@@ -2331,6 +2401,7 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityThroughPipeline(
 	pipelineOptions.allowHLOD = options.allowHLOD;
 	pipelineOptions.editorInspectionView = options.editorInspectionView;
 	pipelineOptions.selectedPrimitiveHandles = options.selectedPrimitiveHandles;
+	pipelineOptions.forceInspectableHLODClusters = ResolveInspectableHLODClusters(options);
 
 	SceneRepresentationState representation;
 	if (m_representationRegistry != nullptr)
@@ -2403,6 +2474,48 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityThroughPipeline(
 	}
 
 	return snapshot;
+}
+
+std::vector<SceneHLODClusterHandle> RenderScene::ResolveInspectableHLODClusters(
+	const RenderSceneVisibilityOptions& options) const
+{
+	std::vector<SceneHLODClusterHandle> handles;
+	if (!options.editorInspectionView ||
+		options.inspectionRootObjects.empty() ||
+		m_representationRegistry == nullptr)
+	{
+		return handles;
+	}
+
+	const auto isInsideInspectionRoot = [&options](const Engine::GameObject* owner)
+	{
+		for (const auto* root : options.inspectionRootObjects)
+		{
+			if (root == nullptr || owner == nullptr)
+				continue;
+			if (owner == root || owner->IsDescendantOf(root))
+				return true;
+		}
+		return false;
+	};
+
+	for (const auto& cluster : m_representationRegistry->hlodClusters)
+	{
+		if (!cluster.clusterHandle.IsValid())
+			continue;
+		for (const auto child : cluster.childPrimitives)
+		{
+			if (!IsPrimitiveHandleLive(child))
+				continue;
+			const auto& primitive = m_primitives[child.index];
+			if (!isInsideInspectionRoot(primitive.owner))
+				continue;
+			if (std::find(handles.begin(), handles.end(), cluster.clusterHandle) == handles.end())
+				handles.push_back(cluster.clusterHandle);
+			break;
+		}
+	}
+	return handles;
 }
 
 RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
@@ -2519,6 +2632,7 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 	pipelineOptions.allowHLOD = options.allowHLOD;
 	pipelineOptions.editorInspectionView = options.editorInspectionView;
 	pipelineOptions.selectedPrimitiveHandles = options.selectedPrimitiveHandles;
+	pipelineOptions.forceInspectableHLODClusters = ResolveInspectableHLODClusters(options);
 	const auto pipelineResult = SceneVisibilityPipeline::Evaluate(
 		pipelineOptions,
 		initialCandidateSnapshot,

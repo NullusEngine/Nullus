@@ -127,10 +127,12 @@ void ShaderManager::ProvideAssetPaths(const std::string& p_projectAssetsPath, co
 {
 	AResourceManager<Shader>::ProvideAssetPaths(p_projectAssetsPath, p_engineAssetsPath);
 	ShaderLoader::SetDefaultProjectAssetsPath(p_projectAssetsPath);
+	ShaderLoader::SetTrustedBuiltInShaderEngineAssetsPath(p_engineAssetsPath);
 }
 
 const std::string& ShaderManager::ProjectAssetsRoot()
 {
 	return GetProjectAssetsPath();
 }
+
 }

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 #include "Components/LightComponent.h"
 #include "Components/MeshRenderer.h"
@@ -17,6 +18,7 @@
 #include "Rendering/Resources/Mesh.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphInstantiator.h"
+#include "Serialize/ObjectGraphBinaryCache.h"
 #include "Serialize/ObjectGraphReader.h"
 #include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/ObjectGraphWriter.h"
@@ -123,6 +125,112 @@ TEST(PrefabObjectGraphSerializationTests, PrefabObjectGraphMatchesGoldenOutput)
         "Tests/Unit/Fixtures/ObjectGraph/simple_prefab.objectgraph.json";
 
     EXPECT_EQ(output, ReadTextFile(goldenPath));
+}
+
+TEST(PrefabObjectGraphSerializationTests, CompactPrefabObjectGraphRoundTripsWithoutPrettyWhitespace)
+{
+    NLS::Engine::GameObject prefabRoot("Lamp", "Prop");
+    prefabRoot.AddComponent<NLS::Engine::Components::LightComponent>()->SetIntensity(2.0f);
+
+    const auto prefab = NLS::Engine::Serialize::ObjectGraphSerializer::SerializePrefab(prefabRoot);
+    const auto pretty = NLS::Engine::Serialize::ObjectGraphWriter::Write(prefab.graph);
+    const auto compact = NLS::Engine::Serialize::ObjectGraphWriter::WriteCompact(prefab.graph);
+
+    EXPECT_LT(compact.size(), pretty.size());
+    EXPECT_EQ(compact.find("\n    "), std::string::npos);
+
+    const auto loaded = NLS::Engine::Serialize::ObjectGraphReader::Read(compact);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->root, prefab.graph.root);
+    EXPECT_EQ(loaded->objects.size(), prefab.graph.objects.size());
+}
+
+TEST(PrefabObjectGraphSerializationTests, BinaryCachePrefabObjectGraphRoundTrips)
+{
+    NLS::Engine::GameObject prefabRoot("BinaryLamp", "Prop");
+    prefabRoot.AddComponent<NLS::Engine::Components::LightComponent>()->SetIntensity(3.0f);
+
+    auto prefab = NLS::Engine::Serialize::ObjectGraphSerializer::SerializePrefab(prefabRoot);
+    prefab.graph.basePrefab = NLS::Engine::Serialize::ObjectIdentifier::Asset(
+        NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("34343434-3434-4434-8434-343434343434")),
+        NLS::Engine::Serialize::MakeLocalIdentifierInFile(
+            NLS::Guid::Parse("34343434-3434-4434-8434-343434343434"),
+            "Assets/Prefabs/BinaryBase.prefab"),
+        "Assets/Prefabs/BinaryBase.prefab");
+    prefab.graph.overrides.push_back(NLS::Engine::Serialize::PatchOperation::ReplaceProperty(
+        prefab.graph.root,
+        "name",
+        NLS::Engine::Serialize::PropertyValue::String("BinaryVariant")));
+
+    const auto bytes = NLS::Engine::Serialize::ObjectGraphBinaryCache::Write(prefab.graph);
+    ASSERT_FALSE(bytes.empty());
+
+    const auto decoded = NLS::Engine::Serialize::ObjectGraphBinaryCache::Read(bytes.data(), bytes.size());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(
+        NLS::Engine::Serialize::ObjectGraphWriter::WriteCompact(*decoded),
+        NLS::Engine::Serialize::ObjectGraphWriter::WriteCompact(prefab.graph));
+}
+
+TEST(PrefabObjectGraphSerializationTests, BinaryCacheRejectsMalformedData)
+{
+    const std::vector<uint8_t> invalidMagic = {'N', 'O', 'P', 'E'};
+    EXPECT_FALSE(NLS::Engine::Serialize::ObjectGraphBinaryCache::Read(
+        invalidMagic.data(),
+        invalidMagic.size()).has_value());
+
+    NLS::Engine::GameObject prefabRoot("BinaryLamp", "Prop");
+    const auto prefab = NLS::Engine::Serialize::ObjectGraphSerializer::SerializePrefab(prefabRoot);
+    auto bytes = NLS::Engine::Serialize::ObjectGraphBinaryCache::Write(prefab.graph);
+    ASSERT_GT(bytes.size(), 8u);
+    bytes.resize(bytes.size() - 3u);
+
+    EXPECT_FALSE(NLS::Engine::Serialize::ObjectGraphBinaryCache::Read(
+        bytes.data(),
+        bytes.size()).has_value());
+}
+
+TEST(PrefabObjectGraphSerializationTests, BinaryCacheRejectsImpossibleVectorCountWithoutThrowing)
+{
+    NLS::Engine::GameObject prefabRoot("BinaryLamp", "Prop");
+    const auto prefab = NLS::Engine::Serialize::ObjectGraphSerializer::SerializePrefab(prefabRoot);
+    auto bytes = NLS::Engine::Serialize::ObjectGraphBinaryCache::Write(prefab.graph);
+    ASSERT_GT(bytes.size(), 64u);
+
+    auto readU32 = [&bytes](const size_t offset)
+    {
+        return static_cast<uint32_t>(bytes[offset]) |
+            (static_cast<uint32_t>(bytes[offset + 1u]) << 8u) |
+            (static_cast<uint32_t>(bytes[offset + 2u]) << 16u) |
+            (static_cast<uint32_t>(bytes[offset + 3u]) << 24u);
+    };
+
+    constexpr size_t magicSize = 4u;
+    constexpr size_t cacheVersionSize = 4u;
+    constexpr size_t stringLengthSize = 4u;
+    constexpr size_t documentVersionSize = 4u;
+    constexpr size_t guidSize = 16u;
+    constexpr size_t boolSize = 1u;
+    const auto formatLengthOffset = magicSize + cacheVersionSize;
+    const auto formatLength = readU32(formatLengthOffset);
+    const auto objectCountOffset =
+        formatLengthOffset +
+        stringLengthSize +
+        formatLength +
+        documentVersionSize +
+        guidSize +
+        guidSize +
+        boolSize;
+    ASSERT_LE(objectCountOffset + 4u, bytes.size());
+
+    bytes[objectCountOffset] = 0xffu;
+    bytes[objectCountOffset + 1u] = 0xffu;
+    bytes[objectCountOffset + 2u] = 0xffu;
+    bytes[objectCountOffset + 3u] = 0xffu;
+
+    std::optional<NLS::Engine::Serialize::ObjectGraphDocument> decoded;
+    EXPECT_NO_THROW(decoded = NLS::Engine::Serialize::ObjectGraphBinaryCache::Read(bytes));
+    EXPECT_FALSE(decoded.has_value());
 }
 
 TEST(PrefabObjectGraphSerializationTests, PrefabInstantiatesWithNewObjectIdsAndSourceToInstanceMapping)
@@ -518,6 +626,122 @@ TEST(PrefabObjectGraphSerializationTests, BatchExternalAssetBindingPreservesImme
         const auto result = ObjectGraphInstantiator::InstantiatePrefab(makePrefab(), scene, policy);
         verifyInstance(result.root);
     }
+
+    meshManager.UnloadResources();
+    materialManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MeshManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+}
+
+TEST(PrefabObjectGraphSerializationTests, DeferredAssetReferenceHintsCanSkipSynchronousResourceCacheLookup)
+{
+    using namespace NLS::Engine;
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MeshManager>(meshManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
+
+    auto* mesh = new NLS::Render::Resources::Mesh({}, {}, 0u);
+    meshManager.RegisterResource("Artifacts/Deferred/body.nmesh", mesh);
+
+    auto* material = new NLS::Render::Resources::Material();
+    const_cast<std::string&>(material->path) = "Artifacts/Deferred/body.nmat";
+    materialManager.RegisterResource("Artifacts/Deferred/body.nmat", material);
+
+    const auto rootId = ObjectId(NLS::Guid::Parse("61616161-6161-4161-8161-616161616161"));
+    const auto meshFilterId = ObjectId(NLS::Guid::Parse("62626262-6262-4262-8262-626262626262"));
+    const auto meshRendererId = ObjectId(NLS::Guid::Parse("63636363-6363-4363-8363-636363636363"));
+    const auto assetId = AssetId(NLS::Guid::Parse("64646464-6464-4464-8464-646464646464"));
+
+    PrefabDocument prefab;
+    prefab.graph.documentId = NLS::Guid::Parse("65656565-6565-4565-8565-656565656565");
+    prefab.graph.root = rootId;
+
+    ObjectRecord root;
+    root.id = rootId;
+    root.localIdentifierInFile = MakeLocalIdentifierInFile(rootId);
+    root.typeName = "NLS::Engine::GameObject";
+    root.debugName = "Deferred Root";
+    root.properties.push_back({"name", PropertyValue::String("Deferred Root")});
+    root.properties.push_back({"components", PropertyValue::Array({
+        PropertyValue::OwnedReference(meshFilterId),
+        PropertyValue::OwnedReference(meshRendererId)
+    })});
+
+    ObjectRecord meshFilter;
+    meshFilter.id = meshFilterId;
+    meshFilter.localIdentifierInFile = MakeLocalIdentifierInFile(meshFilterId);
+    meshFilter.typeName = "NLS::Engine::Components::MeshFilter";
+    meshFilter.properties.push_back({"mesh", PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+        assetId,
+        MakeLocalIdentifierInFile(assetId.GetGuid(), "mesh:deferred/body"),
+        "Artifacts/Deferred/body.nmesh"))});
+
+    ObjectRecord meshRenderer;
+    meshRenderer.id = meshRendererId;
+    meshRenderer.localIdentifierInFile = MakeLocalIdentifierInFile(meshRendererId);
+    meshRenderer.typeName = "NLS::Engine::Components::MeshRenderer";
+    meshRenderer.properties.push_back({"materials", PropertyValue::Array({
+        PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+            assetId,
+            MakeLocalIdentifierInFile(assetId.GetGuid(), "material:deferred/body"),
+            "Artifacts/Deferred/body.nmat"))
+    })});
+
+    prefab.graph.objects.push_back(std::move(root));
+    prefab.graph.objects.push_back(std::move(meshFilter));
+    prefab.graph.objects.push_back(std::move(meshRenderer));
+
+    LoadPolicy policy;
+    policy.deferAssetReferenceResolution = true;
+    policy.skipDeferredAssetReferenceCacheLookup = true;
+
+    NLS::Base::Profiling::PerformanceStageStats stats;
+    SceneSystem::Scene scene;
+    PrefabInstantiationResult result;
+    {
+        NLS::Base::Profiling::PerformanceStageStatsCapture capture(stats);
+        result = ObjectGraphInstantiator::InstantiatePrefab(prefab, scene, policy);
+    }
+
+    ASSERT_NE(result.root, nullptr);
+    auto* loadedMeshFilter = result.root->GetComponent<MeshFilter>();
+    ASSERT_NE(loadedMeshFilter, nullptr);
+    EXPECT_EQ(loadedMeshFilter->GetModelPath(), "Artifacts/Deferred/body.nmesh");
+    EXPECT_EQ(ResolveObjectIdentifier(loadedMeshFilter->GetMeshReference()).filePath, "Artifacts/Deferred/body.nmesh");
+
+    auto* loadedMeshRenderer = result.root->GetComponent<MeshRenderer>();
+    ASSERT_NE(loadedMeshRenderer, nullptr);
+    ASSERT_EQ(loadedMeshRenderer->GetMaterialPaths().size(), 1u);
+    EXPECT_EQ(loadedMeshRenderer->GetMaterialPaths()[0], "Artifacts/Deferred/body.nmat");
+    ASSERT_EQ(loadedMeshRenderer->GetMaterialReferences().size(), 1u);
+    EXPECT_EQ(
+        ResolveObjectIdentifier(loadedMeshRenderer->GetMaterialReferences()[0]).filePath,
+        "Artifacts/Deferred/body.nmat");
+
+    const auto snapshot = stats.Snapshot();
+    auto hasPrefabStage = [&snapshot](const std::string& stageName)
+    {
+        return std::any_of(
+            snapshot.stages.begin(),
+            snapshot.stages.end(),
+            [&stageName](const NLS::Base::Profiling::PerformanceStageEntry& entry)
+            {
+                return entry.domain == NLS::Base::Profiling::PerformanceStageDomain::Prefab &&
+                    entry.stageName == stageName &&
+                    entry.callCount > 0u;
+            });
+    };
+    EXPECT_FALSE(hasPrefabStage("ApplyDeferredAssetReferenceHints"));
+    EXPECT_FALSE(hasPrefabStage("ApplyDeferredMeshReferenceHint"));
+    EXPECT_FALSE(hasPrefabStage("ApplyDeferredMaterialReferenceHints"));
+    EXPECT_FALSE(hasPrefabStage("FindCachedMeshResource"));
+    EXPECT_FALSE(hasPrefabStage("FindCachedMaterialResource"));
 
     meshManager.UnloadResources();
     materialManager.UnloadResources();

@@ -39,34 +39,39 @@ namespace NLS
 			/**
 			* Run the app
 			*/
-		void Run();
+			void Run();
 
-		void TickFrame(float p_deltaTime, bool p_pollEvents);
-        void TickResizeFrame();
-		void QueueResizeTick();
-		void FlushDeferredResizeTick();
+			void TickFrame(float p_deltaTime, bool p_pollEvents);
+			void TickResizeFrame();
+			void QueueResizeTick();
+			void FlushDeferredResizeTick();
 
 			/**
 			* Returns true if the app is running
 			*/
-		bool IsRunning() const;
+			bool IsRunning() const;
+			/** Returns true only after startup progress has shown the main editor window. */
+			bool DidShowEditorWindow() const;
 
-	private:
-        void RunEditorFrame(float deltaTime);
-        void SyncPlatformSwapchainToFramebufferSize();
-        void PaceIdleFrameIfNeeded();
-        bool m_isPollingEvents = false;
-        bool m_isResizeTicking = false;
-		bool m_isTicking = false;
-		bool m_pendingResizeTick = false;
-        bool m_lastFrameHadTransientInput = false;
-        bool m_hasLastIdlePacingMousePosition = false;
-        Maths::Vector2 m_lastIdlePacingMousePosition;
-        bool m_hasLastNativeResizeTickSize = false;
-        Maths::Vector2 m_lastNativeResizeTickSize;
-		Context m_context;
-		std::unique_ptr<Editor> m_editor;
-	};
-}
+		private:
+			void RunEditorFrame(float deltaTime);
+			bool WaitForStartupSceneRendererResources();
+			void SyncPlatformSwapchainToFramebufferSize();
+			void PaceIdleFrameIfNeeded();
+			bool m_isPollingEvents = false;
+			bool m_isResizeTicking = false;
+			bool m_isTicking = false;
+			bool m_pendingResizeTick = false;
+			bool m_lastFrameHadTransientInput = false;
+			bool m_hasLastIdlePacingMousePosition = false;
+			Maths::Vector2 m_lastIdlePacingMousePosition;
+			bool m_hasLastNativeResizeTickSize = false;
+			Maths::Vector2 m_lastNativeResizeTickSize;
+			bool m_logNextEditorFrameStages = false;
+			bool m_editorWindowShown = false;
+			Context m_context;
+			std::unique_ptr<Editor> m_editor;
+		};
+	}
 
 }

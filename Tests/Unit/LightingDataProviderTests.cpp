@@ -1,13 +1,17 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "Core/ServiceLocator.h"
 #include "Components/LightComponent.h"
+#include "Debug/Logger.h"
 #include "Math/Transform.h"
 #include "Rendering/BaseSceneRenderer.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/LightingDescriptor.h"
@@ -24,8 +28,8 @@ namespace
     public:
         explicit LightingProviderTestSceneRenderer(NLS::Render::Context::Driver& driver)
             : BaseSceneRenderer(driver)
-        {
-        }
+	        {
+	        }
 
         void PublishLightingForScene(NLS::Engine::SceneSystem::Scene& scene)
         {
@@ -34,11 +38,31 @@ namespace
 
         NLS::Render::Context::RenderScenePackage CaptureRenderScenePackage(
             const NLS::Render::Context::FrameSnapshot& snapshot) const
-        {
-            return BuildRenderScenePackage(snapshot);
-        }
-    };
-}
+	        {
+	            return BuildRenderScenePackage(snapshot);
+	        }
+	    };
+
+	    class ScopedLogListener final
+	    {
+	    public:
+	        explicit ScopedLogListener(std::function<void(const NLS::Debug::LogData&)> callback)
+	            : m_listener(NLS::Debug::Logger::LogEvent += std::move(callback))
+	        {
+	        }
+
+	        ~ScopedLogListener()
+	        {
+	            NLS::Debug::Logger::LogEvent -= m_listener;
+	        }
+
+	        ScopedLogListener(const ScopedLogListener&) = delete;
+	        ScopedLogListener& operator=(const ScopedLogListener&) = delete;
+
+	    private:
+	        NLS::ListenerID m_listener = NLS::InvalidListenerID;
+	    };
+	}
 
 TEST(LightingDataProviderTests, SceneLightingProviderCollectsOnlyActiveLightsAndRefreshesEachFrame)
 {
@@ -291,6 +315,92 @@ TEST(LightingDataProviderTests, LightGridDimensionsDeriveFromRenderSizeAndPixelS
     EXPECT_EQ(tinyGrid.x, 1u);
     EXPECT_EQ(tinyGrid.y, 1u);
     EXPECT_EQ(tinyGrid.z, 32u);
+}
+
+TEST(LightingDataProviderTests, LightGridBufferElementCountsRejectOverflowingStartupViewport)
+{
+    NLS::Engine::Rendering::ClusteredShadingSettings settings;
+    settings.lightGridPixelSize = 1u;
+    settings.gridSizeZ = 4096u;
+    settings.maxLightsPerCluster = 4096u;
+
+    const auto dimensions = NLS::Engine::Rendering::CalculateLightGridDimensions(
+        settings,
+        65535u,
+        65535u);
+
+    uint64_t clusterCount = 0u;
+    uint64_t culledLightLinksCount = 0u;
+    uint64_t numCulledLightsGridCount = 0u;
+    uint64_t culledLightDataGridCount = 0u;
+
+    EXPECT_FALSE(NLS::Engine::Rendering::TryCalculateLightGridBufferElementCounts(
+        settings,
+        dimensions,
+        NLS::Engine::Rendering::GetLightLinkStride(),
+        NLS::Engine::Rendering::GetNumCulledLightsGridStride(),
+        16ull * 1024ull * 1024ull,
+        clusterCount,
+        culledLightLinksCount,
+        numCulledLightsGridCount,
+        culledLightDataGridCount));
+    EXPECT_EQ(clusterCount, 0u);
+    EXPECT_EQ(culledLightLinksCount, 0u);
+    EXPECT_EQ(numCulledLightsGridCount, 0u);
+	EXPECT_EQ(culledLightDataGridCount, 0u);
+}
+
+TEST(LightingDataProviderTests, LightGridPreparedComputeRejectsOversizedFrameBeforeRhiSetup)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableLightGrid = true;
+    settings.diagnostics.logRenderDrawPath = true;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Render::Context::DriverRendererAccess::SetDiagnosticsSettings(driver, settings.diagnostics);
+    auto lightGridPrepass = std::make_shared<NLS::Engine::Rendering::LightGridPrepass>(driver);
+
+    NLS::Render::Entities::Camera camera;
+    camera.CacheMatrices(65535u, 65535u);
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.renderWidth = 65535u;
+    frameDescriptor.renderHeight = 65535u;
+
+    NLS::Engine::Rendering::LightGridPrepass::PreparedFrameInputs frameInputs;
+
+    std::vector<std::string> messages;
+    const ScopedLogListener listener(
+        [&messages](const NLS::Debug::LogData& data)
+        {
+            messages.push_back(data.message);
+        });
+
+    const auto request = NLS::Engine::Rendering::LightGridPrepass::BuildPreparedComputeRequest(
+        frameDescriptor,
+        lightGridPrepass,
+        frameInputs);
+    const auto preparedSource =
+        NLS::Engine::Rendering::LightGridPrepass::BuildPreparedComputeDispatchSource(request);
+
+    EXPECT_TRUE(preparedSource.dispatchInputs.empty());
+    EXPECT_TRUE(preparedSource.metadata.empty());
+    EXPECT_TRUE(std::any_of(
+        messages.begin(),
+        messages.end(),
+        [](const std::string& message)
+        {
+            return message.find("frame data could not be built") != std::string::npos;
+        }));
+    EXPECT_FALSE(std::any_of(
+        messages.begin(),
+        messages.end(),
+        [](const std::string& message)
+        {
+            return message.find("explicit RHI device is unavailable") != std::string::npos;
+        }));
 }
 
 TEST(LightingDataProviderTests, LightGridZParamsMatchUESourceFormula)

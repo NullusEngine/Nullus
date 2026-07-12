@@ -474,6 +474,26 @@ size_t EstimateSaveMapSize(
         mapSize += kAlignment - remainder;
     return mapSize;
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+size_t& ArtifactDatabaseSaveAttemptCountForTestingStorage()
+{
+    static size_t count = 0u;
+    return count;
+}
+
+bool& ArtifactDatabaseFailNextSaveForTestingStorage()
+{
+    static bool fail = false;
+    return fail;
+}
+
+size_t& ArtifactDatabaseFailSaveAttemptForTestingStorage()
+{
+    static size_t attempt = 0u;
+    return attempt;
+}
+#endif
 }
 
 void ArtifactDatabase::Clear()
@@ -748,6 +768,20 @@ bool ArtifactDatabase::FailLmdb(std::string operation, const int result) const
 
 bool ArtifactDatabase::Save(const std::filesystem::path& path) const
 {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++ArtifactDatabaseSaveAttemptCountForTestingStorage();
+    if (ArtifactDatabaseFailNextSaveForTestingStorage())
+    {
+        ArtifactDatabaseFailNextSaveForTestingStorage() = false;
+        return Fail("Injected ArtifactDB save failure for testing.");
+    }
+    if (ArtifactDatabaseFailSaveAttemptForTestingStorage() != 0u &&
+        ArtifactDatabaseSaveAttemptCountForTestingStorage() == ArtifactDatabaseFailSaveAttemptForTestingStorage())
+    {
+        ArtifactDatabaseFailSaveAttemptForTestingStorage() = 0u;
+        return Fail("Injected ArtifactDB save failure for testing.");
+    }
+#endif
     ClearLastError();
 
     LmdbEnv environment;
@@ -834,6 +868,29 @@ bool ArtifactDatabase::Save(const std::filesystem::path& path) const
     transaction.committed = true;
     return true;
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void ResetArtifactDatabaseSaveAttemptCountForTesting()
+{
+    ArtifactDatabaseSaveAttemptCountForTestingStorage() = 0u;
+    ArtifactDatabaseFailSaveAttemptForTestingStorage() = 0u;
+}
+
+size_t GetArtifactDatabaseSaveAttemptCountForTesting()
+{
+    return ArtifactDatabaseSaveAttemptCountForTestingStorage();
+}
+
+void SetArtifactDatabaseFailNextSaveForTesting(const bool fail)
+{
+    ArtifactDatabaseFailNextSaveForTestingStorage() = fail;
+}
+
+void SetArtifactDatabaseFailSaveAttemptForTesting(const size_t attempt)
+{
+    ArtifactDatabaseFailSaveAttemptForTestingStorage() = attempt;
+}
+#endif
 
 bool ArtifactDatabase::Load(const std::filesystem::path& path)
 {

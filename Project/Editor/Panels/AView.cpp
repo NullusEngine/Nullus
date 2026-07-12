@@ -1,14 +1,17 @@
 ﻿#include "Panels/AView.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Core/EditorActions.h"
+#include "Debug/Logger.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Core/RendererStats.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
+#include "Settings/EditorSettings.h"
 #include "Profiling/Profiler.h"
 #include "ServiceLocator.h"
 #include "UI/UIManager.h"
 #include "ImGui/imgui.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
 
@@ -134,7 +137,18 @@ void Editor::Panels::AView::OnBeforeDrawWidgets()
     }
     {
         NLS_PROFILE_NAMED_SCOPE("AView::RenderView");
-	    Render(m_lastResolvedViewSize.first, m_lastResolvedViewSize.second);
+        const bool skipExplicitFrame = m_skipNextRenderFrame;
+        const bool deferRenderFrame = ShouldDeferRenderFrame();
+        if (skipExplicitFrame || deferRenderFrame)
+        {
+            m_skipNextRenderFrame = false;
+            if (skipExplicitFrame)
+                NLS_LOG_INFO(std::string("[Startup] AView deferred render frame panel=") + name + " reason=explicit");
+        }
+        else
+        {
+	        Render(m_lastResolvedViewSize.first, m_lastResolvedViewSize.second);
+        }
     }
 }
 
@@ -161,6 +175,11 @@ void Editor::Panels::AView::Render()
 {
 	auto [winWidth, winHeight] = GetSafeSize();
 	Render(winWidth, winHeight);
+}
+
+void Editor::Panels::AView::RequestSkipNextRenderFrame()
+{
+    m_skipNextRenderFrame = true;
 }
 
 void Editor::Panels::AView::SyncViewToCurrentContentRegion()
@@ -225,17 +244,47 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_height)
 {
 	NLS_PROFILE_NAMED_SCOPE(name.c_str());
+    const bool logStartupRenderStages = []()
+    {
+        static bool shouldLog = true;
+        const bool result = shouldLog;
+        shouldLog = false;
+        return result;
+    }();
+    auto startupStageBegin = std::chrono::steady_clock::now();
+    auto logStartupRenderStage =
+        [&startupStageBegin, logStartupRenderStages, this](const char* stage)
+        {
+            if (!logStartupRenderStages)
+                return;
+
+            const auto now = std::chrono::steady_clock::now();
+            NLS_LOG_INFO(
+                std::string("[Startup] AView::Render panel=") +
+                name +
+                " stage " +
+                stage +
+                " elapsedMs=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - startupStageBegin).count()));
+            startupStageBegin = now;
+        };
 	auto camera = GetCamera();
 	auto scene = GetScene();
+    logStartupRenderStage("ResolveCameraScene");
 
 	if (p_width > 0 && p_height > 0 && camera && scene)
 	{
         const auto staticFrameCacheKey = BuildStaticFrameCacheKey(*camera, *scene, p_width, p_height);
+        logStartupRenderStage("BuildStaticFrameCacheKey");
         auto* cacheDriver = Render::Context::TryGetLocatedDriver();
         const bool staticFrameCacheRequiresTextureView =
             cacheDriver != nullptr &&
             Render::Context::DriverRendererAccess::HasExplicitRHI(*cacheDriver);
-        const bool forceStaticFrameRender = ShouldForceStaticFrameRender();
+        const bool forceStaticFrameRender =
+            ShouldForceStaticFrameRender() ||
+            (cacheDriver != nullptr &&
+                Render::Context::DriverUIAccess::ShouldForceRenderDocCaptureFrameRender(*cacheDriver));
+        logStartupRenderStage("ResolveStaticFrameCacheInputs");
 
         auto resolveStaticFrameCacheDecision = [&]() {
             if (!ShouldUseStaticFrameCache())
@@ -269,6 +318,7 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             NLS_PROFILE_NAMED_SCOPE(
                 ToStaticFrameCacheReasonScope(m_lastStaticFrameCacheDecisionReason));
         }
+        logStartupRenderStage("ResolveStaticFrameCacheDecision");
         if (m_lastStaticFrameCacheDecisionReason == StaticFrameCacheDecisionReason::Hit)
         {
             NLS_PROFILE_NAMED_SCOPE("AView::RenderSkippedStaticCache");
@@ -279,6 +329,7 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             NLS_PROFILE_NAMED_SCOPE("AView::EnsureRenderer");
             EnsureRenderer();
         }
+        logStartupRenderStage("EnsureRenderer");
         if (m_renderer == nullptr)
             return;
 
@@ -293,10 +344,12 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             beforeTelemetry = beforeTelemetrySnapshot.value();
             m_lastAvailablePublishedFrameCount = beforeTelemetry.publishedFrameCount;
         }
+        logStartupRenderStage("ResolveBeforeTelemetry");
         {
             NLS_PROFILE_NAMED_SCOPE("AView::InitFrame");
 		    InitFrame();
         }
+        logStartupRenderStage("InitFrame");
 
 		Render::Data::FrameDescriptor frameDescriptor;
 		frameDescriptor.renderWidth = p_width;
@@ -306,11 +359,14 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 		m_fbo.SetOptimizedColorClearValue(clearColor.x, clearColor.y, clearColor.z, 1.0f);
 		m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
         NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &m_fbo);
+        logStartupRenderStage("PrepareFrameDescriptor");
 
         {
             NLS_PROFILE_NAMED_SCOPE("AView::RendererBeginFrame");
+            m_renderer->SetLargeSceneSettings(Editor::Settings::EditorSettings::BuildLargeSceneSettings());
 		    m_renderer->BeginFrame(frameDescriptor);
         }
+        logStartupRenderStage("RendererBeginFrame");
         ViewOverlayCameraMatrices submittedOverlayMatrices;
         submittedOverlayMatrices.view = camera->GetViewMatrix();
         submittedOverlayMatrices.projection = camera->GetProjectionMatrix();
@@ -318,20 +374,26 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 			NLS_PROFILE_NAMED_SCOPE("AView::DrawFrame");
 			DrawFrame();
 		}
+        logStartupRenderStage("DrawFrame");
         {
             NLS_PROFILE_NAMED_SCOPE("AView::RendererEndFrame");
 		    m_renderer->EndFrame();
         }
+        logStartupRenderStage("RendererEndFrame");
         if (m_renderer->IsFrameInfoValid())
         {
             m_lastRenderedFrameInfo = m_renderer->GetFrameInfo();
         }
         std::optional<Render::Context::ThreadedFrameTelemetry> postRenderDrainTelemetry;
+        const bool hadInFlightFrameBeforeRender =
+            beforeTelemetrySnapshot.has_value() &&
+            beforeTelemetrySnapshot->inFlightFrameCount > 0u;
         if (Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
             RequiresRetiredFrameConsumption(),
             RequiresImmediateRetiredFrameReadback(),
             m_resizedViewThisFrame,
-            RequiresSynchronizedRetiredFramePresentation()))
+            RequiresSynchronizedRetiredFramePresentation(),
+            hadInFlightFrameBeforeRender))
         {
             if (auto* driver = Render::Context::TryGetLocatedDriver();
                 driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
@@ -351,6 +413,7 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
                         }
                     }
                 }
+                logStartupRenderStage("DrainThreadedRendering");
             }
         }
         bool framePublished = !threadedRendering;
@@ -378,6 +441,7 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
                 latestRetiredFrameId = beforeTelemetry.latestRetiredFrameId;
             }
         }
+        logStartupRenderStage("ResolveAfterTelemetry");
         {
             NLS_PROFILE_NAMED_SCOPE("AView::UpdateSubmittedOverlayCameraMatrices");
             UpdateSubmittedOverlayCameraMatrices(
@@ -387,12 +451,15 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
                 latestPublishedFrameId,
                 latestRetiredFrameId);
         }
+        logStartupRenderStage("UpdateSubmittedOverlayCameraMatrices");
         {
             NLS_PROFILE_NAMED_SCOPE("AView::AfterRenderFrame");
 		    AfterRenderFrame();
         }
+        logStartupRenderStage("AfterRenderFrame");
         CommitStaticFrameCacheKey(staticFrameCacheKey);
         m_staticFrameCacheValid = ShouldUseStaticFrameCache();
+        logStartupRenderStage("CommitStaticFrameCache");
 	}
 }
 
@@ -485,6 +552,11 @@ void Editor::Panels::AView::CommitStaticFrameCacheKey(const uint64_t staticFrame
 }
 
 bool Editor::Panels::AView::ShouldForceStaticFrameRender() const
+{
+    return false;
+}
+
+bool Editor::Panels::AView::ShouldDeferRenderFrame() const
 {
     return false;
 }

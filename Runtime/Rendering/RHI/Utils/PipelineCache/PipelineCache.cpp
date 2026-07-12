@@ -269,8 +269,11 @@ namespace NLS::Render::RHI
         HashCombine(hash, desc.renderTargetLayout.hasDepth);
         HashCombine(hash, desc.renderTargetLayout.sampleCount);
         HashCombine(hash, desc.renderTargetLayout.colorFormats.size());
-        for (const auto colorFormat : desc.renderTargetLayout.colorFormats)
-            HashCombine(hash, static_cast<uint32_t>(colorFormat));
+        for (size_t index = 0u; index < desc.renderTargetLayout.colorFormats.size(); ++index)
+        {
+            HashCombine(hash, static_cast<uint32_t>(desc.renderTargetLayout.colorFormats[index]));
+            HashCombine(hash, static_cast<uint32_t>(desc.renderTargetLayout.GetColorSpace(index)));
+        }
         HashCombine(hash, desc.vertexBuffers.size());
         for (const auto& vertexBuffer : desc.vertexBuffers)
         {

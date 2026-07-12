@@ -369,6 +369,28 @@ bool SourceAssetDatabase::RegisterSourceAsset(
     return RegisterSourceAssetEntry(root, std::filesystem::directory_entry(normalizedPath, error), readOnly, mountedRoots);
 }
 
+bool SourceAssetDatabase::RemoveSourceAsset(const std::filesystem::path& assetPath)
+{
+    const auto found = m_indexByPath.find(PathKey(assetPath));
+    if (found == m_indexByPath.end())
+        return false;
+
+    m_records.erase(m_records.begin() + static_cast<std::ptrdiff_t>(found->second));
+    RebuildIndexes();
+    return true;
+}
+
+void SourceAssetDatabase::RebuildIndexes()
+{
+    m_indexById.clear();
+    m_indexByPath.clear();
+    for (size_t index = 0u; index < m_records.size(); ++index)
+    {
+        m_indexById.emplace(m_records[index].id, index);
+        m_indexByPath.emplace(PathKey(m_records[index].absolutePath), index);
+    }
+}
+
 bool SourceAssetDatabase::RegisterSourceAssetEntry(
     const std::filesystem::path& root,
     const std::filesystem::directory_entry& entry,

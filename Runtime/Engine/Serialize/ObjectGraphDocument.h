@@ -212,7 +212,17 @@ namespace NLS::Engine::Serialize
             return std::get<ArrayValue>(m_value);
         }
 
+        ArrayValue& GetMutableArray()
+        {
+            return std::get<ArrayValue>(m_value);
+        }
+
         const ObjectValue& GetObject() const
+        {
+            return std::get<ObjectValue>(m_value);
+        }
+
+        ObjectValue& GetMutableObject()
         {
             return std::get<ObjectValue>(m_value);
         }

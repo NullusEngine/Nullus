@@ -1480,6 +1480,14 @@ TEST(AssetMaterialConversionTests, GltfPbrConversionMapsTextureSlotsFactorsSampl
     EXPECT_DOUBLE_EQ(FindFactor(material, "NormalScale")->scalar, 0.6);
     EXPECT_DOUBLE_EQ(FindFactor(material, "OcclusionStrength")->scalar, 0.8);
     EXPECT_FALSE(material.serializedPayload.empty());
+    EXPECT_NE(
+        material.serializedPayload.find("property _MetallicMapChannel Vector 0.000000 0.000000 1.000000 0.000000"),
+        std::string::npos)
+        << "glTF metallic-roughness textures store metallic in the blue channel.";
+    EXPECT_NE(
+        material.serializedPayload.find("property _RoughnessMapChannel Vector 0.000000 1.000000 0.000000 0.000000"),
+        std::string::npos)
+        << "glTF metallic-roughness textures store roughness in the green channel.";
 }
 
 TEST(AssetMaterialConversionTests, ConvertedStandardPbrPropertiesExistInBuiltInShaderLabAsset)
@@ -1542,8 +1550,11 @@ TEST(AssetMaterialConversionTests, ConvertedStandardPbrPropertiesExistInBuiltInS
     ASSERT_TRUE(shaderStream) << shaderPath.string();
     std::ostringstream shaderBuffer;
     shaderBuffer << shaderStream.rdbuf();
-    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(shaderBuffer.str(), shaderPath.generic_string());
+    const auto shaderSource = shaderBuffer.str();
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(shaderSource, shaderPath.generic_string());
     ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    EXPECT_NE(shaderSource.find("dot(_MetallicMap.Sample(sampler_MetallicMap, input.uv), _MetallicMapChannel)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("dot(_RoughnessMap.Sample(sampler_RoughnessMap, input.uv), _RoughnessMapChannel)"), std::string::npos);
 
     std::unordered_set<std::string> shaderPropertyNames;
     for (const auto& property : parsed.asset.properties)
@@ -1606,6 +1617,52 @@ TEST(AssetMaterialConversionTests, GltfTextureUrisSerializeAsRuntimeResourcePath
         std::string::npos);
     EXPECT_NE(material.serializedPayload.find("resourcePath=Models/Hero/textures/BaseColor.png"), std::string::npos);
     EXPECT_EQ(material.serializedPayload.find("value=\"image/0\""), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, DeferredTextureSourceKeysDoNotSerializeSourceUrisAsRuntimeResourcePaths)
+{
+    const std::string gltf = R"(
+    {
+      "asset": { "version": "2.0" },
+      "images": [
+        { "uri": "textures/BulkAlbedo0.png", "name": "BaseColor" }
+      ],
+      "textures": [
+        { "source": 0 }
+      ],
+      "materials": [
+        {
+          "name": "HeroMaterial",
+          "pbrMetallicRoughness": {
+            "baseColorTexture": { "index": 0 }
+          }
+        }
+      ]
+    })";
+
+    const auto scene = NLS::Render::Assets::ImportGltfSceneJson(
+        gltf,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("e1020101-0101-4101-8101-010101010103")),
+        "Hero");
+    ASSERT_EQ(scene.materials.size(), 1u);
+
+    NLS::Render::Assets::MaterialConversionContext context;
+    context.texturePathPrefix = std::filesystem::path("Models/Hero");
+    context.deferredTextureSourceKeys.insert("image/0");
+    const auto material = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        scene.materials.front(),
+        MaterialSourceModel::GltfPbrMetallicRoughness,
+        context);
+
+    const auto* baseColor = FindSlot(material, "BaseColor");
+    ASSERT_NE(baseColor, nullptr);
+    EXPECT_EQ(baseColor->textureKey, "image/0");
+    EXPECT_TRUE(baseColor->textureResourcePath.empty());
+    EXPECT_EQ(baseColor->colorSpace, MaterialTextureColorSpace::SRgb);
+    EXPECT_EQ(material.serializedPayload.find("property _BaseMap Texture2D"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("textureSlot _BaseMap texture=image/0 resourcePath="), std::string::npos);
+    EXPECT_EQ(material.serializedPayload.find("BulkAlbedo"), std::string::npos);
 }
 
 TEST(AssetMaterialConversionTests, EmbeddedOrUnnamedGltfImagesDoNotSerializeVirtualImageKeysAsDiskPaths)
@@ -1681,8 +1738,9 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadUsesShaderLabOnlySche
         MaterialSourceModel::GltfPbrMetallicRoughness);
 
     EXPECT_NE(material.serializedPayload.find("shaderLabMaterialVersion=1"), std::string::npos);
-    EXPECT_NE(material.serializedPayload.find("shader=?"), std::string::npos);
-    EXPECT_EQ(material.serializedPayload.find(".shader"), std::string::npos);
+    EXPECT_NE(
+        material.serializedPayload.find("shader=Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"),
+        std::string::npos);
     EXPECT_NE(material.serializedPayload.find("surfaceMode=Transparent"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("alphaMode=Blend"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("doubleSided=true"), std::string::npos);
@@ -1728,8 +1786,9 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadUsesShaderLabMaterial
         MaterialSourceModel::GltfPbrMetallicRoughness);
 
     EXPECT_NE(material.serializedPayload.find("shaderLabMaterialVersion=1"), std::string::npos);
-    EXPECT_NE(material.serializedPayload.find("shader=?"), std::string::npos);
-    EXPECT_EQ(material.serializedPayload.find(".shader"), std::string::npos);
+    EXPECT_NE(
+        material.serializedPayload.find("shader=Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"),
+        std::string::npos);
     EXPECT_NE(material.serializedPayload.find("property _BaseColor Color 0.250000 0.500000 0.750000 0.800000"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("property _Metallic Float 0.400000"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("property _Roughness Float 0.600000"), std::string::npos);
@@ -1972,15 +2031,15 @@ TEST(AssetMaterialConversionTests, MaterialLoaderCreateRejectsSourceMaterialText
         materialPath.string(),
         payload,
         {false, false});
-    ASSERT_NE(parsed, nullptr);
-    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(parsed));
+    EXPECT_EQ(parsed, nullptr)
+        << "ShaderLab .mat payloads must reference an authoritative .shader source instead of shader=?.";
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetMaterialConversionTests, MaterialLoaderReadsShaderLabDecalSurfaceMode)
+TEST(AssetMaterialConversionTests, MaterialLoaderRejectsShaderLabMaterialWithoutShaderReference)
 {
     const auto root = std::filesystem::temp_directory_path() /
-        ("nullus_legacy_decal_material_" + NLS::Guid::New().ToString());
+        ("nullus_shaderlab_material_missing_shader_" + NLS::Guid::New().ToString());
     std::filesystem::create_directories(root);
 
     const auto materialPath = MaterialArtifactPath(root, "3efafaddf8c80942dcb86b4727df50af94b636e293b43a6812bc91eba6f19f9b");
@@ -1997,19 +2056,16 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReadsShaderLabDecalSurfaceMode)
         "alphaMode=Blend\n");
 
     auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
-    ASSERT_NE(loaded, nullptr);
-    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Decal);
-    EXPECT_TRUE(loaded->IsDecal());
-    EXPECT_TRUE(loaded->IsBlendable());
+    EXPECT_EQ(loaded, nullptr)
+        << "Runtime material artifacts without a .shader source reference must not half-load.";
 
-    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetMaterialConversionTests, MaterialLoaderReadsShaderLabTransparentSurfaceMode)
+TEST(AssetMaterialConversionTests, MaterialLoaderReloadRejectsMissingShaderWithoutMutatingExistingMaterial)
 {
     const auto root = std::filesystem::temp_directory_path() /
-        ("nullus_legacy_transparent_material_" + NLS::Guid::New().ToString());
+        ("nullus_shaderlab_reload_missing_shader_" + NLS::Guid::New().ToString());
     std::filesystem::create_directories(root);
 
     const auto materialPath = MaterialArtifactPath(root, "a01b94c6c07819e8d86e295b9c3643a485f09fb2709f1da8354b6ca64e755860");
@@ -2024,13 +2080,65 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReadsShaderLabTransparentSurfac
         "surfaceMode=Transparent\n"
         "alphaMode=Blend\n");
 
-    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
-    ASSERT_NE(loaded, nullptr);
-    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Transparent);
-    EXPECT_FALSE(loaded->IsDecal());
-    EXPECT_TRUE(loaded->IsBlendable());
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(WriteStandardPbrShaderArtifact(root).string());
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    material.path = "Library/Artifacts/00/good-material";
+    const auto originalPath = material.path;
+    material.SetShaderLabSourcePath("Assets/Shaders/AlreadyLoaded.shader");
+    material.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Opaque);
 
-    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    NLS::Render::Resources::Loaders::MaterialLoader::Reload(material, materialPath.string());
+
+    EXPECT_EQ(material.GetShader(), shader);
+    EXPECT_EQ(material.path, originalPath);
+    EXPECT_EQ(material.GetShaderLabSourcePath(), "Assets/Shaders/AlreadyLoaded.shader");
+    EXPECT_EQ(material.GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Opaque)
+        << "Failed reloads must leave shared live materials untouched.";
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderReloadRejectsInvalidSurfaceModeWithoutMutatingExistingMaterial)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shaderlab_reload_invalid_surface_mode_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    const auto materialPath = MaterialArtifactPath(root, "e0389d5b6b28e7d56873629e1fdbab6f3f8e0d62dbfeec1ddfa4b9d32271c00e");
+    WriteNativeMaterialArtifactFile(
+        materialPath,
+        "shaderLabMaterialVersion=1\n"
+        "shader=Assets/Shaders/BadReload.shader\n"
+        "surfaceMode=NotAMode\n"
+        "keyword _BAD_RELOAD\n"
+        "property _Roughness Float 0.125\n");
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(WriteStandardPbrShaderArtifact(root).string());
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    material.path = "Library/Artifacts/00/original-material";
+    const auto originalPath = material.path;
+    material.SetShaderLabSourcePath("Assets/Shaders/Original.shader");
+    material.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Opaque);
+    material.EnableKeyword("_ORIGINAL");
+    material.SetRawParameter("_Roughness", 0.75f);
+
+    NLS::Render::Resources::Loaders::MaterialLoader::Reload(material, materialPath.string());
+
+    EXPECT_EQ(material.GetShader(), shader);
+    EXPECT_EQ(material.path, originalPath);
+    EXPECT_EQ(material.GetShaderLabSourcePath(), "Assets/Shaders/Original.shader");
+    EXPECT_EQ(material.GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Opaque);
+    EXPECT_TRUE(material.IsKeywordEnabled("_ORIGINAL"));
+    EXPECT_FALSE(material.IsKeywordEnabled("_BAD_RELOAD"));
+    const auto* roughnessValue = material.GetParameterBlock().TryGet("_Roughness");
+    ASSERT_NE(roughnessValue, nullptr);
+    ASSERT_EQ(roughnessValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*roughnessValue), 0.75f);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     std::filesystem::remove_all(root);
 }
 
@@ -2180,6 +2288,39 @@ TEST(AssetMaterialConversionTests, MaterialLoaderAcceptsShaderLabSourceAsAuthori
     EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/Shaders/Multi.shader");
     EXPECT_EQ(loaded->GetShader(), nullptr)
         << "A .mat source shader reference must not direct-load or compile the .shader source.";
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderAppliesShaderLabSourceBackedPropertiesWithoutAttachedShader)
+{
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::CreateFromSerializedPayload(
+        "Assets/Materials/SourceBackedProperties.mat",
+        "shaderLabMaterialVersion=1\n"
+        "shader=Assets/Shaders/StandardPBR.shader\n"
+        "surfaceMode=Opaque\n"
+        "property _BaseColor Color 0.25 0.50 0.75 1.00\n"
+        "property _Roughness Float 0.625\n",
+        {false, false});
+
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetShader(), nullptr);
+    EXPECT_EQ(loaded->GetShaderLabSourcePath(), "Assets/Shaders/StandardPBR.shader");
+
+    const auto* baseColorValue = loaded->GetParameterBlock().TryGet("_BaseColor");
+    ASSERT_NE(baseColorValue, nullptr)
+        << "ShaderLab source-backed materials must preserve serialized properties even before pass shaders are attached.";
+    ASSERT_EQ(baseColorValue->type(), typeid(NLS::Maths::Vector4));
+    const auto& baseColor = std::any_cast<const NLS::Maths::Vector4&>(*baseColorValue);
+    EXPECT_FLOAT_EQ(baseColor.x, 0.25f);
+    EXPECT_FLOAT_EQ(baseColor.y, 0.50f);
+    EXPECT_FLOAT_EQ(baseColor.z, 0.75f);
+    EXPECT_FLOAT_EQ(baseColor.w, 1.00f);
+
+    const auto* roughnessValue = loaded->GetParameterBlock().TryGet("_Roughness");
+    ASSERT_NE(roughnessValue, nullptr);
+    ASSERT_EQ(roughnessValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*roughnessValue), 0.625f);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
 }
@@ -2340,6 +2481,97 @@ TEST(AssetMaterialConversionTests, MaterialLoaderResolvesRuntimeShaderLabPassArt
     EXPECT_EQ(forwardShader->path.find((dataRoot / "Artifacts").string()), 0u);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    shaderManager.UnloadResources();
+    textureManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderReusesCachedShaderLabPassArtifactPaths)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shaderlab_runtime_source_pass_cache_" + NLS::Guid::New().ToString());
+    const auto dataRoot = root / "Data";
+    const auto shaderSourcePath = std::filesystem::path("Assets") / "Shaders" / "CachedMulti.shader";
+    const auto shaderSourceId = NLS::Core::Assets::AssetId(NLS::Guid::New());
+    const auto shaderArtifactHash =
+        "9e24e94a076b68fcad5f2bc73efbdf8d7e88eb5fc171edc925d03ac358a64bc9";
+    const auto firstMaterialArtifactHash =
+        "492390f453ae436a1093c55c6b4d804ae257f4fa1645b60cb9433a2b958f24f0";
+    const auto secondMaterialArtifactHash =
+        "592390f453ae436a1093c55c6b4d804ae257f4fa1645b60cb9433a2b958f24f0";
+
+    auto artifact = MakeStandardPbrShaderArtifact();
+    artifact.sourcePath = shaderSourcePath.generic_string();
+    artifact.subAssetKey = "shader:CachedMulti/Forward#0";
+    artifact.shaderLabLightMode = "Forward";
+    artifact.shaderLabPassState = NLS::Render::ShaderLab::ShaderLabPassState{};
+    WriteBinaryFile(
+        dataRoot / RuntimeArtifactPath(shaderArtifactHash),
+        NLS::Render::Assets::SerializeShaderArtifact(artifact));
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = shaderSourceId;
+    manifest.importerId = "ShaderLabImporter";
+    manifest.importerVersion = 1u;
+    manifest.targetPlatform = "win64";
+    manifest.primarySubAssetKey = artifact.subAssetKey;
+    manifest.subAssets.push_back({
+        shaderSourceId,
+        artifact.subAssetKey,
+        NLS::Core::Assets::ArtifactType::Shader,
+        "ShaderLoader",
+        "win64",
+        RuntimeArtifactPath(shaderArtifactHash),
+        "sha256:" + std::string(shaderArtifactHash),
+        "CachedMulti Forward"
+    });
+
+    NLS::Core::Assets::ArtifactDatabase database;
+    database.UpsertManifest(
+        manifest,
+        shaderSourcePath.generic_string(),
+        NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
+    ASSERT_TRUE(database.Save(dataRoot / "ArtifactDB"));
+
+    const auto firstMaterialPath = RuntimeMaterialArtifactPath(root, firstMaterialArtifactHash);
+    const auto secondMaterialPath = RuntimeMaterialArtifactPath(root, secondMaterialArtifactHash);
+    const auto materialPayload =
+        "shaderLabMaterialVersion=1\n"
+        "shader=" + shaderSourcePath.generic_string() + "\n"
+        "surfaceMode=Opaque\n";
+    WriteNativeMaterialArtifactFile(firstMaterialPath, materialPayload);
+    WriteNativeMaterialArtifactFile(secondMaterialPath, materialPayload);
+
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    const ScopedShaderManagerAssetPaths shaderAssetPaths(
+        (root / "Assets").string() + "/",
+        "App/Assets/Engine/");
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions options;
+    options.loadMissingTextures = false;
+    options.loadMissingShaders = true;
+    options.artifactDatabasePath = dataRoot / "ArtifactDB";
+    options.targetPlatform = "win64";
+    auto* first = NLS::Render::Resources::Loaders::MaterialLoader::Create(firstMaterialPath.string(), options);
+    auto* second = NLS::Render::Resources::Loaders::MaterialLoader::Create(secondMaterialPath.string(), options);
+
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    auto* firstForward = first->ResolveShaderForLightMode("Forward");
+    auto* secondForward = second->ResolveShaderForLightMode("Forward");
+    ASSERT_NE(firstForward, nullptr);
+    ASSERT_NE(secondForward, nullptr);
+    EXPECT_EQ(firstForward->GetImportedArtifactSourcePath(), shaderSourcePath.generic_string());
+    EXPECT_EQ(secondForward->GetImportedArtifactSourcePath(), shaderSourcePath.generic_string());
+    EXPECT_EQ(secondForward->GetShaderLabLightMode(), "Forward");
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(first));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(second));
     shaderManager.UnloadResources();
     textureManager.UnloadResources();
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
@@ -2577,6 +2809,46 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesReadableSourceMatNati
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetMaterialConversionTests, MaterialLoaderSavePreservesShaderLabSourceBackedRawProperties)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shaderlab_material_save_source_backed_raw_properties_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    NLS::Render::Resources::Material material;
+    material.SetShaderLabSourcePath("Assets/Shaders/StandardPBR.shader");
+    material.SetRawParameter("_BaseColor", NLS::Maths::Vector4 {0.2f, 0.4f, 0.6f, 1.0f});
+    material.SetRawParameter("_Roughness", 0.55f);
+    material.SetRawParameter("_UseDetail", 1);
+    material.SetTextureResourcePath("_BaseMap", LibraryArtifactPath("2222222222222222222222222222222222222222222222222222222222222222"));
+
+    const auto materialPath = MaterialArtifactPath(root, "2db56a4dbb0f967815069bbd8a075fbb66e8f6aa2f82327c962f831de58ef24c");
+    NLS::Render::Resources::Loaders::MaterialLoader::Save(material, materialPath.string());
+
+    const auto payload = ReadNativeArtifactPayloadText(
+        materialPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+
+    EXPECT_NE(payload.find("shader=Assets/Shaders/StandardPBR.shader"), std::string::npos);
+    EXPECT_NE(payload.find("property _BaseColor Color 0.200000 0.400000 0.600000 1.000000"), std::string::npos);
+    EXPECT_NE(payload.find("property _Roughness Float 0.550000"), std::string::npos);
+    EXPECT_NE(payload.find("property _UseDetail Int 1"), std::string::npos);
+    EXPECT_NE(payload.find("property _BaseMap Texture2D Library/Artifacts/22/2222222222222222222222222222222222222222222222222222222222222222"), std::string::npos);
+
+    auto* reloaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string(), {false, false});
+    ASSERT_NE(reloaded, nullptr);
+    EXPECT_NE(reloaded->GetParameterBlock().TryGet("_BaseColor"), nullptr);
+    EXPECT_NE(reloaded->GetParameterBlock().TryGet("_Roughness"), nullptr);
+    EXPECT_NE(reloaded->GetParameterBlock().TryGet("_UseDetail"), nullptr);
+    EXPECT_EQ(
+        reloaded->GetTextureResourcePath("_BaseMap"),
+        LibraryArtifactPath("2222222222222222222222222222222222222222222222222222222222222222"));
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(reloaded));
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesShaderLabPropertyNames)
 {
     const auto root = std::filesystem::temp_directory_path() /
@@ -2596,6 +2868,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveWritesShaderLabPropertyName
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material material(shader);
+    material.SetShaderLabSourcePath("Assets/Shaders/StandardPBR.shader");
     material.Set<NLS::Maths::Vector4>("_BaseColor", {0.25f, 0.5f, 0.75f, 1.0f});
     material.Set<float>("_Metallic", 0.35f);
     material.Set<float>("_Roughness", 0.65f);
@@ -2639,6 +2912,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSavePreservesNativeShaderLabPro
     ASSERT_NE(shader, nullptr);
 
     NLS::Render::Resources::Material material(shader);
+    material.SetShaderLabSourcePath("Assets/Shaders/Native.shader");
     material.Set<NLS::Maths::Vector4>("_BaseColor", {0.125f, 0.25f, 0.5f, 1.0f});
     const auto textureResourcePath =
         LibraryArtifactPath("1111111111111111111111111111111111111111111111111111111111111111");
@@ -2669,6 +2943,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveRoundTripsKeywordsAndSample
     std::filesystem::create_directories(root);
 
     NLS::Render::Resources::Material material;
+    material.SetShaderLabSourcePath("Assets/Shaders/StandardPBR.shader");
     material.EnableKeyword("_NORMALMAP");
     material.EnableKeyword("_ALPHATEST_ON");
     NLS::Render::RHI::SamplerDesc sampler;
@@ -2697,7 +2972,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderSaveRoundTripsKeywordsAndSample
     WriteNativeMaterialArtifactFile(
         clearedPath,
         "shaderLabMaterialVersion=1\n"
-        "shader=?\n"
+        "shader=Assets/Shaders/StandardPBR.shader\n"
         "surfaceMode=Opaque\n");
     NLS::Render::Resources::Loaders::MaterialLoader::Reload(*loaded, clearedPath.string());
     EXPECT_FALSE(loaded->IsKeywordEnabled("_NORMALMAP"));
@@ -2717,7 +2992,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderUsesExplicitShaderLabSurfaceMod
     WriteNativeMaterialArtifactFile(
         materialPath,
         "shaderLabMaterialVersion=1\n"
-        "shader=?\n"
+        "shader=Assets/Shaders/StandardPBR.shader\n"
         "name=HeroGlass\n"
         "sourceSubAsset=material:decal_folder/hero_glass\n"
         "surfaceMode=Transparent\n"
@@ -2743,7 +3018,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderAllowsShaderLabDecalWithoutName
     WriteNativeMaterialArtifactFile(
         materialPath,
         "shaderLabMaterialVersion=1\n"
-        "shader=?\n"
+        "shader=Assets/Shaders/StandardPBR.shader\n"
         "sourceSubAsset=material:dirt_decal\n"
         "surfaceMode=Decal\n"
         "alphaMode=Blend\n");
@@ -2768,7 +3043,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderExplicitShaderLabTransparentOve
     WriteNativeMaterialArtifactFile(
         materialPath,
         "shaderLabMaterialVersion=1\n"
-        "shader=?\n"
+        "shader=Assets/Shaders/StandardPBR.shader\n"
         "surfaceMode=Transparent\n"
         "name=dirt_decal\n"
         "alphaMode=Blend\n");
@@ -2793,7 +3068,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderExplicitShaderLabOpaqueOverride
     WriteNativeMaterialArtifactFile(
         materialPath,
         "shaderLabMaterialVersion=1\n"
-        "shader=?\n"
+        "shader=Assets/Shaders/StandardPBR.shader\n"
         "surfaceMode=Opaque\n"
         "name=dirt_decal\n"
         "alphaMode=Blend\n");
@@ -2890,6 +3165,36 @@ TEST(AssetMaterialConversionTests, MaterialConversionReferencesAuthoritativeShad
     EXPECT_EQ(material.serializedPayload.find("shader=Library/Artifacts/"), std::string::npos);
 }
 
+TEST(AssetMaterialConversionTests, EditorMaterialCreationSourcesReferenceAuthoritativeStandardPbrShader)
+{
+    const auto read = [](const std::filesystem::path& relativePath)
+    {
+        std::ifstream input(std::filesystem::path(NLS_ROOT_DIR) / relativePath, std::ios::binary);
+        EXPECT_TRUE(input) << relativePath.generic_string();
+        return std::string{
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()};
+    };
+
+    const auto defaults = read("Project/Editor/Assets/ShaderLabMaterialDefaults.h");
+    EXPECT_NE(
+        defaults.find("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"),
+        std::string::npos)
+        << "New .mat assets must bind the authoritative ShaderLab StandardPBR source so prefab "
+           "instantiation can resolve material pass artifacts through ArtifactDB.";
+    EXPECT_EQ(defaults.find("shader=?"), std::string::npos)
+        << "The default material template must never create a ShaderLab payload without a shader reference.";
+
+    for (const auto& relativePath : {
+             std::filesystem::path("Project/Editor/Panels/AssetBrowser.cpp"),
+             std::filesystem::path("Project/Editor/Assets/AssetDragDropWorkflow.cpp")})
+    {
+        const auto source = read(relativePath);
+        EXPECT_EQ(source.find("\"shader=?\\\\n\""), std::string::npos) << relativePath.generic_string();
+        EXPECT_EQ(source.find("shader=?"), std::string::npos) << relativePath.generic_string();
+    }
+}
+
 TEST(AssetMaterialConversionTests, ImportedModelMaterialsDefaultToDoubleSidedVisibility)
 {
     const std::string gltf = R"(
@@ -2930,7 +3235,10 @@ TEST(AssetMaterialConversionTests, EngineDefaultMaterialIsDoubleSidedForDeferred
 
     ASSERT_FALSE(payload.empty());
     EXPECT_NE(payload.find("shaderLabMaterialVersion=1"), std::string::npos);
-    EXPECT_EQ(payload.find(".shader"), std::string::npos);
+    EXPECT_NE(
+        payload.find("shader=Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"),
+        std::string::npos);
+    EXPECT_EQ(payload.find("Library/Artifacts/"), std::string::npos);
     EXPECT_NE(payload.find("doubleSided=true"), std::string::npos);
 }
 
@@ -3425,7 +3733,7 @@ TEST(AssetMaterialConversionTests, MaterialLoaderReadsShaderLabKeywords)
 
     const std::string payload =
         "shaderLabMaterialVersion=1\n"
-        "shader=?\n"
+        "shader=Assets/Shaders/StandardPBR.shader\n"
         "keyword _NORMALMAP\n"
         "keyword _ALPHATEST_ON\n";
     WriteNativeMaterialArtifactFile(materialPath, payload);
@@ -3561,7 +3869,10 @@ TEST(AssetMaterialConversionTests, MaterialManagerBoundsPendingAsyncArtifactRequ
         EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
     }
 
-    EXPECT_LE(MaterialManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
+    EXPECT_EQ(MaterialManager::GetMaxPendingAsyncArtifactRequestCountForTesting(), 32u);
+    EXPECT_LE(
+        MaterialManager::GetPendingAsyncArtifactRequestCountForTesting(),
+        MaterialManager::GetMaxPendingAsyncArtifactRequestCountForTesting())
         << "Async material artifact scheduling must be bounded so large prefab drags cannot spawn unbounded std::async work.";
     EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(MaterialArtifactPath(root, IndexedArtifactHash("pending-material", 79u)).string()))
         << "Requests beyond the active material cap must remain pending so large prefab finalization retries instead of failing.";
@@ -3624,7 +3935,10 @@ TEST(AssetMaterialConversionTests, MaterialManagerBoundsGlobalActiveAsyncArtifac
         materialManagers.push_back(std::move(materialManager));
     }
 
-    EXPECT_LE(MaterialManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
+    EXPECT_EQ(MaterialManager::GetMaxPendingAsyncArtifactRequestCountForTesting(), 32u);
+    EXPECT_LE(
+        MaterialManager::GetPendingAsyncArtifactRequestCountForTesting(),
+        MaterialManager::GetMaxPendingAsyncArtifactRequestCountForTesting())
         << "Material artifact loading must use a global active cap so many preview owners cannot fill the editor background queue.";
     EXPECT_EQ(MaterialManager::GetTotalAsyncArtifactRequestCountForTesting(), 80u);
 
@@ -3653,6 +3967,39 @@ TEST(AssetMaterialConversionTests, MaterialManagerCancelAsyncArtifactDoesNotCons
     materialManager.CancelAsyncArtifact(materialPath.string());
     EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(materialPath.string()))
         << "Preview cleanup must not cancel shared/final material interest by repeating path-only cancellation.";
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerCancelAsyncArtifactCanReleaseSharedInterest)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_cancel_explicit_shared_" + NLS::Guid::New().ToString());
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    MaterialManager materialManager;
+
+    std::filesystem::path queuedMaterialPath;
+    for (size_t index = 0u; index < 80u; ++index)
+    {
+        const auto materialPath = MaterialArtifactPath(
+            root,
+            IndexedArtifactHash("explicit-shared-material", index));
+        WriteMinimalShaderLabMaterialArtifactFile(materialPath);
+        EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string(), false), nullptr);
+        queuedMaterialPath = materialPath;
+    }
+
+    ASSERT_TRUE(materialManager.IsAsyncArtifactLoadPending(queuedMaterialPath.string()));
+    materialManager.CancelAsyncArtifact(queuedMaterialPath.string(), false);
+    EXPECT_FALSE(materialManager.IsAsyncArtifactLoadPending(queuedMaterialPath.string()))
+        << "Scene-load cleanup must be able to release shared material interest that it registered.";
 
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     std::filesystem::remove_all(root);
@@ -3760,6 +4107,116 @@ TEST(AssetMaterialConversionTests, MaterialManagerPreviewAsyncArtifactReturnsMat
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
     MaterialManager::ProvideAssetPaths({}, {});
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerAsyncArtifactRegistersShaderLabMaterialWithShader)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_shaderlab_shader_" + NLS::Guid::New().ToString());
+    const auto projectAssets = root / "Assets";
+    const auto materialResourcePath =
+        LibraryArtifactPath("4b0b69b04c6af9c428efcf5b857c6cf1576804a6a1212995f9b469a4a187d7b8");
+    const auto materialPath = root / materialResourcePath;
+    const auto shaderSourcePath = WriteShaderLabSourceBackedShaderArtifact(
+        root,
+        std::filesystem::path("Assets") / "Shaders" / "AsyncShaderLabMaterial.shader",
+        "5b670b2d4aab273b6e256f3e94b0e16037a19a1c34be235ed9a658b767c0c4e1",
+        MakeStandardPbrShaderArtifact(),
+        "AsyncShaderLabMaterial Forward");
+
+    WriteNativeMaterialArtifactFile(
+        materialPath,
+        "shaderLabMaterialVersion=1\n"
+        "shader=" + shaderSourcePath.generic_string() + "\n"
+        "surfaceMode=Opaque\n");
+
+    const ScopedMaterialConversionJobSystem jobSystem;
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    MaterialManager materialManager;
+    const ScopedShaderManagerAssetPaths shaderAssetPaths(
+        projectAssets.string() + "/",
+        "App/Assets/Engine/");
+    MaterialManager::ProvideAssetPaths(projectAssets.string() + "/", "App/Assets/Engine/");
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
+    for (size_t attempt = 0u; attempt < 256u && !materialManager.IsResourceRegistered(materialPath.string()); ++attempt)
+    {
+        materialManager.PumpAsyncLoadsForPaths({materialPath.string()}, 1u);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    auto* material = materialManager.RequestAsyncArtifact(materialPath.string());
+    ASSERT_NE(material, nullptr);
+    ASSERT_TRUE(material->IsValid())
+        << "Async material artifact completion must not cache a ShaderLab material without its pass shader.";
+    auto* forwardShader = material->ResolveShaderForLightMode("Forward");
+    ASSERT_NE(forwardShader, nullptr);
+    EXPECT_EQ(forwardShader, material->GetShader());
+    EXPECT_EQ(forwardShader->GetImportedArtifactSourcePath(), shaderSourcePath.generic_string());
+
+    materialManager.UnloadResources();
+    shaderManager.UnloadResources();
+    textureManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    MaterialManager::ProvideAssetPaths({}, {});
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetMaterialConversionTests, MaterialManagerAsyncArtifactDoesNotCacheInvalidShaderLabMaterial)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async material request state.";
+#else
+    using NLS::Core::ResourceManagement::MaterialManager;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_material_async_invalid_shaderlab_" + NLS::Guid::New().ToString());
+    const auto materialPath = MaterialArtifactPath(
+        root,
+        "40c4f8e299d86e7a01eb00b97384200ed589dd94c5fef13de750d27955c63c92");
+    WriteNativeMaterialArtifactFile(
+        materialPath,
+        "shaderLabMaterialVersion=1\n"
+        "shader=Assets/Shaders/Missing.shader\n"
+        "surfaceMode=Opaque\n");
+
+    const ScopedMaterialConversionJobSystem jobSystem;
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    MaterialManager materialManager;
+    MaterialManager::ClearAsyncArtifactRequestStateForTesting();
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
+    for (size_t attempt = 0u;
+        attempt < 256u && !materialManager.IsAsyncArtifactLoadFailed(materialPath.string());
+        ++attempt)
+    {
+        materialManager.PumpAsyncLoadsForPaths({materialPath.string()}, 1u);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_FALSE(materialManager.IsResourceRegistered(materialPath.string()))
+        << "Invalid ShaderLab materials must not poison the runtime material cache.";
+    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadFailed(materialPath.string()));
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath.string()), nullptr);
+
+    materialManager.UnloadResources();
     MaterialManager::ClearAsyncArtifactRequestStateForTesting();
     std::filesystem::remove_all(root);
 #endif
@@ -5311,6 +5768,92 @@ TEST(AssetMaterialConversionTests, FbxAndObjChannelsMapOrDiagnoseParserExposedDa
     EXPECT_TRUE(HasDiagnosticCode(convertedObj, "material-illumination-model-unsupported"));
 }
 
+TEST(AssetMaterialConversionTests, FbxMetallicTextureDefaultsMissingFactorToOne)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.textures.push_back({"fbx/texture/metallic", "Metallic", "Metallic.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord fbx;
+    fbx.sourceKey = "fbx/material/TexturedMetal";
+    fbx.name = "TexturedMetal";
+    fbx.materialChannels.push_back({"metallic", "fbx/texture/metallic", {}, true, 0.0});
+
+    const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        fbx,
+        MaterialSourceModel::FbxParserMaterial);
+
+    ASSERT_NE(FindSlot(converted, "Metallic"), nullptr);
+    const auto* metallic = FindFactor(converted, "Metallic");
+    ASSERT_NE(metallic, nullptr);
+    EXPECT_DOUBLE_EQ(metallic->scalar, 1.0)
+        << "FBX metalness maps need an identity multiplier when Assimp exposes no authored metallic factor.";
+    EXPECT_NE(
+        converted.serializedPayload.find("property _Metallic Float 1.000000"),
+        std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, FbxPbrTexturesIgnoreUntexturedLegacyWhiteSpecular)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.textures.push_back({"fbx/texture/metallic", "Metallic", "Metallic.png", "image/png"});
+    scene.textures.push_back({"fbx/texture/roughness", "Roughness", "Roughness.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord fbx;
+    fbx.sourceKey = "fbx/material/PbrSurface";
+    fbx.name = "PbrSurface";
+    fbx.materialChannels.push_back({"metallic", "fbx/texture/metallic", {}, false, 0.0});
+    fbx.materialChannels.push_back({"roughness", "fbx/texture/roughness", {}, false, 0.0});
+    fbx.materialChannels.push_back({"specular", {}, {1.0, 1.0, 1.0}, false, 0.0});
+
+    const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        fbx,
+        MaterialSourceModel::FbxParserMaterial);
+
+    EXPECT_EQ(FindFactor(converted, "Specular"), nullptr)
+        << "An untextured legacy FBX white specular default must not become an additive PBR color term.";
+    EXPECT_NE(
+        converted.serializedPayload.find("property _SpecularColor Color 0.000000 0.000000 0.000000 1.000000"),
+        std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, FbxPbrTexturesPreserveAuthoredSpecularMapAndTint)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.textures.push_back({"fbx/texture/metallic", "Metallic", "Metallic.png", "image/png"});
+    scene.textures.push_back({"fbx/texture/specular", "Specular", "Specular.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord mappedFbx;
+    mappedFbx.sourceKey = "fbx/material/MappedSpecular";
+    mappedFbx.name = "MappedSpecular";
+    mappedFbx.materialChannels.push_back({"metallic", "fbx/texture/metallic", {}, true, 0.0});
+    mappedFbx.materialChannels.push_back({"specular", "fbx/texture/specular", {1.0, 1.0, 1.0}, false, 0.0});
+
+    const auto mapped = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        mappedFbx,
+        MaterialSourceModel::FbxParserMaterial);
+    EXPECT_NE(FindSlot(mapped, "Specular"), nullptr);
+    EXPECT_NE(FindFactor(mapped, "Specular"), nullptr)
+        << "A white factor paired with an authored FBX specular map is not a legacy default.";
+
+    NLS::Render::Assets::ImportedSceneNamedRecord tintedFbx;
+    tintedFbx.sourceKey = "fbx/material/TintedSpecular";
+    tintedFbx.name = "TintedSpecular";
+    tintedFbx.materialChannels.push_back({"metallic", "fbx/texture/metallic", {}, true, 0.0});
+    tintedFbx.materialChannels.push_back({"specular", {}, {0.25, 0.5, 0.75}, false, 0.0});
+
+    const auto tinted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        tintedFbx,
+        MaterialSourceModel::FbxParserMaterial);
+    const auto* tintedSpecular = FindFactor(tinted, "Specular");
+    ASSERT_NE(tintedSpecular, nullptr)
+        << "Only the identity-white FBX compatibility default may be filtered.";
+    EXPECT_EQ(tintedSpecular->values, (std::vector<double>{0.25, 0.5, 0.75}));
+}
+
 TEST(AssetMaterialConversionTests, FbxShininessFallbackGeneratesPbrRoughness)
 {
     NLS::Render::Assets::ImportedScene scene;
@@ -5926,6 +6469,132 @@ TEST(AssetMaterialConversionTests, PbrShadersGuardDegenerateNormalMapInputs)
     EXPECT_NE(deferredGBuffer.find("output.Material = float4(metallic, roughness, ao, surfaceAlpha)"), std::string::npos);
     EXPECT_NE(deferredLighting.find("NLSDeferredSafeNormalize(encodedNormal * 2.0f - 1.0f"), std::string::npos);
     EXPECT_EQ(deferredLighting.find("normalize(encodedNormal * 2.0f - 1.0f)"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, PbrDirectLightingUsesEnergyConservingCookTorranceBrdf)
+{
+    const auto path = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders" / "LightGridCommon.hlsli";
+    std::ifstream input(path, std::ios::binary);
+    const std::string shader {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shader.empty());
+    const std::string requiredTokens[] = {
+        "NLS_PBR_MIN_PERCEPTUAL_ROUGHNESS",
+        "NLS_PBR_MIN_DISTRIBUTION_DENOMINATOR",
+        "NLSDistributionGGX",
+        "NLSGeometrySchlickGGX",
+        "NLSGeometrySmith",
+        "NLSFresnelSchlick",
+        "NLSEvaluateCookTorranceDirect",
+        "lerp(dielectricF0, safeAlbedo, safeMetallic)",
+        "(1.0f.xxx - fresnel) * (1.0f - safeMetallic)",
+        "diffuse + specular",
+        "radiance * ndotl"
+    };
+    for (const auto& token : requiredTokens)
+        EXPECT_NE(shader.find(token), std::string::npos) << token;
+
+    EXPECT_EQ(shader.find("specularHint"), std::string::npos)
+        << "The heuristic highlight must not remain beside the Cook-Torrance implementation.";
+
+    size_t evaluatorOccurrences = 0u;
+    size_t position = 0u;
+    while ((position = shader.find("NLSEvaluateCookTorranceDirect(", position)) != std::string::npos)
+    {
+        ++evaluatorOccurrences;
+        position += 1u;
+    }
+    EXPECT_GE(evaluatorOccurrences, 3u)
+        << "The evaluator definition plus forward-clustered and deferred-scene call sites must share one BRDF.";
+}
+
+TEST(AssetMaterialConversionTests, PbrDirectLightingFiltersSubpixelNormalVarianceIntoRoughness)
+{
+    const auto path = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders" / "LightGridCommon.hlsli";
+    std::ifstream input(path, std::ios::binary);
+    const std::string shader {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shader.empty());
+    const std::string requiredTokens[] = {
+        "NLSFilterPerceptualRoughness",
+        "ddx(safeNormalWS)",
+        "ddy(safeNormalWS)",
+        "roughnessSquared + normalVariance",
+        "filteredRoughness"
+    };
+    for (const auto& token : requiredTokens)
+        EXPECT_NE(shader.find(token), std::string::npos) << token;
+
+    size_t filterOccurrences = 0u;
+    size_t position = 0u;
+    while ((position = shader.find("NLSFilterPerceptualRoughness(", position)) != std::string::npos)
+    {
+        ++filterOccurrences;
+        position += 1u;
+    }
+    EXPECT_GE(filterOccurrences, 3u)
+        << "The filter definition plus forward and deferred PBR paths must share specular anti-aliasing.";
+    EXPECT_EQ(shader.find("clamp(lighting"), std::string::npos)
+        << "Fireflies must be addressed by filtering the BRDF inputs, not by clipping output luminance.";
+}
+
+TEST(AssetMaterialConversionTests, BuiltInPbrShadersUseAuthoredMetallicRoughnessChannels)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders";
+    const auto read = [](const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>());
+    };
+
+    const auto standardPbr = read(root / "StandardPBR.hlsl");
+    const auto deferredGBuffer = read(root / "DeferredGBuffer.hlsl");
+    ASSERT_FALSE(standardPbr.empty());
+    ASSERT_FALSE(deferredGBuffer.empty());
+
+    for (const auto* shader : {&standardPbr, &deferredGBuffer})
+    {
+        EXPECT_NE(shader->find("float4 u_MetallicMapChannel"), std::string::npos);
+        EXPECT_NE(shader->find("float4 u_RoughnessMapChannel"), std::string::npos);
+        EXPECT_NE(shader->find("dot(u_MetallicMap.Sample(u_LinearWrapSampler, texCoord), u_MetallicMapChannel)"), std::string::npos);
+        EXPECT_NE(shader->find("dot(u_RoughnessMap.Sample(u_LinearWrapSampler, texCoord), u_RoughnessMapChannel)"), std::string::npos);
+        EXPECT_EQ(shader->find("u_MetallicMap.Sample(u_LinearWrapSampler, texCoord).r"), std::string::npos);
+        EXPECT_EQ(shader->find("u_RoughnessMap.Sample(u_LinearWrapSampler, texCoord).r"), std::string::npos);
+    }
+}
+
+TEST(AssetMaterialConversionTests, PbrForwardShadersDoNotAddLegacySpecularMapsAsEmissiveLight)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders";
+    const auto read = [](const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>());
+    };
+
+    const auto builtIn = read(root / "StandardPBR.hlsl");
+    const auto shaderLab = read(root / "ShaderLab" / "StandardPBR.shader");
+    ASSERT_FALSE(builtIn.empty());
+    ASSERT_FALSE(shaderLab.empty());
+
+    for (const auto* shader : {&builtIn, &shaderLab})
+    {
+        EXPECT_EQ(shader->find("lighting + emissive + specular"), std::string::npos)
+            << "A legacy specular texture is an F0 input, not unshadowed emitted light.";
+        EXPECT_NE(shader->find("lighting + emissive"), std::string::npos);
+    }
 }
 
 TEST(AssetMaterialConversionTests, SafeTangentFrameFallbacksKeepMappedNormalsFinite)

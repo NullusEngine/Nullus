@@ -88,6 +88,13 @@ TEST(SceneStreamingResidencyTests, PrimitiveDependencyRegistrationUsesHashSetFor
 	EXPECT_EQ(registerBody.find("std::find_if("), std::string::npos);
 }
 
+TEST(SceneStreamingResidencyTests, LargeSceneSettingsDefaultsDisableHLOD)
+{
+	const auto settings = LargeSceneSettings::Defaults();
+
+	EXPECT_FALSE(settings.enableHLOD);
+}
+
 TEST(SceneStreamingResidencyTests, DependencyClosureDeduplicatesVisibleAndRepresentationInterest)
 {
 	SceneStreamingResidency residency;

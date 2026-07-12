@@ -137,7 +137,8 @@ void DebugDrawPass::Draw(PipelineState pso)
         lineBatch.segments.clear();
     };
 
-    for (const auto& primitiveRef : m_renderer.GetDebugDrawService()->CollectVisiblePrimitives())
+    const auto visiblePrimitives = m_renderer.GetDebugDrawService()->CollectVisiblePrimitives();
+    for (const auto& primitiveRef : visiblePrimitives)
     {
         const auto& primitive = primitiveRef.get();
         if (primitive.type != DebugDrawPrimitiveType::Line)

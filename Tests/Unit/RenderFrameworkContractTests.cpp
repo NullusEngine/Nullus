@@ -4,6 +4,7 @@
 #include <array>
 #include <concepts>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -14,6 +15,7 @@
 
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/DriverInternal.h"
 #include "Rendering/Context/SwapchainResizePolicy.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Data/FrameDescriptor.h"
@@ -27,6 +29,7 @@
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
+#include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/Resources/ShaderType.h"
 #include "Rendering/Resources/Mesh.h"
@@ -36,6 +39,28 @@
 
 namespace
 {
+    class ScopedLocatedDriver final
+    {
+    public:
+        explicit ScopedLocatedDriver(NLS::Render::Context::Driver& driver)
+        {
+            if (NLS::Core::ServiceLocator::Contains<NLS::Render::Context::Driver>())
+                m_previous = &NLS::Core::ServiceLocator::Get<NLS::Render::Context::Driver>();
+            NLS::Core::ServiceLocator::Provide<NLS::Render::Context::Driver>(driver);
+        }
+
+        ~ScopedLocatedDriver()
+        {
+            if (m_previous != nullptr)
+                NLS::Core::ServiceLocator::Provide<NLS::Render::Context::Driver>(*m_previous);
+            else
+                NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+        }
+
+    private:
+        NLS::Render::Context::Driver* m_previous = nullptr;
+    };
+
     template<typename T>
     concept HasRawNativeTextureHandle = requires(T& texture)
     {
@@ -76,6 +101,10 @@ namespace
         {
             ++waitCalls;
             return m_status;
+        }
+        void SetStatus(NLS::Render::RHI::RHICompletionStatus status)
+        {
+            m_status = std::move(status);
         }
 
         size_t waitCalls = 0u;
@@ -387,6 +416,80 @@ namespace
         uint32_t drawCalls = 0u;
     };
 
+    class ContractUploadContext final : public NLS::Render::RHI::UploadContext
+    {
+    public:
+        void BeginFrame(uint64_t) override {}
+        void EndFrame(uint64_t) override {}
+        NLS::Render::RHI::UploadAllocation Allocate(size_t, size_t, std::string) override { return {}; }
+        NLS::Render::RHI::UploadBatchSubmission SubmitUploadBatch(
+			NLS::Render::RHI::RHICommandBuffer& commandBuffer,
+			const NLS::Render::RHI::UploadBatchRequest& request) override
+		{
+			++submitBatchCalls;
+			lastBatchCommandBuffer = &commandBuffer;
+            lastBatchCompletionFence = request.completionFence;
+            lastBatchTextureUploadCount = request.textureUploads.size();
+            if (!request.textureUploads.empty())
+                CaptureTextureRequest(request.textureUploads.front());
+            if (onSubmitTexture)
+                onSubmitTexture();
+            return nextBatchSubmission;
+        }
+        NLS::Render::RHI::UploadSubmission SubmitUploadBuffer(
+            NLS::Render::RHI::RHICommandBuffer&,
+            const NLS::Render::RHI::UploadBufferRequest&) override
+        {
+            return {};
+        }
+        NLS::Render::RHI::UploadSubmission SubmitUploadTexture(
+            NLS::Render::RHI::RHICommandBuffer&,
+            const NLS::Render::RHI::UploadTextureRequest& request) override
+        {
+            ++submitTextureCalls;
+            CaptureTextureRequest(request);
+            if (onSubmitTexture)
+                onSubmitTexture();
+            return nextTextureSubmission;
+        }
+        bool UploadBuffer(NLS::Render::RHI::RHICommandBuffer&, const NLS::Render::RHI::UploadBufferRequest&) override
+        {
+            return false;
+        }
+        bool UploadTexture(NLS::Render::RHI::RHICommandBuffer&, const NLS::Render::RHI::UploadTextureRequest&) override
+        {
+            return false;
+        }
+        void CollectGarbage(uint64_t) override {}
+
+        void CaptureTextureRequest(const NLS::Render::RHI::UploadTextureRequest& request)
+        {
+            lastTextureDestination = request.destination;
+            lastTextureDataSize = request.dataSize;
+            lastTextureMipLevel = request.mipLevel;
+            lastTextureArrayLayer = request.arrayLayer;
+            lastTextureRowPitch = request.rowPitch;
+            lastTextureSlicePitch = request.slicePitch;
+            lastTextureExtent = request.extent;
+        }
+
+        size_t submitBatchCalls = 0u;
+        size_t submitTextureCalls = 0u;
+        size_t lastBatchTextureUploadCount = 0u;
+		NLS::Render::RHI::RHICommandBuffer* lastBatchCommandBuffer = nullptr;
+        std::shared_ptr<NLS::Render::RHI::RHIFence> lastBatchCompletionFence;
+        std::shared_ptr<NLS::Render::RHI::RHITexture> lastTextureDestination;
+        size_t lastTextureDataSize = 0u;
+        uint32_t lastTextureMipLevel = 0u;
+        uint32_t lastTextureArrayLayer = 0u;
+        uint32_t lastTextureRowPitch = 0u;
+        uint32_t lastTextureSlicePitch = 0u;
+        NLS::Render::RHI::RHIExtent3D lastTextureExtent {};
+        std::function<void()> onSubmitTexture;
+        NLS::Render::RHI::UploadBatchSubmission nextBatchSubmission;
+        NLS::Render::RHI::UploadSubmission nextTextureSubmission;
+    };
+
     class BaseQueueContract final : public NLS::Render::RHI::RHIQueue
     {
     public:
@@ -511,12 +614,17 @@ namespace
             const NLS::Render::RHI::RHITextureDesc& desc,
             const NLS::Render::RHI::RHITextureUploadDesc&) override
         {
-            return std::make_shared<ContractTexture>(desc);
+            auto texture = std::make_shared<ContractTexture>(desc);
+            lastCreatedTexture = texture;
+            return texture;
         }
         std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
             const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
             const NLS::Render::RHI::RHITextureViewDesc& desc) override
         {
+            ++createTextureViewCalls;
+            if (failTextureViewCreation)
+                return nullptr;
             return std::make_shared<ContractTextureView>(texture, desc);
         }
         std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(
@@ -601,6 +709,9 @@ namespace
         std::shared_ptr<ContractQueue> GetContractQueue() const { return m_queue; }
 
         size_t beginReadPixelsCalls = 0u;
+        size_t createTextureViewCalls = 0u;
+        bool failTextureViewCreation = false;
+        std::weak_ptr<NLS::Render::RHI::RHITexture> lastCreatedTexture;
         std::shared_ptr<NLS::Render::RHI::RHITexture> lastReadPixelsTexture;
         NLS::Render::RHI::RHIReadbackResult nextBeginReadPixelsResult {
             NLS::Render::RHI::RHIReadbackStatusCode::Success,
@@ -998,7 +1109,7 @@ TEST(RenderFrameworkContractTests, QueueOperationFailuresAreExposedThroughDriver
 TEST(RenderFrameworkContractTests, MeshContentRevisionChangesWhenGeometryBuffersChange)
 {
     NLS::Render::Context::Driver driver(MakeContractDriverSettings());
-    NLS::Core::ServiceLocator::Provide(driver);
+    ScopedLocatedDriver locatedDriver(driver);
     auto explicitDevice = std::make_shared<ContractDevice>();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
 
@@ -1152,6 +1263,422 @@ TEST(RenderFrameworkContractTests, RendererFrameAbortsWhenStandaloneFrameFenceWa
     EXPECT_EQ(explicitDevice->GetContractQueue()->presentCalls, 0u);
     NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
 }
+
+TEST(RenderFrameworkContractTests, RendererFrameSkipsWhenBackgroundPreviewOwnsGlobalFrame)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings());
+    NLS::Render::Core::CompositeRenderer renderer(driver);
+    auto& pass = renderer.AddPass<CountingContractPass>(
+        "CountingContractPass",
+        NLS::Render::Settings::ERenderPassOrder::Opaque);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+
+    ASSERT_TRUE(NLS::Render::Core::ABaseRenderer::TryBeginGlobalFrameForBackgroundPreview());
+    ASSERT_NO_THROW(renderer.BeginFrame(frameDescriptor));
+    EXPECT_FALSE(renderer.IsFrameActive());
+    EXPECT_FALSE(renderer.IsDrawing());
+    EXPECT_EQ(pass.beginFrameCalls, 0u);
+
+    ASSERT_NO_THROW(renderer.DrawFrame());
+    EXPECT_EQ(pass.drawCalls, 0u);
+    ASSERT_NO_THROW(renderer.EndFrame());
+    EXPECT_EQ(pass.endFrameCalls, 0u);
+    EXPECT_FALSE(renderer.IsFrameActive());
+
+    EXPECT_FALSE(NLS::Render::Core::ABaseRenderer::TryBeginGlobalFrameForBackgroundPreview())
+        << "An inactive foreground frame must not release the background preview's global frame lock.";
+    NLS::Render::Core::ABaseRenderer::EndGlobalFrameForBackgroundPreview();
+    ASSERT_TRUE(NLS::Render::Core::ABaseRenderer::TryBeginGlobalFrameForBackgroundPreview());
+    NLS::Render::Core::ABaseRenderer::EndGlobalFrameForBackgroundPreview();
+}
+
+TEST(RenderFrameworkContractTests, BackgroundPreviewBeginFrameRunsCompositeFrameLifecycle)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings(true));
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    NLS::Render::Core::CompositeRenderer renderer(driver);
+    auto& pass = renderer.AddPass<CountingContractPass>(
+        "CountingContractPass",
+        NLS::Render::Settings::ERenderPassOrder::Opaque);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+
+    ASSERT_TRUE(NLS::Render::Core::ABaseRenderer::TryBeginGlobalFrameForBackgroundPreview());
+    ASSERT_NO_THROW(renderer.BeginFrameForBackgroundPreview(frameDescriptor));
+    EXPECT_TRUE(renderer.IsFrameActive());
+    EXPECT_EQ(pass.beginFrameCalls, 1u);
+    ASSERT_NO_THROW(renderer.DrawFrame());
+    EXPECT_EQ(pass.drawCalls, 1u);
+    ASSERT_NO_THROW(renderer.EndFrame());
+    EXPECT_EQ(pass.endFrameCalls, 1u);
+    NLS::Render::Core::ABaseRenderer::EndGlobalFrameForBackgroundPreview();
+}
+
+TEST(RenderFrameworkContractTests, UiRgba8TextureUploadUsesActiveUiCommandBufferAndPublishesAfterCompletion)
+{
+    using namespace NLS::Render;
+
+    Context::DriverImpl impl;
+    impl.explicitDevice = std::make_shared<ContractDevice>();
+    impl.pendingUiRgba8TextureUploads.push_back({
+        17u,
+        2u,
+        1u,
+        {
+            255u, 0u, 0u, 255u,
+            0u, 255u, 0u, 255u,
+        },
+        "ContractThumbnailUpload"
+    });
+
+	auto frameCommandBuffer = std::make_shared<ContractCommandBuffer>();
+	auto uiCommandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto uploadContext = std::make_shared<ContractUploadContext>();
+    auto completion = std::make_shared<ContractCompletionToken>(RHI::RHICompletionStatus{
+        RHI::RHICompletionStatusCode::Pending,
+        "upload still queued"
+    });
+    uploadContext->nextBatchSubmission.accepted = true;
+    uploadContext->nextBatchSubmission.acceptedTextureUploads = 1u;
+    uploadContext->nextBatchSubmission.completion = completion;
+
+    RHI::RHIFrameContext frameContext;
+	frameContext.commandBuffer = frameCommandBuffer;
+    frameContext.uploadContext = uploadContext;
+    frameContext.frameFence = std::make_shared<ContractFence>();
+
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(impl, frameContext, *uiCommandBuffer), 1u);
+	EXPECT_EQ(uploadContext->submitBatchCalls, 1u);
+	EXPECT_EQ(uploadContext->lastBatchCommandBuffer, uiCommandBuffer.get())
+		<< "UI thumbnail uploads must be recorded into the command buffer that owns the active UI overlay pass.";
+    EXPECT_EQ(uploadContext->submitTextureCalls, 0u);
+    EXPECT_EQ(uploadContext->lastBatchTextureUploadCount, 1u);
+    EXPECT_EQ(uploadContext->lastBatchCompletionFence, frameContext.frameFence);
+    ASSERT_NE(uploadContext->lastTextureDestination, nullptr);
+    EXPECT_EQ(uploadContext->lastTextureDataSize, 256u);
+    EXPECT_EQ(uploadContext->lastTextureMipLevel, 0u);
+    EXPECT_EQ(uploadContext->lastTextureArrayLayer, 0u);
+    EXPECT_EQ(uploadContext->lastTextureRowPitch, 256u);
+    EXPECT_EQ(uploadContext->lastTextureSlicePitch, 256u);
+    EXPECT_EQ(uploadContext->lastTextureExtent.width, 2u);
+    EXPECT_EQ(uploadContext->lastTextureExtent.height, 1u);
+    EXPECT_EQ(uploadContext->lastTextureExtent.depth, 1u);
+    EXPECT_TRUE(impl.completedUiRgba8TextureUploads.empty())
+        << "UI thumbnails must not publish a texture view before the RHI upload completion token succeeds.";
+
+    completion->SetStatus({
+        RHI::RHICompletionStatusCode::Success,
+        {}
+    });
+
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(impl, frameContext, *uiCommandBuffer), 0u);
+    auto completed = impl.completedUiRgba8TextureUploads.find(17u);
+    ASSERT_NE(completed, impl.completedUiRgba8TextureUploads.end());
+    EXPECT_TRUE(completed->second.success);
+    EXPECT_NE(completed->second.textureView, nullptr);
+    EXPECT_EQ(completed->second.width, 2u);
+    EXPECT_EQ(completed->second.height, 1u);
+}
+
+TEST(RenderFrameworkContractTests, UiRgba8TextureUploadReportsFailedCompletion)
+{
+    using namespace NLS::Render;
+
+    Context::DriverImpl impl;
+    impl.explicitDevice = std::make_shared<ContractDevice>();
+    impl.pendingUiRgba8TextureUploads.push_back({
+        23u,
+        1u,
+        1u,
+        {
+            255u, 255u, 255u, 255u,
+        },
+        "ContractFailedThumbnailUpload"
+    });
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto uploadContext = std::make_shared<ContractUploadContext>();
+    auto completion = std::make_shared<ContractCompletionToken>(RHI::RHICompletionStatus{
+        RHI::RHICompletionStatusCode::Failed,
+        "upload fence failed"
+    });
+    uploadContext->nextBatchSubmission.accepted = true;
+    uploadContext->nextBatchSubmission.acceptedTextureUploads = 1u;
+    uploadContext->nextBatchSubmission.completion = completion;
+
+    RHI::RHIFrameContext frameContext;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.uploadContext = uploadContext;
+    frameContext.frameFence = std::make_shared<ContractFence>();
+
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(impl, frameContext, *commandBuffer), 1u);
+    ASSERT_TRUE(impl.completedUiRgba8TextureUploads.empty());
+
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(impl, frameContext, *commandBuffer), 0u);
+    auto completed = impl.completedUiRgba8TextureUploads.find(23u);
+    ASSERT_NE(completed, impl.completedUiRgba8TextureUploads.end());
+    EXPECT_FALSE(completed->second.success);
+    EXPECT_EQ(completed->second.texture, nullptr);
+    EXPECT_EQ(completed->second.textureView, nullptr);
+    EXPECT_EQ(completed->second.diagnostic, "upload fence failed");
+}
+
+TEST(RenderFrameworkContractTests, UiRgba8TextureUploadDoesNotSubmitWhenTextureViewCreationFails)
+{
+    using namespace NLS::Render;
+
+    Context::DriverImpl impl;
+    auto explicitDevice = std::make_shared<ContractDevice>();
+    explicitDevice->failTextureViewCreation = true;
+    impl.explicitDevice = explicitDevice;
+    impl.pendingUiRgba8TextureUploads.push_back({
+        29u,
+        1u,
+        1u,
+        {
+            255u, 0u, 255u, 255u,
+        },
+        "ContractViewFailureThumbnailUpload"
+    });
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto uploadContext = std::make_shared<ContractUploadContext>();
+    auto completion = std::make_shared<ContractCompletionToken>(RHI::RHICompletionStatus{
+        RHI::RHICompletionStatusCode::Pending,
+        "upload would remain pending"
+    });
+    uploadContext->nextBatchSubmission.accepted = true;
+    uploadContext->nextBatchSubmission.acceptedTextureUploads = 1u;
+    uploadContext->nextBatchSubmission.completion = completion;
+
+    RHI::RHIFrameContext frameContext;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.uploadContext = uploadContext;
+    frameContext.frameFence = std::make_shared<ContractFence>();
+
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(impl, frameContext, *commandBuffer), 0u);
+    EXPECT_EQ(explicitDevice->createTextureViewCalls, 1u);
+    EXPECT_EQ(uploadContext->submitBatchCalls, 0u);
+    EXPECT_EQ(uploadContext->submitTextureCalls, 0u)
+        << "A failed texture view must stop before recording upload commands that would reference the texture.";
+    auto completed = impl.completedUiRgba8TextureUploads.find(29u);
+    ASSERT_NE(completed, impl.completedUiRgba8TextureUploads.end());
+    EXPECT_FALSE(completed->second.success);
+    EXPECT_EQ(completed->second.diagnostic, "failed to create UI RGBA8 texture view");
+    EXPECT_TRUE(explicitDevice->lastCreatedTexture.expired());
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(RenderFrameworkContractTests, MeshRuntimeUploadPublishesOnlyAfterRhiPump)
+{
+    using namespace NLS::Render;
+
+    Context::Driver driver(MakeContractDriverSettings());
+    ScopedLocatedDriver locatedDriver(driver);
+    auto* impl = Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->explicitDevice = std::make_shared<ContractDevice>();
+
+    Context::MeshRuntimeUploadRequest request;
+    request.vertices.resize(3u);
+    request.indices = { 0u, 1u, 2u };
+    request.boundingSphere.radius = 1.0f;
+    request.debugName = "ContractMeshRuntimeUpload";
+
+    const uint64_t requestId = Context::DriverResourceAccess::RequestMeshRuntimeUpload(
+        driver,
+        std::move(request));
+    ASSERT_NE(requestId, 0u);
+    EXPECT_FALSE(Context::DriverResourceAccess::ConsumeMeshRuntimeUploadResult(driver, requestId).ready);
+
+    EXPECT_EQ(Context::Detail::RecordPendingMeshRuntimeUploads(*impl), 1u);
+    auto completed = Context::DriverResourceAccess::ConsumeMeshRuntimeUploadResult(driver, requestId);
+    ASSERT_TRUE(completed.ready);
+    ASSERT_TRUE(completed.success) << completed.diagnostic;
+    ASSERT_NE(completed.mesh, nullptr);
+    EXPECT_EQ(completed.mesh->GetVertexCount(), 3u);
+    EXPECT_EQ(completed.mesh->GetIndexCount(), 3u);
+}
+
+TEST(RenderFrameworkContractTests, MeshRuntimeUploadUsesFrameByteBudgetForMultipleSmallMeshes)
+{
+    using namespace NLS::Render;
+
+    Context::Driver driver(MakeContractDriverSettings());
+    ScopedLocatedDriver locatedDriver(driver);
+    auto* impl = Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->explicitDevice = std::make_shared<ContractDevice>();
+
+    std::vector<uint64_t> requestIds;
+    for (size_t index = 0u; index < 8u; ++index)
+    {
+        Context::MeshRuntimeUploadRequest request;
+        request.vertices.resize(3u);
+        request.indices = { 0u, 1u, 2u };
+        request.boundingSphere.radius = 1.0f;
+        request.debugName = "ContractBatchedMeshRuntimeUpload" + std::to_string(index);
+        requestIds.push_back(Context::DriverResourceAccess::RequestMeshRuntimeUpload(
+            driver,
+            std::move(request)));
+        ASSERT_NE(requestIds.back(), 0u);
+    }
+
+    EXPECT_EQ(Context::Detail::RecordPendingMeshRuntimeUploads(*impl), requestIds.size());
+    for (const auto requestId : requestIds)
+    {
+        auto completed = Context::DriverResourceAccess::ConsumeMeshRuntimeUploadResult(driver, requestId);
+        ASSERT_TRUE(completed.ready);
+        ASSERT_TRUE(completed.success) << completed.diagnostic;
+        ASSERT_NE(completed.mesh, nullptr);
+    }
+}
+
+TEST(RenderFrameworkContractTests, CancelledMeshRuntimeUploadDoesNotPublish)
+{
+    using namespace NLS::Render;
+
+    Context::Driver driver(MakeContractDriverSettings());
+    ScopedLocatedDriver locatedDriver(driver);
+    auto* impl = Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->explicitDevice = std::make_shared<ContractDevice>();
+
+    Context::MeshRuntimeUploadRequest request;
+    request.vertices.resize(3u);
+    request.indices = { 0u, 1u, 2u };
+    request.boundingSphere.radius = 1.0f;
+    request.debugName = "ContractCancelledMeshRuntimeUpload";
+
+    const uint64_t requestId = Context::DriverResourceAccess::RequestMeshRuntimeUpload(
+        driver,
+        std::move(request));
+    ASSERT_NE(requestId, 0u);
+
+    Context::DriverResourceAccess::CancelMeshRuntimeUpload(driver, requestId);
+    EXPECT_EQ(Context::Detail::RecordPendingMeshRuntimeUploads(*impl), 0u);
+    EXPECT_FALSE(Context::DriverResourceAccess::ConsumeMeshRuntimeUploadResult(driver, requestId).ready);
+}
+#endif
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(RenderFrameworkContractTests, UiRgba8TextureUploadCancelRemovesRecordedUpload)
+{
+    using namespace NLS::Render;
+
+    Context::Driver driver(MakeContractDriverSettings());
+    auto* impl = Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->explicitDevice = std::make_shared<ContractDevice>();
+
+    const uint64_t requestId = Context::DriverUIAccess::RequestUiRgba8TextureUpload(
+        driver,
+        {
+            1u,
+            1u,
+            {
+                0u, 0u, 255u, 255u,
+            },
+            "ContractCanceledThumbnailUpload"
+        });
+    ASSERT_NE(requestId, 0u);
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto uploadContext = std::make_shared<ContractUploadContext>();
+    auto completion = std::make_shared<ContractCompletionToken>(RHI::RHICompletionStatus{
+        RHI::RHICompletionStatusCode::Pending,
+        "upload pending"
+    });
+    uploadContext->nextBatchSubmission.accepted = true;
+    uploadContext->nextBatchSubmission.acceptedTextureUploads = 1u;
+    uploadContext->nextBatchSubmission.completion = completion;
+
+    RHI::RHIFrameContext frameContext;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.uploadContext = uploadContext;
+    frameContext.frameFence = std::make_shared<ContractFence>();
+
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(*impl, frameContext, *commandBuffer), 1u);
+    ASSERT_EQ(impl->recordedUiRgba8TextureUploads.size(), 1u);
+
+    Context::DriverUIAccess::CancelUiRgba8TextureUpload(driver, requestId);
+    EXPECT_EQ(impl->recordedUiRgba8TextureUploads.size(), 1u)
+        << "Cancel must suppress publication but keep accepted upload resources alive until completion.";
+
+    completion->SetStatus({
+        RHI::RHICompletionStatusCode::Success,
+        {}
+    });
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(*impl, frameContext, *commandBuffer), 0u);
+    EXPECT_TRUE(impl->recordedUiRgba8TextureUploads.empty());
+    EXPECT_TRUE(impl->completedUiRgba8TextureUploads.empty());
+    EXPECT_FALSE(Context::DriverUIAccess::ConsumeUiRgba8TextureUploadResult(driver, requestId).ready);
+}
+
+TEST(RenderFrameworkContractTests, UiRgba8TextureUploadCancelDuringSubmitKeepsRecordedUploadUntilCompletion)
+{
+    using namespace NLS::Render;
+
+    Context::Driver driver(MakeContractDriverSettings());
+    auto* impl = Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->explicitDevice = std::make_shared<ContractDevice>();
+
+    const uint64_t requestId = Context::DriverUIAccess::RequestUiRgba8TextureUpload(
+        driver,
+        {
+            1u,
+            1u,
+            {
+                64u, 128u, 255u, 255u,
+            },
+            "ContractCancelDuringSubmitThumbnailUpload"
+        });
+    ASSERT_NE(requestId, 0u);
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto uploadContext = std::make_shared<ContractUploadContext>();
+    auto completion = std::make_shared<ContractCompletionToken>(RHI::RHICompletionStatus{
+        RHI::RHICompletionStatusCode::Pending,
+        "upload pending"
+    });
+    uploadContext->nextBatchSubmission.accepted = true;
+    uploadContext->nextBatchSubmission.acceptedTextureUploads = 1u;
+    uploadContext->nextBatchSubmission.completion = completion;
+    uploadContext->onSubmitTexture = [&driver, requestId]()
+    {
+        Context::DriverUIAccess::CancelUiRgba8TextureUpload(driver, requestId);
+    };
+
+    RHI::RHIFrameContext frameContext;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.uploadContext = uploadContext;
+    frameContext.frameFence = std::make_shared<ContractFence>();
+
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(*impl, frameContext, *commandBuffer), 1u);
+    EXPECT_EQ(uploadContext->submitBatchCalls, 1u);
+    EXPECT_EQ(uploadContext->submitTextureCalls, 0u);
+    ASSERT_EQ(impl->recordedUiRgba8TextureUploads.size(), 1u)
+        << "Cancel racing with accepted upload submission must not drop the GPU resource keepalive.";
+    EXPECT_TRUE(impl->completedUiRgba8TextureUploads.empty());
+
+    completion->SetStatus({
+        RHI::RHICompletionStatusCode::Success,
+        {}
+    });
+	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(*impl, frameContext, *commandBuffer), 0u);
+    EXPECT_TRUE(impl->recordedUiRgba8TextureUploads.empty());
+    EXPECT_TRUE(impl->completedUiRgba8TextureUploads.empty());
+}
+#endif
 
 TEST(RenderFrameworkContractTests, ThreadedRhiFrameDoesNotReuseResourcesWhenFenceWaitFails)
 {
@@ -1624,7 +2151,7 @@ TEST(RenderFrameworkContractTests, DefaultSceneRendererFactoryCreatesDeferredRen
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
     NLS::Render::Context::Driver driver(settings);
-    NLS::Core::ServiceLocator::Provide(driver);
+    ScopedLocatedDriver locatedDriver(driver);
 
     NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
     options.loadPipelineResources = false;

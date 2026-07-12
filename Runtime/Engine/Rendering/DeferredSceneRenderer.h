@@ -45,11 +45,12 @@ namespace NLS::Engine::Rendering
 		friend struct DeferredSceneRendererTestAccess;
 
 	public:
-		struct ConstructionOptions
-		{
-			// Allows contract tests to validate factory selection without compiling renderer-owned shaders.
-			bool loadPipelineResources = true;
-		};
+			struct ConstructionOptions
+			{
+				// Allows contract tests to validate factory selection without compiling renderer-owned shaders.
+				bool loadPipelineResources = true;
+				bool deferPipelineResourcesUntilFirstFrame = false;
+			};
 
 		explicit DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver);
 		DeferredSceneRenderer(
@@ -108,10 +109,11 @@ namespace NLS::Engine::Rendering
 			bool hasSkyboxTexture,
 			std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs = {},
 			std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> appendedPassMetadata = {},
-			std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture = nullptr,
-			uint64_t preferredReadbackTextureGeneration = 0u,
-			uint64_t additionalRenderTargetUseCount = 0u,
-			std::optional<NLS::Render::Context::PostSubmitBufferReadbackRequest> hzbPostSubmitReadback = std::nullopt) const;
+				std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture = nullptr,
+				uint64_t preferredReadbackTextureGeneration = 0u,
+				uint64_t additionalRenderTargetUseCount = 0u,
+				std::optional<NLS::Render::Context::PostSubmitBufferReadbackRequest> hzbPostSubmitReadback = std::nullopt,
+				bool includeDeferredSceneExecution = true) const;
 		NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
 			const NLS::Render::Context::FrameSnapshot& snapshot) const override;
 		bool TryPublishThreadedFrame() override;
@@ -119,9 +121,10 @@ namespace NLS::Engine::Rendering
 		std::optional<NLS::Render::Context::PostSubmitBufferReadbackRequest>
 			GetThreadedHZBPostSubmitReadbackForPreparedBuilder() const;
 
-	private:
-		void LoadPipelineResources();
-		void EnsureGBufferTargets(uint16_t width, uint16_t height);
+		private:
+			void LoadPipelineResources();
+			void EnsureDeferredPipelineResourceAssets();
+			void EnsureGBufferTargets(uint16_t width, uint16_t height);
 		bool HasDeferredThreadedPipelineResources() const;
 		bool EnsureHZBTargets(uint16_t width, uint16_t height);
 		bool PrepareHZBOcclusionPrimitiveBuffers(std::span<const SceneOcclusionPrimitivePacket> packets);
@@ -203,10 +206,13 @@ namespace NLS::Engine::Rendering
 		uint64_t m_threadedQueuedLightingDrawCount = 0u;
 		uint64_t m_threadedQueuedTransparentDrawCount = 0u;
 		uint64_t m_frameGBufferMaterialSyncCount = 0u;
-		uint64_t m_frameGBufferMaterialResolveHitCount = 0u;
-		uint64_t m_frameGBufferMaterialResolveMissCount = 0u;
-		bool m_skipThreadedFramePublish = false;
-	};
+			uint64_t m_frameGBufferMaterialResolveHitCount = 0u;
+			uint64_t m_frameGBufferMaterialResolveMissCount = 0u;
+			mutable uint32_t m_framePreparedDrawDiagnosticLogCount = 0u;
+			bool m_skipThreadedFramePublish = false;
+			bool m_pipelineResourceAssetsLoaded = false;
+			bool m_deferPipelineResourceAssetsUntilFirstFrame = false;
+		};
 
 	struct NLS_ENGINE_API DeferredSceneRendererTestAccess final
 	{

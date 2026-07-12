@@ -261,7 +261,7 @@ TEST(TextureResourceLifecycleTests, SameSizeTextureDataUpdateUsesInPlaceUploadIn
     EXPECT_EQ(explicitDevice->lastTextureUpdateDesc.rowPitch, 8u);
 }
 
-TEST(TextureResourceLifecycleTests, FailedCreateFromMemoryUploadKeepsTexture2DMetadataAlignedWithFallbackTexture)
+TEST(TextureResourceLifecycleTests, FailedCreateFromMemoryUploadKeepsFallbackTextureCompatibility)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -286,10 +286,114 @@ TEST(TextureResourceLifecycleTests, FailedCreateFromMemoryUploadKeepsTexture2DMe
 
     ASSERT_NE(texture, nullptr);
     ASSERT_NE(texture->GetTextureHandle(), nullptr);
+    EXPECT_EQ(explicitDevice->textureCreateCalls, 2u);
     EXPECT_EQ(texture->GetTextureHandle()->GetDesc().extent.width, 1u);
     EXPECT_EQ(texture->GetTextureHandle()->GetDesc().extent.height, 1u);
     EXPECT_EQ(texture->width, 1u);
     EXPECT_EQ(texture->height, 1u);
+}
+
+TEST(TextureResourceLifecycleTests, CreateFromMemoryPreservesFallbackTextureCompatibility)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    uint8_t pixels[3u * 2u * 4u] {};
+    std::unique_ptr<NLS::Render::Resources::Texture2D> texture(
+        NLS::Render::Resources::Loaders::TextureLoader::CreateFromMemory(
+            pixels,
+            3u,
+            2u,
+            NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+            NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+            false));
+
+    ASSERT_NE(texture, nullptr);
+    ASSERT_NE(texture->GetTextureHandle(), nullptr);
+    EXPECT_EQ(explicitDevice->textureCreateCalls, 2u)
+        << "The generic image loader keeps its 1x1 fallback texture compatibility for older callers.";
+    EXPECT_EQ(texture->GetTextureHandle()->GetDesc().extent.width, 3u);
+    EXPECT_EQ(texture->GetTextureHandle()->GetDesc().extent.height, 2u);
+    EXPECT_EQ(texture->width, 3u);
+    EXPECT_EQ(texture->height, 2u);
+}
+
+TEST(TextureResourceLifecycleTests, CreateFromRgba8MemoryUploadsDirectly)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    uint8_t pixels[3u * 2u * 4u] {};
+    std::unique_ptr<NLS::Render::Resources::Texture2D> texture(
+        NLS::Render::Resources::Loaders::TextureLoader::CreateFromRgba8Memory(
+            pixels,
+            sizeof(pixels),
+            3u,
+            2u,
+            NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+            NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+            false));
+
+    ASSERT_NE(texture, nullptr);
+    ASSERT_NE(texture->GetTextureHandle(), nullptr);
+    EXPECT_EQ(explicitDevice->textureCreateCalls, 1u);
+    EXPECT_EQ(explicitDevice->lastTextureUploadDesc.data, pixels);
+    EXPECT_EQ(explicitDevice->lastTextureUploadDesc.dataSize, sizeof(pixels));
+    EXPECT_EQ(explicitDevice->lastTextureUploadDesc.rowPitch, 12u);
+    EXPECT_EQ(explicitDevice->lastTextureUploadDesc.slicePitch, sizeof(pixels));
+    EXPECT_EQ(texture->width, 3u);
+    EXPECT_EQ(texture->height, 2u);
+}
+
+TEST(TextureResourceLifecycleTests, FailedCreateFromRgba8MemoryUploadReturnsNullWithoutFallbackTexture)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    uint8_t pixels[2u * 2u * 4u] {};
+    explicitDevice->failTextureCreateCall = explicitDevice->textureCreateCalls + 1u;
+
+    std::unique_ptr<NLS::Render::Resources::Texture2D> texture(
+        NLS::Render::Resources::Loaders::TextureLoader::CreateFromRgba8Memory(
+            pixels,
+            sizeof(pixels),
+            2u,
+            2u,
+            NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+            NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+            false));
+
+    EXPECT_EQ(texture, nullptr);
+    EXPECT_EQ(explicitDevice->textureCreateCalls, 1u);
+
+    texture.reset(NLS::Render::Resources::Loaders::TextureLoader::CreateFromRgba8Memory(
+        pixels,
+        sizeof(pixels),
+        UINT32_MAX,
+        UINT32_MAX,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        false));
+    EXPECT_EQ(texture, nullptr);
+    EXPECT_EQ(explicitDevice->textureCreateCalls, 1u);
 }
 
 TEST(TextureResourceLifecycleTests, FailedTextureArtifactUploadReturnsNull)
@@ -361,6 +465,33 @@ TEST(TextureResourceLifecycleTests, TextureArtifactUploadCreatesOnlyFinalTexture
     EXPECT_EQ(texture->GetTextureHandle()->GetDesc().extent.width, 2u);
     EXPECT_EQ(texture->GetTextureHandle()->GetDesc().extent.height, 2u);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
+}
+
+TEST(TextureResourceLifecycleTests, WrapExternalTexture2DSkipsFallbackTextureCreation)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::RHI::RHITextureDesc desc{};
+    desc.extent.width = 4u;
+    desc.extent.height = 4u;
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    auto externalTexture = std::make_shared<TestTexture>(desc);
+
+    auto texture = NLS::Render::Resources::Texture2D::WrapExternal(externalTexture, 4u, 4u);
+
+    ASSERT_NE(texture, nullptr);
+    EXPECT_EQ(texture->GetTextureHandle(), externalTexture);
+    EXPECT_EQ(explicitDevice->textureCreateCalls, 0u)
+        << "Wrapping renderer-thread thumbnail textures must not create a UI-thread fallback RHI texture first.";
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
 }
 
 TEST(TextureResourceLifecycleTests, TextureLoaderCreateParsesNativeTextureArtifactOnce)
@@ -485,6 +616,121 @@ TEST(TextureResourceLifecycleTests, LoadTextureArtifactUsesBackedPixelViews)
     EXPECT_TRUE(decoded->mips[0].pixelView.empty());
 
     std::filesystem::remove_all(root);
+}
+
+TEST(TextureResourceLifecycleTests, LoadTextureArtifactRecordsReadAndDeserializeTelemetry)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_texture_loader_telemetry_" + NLS::Guid::New().ToString());
+    const auto texturePath = root / "texture-artifact";
+
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 2u;
+    artifact.height = 2u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    artifact.mips.push_back({
+        0u,
+        2u,
+        2u,
+        8u,
+        16u,
+        std::vector<uint8_t>(16u, 255u)
+    });
+
+    const auto bytes = NLS::Render::Assets::SerializeTextureArtifact(artifact);
+    WriteBytes(texturePath, bytes);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    const auto loaded = NLS::Render::Assets::LoadTextureArtifact(texturePath);
+    const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+
+    ASSERT_TRUE(loaded.has_value());
+    auto findStage = [&records](const NLS::Core::Assets::ArtifactLoadTelemetryStage stage)
+        -> const NLS::Core::Assets::ArtifactLoadTelemetryRecord*
+    {
+        const auto found = std::find_if(
+            records.begin(),
+            records.end(),
+            [stage](const auto& record)
+            {
+                return record.stage == stage;
+            });
+        return found == records.end() ? nullptr : &*found;
+    };
+
+    const auto* fileRead = findStage(NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead);
+    ASSERT_NE(fileRead, nullptr);
+    EXPECT_EQ(fileRead->byteCount, bytes.size());
+    EXPECT_GT(fileRead->elapsed.count(), 0);
+
+    const auto* cpuDeserialize = findStage(NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize);
+    ASSERT_NE(cpuDeserialize, nullptr);
+    EXPECT_EQ(cpuDeserialize->byteCount, bytes.size());
+    EXPECT_GT(cpuDeserialize->elapsed.count(), 0);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    std::filesystem::remove_all(root);
+}
+
+TEST(TextureResourceLifecycleTests, TextureLoaderCreateFromArtifactRecordsRuntimeAndGpuTelemetry)
+{
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 2u;
+    artifact.height = 2u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    artifact.mips.push_back({
+        0u,
+        2u,
+        2u,
+        8u,
+        16u,
+        std::vector<uint8_t>(16u, 255u)
+    });
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreateFromArtifact(
+        artifact,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        false);
+    const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+
+    ASSERT_NE(texture, nullptr);
+    auto findStage = [&records](const NLS::Core::Assets::ArtifactLoadTelemetryStage stage)
+        -> const NLS::Core::Assets::ArtifactLoadTelemetryRecord*
+    {
+        const auto found = std::find_if(
+            records.begin(),
+            records.end(),
+            [stage](const auto& record)
+            {
+                return record.stage == stage;
+            });
+        return found == records.end() ? nullptr : &*found;
+    };
+
+    const auto* runtimeCreation = findStage(NLS::Core::Assets::ArtifactLoadTelemetryStage::RuntimeResourceCreation);
+    ASSERT_NE(runtimeCreation, nullptr);
+    EXPECT_EQ(runtimeCreation->byteCount, 16u);
+    EXPECT_GT(runtimeCreation->elapsed.count(), 0);
+
+    const auto* gpuUpload = findStage(NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUpload);
+    ASSERT_NE(gpuUpload, nullptr);
+    EXPECT_EQ(gpuUpload->byteCount, 16u);
+    EXPECT_GT(gpuUpload->elapsed.count(), 0);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
 }
 
 TEST(TextureResourceLifecycleTests, DefaultTextureViewCoversUploadedMipChain)

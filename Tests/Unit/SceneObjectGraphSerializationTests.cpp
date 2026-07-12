@@ -30,6 +30,7 @@
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Serialize/ObjectGraphDocument.h"
 #include "Reflection/Field.h"
 #include "Reflection/MetaParserFieldMethodSample.h"
@@ -708,6 +709,8 @@ TEST(SceneObjectGraphSerializationTests, SceneGraphActivationDoesNotWaitForGener
     auto* loadedMeshFilter = loadedObject->GetComponent<NLS::Engine::Components::MeshFilter>();
     ASSERT_NE(loadedMeshFilter, nullptr);
     EXPECT_EQ(loadedMeshFilter->GetModelPath(), "Library/Artifacts/StreamingHero/db7ffec2d25e80c7b075bc30a992e27e5f392f809146715c3cdf514a6fba8beb");
+    EXPECT_EQ(loadedMeshFilter->GetRenderRevision(), 1u)
+        << "Deferred mesh reference hints should not synchronously dirty or resolve mesh render state during scene restore.";
     EXPECT_EQ(loadedMeshFilter->ResolveMesh(), nullptr);
 
     auto* loadedRenderer = loadedObject->GetComponent<NLS::Engine::Components::MeshRenderer>();
@@ -1761,6 +1764,32 @@ TEST(SceneObjectGraphSerializationTests, MeshRendererPathHintsPreserveEquivalent
     EXPECT_EQ(renderer.GetMaterialPaths()[0], libraryPath);
 }
 
+TEST(SceneObjectGraphSerializationTests, MeshRendererPartialPathHintsPreserveExistingTrailingSlots)
+{
+    using namespace NLS::Engine::Components;
+
+    const auto firstPath = std::string("Library/Artifacts/Hero/materials/first");
+    const auto secondPath = std::string("Library/Artifacts/Hero/materials/second");
+    NLS::Render::Resources::Material firstMaterial;
+    NLS::Render::Resources::Material secondMaterial;
+    firstMaterial.path = firstPath;
+    secondMaterial.path = secondPath;
+
+    MeshRenderer renderer;
+    renderer.SetMaterialAtIndex(0u, firstMaterial);
+    renderer.SetMaterialAtIndex(1u, secondMaterial);
+
+    renderer.SetMaterialPathHints({ firstPath });
+
+    EXPECT_EQ(renderer.GetMaterialAtIndex(0u), &firstMaterial);
+    EXPECT_EQ(renderer.GetMaterialAtIndex(1u), &secondMaterial)
+        << "Renderer resource resolution may update a subset of material hints and must not clear already bound sibling slots.";
+    const auto materialPaths = renderer.GetMaterialPaths();
+    ASSERT_EQ(materialPaths.size(), 2u);
+    EXPECT_EQ(materialPaths[0], firstPath);
+    EXPECT_EQ(materialPaths[1], secondPath);
+}
+
 TEST(SceneObjectGraphSerializationTests, MeshRendererResolvesEquivalentCachedMaterialPathHint)
 {
     using namespace NLS::Engine::Components;
@@ -2126,6 +2155,162 @@ TEST(SceneObjectGraphSerializationTests, SceneManagerLoadPreservesMalformedDefer
     EXPECT_TRUE(loadedMeshFilter->GetMeshReference().IsNull());
 
     std::filesystem::remove(scenePath);
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneManagerLoadRecordsSceneLoadPerformanceStages)
+{
+    using namespace NLS::Base::Profiling;
+    using namespace NLS::Engine::SceneSystem;
+    using namespace NLS::Engine::Serialize;
+
+    const auto scenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_manager_load_stages_" + NLS::Guid::New().ToString() + ".scene");
+
+    {
+        std::ofstream output(scenePath);
+        output << ObjectGraphWriter::Write(MakeSimpleSceneDocument());
+    }
+
+    PerformanceStageStats stats;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        SceneManager manager;
+        ASSERT_TRUE(manager.LoadScene(scenePath.string(), true));
+    }
+
+    const auto snapshot = stats.Snapshot();
+    const auto findStage = [&snapshot](const std::string& stageName)
+        -> const PerformanceStageEntry*
+    {
+        const auto found = std::find_if(
+            snapshot.stages.begin(),
+            snapshot.stages.end(),
+            [&stageName](const PerformanceStageEntry& entry)
+            {
+                return entry.domain == PerformanceStageDomain::Unknown &&
+                    entry.stageName == stageName;
+            });
+        return found != snapshot.stages.end() ? &*found : nullptr;
+    };
+
+    EXPECT_NE(findStage("SceneLoad.ReadSceneFile"), nullptr);
+    EXPECT_NE(findStage("SceneLoad.ParseObjectGraph"), nullptr);
+    const auto* instantiateStage = findStage("SceneLoad.InstantiateScene");
+    ASSERT_NE(instantiateStage, nullptr);
+    EXPECT_EQ(instantiateStage->counters.at("objectCount"), 3u);
+    EXPECT_NE(findStage("SceneLoad.SceneLoadEvent"), nullptr);
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(scenePath.parent_path() / ".nullus_scene_cache");
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneManagerLoadUsesObjectGraphBinaryCacheOnWarmLoad)
+{
+    using namespace NLS::Base::Profiling;
+    using namespace NLS::Engine::SceneSystem;
+    using namespace NLS::Engine::Serialize;
+
+    const auto scenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_manager_binary_cache_warm_" + NLS::Guid::New().ToString() + ".scene");
+
+    {
+        std::ofstream output(scenePath);
+        output << ObjectGraphWriter::Write(MakeSimpleSceneDocument());
+    }
+
+    SceneManager coldManager;
+    ASSERT_TRUE(coldManager.LoadScene(scenePath.string(), true));
+
+    PerformanceStageStats warmStats;
+    {
+        PerformanceStageStatsCapture capture(warmStats);
+        SceneManager warmManager;
+        ASSERT_TRUE(warmManager.LoadScene(scenePath.string(), true));
+    }
+
+    const auto snapshot = warmStats.Snapshot();
+    const auto hasStage = [&snapshot](const std::string& stageName)
+    {
+        return std::any_of(
+            snapshot.stages.begin(),
+            snapshot.stages.end(),
+            [&stageName](const PerformanceStageEntry& entry)
+            {
+                return entry.stageName == stageName;
+            });
+    };
+
+    EXPECT_TRUE(hasStage("SceneLoad.ReadObjectGraphCache"));
+    EXPECT_FALSE(hasStage("SceneLoad.ParseObjectGraph"))
+        << "Warm scene loads should use the binary object graph cache instead of reparsing JSON.";
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(scenePath.parent_path() / ".nullus_scene_cache");
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneManagerLoadInvalidatesObjectGraphBinaryCacheWhenSceneChanges)
+{
+    using namespace NLS::Base::Profiling;
+    using namespace NLS::Engine::SceneSystem;
+    using namespace NLS::Engine::Serialize;
+
+    const auto scenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_manager_binary_cache_stale_" + NLS::Guid::New().ToString() + ".scene");
+
+    {
+        std::ofstream output(scenePath);
+        output << ObjectGraphWriter::Write(MakeSimpleSceneDocument());
+    }
+
+    SceneManager coldManager;
+    ASSERT_TRUE(coldManager.LoadScene(scenePath.string(), true));
+
+    auto updatedDocument = MakeSimpleSceneDocument();
+    auto& playerRecord = updatedDocument.objects.front();
+    ASSERT_EQ(playerRecord.debugName, "Player");
+    auto* nameProperty = FindMutableProperty(playerRecord, "name");
+    ASSERT_NE(nameProperty, nullptr);
+    nameProperty->value = PropertyValue::String("Updated Player From Source");
+    playerRecord.debugName = "Updated Player From Source";
+    {
+        std::ofstream output(scenePath, std::ios::trunc);
+        output << ObjectGraphWriter::Write(updatedDocument);
+    }
+    std::error_code writeTimeError;
+    const auto currentWriteTime = std::filesystem::last_write_time(scenePath, writeTimeError);
+    ASSERT_FALSE(writeTimeError);
+    std::filesystem::last_write_time(scenePath, currentWriteTime + std::chrono::seconds(2), writeTimeError);
+    ASSERT_FALSE(writeTimeError);
+
+    PerformanceStageStats staleStats;
+    SceneManager staleManager;
+    {
+        PerformanceStageStatsCapture capture(staleStats);
+        ASSERT_TRUE(staleManager.LoadScene(scenePath.string(), true));
+    }
+
+    auto* loadedObject = staleManager.GetCurrentScene()->FindGameObjectByName("Updated Player From Source");
+    ASSERT_NE(loadedObject, nullptr);
+
+    const auto snapshot = staleStats.Snapshot();
+    const auto hasStage = [&snapshot](const std::string& stageName)
+    {
+        return std::any_of(
+            snapshot.stages.begin(),
+            snapshot.stages.end(),
+            [&stageName](const PerformanceStageEntry& entry)
+            {
+                return entry.stageName == stageName;
+            });
+    };
+
+    EXPECT_TRUE(hasStage("SceneLoad.ParseObjectGraph"));
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(scenePath.parent_path() / ".nullus_scene_cache");
 }
 
 TEST(SceneObjectGraphSerializationTests, SceneManagerSharedSavePathWritesStandaloneScenesWithoutMutatingCurrentScene)

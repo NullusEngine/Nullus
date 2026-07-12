@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -148,23 +149,12 @@ namespace
 
 	std::string ResolveEngineShaderPath(const std::string& fileName)
 	{
-		const auto relativeShaderPath = std::filesystem::path("App") / "Assets" / "Engine" / "Shaders" / fileName;
-		const auto appRelativeShaderPath = std::filesystem::path("..") / "Assets" / "Engine" / "Shaders" / fileName;
-		for (auto probe = std::filesystem::current_path(); !probe.empty(); probe = probe.parent_path())
-		{
-			const auto repoCandidate = probe / relativeShaderPath;
-			if (std::filesystem::exists(repoCandidate))
-				return std::filesystem::weakly_canonical(repoCandidate).string();
+		const auto trustedPath =
+			NLS::Render::Resources::Loaders::ShaderLoader::ResolveTrustedBuiltInEngineShaderPath(fileName);
+		if (!trustedPath.empty())
+			return trustedPath;
 
-			const auto appCandidate = probe / appRelativeShaderPath;
-			if (std::filesystem::exists(appCandidate))
-				return std::filesystem::weakly_canonical(appCandidate).string();
-
-			if (probe == probe.root_path())
-				break;
-		}
-
-		return relativeShaderPath.string();
+		return (std::filesystem::path("App") / "Assets" / "Engine" / "Shaders" / fileName).string();
 	}
 
 	const std::any* FindMaterialParameter(
@@ -280,6 +270,17 @@ namespace
 			target.SetRawParameter("u_Roughness", 1.0f);
 		}
 
+		for (const char* channelName : {"u_MetallicMapChannel", "u_RoughnessMapChannel"})
+		{
+			const auto* channel = parameters.TryGet(channelName);
+			if (channel == nullptr ||
+				(channel->type() == typeid(NLS::Maths::Vector4) &&
+					IsZeroColor(std::any_cast<const NLS::Maths::Vector4&>(*channel))))
+			{
+				target.SetRawParameter(channelName, NLS::Maths::Vector4(1.0f, 0.0f, 0.0f, 0.0f));
+			}
+		}
+
 		auto* ambientOcclusion = parameters.TryGet("u_AmbientOcclusion");
 		if (ambientOcclusion == nullptr ||
 			(ambientOcclusion->type() == typeid(float) &&
@@ -302,6 +303,16 @@ namespace
 			if (!parameters.Contains(textureName))
 				target.SetRawParameter(textureName, static_cast<NLS::Render::Resources::Texture2D*>(nullptr));
 		}
+	}
+
+	bool MaterialHasTextureParameter(
+		const NLS::Render::Resources::Material& material,
+		const char* textureName)
+	{
+		const auto* value = material.GetParameterBlock().TryGet(textureName);
+		return value != nullptr &&
+			value->type() == typeid(NLS::Render::Resources::Texture2D*) &&
+			std::any_cast<NLS::Render::Resources::Texture2D*>(*value) != nullptr;
 	}
 
 	void SubmitMeshDraw(
@@ -496,14 +507,16 @@ namespace NLS::Engine::Rendering
 	{
 	}
 
-	DeferredSceneRenderer::DeferredSceneRenderer(
-		NLS::Render::Context::Driver& p_driver,
-		ConstructionOptions options)
-		: BaseSceneRenderer(p_driver)
-	{
-		if (options.loadPipelineResources)
-			LoadPipelineResources();
-	}
+		DeferredSceneRenderer::DeferredSceneRenderer(
+			NLS::Render::Context::Driver& p_driver,
+			ConstructionOptions options)
+			: BaseSceneRenderer(p_driver)
+		{
+			m_deferPipelineResourceAssetsUntilFirstFrame =
+				options.loadPipelineResources && options.deferPipelineResourcesUntilFirstFrame;
+			if (options.loadPipelineResources && !m_deferPipelineResourceAssetsUntilFirstFrame)
+				EnsureDeferredPipelineResourceAssets();
+		}
 
 	void DeferredSceneRenderer::SynchronizeThreadedDeferredSnapshot(
 		NLS::Render::Context::FrameSnapshot& snapshot,
@@ -600,6 +613,9 @@ namespace NLS::Engine::Rendering
 	{
 		if (!NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
 			return;
+		if (m_framePreparedDrawDiagnosticLogCount >= 8u)
+			return;
+		++m_framePreparedDrawDiagnosticLogCount;
 
 		NLS_LOG_INFO(
 			std::string("[DeferredSceneRenderer] ") + stage +
@@ -618,29 +634,116 @@ namespace NLS::Engine::Rendering
 			" instances=" + std::to_string(preparedDraw.instanceCount));
 	}
 
-	NLS::Render::Context::PreparedRenderSceneBuilder DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder(
-		NLS::Render::Context::FrameSnapshot snapshot,
-		const bool hasSkyboxTexture,
-		std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs,
-		std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> appendedPassMetadata,
-		std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture,
-		const uint64_t preferredReadbackTextureGeneration,
-		const uint64_t additionalRenderTargetUseCount,
-		std::optional<NLS::Render::Context::PostSubmitBufferReadbackRequest> hzbPostSubmitReadback) const
-	{
-		auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture);
-		auto frozenFrameDescriptor = FreezeDeferredPreparedFrameDescriptor(GetFrameDescriptor());
-		auto frameDescriptorForBuilder = frozenFrameDescriptor.descriptor;
-		lightGridContext.frameDescriptor = frozenFrameDescriptor.descriptor;
-		auto externalSceneOutputAttachments =
-			NLS::Render::FrameGraph::ResolveExternalSceneOutputAttachments(
-				frameDescriptorForBuilder,
-				"DeferredEditorOverlayColorView",
-				"DeferredEditorOverlayDepthView");
-		auto deferredResources = NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(
-			BuildDeferredPreparedSceneResourceRequest());
+		NLS::Render::Context::PreparedRenderSceneBuilder DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder(
+			NLS::Render::Context::FrameSnapshot snapshot,
+			const bool hasSkyboxTexture,
+			std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs,
+			std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> appendedPassMetadata,
+			std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture,
+			const uint64_t preferredReadbackTextureGeneration,
+			const uint64_t additionalRenderTargetUseCount,
+			std::optional<NLS::Render::Context::PostSubmitBufferReadbackRequest> hzbPostSubmitReadback,
+			const bool includeDeferredSceneExecution) const
+		{
+			const bool logStartupPreparedBuilderStages = []()
+			{
+				static bool shouldLog = true;
+				const bool result = shouldLog;
+				shouldLog = false;
+				return result;
+			}();
+			auto preparedBuilderStageBegin = std::chrono::steady_clock::now();
+			auto logStartupPreparedBuilderStage =
+				[&preparedBuilderStageBegin, logStartupPreparedBuilderStages](const char* stage)
+				{
+					if (!logStartupPreparedBuilderStages)
+						return;
+
+					const auto now = std::chrono::steady_clock::now();
+					NLS_LOG_INFO(
+						std::string("[Startup] DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder stage ") +
+						stage +
+						" elapsedMs=" +
+						std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - preparedBuilderStageBegin).count()));
+					preparedBuilderStageBegin = now;
+				};
+			auto frozenFrameDescriptor = FreezeDeferredPreparedFrameDescriptor(GetFrameDescriptor());
+			logStartupPreparedBuilderStage("FreezeDeferredPreparedFrameDescriptor");
+			auto frameDescriptorForBuilder = frozenFrameDescriptor.descriptor;
+			auto externalSceneOutputAttachments =
+				NLS::Render::FrameGraph::ResolveExternalSceneOutputAttachments(
+					frameDescriptorForBuilder,
+					"DeferredEditorOverlayColorView",
+					"DeferredEditorOverlayDepthView");
+			logStartupPreparedBuilderStage("ResolveExternalSceneOutputAttachments");
+
+			if (!includeDeferredSceneExecution)
+			{
+				logStartupPreparedBuilderStage("BuildSkipDeferredSceneExecutionBuilder");
+				return [snapshot = std::move(snapshot),
+						frameDescriptorForBuilder,
+						externalSceneOutputAttachments = std::move(externalSceneOutputAttachments),
+						appendedPassInputs = std::move(appendedPassInputs),
+						appendedPassMetadata = std::move(appendedPassMetadata),
+						preferredReadbackTexture = std::move(preferredReadbackTexture),
+						preferredReadbackTextureGeneration,
+						additionalRenderTargetUseCount,
+						frozenFrameDescriptor = std::move(frozenFrameDescriptor)]() mutable
+				{
+					frameDescriptorForBuilder.camera = frozenFrameDescriptor.camera.get();
+					auto package = BuildSnapshotOwnedRenderScenePackage(
+						snapshot,
+						SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+					if (auto helperInput = NLS::Render::FrameGraph::BuildDeferredAggregateHelperPassInput(package);
+						helperInput.has_value())
+					{
+						appendedPassInputs.push_back(std::move(*helperInput));
+					}
+					if (!package.targetsSwapchain)
+					{
+						NLS::Render::FrameGraph::ApplyExternalSceneOutputAttachments(
+							appendedPassInputs,
+							externalSceneOutputAttachments,
+							{
+								NLS::Render::Context::RenderPassCommandKind::Helper
+							});
+					}
+					NLS::Render::FrameGraph::CompileAndApplyThreadedRenderSceneExecution(
+						package,
+						frameDescriptorForBuilder,
+						-1,
+						-1,
+						appendedPassMetadata,
+						[appendedPassInputs = std::move(appendedPassInputs)](const auto&) mutable
+						{
+							return std::move(appendedPassInputs);
+						});
+					if (preferredReadbackTexture != nullptr)
+						NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(
+							package,
+							preferredReadbackTexture,
+							preferredReadbackTextureGeneration);
+					package.renderTargetUseCount += additionalRenderTargetUseCount;
+					NLS::Render::FrameGraph::FinalizePreparedDeferredScenePackage(package, frameDescriptorForBuilder);
+					return package;
+				};
+			}
+
+			const bool suppressLightGridCompute =
+				HasDescriptor<SceneDescriptor>() &&
+				GetDescriptor<SceneDescriptor>().suppressLightGridCompute;
+			auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture, suppressLightGridCompute);
+			lightGridContext.frameDescriptor.renderWidth = frozenFrameDescriptor.descriptor.renderWidth;
+			lightGridContext.frameDescriptor.renderHeight = frozenFrameDescriptor.descriptor.renderHeight;
+			lightGridContext.frameDescriptor.camera = frozenFrameDescriptor.descriptor.camera;
+			lightGridContext.frameDescriptor.clearColorOverride = frozenFrameDescriptor.descriptor.clearColorOverride;
+			logStartupPreparedBuilderStage("BuildLightGridCompileContext");
+			auto deferredResources = NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(
+				BuildDeferredPreparedSceneResourceRequest());
+			logStartupPreparedBuilderStage("CaptureDeferredPreparedSceneResources");
 		const auto hzbSource = NLS::Render::FrameGraph::BuildHZBPreparedComputeDispatchSource(
 			BuildHZBFrameResourceRequest());
+			logStartupPreparedBuilderStage("BuildHZBPreparedComputeDispatchSource");
 		if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
 		{
 			NLS_LOG_INFO(
@@ -649,6 +752,7 @@ namespace NLS::Engine::Rendering
 				" hasReadback=" +
 				std::to_string(hzbPostSubmitReadback.has_value() ? 1 : 0));
 		}
+			logStartupPreparedBuilderStage("BuildDeferredPreparedRenderSceneBuilderLambda");
 		return [snapshot = std::move(snapshot),
 				frameDescriptorForBuilder,
 				externalSceneOutputAttachments = std::move(externalSceneOutputAttachments),
@@ -692,7 +796,8 @@ namespace NLS::Engine::Rendering
 				std::move(appendedPassInputs),
 				appendedPassMetadata,
 				queuedDrawCounts,
-				hzbSource);
+				hzbSource,
+				&externalSceneOutputAttachments);
 			if (preferredReadbackTexture != nullptr)
 				NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(
 					package,
@@ -777,18 +882,44 @@ namespace NLS::Engine::Rendering
 			BuildDeferredPreparedSceneResourceRequest()).gbufferDepthView;
 	}
 
-	void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
-	{
-		NLS_PROFILE_SCOPE();
-		NLS_ASSERT(HasFrameObjectBindingProvider(), "DeferredSceneRenderer requires a renderer-owned frame/object binding provider.");
-		{
-			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PollHZBOcclusionResultReadback");
-			PollHZBOcclusionResultReadback();
-		}
-		{
-			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BaseSceneRendererBeginFrame");
-			BaseSceneRenderer::BeginFrame(p_frameDescriptor);
-		}
+			void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
+			{
+				NLS_PROFILE_SCOPE();
+				const bool logStartupBeginFrameStages = []()
+				{
+					static bool shouldLog = true;
+					const bool result = shouldLog;
+					shouldLog = false;
+					return result;
+				}();
+				auto startupStageBegin = std::chrono::steady_clock::now();
+				auto logStartupBeginFrameStage =
+					[&startupStageBegin, logStartupBeginFrameStages](const char* stage)
+					{
+						if (!logStartupBeginFrameStages)
+							return;
+
+						const auto now = std::chrono::steady_clock::now();
+						NLS_LOG_INFO(
+							std::string("[Startup] DeferredSceneRenderer::BeginFrame stage ") +
+							stage +
+							" elapsedMs=" +
+							std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - startupStageBegin).count()));
+						startupStageBegin = now;
+				};
+				NLS_ASSERT(HasFrameObjectBindingProvider(), "DeferredSceneRenderer requires a renderer-owned frame/object binding provider.");
+				{
+					NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PollHZBOcclusionResultReadback");
+					PollHZBOcclusionResultReadback();
+				}
+				logStartupBeginFrameStage("PollHZBOcclusionResultReadback");
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BaseSceneRendererBeginFrame");
+				BaseSceneRenderer::BeginFrame(p_frameDescriptor);
+			}
+				logStartupBeginFrameStage("BaseSceneRendererBeginFrame");
+				if (!IsFrameActive())
+					return;
 
 		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 		uint64_t queuedGBufferDrawCount = 0u;
@@ -800,18 +931,31 @@ namespace NLS::Engine::Rendering
 		m_threadedQueuedLightingDrawCount = 0u;
 		m_threadedQueuedTransparentDrawCount = 0u;
 		m_frameGBufferMaterialSyncCount = 0u;
+		m_framePreparedDrawDiagnosticLogCount = 0u;
 		m_skipThreadedFramePublish = false;
 		m_threadedHZBPostSubmitReadback.reset();
 		ClearFrameGBufferMaterialResolveCache();
 
-		auto drawables = [&]()
-		{
-			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ParseScene");
-			return ParseScene();
-		}();
-		const auto& hzbPacketBuild = GetLastHZBOcclusionPrimitivePacketBuildResult();
-		const auto& hzbOcclusionFrameInput = GetLastHZBOcclusionFrameInput();
-		{
+			auto drawables = [&]()
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ParseScene");
+					return ParseScene();
+				}();
+				logStartupBeginFrameStage("ParseScene");
+				const bool hasDeferredSceneDrawables =
+					!drawables.opaques.empty() ||
+					!drawables.decals.empty() ||
+					!drawables.transparents.empty() ||
+					!drawables.skyboxes.empty();
+				if (m_deferPipelineResourceAssetsUntilFirstFrame && hasDeferredSceneDrawables)
+					EnsureDeferredPipelineResourceAssets();
+				logStartupBeginFrameStage(
+					hasDeferredSceneDrawables
+						? "EnsureDeferredPipelineResourceAssets"
+						: "SkipDeferredPipelineResourceAssets");
+				const auto& hzbPacketBuild = GetLastHZBOcclusionPrimitivePacketBuildResult();
+			const auto& hzbOcclusionFrameInput = GetLastHZBOcclusionFrameInput();
+			{
 			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PrepareHZBOcclusionObservation");
 			if (hzbOcclusionFrameInput.enabled &&
 				hzbOcclusionFrameInput.backendSupported &&
@@ -820,16 +964,17 @@ namespace NLS::Engine::Rendering
 				m_hzbOcclusionResultReadbackCompletion == nullptr &&
 				m_hzbOcclusionResultReadbackState == nullptr &&
 				!hzbPacketBuild.primitiveInputs.empty() &&
-				PrepareHZBOcclusionPrimitiveBuffers(hzbPacketBuild.primitivePackets))
-			{
-				BeginHZBOcclusionObservationFrame(
-					hzbOcclusionFrameInput,
-					hzbPacketBuild.primitiveInputs);
+					PrepareHZBOcclusionPrimitiveBuffers(hzbPacketBuild.primitivePackets))
+				{
+					BeginHZBOcclusionObservationFrame(
+						hzbOcclusionFrameInput,
+						hzbPacketBuild.primitiveInputs);
+				}
 			}
-		}
-		const auto& frameDescriptor = GetFrameDescriptor();
-		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
-		NLS::Render::Resources::Material* skyboxMaterial = nullptr;
+			logStartupBeginFrameStage("PrepareHZBOcclusionObservation");
+			const auto& frameDescriptor = GetFrameDescriptor();
+			NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
+			NLS::Render::Resources::Material* skyboxMaterial = nullptr;
 		{
 			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ResolveSkyboxTexture");
 			for (const auto& entry : drawables.skyboxes)
@@ -844,20 +989,25 @@ namespace NLS::Engine::Rendering
 				{
 					skyboxTexture = std::any_cast<NLS::Render::Resources::TextureCube*>(*skyboxParameter);
 					break;
+					}
 				}
 			}
-		}
-		const bool hasSkyboxTexture = skyboxTexture != nullptr;
-		if (usesThreadedRendering)
-		{
-			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ThreadedCapture");
-			const bool hasPreparedSceneDrawables =
-				!drawables.opaques.empty() ||
-				!drawables.decals.empty() ||
-				!drawables.transparents.empty();
-			const bool preparedFrameResourcesAvailable =
-				!hasPreparedSceneDrawables ||
-				TryReservePreparedFrameResourcesForThreadedCapture(*this);
+			logStartupBeginFrameStage("ResolveSkyboxTexture");
+			const bool hasSkyboxTexture = skyboxTexture != nullptr;
+			if (usesThreadedRendering)
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::ThreadedCapture");
+				const bool hasPreparedSceneDrawables =
+					!drawables.opaques.empty() ||
+					!drawables.decals.empty() ||
+					!drawables.transparents.empty();
+				const bool shouldCaptureDeferredScene =
+					hasPreparedSceneDrawables ||
+					!drawables.skyboxes.empty();
+				const bool preparedFrameResourcesAvailable =
+					!hasPreparedSceneDrawables ||
+					TryReservePreparedFrameResourcesForThreadedCapture(*this);
+				logStartupBeginFrameStage("ReservePreparedFrameResources");
 			if (!preparedFrameResourcesAvailable && queuedGBufferDrawCount == 0u)
 			{
 				m_skipThreadedFramePublish = true;
@@ -870,13 +1020,21 @@ namespace NLS::Engine::Rendering
 						" sceneDecalDrawables=" + std::to_string(drawables.decals.size()) +
 						" sceneTransparentDrawables=" + std::to_string(drawables.transparents.size()));
 				}
-			}
-			else
-			{
-				{
-					NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::EnsureGBufferTargets");
-					EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
 				}
+				else
+				{
+					if (!shouldCaptureDeferredScene)
+					{
+						m_skipThreadedFramePublish = true;
+						logStartupBeginFrameStage("SkipDeferredSceneCapture");
+					}
+					else
+					{
+					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::EnsureGBufferTargets");
+						EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+					}
+				logStartupBeginFrameStage("EnsureGBufferTargets");
 				if (!HasDeferredThreadedPipelineResources())
 				{
 					m_skipThreadedFramePublish = true;
@@ -896,14 +1054,23 @@ namespace NLS::Engine::Rendering
 				}
 				else
 				{
-					{
-						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PrepareHZBFrameResources");
-						PrepareHZBFrameResources(BuildDeferredPreparedSceneResourceRequest());
-						m_threadedHZBPostSubmitReadback = BuildHZBPostSubmitReadbackRequest(true);
-					}
+						if (hzbOcclusionFrameInput.enabled)
+						{
+							{
+								NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PrepareHZBFrameResources");
+								PrepareHZBFrameResources(BuildDeferredPreparedSceneResourceRequest());
+								m_threadedHZBPostSubmitReadback = BuildHZBPostSubmitReadbackRequest(true);
+							}
+							logStartupBeginFrameStage("PrepareHZBFrameResources");
+						}
+						else
+						{
+							logStartupBeginFrameStage("SkipHZBFrameResources");
+						}
 					SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
 
 					auto gbufferPso = CreateSceneDefaultPipelineState(*this);
+					logStartupBeginFrameStage("CreateGBufferPipelineState");
 					{
 						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureGBufferOpaques");
 						for (const auto& entry : drawables.opaques)
@@ -933,6 +1100,7 @@ namespace NLS::Engine::Rendering
 							LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
 						}
 					}
+					logStartupBeginFrameStage("CaptureGBufferOpaques");
 
 					{
 						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureDecals");
@@ -964,6 +1132,7 @@ namespace NLS::Engine::Rendering
 							LogPreparedDrawResult("Decal", captured, queued, preparedDraw);
 						}
 					}
+					logStartupBeginFrameStage("CaptureDecals");
 
 					{
 						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureLighting");
@@ -999,6 +1168,7 @@ namespace NLS::Engine::Rendering
 							++queuedLightingDrawCount;
 						LogPreparedDrawResult("Lighting", captured, queued, preparedDraw);
 					}
+					logStartupBeginFrameStage("CaptureLighting");
 
 					{
 						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureTransparents");
@@ -1028,26 +1198,46 @@ namespace NLS::Engine::Rendering
 							LogPreparedDrawResult("Transparent", captured, queued, preparedDraw);
 						}
 						SetActivePreparedPassBindingSet(nullptr);
+						}
+						logStartupBeginFrameStage("CaptureTransparents");
+					}
 					}
 				}
-			}
 
-			m_threadedQueuedGBufferDrawCount = queuedGBufferDrawCount;
+				m_threadedQueuedGBufferDrawCount = queuedGBufferDrawCount;
 			m_threadedQueuedDecalDrawCount = queuedDecalDrawCount;
 			m_threadedQueuedLightingDrawCount = queuedLightingDrawCount;
 			m_threadedQueuedTransparentDrawCount = queuedTransparentDrawCount;
 
 		}
+			logStartupBeginFrameStage("ThreadedCapture");
 
-		auto pendingFrameSnapshot = [&]()
-		{
-			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BuildFrameSnapshot");
-			return BuildFrameSnapshot(p_frameDescriptor);
-		}();
-		if (pendingFrameSnapshot.has_value())
-		{
-			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PublishFrameSnapshot");
+			auto pendingFrameSnapshot = [&]()
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BuildFrameSnapshot");
+				return BuildFrameSnapshot(p_frameDescriptor);
+			}();
+			logStartupBeginFrameStage("BuildFrameSnapshot");
+			if (pendingFrameSnapshot.has_value())
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::PublishFrameSnapshot");
+				auto publishStageBegin = std::chrono::steady_clock::now();
+				auto logStartupPublishStage =
+					[&publishStageBegin, logStartupBeginFrameStages](const char* stage)
+					{
+						if (!logStartupBeginFrameStages)
+							return;
+
+						const auto now = std::chrono::steady_clock::now();
+						NLS_LOG_INFO(
+							std::string("[Startup] DeferredSceneRenderer::BeginFrame PublishFrameSnapshot stage ") +
+							stage +
+							" elapsedMs=" +
+							std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - publishStageBegin).count()));
+						publishStageBegin = now;
+					};
 			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
+				logStartupPublishStage("RefreshFrameSnapshotVisibility");
 			if (usesThreadedRendering &&
 				ShouldSkipThreadedDeferredFramePublish(
 					pendingFrameSnapshot.value(),
@@ -1061,6 +1251,7 @@ namespace NLS::Engine::Rendering
 					DiscardPendingHZBOcclusionObservationFrame();
 				m_threadedHZBPostSubmitReadback.reset();
 			}
+				logStartupPublishStage("ShouldSkipThreadedDeferredFramePublish");
 			if (usesThreadedRendering)
 				SynchronizeThreadedDeferredSnapshot(
 					pendingFrameSnapshot.value(),
@@ -1068,18 +1259,22 @@ namespace NLS::Engine::Rendering
 					queuedDecalDrawCount,
 					queuedLightingDrawCount,
 					queuedTransparentDrawCount);
+				logStartupPublishStage("SynchronizeThreadedDeferredSnapshot");
 			if (usesThreadedRendering)
 			{
-				SetPendingPreparedRenderSceneBuilder(
-					BuildDeferredPreparedRenderSceneBuilder(
-						pendingFrameSnapshot.value(),
-						hasSkyboxTexture,
-						{},
-						{},
-						nullptr,
-						0u,
-						0u,
-						GetThreadedHZBPostSubmitReadbackForPreparedBuilder()));
+					auto preparedRenderSceneBuilder = BuildDeferredPreparedRenderSceneBuilder(
+							pendingFrameSnapshot.value(),
+							hasSkyboxTexture,
+							{},
+							{},
+							nullptr,
+							0u,
+							0u,
+							GetThreadedHZBPostSubmitReadbackForPreparedBuilder(),
+							hasDeferredSceneDrawables);
+					logStartupPublishStage("BuildDeferredPreparedRenderSceneBuilder");
+				SetPendingPreparedRenderSceneBuilder(std::move(preparedRenderSceneBuilder));
+					logStartupPublishStage("SetPendingPreparedRenderSceneBuilder");
 			}
 			if (usesThreadedRendering &&
 				NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
@@ -1095,26 +1290,30 @@ namespace NLS::Engine::Rendering
 					" visibleDecalDraws=" + std::to_string(pendingFrameSnapshot->visibleDecalDrawCount) +
 					" visibleTransparentDraws=" + std::to_string(pendingFrameSnapshot->visibleTransparentDrawCount) +
 					" sceneOpaqueDrawables=" + std::to_string(drawables.opaques.size()));
+				}
+				SetPendingFrameSnapshot(pendingFrameSnapshot.value());
+				logStartupPublishStage("SetPendingFrameSnapshot");
 			}
-			SetPendingFrameSnapshot(pendingFrameSnapshot.value());
-		}
+			logStartupBeginFrameStage("PublishFrameSnapshot");
 
-		NLS::Render::Context::RenderScenePackage scenePackage;
-		if (!usesThreadedRendering && pendingFrameSnapshot.has_value())
-		{
-			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BuildRenderScenePackage");
-			scenePackage = BuildRenderScenePackage(pendingFrameSnapshot.value());
-		}
+			NLS::Render::Context::RenderScenePackage scenePackage;
+			if (!usesThreadedRendering && pendingFrameSnapshot.has_value())
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::BuildRenderScenePackage");
+				scenePackage = BuildRenderScenePackage(pendingFrameSnapshot.value());
+			}
+			logStartupBeginFrameStage("BuildRenderScenePackage");
 
-		{
-			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::AddDeferredSceneDescriptor");
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::AddDeferredSceneDescriptor");
 			AddDescriptor<DeferredSceneDescriptor>({
 				std::move(drawables),
-				std::move(scenePackage),
-				hasSkyboxTexture });
-		}
+					std::move(scenePackage),
+					hasSkyboxTexture });
+			}
+			logStartupBeginFrameStage("AddDeferredSceneDescriptor");
 
-	}
+		}
 
 	void DeferredSceneRenderer::DrawFrame()
 	{
@@ -1124,57 +1323,71 @@ namespace NLS::Engine::Rendering
 		// NOTE: Deferred rendering with threaded RHI requires proper GBuffer-to-Lighting
 		// texture barrier handling in SubmitThreadedRhiFrame, which is not yet implemented.
 		// For now, always use FrameGraph path for Deferred to ensure correct rendering.
-		if (!usesThreadedRendering)
-		{
-			const auto& frame = GetFrameDescriptor();
-			EnsureGBufferTargets(frame.renderWidth, frame.renderHeight);
+			if (!usesThreadedRendering)
+			{
+				const auto& frame = GetFrameDescriptor();
+				const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+				const bool hasDeferredSceneDrawables =
+					!scene.drawables.opaques.empty() ||
+					!scene.drawables.decals.empty() ||
+					!scene.drawables.transparents.empty() ||
+					!scene.drawables.skyboxes.empty();
 
-			if (!m_gBufferShader || !m_lightingMaterial || !m_fullscreenQuad)
-			{
-				NLS_LOG_WARNING("DeferredSceneRenderer is missing shader or mesh resources; skipping deferred frame.");
-				return;
-			}
+				if (hasDeferredSceneDrawables)
+				{
+					EnsureGBufferTargets(frame.renderWidth, frame.renderHeight);
 
-			FrameGraph frameGraph;
-			FrameGraphBlackboard blackboard;
-			const auto deferredResourceRequest = BuildDeferredPreparedSceneResourceRequest();
-			const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
-			const auto lightGridContext = BuildLightGridCompileContext(scene.hasSkyboxTexture);
-			NLS::Render::FrameGraph::DeferredGraphSceneResourceRequest resourceRequest;
-			{
-				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BuildGraphResourceRequest");
-				resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
-					frameGraph,
-					blackboard,
-					frame,
-					deferredResourceRequest);
-				if (PrepareHZBFrameResources(deferredResourceRequest))
-					resourceRequest.hzbResources = BuildHZBFrameResourceRequest();
-			}
-			{
-				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::ReserveDeferredSceneGraph");
-				NLS::Render::FrameGraph::ReserveDeferredSceneGraph(frameGraph, resourceRequest);
-			}
-			NLS::Render::FrameGraph::PreparedDeferredSceneGraph preparedGraph;
-			{
-				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::PrepareDeferredSceneGraph");
-				preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
-					resourceRequest,
-					lightGridContext,
-					!scene.drawables.transparents.empty(),
-					!scene.drawables.decals.empty());
-			}
-			{
-				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::ExecutePreparedDeferredSceneGraph");
-				const auto transparentDepthView = !scene.drawables.transparents.empty()
-					? NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(
-						deferredResourceRequest).gbufferDepthView
-					: std::shared_ptr<NLS::Render::RHI::RHITextureView>{};
-				SetActivePreparedPassBindingSet(lightGridContext.graphicsPassBindingSet);
-				NLS::Render::FrameGraph::ExecutePreparedDeferredSceneGraph(
-					frameGraph,
-					preparedGraph,
+					if (!m_gBufferShader || !m_lightingMaterial || !m_fullscreenQuad)
 					{
+						NLS_LOG_WARNING("DeferredSceneRenderer is missing shader or mesh resources; skipping deferred frame.");
+						return;
+					}
+
+					FrameGraph frameGraph;
+					FrameGraphBlackboard blackboard;
+					const auto deferredResourceRequest = BuildDeferredPreparedSceneResourceRequest();
+					const bool suppressLightGridCompute =
+						HasDescriptor<SceneDescriptor>() &&
+						GetDescriptor<SceneDescriptor>().suppressLightGridCompute;
+					const auto lightGridContext = BuildLightGridCompileContext(
+						scene.hasSkyboxTexture,
+						suppressLightGridCompute);
+					NLS::Render::FrameGraph::DeferredGraphSceneResourceRequest resourceRequest;
+					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BuildGraphResourceRequest");
+						resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+							frameGraph,
+							blackboard,
+							frame,
+							deferredResourceRequest);
+							if (GetLastHZBOcclusionFrameInput().enabled &&
+								PrepareHZBFrameResources(deferredResourceRequest))
+								resourceRequest.hzbResources = BuildHZBFrameResourceRequest();
+					}
+					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::ReserveDeferredSceneGraph");
+						NLS::Render::FrameGraph::ReserveDeferredSceneGraph(frameGraph, resourceRequest);
+					}
+					NLS::Render::FrameGraph::PreparedDeferredSceneGraph preparedGraph;
+					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::PrepareDeferredSceneGraph");
+						preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+							resourceRequest,
+							lightGridContext,
+							!scene.drawables.transparents.empty(),
+							!scene.drawables.decals.empty());
+					}
+					{
+						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::ExecutePreparedDeferredSceneGraph");
+						const auto transparentDepthView = !scene.drawables.transparents.empty()
+							? NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(
+								deferredResourceRequest).gbufferDepthView
+							: std::shared_ptr<NLS::Render::RHI::RHITextureView>{};
+						SetActivePreparedPassBindingSet(lightGridContext.graphicsPassBindingSet);
+						NLS::Render::FrameGraph::ExecutePreparedDeferredSceneGraph(
+							frameGraph,
+							preparedGraph,
+							{
 						[this](const auto& beginDesc) -> bool
 						{
 							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginGBufferPass");
@@ -1279,11 +1492,11 @@ namespace NLS::Engine::Rendering
 				frameGraph.execute(&executionContext, &executionContext);
 			}
 			SetActivePreparedPassBindingSet(nullptr);
-			if (auto hzbPostSubmitReadback = BuildHZBPostSubmitReadbackRequest(false); hzbPostSubmitReadback.has_value())
-			{
-				const auto queuedHZBReadbackRequest = hzbPostSubmitReadback.value();
-				const bool queuedHZBReadback =
-					NLS::Render::Context::DriverRendererAccess::QueueStandalonePostSubmitBufferReadback(
+				if (auto hzbPostSubmitReadback = BuildHZBPostSubmitReadbackRequest(false); hzbPostSubmitReadback.has_value())
+				{
+					const auto queuedHZBReadbackRequest = hzbPostSubmitReadback.value();
+					const bool queuedHZBReadback =
+						NLS::Render::Context::DriverRendererAccess::QueueStandalonePostSubmitBufferReadback(
 					m_driver,
 					std::move(hzbPostSubmitReadback.value()));
 				if (queuedHZBReadback)
@@ -1291,7 +1504,8 @@ namespace NLS::Engine::Rendering
 				if (!queuedHZBReadback)
 				{
 					DiscardPendingHZBOcclusionObservationFrame();
-					ClearHZBPendingResultReadback();
+						ClearHZBPendingResultReadback();
+					}
 				}
 			}
 		}
@@ -1304,6 +1518,8 @@ namespace NLS::Engine::Rendering
 		if (usesThreadedRendering)
 		{
 			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::DrawFrame::ThreadedSnapshotRefresh");
+			if (!HasDescriptor<DeferredSceneDescriptor>())
+				return;
 			const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 			auto pendingFrameSnapshot = BuildFrameSnapshot(m_frameDescriptor);
 			if (pendingFrameSnapshot.has_value())
@@ -1320,9 +1536,9 @@ namespace NLS::Engine::Rendering
 		}
 	}
 
-	void DeferredSceneRenderer::LoadPipelineResources()
-	{
-		NLS_PROFILE_SCOPE();
+		void DeferredSceneRenderer::LoadPipelineResources()
+		{
+			NLS_PROFILE_SCOPE();
 		using ShaderLoader = NLS::Render::Resources::Loaders::ShaderLoader;
 		const auto& projectAssetsRoot = NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot();
 
@@ -1343,8 +1559,16 @@ namespace NLS::Engine::Rendering
 			MakeFullscreenVertex( 1.0f, -1.0f, 1.0f, 1.0f)
 		};
 		std::vector<uint32_t> indices{ 0, 1, 2, 0, 2, 3 };
-		m_fullscreenQuad = std::make_unique<NLS::Render::Resources::Mesh>(vertices, indices, 0);
-	}
+			m_fullscreenQuad = std::make_unique<NLS::Render::Resources::Mesh>(vertices, indices, 0);
+		}
+
+		void DeferredSceneRenderer::EnsureDeferredPipelineResourceAssets()
+		{
+			if (m_pipelineResourceAssetsLoaded)
+				return;
+			LoadPipelineResources();
+			m_pipelineResourceAssetsLoaded = true;
+		}
 
 	void DeferredSceneRenderer::EnsureGBufferTargets(uint16_t width, uint16_t height)
 	{
@@ -2358,11 +2582,16 @@ namespace NLS::Engine::Rendering
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AlbedoMap", sourceMaterial, "_BaseMap");
 		CopyMaterialParameterIfPresent(target, "u_Metallic", sourceMaterial, "_Metallic");
 		CopyMaterialParameterIfPresent(target, "u_Roughness", sourceMaterial, "_Roughness");
+		CopyMaterialParameterIfPresent(target, "u_MetallicMapChannel", sourceMaterial, "_MetallicMapChannel");
+		CopyMaterialParameterIfPresent(target, "u_RoughnessMapChannel", sourceMaterial, "_RoughnessMapChannel");
 		CopyMaterialParameterIfPresent(target, "u_AmbientOcclusion", sourceMaterial, "_AmbientOcclusion");
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_MetallicMap", sourceMaterial, "_MetallicMap");
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_RoughnessMap", sourceMaterial, "_RoughnessMap");
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AmbientOcclusionMap", sourceMaterial, "_OcclusionMap");
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_NormalMap", sourceMaterial, "_NormalMap");
+		target.SetRawParameter(
+			"u_EnableNormalMapping",
+			MaterialHasTextureParameter(sourceMaterial, "_NormalMap") ? 1.0f : 0.0f);
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_OpacityMap", sourceMaterial, "_OpacityMap");
 		CopyMaterialParameterIfPresent(target, "u_Emissive", sourceMaterial, "_EmissiveColor");
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_EmissiveMap", sourceMaterial, "_EmissiveMap");

@@ -47,6 +47,7 @@ namespace NLS::Engine::Rendering
 		bool allowHLOD = false;
 		bool editorInspectionView = false;
 		std::vector<ScenePrimitiveHandle> selectedPrimitiveHandles;
+		std::vector<SceneHLODClusterHandle> forceInspectableHLODClusters;
 	};
 
 	struct HLODSelectionResult

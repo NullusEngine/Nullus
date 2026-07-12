@@ -18,8 +18,18 @@ namespace NLS::UI
 			bool valid = false;
 		};
 
-		CachedDragDropPayload g_cachedDragDropPayload;
-		constexpr int kCachedPayloadFrameGrace = 1;
+			CachedDragDropPayload g_cachedDragDropPayload;
+			constexpr int kCachedPayloadFrameGrace = 1;
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+			struct DragDropTargetPayloadOverride
+			{
+				DragDropTargetPayloadForTesting payload;
+				bool enabled = false;
+			};
+
+			DragDropTargetPayloadOverride g_dragDropTargetPayloadOverride;
+#endif
 
 		int GetCurrentImGuiFrame()
 		{
@@ -93,23 +103,44 @@ namespace NLS::UI
 		g_cachedDragDropPayload = {};
 	}
 
-	bool BeginDragDropTarget()
-	{
-		return ImGui::BeginDragDropTarget();
-	}
+		bool BeginDragDropTarget()
+		{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+			if (g_dragDropTargetPayloadOverride.enabled)
+				return g_dragDropTargetPayloadOverride.payload.targetActive;
+#endif
+			return ImGui::BeginDragDropTarget();
+		}
 
-	void EndDragDropTarget()
-	{
-		ImGui::EndDragDropTarget();
-	}
+		void EndDragDropTarget()
+		{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+			if (g_dragDropTargetPayloadOverride.enabled)
+				return;
+#endif
+			ImGui::EndDragDropTarget();
+		}
 
-	DragDropPayloadView AcceptDragDropPayload(const char* type, const DragDropTargetFlags flags)
-	{
-		const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type, ToImGuiFlags(flags));
-		if (payload == nullptr)
-			return {};
-		return { payload->Data, static_cast<size_t>(payload->DataSize), payload->IsDelivery() };
-	}
+		DragDropPayloadView AcceptDragDropPayload(const char* type, const DragDropTargetFlags flags)
+		{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+			if (g_dragDropTargetPayloadOverride.enabled)
+			{
+				const auto& overridePayload = g_dragDropTargetPayloadOverride.payload;
+				if (!overridePayload.targetActive || type == nullptr ||
+					overridePayload.type != type || overridePayload.bytes.empty())
+					return {};
+				return {
+					overridePayload.bytes.data(),
+					overridePayload.bytes.size(),
+					overridePayload.delivered };
+			}
+#endif
+			const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type, ToImGuiFlags(flags));
+			if (payload == nullptr)
+				return {};
+			return { payload->Data, static_cast<size_t>(payload->DataSize), payload->IsDelivery() };
+		}
 
 	DragDropPayloadView PeekDragDropPayload(const char* type)
 	{
@@ -135,9 +166,20 @@ namespace NLS::UI
 	}
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
-	void SetCachedDragDropPayloadForTesting(const char* type, const void* data, const size_t dataSize, const bool fresh)
-	{
-		g_cachedDragDropPayload = {};
+		void SetDragDropTargetPayloadForTesting(const DragDropTargetPayloadForTesting& payload)
+		{
+			g_dragDropTargetPayloadOverride.payload = payload;
+			g_dragDropTargetPayloadOverride.enabled = true;
+		}
+
+		void ClearDragDropTargetPayloadForTesting()
+		{
+			g_dragDropTargetPayloadOverride = {};
+		}
+
+		void SetCachedDragDropPayloadForTesting(const char* type, const void* data, const size_t dataSize, const bool fresh)
+		{
+			g_cachedDragDropPayload = {};
 		if (type == nullptr || (data == nullptr && dataSize > 0u))
 			return;
 

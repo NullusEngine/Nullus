@@ -24,7 +24,7 @@ struct EditorAssetDragPayload
     uint32_t artifactType = static_cast<uint32_t>(NLS::Core::Assets::ArtifactType::Unknown);
     uint8_t generatedModelPrefab = 0u;
     uint8_t imported = 0u;
-    uint8_t previewPrefabReady = 0u;
+    uint8_t reserved = 0u;
     uint8_t generatedBrowserSubAsset = 0u;
 };
 
@@ -42,7 +42,6 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     NLS::Core::Assets::ArtifactType artifactType,
     bool generatedModelPrefab,
     bool imported,
-    bool previewPrefabReady = false,
     bool generatedBrowserSubAsset = false);
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -53,7 +52,6 @@ EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
     NLS::Core::Assets::ArtifactType artifactType,
     bool generatedModelPrefab,
     bool imported,
-    bool previewPrefabReady = false,
     bool generatedBrowserSubAsset = false);
 #endif
 
@@ -67,7 +65,6 @@ std::string GetEditorAssetDragPayloadGuid(const EditorAssetDragPayload& payload)
 std::string GetEditorAssetDragPayloadSubAssetKey(const EditorAssetDragPayload& payload);
 NLS::Core::Assets::AssetId GetEditorAssetDragPayloadAssetId(const EditorAssetDragPayload& payload);
 NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const EditorAssetDragPayload& payload);
-bool IsEditorAssetDragPayloadPreviewPrefabReady(const EditorAssetDragPayload& payload);
 bool IsEditorAssetDragPayloadGeneratedBrowserSubAsset(const EditorAssetDragPayload& payload);
 bool CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(const EditorAssetDragPayload& payload);
 }

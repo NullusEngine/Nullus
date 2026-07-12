@@ -14,9 +14,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 namespace NLS::Editor::Assets
@@ -73,7 +75,26 @@ struct AssetBrowserItem
     bool generatedReadOnly = false;
     bool previewableInAssetView = false;
     bool hasGeneratedSubAssets = false;
+
+    bool operator==(const AssetBrowserItem&) const = default;
 };
+
+struct AssetBrowserActionIdentity
+{
+    AssetBrowserItemKind kind = AssetBrowserItemKind::Folder;
+    std::string canonicalSourcePath;
+    NLS::Core::Assets::AssetId assetId;
+    std::string subAssetKey;
+
+    bool operator==(const AssetBrowserActionIdentity&) const = default;
+};
+
+std::optional<AssetBrowserActionIdentity> BuildAssetBrowserActionIdentity(
+    const AssetBrowserItem& item);
+
+bool AssetBrowserItemMatchesActionIdentity(
+    const AssetBrowserItem& item,
+    const AssetBrowserActionIdentity& identity);
 
 struct AssetBrowserBreadcrumbSegment
 {
@@ -94,9 +115,10 @@ struct AssetBrowserBuildOptions
     bool verifyGeneratedSubAssetManifests = true;
     bool loadSourceAssetMetadataWithoutDatabase = true;
     std::unordered_set<std::string> expandedSourceAssets;
-    std::unordered_map<std::string, size_t> generatedSubAssetCountHints;
     std::string searchQuery;
     AssetBrowserItemType typeFilter = AssetBrowserItemType::All;
+
+    bool operator==(const AssetBrowserBuildOptions&) const = default;
 };
 
 struct AssetBrowserFolderTreeBuildOptions
@@ -122,6 +144,7 @@ struct AssetBrowserRefreshPlan
     bool refreshAssetDatabase = false;
     bool rebuildFolderTree = false;
     bool rebuildCurrentFolderItems = true;
+    bool clearCurrentFolderItemsBeforeAsyncRefresh = false;
 };
 
 struct AssetDatabaseRefreshSchedulingDecision
@@ -129,6 +152,110 @@ struct AssetDatabaseRefreshSchedulingDecision
     bool startRefresh = false;
     bool queueRefreshAfterInFlight = false;
 };
+
+enum class AssetBrowserAsyncRefreshStatus
+{
+    Idle,
+    Loading,
+    Success,
+    Failure,
+    Closed
+};
+
+struct AssetBrowserAsyncRefreshState
+{
+    AssetBrowserAsyncRefreshStatus status = AssetBrowserAsyncRefreshStatus::Idle;
+    std::string diagnostic;
+};
+
+void ResetAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state);
+void BeginAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state);
+void CompleteAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state);
+void FailAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state, std::string diagnostic);
+void CloseAssetBrowserAsyncRefresh(AssetBrowserAsyncRefreshState& state);
+
+enum class AssetBrowserLatestRequestDisposition
+{
+    StartNow,
+    ActiveUnchanged,
+    PendingReplaced
+};
+
+template<typename Key>
+struct AssetBrowserLatestRequestCoordinator
+{
+    std::optional<Key> desiredKey;
+    std::optional<Key> activeKey;
+    std::optional<Key> pendingKey;
+};
+
+template<typename Key>
+struct AssetBrowserLatestRequestCompletion
+{
+    bool publish = false;
+    std::optional<Key> nextKey;
+};
+
+template<typename Key>
+AssetBrowserLatestRequestDisposition QueueAssetBrowserLatestRequest(
+    AssetBrowserLatestRequestCoordinator<Key>& coordinator,
+    Key key)
+{
+    coordinator.desiredKey = key;
+    if (!coordinator.activeKey.has_value())
+    {
+        coordinator.pendingKey = std::move(key);
+        return AssetBrowserLatestRequestDisposition::StartNow;
+    }
+    if (*coordinator.activeKey == key)
+    {
+        coordinator.pendingKey.reset();
+        return AssetBrowserLatestRequestDisposition::ActiveUnchanged;
+    }
+    coordinator.pendingKey = std::move(key);
+    return AssetBrowserLatestRequestDisposition::PendingReplaced;
+}
+
+template<typename Key>
+std::optional<Key> ActivateAssetBrowserLatestRequest(
+    AssetBrowserLatestRequestCoordinator<Key>& coordinator)
+{
+    if (coordinator.activeKey.has_value() || !coordinator.pendingKey.has_value())
+        return std::nullopt;
+    coordinator.activeKey = std::move(coordinator.pendingKey);
+    coordinator.pendingKey.reset();
+    return coordinator.activeKey;
+}
+
+template<typename Key>
+AssetBrowserLatestRequestCompletion<Key> CompleteAssetBrowserLatestRequest(
+    AssetBrowserLatestRequestCoordinator<Key>& coordinator,
+    const Key& completedKey)
+{
+    AssetBrowserLatestRequestCompletion<Key> completion;
+    if (!coordinator.activeKey.has_value() || *coordinator.activeKey != completedKey)
+        return completion;
+
+    completion.publish =
+        coordinator.desiredKey.has_value() &&
+        *coordinator.desiredKey == completedKey;
+    coordinator.activeKey.reset();
+    if (coordinator.pendingKey.has_value() &&
+        coordinator.desiredKey.has_value() &&
+        *coordinator.pendingKey == *coordinator.desiredKey)
+    {
+        completion.nextKey = coordinator.pendingKey;
+    }
+    return completion;
+}
+
+template<typename Key>
+void CloseAssetBrowserLatestRequestCoordinator(AssetBrowserLatestRequestCoordinator<Key>& coordinator)
+{
+    coordinator.desiredKey.reset();
+    coordinator.activeKey.reset();
+    coordinator.pendingKey.reset();
+}
 
 using AssetBrowserExternalDroppedFileBatch = std::vector<std::string>;
 using AssetBrowserExternalDroppedFileQueue = std::deque<AssetBrowserExternalDroppedFileBatch>;
@@ -205,10 +332,20 @@ enum class AssetBrowserContentViewMode
 struct AssetBrowserDisplayItem
 {
     AssetBrowserItem item;
+    uint64_t groupId = 0u;
     size_t childCount = 0u;
     bool subAsset = false;
     bool expanded = false;
     bool loadingPlaceholder = false;
+};
+
+bool ShouldShowAssetBrowserSubAssetDisclosure(const AssetBrowserDisplayItem& displayItem);
+
+struct AssetBrowserPresentationBundle
+{
+    std::vector<AssetBrowserItem> rootItems;
+    std::vector<AssetBrowserItem> visibleItems;
+    std::vector<AssetBrowserDisplayItem> displayItems;
 };
 
 struct AssetBrowserPoint
@@ -229,6 +366,13 @@ struct AssetBrowserDisplayItemRange
     size_t count = 0u;
 };
 
+struct AssetBrowserGroupSegment
+{
+    AssetBrowserDisplayItemRange range;
+    bool trueSegmentStart = false;
+    bool trueSegmentEnd = false;
+};
+
 AssetBrowserWorkflowCapabilities BuildAssetBrowserWorkflowCapabilities(
     const AssetBrowserItem& item);
 
@@ -236,6 +380,9 @@ AssetBrowserItemType AssetBrowserItemTypeFromPathParserFileType(
     NLS::Utils::PathParser::EFileType fileType);
 
 bool AssetBrowserSourceAssetCanHaveGeneratedSubAssets(const std::string& sourceAssetPath);
+
+std::optional<AssetBrowserItemType> AssetBrowserGeneratedArtifactItemType(
+    NLS::Core::Assets::ArtifactType artifactType);
 
 const char* AssetBrowserItemTypeDisplayLabel(AssetBrowserItemType type);
 
@@ -254,21 +401,38 @@ AssetBrowserRect ComputeAssetBrowserThumbnailRect(
     uint32_t imageWidth,
     uint32_t imageHeight);
 
-bool ShouldDrawAssetBrowserThumbnailLetterboxBackground(AssetBrowserItemType type);
-
 std::vector<AssetBrowserDisplayItem> BuildAssetBrowserDisplayItems(
     const std::vector<AssetBrowserItem>& items,
-    const std::unordered_set<std::string>& expandedSourceAssets,
-    const std::unordered_map<std::string, size_t>& generatedSubAssetCountHints = {});
+    const std::unordered_set<std::string>& expandedSourceAssets);
 
-std::vector<AssetBrowserDisplayItem> BuildProgressiveAssetBrowserDisplayItems(
-    const std::vector<AssetBrowserDisplayItem>& displayItems,
-    const std::unordered_map<std::string, size_t>& generatedSubAssetRevealCounts,
-    size_t maxGeneratedSubAssetPlaceholdersPerSource);
+std::vector<AssetBrowserDisplayItem> BuildFilteredAssetBrowserDisplayItems(
+    const std::vector<AssetBrowserItem>& items,
+    const std::unordered_set<std::string>& expandedSourceAssets,
+    const std::string& searchQuery,
+    AssetBrowserItemType typeFilter);
+
+AssetBrowserPresentationBundle BuildAssetBrowserPresentationBundle(
+    std::vector<AssetBrowserItem> rootItems,
+    const EditorAssetSnapshotIndex* snapshotIndex,
+    const AssetBrowserBuildOptions& options);
+
+bool ShouldPublishPartialAssetBrowserDisplayRebuild(
+    size_t processedSinceLastPublish,
+    bool interactive);
 
 std::optional<AssetBrowserDisplayItemRange> ResolveAssetBrowserExpandedSubAssetRange(
     const std::vector<AssetBrowserDisplayItem>& displayItems,
     size_t sourceDisplayIndex);
+
+std::vector<AssetBrowserGroupSegment> ResolveAssetBrowserGridRowGroupSegments(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    size_t rowBegin,
+    size_t columnCount);
+
+std::vector<AssetBrowserGroupSegment> ResolveAssetBrowserVisibleListGroupSegments(
+    const std::vector<AssetBrowserDisplayItem>& displayItems,
+    size_t visibleBegin,
+    size_t visibleEnd);
 
 const std::array<AssetBrowserItemType, kAssetBrowserItemTypeCount>& AssetBrowserItemTypeFilterOptions();
 
@@ -292,6 +456,27 @@ void RegisterAssetBrowserThumbnailCacheKeyBinding(
         itemKeys.push_back(itemKey);
 }
 
+template<typename Result, typename = void>
+struct AssetBrowserThumbnailResultHasImagePath : std::false_type
+{
+};
+
+template<typename Result>
+struct AssetBrowserThumbnailResultHasImagePath<
+    Result,
+    std::void_t<decltype(std::declval<const Result&>().imagePath)>> : std::true_type
+{
+};
+
+template<typename Result>
+bool AssetBrowserThumbnailResultHasDisplayImage(const Result& result)
+{
+    if constexpr (AssetBrowserThumbnailResultHasImagePath<Result>::value)
+        return !result.imagePath.empty();
+    else
+        return false;
+}
+
 template<typename ItemKeyMap, typename ResultMap, typename Result>
 void ApplyAssetBrowserThumbnailCacheKeyResult(
     const ItemKeyMap& itemKeysByCacheKey,
@@ -304,7 +489,16 @@ void ApplyAssetBrowserThumbnailCacheKeyResult(
         return;
 
     for (const auto& itemKey : foundItemKeys->second)
+    {
+        const auto existing = resultsByItemKey.find(itemKey);
+        if (existing != resultsByItemKey.end() &&
+            AssetBrowserThumbnailResultHasDisplayImage(existing->second) &&
+            !AssetBrowserThumbnailResultHasDisplayImage(result))
+        {
+            continue;
+        }
         resultsByItemKey[itemKey] = result;
+    }
 }
 
 struct AssetBrowserThumbnailGenerationScopeDecision
@@ -314,13 +508,29 @@ struct AssetBrowserThumbnailGenerationScopeDecision
     bool requerySameScope = false;
 };
 
+struct AssetBrowserPostDrawThumbnailPumpPermissions
+{
+    bool allowGpuPreviewStart = false;
+    bool allowHeavyGpuPreview = false;
+};
+
+struct AssetBrowserPostDrawThumbnailPumpInput
+{
+    bool interactive = false;
+    double nowSeconds = 0.0;
+    double lightDeferredUntilSeconds = 0.0;
+    double heavyDeferredUntilSeconds = 0.0;
+};
+
 struct AssetBrowserHeavyGpuThumbnailPumpInput
 {
     bool allowHeavyGpuPreview = true;
     bool interactive = false;
     bool hasQueuedWork = false;
     bool hasInFlightWork = false;
+    bool hasQueuedReadback = false;
     bool hasPreviewRenderer = false;
+    bool sceneLoadRendererResourcesPending = false;
     double nowSeconds = 0.0;
     double deferredUntilSeconds = 0.0;
     double nextAllowedSeconds = 0.0;
@@ -338,6 +548,7 @@ struct AssetBrowserLightGpuThumbnailPumpInput
     bool hasQueuedWork = false;
     bool hasInFlightWork = false;
     bool hasPreviewRenderer = false;
+    bool standardPbrShaderPassPrewarmPending = false;
     double nowSeconds = 0.0;
     double deferredUntilSeconds = 0.0;
     double nextAllowedSeconds = 0.0;
@@ -367,6 +578,7 @@ struct AssetBrowserCachedThumbnailTexturePumpInput
     bool interactive = false;
     size_t queuedTextureLoads = 0u;
     size_t inFlightDecodes = 0u;
+    size_t pendingTextureUploads = 0u;
     size_t interactiveStartsThisFrame = 0u;
     size_t maxInteractiveStartsPerFrame = 1u;
 };
@@ -376,12 +588,33 @@ struct AssetBrowserCachedThumbnailTexturePumpDecision
     bool shouldPump = false;
 };
 
+struct AssetBrowserThumbnailTextureUploadBudgetInput
+{
+    size_t uploadedThisFrame = 0u;
+    size_t maxUploadsPerFrame = 0u;
+    size_t polledThisFrame = 0u;
+    size_t maxPollsPerFrame = 0u;
+    uint64_t elapsedMicroseconds = 0u;
+    uint64_t maxElapsedMicroseconds = 0u;
+};
+
+struct AssetBrowserThumbnailRequestBudgetInput
+{
+    size_t requestedThisFrame = 0u;
+    size_t maxRequestsPerFrame = 0u;
+    uint64_t elapsedMicroseconds = 0u;
+    uint64_t maxElapsedMicroseconds = 0u;
+};
+
 AssetBrowserThumbnailGenerationScopeDecision EvaluateAssetBrowserThumbnailGenerationScope(
     const std::string& previousScopeKey,
     uint32_t previousRequestedSize,
     bool scopeDirty,
     const std::string& nextScopeKey,
     uint32_t nextRequestedSize);
+
+AssetBrowserPostDrawThumbnailPumpPermissions PlanAssetBrowserPostDrawThumbnailPump(
+    const AssetBrowserPostDrawThumbnailPumpInput& input = {});
 
 AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
     const AssetBrowserHeavyGpuThumbnailPumpInput& input);
@@ -394,6 +627,12 @@ AssetBrowserThumbnailPumpDecision PlanAssetBrowserThumbnailPump(
 
 AssetBrowserCachedThumbnailTexturePumpDecision PlanAssetBrowserCachedThumbnailTexturePump(
     const AssetBrowserCachedThumbnailTexturePumpInput& input);
+
+bool ShouldContinueAssetBrowserThumbnailTextureUploads(
+    const AssetBrowserThumbnailTextureUploadBudgetInput& input);
+
+bool ShouldContinueAssetBrowserThumbnailRequests(
+    const AssetBrowserThumbnailRequestBudgetInput& input);
 
 AssetBrowserFolderNode BuildProjectAssetFolderTree(const std::filesystem::path& projectRootOrAssetsRoot);
 

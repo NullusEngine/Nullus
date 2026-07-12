@@ -798,6 +798,26 @@ TEST(FbxSdkIntegrationContractTests, FbxSdkParserImportsTangentsBinormalsAndUvLa
     EXPECT_NE(std::find(attributes.begin(), attributes.end(), "TEXCOORD_0"), attributes.end());
     EXPECT_NE(std::find(attributes.begin(), attributes.end(), "TEXCOORD_1"), attributes.end());
 
+    NLS::Render::Resources::Parsers::FbxSdkParser flippedParser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> flippedMeshes;
+    std::vector<std::string> flippedMaterials;
+    ASSERT_TRUE(flippedParser.LoadModelData(
+        sourcePath.string(),
+        flippedMeshes,
+        flippedMaterials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::FLIP_UVS,
+        nullptr,
+        true));
+    ASSERT_EQ(flippedMeshes.size(), meshes.size());
+    ASSERT_EQ(flippedMeshes[0].vertices.size(), meshes[0].vertices.size());
+    for (size_t vertexIndex = 0u; vertexIndex < meshes[0].vertices.size(); ++vertexIndex)
+    {
+        EXPECT_FLOAT_EQ(
+            flippedMeshes[0].vertices[vertexIndex].texCoords[1],
+            1.0f - meshes[0].vertices[vertexIndex].texCoords[1])
+            << "FBX UV origin conversion must run exactly once after the complete scene is parsed.";
+    }
+
     std::filesystem::remove_all(root);
 }
 

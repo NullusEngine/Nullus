@@ -35,6 +35,7 @@
 #include "Rendering/RenderScene.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/Resources/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
@@ -51,6 +52,42 @@
 
 namespace
 {
+    class RenderSceneReadyTestTexture final : public NLS::Render::RHI::RHITexture
+    {
+    public:
+        RenderSceneReadyTestTexture()
+        {
+            m_desc.extent = {1u, 1u, 1u};
+            m_desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+            m_desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+            m_desc.debugName = "RenderSceneReadyTestTexture";
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHITextureDesc& GetDesc() const override { return m_desc; }
+        NLS::Render::RHI::ResourceState GetState() const override
+        {
+            return NLS::Render::RHI::ResourceState::Unknown;
+        }
+
+    private:
+        NLS::Render::RHI::RHITextureDesc m_desc {};
+    };
+
+    NLS::Render::Resources::Texture2D* CreateReadyTestTexture()
+    {
+        return NLS::Render::Resources::Texture2D::WrapExternal(
+            std::make_shared<RenderSceneReadyTestTexture>(),
+            1u,
+            1u).release();
+    }
+
+    std::string ReadRepoText(const std::filesystem::path& relativePath)
+    {
+        std::ifstream stream(std::filesystem::path(NLS_ROOT_DIR) / relativePath, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    }
+
     bool IsDxcUnavailableDiagnosticForTests(const std::string& diagnostics)
     {
         return diagnostics.find("Unable to locate dxc.exe.") != std::string::npos ||
@@ -515,7 +552,58 @@ namespace
             m_frameDescriptor = frameDescriptor;
             return ParseScene();
         }
+
+        const NLS::Engine::Rendering::SceneOcclusionFrameInput& GetLastHZBFrameInputForTesting() const
+        {
+            return GetLastHZBOcclusionFrameInput();
+        }
     };
+
+    TEST(RenderSceneCacheTests, BaseSceneRendererStoresLargeSceneSettingsOverride)
+    {
+        NLS::Render::Settings::DriverSettings driverSettings;
+        driverSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+        NLS::Render::Context::Driver driver(driverSettings);
+        SceneDrawableProbeRenderer renderer(driver);
+
+        auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();
+        settings.enableSpatialIndex = false;
+        settings.enableParallelVisibility = false;
+        settings.enableLOD = false;
+        settings.enableHLOD = true;
+        settings.enableHZBOcclusion = true;
+        settings.maxVisibilityJobs = 3u;
+        settings.parallelVisibilityPrimitiveThreshold = 4096u;
+        settings.parallelVisibilityPrimitivesPerTask = 256u;
+        settings.staticRebuildDirtyRatio = 0.45;
+        settings.staticRebuildBudgetUs = 500u;
+        settings.streamingCpuBudgetUs = 2500u;
+        settings.streamingGpuUploadBudgetBytes = 6ull * 1024ull * 1024ull;
+        settings.streamingIoBudgetBytes = 12ull * 1024ull * 1024ull;
+        settings.streamingCpuMemoryBudgetBytes = 384ull * 1024ull * 1024ull;
+        settings.streamingGpuMemoryBudgetBytes = 768ull * 1024ull * 1024ull;
+        settings.maxOcclusionHistoryAge = 4u;
+
+        renderer.SetLargeSceneSettings(settings);
+        const auto& stored = renderer.GetLargeSceneSettings();
+
+        EXPECT_FALSE(stored.enableSpatialIndex);
+        EXPECT_FALSE(stored.enableParallelVisibility);
+        EXPECT_FALSE(stored.enableLOD);
+        EXPECT_TRUE(stored.enableHLOD);
+        EXPECT_TRUE(stored.enableHZBOcclusion);
+        EXPECT_EQ(stored.maxVisibilityJobs, 3u);
+        EXPECT_EQ(stored.parallelVisibilityPrimitiveThreshold, 4096u);
+        EXPECT_EQ(stored.parallelVisibilityPrimitivesPerTask, 256u);
+        EXPECT_DOUBLE_EQ(stored.staticRebuildDirtyRatio, 0.45);
+        EXPECT_EQ(stored.staticRebuildBudgetUs, 500u);
+        EXPECT_EQ(stored.streamingCpuBudgetUs, 2500u);
+        EXPECT_EQ(stored.streamingGpuUploadBudgetBytes, 6ull * 1024ull * 1024ull);
+        EXPECT_EQ(stored.streamingIoBudgetBytes, 12ull * 1024ull * 1024ull);
+        EXPECT_EQ(stored.streamingCpuMemoryBudgetBytes, 384ull * 1024ull * 1024ull);
+        EXPECT_EQ(stored.streamingGpuMemoryBudgetBytes, 768ull * 1024ull * 1024ull);
+        EXPECT_EQ(stored.maxOcclusionHistoryAge, 4u);
+    }
 
     void WriteCubeMeshArtifact(const std::filesystem::path& artifactPath)
     {
@@ -800,6 +888,26 @@ TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedComman
     EXPECT_EQ(secondOptimizationStats.rawVisibleObjectCount, 1u);
     EXPECT_EQ(secondOptimizationStats.submittedSceneDrawCount, 1u);
     EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
+}
+
+TEST(RenderSceneCacheTests, ReuseCheckValidatesCachedCommandStampBeforeMaterialDereference)
+{
+    const auto source = ReadRepoText("Runtime/Engine/Rendering/RenderScene.cpp");
+    const auto functionStart = source.find("bool RenderScene::CanReuseSynchronizedPrimitive(");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto functionEnd = source.find("void RenderScene::RemoveMissingPrimitives", functionStart);
+    ASSERT_NE(functionEnd, std::string::npos);
+    const auto body = source.substr(functionStart, functionEnd - functionStart);
+
+    const auto stampMaterialCheck = body.find("slot.stamp.material != slot.command.material");
+    const auto texturePathDereference = body.find("GetTextureResourcePaths()");
+
+    EXPECT_NE(stampMaterialCheck, std::string::npos)
+        << "Preview-owned materials can be replaced between frames; the render-scene reuse fast path must "
+           "reject stale cached commands before reading their material pointer.";
+    EXPECT_NE(texturePathDereference, std::string::npos);
+    if (stampMaterialCheck != std::string::npos && texturePathDereference != std::string::npos)
+        EXPECT_LT(stampMaterialCheck, texturePathDereference);
 }
 
 TEST(RenderSceneCacheTests, MutableTransformAccessUpdatesPrimitiveWorldMatrixWithoutCommandRebuild)
@@ -1409,6 +1517,40 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsLoadedPrimitiveCubeWithColdDefault
     EXPECT_EQ(drawables.opaques.front().second.material->GetParameterBlock().TryGet("u_Diffuse"), nullptr);
 }
 
+TEST(RenderSceneCacheTests, HZBFrameInputViewCompatibilityChangesWhenCameraMoves)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+
+    NLS::Engine::SceneSystem::Scene scene;
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Maths::Transform cameraTransform;
+    NLS::Render::Entities::Camera camera(&cameraTransform);
+    camera.CacheMatrices(128u, 128u);
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    renderer.CaptureSceneDrawables(frameDescriptor);
+    const auto firstHash = renderer.GetLastHZBFrameInputForTesting().viewCompatibilityHash;
+    ASSERT_NE(firstHash, 0u);
+
+    cameraTransform.SetWorldPosition({10.0f, 3.0f, -4.0f});
+    camera.CacheMatrices(128u, 128u);
+
+    renderer.CaptureSceneDrawables(frameDescriptor);
+    const auto movedHash = renderer.GetLastHZBFrameInputForTesting().viewCompatibilityHash;
+
+    EXPECT_NE(movedHash, firstHash);
+}
+
 TEST(RenderSceneCacheTests, SceneFallbackPreloadLoadsStandardPbrForwardFromArtifactDatabase)
 {
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
@@ -1439,7 +1581,7 @@ TEST(RenderSceneCacheTests, SceneFallbackPreloadLoadsStandardPbrForwardFromArtif
         "Forward");
 
     EXPECT_TRUE(shaderManager.GetResources().empty());
-    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+    EXPECT_TRUE(NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager));
 
     const auto resources = shaderManager.GetResources();
     ASSERT_EQ(resources.size(), 1u);
@@ -1479,7 +1621,7 @@ TEST(RenderSceneCacheTests, SceneFallbackPreloadAcceptsStandardPbrPrimarySubAsse
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         "Forward");
 
-    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+    EXPECT_TRUE(NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager));
 
     const auto resources = shaderManager.GetResources();
     ASSERT_EQ(resources.size(), 1u);
@@ -1518,7 +1660,7 @@ TEST(RenderSceneCacheTests, SceneFallbackPreloadAcceptsPackagedStandardPbrSource
         "2b40aa9d7e26302abaee46d90172b24a111dda5b6d466fcf2e7a2aff001a0607",
         "Forward");
 
-    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+    EXPECT_TRUE(NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager));
 
     const auto resources = shaderManager.GetResources();
     ASSERT_EQ(resources.size(), 1u);
@@ -1558,7 +1700,7 @@ TEST(RenderSceneCacheTests, SceneFallbackPreloadIgnoresRuntimeTargetStandardPbrA
         "Forward",
         "win64");
 
-    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+    EXPECT_FALSE(NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager, false));
 
     EXPECT_TRUE(shaderManager.GetResources().empty())
         << "Editor scene fallback selection must not load runtime-target ShaderLab records from ArtifactDB.";
@@ -1741,6 +1883,59 @@ TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
 }
 
+TEST(RenderSceneCacheTests, SynchronizeResolvesMaterialSlotAboveLegacyByteRange)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    auto* material = new NLS::Render::Resources::Material();
+    material->SetShader(shader);
+    const auto materialPath = std::string("Library/Artifacts/HighSlot/7dff82104de34261a701858aeacb53f7955f1cbb7f0c46af8d1bcf2937d514f2");
+    const_cast<std::string&>(material->path) = materialPath;
+    materialManager.RegisterResource(materialPath, material);
+
+    constexpr uint32_t kHighMaterialSlot = 300u;
+    auto* mesh = CreateSingleMesh(kHighMaterialSlot);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("HighMaterialSlotPrimitive");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+
+    NLS::Array<std::string> materialPaths;
+    materialPaths.resize(static_cast<size_t>(kHighMaterialSlot) + 1u);
+    materialPaths[kHighMaterialSlot] = materialPath;
+    meshRenderer->SetMaterialPathHints(materialPaths);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    const auto visible = renderScene.GatherVisibleCommands({});
+
+    EXPECT_EQ(stats.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.material, material);
+
+    delete mesh;
+    materialManager.UnloadResources();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+}
+
 TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilResolved)
 {
     NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
@@ -1838,7 +2033,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTextu
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty())
         << "A generated model material with declared but unresolved textures must not render as a white/default-textured model.";
 
-    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    auto* texture = CreateReadyTestTexture();
     ASSERT_NE(texture, nullptr);
     texture->path = texturePath;
     material.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", texture);
@@ -1981,7 +2176,12 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBefor
     const_cast<std::string&>(material.path) = materialPath;
     material.SetTextureResourcePath("u_DiffuseMap", texturePath);
 
-    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    auto* staleTexture = CreateReadyTestTexture();
+    ASSERT_NE(staleTexture, nullptr);
+    staleTexture->path = texturePath;
+    material.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", staleTexture);
+
+    auto* texture = CreateReadyTestTexture();
     ASSERT_NE(texture, nullptr);
     texture->path = texturePath;
     textureManager.RegisterResource(texturePath, texture);
@@ -2014,8 +2214,101 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBefor
 
     delete mesh;
     textureManager.UnloadResources();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(staleTexture));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+}
+
+TEST(RenderSceneCacheTests, ExplicitMaterialPathRejectsManagerTextureWithoutGpuHandle)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto materialPath = std::string("Library/Artifacts/Preview/null-handle-material.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Preview/textures/null-handle-normal.ntex");
+    auto* material = new NLS::Render::Resources::Material();
+    material->SetShader(shader);
+    material->path = materialPath;
+    material->SetTextureResourcePath("_NormalMap", texturePath);
+    materialManager.RegisterResource(materialPath, material);
+
+    auto texture = NLS::Render::Resources::Texture2D::WrapExternal(nullptr, 1u, 1u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = texturePath;
+    auto* registeredTexture = textureManager.RegisterResource(texturePath, texture.release());
+    ASSERT_NE(registeredTexture, nullptr);
+    material->Set<NLS::Render::Resources::Texture2D*>("_NormalMap", registeredTexture);
+    EXPECT_FALSE(NLS::Engine::Rendering::HasResolvedDeclaredMaterialTexturesForTesting(*material));
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("NullHandleDeclaredTexture");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPathHints({materialPath});
+    meshRenderer->SetResolvedMaterialFromReference(0u, *material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+    syncOptions.requireExplicitMaterialTextures = true;
+
+    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    EXPECT_EQ(stats.rebuiltCachedCommandCount, 0u);
+    EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
+
+    delete mesh;
+    textureManager.UnloadResources();
+    materialManager.UnloadResources();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+}
+
+TEST(RenderSceneCacheTests, TextureManagerRequestsReplacementForCachedTextureWithoutGpuHandle)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_replace_null_handle_texture_" + NLS::Guid::New().ToString()));
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    const auto texturePath = ContentAddressedArtifactPath(root.Path(), "replace-null-handle:texture");
+    WriteTextureArtifact(texturePath);
+
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    auto texture = NLS::Render::Resources::Texture2D::WrapExternal(nullptr, 1u, 1u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = texturePath.string();
+    textureManager.RegisterResource(texturePath.string(), texture.release());
+
+    EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), false), nullptr);
+    EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending(texturePath.string()));
+
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
 }
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathRebindsDeclaredTextureWhenItArrivesAfterFirstSync)
@@ -2068,7 +2361,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathRebindsDeclaredTextureWhenItArri
     ASSERT_EQ(firstParameter->type(), typeid(NLS::Render::Resources::Texture2D*));
     EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*firstParameter), nullptr);
 
-    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    auto* texture = CreateReadyTestTexture();
     ASSERT_NE(texture, nullptr);
     texture->path = texturePath;
     textureManager.RegisterResource(texturePath, texture);
@@ -2124,7 +2417,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathAcceptsEquivalentCachedDeclaredT
     const_cast<std::string&>(material.path) = materialPath;
     material.SetTextureResourcePath("u_DiffuseMap", texturePath);
 
-    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    auto* texture = CreateReadyTestTexture();
     ASSERT_NE(texture, nullptr);
     texture->path = absoluteTexturePath;
     textureManager.RegisterResource(absoluteTexturePath, texture);
@@ -2189,7 +2482,7 @@ TEST(RenderSceneCacheTests, SharedDeclaredTexturePathIsResolvedOncePerSync)
 
     const auto texturePath = std::string("Library/Artifacts/Hero/shared/textures/body-basecolor.ntex");
     const auto absoluteTexturePath = NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
-    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    auto* texture = CreateReadyTestTexture();
     ASSERT_NE(texture, nullptr);
     texture->path = absoluteTexturePath;
     textureManager.RegisterResource(absoluteTexturePath, texture);
@@ -2279,7 +2572,7 @@ TEST(RenderSceneCacheTests, ResourceManagersReturnEquivalentCachedArtifactsForAs
     material->path = absoluteMaterialPath;
     materialManager.RegisterResource(absoluteMaterialPath, material);
 
-    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(12u, 34u, 56u, 255u);
+    auto* texture = CreateReadyTestTexture();
     ASSERT_NE(texture, nullptr);
     texture->path = absoluteTexturePath;
     textureManager.RegisterResource(absoluteTexturePath, texture);
@@ -2507,7 +2800,10 @@ TEST(RenderSceneCacheTests, ResourceManagersBoundPendingAsyncArtifactRequests)
     }
 
     EXPECT_LE(NLS::Core::ResourceManagement::MeshManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u);
-    EXPECT_LE(NLS::Core::ResourceManagement::TextureManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u);
+    EXPECT_EQ(NLS::Core::ResourceManagement::TextureManager::GetMaxPendingAsyncArtifactRequestCountForTesting(), 32u);
+    EXPECT_LE(
+        NLS::Core::ResourceManagement::TextureManager::GetPendingAsyncArtifactRequestCountForTesting(),
+        NLS::Core::ResourceManagement::TextureManager::GetMaxPendingAsyncArtifactRequestCountForTesting());
     EXPECT_TRUE(meshManager.IsAsyncArtifactLoadPending(ContentAddressedArtifactPath(root.Path(), "bounded:mesh:79").string()))
         << "Requests beyond the active async cap must stay observable as pending instead of looking like missing resources.";
     EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending(ContentAddressedArtifactPath(root.Path(), "bounded:texture:79").string()))
@@ -2591,7 +2887,10 @@ TEST(RenderSceneCacheTests, ResourceManagersBoundGlobalActiveAsyncArtifactReques
 
     EXPECT_LE(NLS::Core::ResourceManagement::MeshManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
         << "Mesh artifact loading must use a global active cap so many preview owners cannot fill the editor background queue.";
-    EXPECT_LE(NLS::Core::ResourceManagement::TextureManager::GetPendingAsyncArtifactRequestCountForTesting(), 8u)
+    EXPECT_EQ(NLS::Core::ResourceManagement::TextureManager::GetMaxPendingAsyncArtifactRequestCountForTesting(), 32u);
+    EXPECT_LE(
+        NLS::Core::ResourceManagement::TextureManager::GetPendingAsyncArtifactRequestCountForTesting(),
+        NLS::Core::ResourceManagement::TextureManager::GetMaxPendingAsyncArtifactRequestCountForTesting())
         << "Texture artifact loading must use a global active cap so many preview owners cannot fill the editor background queue.";
     EXPECT_EQ(NLS::Core::ResourceManagement::MeshManager::GetTotalAsyncArtifactRequestCountForTesting(), 80u);
     EXPECT_EQ(NLS::Core::ResourceManagement::TextureManager::GetTotalAsyncArtifactRequestCountForTesting(), 80u);
@@ -2636,6 +2935,87 @@ TEST(RenderSceneCacheTests, CancelAsyncArtifactDoesNotConsumeSharedMeshOrTexture
         << "Preview cleanup must not cancel shared/final texture interest by repeating path-only cancellation.";
 
     NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, TextureManagerCancelAsyncArtifactCanReleaseSharedInterest)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_cancel_explicit_shared_texture_" + NLS::Guid::New().ToString()));
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    std::filesystem::path queuedTexturePath;
+    for (size_t index = 0u; index < 80u; ++index)
+    {
+        const auto texturePath = ContentAddressedArtifactPath(
+            root.Path(),
+            "explicit-shared:texture:" + std::to_string(index));
+        WriteTextureArtifact(texturePath);
+        EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), false), nullptr);
+        queuedTexturePath = texturePath;
+    }
+
+    ASSERT_TRUE(textureManager.IsAsyncArtifactLoadPending(queuedTexturePath.string()));
+    textureManager.CancelAsyncArtifact(queuedTexturePath.string(), false);
+    EXPECT_FALSE(textureManager.IsAsyncArtifactLoadPending(queuedTexturePath.string()))
+        << "Scene-load cleanup must be able to release shared texture interest that it registered.";
+
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, TextureManagerCancellationRemainsVisibleDuringCompletion)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to synchronize async completion.";
+#else
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+    ScopedRenderSceneCacheJobSystem jobSystem(1u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_cancel_completing_texture_" + NLS::Guid::New().ToString()));
+    const auto texturePath = ContentAddressedArtifactPath(root.Path(), "cancel-completing:texture");
+    WriteTextureArtifact(texturePath);
+
+    NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    bool enteredCompletion = false;
+    bool pendingDuringCompletion = false;
+    NLS::Core::ResourceManagement::TextureManager::SetBeforeAsyncArtifactCompletionForTesting([&]()
+    {
+        enteredCompletion = true;
+        pendingDuringCompletion = textureManager.IsAsyncArtifactLoadPending(texturePath.string());
+        textureManager.CancelAsyncArtifact(texturePath.string(), true);
+    });
+
+    EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath.string(), true), nullptr);
+    for (size_t attempt = 0u; attempt < 1000u && !enteredCompletion; ++attempt)
+    {
+        textureManager.PumpAsyncLoads(1u);
+        if (!enteredCompletion)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    NLS::Core::ResourceManagement::TextureManager::SetBeforeAsyncArtifactCompletionForTesting({});
+    EXPECT_TRUE(enteredCompletion);
+    EXPECT_TRUE(pendingDuringCompletion)
+        << "A request being converted into a runtime texture must remain visible to cancellation.";
+    EXPECT_FALSE(textureManager.IsAsyncArtifactLoadPending(texturePath.string()));
+    EXPECT_FALSE(textureManager.IsAsyncArtifactLoadFailed(texturePath.string()));
+    EXPECT_EQ(textureManager.GetArtifactResource(texturePath.string(), false), nullptr);
+
     NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();
 #endif
 }
@@ -2816,6 +3196,46 @@ TEST(RenderSceneCacheTests, MissingMaterialPathStillUsesDefaultMaterial)
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
+TEST(RenderSceneCacheTests, ExplicitMaterialPathUsesDefaultMaterialOnlyWhenFallbackEnabled)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    EnsureRenderSceneTestDriver();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("PendingMaterialPath");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPaths({"Library/ArtifactDB/MissingPendingSceneLoadMaterial.mat"});
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    EXPECT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
+
+    syncOptions.allowDefaultMaterialForUnresolvedExplicitMaterials = true;
+    EXPECT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    const auto visible = renderScene.GatherVisibleCommands({});
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.material, &defaultMaterial);
+
+    delete mesh;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
 TEST(RenderSceneCacheTests, BitsetVisibilityTracksPrimitiveAndMeshResults)
 {
     ManyPrimitiveFixture fixture(9u);
@@ -2867,17 +3287,52 @@ TEST(RenderSceneCacheTests, TransientRenderSuppressionHidesMeshWithoutChangingGa
         << "Render-only suppression must not mutate serialized GameObject active state.";
 
     ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u)
-        << "Render-only suppression should reuse cached commands and only affect visibility.";
+        << "Render-only suppression should skip retained primitive synchronization.";
     visible = renderScene.GatherVisibleCommands({});
     EXPECT_TRUE(visible.opaques.empty());
 
     fixture.meshRenderer->SetTransientRenderingSuppressed(false);
     EXPECT_TRUE(owner->IsSelfActive());
 
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u)
-        << "Restoring render-only suppression should not rebuild cached commands.";
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u)
+        << "Restoring render-only suppression should rebuild the retained command after the primitive was skipped.";
     visible = renderScene.GatherVisibleCommands({});
     ASSERT_EQ(visible.opaques.size(), 1u);
+}
+
+TEST(RenderSceneCacheTests, TransientRenderSuppressionRemovesPrimitiveFromRetainedSyncSet)
+{
+    RenderableFixture fixture;
+    ASSERT_NE(fixture.meshRenderer, nullptr);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(renderScene.GetPrimitiveCount(), 1u);
+
+    fixture.meshRenderer->SetTransientRenderingSuppressed(true);
+
+    const auto suppressedStats = renderScene.Synchronize(fixture.scene, syncOptions);
+    EXPECT_EQ(suppressedStats.syncTouchedPrimitiveCount, 0u);
+    EXPECT_EQ(suppressedStats.removedPrimitiveCount, 1u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
+    EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
+
+    const auto steadySuppressedStats = renderScene.Synchronize(fixture.scene, syncOptions);
+    EXPECT_EQ(steadySuppressedStats.syncTouchedPrimitiveCount, 0u);
+    EXPECT_EQ(steadySuppressedStats.removedPrimitiveCount, 0u);
+    EXPECT_EQ(steadySuppressedStats.rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
+
+    fixture.meshRenderer->SetTransientRenderingSuppressed(false);
+
+    const auto restoredStats = renderScene.Synchronize(fixture.scene, syncOptions);
+    EXPECT_EQ(restoredStats.addedPrimitiveCount, 1u);
+    EXPECT_EQ(restoredStats.rebuiltCachedCommandCount, 1u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), 1u);
+    EXPECT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
 }
 
 TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
@@ -3118,6 +3573,237 @@ TEST(RenderSceneCacheTests, GatherVisibleCommandsAppliesImportedHierarchyHLODMet
 
     delete childMeshB;
     delete proxyMesh;
+}
+
+TEST(RenderSceneCacheTests, ImportedHierarchyHLODUsesWorldBoundsForSelection)
+{
+    RenderableFixture fixture;
+    auto* childMeshB = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* proxyMesh = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 3.0f});
+
+    auto& cluster = fixture.scene.CreateGameObject("ImportedCluster");
+    cluster.SetSourceObjectKey("node/cluster");
+    cluster.SetLargeSceneHLODMetadata(std::string(
+        "{\"children\":[\"node/childA\",\"node/childB\"],"
+        "\"clusterKey\":\"node/cluster\","
+        "\"proxySubAssetKey\":\"hlod-proxy:node/cluster\","
+        "\"source\":\"imported-hierarchy\"}"));
+
+    auto* childA = fixture.meshRenderer->gameobject();
+    ASSERT_NE(childA, nullptr);
+    childA->SetName("ChildA");
+    childA->SetParent(cluster);
+    childA->SetSourceObjectKey("node/childA");
+    childA->GetTransform()->SetWorldPosition({-100.0f, 0.0f, 0.0f});
+
+    auto& childB = fixture.scene.CreateGameObject("ChildB");
+    childB.SetParent(cluster);
+    childB.SetSourceObjectKey("node/childB");
+    childB.GetTransform()->SetWorldPosition({100.0f, 0.0f, 0.0f});
+    auto* childBFilter = childB.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* childBRenderer = childB.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(childBFilter, nullptr);
+    ASSERT_NE(childBRenderer, nullptr);
+    childBFilter->SetMesh(childMeshB);
+    childBRenderer->FillWithMaterial(fixture.material);
+
+    auto& proxy = fixture.scene.CreateGameObject("__HLODProxy_Cluster");
+    proxy.SetParent(cluster);
+    proxy.SetActive(false);
+    proxy.SetSourceObjectKey("hlod-proxy:node/cluster");
+    auto* proxyFilter = proxy.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* proxyRenderer = proxy.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(proxyFilter, nullptr);
+    ASSERT_NE(proxyRenderer, nullptr);
+    proxyFilter->SetMesh(proxyMesh);
+    proxyRenderer->FillWithMaterial(fixture.material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
+    largeSceneSettings.enableSpatialIndex = false;
+    largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    const auto meshes = ExtractMeshes(visible);
+
+    ASSERT_EQ(meshes.size(), 2u);
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), fixture.mesh), meshes.end());
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), childMeshB), meshes.end());
+    EXPECT_EQ(std::find(meshes.begin(), meshes.end(), proxyMesh), meshes.end());
+    EXPECT_EQ(telemetry.culledByReason[
+        static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODChildSuppressed)], 0u);
+    EXPECT_EQ(telemetry.activeHLODClusterCount, 0u);
+
+    delete childMeshB;
+    delete proxyMesh;
+}
+
+TEST(RenderSceneCacheTests, EditorInspectionRootKeepsImportedHierarchyHLODChildrenVisible)
+{
+    RenderableFixture fixture;
+    auto* childMeshB = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* proxyMesh = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 3.0f});
+
+    auto& cluster = fixture.scene.CreateGameObject("ImportedCluster");
+    cluster.SetSourceObjectKey("node/cluster");
+    cluster.SetLargeSceneHLODMetadata(std::string(
+        "{\"children\":[\"node/childA\",\"node/childB\"],"
+        "\"clusterKey\":\"node/cluster\","
+        "\"proxySubAssetKey\":\"hlod-proxy:node/cluster\","
+        "\"source\":\"imported-hierarchy\"}"));
+
+    auto* childA = fixture.meshRenderer->gameobject();
+    ASSERT_NE(childA, nullptr);
+    childA->SetName("ChildA");
+    childA->SetParent(cluster);
+    childA->SetSourceObjectKey("node/childA");
+
+    auto& childB = fixture.scene.CreateGameObject("ChildB");
+    childB.SetParent(cluster);
+    childB.SetSourceObjectKey("node/childB");
+    auto* childBFilter = childB.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* childBRenderer = childB.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(childBFilter, nullptr);
+    ASSERT_NE(childBRenderer, nullptr);
+    childBFilter->SetMesh(childMeshB);
+    childBRenderer->FillWithMaterial(fixture.material);
+
+    auto& proxy = fixture.scene.CreateGameObject("__HLODProxy_Cluster");
+    proxy.SetParent(cluster);
+    proxy.SetActive(false);
+    proxy.SetSourceObjectKey("hlod-proxy:node/cluster");
+    auto* proxyFilter = proxy.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* proxyRenderer = proxy.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(proxyFilter, nullptr);
+    ASSERT_NE(proxyRenderer, nullptr);
+    proxyFilter->SetMesh(proxyMesh);
+    proxyRenderer->FillWithMaterial(fixture.material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
+    largeSceneSettings.enableSpatialIndex = false;
+    largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
+    visibilityOptions.editorInspectionView = true;
+    visibilityOptions.inspectionRootObjects = { &cluster };
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    const auto meshes = ExtractMeshes(visible);
+
+    ASSERT_EQ(meshes.size(), 2u);
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), fixture.mesh), meshes.end());
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), childMeshB), meshes.end());
+    EXPECT_EQ(std::find(meshes.begin(), meshes.end(), proxyMesh), meshes.end());
+    EXPECT_EQ(telemetry.culledByReason[
+        static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODChildSuppressed)], 0u);
+    EXPECT_EQ(telemetry.activeHLODClusterCount, 0u);
+
+    delete childMeshB;
+    delete proxyMesh;
+}
+
+TEST(RenderSceneCacheTests, ImportedHierarchyHLODMetadataScopesRepeatedSourceKeysPerInstance)
+{
+    RenderableFixture fixture;
+    auto* childMeshB0 = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* childMeshA1 = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* childMeshB1 = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f});
+    auto* proxyMesh0 = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 3.0f});
+    auto* proxyMesh1 = CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 3.0f});
+
+    const std::string metadata =
+        "{\"children\":[\"node/childA\",\"node/childB\"],"
+        "\"clusterKey\":\"node/cluster\","
+        "\"proxySubAssetKey\":\"hlod-proxy:node/cluster\","
+        "\"source\":\"imported-hierarchy\"}";
+
+    auto addRenderable = [&](NLS::Engine::GameObject& object, NLS::Render::Resources::Mesh& mesh)
+    {
+        auto* meshFilter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
+        auto* meshRenderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
+        EXPECT_NE(meshFilter, nullptr);
+        EXPECT_NE(meshRenderer, nullptr);
+        meshFilter->SetMesh(&mesh);
+        meshRenderer->FillWithMaterial(fixture.material);
+    };
+
+    auto addInstance = [&](const char* suffix, NLS::Render::Resources::Mesh& childMeshA, NLS::Render::Resources::Mesh& childMeshB, NLS::Render::Resources::Mesh& proxyMesh)
+    {
+        auto& cluster = fixture.scene.CreateGameObject(std::string("ImportedCluster") + suffix);
+        cluster.SetSourceObjectKey("node/cluster");
+        cluster.SetLargeSceneHLODMetadata(metadata);
+
+        auto& childA = fixture.scene.CreateGameObject(std::string("ChildA") + suffix);
+        childA.SetParent(cluster);
+        childA.SetSourceObjectKey("node/childA");
+        addRenderable(childA, childMeshA);
+
+        auto& childB = fixture.scene.CreateGameObject(std::string("ChildB") + suffix);
+        childB.SetParent(cluster);
+        childB.SetSourceObjectKey("node/childB");
+        addRenderable(childB, childMeshB);
+
+        auto& proxy = fixture.scene.CreateGameObject(std::string("__HLODProxy_Cluster") + suffix);
+        proxy.SetParent(cluster);
+        proxy.SetActive(false);
+        proxy.SetSourceObjectKey("hlod-proxy:node/cluster");
+        addRenderable(proxy, proxyMesh);
+    };
+
+    fixture.meshRenderer->gameobject()->SetName("UnusedFixtureActor");
+    fixture.meshRenderer->gameobject()->SetActive(false);
+    addInstance("0", *fixture.mesh, *childMeshB0, *proxyMesh0);
+    addInstance("1", *childMeshA1, *childMeshB1, *proxyMesh1);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
+
+    NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
+    largeSceneSettings.enableSpatialIndex = false;
+    largeSceneSettings.enableHLOD = true;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = {0.0f, 0.0f, 500.0f};
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
+
+    const auto visible = renderScene.GatherVisibleCommands(
+        visibilityOptions,
+        NLS::Engine::Rendering::RenderSceneVisibilityMode::Serial);
+    const auto telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    const auto meshes = ExtractMeshes(visible);
+
+    ASSERT_EQ(meshes.size(), 2u);
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), proxyMesh0), meshes.end());
+    EXPECT_NE(std::find(meshes.begin(), meshes.end(), proxyMesh1), meshes.end());
+    EXPECT_EQ(telemetry.culledByReason[
+        static_cast<size_t>(NLS::Engine::Rendering::CullReason::HLODChildSuppressed)], 4u);
+    EXPECT_EQ(telemetry.activeHLODClusterCount, 2u);
+
+    delete childMeshB0;
+    delete childMeshA1;
+    delete childMeshB1;
+    delete proxyMesh0;
+    delete proxyMesh1;
 }
 
 TEST(RenderSceneCacheTests, SynchronizeKeepsManuallyRegisteredHLODClusters)
@@ -3493,7 +4179,7 @@ TEST(RenderSceneCacheTests, AdditivePreviewSceneSkipsTexturedModelUntilMaterialT
     EXPECT_EQ(texturePendingDrawables.opaques.front().second.mesh, existingMesh);
     EXPECT_EQ(texturePendingDrawables.opaques.front().second.material, &existingMaterial);
 
-    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    auto* texture = CreateReadyTestTexture();
     ASSERT_NE(texture, nullptr);
     texture->path = texturePath;
     previewMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", texture);

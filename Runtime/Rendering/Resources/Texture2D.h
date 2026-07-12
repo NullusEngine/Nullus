@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <cstddef>
 #include <stdint.h>
 #include <memory>
 #include <string>
@@ -43,6 +44,7 @@ namespace NLS::Render::Resources
 		}
 
 		void SetTextureResource(const Image*);
+		bool SetRgba8TextureResource(const void* pixels, size_t pixelBytes, uint32_t width, uint32_t height);
 		bool SetTextureResource(const NLS::Render::Assets::TextureArtifactData& artifact);
 		void ReloadFrom(const Texture2D& source);
 

@@ -44,6 +44,8 @@ namespace
 	constexpr const char* kLibraryDirectoryName = "Library";
 	constexpr const char* kShaderCacheDirectoryName = "ShaderCache";
 	constexpr const char* kShaderCacheDatabaseFileName = "ShaderCache.tsv";
+	std::string g_defaultProjectAssetsPath;
+	std::vector<std::filesystem::path> g_trustedBuiltInShaderEngineAssetsPaths;
 
 	struct PreparedShaderSource
 	{
@@ -72,14 +74,6 @@ namespace
 	bool PathNameEquals(const std::filesystem::path& path, const char* expected)
 	{
 		return ToLowerAscii(path.filename().string()) == ToLowerAscii(expected);
-	}
-
-	bool IsRuntimeSharedPackageDirectory(const std::filesystem::path& path)
-	{
-		const auto name = ToLowerAscii(path.filename().string());
-		const std::string suffix = "_runtime_shared";
-		return name.size() > suffix.size() &&
-			name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
 	}
 
 	std::string InferBuiltInHlslLightMode(const std::string& sourcePath)
@@ -223,56 +217,23 @@ namespace
 			16u * 1024u).has_value();
 	}
 
-	void AddConfiguredBuiltInShaderRoots(
-		std::vector<std::filesystem::path>& roots,
-		const std::string& projectAssetsPath)
+	void AddTrustedBuiltInShaderRoots(std::vector<std::filesystem::path>& roots)
 	{
-		if (projectAssetsPath.empty())
-			return;
-
-		std::filesystem::path assetsPath(projectAssetsPath);
-		if (assetsPath.is_relative())
-			assetsPath = std::filesystem::absolute(assetsPath);
-
-		std::error_code error;
-		assetsPath = std::filesystem::weakly_canonical(assetsPath, error);
-		if (error)
-			assetsPath = std::filesystem::absolute(std::filesystem::path(projectAssetsPath)).lexically_normal();
-
-		while (!assetsPath.empty() && assetsPath.filename().empty())
+		for (auto engineAssetsPath : g_trustedBuiltInShaderEngineAssetsPaths)
 		{
-			const auto parent = assetsPath.parent_path();
-			if (parent == assetsPath)
-				break;
-			assetsPath = parent;
-		}
-
-		const auto projectRoot = PathNameEquals(assetsPath, kAssetsDirectoryName) ? assetsPath.parent_path() : assetsPath;
-		const auto workspaceRoot = projectRoot.parent_path();
-		if (workspaceRoot.empty())
-			return;
-
-		roots.emplace_back(workspaceRoot / kAppDirectoryName / kAssetsDirectoryName / kEngineDirectoryName / "Shaders");
-		roots.emplace_back(workspaceRoot / kAppDirectoryName / kAssetsDirectoryName / kEditorDirectoryName / "Shaders");
-
-		const auto appRoot = workspaceRoot / kAppDirectoryName;
-		std::error_code iterateError;
-		for (const auto& entry : std::filesystem::directory_iterator(appRoot, iterateError))
-		{
-			if (iterateError)
-				break;
-			std::error_code entryError;
-			if (!entry.is_directory(entryError) || entryError || !IsRuntimeSharedPackageDirectory(entry.path()))
+			while (!engineAssetsPath.empty() && engineAssetsPath.filename().empty())
+				engineAssetsPath = engineAssetsPath.parent_path();
+			if (engineAssetsPath.empty())
 				continue;
-
-			roots.emplace_back(entry.path() / kAssetsDirectoryName / kEngineDirectoryName / "Shaders");
-			roots.emplace_back(entry.path() / kAssetsDirectoryName / kEditorDirectoryName / "Shaders");
+			roots.emplace_back(engineAssetsPath / "Shaders");
+			if (PathNameEquals(engineAssetsPath, kEngineDirectoryName))
+				roots.emplace_back(engineAssetsPath.parent_path() / kEditorDirectoryName / "Shaders");
 		}
 	}
 
 	bool IsAllowedBuiltInHlslSourcePath(
 		const std::string& path,
-		const std::string& projectAssetsPath = {})
+		const std::string& = {})
 	{
 		const auto normalizedRequest = ToLowerAscii(std::filesystem::path(path).generic_string());
 		if (normalizedRequest.rfind(":shaders/", 0u) == 0u)
@@ -295,13 +256,8 @@ namespace
 		};
 
 		const auto normalized = canonicalPath(path);
-		std::vector<std::filesystem::path> roots =
-		{
-			std::filesystem::path(kAppDirectoryName) / kAssetsDirectoryName / kEngineDirectoryName / "Shaders",
-			std::filesystem::path(kAppDirectoryName) / kAssetsDirectoryName / kEditorDirectoryName / "Shaders",
-			std::filesystem::path("EngineAssets") / "Shaders"
-		};
-		AddConfiguredBuiltInShaderRoots(roots, projectAssetsPath);
+		std::vector<std::filesystem::path> roots;
+		AddTrustedBuiltInShaderRoots(roots);
 		for (auto root : roots)
 		{
 			if (root.is_relative())
@@ -451,10 +407,6 @@ namespace
 namespace NLS::Render::Resources::Loaders
 {
 std::string ShaderLoader::__FILE_TRACE;
-namespace
-{
-	std::string g_defaultProjectAssetsPath;
-}
 
 Shader* ShaderLoader::Create(const std::string& p_filePath)
 {
@@ -597,6 +549,35 @@ void ShaderLoader::RecompileBuiltInHlsl(Shader& p_shader, const std::string& p_f
 void ShaderLoader::SetDefaultProjectAssetsPath(const std::string& p_projectAssetsPath)
 {
 	g_defaultProjectAssetsPath = p_projectAssetsPath;
+}
+
+void ShaderLoader::SetTrustedBuiltInShaderEngineAssetsPath(const std::string& p_engineAssetsPath)
+{
+	g_trustedBuiltInShaderEngineAssetsPaths.clear();
+#if defined(NLS_DEVELOPMENT_ENGINE_ASSETS_ROOT)
+	g_trustedBuiltInShaderEngineAssetsPaths.emplace_back(NLS_DEVELOPMENT_ENGINE_ASSETS_ROOT);
+#endif
+	if (!p_engineAssetsPath.empty())
+		g_trustedBuiltInShaderEngineAssetsPaths.emplace_back(p_engineAssetsPath);
+}
+
+std::string ShaderLoader::ResolveTrustedBuiltInEngineShaderPath(const std::string& p_fileName)
+{
+	const std::filesystem::path fileName(p_fileName);
+	if (fileName.empty() || fileName.is_absolute() || fileName.has_parent_path() ||
+		fileName.filename() != fileName)
+	{
+		return {};
+	}
+
+	for (const auto& engineAssetsPath : g_trustedBuiltInShaderEngineAssetsPaths)
+	{
+		const auto candidate = engineAssetsPath / "Shaders" / fileName;
+		std::error_code error;
+		if (std::filesystem::is_regular_file(candidate, error))
+			return std::filesystem::weakly_canonical(candidate, error).string();
+	}
+	return {};
 }
 
 const std::string& ShaderLoader::ResolveProjectAssetsPath(const std::string& p_projectAssetsPath)

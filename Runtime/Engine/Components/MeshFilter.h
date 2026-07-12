@@ -40,6 +40,8 @@ namespace NLS::Engine::Components
         FUNCTION()
         void SetMeshReference(NLS::Engine::Serialize::PPtr<Mesh> p_reference);
         void SetMeshObjectIdentifier(const NLS::Engine::Serialize::ObjectIdentifier& p_identifier);
+        // Records an external asset reference during deferred object graph load without forcing renderer refresh.
+        void SetDeferredMeshObjectIdentifierHint(const NLS::Engine::Serialize::ObjectIdentifier& p_identifier);
 
         std::string GetModelPath() const;
         void SetModelPath(const std::string& p_path);
@@ -47,6 +49,9 @@ namespace NLS::Engine::Components
 
     private:
         void NotifyMeshChanged();
+        void SetMeshObjectIdentifierInternal(
+            const NLS::Engine::Serialize::ObjectIdentifier& p_identifier,
+            bool notify);
 
         NLS::Engine::Serialize::PPtr<Mesh> mesh;
         std::shared_ptr<Mesh> m_transientMesh;

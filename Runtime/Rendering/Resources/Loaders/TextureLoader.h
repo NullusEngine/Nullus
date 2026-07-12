@@ -4,6 +4,7 @@
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Settings/ETextureFilteringMode.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -61,10 +62,11 @@ namespace NLS::Render::Resources::Loaders
 		* @param p_firstFilder
 		* @param p_secondFilter
 		* @param p_generateMipmap
-		*/
-		static Texture2D* CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+			*/
+			static Texture2D* CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+			static Texture2D* CreateFromRgba8Memory(const void* p_data, size_t p_dataSize, uint32_t p_width, uint32_t p_height, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
-		static Texture2D* CreateFromImage(const Image* iamge, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+			static Texture2D* CreateFromImage(const Image* iamge, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 		static Texture2D* CreateFromArtifact(const NLS::Render::Assets::TextureArtifactData& artifact, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
 		/**

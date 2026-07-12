@@ -46,6 +46,11 @@ namespace NLS::Render::Resources
 
 namespace NLS::Engine::Rendering
 {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS_ENGINE_API bool HasResolvedDeclaredMaterialTexturesForTesting(
+        const NLS::Render::Resources::Material& material);
+#endif
+
 	struct LargeSceneSettings;
 	struct HLODClusterRecord;
 	struct LODGroupRecord;
@@ -147,13 +152,14 @@ namespace NLS::Engine::Rendering
 		uint64_t memoryArenaSerial = 0u;
 	};
 
-	struct RenderSceneSyncOptions
-	{
-		NLS::Render::Resources::Material* defaultMaterial = nullptr;
-		NLS::Render::Resources::Material* overrideMaterial = nullptr;
-		bool requireExplicitMaterialTextures = false;
-		const LargeSceneSettings* largeSceneSettings = nullptr;
-	};
+		struct RenderSceneSyncOptions
+		{
+			NLS::Render::Resources::Material* defaultMaterial = nullptr;
+			NLS::Render::Resources::Material* overrideMaterial = nullptr;
+			bool requireExplicitMaterialTextures = false;
+			bool allowDefaultMaterialForUnresolvedExplicitMaterials = false;
+			const LargeSceneSettings* largeSceneSettings = nullptr;
+		};
 
 	struct RenderSceneSyncStats
 	{
@@ -184,6 +190,7 @@ namespace NLS::Engine::Rendering
 		bool allowHLOD = true;
 		bool editorInspectionView = false;
 		std::vector<ScenePrimitiveHandle> selectedPrimitiveHandles;
+		std::vector<const Engine::GameObject*> inspectionRootObjects;
 		bool enableCullReasonDebugSnapshot = false;
 		uint64_t maxCullReasonDebugSnapshotEntries = 0u;
 		const SceneOcclusionState* occlusion = nullptr;
@@ -359,6 +366,7 @@ namespace NLS::Engine::Rendering
 				uint64_t materialRenderStateRevision = 0u;
 				bool explicitMaterialTexturesResolved = true;
 				bool requireExplicitMaterialTextures = false;
+				bool allowDefaultMaterialForUnresolvedExplicitMaterials = false;
 				bool ownerAlive = false;
 				bool ownerActive = false;
 
@@ -479,6 +487,8 @@ namespace NLS::Engine::Rendering
 			const std::vector<size_t>& meshBaseIndices,
 			SceneVisibilityPipelineMode mode,
 			bool buildVisibilityBitsets = true) const;
+		[[nodiscard]] std::vector<SceneHLODClusterHandle> ResolveInspectableHLODClusters(
+			const RenderSceneVisibilityOptions& options) const;
 		void MergeVisibilityRangeSnapshot(
 			RenderSceneVisibilitySnapshot& target,
 			const RenderSceneVisibilityRangeSnapshot& source) const;

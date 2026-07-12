@@ -5,6 +5,7 @@
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/ImportedPrefabRendererDependencyTemplates.h"
 #include "Assets/PrefabUtilityFacade.h"
+#include "Assets/SourceFileHashCache.h"
 
 #include <filesystem>
 #include <functional>
@@ -37,7 +38,6 @@ struct EditorAssetDragDropAsyncRequest
 enum class UnifiedPrefabLoadMode
 {
     SceneRestore,
-    DragPreview,
     FinalDrop,
     Duplicate,
     InspectorPreview,
@@ -48,7 +48,6 @@ enum class UnifiedPrefabOwnerKind
 {
     None,
     SceneInstance,
-    PreviewScene,
     Inspector,
     AsyncJob
 };
@@ -105,6 +104,7 @@ struct UnifiedPrefabLoadKey
     std::string dependencyStamp;
     std::string prefabArtifactStamp;
     std::string rendererArtifactStamp;
+    bool rendererArtifactReadinessRequired = false;
     uint32_t prefabImporterVersion = 0u;
     uint32_t reflectionSchemaVersion = 0u;
     uint32_t serializationFormatVersion = 0u;
@@ -136,13 +136,16 @@ struct UnifiedPrefabSharedLoadResult
     std::string diagnosticMessage;
 };
 
-std::optional<std::vector<ImportedPrefabRendererDependencyTemplate>>
+std::shared_ptr<const std::vector<ImportedPrefabRendererDependencyTemplate>>
 TryGetImportedPrefabRendererDependencyTemplates(const UnifiedPrefabLoadKey& key);
 std::optional<UnifiedPrefabLoadKey> TryGetImportedPrefabLoadKeyForArtifact(
     const NLS::Engine::Assets::PrefabArtifact& prefab);
 #if defined(NLS_ENABLE_TEST_HOOKS)
 void ClearModelTextureMappingDependencyFingerprintCacheForTesting();
 size_t GetModelTextureMappingDependencyFingerprintScanCountForTesting();
+size_t GetModelTextureMappingDependencyArtifactDatabaseLoadCountForTesting();
+size_t GetModelTextureMappingDependencyMetaLoadCountForTesting();
+size_t GetModelTextureMappingDependencySourcePathFallbackCountForTesting();
 std::optional<std::string> ComputeModelTextureMappingDependencyFingerprintForTesting(
     const std::filesystem::path& projectRoot,
     const std::string& dependencyValue,
@@ -152,11 +155,6 @@ std::vector<std::optional<std::string>> ComputeModelTextureMappingDependencyFing
     const std::vector<std::string>& dependencyValues,
     const std::string& targetPlatform);
 #endif
-bool SchedulePreviewPrefabHotCachePreload(
-    EditorAssetDragPayload payload,
-    std::filesystem::path projectAssetsPath,
-    std::function<bool(std::function<void()>)> scheduleBackgroundTask);
-
 class EditorAssetDragDropBridge
 {
 public:
@@ -181,6 +179,18 @@ public:
         PrefabInstanceRegistry* prefabInstanceRegistry = nullptr,
         NLS::Engine::GameObject* parent = nullptr,
         ImportProgressTracker* progressTracker = nullptr) const;
+    EditorAssetDragDropBridgeResult TryDropImportedAssetHandleFromHotCacheIntoHierarchy(
+        const std::string& assetPath,
+        const std::string& prefabSubAssetKey,
+        NLS::Core::Assets::AssetId assetId,
+        NLS::Core::Assets::AssetType assetType,
+        const UnifiedPrefabLoadKey& hotCacheKey,
+        NLS::Engine::SceneSystem::Scene& scene,
+        NLS::Core::Assets::AssetId sceneAssetId = {},
+        PrefabInstanceRegistry* prefabInstanceRegistry = nullptr,
+        NLS::Engine::GameObject* parent = nullptr,
+        ImportProgressTracker* progressTracker = nullptr,
+        bool allowGraphOnlyPreview = false) const;
     EditorAssetDragDropBridgeResult DropImportedAssetHandleIntoHierarchyBlocking(
         const EditorAssetDragPayload& payload,
         NLS::Engine::SceneSystem::Scene& scene,
@@ -204,18 +214,6 @@ public:
         PrefabInstanceRegistry* prefabInstanceRegistry = nullptr,
         NLS::Engine::GameObject* parent = nullptr,
         ImportProgressTracker* progressTracker = nullptr) const;
-    std::optional<NLS::Engine::Assets::PrefabArtifact> TryLoadPreviewPrefabArtifact(
-        const EditorAssetDragPayload& payload) const;
-    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> TryLoadPreviewPrefabArtifactShared(
-        const EditorAssetDragPayload& payload) const;
-    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> TryGetCachedPreviewPrefabArtifactShared(
-        const EditorAssetDragPayload& payload) const;
-    bool PreloadPreviewPrefabHotCache(
-        const EditorAssetDragPayload& payload) const;
-    bool IsPreviewPrefabArtifactCurrent(
-        const EditorAssetDragPayload& payload,
-        const NLS::Engine::Assets::PrefabArtifact& prefab,
-        UnifiedPrefabReadiness requiredReadiness = UnifiedPrefabReadiness::PrefabGraphOnly) const;
     std::optional<NLS::Engine::Assets::PrefabArtifact> TryLoadImportedPrefabArtifact(
         const std::string& assetPath,
         const std::string& prefabSubAssetKey) const;
@@ -226,8 +224,25 @@ public:
         const UnifiedPrefabLoadRequest& request) const;
     UnifiedPrefabSharedLoadResult LoadUnifiedPrefabShared(
         const UnifiedPrefabLoadRequest& request) const;
-    std::optional<UnifiedPrefabLoadKey> BuildUnifiedPrefabLoadKey(
-        const UnifiedPrefabLoadRequest& request) const;
+	    bool PreloadImportedAssetHandlePrefabHotCache(
+	        const EditorAssetDragPayload& payload) const;
+	    std::optional<UnifiedPrefabLoadKey> BuildUnifiedPrefabLoadKey(
+	        const UnifiedPrefabLoadRequest& request) const;
+	    std::optional<UnifiedPrefabLoadKey> TryFindImportedPrefabHotCacheKey(
+	        const std::string& assetPath,
+	        const std::string& prefabSubAssetKey,
+	        NLS::Core::Assets::AssetId assetId,
+	        NLS::Core::Assets::AssetType assetType,
+	        UnifiedPrefabReadiness requiredReadiness = UnifiedPrefabReadiness::MeshMaterialTextureReady) const;
+	    bool IsImportedPrefabHotCacheKeyCurrent(
+	        const std::string& assetPath,
+	        const std::string& prefabSubAssetKey,
+	        NLS::Core::Assets::AssetId assetId,
+	        NLS::Core::Assets::AssetType assetType,
+	        const UnifiedPrefabLoadKey& hotCacheKey) const;
+	    // Cache-only prewarm for startup: loads L1/L2 prepared prefab cache without generating cold entries.
+	    bool TryPreloadExistingPreparedPrefabHotCache(
+	        const UnifiedPrefabLoadRequest& request) const;
     bool PreloadPreparedPrefabHotCache(
         const UnifiedPrefabLoadRequest& request) const;
 
@@ -272,9 +287,19 @@ private:
     std::filesystem::path m_projectAssetsPath;
 };
 
+std::string NormalizeGeneratedPrefabSubAssetKeyForAssetPath(
+    const std::string& assetPath,
+    std::string subAssetKey,
+    NLS::Core::Assets::AssetType assetType);
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
 void ClearImportedPrefabHotCacheForTesting();
 size_t GetImportedPrefabHotCacheEntryCountForTesting();
+bool ManifestDependenciesAreCurrentForTesting(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::AssetMeta& meta,
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& absoluteAssetPath);
 PreparedPrefabCacheFreshnessRecord BuildPreparedPrefabCacheFreshnessRecordForTesting(
     const UnifiedPrefabLoadKey& key);
 bool IsPreparedPrefabCacheFreshForTesting(

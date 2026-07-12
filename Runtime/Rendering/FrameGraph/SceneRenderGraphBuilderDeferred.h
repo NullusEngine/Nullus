@@ -253,6 +253,10 @@ namespace NLS::Render::FrameGraph
     NLS_RENDER_API PreparedComputeDispatchSource BuildHZBPreparedComputeDispatchSource(
         const HZBFrameResourceRequest& request);
 
+    NLS_RENDER_API std::optional<NLS::Render::Context::RenderPassCommandInput>
+        BuildDeferredAggregateHelperPassInput(
+            const NLS::Render::Context::RenderScenePackage& package);
+
     NLS_RENDER_API CompiledThreadedRenderSceneExecution CompileAndApplyPreparedDeferredLightGridSceneExecution(
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext,
@@ -260,7 +264,8 @@ namespace NLS::Render::FrameGraph
         std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs = {},
         const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata = {},
         DeferredPreparedQueuedDrawCounts queuedDrawCounts = {},
-        const PreparedComputeDispatchSource& hzbSource = {});
+        const PreparedComputeDispatchSource& hzbSource = {},
+        const ExternalSceneOutputAttachments* externalOutputAttachments = nullptr);
 
     NLS_RENDER_API void FinalizePreparedDeferredScenePackage(
         NLS::Render::Context::RenderScenePackage& package,

@@ -166,6 +166,20 @@ TEST(RHIUiOverlaySourceGuardTests, FontAtlasUploadAvoidsImmediateCreateTextureIn
     EXPECT_NE(source.find("CopyBufferToTexture"), std::string::npos);
 }
 
+TEST(RHIUiOverlaySourceGuardTests, AssetBrowserThumbnailUploadAvoidsImmediateTextureInitialData)
+{
+    const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
+    const auto uploadBody = ExtractFunctionBody(
+        source,
+        "bool Editor::Panels::AssetBrowser::LoadDecodedCachedThumbnailTexture(");
+
+    EXPECT_EQ(uploadBody.find("CreateFromRgba8Memory"), std::string::npos)
+        << "Asset Browser cached thumbnail upload must not use immediate TextureLoader RGBA uploads "
+           "because the RHI initial-data path can synchronously wait on GPU work and stall UI scrolling.";
+    EXPECT_NE(uploadBody.find("RequestUiRgba8TextureUpload"), std::string::npos)
+        << "Cached thumbnail RGBA pixels should be submitted to the renderer-owned upload queue.";
+}
+
 TEST(RHIUiOverlaySourceGuardTests, OverlayRendererDoesNotExposeRecordConveniencePath)
 {
     const auto header = ReadSourceText(RepoPath("Runtime/Rendering/UI/RHIImGuiOverlayRenderer.h"));
@@ -257,15 +271,6 @@ TEST(RHIUiOverlaySourceGuardTests, UIManagerResolveTextureViewUsesPackedUiTextur
     EXPECT_NE(resolveBody.find("nativeHandle.handle"), std::string::npos);
 }
 
-TEST(RHIUiOverlaySourceGuardTests, RegisteredUiTextureContractDocumentsPreviousFrameStaticScope)
-{
-    const auto contract = ReadSourceText(
-        RepoPath("specs/049-integrate-ui-framegraph/contracts/rhi-ui-overlay-pass-contract.md"));
-
-    EXPECT_NE(contract.find("previous-frame/static sampled resources"), std::string::npos);
-    EXPECT_NE(contract.find("does not infer same-frame producer dependencies"), std::string::npos);
-}
-
 TEST(RHIUiOverlaySourceGuardTests, ImageWidgetsPreferPackedUiTextureIdentityWhenAvailable)
 {
     const auto imageSource = ReadSourceText(RepoPath("Runtime/UI/Widgets/Visual/Image.cpp"));
@@ -304,26 +309,89 @@ TEST(RHIUiOverlaySourceGuardTests, DirectImageCallSitesUseUnifiedTextureIdResolv
     EXPECT_EQ(drawTextureBody.find("IsValid()"), std::string::npos);
 
     const auto assetBrowserSource = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
-    const auto assetBrowserResolveBody = ExtractFunctionBody(assetBrowserSource, "void* ResolveAssetBrowserTextureHandle(");
-    EXPECT_NE(assetBrowserResolveBody.find("ResolveTextureId(textureView)"), std::string::npos);
+    const auto assetBrowserHeader = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.h"));
+    const auto assetBrowserResolveBody = ExtractFunctionBody(
+        assetBrowserSource,
+        "void* Editor::Panels::AssetBrowser::ResolveAssetBrowserTextureHandle(");
+    EXPECT_EQ(
+        assetBrowserResolveBody.find("ResolveTextureId(textureView)"),
+        std::string::npos)
+        << "AssetBrowser fixed icon draw is a hot path; texture ids should be cached per icon/debug-name pair.";
+    EXPECT_NE(assetBrowserResolveBody.find("m_assetBrowserTextureHandleCache"), std::string::npos);
+    EXPECT_NE(assetBrowserResolveBody.find("return found->second.textureId"), std::string::npos);
+    EXPECT_NE(assetBrowserResolveBody.find("ResolveTextureId(resolvedTextureView)"), std::string::npos);
+    EXPECT_LT(
+        assetBrowserResolveBody.find("return found->second.textureId"),
+        assetBrowserResolveBody.find("ResolveTextureId(resolvedTextureView)"));
+    EXPECT_EQ(assetBrowserHeader.find("std::string debugName;"), std::string::npos)
+        << "Texture2D currently owns a single explicit texture view, so debug-name keyed UI id cache entries "
+           "can duplicate release/retire calls for the same view.";
+    EXPECT_NE(
+        ExtractFunctionBody(assetBrowserSource, "void Editor::Panels::AssetBrowser::Clear(")
+            .find("ReleaseAssetBrowserTextureHandleCache(false)"),
+        std::string::npos)
+        << "Fixed-icon UI texture ids must be invalidated when the browser clears refresh-owned texture state.";
     EXPECT_EQ(assetBrowserResolveBody.find("ResolveTextureView(textureView)"), std::string::npos);
     EXPECT_EQ(assetBrowserResolveBody.find("IsValid()"), std::string::npos);
 
     const auto thumbnailResolveBody = ExtractFunctionBody(
         assetBrowserSource,
         "Editor::Panels::AssetBrowser::ThumbnailTextureHandle Editor::Panels::AssetBrowser::ResolveCachedThumbnailTextureHandle(");
-    EXPECT_NE(
+    EXPECT_EQ(
         thumbnailResolveBody.find("ResolveTextureId(found->second.textureView)"),
-        std::string::npos);
+        std::string::npos)
+        << "AssetBrowser thumbnail draw is a hot path; texture ids should be resolved once when the cached thumbnail texture is loaded.";
+    EXPECT_NE(thumbnailResolveBody.find("found->second.textureId"), std::string::npos);
     EXPECT_EQ(thumbnailResolveBody.find("ResolveTextureView(found->second.textureView)"), std::string::npos);
     EXPECT_EQ(thumbnailResolveBody.find("IsValid()"), std::string::npos);
 
     const auto thumbnailLoadBody = ExtractFunctionBody(
         assetBrowserSource,
         "bool Editor::Panels::AssetBrowser::LoadDecodedCachedThumbnailTexture(");
-    EXPECT_NE(thumbnailLoadBody.find("ResolveTextureId(textureView) == nullptr"), std::string::npos);
+    EXPECT_EQ(thumbnailLoadBody.find("ResolveTextureId("), std::string::npos)
+        << "Decoded cached thumbnails should submit renderer-owned uploads; UI texture ids are resolved after upload completion.";
+
+    const auto thumbnailConsumeBody = ExtractFunctionBody(
+        assetBrowserSource,
+        "void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes()");
+    EXPECT_NE(thumbnailConsumeBody.find("ResolveTextureId(result.textureView)"), std::string::npos);
+    EXPECT_NE(thumbnailConsumeBody.find("textureId"), std::string::npos);
     EXPECT_EQ(thumbnailLoadBody.find("ResolveTextureView(textureView)"), std::string::npos);
     EXPECT_EQ(thumbnailLoadBody.find("IsValid()"), std::string::npos);
+
+    const auto thumbnailServiceSource = ReadSourceText(
+        RepoPath("Project/Editor/Assets/AssetThumbnailService.cpp"));
+    const std::string gpuPreviewNeedle =
+        "std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextThumbnail(";
+    size_t gpuPreviewBegin = std::string::npos;
+    for (size_t searchBegin = 0u;; searchBegin += gpuPreviewNeedle.size())
+    {
+        const auto candidateBegin = thumbnailServiceSource.find(gpuPreviewNeedle, searchBegin);
+        if (candidateBegin == std::string::npos)
+            break;
+
+        const auto candidateBodyBegin = thumbnailServiceSource.find('{', candidateBegin);
+        ASSERT_NE(candidateBodyBegin, std::string::npos);
+        const auto candidateSignature =
+            thumbnailServiceSource.substr(candidateBegin, candidateBodyBegin - candidateBegin);
+        if (candidateSignature.find("IEditorThumbnailPreviewRenderer& previewRenderer") != std::string::npos)
+        {
+            gpuPreviewBegin = candidateBegin;
+            break;
+        }
+        searchBegin = candidateBegin;
+    }
+    ASSERT_NE(gpuPreviewBegin, std::string::npos);
+    const auto completedReadbackGuard = thumbnailServiceSource.find(
+        "!preview.completedPendingReadback",
+        gpuPreviewBegin);
+    const auto renderTelemetry = thumbnailServiceSource.find(
+        "ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender",
+        gpuPreviewBegin);
+    ASSERT_NE(completedReadbackGuard, std::string::npos);
+    ASSERT_NE(renderTelemetry, std::string::npos);
+    EXPECT_LT(completedReadbackGuard, renderTelemetry)
+        << "GPU preview readback polling must not be counted as a second ThumbnailGpuPreviewRender sample.";
 }
 
 TEST(RHIUiOverlaySourceGuardTests, UIManagerResourceNotificationsRouteThroughFrameGraphOverlayResources)

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
+#include "Math/Vector4.h"
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Entities/Camera.h"
 
@@ -20,8 +22,9 @@ namespace NLS::Render::Data
 	{
 		uint16_t renderWidth = 0;
 		uint16_t renderHeight = 0;
-		NLS::Render::Entities::Camera* camera = nullptr;
-        Buffers::Framebuffer* outputBuffer = nullptr;
+			NLS::Render::Entities::Camera* camera = nullptr;
+			std::optional<NLS::Maths::Vector4> clearColorOverride;
+	        Buffers::Framebuffer* outputBuffer = nullptr;
 		std::shared_ptr<NLS::Render::RHI::RHITexture> outputColorTexture;
 		std::shared_ptr<NLS::Render::RHI::RHITexture> outputDepthStencilTexture;
 		std::shared_ptr<NLS::Render::RHI::RHITextureView> outputColorView;
@@ -33,6 +36,6 @@ namespace NLS::Render::Data
 		bool IsValid() const
 		{
 			return camera != nullptr;
-		}
-	};
-}
+			}
+		};
+	}

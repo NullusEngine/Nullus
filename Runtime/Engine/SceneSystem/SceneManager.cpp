@@ -9,14 +9,36 @@
 #include "Serialize/ObjectGraphReader.h"
 #include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/ObjectGraphWriter.h"
+#include "Serialize/ObjectGraphBinaryCache.h"
+#include "Profiling/PerformanceStageStats.h"
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
+#include <vector>
 
 namespace
 {
+    constexpr uint8_t kSceneObjectGraphCacheMagic[] = {'N', 'S', 'G', 'C'};
+    constexpr uint32_t kSceneObjectGraphCacheVersion = 1u;
+
+    struct SceneObjectGraphSourceStamp
+    {
+        uint64_t fileSize = 0u;
+        int64_t writeTimeTicks = 0;
+    };
+
+    bool operator==(const SceneObjectGraphSourceStamp& left, const SceneObjectGraphSourceStamp& right)
+    {
+        return left.fileSize == right.fileSize &&
+            left.writeTimeTicks == right.writeTimeTicks;
+    }
+
     void AppendSceneManagerTrace(const char* message)
     {
         (void)message;
@@ -62,6 +84,272 @@ namespace
         std::ostringstream stream;
         stream << file.rdbuf();
         return stream.str();
+    }
+
+    std::optional<std::vector<uint8_t>> ReadBinaryFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        if (!file)
+            return std::nullopt;
+
+        file.seekg(0, std::ios::end);
+        const auto size = file.tellg();
+        if (size < 0)
+            return std::nullopt;
+        file.seekg(0, std::ios::beg);
+
+        std::vector<uint8_t> bytes(static_cast<size_t>(size));
+        if (!bytes.empty())
+            file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!file.good() && !file.eof())
+            return std::nullopt;
+        return bytes;
+    }
+
+    bool WriteBinaryFileAtomically(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
+    {
+        std::error_code error;
+        if (path.has_parent_path())
+            std::filesystem::create_directories(path.parent_path(), error);
+
+        const auto temporaryPath = path.string() + ".tmp";
+        {
+            std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
+            if (!file)
+                return false;
+            if (!bytes.empty())
+                file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            if (!file.good())
+                return false;
+        }
+
+        if (std::filesystem::exists(path, error))
+            std::filesystem::remove(path, error);
+
+        std::filesystem::rename(temporaryPath, path, error);
+        if (error)
+        {
+            error.clear();
+            std::filesystem::copy_file(temporaryPath, path, std::filesystem::copy_options::overwrite_existing, error);
+            std::filesystem::remove(temporaryPath, error);
+        }
+
+        return !error;
+    }
+
+    uint64_t HashPathForCacheKey(const std::string& text)
+    {
+        uint64_t hash = 14695981039346656037ull;
+        for (const unsigned char value : text)
+        {
+            hash ^= value;
+            hash *= 1099511628211ull;
+        }
+        return hash;
+    }
+
+    std::string ToFixedHex(const uint64_t value)
+    {
+        constexpr char kDigits[] = "0123456789abcdef";
+        std::string text(16u, '0');
+        for (size_t index = 0u; index < text.size(); ++index)
+        {
+            const auto shift = static_cast<uint32_t>((text.size() - index - 1u) * 4u);
+            text[index] = kDigits[(value >> shift) & 0x0full];
+        }
+        return text;
+    }
+
+    std::optional<SceneObjectGraphSourceStamp> GetSceneObjectGraphSourceStamp(const std::filesystem::path& path)
+    {
+        std::error_code error;
+        const auto size = std::filesystem::file_size(path, error);
+        if (error)
+            return std::nullopt;
+
+        const auto writeTime = std::filesystem::last_write_time(path, error);
+        if (error)
+            return std::nullopt;
+
+        return SceneObjectGraphSourceStamp{
+            size,
+            static_cast<int64_t>(writeTime.time_since_epoch().count())
+        };
+    }
+
+    std::filesystem::path ResolveSceneObjectGraphCachePath(const std::filesystem::path& scenePath)
+    {
+        std::error_code error;
+        const auto absolutePath = std::filesystem::absolute(scenePath, error).lexically_normal();
+        const auto key = ToFixedHex(HashPathForCacheKey(absolutePath.generic_string()));
+
+        for (auto parent = absolutePath.parent_path(); !parent.empty(); parent = parent.parent_path())
+        {
+            if (parent.filename() == "Assets")
+            {
+                return parent.parent_path() /
+                    "Library" /
+                    "SceneObjectGraphCache" /
+                    (key + ".nogc");
+            }
+
+            if (parent == parent.parent_path())
+                break;
+        }
+
+        return absolutePath.parent_path() /
+            ".nullus_scene_cache" /
+            (absolutePath.filename().string() + "." + key + ".nogc");
+    }
+
+    class SceneObjectGraphCacheReader
+    {
+    public:
+        SceneObjectGraphCacheReader(const uint8_t* input, const size_t inputSize)
+            : data(input)
+            , size(inputSize)
+        {
+        }
+
+        std::optional<NLS::Engine::Serialize::ObjectGraphDocument> Read(const SceneObjectGraphSourceStamp& stamp)
+        {
+            if (!ReadMagic())
+                return std::nullopt;
+
+            uint32_t version = 0u;
+            uint64_t sourceSize = 0u;
+            int64_t sourceWriteTime = 0;
+            uint32_t payloadSize = 0u;
+            if (!ReadU32(version) ||
+                version != kSceneObjectGraphCacheVersion ||
+                !ReadU64(sourceSize) ||
+                !ReadI64(sourceWriteTime) ||
+                !ReadU32(payloadSize) ||
+                sourceSize != stamp.fileSize ||
+                sourceWriteTime != stamp.writeTimeTicks ||
+                Remaining() != payloadSize)
+            {
+                return std::nullopt;
+            }
+
+            auto document = NLS::Engine::Serialize::ObjectGraphBinaryCache::Read(data + position, payloadSize);
+            if (!document.has_value() || document->Validate().HasErrors())
+                return std::nullopt;
+            position += payloadSize;
+            return document;
+        }
+
+    private:
+        bool ReadMagic()
+        {
+            if (Remaining() < sizeof(kSceneObjectGraphCacheMagic))
+                return false;
+            if (std::memcmp(data + position, kSceneObjectGraphCacheMagic, sizeof(kSceneObjectGraphCacheMagic)) != 0)
+                return false;
+            position += sizeof(kSceneObjectGraphCacheMagic);
+            return true;
+        }
+
+        bool ReadU32(uint32_t& value)
+        {
+            if (Remaining() < 4u)
+                return false;
+            value =
+                static_cast<uint32_t>(data[position]) |
+                (static_cast<uint32_t>(data[position + 1u]) << 8u) |
+                (static_cast<uint32_t>(data[position + 2u]) << 16u) |
+                (static_cast<uint32_t>(data[position + 3u]) << 24u);
+            position += 4u;
+            return true;
+        }
+
+        bool ReadU64(uint64_t& value)
+        {
+            if (Remaining() < 8u)
+                return false;
+            value =
+                static_cast<uint64_t>(data[position]) |
+                (static_cast<uint64_t>(data[position + 1u]) << 8u) |
+                (static_cast<uint64_t>(data[position + 2u]) << 16u) |
+                (static_cast<uint64_t>(data[position + 3u]) << 24u) |
+                (static_cast<uint64_t>(data[position + 4u]) << 32u) |
+                (static_cast<uint64_t>(data[position + 5u]) << 40u) |
+                (static_cast<uint64_t>(data[position + 6u]) << 48u) |
+                (static_cast<uint64_t>(data[position + 7u]) << 56u);
+            position += 8u;
+            return true;
+        }
+
+        bool ReadI64(int64_t& value)
+        {
+            uint64_t raw = 0u;
+            if (!ReadU64(raw))
+                return false;
+            value = static_cast<int64_t>(raw);
+            return true;
+        }
+
+        size_t Remaining() const
+        {
+            return size - position;
+        }
+
+        const uint8_t* data = nullptr;
+        size_t size = 0u;
+        size_t position = 0u;
+    };
+
+    void WriteU32(std::vector<uint8_t>& bytes, const uint32_t value)
+    {
+        for (uint32_t shift = 0u; shift < 32u; shift += 8u)
+            bytes.push_back(static_cast<uint8_t>((value >> shift) & 0xffu));
+    }
+
+    void WriteU64(std::vector<uint8_t>& bytes, const uint64_t value)
+    {
+        for (uint32_t shift = 0u; shift < 64u; shift += 8u)
+            bytes.push_back(static_cast<uint8_t>((value >> shift) & 0xffu));
+    }
+
+    void WriteI64(std::vector<uint8_t>& bytes, const int64_t value)
+    {
+        WriteU64(bytes, static_cast<uint64_t>(value));
+    }
+
+    std::optional<NLS::Engine::Serialize::ObjectGraphDocument> ReadSceneObjectGraphCache(
+        const std::filesystem::path& scenePath,
+        const SceneObjectGraphSourceStamp& stamp,
+        uint64_t& cacheByteCount)
+    {
+        cacheByteCount = 0u;
+        const auto cachePath = ResolveSceneObjectGraphCachePath(scenePath);
+        const auto bytes = ReadBinaryFile(cachePath);
+        if (!bytes.has_value())
+            return std::nullopt;
+
+        cacheByteCount = bytes->size();
+        return SceneObjectGraphCacheReader(bytes->data(), bytes->size()).Read(stamp);
+    }
+
+    bool WriteSceneObjectGraphCache(
+        const std::filesystem::path& scenePath,
+        const SceneObjectGraphSourceStamp& stamp,
+        const NLS::Engine::Serialize::ObjectGraphDocument& document)
+    {
+        const auto payload = NLS::Engine::Serialize::ObjectGraphBinaryCache::Write(document);
+        if (payload.empty() || payload.size() > std::numeric_limits<uint32_t>::max())
+            return false;
+
+        std::vector<uint8_t> bytes;
+        bytes.reserve(sizeof(kSceneObjectGraphCacheMagic) + 4u + 8u + 8u + 4u + payload.size());
+        bytes.insert(bytes.end(), std::begin(kSceneObjectGraphCacheMagic), std::end(kSceneObjectGraphCacheMagic));
+        WriteU32(bytes, kSceneObjectGraphCacheVersion);
+        WriteU64(bytes, stamp.fileSize);
+        WriteI64(bytes, stamp.writeTimeTicks);
+        WriteU32(bytes, static_cast<uint32_t>(payload.size()));
+        bytes.insert(bytes.end(), payload.begin(), payload.end());
+
+        return WriteBinaryFileAtomically(ResolveSceneObjectGraphCachePath(scenePath), bytes);
     }
 
     void ReportSceneLoadProgress(
@@ -181,41 +469,116 @@ bool SceneManager::LoadScene(
     bool p_absolute,
     const SceneLoadProgressCallback& p_progressCallback)
 {
-    std::string completePath = (p_absolute ? "" : m_sceneRootFolder) + p_path;
+    namespace Profiling = NLS::Base::Profiling;
 
-    ReportSceneLoadProgress(p_progressCallback, 0.02f, "Reading scene file");
-    const auto fileText = ReadTextFile(completePath);
-    if (!fileText.has_value())
+    std::string completePath = (p_absolute ? "" : m_sceneRootFolder) + p_path;
+    const auto scenePath = std::filesystem::path(completePath);
+    const auto sourceStamp = GetSceneObjectGraphSourceStamp(scenePath);
+    if (!sourceStamp.has_value())
         return false;
 
-    ReportSceneLoadProgress(p_progressCallback, 0.12f, "Parsing scene object graph");
-    auto document = Engine::Serialize::ObjectGraphReader::Read(*fileText);
+    ReportSceneLoadProgress(p_progressCallback, 0.08f, "Checking scene object graph cache");
+    std::optional<Engine::Serialize::ObjectGraphDocument> document;
+    {
+        Profiling::PerformanceStageScope scope(
+            Profiling::PerformanceStageDomain::Unknown,
+            "SceneLoad.ReadObjectGraphCache",
+            Profiling::PerformanceStageThread::Main);
+        uint64_t cacheByteCount = 0u;
+        document = ReadSceneObjectGraphCache(scenePath, *sourceStamp, cacheByteCount);
+        scope.AddCounter("cacheByteCount", cacheByteCount);
+        scope.AddCounter("cacheHitCount", document.has_value() ? 1u : 0u);
+    }
+
+    std::optional<std::string> fileText;
+    if (!document.has_value())
+    {
+        ReportSceneLoadProgress(p_progressCallback, 0.02f, "Reading scene file");
+        {
+            Profiling::PerformanceStageScope scope(
+                Profiling::PerformanceStageDomain::Unknown,
+                "SceneLoad.ReadSceneFile",
+                Profiling::PerformanceStageThread::Main);
+            fileText = ReadTextFile(completePath);
+            if (fileText.has_value())
+                scope.AddCounter("byteCount", fileText->size());
+        }
+        if (!fileText.has_value())
+            return false;
+    }
+
+    if (!document.has_value())
+    {
+        ReportSceneLoadProgress(p_progressCallback, 0.12f, "Parsing scene object graph");
+        {
+            Profiling::PerformanceStageScope scope(
+                Profiling::PerformanceStageDomain::Unknown,
+                "SceneLoad.ParseObjectGraph",
+                Profiling::PerformanceStageThread::Main);
+            document = Engine::Serialize::ObjectGraphReader::Read(*fileText);
+            if (document.has_value())
+                scope.AddCounter("objectCount", document->objects.size());
+        }
+    }
     m_lastLoadedSceneDocument.reset();
     if (!document.has_value() || document->format != "Nullus.ObjectGraph.Scene")
         return false;
 
+    if (fileText.has_value())
+    {
+        Profiling::PerformanceStageScope scope(
+            Profiling::PerformanceStageDomain::Unknown,
+            "SceneLoad.WriteObjectGraphCache",
+            Profiling::PerformanceStageThread::Main);
+        const auto postParseStamp = GetSceneObjectGraphSourceStamp(scenePath);
+        const bool canWriteCache = postParseStamp.has_value() && *postParseStamp == *sourceStamp;
+        scope.AddCounter("cacheWriteSuccessCount", canWriteCache && WriteSceneObjectGraphCache(scenePath, *sourceStamp, *document) ? 1u : 0u);
+        scope.AddCounter("objectCount", document->objects.size());
+    }
+
     ReportSceneLoadProgress(p_progressCallback, 0.20f, "Unloading previous scene");
-    UnloadCurrentScene();
+    {
+        Profiling::PerformanceStageScope scope(
+            Profiling::PerformanceStageDomain::Unknown,
+            "SceneLoad.UnloadPreviousScene",
+            Profiling::PerformanceStageThread::Main);
+        UnloadCurrentScene();
+    }
 
     Engine::Serialize::LoadPolicy loadPolicy;
     loadPolicy.deferAssetReferenceResolution = true;
     loadPolicy.invalidReferencePolicy = Engine::Serialize::InvalidReferencePolicy::Preserve;
-    auto sceneResult = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(
-        *document,
-        loadPolicy,
-        [&p_progressCallback](const Engine::Serialize::InstantiationProgress& progress)
-        {
-            ReportSceneLoadProgress(
-                p_progressCallback,
-                0.20f + progress.normalizedProgress * 0.70f,
-                progress.message);
-        });
+    Engine::Serialize::SceneInstantiationResult sceneResult;
+    {
+        Profiling::PerformanceStageScope scope(
+            Profiling::PerformanceStageDomain::Unknown,
+            "SceneLoad.InstantiateScene",
+            Profiling::PerformanceStageThread::Main);
+        scope.AddCounter("objectCount", document->objects.size());
+        sceneResult = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(
+            *document,
+            loadPolicy,
+            [&p_progressCallback](const Engine::Serialize::InstantiationProgress& progress)
+            {
+                ReportSceneLoadProgress(
+                    p_progressCallback,
+                    0.20f + progress.normalizedProgress * 0.70f,
+                    progress.message);
+            });
+        scope.AddCounter("successCount", sceneResult.scene ? 1u : 0u);
+    }
     auto& scene = sceneResult.scene;
     if (!scene)
     {
         m_currentScene = new Scene();
         m_lastLoadedSceneDocument.reset();
-        SceneLoadEvent.Invoke();
+        {
+            Profiling::PerformanceStageScope scope(
+                Profiling::PerformanceStageDomain::Unknown,
+                "SceneLoad.SceneLoadEvent",
+                Profiling::PerformanceStageThread::Main);
+            SceneLoadEvent.Invoke();
+        }
         MarkCurrentSceneClean();
         return false;
     }
@@ -223,9 +586,21 @@ bool SceneManager::LoadScene(
     m_currentScene = scene.release();
     m_lastLoadedSceneDocument = std::move(*document);
     ReportSceneLoadProgress(p_progressCallback, 0.92f, "Activating loaded scene");
-    SceneLoadEvent.Invoke();
-    StoreCurrentSceneSourcePath(completePath);
-    MarkCurrentSceneClean();
+    {
+        Profiling::PerformanceStageScope scope(
+            Profiling::PerformanceStageDomain::Unknown,
+            "SceneLoad.SceneLoadEvent",
+            Profiling::PerformanceStageThread::Main);
+        SceneLoadEvent.Invoke();
+    }
+    {
+        Profiling::PerformanceStageScope scope(
+            Profiling::PerformanceStageDomain::Unknown,
+            "SceneLoad.StoreScenePath",
+            Profiling::PerformanceStageThread::Main);
+        StoreCurrentSceneSourcePath(completePath);
+        MarkCurrentSceneClean();
+    }
     ReportSceneLoadProgress(p_progressCallback, 1.0f, "Scene loaded");
     return true;
 }

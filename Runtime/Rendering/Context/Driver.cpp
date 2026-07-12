@@ -22,6 +22,7 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/RHI/Backends/RHIDeviceFactory.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/RHI/BindingPointMap.h"
@@ -40,8 +41,16 @@
 #include "Rendering/Context/RhiThreadCoordinator.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Context/SwapchainResizePolicy.h"
+#include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocCaptureController.h"
+
+NLS::Render::Context::MeshRuntimeUploadResult::MeshRuntimeUploadResult() = default;
+NLS::Render::Context::MeshRuntimeUploadResult::~MeshRuntimeUploadResult() = default;
+NLS::Render::Context::MeshRuntimeUploadResult::MeshRuntimeUploadResult(
+    MeshRuntimeUploadResult&&) noexcept = default;
+NLS::Render::Context::MeshRuntimeUploadResult&
+NLS::Render::Context::MeshRuntimeUploadResult::operator=(MeshRuntimeUploadResult&&) noexcept = default;
 #include "Rendering/Resources/IMesh.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Utils/Conversions.h"
@@ -1779,19 +1788,34 @@ namespace
             });
     }
 
-    bool DrainFrameFenceForResize(Render::RHI::RHIFrameContext& frameContext, const DriverImpl* impl)
+    bool DrainFrameFenceForResize(
+        Render::RHI::RHIFrameContext& frameContext,
+        const DriverImpl* impl,
+        const size_t frameContextIndex = std::numeric_limits<size_t>::max())
     {
         if (frameContext.frameFence == nullptr || frameContext.frameFence->IsSignaled())
             return true;
 
         if (impl != nullptr && impl->deviceLostDetected.load(std::memory_order_acquire))
+        {
+            NLS_LOG_ERROR(
+                "Driver: abandoned submitted GPU work fence wait after device loss fence=" +
+                std::string(frameContext.frameFence->GetDebugName()) +
+                (frameContextIndex != std::numeric_limits<size_t>::max()
+                    ? " frameContextIndex=" + std::to_string(frameContextIndex)
+                    : std::string()));
             return false;
+        }
 
         if (frameContext.frameFence->Wait(kDriverGpuDrainTimeoutNanoseconds))
             return true;
 
         NLS_LOG_ERROR(
-            "ApplyPendingSwapchainResize: timed out waiting for frame fence before resizing swapchain");
+            "Driver: timed out waiting for submitted GPU work frame fence=" +
+            std::string(frameContext.frameFence->GetDebugName()) +
+            (frameContextIndex != std::numeric_limits<size_t>::max()
+                ? " frameContextIndex=" + std::to_string(frameContextIndex)
+                : std::string()));
         return false;
     }
 
@@ -1799,9 +1823,9 @@ namespace
         std::vector<Render::RHI::RHIFrameContext>& frameContexts,
         const DriverImpl* impl)
     {
-        for (auto& frameContext : frameContexts)
+        for (size_t frameContextIndex = 0u; frameContextIndex < frameContexts.size(); ++frameContextIndex)
         {
-            if (!DrainFrameFenceForResize(frameContext, impl))
+            if (!DrainFrameFenceForResize(frameContexts[frameContextIndex], impl, frameContextIndex))
                 return false;
         }
         return true;
@@ -2194,7 +2218,8 @@ bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
     const FrameSnapshot& snapshot,
     PreparedRenderSceneBuilder renderSceneBuilder,
     size_t* publishedSlotIndex,
-    uint64_t* publishedFrameId)
+    uint64_t* publishedFrameId,
+    const bool backgroundPreview)
 {
     if (driver.m_impl != nullptr)
     {
@@ -2229,7 +2254,14 @@ bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
         std::move(renderSceneBuilder),
         true,
         publishedSlotIndex,
-        publishedFrameId);
+        publishedFrameId,
+        backgroundPreview);
+}
+
+void DriverRendererAccess::CancelBackgroundPreviewPublicationRequest(Driver& driver)
+{
+    if (driver.m_impl != nullptr)
+        driver.m_impl->backgroundPreviewPublicationRequested.store(false, std::memory_order_release);
 }
 
 bool DriverRendererAccess::QueueStandalonePostSubmitBufferReadback(
@@ -2259,6 +2291,15 @@ bool DriverRendererAccess::TryDrainThreadedRendering(Driver& driver, const bool 
     if (drained && applyPendingSwapchainResize)
         driver.ApplyPendingSwapchainResize();
     return drained;
+}
+
+bool DriverRendererAccess::TryWaitForSubmittedGpuWork(Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return true;
+    if (!TryDrainThreadedRendering(driver, false))
+        return false;
+    return DrainFrameFencesForResize(driver.m_impl->frameContexts, driver.m_impl.get());
 }
 
 void DriverRendererAccess::DrainThreadedRendering(Driver& driver)
@@ -2364,7 +2405,8 @@ namespace
 {
     std::optional<size_t> ReserveReusableFrameContextSlotIndexForDriver(
         DriverImpl& impl,
-        const bool waitForDeferredFrameFence)
+        const bool waitForDeferredFrameFence,
+        const bool waitForRetirement)
     {
         auto* threadedLifecycle = impl.threadedLifecycle.get();
         if (threadedLifecycle != nullptr)
@@ -2387,7 +2429,9 @@ namespace
             {
                 const auto reservedSlotIndex = threadedLifecycle->ReserveReusableSlotIndexExcluding(
                     skippedUnsafeSlots,
-                    std::chrono::milliseconds(impl.threadedPublishRetirementWaitMs));
+                    waitForRetirement
+                        ? std::chrono::milliseconds(impl.threadedPublishRetirementWaitMs)
+                        : std::chrono::milliseconds::zero());
                 if (!reservedSlotIndex.has_value())
                     return std::nullopt;
 
@@ -2455,15 +2499,20 @@ std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex
     if (driver.m_impl == nullptr)
         return std::nullopt;
 
-    return ReserveReusableFrameContextSlotIndexForDriver(*driver.m_impl, false);
+    return ReserveReusableFrameContextSlotIndexForDriver(*driver.m_impl, false, true);
 }
 
-std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(Driver& driver)
+std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
+    Driver& driver,
+    const bool waitForRetirement)
 {
     if (driver.m_impl == nullptr)
         return std::nullopt;
 
-    return ReserveReusableFrameContextSlotIndexForDriver(*driver.m_impl, true);
+    return ReserveReusableFrameContextSlotIndexForDriver(
+        *driver.m_impl,
+        waitForRetirement,
+        waitForRetirement);
 }
 
 bool DriverRendererAccess::ReleaseReservedFrameContextSlotIndex(Driver& driver, const size_t slotIndex)
@@ -2896,10 +2945,34 @@ bool DriverUIAccess::IsRenderDocAvailable(const Driver& driver)
 		driver.m_impl->renderDocCaptureController->IsAvailable();
 }
 
+bool DriverUIAccess::ShouldForceRenderDocCaptureFrameRender(const Driver& driver)
+{
+	return driver.m_impl->renderDocCaptureController != nullptr &&
+		driver.m_impl->renderDocCaptureController->ShouldForceCaptureFrameRender();
+}
+
 bool DriverUIAccess::QueueRenderDocCapture(Driver& driver, const std::string& label)
 {
 	return driver.m_impl->renderDocCaptureController != nullptr &&
 		driver.m_impl->renderDocCaptureController->QueueCapture(label);
+}
+
+bool DriverUIAccess::QueueRenderDocCaptureForNextExternalOutput(Driver& driver, const std::string& label)
+{
+	return driver.m_impl->renderDocCaptureController != nullptr &&
+		driver.m_impl->renderDocCaptureController->QueueCaptureForNextExternalOutput(label);
+}
+
+bool DriverUIAccess::StartRenderDocCapture(Driver& driver)
+{
+	return driver.m_impl->renderDocCaptureController != nullptr &&
+		driver.m_impl->renderDocCaptureController->StartCapture();
+}
+
+bool DriverUIAccess::EndRenderDocCapture(Driver& driver)
+{
+	return driver.m_impl->renderDocCaptureController != nullptr &&
+		driver.m_impl->renderDocCaptureController->EndCapture();
 }
 
 bool DriverUIAccess::OpenLatestRenderDocCapture(const Driver& driver)
@@ -3095,6 +3168,154 @@ UI::UiTextureId DriverUIAccess::RegisterUiTextureView(
     return driver.m_impl->uiTextureRegistry.RegisterTextureView(textureView, synchronizationScope);
 }
 
+uint64_t DriverUIAccess::RequestUiRgba8TextureUpload(
+    Driver& driver,
+    Rgba8TextureUploadRequest request)
+{
+    if (driver.m_impl == nullptr ||
+        request.width == 0u ||
+        request.height == 0u ||
+        request.rgbaPixels.empty())
+    {
+        return 0u;
+    }
+
+    const size_t expectedBytes =
+        static_cast<size_t>(request.width) *
+        static_cast<size_t>(request.height) *
+        4u;
+    if (request.rgbaPixels.size() < expectedBytes)
+        return 0u;
+
+    std::lock_guard lock(driver.m_impl->pendingUiRgba8TextureUploadMutex);
+    const uint64_t requestId = driver.m_impl->nextUiRgba8TextureUploadRequestId++;
+    if (driver.m_impl->nextUiRgba8TextureUploadRequestId == 0u)
+        driver.m_impl->nextUiRgba8TextureUploadRequestId = 1u;
+
+    driver.m_impl->pendingUiRgba8TextureUploads.push_back({
+        requestId,
+        request.width,
+        request.height,
+        std::move(request.rgbaPixels),
+        std::move(request.debugName)
+    });
+    Detail::NotifyThreadedWorkers(*driver.m_impl);
+    return requestId;
+}
+
+DriverUIAccess::Rgba8TextureUploadResult DriverUIAccess::ConsumeUiRgba8TextureUploadResult(
+    Driver& driver,
+    const uint64_t requestId)
+{
+    Rgba8TextureUploadResult result;
+    if (driver.m_impl == nullptr || requestId == 0u)
+        return result;
+
+    std::lock_guard lock(driver.m_impl->pendingUiRgba8TextureUploadMutex);
+    auto found = driver.m_impl->completedUiRgba8TextureUploads.find(requestId);
+    if (found == driver.m_impl->completedUiRgba8TextureUploads.end())
+        return result;
+
+    result.ready = true;
+    result.success = found->second.success;
+    result.texture = std::move(found->second.texture);
+    result.textureView = std::move(found->second.textureView);
+    result.width = found->second.width;
+    result.height = found->second.height;
+    result.diagnostic = std::move(found->second.diagnostic);
+    driver.m_impl->completedUiRgba8TextureUploads.erase(found);
+    return result;
+}
+
+void DriverUIAccess::CancelUiRgba8TextureUpload(
+    Driver& driver,
+    const uint64_t requestId)
+{
+    if (driver.m_impl == nullptr || requestId == 0u)
+        return;
+
+    std::lock_guard lock(driver.m_impl->pendingUiRgba8TextureUploadMutex);
+    const size_t pendingCountBefore = driver.m_impl->pendingUiRgba8TextureUploads.size();
+    driver.m_impl->pendingUiRgba8TextureUploads.erase(
+        std::remove_if(
+            driver.m_impl->pendingUiRgba8TextureUploads.begin(),
+            driver.m_impl->pendingUiRgba8TextureUploads.end(),
+            [requestId](const DriverImpl::PendingUiRgba8TextureUpload& upload)
+            {
+                return upload.requestId == requestId;
+            }),
+        driver.m_impl->pendingUiRgba8TextureUploads.end());
+    const bool removedPending =
+        driver.m_impl->pendingUiRgba8TextureUploads.size() != pendingCountBefore;
+    const bool removedCompleted =
+        driver.m_impl->completedUiRgba8TextureUploads.erase(requestId) != 0u;
+    if (!removedPending && !removedCompleted)
+        driver.m_impl->canceledUiRgba8TextureUploadRequestIds.insert(requestId);
+}
+
+uint64_t DriverResourceAccess::RequestMeshRuntimeUpload(
+    Driver& driver,
+    MeshRuntimeUploadRequest request)
+{
+    if (driver.m_impl == nullptr || request.vertices.empty())
+        return 0u;
+
+    std::lock_guard lock(driver.m_impl->pendingMeshRuntimeUploadMutex);
+    const uint64_t requestId = driver.m_impl->nextMeshRuntimeUploadRequestId++;
+    if (driver.m_impl->nextMeshRuntimeUploadRequestId == 0u)
+        driver.m_impl->nextMeshRuntimeUploadRequestId = 1u;
+    driver.m_impl->pendingMeshRuntimeUploads.push_back({ requestId, std::move(request) });
+    Detail::NotifyThreadedWorkers(*driver.m_impl);
+    return requestId;
+}
+
+MeshRuntimeUploadResult DriverResourceAccess::ConsumeMeshRuntimeUploadResult(
+    Driver& driver,
+    const uint64_t requestId)
+{
+    MeshRuntimeUploadResult result;
+    if (driver.m_impl == nullptr || requestId == 0u)
+        return result;
+
+    std::lock_guard lock(driver.m_impl->pendingMeshRuntimeUploadMutex);
+    auto found = driver.m_impl->completedMeshRuntimeUploads.find(requestId);
+    if (found == driver.m_impl->completedMeshRuntimeUploads.end())
+        return result;
+
+    result.ready = true;
+    result.success = found->second.success;
+    result.mesh = std::move(found->second.mesh);
+    result.diagnostic = std::move(found->second.diagnostic);
+    driver.m_impl->completedMeshRuntimeUploads.erase(found);
+    return result;
+}
+
+void DriverResourceAccess::CancelMeshRuntimeUpload(
+    Driver& driver,
+    const uint64_t requestId)
+{
+    if (driver.m_impl == nullptr || requestId == 0u)
+        return;
+
+    std::lock_guard lock(driver.m_impl->pendingMeshRuntimeUploadMutex);
+    const auto pendingCountBefore = driver.m_impl->pendingMeshRuntimeUploads.size();
+    driver.m_impl->pendingMeshRuntimeUploads.erase(
+        std::remove_if(
+            driver.m_impl->pendingMeshRuntimeUploads.begin(),
+            driver.m_impl->pendingMeshRuntimeUploads.end(),
+            [requestId](const DriverImpl::PendingMeshRuntimeUpload& upload)
+            {
+                return upload.requestId == requestId;
+            }),
+        driver.m_impl->pendingMeshRuntimeUploads.end());
+    const bool removedPending =
+        driver.m_impl->pendingMeshRuntimeUploads.size() != pendingCountBefore;
+    const bool removedCompleted =
+        driver.m_impl->completedMeshRuntimeUploads.erase(requestId) != 0u;
+    if (!removedPending && !removedCompleted)
+        driver.m_impl->canceledMeshRuntimeUploadRequestIds.insert(requestId);
+}
+
 void DriverUIAccess::ReleaseUiTextureView(
     Driver& driver,
     const std::shared_ptr<RHI::RHITextureView>& textureView)
@@ -3276,6 +3497,14 @@ DriverImpl* DriverTestAccess::GetImplForTesting(Driver& driver)
 void DriverTestAccess::ShutdownRhiResourcesForTesting(Driver& driver)
 {
     driver.ShutdownRhiResources();
+}
+
+size_t DriverTestAccess::GetPendingMeshRuntimeUploadCount(const Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return 0u;
+    std::lock_guard lock(driver.m_impl->pendingMeshRuntimeUploadMutex);
+    return driver.m_impl->pendingMeshRuntimeUploads.size();
 }
 #endif
 

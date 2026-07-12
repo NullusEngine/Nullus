@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace NLS::Engine::Rendering
 {
@@ -37,6 +38,19 @@ namespace NLS::Engine::Rendering
                 return 0.0f;
 
             return Clamp01((depth - nearPlane) / (farPlane - nearPlane)) * static_cast<float>(gridSizeZ - 1);
+        }
+
+        bool TryMultiply(uint64_t lhs, uint64_t rhs, uint64_t& out)
+        {
+            if (lhs != 0u && rhs > (std::numeric_limits<uint64_t>::max)() / lhs)
+                return false;
+            out = lhs * rhs;
+            return true;
+        }
+
+        bool IsWithinElementBudget(uint64_t value, uint64_t maxElementCount)
+        {
+            return maxElementCount == 0u || value <= maxElementCount;
         }
 
         inline bool IsGlobalLight(const NLS::Render::Entities::Light& light)
@@ -150,6 +164,51 @@ namespace NLS::Engine::Rendering
             std::max(1u, (renderHeight + pixelSize - 1u) / pixelSize),
             std::max(1u, settings.gridSizeZ)
         };
+    }
+
+    bool TryCalculateLightGridBufferElementCounts(
+        const ClusteredShadingSettings& settings,
+        const LightGridDimensions& dimensions,
+        const uint32_t lightLinkStride,
+        const uint32_t numCulledLightsGridStride,
+        const uint64_t maxElementCount,
+        uint64_t& outClusterCount,
+        uint64_t& outCulledLightLinksCount,
+        uint64_t& outNumCulledLightsGridCount,
+        uint64_t& outCulledLightDataGridCount)
+    {
+        outClusterCount = 0u;
+        outCulledLightLinksCount = 0u;
+        outNumCulledLightsGridCount = 0u;
+        outCulledLightDataGridCount = 0u;
+
+        uint64_t xy = 0u;
+        uint64_t clusterCount = 0u;
+        if (!TryMultiply(dimensions.x, dimensions.y, xy) ||
+            !TryMultiply(xy, dimensions.z, clusterCount) ||
+            !IsWithinElementBudget(clusterCount, maxElementCount))
+        {
+            return false;
+        }
+
+        uint64_t culledLightLinksCount = 0u;
+        uint64_t culledLightDataGridCount = 0u;
+        uint64_t numCulledLightsGridCount = 0u;
+        if (!TryMultiply(clusterCount, settings.maxLightsPerCluster, culledLightDataGridCount) ||
+            !TryMultiply(culledLightDataGridCount, lightLinkStride, culledLightLinksCount) ||
+            !TryMultiply(clusterCount, numCulledLightsGridStride, numCulledLightsGridCount) ||
+            !IsWithinElementBudget(culledLightLinksCount, maxElementCount) ||
+            !IsWithinElementBudget(numCulledLightsGridCount, maxElementCount) ||
+            !IsWithinElementBudget(culledLightDataGridCount, maxElementCount))
+        {
+            return false;
+        }
+
+        outClusterCount = clusterCount;
+        outCulledLightLinksCount = culledLightLinksCount;
+        outNumCulledLightsGridCount = numCulledLightsGridCount;
+        outCulledLightDataGridCount = culledLightDataGridCount;
+        return true;
     }
 
     LightGridDimensions CalculateLightGridDispatchGroups(

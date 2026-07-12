@@ -156,10 +156,16 @@ private:
             settings.editorValidationSelectGameObject = m_diagnosticsOverride->editorValidationSelectGameObject;
         if (!m_diagnosticsOverride->editorValidationCreateAsset.empty())
             settings.editorValidationCreateAsset = m_diagnosticsOverride->editorValidationCreateAsset;
+        if (!m_diagnosticsOverride->editorValidationAssetBrowserFolder.empty())
+            settings.editorValidationAssetBrowserFolder = m_diagnosticsOverride->editorValidationAssetBrowserFolder;
         if (!m_diagnosticsOverride->editorValidationSceneReadbackOutput.empty())
             settings.editorValidationSceneReadbackOutput = m_diagnosticsOverride->editorValidationSceneReadbackOutput;
         if (!m_diagnosticsOverride->editorValidationSceneReadbackSummary.empty())
             settings.editorValidationSceneReadbackSummary = m_diagnosticsOverride->editorValidationSceneReadbackSummary;
+        if (!m_diagnosticsOverride->editorValidationPrefabDragProxySummaryOutput.empty())
+            settings.editorValidationPrefabDragProxySummaryOutput = m_diagnosticsOverride->editorValidationPrefabDragProxySummaryOutput;
+        if (!m_diagnosticsOverride->editorThumbnailTelemetrySummaryOutput.empty())
+            settings.editorThumbnailTelemetrySummaryOutput = m_diagnosticsOverride->editorThumbnailTelemetrySummaryOutput;
         if (m_diagnosticsOverride->logRenderDrawPath)
             settings.logRenderDrawPath = true;
         if (m_diagnosticsOverride->dx12LogFrameFlow)

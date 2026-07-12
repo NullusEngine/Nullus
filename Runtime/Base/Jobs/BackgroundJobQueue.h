@@ -15,6 +15,7 @@ namespace NLS::Base::Jobs
         JobFunction cancelFunction = nullptr;
         void* cancelUserData = nullptr;
         JobHandle dependency;
+        JobPriority priority = JobPriority::Normal;
         const char* debugName = nullptr;
     };
 
@@ -33,6 +34,7 @@ namespace NLS::Base::Jobs
     namespace Internal
     {
         NLS_BASE_API bool StartBackgroundJobQueue(uint32_t workerCount);
+        NLS_BASE_API uint32_t GetBackgroundJobWorkerCount();
         NLS_BASE_API void StopAcceptingBackgroundJobQueue();
         NLS_BASE_API void ShutdownBackgroundJobQueue(JobSystemShutdownMode mode);
         NLS_BASE_API bool IsBackgroundJobHandle(JobHandle handle);

@@ -426,6 +426,13 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
         return;
     }
 
+    if (!m_renderer.HasDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>() ||
+        !m_renderer.HasDescriptor<DebugSceneRenderer::DebugSceneDescriptor>())
+    {
+        ResetPickingFrameState();
+        return;
+    }
+
 	auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
     auto& debugSceneDescriptor = m_renderer.GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>();
     if (!debugSceneDescriptor.requestPickingFrame)

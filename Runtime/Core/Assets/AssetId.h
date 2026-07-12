@@ -38,7 +38,7 @@ public:
     friend bool operator!=(const AssetId& lhs, const AssetId& rhs) = default;
     friend bool operator<(const AssetId& lhs, const AssetId& rhs)
     {
-        return lhs.m_guid < rhs.m_guid;
+        return lhs.m_guid.GetBytes() < rhs.m_guid.GetBytes();
     }
 
 private:

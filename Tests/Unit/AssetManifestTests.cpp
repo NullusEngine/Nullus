@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Assets/AssetId.h"
+#include "Assets/AssetMeta.h"
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
 #include "Engine/Assets/PrefabAsset.h"
@@ -10,6 +11,8 @@
 #include "Serialize/ObjectGraphDocument.h"
 
 #include <lmdb.h>
+
+#include <array>
 
 namespace
 {
@@ -237,6 +240,27 @@ TEST(AssetManifestTests, ArtifactStorageFileNamesAreExtensionlessHexContentNames
     EXPECT_FALSE(NLS::Core::Assets::IsContentStorageArtifactPath("Materials/" + name));
     EXPECT_FALSE(NLS::Core::Assets::IsContentStorageArtifactPath("Library/Other/" + name));
     EXPECT_FALSE(NLS::Core::Assets::IsArtifactStorageFileName("materials/" + name));
+}
+
+TEST(AssetManifestTests, ShaderImporterVersionInvalidatesDefaultVariantOnlyReflectionArtifacts)
+{
+    EXPECT_GE(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::Shader),
+        2u);
+}
+
+TEST(AssetManifestTests, ArtifactStorageFileNamesMatchSha256TestVectors)
+{
+    const std::array<uint8_t, 3u> abc { 'a', 'b', 'c' };
+
+    EXPECT_EQ(
+        NLS::Core::Assets::BuildArtifactStorageFileName(""),
+        "e3b0c44298fc1c149afbf4c8996fb924"
+        "27ae41e4649b934ca495991b7852b855");
+    EXPECT_EQ(
+        NLS::Core::Assets::BuildArtifactStorageFileName(abc.data(), abc.size()),
+        "ba7816bf8f01cfea414140de5dae2223"
+        "b00361a396177a9cb410ff61f20015ad");
 }
 
 TEST(AssetManifestTests, PortableContentArtifactPathCanBeDerivedFromPhysicalLibraryPath)

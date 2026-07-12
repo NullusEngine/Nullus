@@ -28,14 +28,115 @@ enum class ArtifactLoadTelemetryStage : uint8_t
     LifetimeAcquire,
     LifetimeRelease,
     LifetimeTrimSkip,
-    Eviction
+    Eviction,
+    PrefabVisiblePrewarmSchedule,
+    PrefabVisiblePrewarmLoad,
+    PrefabUnifiedSharedLoad,
+    PrefabRendererTaskBuild,
+    PrefabRendererResolutionStep,
+    ThumbnailGpuPreviewRender,
+    ThumbnailGpuPreviewPrepareResources,
+    ThumbnailGpuPreviewPumpDependencies,
+    ThumbnailGpuPreviewPumpMeshDependencies,
+    ThumbnailGpuPreviewPumpMaterialDependencies,
+    ThumbnailGpuPreviewPumpTextureDependencies,
+    ThumbnailGpuPreviewPumpMaterialPathBuild,
+    ThumbnailGpuPreviewPumpMaterialPromote,
+    ThumbnailGpuPreviewPumpMaterialReadyScan,
+    ThumbnailGpuPreviewPumpMaterialFutureGet,
+    ThumbnailGpuPreviewPumpMaterialRuntimeCreate,
+    ThumbnailGpuPreviewPumpMaterialShaderPassResolve,
+    ThumbnailGpuPreviewPumpMaterialShaderPassLoad,
+    ThumbnailGpuPreviewBackgroundMaterialShaderPassLoad,
+    ThumbnailGpuPreviewPumpMaterialRegister,
+    ThumbnailGpuPreviewRecord,
+    ThumbnailGpuPreviewSubmit,
+    ThumbnailGpuPreviewDrain,
+    ThumbnailGpuPreviewCleanup,
+    ThumbnailGpuPreviewReadback,
+    ThumbnailGpuPreviewPollReadback,
+    ThumbnailTextureDecode,
+    ThumbnailTextureUploadEnqueue,
+    ThumbnailTextureUpload,
+    ThumbnailTextureUploadPreparePixels,
+    ThumbnailTextureUploadCreate,
+    ThumbnailTextureUploadCreateView,
+    ThumbnailTextureUploadSubmit,
+    ThumbnailTextureUploadPublish,
+    ThumbnailTextureUploadResolveUiId,
+    ThumbnailUiDraw,
+    ThumbnailUiDrawGridVisibleRows,
+    ThumbnailUiDrawGridItemInteractions,
+    ThumbnailUiDrawGridItemThumbnail,
+    ThumbnailUiDrawGridItemLabel,
+    ThumbnailUiDrawVisibleSet,
+    ThumbnailUiDrawVisibleSetHash,
+    ThumbnailUiDrawVisibleSetApply,
+    ThumbnailUiDrawVisibleSetHotCacheFlush,
+    ThumbnailUiDrawGenerationScope,
+    ThumbnailUiDrawGenerationScopeSelectItems,
+    ThumbnailUiDrawGenerationScopeBuildKey,
+    ThumbnailUiDrawGenerationScopeItemKey,
+    ThumbnailUiDrawGenerationScopeResultLookup,
+    ThumbnailUiDrawGenerationScopeBuildRequest,
+    ThumbnailUiDrawGenerationScopeBuildRequestValidate,
+    ThumbnailUiDrawGenerationScopeBuildRequestMetaId,
+    ThumbnailUiDrawGenerationScopeBuildRequestManifestLookup,
+    ThumbnailUiDrawGenerationScopeBuildRequestItemIdentity,
+    ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshness,
+    ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessResolve,
+    ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessFileStamp,
+    ThumbnailUiDrawGenerationScopeBuildRequestSourceFreshnessMetaStamp,
+    ThumbnailUiDrawGenerationScopeBuildRequestArtifactFreshness,
+    ThumbnailUiDrawGenerationScopeBuildRequestDependencyStamp,
+    ThumbnailUiDrawGenerationScopeRequestPreview,
+    ThumbnailServiceRequestStableLookup,
+    ThumbnailServiceRequestCacheEvaluate,
+    ThumbnailServiceRequestQueue,
+    ThumbnailServiceGpuPreviewQueueDecision,
+    ThumbnailTexturePump,
+    ThumbnailTexturePumpConsumeCompleted,
+    ThumbnailTexturePumpPendingUploadPoll,
+    ThumbnailTexturePumpPendingUploadConsumeResult,
+    ThumbnailTexturePumpPendingUploadResolveUiId,
+    ThumbnailTexturePumpPendingUploadWrapTexture,
+    ThumbnailTexturePumpPendingUploadCachePublish,
+    ThumbnailTexturePumpReadyDecodePoll,
+    ThumbnailTexturePumpReadyDecodeLoad,
+    ThumbnailTexturePumpStartDecodes,
+    ThumbnailTexturePumpBuildResidentSet,
+    ThumbnailTexturePumpSelectDecodeCandidates,
+    ThumbnailTexturePumpScheduleDecodeJobs,
+    ThumbnailTextureUploadDeferred,
+    ThumbnailUiPostDrawPump,
+    ThumbnailGpuPreviewPrepareMaterialResources,
+    ThumbnailGpuPreviewPrepareSceneObjects,
+    ThumbnailUiPostDrawPumpConsumeCompleted,
+    ThumbnailUiPostDrawPumpCreatePreviewRenderer,
+    ThumbnailUiPostDrawPumpStartLightGpu,
+    ThumbnailUiPostDrawPumpStartHeavyGpu,
+    ThumbnailUiPostDrawPumpStartBackground,
+    ThumbnailCacheEvaluateResolveEntry,
+    ThumbnailCacheEvaluateResolveEntryBuild,
+    ThumbnailCacheEvaluateResolveEntryContainmentKey,
+    ThumbnailCacheEvaluateResolveEntryContainmentStamp,
+    ThumbnailCacheEvaluateResolveEntryContainmentValidate,
+    ThumbnailCacheEvaluateMetadataStat,
+    ThumbnailCacheEvaluateMetadataLoad,
+    ThumbnailCacheEvaluateFreshness,
+    ThumbnailCacheEvaluateImageStat,
+    ThumbnailCacheEvaluateImageValidate
 };
 
 enum class ArtifactLoadBudgetKind : uint8_t
 {
     WarmTexturedPreviewFirstVisible,
     MouseReleaseUiThreadWork,
-    HotCacheLookup
+    HotCacheLookup,
+    PrefabVisiblePrewarm,
+    PrefabUnifiedSharedLoad,
+    PrefabRendererTaskBuild,
+    PrefabRendererResolutionStep
 };
 
 struct ArtifactLoadTelemetryRecord
@@ -68,25 +169,32 @@ struct ArtifactLoadBudget
     static constexpr int kWarmTexturedPreviewFirstVisibleBudgetMs = 200;
     static constexpr int kMouseReleaseFrameBudgetMs = 17;
     static constexpr int kHotCacheLookupBudgetMs = 10;
+    static constexpr int kPrefabVisiblePrewarmBudgetMs = 250;
+    static constexpr int kPrefabUnifiedSharedLoadBudgetMs = 50;
+    static constexpr int kPrefabRendererTaskBuildBudgetMs = 5;
+    static constexpr int kPrefabRendererResolutionStepBudgetMs = 5;
 };
 
 namespace Detail
 {
 #if !defined(NDEBUG) || defined(NLS_ENABLE_TEST_HOOKS) || defined(NLS_ENABLE_ARTIFACT_LOAD_TELEMETRY)
-inline constexpr bool kArtifactLoadTelemetryEnabled = true;
+inline constexpr bool kArtifactLoadTelemetryEnabledByDefault = true;
 #else
-inline constexpr bool kArtifactLoadTelemetryEnabled = false;
+inline constexpr bool kArtifactLoadTelemetryEnabledByDefault = false;
 #endif
 
-inline constexpr size_t kMaxArtifactLoadTelemetryRecords = 2048u;
+inline constexpr size_t kMaxArtifactLoadTelemetryRecords = 16384u;
 inline constexpr size_t kMaxArtifactLoadBudgetMissRecords = 256u;
 }
 
+NLS_CORE_API void SetArtifactLoadTelemetryEnabled(bool enabled);
+NLS_CORE_API bool IsArtifactLoadTelemetryEnabled();
 NLS_CORE_API void RecordArtifactLoadTelemetry(const ArtifactLoadTelemetryRecord& record);
 NLS_CORE_API std::vector<ArtifactLoadTelemetryRecord> SnapshotArtifactLoadTelemetry();
 NLS_CORE_API std::vector<ArtifactLoadTelemetryStageSummary> SummarizeArtifactLoadTelemetry();
 NLS_CORE_API std::vector<ArtifactLoadBudgetMissRecord> SnapshotArtifactLoadBudgetMisses();
 NLS_CORE_API void ClearArtifactLoadTelemetry();
+NLS_CORE_API const char* ArtifactLoadTelemetryStageName(ArtifactLoadTelemetryStage stage);
 
 inline bool BudgetExceeded(const std::chrono::milliseconds elapsed, const int budgetMs)
 {
@@ -103,6 +211,14 @@ inline int BudgetMilliseconds(const ArtifactLoadBudgetKind kind)
         return ArtifactLoadBudget::kMouseReleaseFrameBudgetMs;
     case ArtifactLoadBudgetKind::HotCacheLookup:
         return ArtifactLoadBudget::kHotCacheLookupBudgetMs;
+    case ArtifactLoadBudgetKind::PrefabVisiblePrewarm:
+        return ArtifactLoadBudget::kPrefabVisiblePrewarmBudgetMs;
+    case ArtifactLoadBudgetKind::PrefabUnifiedSharedLoad:
+        return ArtifactLoadBudget::kPrefabUnifiedSharedLoadBudgetMs;
+    case ArtifactLoadBudgetKind::PrefabRendererTaskBuild:
+        return ArtifactLoadBudget::kPrefabRendererTaskBuildBudgetMs;
+    case ArtifactLoadBudgetKind::PrefabRendererResolutionStep:
+        return ArtifactLoadBudget::kPrefabRendererResolutionStepBudgetMs;
     }
     return ArtifactLoadBudget::kWarmTexturedPreviewFirstVisibleBudgetMs;
 }

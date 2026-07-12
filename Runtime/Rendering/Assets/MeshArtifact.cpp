@@ -345,6 +345,34 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
     };
 }
 
+bool IsMeshArtifactFile(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return false;
+
+    std::array<uint8_t, kNativeArtifactHeaderSize> headerBytes {};
+    input.read(
+        reinterpret_cast<char*>(headerBytes.data()),
+        static_cast<std::streamsize>(headerBytes.size()));
+    if (input.gcount() != static_cast<std::streamsize>(headerBytes.size()))
+        return false;
+
+    NativeArtifactHeaderPreview header;
+    if (!ReadNativeArtifactHeaderPreview(headerBytes, header) ||
+        header.metadataSize > std::numeric_limits<uint64_t>::max() - kNativeArtifactHeaderSize ||
+        header.payloadOffset != kNativeArtifactHeaderSize + header.metadataSize)
+    {
+        return false;
+    }
+
+    std::error_code error;
+    const auto fileSize = std::filesystem::file_size(path, error);
+    return !error &&
+        header.payloadOffset <= fileSize &&
+        header.payloadSize == fileSize - header.payloadOffset;
+}
+
 std::optional<MeshArtifactData> LoadMeshArtifactPreviewSample(
     const std::filesystem::path& path,
     const uint32_t maxVertices,

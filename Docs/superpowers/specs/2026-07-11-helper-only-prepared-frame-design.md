@@ -14,10 +14,11 @@ empty package and logging the misleading warning once per frame.
 
 ## Design
 
-Keep the no-scene fast path only for frames that have no deferred scene execution and no helper or
-appended render work. A frame with helper draw commands or appended pass metadata/inputs must use
-the prepared deferred compilation path, because that path constructs and validates the complete
-pass-input set, including the generic helper pass.
+Keep the no-scene fast path for frames without deferred scene execution. Before compiling its
+metadata, materialize the generic aggregate helper pass input from the snapshot-owned recorded draw
+commands and append it beside any explicitly prepared helper inputs. Reuse the deferred frame-graph
+helper slicing logic as the single source of truth, but do not force helper-only frames through the
+GBuffer-dependent prepared deferred path.
 
 The fix stays within the existing prepared-builder boundary. It does not change slot ownership,
 worker scheduling, render-thread synchronization, or backend-specific RHI behavior.
@@ -31,10 +32,10 @@ Unknown exceptions retain a distinct generic diagnostic.
 
 ## Tests
 
-Add a focused regression test that builds a threaded prepared frame containing helper-only work and
-asserts that builder resolution succeeds with the helper pass and draw command preserved. Run the
-test against the current implementation first and confirm it fails because frame-graph compilation
-rejects the incomplete pass inputs.
+Add a focused regression test that builds the aggregate input for a helper-only package and asserts
+that its helper pass and recorded draw command are preserved. Keep a routing contract test proving
+the no-scene builder calls the shared helper-input constructor. Run the tests against the current
+implementation first and confirm they fail because that constructor is not exposed or called.
 
 Keep the existing empty-scene coverage to prove the fast path remains valid. Run the relevant
 threaded rendering and editor debug-renderer tests after the fix.

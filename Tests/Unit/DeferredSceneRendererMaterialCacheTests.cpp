@@ -307,19 +307,23 @@ namespace
             NLS::Render::ShaderCompiler::ShaderStage::Pixel,
             NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
             0u,
-            64u,
+            96u,
             {
                 {"u_Diffuse", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 0u, 16u, 1u},
                 {"u_DiffuseMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, 16u, 0u, 1u},
                 {"u_Albedo", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 32u, 16u, 1u},
-                {"u_AlbedoMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, 48u, 0u, 1u}
+                {"u_AlbedoMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, 48u, 0u, 1u},
+                {"u_MetallicMapChannel", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 64u, 16u, 1u},
+                {"u_RoughnessMapChannel", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 80u, 16u, 1u}
             }
         });
         for (const auto& [name, type, kind, offset, size] : {
             std::tuple{"u_Diffuse", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 0u, 16u},
             std::tuple{"u_DiffuseMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 16u, 0u},
             std::tuple{"u_Albedo", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 32u, 16u},
-            std::tuple{"u_AlbedoMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 48u, 0u}
+            std::tuple{"u_AlbedoMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 48u, 0u},
+            std::tuple{"u_MetallicMapChannel", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 64u, 16u},
+            std::tuple{"u_RoughnessMapChannel", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 80u, 16u}
         })
         {
             reflection.properties.push_back({
@@ -352,7 +356,9 @@ namespace
                 {"_BaseColor", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 0u, 16u, 1u},
                 {"_Metallic", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, 16u, 4u, 1u},
                 {"_Roughness", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, 20u, 4u, 1u},
-                {"_AmbientOcclusion", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, 24u, 4u, 1u}
+                {"_AmbientOcclusion", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, 24u, 4u, 1u},
+                {"_MetallicMapChannel", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 32u, 16u, 1u},
+                {"_RoughnessMapChannel", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 48u, 16u, 1u}
             }
         });
         for (const auto& [name, type, kind, offset, size, cbuffer] : {
@@ -360,6 +366,8 @@ namespace
             std::tuple{"_Metallic", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, NLS::Render::Resources::ShaderResourceKind::Value, 16u, 4u, "MaterialProperties"},
             std::tuple{"_Roughness", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, NLS::Render::Resources::ShaderResourceKind::Value, 20u, 4u, "MaterialProperties"},
             std::tuple{"_AmbientOcclusion", NLS::Render::Resources::UniformType::UNIFORM_FLOAT, NLS::Render::Resources::ShaderResourceKind::Value, 24u, 4u, "MaterialProperties"},
+            std::tuple{"_MetallicMapChannel", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 32u, 16u, "MaterialProperties"},
+            std::tuple{"_RoughnessMapChannel", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 48u, 16u, "MaterialProperties"},
             std::tuple{"_BaseMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 0u, 0u, ""},
             std::tuple{"_NormalMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 1u, 0u, ""},
             std::tuple{"_MetallicMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 2u, 0u, ""},
@@ -1169,6 +1177,23 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
         ASSERT_EQ(textureValue->type(), typeid(NLS::Render::Resources::Texture2D*)) << textureName;
     }
 
+    const auto* enableNormalMappingValue = gbuffer.GetParameterBlock().TryGet("u_EnableNormalMapping");
+    ASSERT_NE(enableNormalMappingValue, nullptr);
+    ASSERT_EQ(enableNormalMappingValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*enableNormalMappingValue), 0.0f);
+
+    for (const char* channelName : {"u_MetallicMapChannel", "u_RoughnessMapChannel"})
+    {
+        const auto* channelValue = gbuffer.GetParameterBlock().TryGet(channelName);
+        ASSERT_NE(channelValue, nullptr) << channelName;
+        ASSERT_EQ(channelValue->type(), typeid(NLS::Maths::Vector4)) << channelName;
+        const auto& channel = std::any_cast<const NLS::Maths::Vector4&>(*channelValue);
+        EXPECT_FLOAT_EQ(channel.x, 1.0f) << channelName;
+        EXPECT_FLOAT_EQ(channel.y, 0.0f) << channelName;
+        EXPECT_FLOAT_EQ(channel.z, 0.0f) << channelName;
+        EXPECT_FLOAT_EQ(channel.w, 0.0f) << channelName;
+    }
+
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(diffuseTexture));
     NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
@@ -1213,6 +1238,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, MapsShaderLabStandardPBRParameters
     source.Set<float>("_Metallic", 0.35f);
     source.Set<float>("_Roughness", 0.65f);
     source.Set<float>("_AmbientOcclusion", 0.75f);
+    source.Set<NLS::Maths::Vector4>("_MetallicMapChannel", { 0.0f, 0.0f, 1.0f, 0.0f });
+    source.Set<NLS::Maths::Vector4>("_RoughnessMapChannel", { 0.0f, 1.0f, 0.0f, 0.0f });
     source.Set<NLS::Render::Resources::Texture2D*>("_NormalMap", normalMap);
     source.Set<NLS::Render::Resources::Texture2D*>("_MetallicMap", metallicMap);
     source.Set<NLS::Render::Resources::Texture2D*>("_RoughnessMap", roughnessMap);
@@ -1260,6 +1287,11 @@ TEST(DeferredSceneRendererMaterialCacheTests, MapsShaderLabStandardPBRParameters
     ASSERT_EQ(normalMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
     EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*normalMapValue), normalMap);
 
+    const auto* enableNormalMappingValue = gbuffer.GetParameterBlock().TryGet("u_EnableNormalMapping");
+    ASSERT_NE(enableNormalMappingValue, nullptr);
+    ASSERT_EQ(enableNormalMappingValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*enableNormalMappingValue), 1.0f);
+
     const auto* metallicMapValue = gbuffer.GetParameterBlock().TryGet("u_MetallicMap");
     ASSERT_NE(metallicMapValue, nullptr);
     ASSERT_EQ(metallicMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
@@ -1270,10 +1302,88 @@ TEST(DeferredSceneRendererMaterialCacheTests, MapsShaderLabStandardPBRParameters
     ASSERT_EQ(roughnessMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
     EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*roughnessMapValue), roughnessMap);
 
+    const auto* metallicMapChannelValue = gbuffer.GetParameterBlock().TryGet("u_MetallicMapChannel");
+    ASSERT_NE(metallicMapChannelValue, nullptr);
+    ASSERT_EQ(metallicMapChannelValue->type(), typeid(NLS::Maths::Vector4));
+    const auto& metallicMapChannel = std::any_cast<const NLS::Maths::Vector4&>(*metallicMapChannelValue);
+    EXPECT_FLOAT_EQ(metallicMapChannel.x, 0.0f);
+    EXPECT_FLOAT_EQ(metallicMapChannel.y, 0.0f);
+    EXPECT_FLOAT_EQ(metallicMapChannel.z, 1.0f);
+    EXPECT_FLOAT_EQ(metallicMapChannel.w, 0.0f);
+
+    const auto* roughnessMapChannelValue = gbuffer.GetParameterBlock().TryGet("u_RoughnessMapChannel");
+    ASSERT_NE(roughnessMapChannelValue, nullptr);
+    ASSERT_EQ(roughnessMapChannelValue->type(), typeid(NLS::Maths::Vector4));
+    const auto& roughnessMapChannel = std::any_cast<const NLS::Maths::Vector4&>(*roughnessMapChannelValue);
+    EXPECT_FLOAT_EQ(roughnessMapChannel.x, 0.0f);
+    EXPECT_FLOAT_EQ(roughnessMapChannel.y, 1.0f);
+    EXPECT_FLOAT_EQ(roughnessMapChannel.z, 0.0f);
+    EXPECT_FLOAT_EQ(roughnessMapChannel.w, 0.0f);
+
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(baseMap));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(normalMap));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(metallicMap));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(roughnessMap));
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(standardShader));
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, EnablesDeferredNormalMappingAfterNormalTextureResourceLoads)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    auto* standardShader = CreateTestShader(
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader",
+        MakeShaderLabStandardPbrShaderReflection());
+    ASSERT_NE(standardShader, nullptr);
+    auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(gbufferShader, nullptr);
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, gbufferShader);
+
+    constexpr const char* normalTexturePath =
+        "Library/Artifacts/12/123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    NLS::Render::Resources::Material source(standardShader);
+    source.SetTextureResourcePath("_NormalMap", normalTexturePath);
+
+    auto& unloadedGBuffer = SyncOneDeferredCacheMaterial(renderer, source);
+    EXPECT_EQ(unloadedGBuffer.GetTextureResourcePath("u_NormalMap"), normalTexturePath);
+    const auto* unloadedNormalMapValue = unloadedGBuffer.GetParameterBlock().TryGet("u_NormalMap");
+    ASSERT_NE(unloadedNormalMapValue, nullptr);
+    ASSERT_EQ(unloadedNormalMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*unloadedNormalMapValue), nullptr);
+
+    const auto* unloadedEnableValue = unloadedGBuffer.GetParameterBlock().TryGet("u_EnableNormalMapping");
+    ASSERT_NE(unloadedEnableValue, nullptr);
+    ASSERT_EQ(unloadedEnableValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*unloadedEnableValue), 0.0f);
+
+    auto* normalMap = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(128, 128, 255, 255);
+    ASSERT_NE(normalMap, nullptr);
+    source.SetRawParameter("_NormalMap", normalMap);
+
+    auto& loadedGBuffer = SyncOneDeferredCacheMaterial(renderer, source);
+    const auto* loadedNormalMapValue = loadedGBuffer.GetParameterBlock().TryGet("u_NormalMap");
+    ASSERT_NE(loadedNormalMapValue, nullptr);
+    ASSERT_EQ(loadedNormalMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*loadedNormalMapValue), normalMap);
+
+    const auto* loadedEnableValue = loadedGBuffer.GetParameterBlock().TryGet("u_EnableNormalMapping");
+    ASSERT_NE(loadedEnableValue, nullptr);
+    ASSERT_EQ(loadedEnableValue->type(), typeid(float));
+    EXPECT_FLOAT_EQ(std::any_cast<float>(*loadedEnableValue), 1.0f);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(normalMap));
     NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(standardShader));

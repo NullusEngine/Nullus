@@ -40,7 +40,6 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     const NLS::Core::Assets::ArtifactType artifactType,
     const bool generatedModelPrefab,
     const bool imported,
-    const bool previewPrefabReady,
     const bool generatedBrowserSubAsset)
 {
     EditorAssetDragPayload payload;
@@ -50,7 +49,7 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     payload.artifactType = static_cast<uint32_t>(artifactType);
     payload.generatedModelPrefab = generatedModelPrefab ? 1u : 0u;
     payload.imported = imported ? 1u : 0u;
-    payload.previewPrefabReady = previewPrefabReady ? 1u : 0u;
+    payload.reserved = 0u;
     payload.generatedBrowserSubAsset = generatedBrowserSubAsset ? 1u : 0u;
     return payload;
 }
@@ -63,7 +62,6 @@ EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
     const NLS::Core::Assets::ArtifactType artifactType,
     const bool generatedModelPrefab,
     const bool imported,
-    const bool previewPrefabReady,
     const bool generatedBrowserSubAsset)
 {
     return MakeEditorAssetDragPayload(
@@ -73,7 +71,6 @@ EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
         artifactType,
         generatedModelPrefab,
         imported,
-        previewPrefabReady,
         generatedBrowserSubAsset);
 }
 #endif
@@ -138,11 +135,6 @@ NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const Edit
         return ArtifactType::Unknown;
     }
     return ArtifactType::Unknown;
-}
-
-bool IsEditorAssetDragPayloadPreviewPrefabReady(const EditorAssetDragPayload& payload)
-{
-    return payload.previewPrefabReady != 0u;
 }
 
 bool IsEditorAssetDragPayloadGeneratedBrowserSubAsset(const EditorAssetDragPayload& payload)

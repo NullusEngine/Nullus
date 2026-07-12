@@ -94,6 +94,7 @@ const char* ToMetadataString(const AssetDependencyKind kind)
     case AssetDependencyKind::PrefabOverrideTarget: return "prefab-override-target";
     case AssetDependencyKind::RuntimeComponentCapability: return "runtime-component-capability";
     case AssetDependencyKind::RawPackageFile: return "raw-package-file";
+    case AssetDependencyKind::PrefabValidation: return "prefab-validation";
     }
     return "unknown";
 }
@@ -112,6 +113,7 @@ std::optional<AssetDependencyKind> DependencyKindFromMetadataString(const std::s
     if (value == "prefab-override-target") return AssetDependencyKind::PrefabOverrideTarget;
     if (value == "runtime-component-capability") return AssetDependencyKind::RuntimeComponentCapability;
     if (value == "raw-package-file") return AssetDependencyKind::RawPackageFile;
+    if (value == "prefab-validation") return AssetDependencyKind::PrefabValidation;
     return std::nullopt;
 }
 
@@ -672,6 +674,45 @@ bool IsNativeArtifactContainer(const std::vector<uint8_t>& bytes)
     return ReadUInt32(bytes, offset, magic) && magic == kNativeArtifactMagic;
 }
 
+std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefix(
+    const std::vector<uint8_t>& bytes,
+    const ArtifactType expectedType,
+    const uint32_t expectedSchemaVersion,
+    const size_t prefixSize)
+{
+    NativeArtifactHeader header;
+    if (!ReadHeader(bytes, header) ||
+        static_cast<ArtifactType>(header.artifactType) != expectedType ||
+        header.schemaVersion != expectedSchemaVersion ||
+        header.payloadSize < prefixSize)
+    {
+        return std::nullopt;
+    }
+
+    const auto metadataBegin = bytes.begin() + static_cast<std::ptrdiff_t>(header.headerSize);
+    const auto metadataEnd = metadataBegin + static_cast<std::ptrdiff_t>(header.metadataSize);
+    const std::string metadataText(metadataBegin, metadataEnd);
+    auto metadata = DeserializeMetadata(metadataText);
+    if (!metadata.has_value() ||
+        metadata->artifactType != expectedType ||
+        metadata->schemaVersion != expectedSchemaVersion)
+    {
+        return std::nullopt;
+    }
+
+    NativeArtifactPayloadPrefix result;
+    result.metadata = std::move(*metadata);
+    result.bytes.resize(prefixSize);
+    if (prefixSize > 0u)
+    {
+        const auto payloadBegin = bytes.begin() + static_cast<std::ptrdiff_t>(header.payloadOffset);
+        std::copy(payloadBegin, payloadBegin + static_cast<std::ptrdiff_t>(prefixSize), result.bytes.begin());
+    }
+    result.payloadSize = header.payloadSize;
+    result.payloadOffset = header.payloadOffset;
+    return result;
+}
+
 std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefixFromFile(
     const std::filesystem::path& path,
     const ArtifactType expectedType,
@@ -754,6 +795,99 @@ std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefixFromFi
     }
     result.payloadSize = header.payloadSize;
     result.payloadOffset = header.payloadOffset;
+    return result;
+}
+
+std::optional<NativeArtifactPayloadText> ReadNativeArtifactPayloadTextFromFile(
+    const std::filesystem::path& path,
+    const ArtifactType expectedType,
+    const uint32_t expectedSchemaVersion,
+    const uint64_t maxMetadataBytes)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    std::array<uint8_t, kNativeArtifactHeaderSize> headerBytes {};
+    input.read(
+        reinterpret_cast<char*>(headerBytes.data()),
+        static_cast<std::streamsize>(headerBytes.size()));
+    if (input.gcount() != static_cast<std::streamsize>(headerBytes.size()))
+        return std::nullopt;
+
+    NativeArtifactHeader header;
+    std::vector<uint8_t> headerVector(headerBytes.begin(), headerBytes.end());
+    if (!ReadHeaderPrefix(headerVector, header) ||
+        static_cast<ArtifactType>(header.artifactType) != expectedType ||
+        header.schemaVersion != expectedSchemaVersion ||
+        header.metadataSize > maxMetadataBytes ||
+        header.metadataSize > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
+        header.payloadSize > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        header.payloadSize > static_cast<uint64_t>(std::numeric_limits<std::streamsize>::max()) ||
+        header.payloadOffset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()))
+    {
+        return std::nullopt;
+    }
+
+    std::error_code error;
+    const auto fileSize = std::filesystem::file_size(path, error);
+    if (error ||
+        header.payloadOffset > fileSize ||
+        header.payloadSize > fileSize - header.payloadOffset ||
+        header.payloadOffset != kNativeArtifactHeaderSize + header.metadataSize)
+    {
+        return std::nullopt;
+    }
+
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::NativeArtifactFileRead,
+        {},
+        static_cast<size_t>(fileSize),
+        path.generic_string()
+    });
+
+    std::string metadataText;
+    metadataText.resize(static_cast<size_t>(header.metadataSize));
+    if (header.metadataSize > 0u)
+    {
+        input.read(metadataText.data(), static_cast<std::streamsize>(metadataText.size()));
+        if (input.gcount() != static_cast<std::streamsize>(metadataText.size()))
+            return std::nullopt;
+    }
+
+    auto metadata = DeserializeMetadata(metadataText);
+    if (!metadata.has_value() ||
+        metadata->artifactType != expectedType ||
+        metadata->schemaVersion != expectedSchemaVersion)
+    {
+        return std::nullopt;
+    }
+
+    std::string payload;
+    payload.resize(static_cast<size_t>(header.payloadSize));
+    if (header.payloadSize > 0u)
+    {
+        input.read(payload.data(), static_cast<std::streamsize>(payload.size()));
+        if (input.gcount() != static_cast<std::streamsize>(payload.size()))
+            return std::nullopt;
+    }
+
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::NativeContainerParseHash,
+        {},
+        payload.size(),
+        path.generic_string()
+    });
+
+    const auto* payloadData = reinterpret_cast<const uint8_t*>(payload.data());
+    if (metadata->payloadHash != ComputeNativeArtifactPayloadHash(payloadData, payload.size()))
+        return std::nullopt;
+    if (metadata->dependencyHash != ComputeNativeArtifactDependencyHash(metadata->dependencies))
+        return std::nullopt;
+
+    NativeArtifactPayloadText result;
+    result.metadata = std::move(*metadata);
+    result.payload = std::move(payload);
     return result;
 }
 }

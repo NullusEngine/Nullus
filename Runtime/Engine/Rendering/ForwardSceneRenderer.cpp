@@ -72,13 +72,31 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
+		BeginSceneFrame(p_frameDescriptor, false);
+	}
+
+	void ForwardSceneRenderer::BeginFrameForBackgroundPreview(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
+	{
+		BeginSceneFrame(p_frameDescriptor, true);
+	}
+
+	void ForwardSceneRenderer::BeginSceneFrame(
+		const NLS::Render::Data::FrameDescriptor& p_frameDescriptor,
+		bool backgroundPreview)
+	{
 		NLS_PROFILE_SCOPE();
 		NLS_ASSERT(HasFrameObjectBindingProvider(), "ForwardSceneRenderer requires a renderer-owned frame/object binding provider.");
-		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
+		if (backgroundPreview)
+			BaseSceneRenderer::BeginFrameForBackgroundPreview(p_frameDescriptor);
+		else
+			BaseSceneRenderer::BeginFrame(p_frameDescriptor);
+		if (!IsFrameActive())
+			return;
 		auto drawables = ParseScene();
 		const bool hasSkyboxTexture = !drawables.skyboxes.empty();
 
-		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+		const bool usesThreadedRendering =
+			NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 		if (usesThreadedRendering)
 		{
 			SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
@@ -148,11 +166,12 @@ namespace NLS::Engine::Rendering
 		if (usesThreadedRendering && pendingFrameSnapshot.has_value())
 		{
 			auto snapshot = pendingFrameSnapshot.value();
+			auto externalOutputFrameDescriptor =
+				NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(p_frameDescriptor);
 			auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture);
-			auto frameDescriptor = lightGridContext.frameDescriptor;
 			SetPendingPreparedRenderSceneBuilder(
 				[snapshot = std::move(snapshot),
-				 frameDescriptor,
+				 externalOutputFrameDescriptor = std::move(externalOutputFrameDescriptor),
 				 lightGridContext = std::move(lightGridContext)]() mutable
 			{
 				auto package = BuildSnapshotOwnedRenderScenePackage(
@@ -161,7 +180,9 @@ namespace NLS::Engine::Rendering
 				NLS::Render::FrameGraph::CompileAndApplyPreparedForwardLightGridSceneExecution(
 					package,
 					lightGridContext);
-				NLS::Render::FrameGraph::FinalizePreparedForwardScenePackage(package, frameDescriptor);
+				NLS::Render::FrameGraph::FinalizePreparedForwardScenePackage(
+					package,
+					externalOutputFrameDescriptor);
 				return package;
 			});
 		}
@@ -170,7 +191,8 @@ namespace NLS::Engine::Rendering
 	void ForwardSceneRenderer::DrawFrame()
 	{
 		NLS_PROFILE_SCOPE();
-		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+		const bool usesThreadedRendering =
+			NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
 		// In threaded rendering mode, the Game Thread only captured immutable per-draw inputs.
 		// Render-scene package assembly now happens later through the prepared builder path.

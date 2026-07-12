@@ -37,6 +37,16 @@ namespace NLS::Engine::Rendering
         const ClusteredShadingSettings& settings,
         uint32_t renderWidth,
         uint32_t renderHeight);
+    NLS_ENGINE_API bool TryCalculateLightGridBufferElementCounts(
+        const ClusteredShadingSettings& settings,
+        const LightGridDimensions& dimensions,
+        uint32_t lightLinkStride,
+        uint32_t numCulledLightsGridStride,
+        uint64_t maxElementCount,
+        uint64_t& outClusterCount,
+        uint64_t& outCulledLightLinksCount,
+        uint64_t& outNumCulledLightsGridCount,
+        uint64_t& outCulledLightDataGridCount);
 
     NLS_ENGINE_API LightGridDimensions CalculateLightGridDispatchGroups(
         const LightGridDimensions& gridDimensions);

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <string>
+#include <vector>
 
 #include "UI/UIDef.h"
 
@@ -67,6 +69,16 @@ namespace NLS::UI
 	NLS_UI_API DragDropPayloadView PeekDragDropPayload(const char* type);
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
-	NLS_UI_API void SetCachedDragDropPayloadForTesting(const char* type, const void* data, size_t dataSize, bool fresh);
+        struct DragDropTargetPayloadForTesting
+        {
+            std::string type;
+            std::vector<std::byte> bytes;
+            bool targetActive = true;
+            bool delivered = false;
+        };
+
+        NLS_UI_API void SetDragDropTargetPayloadForTesting(const DragDropTargetPayloadForTesting& payload);
+        NLS_UI_API void ClearDragDropTargetPayloadForTesting();
+        NLS_UI_API void SetCachedDragDropPayloadForTesting(const char* type, const void* data, size_t dataSize, bool fresh);
 #endif
 }

@@ -30,9 +30,12 @@ namespace NLS::Core::ResourceManagement
 #if defined(NLS_ENABLE_TEST_HOOKS)
         static void ClearAsyncArtifactRequestStateForTesting();
         static bool WaitForAsyncArtifactWorkersForTesting(uint32_t timeoutMilliseconds = 5000u);
+        static size_t GetMaxPendingAsyncArtifactRequestCountForTesting();
         static size_t GetPendingAsyncArtifactRequestCountForTesting();
         static size_t GetTotalAsyncArtifactRequestCountForTesting();
         static size_t GetFailedAsyncArtifactRequestCountForTesting();
+        static void ResetArtifactResourcePathResolutionCountForTesting();
+        static size_t GetArtifactResourcePathResolutionCountForTesting();
 #endif
         ResourceHandle<Mesh> AcquireMeshHandle(
             ResourceLifetimeRegistry& registry,

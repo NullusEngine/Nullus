@@ -176,6 +176,7 @@ namespace NLS::Render::Context
         package.renderHeight = snapshot.renderHeight;
         package.sceneGameObjectCount = snapshot.sceneGameObjectCount;
         package.recordedDrawCommands = snapshot.recordedDrawCommands;
+        package.postSubmitTextureReadbacks = snapshot.postSubmitTextureReadbacks;
         package.externalSceneOutputIdentity = snapshot.externalOutputIdentity;
         package.externalSceneOutputIdentities = snapshot.externalOutputIdentities;
         package.externalSceneOutputTextureCount = snapshot.externalOutputTextureCount;

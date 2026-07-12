@@ -2,19 +2,19 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
-#include <unordered_map>
-#include <unordered_set>
 #include <string>
 #include <vector>
 
+#include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
+#include "Core/EditorActions.h"
 #include "Core/SceneCameraFocus.h"
-#include "Core/RendererResourcePrewarmRequest.h"
 #include "Engine/Assets/PrefabAsset.h"
-#include "Panels/ImportedPrefabDragPreviewSession.h"
 #include "Panels/AViewControllable.h"
+#include "Rendering/DebugSceneRenderer.h"
 #include "Panels/SceneViewPickingPolicy.h"
 #include "Core/SceneViewImGuizmo.h"
 
@@ -24,12 +24,43 @@ namespace NLS::Editor::Core
 
 namespace NLS::Editor::Panels
 {
-    bool CanCommitImportedAssetDragPreviewRootOnRelease(
-        bool hasPreviewArtifact,
-        bool hasPreviewRoot);
+            std::optional<Editor::Rendering::DebugSceneRenderer::PrefabDragProxyDescriptor>
+            BuildSceneViewPrefabDragProxyDescriptor(
+                const std::optional<Maths::Vector3>& placement,
+                bool hasActivePayload,
+                const Engine::GameObject* activeRoot,
+                bool activeRootVisible = true);
 
-	class SceneView : public Editor::Panels::AViewControllable
-	{
+            bool ShouldDeferSceneViewRenderForPendingSceneLoadResources(size_t pendingTaskCount);
+            bool ShouldSkipSceneViewSceneDrawablesForPendingSceneLoadResources(
+                size_t pendingTaskCount,
+                bool placeholderAlreadyRendered = false,
+                size_t visibleObjectCount = 0u);
+            bool ShouldSuppressSceneViewLightGridComputeForPendingSceneLoadResources(
+                size_t pendingTaskCount,
+                bool skipSceneDrawables);
+            bool ShouldForceSceneViewRenderForPendingSceneLoadResources(
+                size_t pendingTaskCount,
+                bool validationReadbackRequested);
+            bool ShouldWaitForSceneViewValidationReadbackSceneLoadResources(
+                bool activeResolution,
+                size_t pendingTaskCount,
+                size_t visibleObjectCount);
+            bool ShouldWaitForSceneViewValidationReadbackAfterSceneLoadResources(
+                bool observedSceneLoadResources,
+                uint32_t stableFramesAfterResourcesReady,
+                uint32_t requiredStableFrames = 4u);
+            std::string BuildSceneViewValidationReadbackStatus(
+                uint64_t nonBlackPixels,
+                uint32_t maxChannel,
+                size_t pendingSceneLoadTextureLoads = 0u);
+            uint64_t BuildSceneViewSceneLoadResourceCacheVersion(
+                size_t pendingTaskCount,
+                bool placeholderAlreadyRendered = false,
+                size_t visibleObjectCount = 0u);
+
+				class SceneView : public Editor::Panels::AViewControllable
+			{
 	public:
 		/**
 		* Constructor
@@ -69,7 +100,22 @@ namespace NLS::Editor::Panels
 		*/
 		virtual Engine::SceneSystem::Scene* GetScene();
 
-	protected:
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        struct PrefabDragProxySceneViewLoopValidation
+        {
+            bool dragLoopExercised = false;
+            bool payloadAcceptedBeforeDelivery = false;
+            bool followedPlacement = true;
+            bool sceneRootCreatedByProxy = false;
+            std::vector<Maths::Vector3> descriptorPlacements;
+        };
+
+        PrefabDragProxySceneViewLoopValidation ValidatePrefabDragProxySceneViewLoopForTesting(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            const std::vector<Maths::Vector3>& placements);
+#endif
+
+		protected:
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
         bool ShouldUseStaticFrameCache() const override;
         uint64_t BuildStaticFrameCacheKey(
@@ -82,30 +128,32 @@ namespace NLS::Editor::Panels
             uint64_t currentKey) const override;
         void CommitStaticFrameCacheKey(uint64_t staticFrameCacheKey) override;
         bool ShouldForceStaticFrameRender() const override;
+        bool ShouldDeferRenderFrame() const override;
         bool RequiresSynchronizedRetiredFramePresentation() const override;
         void AfterRenderFrame() override;
         void DrawPreRenderViewportOverlay() override;
         void OnAfterDrawWidgets() override;
         void DrawViewportOverlay() override;
 
-	private:
-        class ViewportDragDropTarget;
+		private:
+            class ViewportDragDropTarget;
 
-		void HandleGameObjectPicking();
+			void HandleGameObjectPicking();
         void EnsureCameraFocus();
         bool ShouldRequestPickingFrame() const;
         void TryWriteValidationReadback();
-        void UpdateImportedAssetDragPreview(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
-        bool EnsureImportedAssetDragPreviewMeshGhost(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
-        std::optional<Maths::Vector3> ResolveImportedAssetDragPreviewPlacement(const Maths::Vector2& mousePosition) const;
-        void HandleViewportAssetDragDrop();
-        void PumpImportedAssetDragPreviewBeforeRender();
-        void PumpImportedAssetDragPreviewResources();
-        NLS::Editor::Core::PrefabInstancePreviewResourceHandoff CollectImportedAssetDragPreviewResourceHandoff();
-        void DrawImportedAssetDragPreview();
-        void ClearImportedAssetDragPreview(bool cancelAsyncResourceRequests = true);
+	        void HandleViewportAssetDragDrop();
+	        void UpdateActivePrefabDragInstance(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
+	        void TryRefreshActivePrefabDragHotCacheKey();
+	        void ClearActivePrefabDragState();
+	        void CancelActivePrefabDragInstance();
+	        bool CommitActivePrefabDragInstance();
+	        Editor::Core::EditorActions::SceneMutationToken CaptureActivePrefabDragSceneToken() const;
+	        bool IsActivePrefabDragSceneTokenCurrent(
+	            const Editor::Core::EditorActions::SceneMutationToken& token);
+        std::optional<Maths::Vector3> ResolveActivePrefabDragPlacement(const Maths::Vector2& mousePosition) const;
 
-	private:
+		private:
 		Engine::SceneSystem::SceneManager& m_sceneManager;
 		Editor::Core::EGizmoOperation m_currentOperation = Editor::Core::EGizmoOperation::TRANSLATE;
 		Editor::Core::SceneViewGizmoPivot m_currentPivot = Editor::Core::SceneViewGizmoPivot::Pivot;
@@ -118,35 +166,49 @@ namespace NLS::Editor::Panels
         Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };
         std::optional<Maths::Vector2> m_pendingClickPickRenderPos;
         std::optional<NLS::Editor::Panels::HitProxyPickingSignature> m_pendingClickPickingSignature;
-		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
+			std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
         uint64_t m_pendingClickMinReadablePickingFrameSerial = 0u;
-        std::optional<NLS::Editor::Assets::EditorAssetDragPayload> m_importedAssetDragPreviewPayload;
-        std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> m_importedAssetDragPreviewArtifact;
-        ImportedPrefabDragPreviewSession m_importedAssetDragPreviewSession;
-        bool m_importedAssetDragPreviewMeshGhostUnavailable = false;
-        bool m_importedAssetDragPreviewRenderableReady = false;
-        std::chrono::steady_clock::time_point m_importedAssetDragPreviewNextMeshGhostRetryTime {};
-        NLS::Editor::Core::RendererResourcePrewarmRequest m_importedAssetDragPreviewPrewarmRequest;
-        Maths::Vector2 m_importedAssetDragPreviewMousePos { 0.0f, 0.0f };
-        std::optional<Maths::Vector3> m_importedAssetDragPreviewPlacement;
         bool m_hasPickingSample = false;
-        bool m_requestPickingFrame = true;
-        bool m_requestPickingFrameForClick = false;
+	        bool m_requestPickingFrame = true;
+	        bool m_requestPickingFrameForClick = false;
+	        std::optional<NLS::Editor::Assets::EditorAssetDragPayload> m_activeDraggedPrefabPayload;
+	        std::string m_activeDraggedPrefabPayloadKey;
+	        std::string m_activeDraggedPrefabAssetPath;
+	        std::string m_activeDraggedPrefabSubAssetKey;
+	        NLS::Core::Assets::AssetId m_activeDraggedPrefabAssetId {};
+	        NLS::Core::Assets::AssetType m_activeDraggedPrefabAssetType = NLS::Core::Assets::AssetType::Unknown;
+	        std::optional<NLS::Editor::Assets::UnifiedPrefabLoadKey> m_activeDraggedPrefabHotCacheKey;
+	        bool m_activeDraggedPrefabHotCacheKeyBuildAttempted = false;
+	        Engine::GameObject* m_activeDraggedPrefabRoot = nullptr;
+	        std::optional<Editor::Core::EditorActions::SceneMutationToken> m_activeDraggedPrefabDropSceneToken;
+        std::optional<Editor::Core::EditorActions::SceneMutationToken> m_activeDraggedPrefabRootSceneToken;
+		std::optional<Maths::Vector3> m_activeDraggedPrefabDropPlacement;
+        std::optional<Maths::Vector3> m_activeDraggedPrefabProxyPlacement;
+        bool m_activeDraggedPrefabRootAwaitingRendererResources = false;
+        bool m_activeDraggedPrefabCommitPending = false;
+        bool m_hasRenderedSceneLoadResourcePlaceholder = false;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        std::optional<Maths::Vector3> m_activePrefabDragPlacementOverrideForTesting;
+        bool m_disableActivePrefabDragPreloadForTesting = false;
+#endif
         bool m_cameraMovedForPresentation = true;
         bool m_validationReadbackWritten = false;
         uint32_t m_validationReadbackWarmupFrames = 0u;
         uint32_t m_validationReadbackReadyFrames = 0u;
+        uint32_t m_validationReadbackSceneLoadReadyFrames = 0u;
+        bool m_validationReadbackObservedSceneLoadResources = false;
         mutable uint64_t m_lastComputedStaticCacheBaseKey = 0u;
         mutable uint64_t m_lastComputedStaticCacheHighlightKey = 0u;
         mutable uint64_t m_lastComputedStaticCacheGizmoKey = 0u;
         mutable uint64_t m_lastComputedStaticCacheFocusKey = 0u;
         mutable uint64_t m_lastComputedStaticCacheSelectionKey = 0u;
-        mutable uint64_t m_lastComputedStaticCacheDragPreviewKey = 0u;
+        mutable uint64_t m_lastComputedStaticCacheSceneLoadResourcesKey = 0u;
+        mutable size_t m_lastLoggedDeferredSceneLoadResourceTasks = std::numeric_limits<size_t>::max();
         uint64_t m_committedStaticCacheBaseKey = 0u;
         uint64_t m_committedStaticCacheHighlightKey = 0u;
         uint64_t m_committedStaticCacheGizmoKey = 0u;
         uint64_t m_committedStaticCacheFocusKey = 0u;
         uint64_t m_committedStaticCacheSelectionKey = 0u;
-        uint64_t m_committedStaticCacheDragPreviewKey = 0u;
+        uint64_t m_committedStaticCacheSceneLoadResourcesKey = 0u;
 	};
 }

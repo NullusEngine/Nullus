@@ -10,7 +10,11 @@
 #include "Serialize/PrefabDocument.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -24,6 +28,18 @@ struct PrefabAssetReference
 {
     Serialize::ObjectIdentifier reference;
     std::string expectedType;
+};
+
+struct PrefabResolvedAssetValidationIndex
+{
+    std::unordered_set<std::string> assetIdsWithResolvedAssets;
+    std::unordered_set<std::string> referenceKeys;
+};
+
+struct PrefabResolvedAssetValidationStats
+{
+    size_t indexKeyCount = 0u;
+    size_t lookupCount = 0u;
 };
 
 void AddDiagnostic(
@@ -89,36 +105,101 @@ bool ResolvedAssetLocalIdentifierMatches(
         resolved.subAssetKey) == reference.localIdentifierInFile;
 }
 
-bool HasResolvedAsset(
-    const PrefabArtifact& artifact,
-    const Serialize::ObjectIdentifier& reference)
+std::string MakeResolvedAssetPathKey(const std::string& assetId, const std::string& path)
 {
-    const auto assetId = NLS::Core::Assets::AssetId(reference.guid);
+    return assetId + "\npath:" + path;
+}
+
+std::string MakeResolvedAssetLocalIdentifierKey(const std::string& assetId, const uint64_t localIdentifierInFile)
+{
+    return assetId + "\nlocal:" + std::to_string(localIdentifierInFile);
+}
+
+void AddResolvedAssetPathKey(
+    PrefabResolvedAssetValidationIndex& index,
+    const std::string& assetId,
+    const std::string& path)
+{
+    if (path.empty())
+        return;
+
+    index.referenceKeys.insert(MakeResolvedAssetPathKey(assetId, path));
+    const auto normalizedPath = std::filesystem::path(path).lexically_normal().generic_string();
+    if (!normalizedPath.empty())
+        index.referenceKeys.insert(MakeResolvedAssetPathKey(assetId, normalizedPath));
+}
+
+PrefabResolvedAssetValidationIndex BuildResolvedAssetValidationIndex(const PrefabArtifact& artifact)
+{
+    PrefabResolvedAssetValidationIndex index;
+    index.assetIdsWithResolvedAssets.reserve(artifact.resolvedAssets.size());
+    index.referenceKeys.reserve(artifact.resolvedAssets.size() * 4u);
+
     for (const auto& resolved : artifact.resolvedAssets)
     {
-        if (resolved.assetId != assetId)
+        const auto assetId = resolved.assetId.ToString();
+        if (assetId.empty())
             continue;
 
-        if (reference.filePath.empty() ||
-            ResolvedAssetReferencePathMatches(resolved, reference.filePath) ||
-            ResolvedAssetLocalIdentifierMatches(resolved, reference))
+        index.assetIdsWithResolvedAssets.insert(assetId);
+        AddResolvedAssetPathKey(index, assetId, resolved.subAssetKey);
+        AddResolvedAssetPathKey(index, assetId, resolved.artifactPath);
+
+        if (!resolved.subAssetKey.empty())
         {
-            return true;
+            index.referenceKeys.insert(MakeResolvedAssetLocalIdentifierKey(
+                assetId,
+                Serialize::MakeLocalIdentifierInFile(resolved.assetId.GetGuid(), resolved.subAssetKey)));
         }
     }
+
+    return index;
+}
+
+bool HasResolvedAsset(
+    const PrefabResolvedAssetValidationIndex& index,
+    const Serialize::ObjectIdentifier& reference,
+    size_t& lookupCount)
+{
+    ++lookupCount;
+    const auto assetId = reference.guid.ToString();
+    if (assetId.empty())
+        return false;
+
+    if (reference.filePath.empty())
+        return index.assetIdsWithResolvedAssets.find(assetId) != index.assetIdsWithResolvedAssets.end();
+
+    if (index.referenceKeys.find(MakeResolvedAssetPathKey(assetId, reference.filePath)) != index.referenceKeys.end())
+        return true;
+
+    const auto referencePath = std::filesystem::path(reference.filePath).lexically_normal().generic_string();
+    if (!referencePath.empty() &&
+        index.referenceKeys.find(MakeResolvedAssetPathKey(assetId, referencePath)) != index.referenceKeys.end())
+    {
+        return true;
+    }
+
+    if (reference.localIdentifierInFile != 0u &&
+        index.referenceKeys.find(MakeResolvedAssetLocalIdentifierKey(assetId, reference.localIdentifierInFile)) !=
+            index.referenceKeys.end())
+    {
+        return true;
+    }
+
     return false;
 }
 
 void ValidateResolvedAssetValue(
-    const PrefabArtifact& artifact,
+    const PrefabResolvedAssetValidationIndex& resolvedAssetIndex,
     const Serialize::PropertyValue& value,
-    Serialize::SerializationDiagnosticList& diagnostics)
+    Serialize::SerializationDiagnosticList& diagnostics,
+    size_t& lookupCount)
 {
     switch (value.GetKind())
     {
     case Serialize::PropertyValue::Kind::ObjectReference:
         if (value.GetObjectReference().guid.IsValid() &&
-            !HasResolvedAsset(artifact, value.GetObjectReference()))
+            !HasResolvedAsset(resolvedAssetIndex, value.GetObjectReference(), lookupCount))
         {
             AddDiagnostic(
                 diagnostics,
@@ -129,26 +210,31 @@ void ValidateResolvedAssetValue(
         break;
     case Serialize::PropertyValue::Kind::Array:
         for (const auto& item : value.GetArray())
-            ValidateResolvedAssetValue(artifact, item, diagnostics);
+            ValidateResolvedAssetValue(resolvedAssetIndex, item, diagnostics, lookupCount);
         break;
     case Serialize::PropertyValue::Kind::Object:
         for (const auto& property : value.GetObject())
-            ValidateResolvedAssetValue(artifact, property.second, diagnostics);
+            ValidateResolvedAssetValue(resolvedAssetIndex, property.second, diagnostics, lookupCount);
         break;
     default:
         break;
     }
 }
 
-void ValidateResolvedAssetReferences(
+PrefabResolvedAssetValidationStats ValidateResolvedAssetReferences(
     const PrefabArtifact& artifact,
     Serialize::SerializationDiagnosticList& diagnostics)
 {
+    const auto resolvedAssetIndex = BuildResolvedAssetValidationIndex(artifact);
+    PrefabResolvedAssetValidationStats stats;
+    stats.indexKeyCount = resolvedAssetIndex.assetIdsWithResolvedAssets.size() +
+        resolvedAssetIndex.referenceKeys.size();
     for (const auto& object : artifact.graph.objects)
     {
         for (const auto& property : object.properties)
-            ValidateResolvedAssetValue(artifact, property.value, diagnostics);
+            ValidateResolvedAssetValue(resolvedAssetIndex, property.value, diagnostics, stats.lookupCount);
     }
+    return stats;
 }
 
 void CollectAssetReferencesFromValue(
@@ -290,6 +376,194 @@ bool ContainsResolvedAssetReference(
                 existing.subAssetKey == candidate.subAssetKey &&
                 existing.artifactPath == candidate.artifactPath;
         });
+}
+
+struct PrefabResolvedAssetIndex
+{
+    std::unordered_map<NLS::Core::Assets::AssetId, std::vector<const PrefabResolvedAsset*>> byAssetId;
+};
+
+struct PrefabRuntimeResolvedAssetCandidates
+{
+    const PrefabResolvedAsset* directAsset = nullptr;
+    const PrefabResolvedAsset* singleSubAsset = nullptr;
+    bool ambiguousSubAssets = false;
+};
+
+struct PrefabRuntimeResolvedAssetIndex
+{
+    std::unordered_map<std::string, const PrefabResolvedAsset*> byReferenceKey;
+    std::unordered_map<NLS::Core::Assets::AssetId, PrefabRuntimeResolvedAssetCandidates> emptyReferenceCandidates;
+};
+
+struct RuntimeResolvedGraphStats
+{
+    size_t propertyValueVisitCount = 0u;
+    size_t objectReferenceLookupCount = 0u;
+    size_t resolvedReferenceCount = 0u;
+    size_t indexKeyCount = 0u;
+};
+
+PrefabResolvedAssetIndex BuildPrefabResolvedAssetIndex(
+    const std::vector<PrefabResolvedAsset>& resolvedAssets)
+{
+    PrefabResolvedAssetIndex index;
+    index.byAssetId.reserve(resolvedAssets.size());
+    for (const auto& resolved : resolvedAssets)
+        index.byAssetId[resolved.assetId].push_back(&resolved);
+    return index;
+}
+
+std::optional<PrefabResolvedAsset> FindExistingResolvedAssetForReference(
+    const PrefabResolvedAssetIndex& index,
+    const Serialize::ObjectIdentifier& reference)
+{
+    const auto assetId = NLS::Core::Assets::AssetId(reference.guid);
+    const auto foundCandidates = index.byAssetId.find(assetId);
+    if (foundCandidates == index.byAssetId.end())
+        return std::nullopt;
+
+    const auto& candidates = foundCandidates->second;
+    if (reference.filePath.empty())
+    {
+        const PrefabResolvedAsset* candidate = nullptr;
+        for (const auto* resolved : candidates)
+        {
+            if (resolved == nullptr)
+                continue;
+
+            if (!resolved->subAssetKey.empty() || !resolved->artifactPath.empty())
+            {
+                if (candidate)
+                    return std::nullopt;
+                candidate = resolved;
+                continue;
+            }
+
+            return *resolved;
+        }
+        if (!candidate)
+            return std::nullopt;
+        return *candidate;
+    }
+
+    for (const auto* resolved : candidates)
+    {
+        if (resolved != nullptr && ResolvedAssetMatchesReference(*resolved, reference))
+            return *resolved;
+    }
+    return std::nullopt;
+}
+
+struct PrefabResolvedAssetKey
+{
+    NLS::Core::Assets::AssetId assetId;
+    std::string subAssetKey;
+    std::string artifactPath;
+
+    bool operator==(const PrefabResolvedAssetKey& other) const = default;
+};
+
+struct PrefabResolvedAssetKeyHash
+{
+    size_t operator()(const PrefabResolvedAssetKey& key) const noexcept
+    {
+        size_t hash = std::hash<NLS::Core::Assets::AssetId> {}(key.assetId);
+        const auto combine = [&hash](const size_t value)
+        {
+            hash ^= value + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+        };
+        combine(std::hash<std::string> {}(key.subAssetKey));
+        combine(std::hash<std::string> {}(key.artifactPath));
+        return hash;
+    }
+};
+
+PrefabResolvedAssetKey MakePrefabResolvedAssetKey(const PrefabResolvedAsset& resolved)
+{
+    return {resolved.assetId, resolved.subAssetKey, resolved.artifactPath};
+}
+
+void AddRuntimeResolvedAssetKey(
+    PrefabRuntimeResolvedAssetIndex& index,
+    const std::string& key,
+    const PrefabResolvedAsset& resolved)
+{
+    if (key.empty())
+        return;
+
+    if (index.byReferenceKey.try_emplace(key, &resolved).second)
+        return;
+}
+
+void AddRuntimeResolvedAssetPathKey(
+    PrefabRuntimeResolvedAssetIndex& index,
+    const std::string& assetId,
+    const std::string& path,
+    const PrefabResolvedAsset& resolved)
+{
+    if (path.empty())
+        return;
+
+    AddRuntimeResolvedAssetKey(index, MakeResolvedAssetPathKey(assetId, path), resolved);
+}
+
+PrefabRuntimeResolvedAssetIndex BuildPrefabRuntimeResolvedAssetIndex(
+    const std::vector<PrefabResolvedAsset>& resolvedAssets)
+{
+    PrefabRuntimeResolvedAssetIndex index;
+    index.byReferenceKey.reserve(resolvedAssets.size() * 4u);
+    index.emptyReferenceCandidates.reserve(resolvedAssets.size());
+
+    for (const auto& resolved : resolvedAssets)
+    {
+        const auto assetId = resolved.assetId.ToString();
+        if (assetId.empty())
+            continue;
+
+        if (resolved.subAssetKey.empty() && resolved.artifactPath.empty())
+        {
+            auto& candidates = index.emptyReferenceCandidates[resolved.assetId];
+            if (candidates.directAsset == nullptr)
+                candidates.directAsset = &resolved;
+            continue;
+        }
+
+        auto& candidates = index.emptyReferenceCandidates[resolved.assetId];
+        if (!candidates.ambiguousSubAssets)
+        {
+            if (candidates.singleSubAsset == nullptr)
+            {
+                candidates.singleSubAsset = &resolved;
+            }
+            else
+            {
+                candidates.singleSubAsset = nullptr;
+                candidates.ambiguousSubAssets = true;
+            }
+        }
+
+        AddRuntimeResolvedAssetPathKey(index, assetId, resolved.subAssetKey, resolved);
+        AddRuntimeResolvedAssetPathKey(index, assetId, resolved.artifactPath, resolved);
+
+        if (!resolved.artifactPath.empty())
+        {
+            const auto normalizedPath = std::filesystem::path(resolved.artifactPath).lexically_normal().generic_string();
+            AddRuntimeResolvedAssetPathKey(index, assetId, normalizedPath, resolved);
+        }
+
+        if (!resolved.subAssetKey.empty())
+        {
+            AddRuntimeResolvedAssetKey(
+                index,
+                MakeResolvedAssetLocalIdentifierKey(
+                    assetId,
+                    Serialize::MakeLocalIdentifierInFile(resolved.assetId.GetGuid(), resolved.subAssetKey)),
+                resolved);
+        }
+    }
+
+    return index;
 }
 
 bool VisitBaseChain(
@@ -455,83 +729,401 @@ void CollectNestedPrefabDependenciesFromValue(
     }
 }
 
-const PrefabResolvedAsset* FindResolvedAsset(
-    const PrefabArtifact& artifact,
+const PrefabResolvedAsset* FindRuntimeResolvedAsset(
+    const PrefabRuntimeResolvedAssetIndex& index,
     const Serialize::ObjectIdentifier& reference)
 {
     const auto assetId = NLS::Core::Assets::AssetId(reference.guid);
-    const PrefabResolvedAsset* candidate = nullptr;
-    for (const auto& resolved : artifact.resolvedAssets)
+    const auto assetIdString = reference.guid.ToString();
+    if (assetIdString.empty())
+        return nullptr;
+
+    if (reference.filePath.empty())
     {
-        if (!reference.filePath.empty())
-        {
-            if ((resolved.assetId == assetId || resolved.subAssetKey == reference.filePath) &&
-                (ResolvedAssetReferencePathMatches(resolved, reference.filePath) ||
-                    ResolvedAssetLocalIdentifierMatches(resolved, reference)))
-            {
-                return &resolved;
-            }
-            continue;
-        }
-
-        if (resolved.assetId != assetId)
-            continue;
-
-        if (candidate)
+        const auto found = index.emptyReferenceCandidates.find(assetId);
+        if (found == index.emptyReferenceCandidates.end())
             return nullptr;
-        candidate = &resolved;
+
+        const auto& candidates = found->second;
+        if (candidates.directAsset != nullptr)
+            return candidates.directAsset;
+        if (!candidates.ambiguousSubAssets)
+            return candidates.singleSubAsset;
+        return nullptr;
     }
-    return candidate;
+
+    const auto foundPath = index.byReferenceKey.find(MakeResolvedAssetPathKey(assetIdString, reference.filePath));
+    if (foundPath != index.byReferenceKey.end())
+        return foundPath->second;
+
+    const auto normalizedPath = std::filesystem::path(reference.filePath).lexically_normal().generic_string();
+    if (!normalizedPath.empty())
+    {
+        const auto foundNormalizedPath = index.byReferenceKey.find(MakeResolvedAssetPathKey(assetIdString, normalizedPath));
+        if (foundNormalizedPath != index.byReferenceKey.end())
+            return foundNormalizedPath->second;
+    }
+
+    if (reference.localIdentifierInFile != 0u)
+    {
+        const auto foundLocalIdentifier = index.byReferenceKey.find(
+            MakeResolvedAssetLocalIdentifierKey(assetIdString, reference.localIdentifierInFile));
+        if (foundLocalIdentifier != index.byReferenceKey.end())
+            return foundLocalIdentifier->second;
+    }
+
+    return nullptr;
 }
 
-Serialize::PropertyValue ResolveObjectIdentifier(
-    const PrefabArtifact& artifact,
-    const Serialize::PropertyValue& value)
+void ResolveObjectIdentifierInPlace(
+    const PrefabRuntimeResolvedAssetIndex& index,
+    Serialize::PropertyValue& value,
+    RuntimeResolvedGraphStats* stats)
 {
+    if (stats != nullptr)
+        ++stats->propertyValueVisitCount;
+
     switch (value.GetKind())
     {
     case Serialize::PropertyValue::Kind::ObjectReference:
     {
-        auto reference = value.GetObjectReference();
+        auto& reference = value.GetMutableObjectReference();
         if (!reference.guid.IsValid())
-            return value;
-        if (const auto* resolved = FindResolvedAsset(artifact, reference);
+            return;
+        if (stats != nullptr)
+            ++stats->objectReferenceLookupCount;
+        if (const auto* resolved = FindRuntimeResolvedAsset(index, reference);
             resolved && !resolved->artifactPath.empty())
         {
             reference.filePath = resolved->artifactPath;
+            if (stats != nullptr)
+                ++stats->resolvedReferenceCount;
         }
-        return Serialize::PropertyValue::ObjectReference(std::move(reference));
+        break;
     }
     case Serialize::PropertyValue::Kind::Array:
     {
-        Serialize::PropertyValue::ArrayValue values;
-        values.reserve(value.GetArray().size());
-        for (const auto& item : value.GetArray())
-            values.push_back(ResolveObjectIdentifier(artifact, item));
-        return Serialize::PropertyValue::Array(std::move(values));
+        for (auto& item : value.GetMutableArray())
+            ResolveObjectIdentifierInPlace(index, item, stats);
+        break;
     }
     case Serialize::PropertyValue::Kind::Object:
     {
-        Serialize::PropertyValue::ObjectValue properties;
-        properties.reserve(value.GetObject().size());
-        for (const auto& property : value.GetObject())
-            properties.push_back({property.first, ResolveObjectIdentifier(artifact, property.second)});
-        return Serialize::PropertyValue::Object(std::move(properties));
+        for (auto& property : value.GetMutableObject())
+            ResolveObjectIdentifierInPlace(index, property.second, stats);
+        break;
     }
     default:
-        return value;
+        break;
     }
 }
 
-Serialize::ObjectGraphDocument BuildRuntimeResolvedGraph(const PrefabArtifact& artifact)
+uint64_t HashCombine(const uint64_t seed, const uint64_t value)
+{
+    return seed ^ (value + 0x9e3779b97f4a7c15ull + (seed << 6u) + (seed >> 2u));
+}
+
+uint64_t HashString(const std::string_view value)
+{
+    uint64_t hash = 1469598103934665603ull;
+    for (const auto character : value)
+    {
+        hash ^= static_cast<uint64_t>(static_cast<unsigned char>(character));
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+uint64_t HashGuid(const NLS::Guid& guid)
+{
+    return static_cast<uint64_t>(std::hash<NLS::Guid> {}(guid));
+}
+
+uint64_t HashObjectId(const Serialize::ObjectId& id)
+{
+    return HashGuid(id.GetGuid());
+}
+
+uint64_t HashObjectIdentifier(const Serialize::ObjectIdentifier& identifier)
+{
+    uint64_t hash = HashGuid(identifier.guid);
+    hash = HashCombine(hash, static_cast<uint64_t>(identifier.localIdentifierInFile));
+    hash = HashCombine(hash, static_cast<uint64_t>(identifier.fileType));
+    hash = HashCombine(hash, HashString(identifier.filePath));
+    return hash;
+}
+
+uint64_t HashPropertyValue(const Serialize::PropertyValue& value)
+{
+    uint64_t hash = static_cast<uint64_t>(value.GetKind());
+    switch (value.GetKind())
+    {
+    case Serialize::PropertyValue::Kind::Null:
+        break;
+    case Serialize::PropertyValue::Kind::Bool:
+        hash = HashCombine(hash, value.GetBool() ? 1u : 0u);
+        break;
+    case Serialize::PropertyValue::Kind::Integer:
+        hash = HashCombine(hash, static_cast<uint64_t>(value.GetInteger()));
+        break;
+    case Serialize::PropertyValue::Kind::Number:
+        hash = HashCombine(hash, static_cast<uint64_t>(std::hash<double> {}(value.GetNumber())));
+        break;
+    case Serialize::PropertyValue::Kind::String:
+        hash = HashCombine(hash, HashString(value.GetString()));
+        break;
+    case Serialize::PropertyValue::Kind::Guid:
+        hash = HashCombine(hash, HashGuid(value.GetGuid()));
+        break;
+    case Serialize::PropertyValue::Kind::OwnedReference:
+        hash = HashCombine(hash, HashObjectId(value.GetObjectId()));
+        break;
+    case Serialize::PropertyValue::Kind::ObjectReference:
+        hash = HashCombine(hash, HashObjectIdentifier(value.GetObjectReference()));
+        break;
+    case Serialize::PropertyValue::Kind::Array:
+        for (const auto& item : value.GetArray())
+            hash = HashCombine(hash, HashPropertyValue(item));
+        break;
+    case Serialize::PropertyValue::Kind::Object:
+        for (const auto& property : value.GetObject())
+        {
+            hash = HashCombine(hash, HashString(property.first));
+            hash = HashCombine(hash, HashPropertyValue(property.second));
+        }
+        break;
+    }
+    return hash;
+}
+
+uint64_t HashPatchOperation(const Serialize::PatchOperation& patch)
+{
+    uint64_t hash = static_cast<uint64_t>(patch.type);
+    hash = HashCombine(hash, HashObjectId(patch.target));
+    hash = HashCombine(hash, HashString(patch.property));
+    hash = HashCombine(hash, HashPropertyValue(patch.value));
+    hash = HashCombine(hash, HashObjectId(patch.object));
+    hash = HashCombine(hash, static_cast<uint64_t>(patch.index));
+    hash = HashCombine(hash, patch.hasIndex ? 1u : 0u);
+    return hash;
+}
+
+uint64_t HashObjectRecord(const Serialize::ObjectRecord& object)
+{
+    uint64_t hash = HashObjectId(object.id);
+    hash = HashCombine(hash, HashString(object.typeName));
+    hash = HashCombine(hash, HashString(object.debugName));
+    hash = HashCombine(hash, HashString(object.debugPath));
+    hash = HashCombine(hash, static_cast<uint64_t>(object.state));
+    hash = HashCombine(hash, static_cast<uint64_t>(object.localIdentifierInFile));
+    hash = HashCombine(hash, static_cast<uint64_t>(object.properties.size()));
+    for (const auto& property : object.properties)
+    {
+        hash = HashCombine(hash, HashString(property.name));
+        hash = HashCombine(hash, HashPropertyValue(property.value));
+    }
+    return hash;
+}
+
+uint64_t HashPrefabInstanceRecord(const Serialize::PrefabInstanceRecord& instance)
+{
+    uint64_t hash = HashObjectId(instance.instanceRoot);
+    hash = HashCombine(hash, HashObjectIdentifier(instance.sourcePrefab));
+    hash = HashCombine(hash, instance.generatedReadOnly ? 1u : 0u);
+    for (const auto& modification : instance.modifications)
+        hash = HashCombine(hash, HashPatchOperation(modification));
+    for (const auto& object : instance.addedObjects)
+        hash = HashCombine(hash, HashObjectRecord(object));
+    for (const auto& correspondence : instance.correspondence)
+    {
+        hash = HashCombine(hash, HashObjectId(correspondence.sourceObject));
+        hash = HashCombine(hash, HashObjectId(correspondence.instanceObject));
+    }
+    return hash;
+}
+
+uint64_t HashObjectGraphDocument(const Serialize::ObjectGraphDocument& graph)
+{
+    uint64_t hash = HashString(graph.format);
+    hash = HashCombine(hash, static_cast<uint64_t>(graph.version));
+    hash = HashCombine(hash, HashGuid(graph.documentId));
+    hash = HashCombine(hash, HashObjectId(graph.root));
+    hash = HashCombine(hash, graph.basePrefab.has_value() ? 1u : 0u);
+    if (graph.basePrefab.has_value())
+        hash = HashCombine(hash, HashObjectIdentifier(*graph.basePrefab));
+    hash = HashCombine(hash, static_cast<uint64_t>(graph.objects.size()));
+    for (const auto& object : graph.objects)
+        hash = HashCombine(hash, HashObjectRecord(object));
+    hash = HashCombine(hash, static_cast<uint64_t>(graph.overrides.size()));
+    for (const auto& overrideOperation : graph.overrides)
+        hash = HashCombine(hash, HashPatchOperation(overrideOperation));
+    hash = HashCombine(hash, static_cast<uint64_t>(graph.prefabInstances.size()));
+    for (const auto& instance : graph.prefabInstances)
+        hash = HashCombine(hash, HashPrefabInstanceRecord(instance));
+    return hash;
+}
+
+uint64_t HashPrefabResolvedAsset(const PrefabResolvedAsset& resolved)
+{
+    uint64_t hash = HashGuid(resolved.assetId.GetGuid());
+    hash = HashCombine(hash, HashString(resolved.expectedType));
+    hash = HashCombine(hash, HashString(resolved.subAssetKey));
+    hash = HashCombine(hash, HashString(resolved.artifactPath));
+    return hash;
+}
+
+uint64_t HashPrefabValidationResolvedAsset(const PrefabResolvedAsset& resolved)
+{
+    uint64_t hash = HashGuid(resolved.assetId.GetGuid());
+    hash = HashCombine(hash, HashString(resolved.expectedType));
+    hash = HashCombine(hash, HashString(resolved.subAssetKey));
+    return hash;
+}
+
+uint64_t BuildRuntimeResolvedGraphFingerprint(const PrefabArtifact& artifact)
+{
+    uint64_t hash = HashObjectGraphDocument(artifact.graph);
+    hash = HashCombine(hash, static_cast<uint64_t>(artifact.resolvedAssets.size()));
+    for (const auto& resolved : artifact.resolvedAssets)
+        hash = HashCombine(hash, HashPrefabResolvedAsset(resolved));
+    return hash == 0u ? 1u : hash;
+}
+
+uint64_t BuildValidationFingerprint(const PrefabArtifact& artifact)
+{
+    uint64_t hash = HashObjectGraphDocument(artifact.graph);
+    auto resolvedAssets = artifact.resolvedAssets;
+    std::sort(
+        resolvedAssets.begin(),
+        resolvedAssets.end(),
+        [](const PrefabResolvedAsset& lhs, const PrefabResolvedAsset& rhs)
+        {
+            if (lhs.assetId != rhs.assetId)
+                return lhs.assetId < rhs.assetId;
+            if (lhs.expectedType != rhs.expectedType)
+                return lhs.expectedType < rhs.expectedType;
+            return lhs.subAssetKey < rhs.subAssetKey;
+        });
+    hash = HashCombine(hash, static_cast<uint64_t>(resolvedAssets.size()));
+    for (const auto& resolved : resolvedAssets)
+        hash = HashCombine(hash, HashPrefabValidationResolvedAsset(resolved));
+    return hash == 0u ? 1u : hash;
+}
+
+Serialize::ObjectGraphDocument BuildRuntimeResolvedGraph(
+    const PrefabArtifact& artifact,
+    RuntimeResolvedGraphStats* stats = nullptr)
 {
     auto graph = artifact.graph;
+    const auto resolvedAssetIndex = BuildPrefabRuntimeResolvedAssetIndex(artifact.resolvedAssets);
+    if (stats != nullptr)
+        stats->indexKeyCount = resolvedAssetIndex.byReferenceKey.size();
     for (auto& object : graph.objects)
     {
         for (auto& property : object.properties)
-            property.value = ResolveObjectIdentifier(artifact, property.value);
+            ResolveObjectIdentifierInPlace(resolvedAssetIndex, property.value, stats);
     }
     return graph;
+}
+
+void AddRuntimeResolvedGraphStatsCounters(
+    NLS::Base::Profiling::PerformanceStageScope& scope,
+    const RuntimeResolvedGraphStats& stats)
+{
+    scope.AddCounter("runtimeResolvedGraphIndexKeyCount", stats.indexKeyCount);
+    scope.AddCounter("runtimeResolvedGraphPropertyValueVisitCount", stats.propertyValueVisitCount);
+    scope.AddCounter("runtimeResolvedGraphObjectReferenceLookupCount", stats.objectReferenceLookupCount);
+    scope.AddCounter("runtimeResolvedGraphResolvedReferenceCount", stats.resolvedReferenceCount);
+}
+
+std::mutex& RuntimeResolvedGraphCacheMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::mutex& PrefabInstantiatePlanCacheMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::mutex& PrefabValidationCacheMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::shared_ptr<const Serialize::ObjectGraphDocument> GetOrBuildRuntimeResolvedGraph(
+    const PrefabArtifact& artifact,
+    const uint64_t fingerprint,
+    bool& cacheHit,
+    RuntimeResolvedGraphStats* stats = nullptr)
+{
+    {
+        std::lock_guard<std::mutex> lock(RuntimeResolvedGraphCacheMutex());
+        if (artifact.runtimeResolvedGraph &&
+            artifact.runtimeResolvedGraphFingerprint == fingerprint)
+        {
+            cacheHit = true;
+            return artifact.runtimeResolvedGraph;
+        }
+    }
+
+    auto graph = std::make_shared<Serialize::ObjectGraphDocument>(
+        BuildRuntimeResolvedGraph(artifact, stats));
+
+    {
+        std::lock_guard<std::mutex> lock(RuntimeResolvedGraphCacheMutex());
+        if (artifact.runtimeResolvedGraph &&
+            artifact.runtimeResolvedGraphFingerprint == fingerprint)
+        {
+            cacheHit = true;
+            return artifact.runtimeResolvedGraph;
+        }
+
+        artifact.runtimeResolvedGraph = graph;
+        artifact.runtimeResolvedGraphFingerprint = fingerprint;
+    }
+
+    cacheHit = false;
+    return graph;
+}
+
+std::shared_ptr<const Serialize::ObjectGraphInstantiator::PrefabInstantiatePlan> GetOrBuildPrefabInstantiatePlan(
+    const PrefabArtifact& artifact,
+    const Serialize::ObjectGraphDocument& graph,
+    const uint64_t fingerprint,
+    bool& cacheHit)
+{
+    {
+        std::lock_guard<std::mutex> lock(PrefabInstantiatePlanCacheMutex());
+        if (artifact.instantiatePlan &&
+            artifact.instantiatePlanFingerprint == fingerprint)
+        {
+            cacheHit = true;
+            return artifact.instantiatePlan;
+        }
+    }
+
+    auto plan = std::make_shared<Serialize::ObjectGraphInstantiator::PrefabInstantiatePlan>(
+        Serialize::ObjectGraphInstantiator::BuildPrefabInstantiatePlan(graph));
+
+    {
+        std::lock_guard<std::mutex> lock(PrefabInstantiatePlanCacheMutex());
+        if (artifact.instantiatePlan &&
+            artifact.instantiatePlanFingerprint == fingerprint)
+        {
+            cacheHit = true;
+            return artifact.instantiatePlan;
+        }
+
+        artifact.instantiatePlan = plan;
+        artifact.instantiatePlanFingerprint = fingerprint;
+    }
+
+    cacheHit = false;
+    return plan;
 }
 
 void PrewarmPrefabMeshArtifacts(
@@ -627,11 +1219,124 @@ const Serialize::ObjectId* PrefabArtifact::FindRuntimeObject(const Serialize::Ob
 
 Serialize::SerializationDiagnosticList PrefabArtifact::Validate() const
 {
-    Serialize::PrefabDocument prefab;
-    prefab.graph = graph;
-    auto diagnostics = Serialize::ObjectGraphInstantiator::ValidatePrefab(prefab);
-    ValidateResolvedAssetReferences(*this, diagnostics);
+    return Validate(BuildRuntimeResolvedGraphFingerprint(*this));
+}
+
+Serialize::SerializationDiagnosticList PrefabArtifact::Validate(const uint64_t fingerprint) const
+{
+    NLS::Base::Profiling::PerformanceStageScope validateScope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "ValidatePrefabArtifact",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
+    validateScope.AddCounter("objectCount", graph.objects.size());
+    validateScope.AddCounter("validationGraphCopyCount", 0u);
+
+    {
+        std::lock_guard<std::mutex> lock(PrefabValidationCacheMutex());
+        if (validationDiagnostics && validationFingerprint == fingerprint)
+        {
+            validateScope.AddCounter("validationCacheHitCount", 1u);
+            return *validationDiagnostics;
+        }
+    }
+
+    auto diagnostics = Serialize::ObjectGraphInstantiator::ValidatePrefabGraph(graph);
+    const auto resolvedAssetStats = ValidateResolvedAssetReferences(*this, diagnostics);
+    validateScope.AddCounter("resolvedAssetIndexKeyCount", resolvedAssetStats.indexKeyCount);
+    validateScope.AddCounter("resolvedAssetReferenceLookupCount", resolvedAssetStats.lookupCount);
+    auto cachedDiagnostics = std::make_shared<Serialize::SerializationDiagnosticList>(diagnostics);
+    {
+        std::lock_guard<std::mutex> lock(PrefabValidationCacheMutex());
+        if (validationDiagnostics && validationFingerprint == fingerprint)
+        {
+            validateScope.AddCounter("validationCacheHitCount", 1u);
+            return *validationDiagnostics;
+        }
+
+        validationDiagnostics = std::move(cachedDiagnostics);
+        validationFingerprint = fingerprint;
+        validateScope.AddCounter("validationCacheMissCount", 1u);
+    }
     return diagnostics;
+}
+
+uint64_t BuildPrefabArtifactValidationFingerprint(const PrefabArtifact& artifact)
+{
+    return BuildValidationFingerprint(artifact);
+}
+
+uint64_t BuildPrefabRuntimeResolvedGraphFingerprint(const PrefabArtifact& artifact)
+{
+    return BuildRuntimeResolvedGraphFingerprint(artifact);
+}
+
+std::string PrefabResolvedAssetTypeForArtifactType(const NLS::Core::Assets::ArtifactType type)
+{
+    using NLS::Core::Assets::ArtifactType;
+    switch (type)
+    {
+    case ArtifactType::Mesh: return "Mesh";
+    case ArtifactType::Material: return "Material";
+    case ArtifactType::Texture: return "Texture";
+    case ArtifactType::Skeleton: return "Skeleton";
+    case ArtifactType::Skin: return "Skin";
+    case ArtifactType::AnimationClip: return "AnimationClip";
+    case ArtifactType::MorphTarget: return "MorphTarget";
+    case ArtifactType::Model: return "Model";
+    case ArtifactType::Shader: return "Shader";
+    case ArtifactType::Scene: return "Scene";
+    case ArtifactType::Audio: return "Audio";
+    case ArtifactType::Prefab:
+    case ArtifactType::Unknown:
+    case ArtifactType::Count:
+        return {};
+    }
+    return {};
+}
+
+std::vector<PrefabResolvedAsset> BuildPrefabValidationResolvedAssetsFromManifest(
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    std::vector<PrefabResolvedAsset> resolvedAssets;
+    for (const auto& artifact : manifest.subAssets)
+    {
+        if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Prefab)
+            continue;
+
+        auto expectedType = PrefabResolvedAssetTypeForArtifactType(artifact.artifactType);
+        if (expectedType.empty())
+            continue;
+
+        const auto sourceAssetId = artifact.sourceAssetId.IsValid()
+            ? artifact.sourceAssetId
+            : manifest.sourceAssetId;
+        resolvedAssets.push_back({
+            sourceAssetId,
+            std::move(expectedType),
+            artifact.subAssetKey,
+            std::filesystem::path(artifact.artifactPath).lexically_normal().generic_string()
+        });
+    }
+    return resolvedAssets;
+}
+
+std::string FindPrefabValidationProofFingerprint(
+    const std::vector<NLS::Core::Assets::AssetDependencyRecord>& dependencies,
+    const std::string_view prefabSubAssetKey)
+{
+    if (prefabSubAssetKey.empty())
+        return {};
+
+    for (const auto& dependency : dependencies)
+    {
+        if (dependency.kind == NLS::Core::Assets::AssetDependencyKind::PrefabValidation &&
+            dependency.value == prefabSubAssetKey &&
+            !dependency.hashOrVersion.empty())
+        {
+            return dependency.hashOrVersion;
+        }
+    }
+    return {};
 }
 
 std::vector<Serialize::ObjectIdentifier> CollectPrefabAssetReferences(
@@ -690,14 +1395,16 @@ std::vector<PrefabResolvedAsset> BuildPrefabResolvedAssetsFromReferences(
     const std::vector<PrefabResolvedAsset>& existingResolvedAssets)
 {
     std::vector<PrefabResolvedAsset> resolvedAssets;
+    auto existingIndex = BuildPrefabResolvedAssetIndex(existingResolvedAssets);
+    std::unordered_set<PrefabResolvedAssetKey, PrefabResolvedAssetKeyHash> resolvedKeys;
     for (const auto& assetReference : CollectPrefabAssetReferenceRecords(graph))
     {
         const auto& reference = assetReference.reference;
-        auto resolved = FindExistingResolvedAssetForReference(existingResolvedAssets, reference);
+        auto resolved = FindExistingResolvedAssetForReference(existingIndex, reference);
         auto resolvedAsset = resolved.has_value()
             ? std::move(*resolved)
             : BuildFallbackResolvedAsset(assetReference);
-        if (!ContainsResolvedAssetReference(resolvedAssets, resolvedAsset))
+        if (resolvedKeys.insert(MakePrefabResolvedAssetKey(resolvedAsset)).second)
             resolvedAssets.push_back(std::move(resolvedAsset));
     }
     return resolvedAssets;
@@ -722,6 +1429,15 @@ PrefabImportResult ImportPrefabArtifact(
     NLS::Core::Assets::AssetId assetId,
     std::vector<PrefabResolvedAsset> resolvedAssets)
 {
+    return ImportPrefabArtifact(sourceText, assetId, std::move(resolvedAssets), {});
+}
+
+PrefabImportResult ImportPrefabArtifact(
+    const std::string& sourceText,
+    NLS::Core::Assets::AssetId assetId,
+    std::vector<PrefabResolvedAsset> resolvedAssets,
+    PrefabImportOptions options)
+{
     NLS::Base::Profiling::PerformanceStageScope parseScope(
         NLS::Base::Profiling::PerformanceStageDomain::Prefab,
         "ParsePreparedPrefab",
@@ -742,7 +1458,8 @@ PrefabImportResult ImportPrefabArtifact(
         return result;
     }
 
-    result.artifact.graph = *document;
+    result.artifact.graph = std::move(*document);
+    if (!options.trustResolvedAssets)
     {
         NLS::Base::Profiling::PerformanceStageScope resolveScope(
             NLS::Base::Profiling::PerformanceStageDomain::Prefab,
@@ -750,14 +1467,82 @@ PrefabImportResult ImportPrefabArtifact(
             NLS::Base::Profiling::PerformanceStageThread::Main);
         RefreshPrefabResolvedAssetsFromReferences(result.artifact);
         resolveScope.AddCounter("dependencyCount", result.artifact.resolvedAssets.size());
+        resolveScope.AddCounter("manifestResolvedAssetsTrusted", 0u);
     }
-    if (document->basePrefab.has_value())
+    else
+    {
+        NLS::Base::Profiling::PerformanceStageScope resolveScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "ResolveDependencies",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        resolveScope.AddCounter("dependencyCount", result.artifact.resolvedAssets.size());
+        resolveScope.AddCounter("manifestResolvedAssetsTrusted", 1u);
+    }
+    if (result.artifact.graph.basePrefab.has_value())
     {
         result.artifact.baseChain.push_back(
-            NLS::Core::Assets::AssetId(document->basePrefab->guid));
+            NLS::Core::Assets::AssetId(result.artifact.graph.basePrefab->guid));
     }
 
-    result.diagnostics = result.artifact.Validate();
+    const auto runtimeResolvedGraphFingerprint = BuildRuntimeResolvedGraphFingerprint(result.artifact);
+    auto graphValidationArtifact = result.artifact;
+    if (!options.trustedGraphValidationResolvedAssets.empty())
+        graphValidationArtifact.resolvedAssets = std::move(options.trustedGraphValidationResolvedAssets);
+    const auto artifactFingerprint = BuildPrefabArtifactValidationFingerprint(graphValidationArtifact);
+    const bool hasTrustedGraphValidation =
+        options.trustGraphValidation &&
+        !options.trustedGraphValidationFingerprint.empty() &&
+        options.trustedGraphValidationFingerprint == std::to_string(artifactFingerprint);
+    if (hasTrustedGraphValidation)
+    {
+        {
+            NLS::Base::Profiling::PerformanceStageScope validateScope(
+                NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+                "ValidatePrefabArtifact",
+                NLS::Base::Profiling::PerformanceStageThread::Main);
+            validateScope.AddCounter("objectCount", result.artifact.graph.objects.size());
+            validateScope.AddCounter("graphValidationTrusted", 1u);
+            result.artifact.validationFingerprint = runtimeResolvedGraphFingerprint;
+            result.artifact.validationDiagnostics =
+                std::make_shared<const Serialize::SerializationDiagnosticList>();
+        }
+        if (options.trustResolvedAssets && !result.artifact.resolvedAssets.empty())
+        {
+            NLS::Base::Profiling::PerformanceStageScope resolveScope(
+                NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+                "ResolveExternalReferences",
+                NLS::Base::Profiling::PerformanceStageThread::Main);
+            RuntimeResolvedGraphStats runtimeResolvedGraphStats;
+            auto runtimeResolvedGraph = std::make_shared<Serialize::ObjectGraphDocument>(
+                BuildRuntimeResolvedGraph(result.artifact, &runtimeResolvedGraphStats));
+            result.artifact.runtimeResolvedGraph = std::move(runtimeResolvedGraph);
+            result.artifact.runtimeResolvedGraphFingerprint = runtimeResolvedGraphFingerprint;
+            resolveScope.AddCounter("dependencyCount", result.artifact.resolvedAssets.size());
+            resolveScope.AddCounter("runtimeResolvedGraphPrimedCount", 1u);
+            resolveScope.AddCounter("runtimeResolvedGraphCopyCount", 1u);
+            AddRuntimeResolvedGraphStatsCounters(resolveScope, runtimeResolvedGraphStats);
+        }
+    }
+    else
+    {
+        result.diagnostics = result.artifact.Validate(runtimeResolvedGraphFingerprint);
+        if (!result.diagnostics.HasErrors() && options.trustResolvedAssets && !result.artifact.resolvedAssets.empty())
+        {
+            NLS::Base::Profiling::PerformanceStageScope resolveScope(
+                NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+                "ResolveExternalReferences",
+                NLS::Base::Profiling::PerformanceStageThread::Main);
+            RuntimeResolvedGraphStats runtimeResolvedGraphStats;
+            auto runtimeResolvedGraph = std::make_shared<Serialize::ObjectGraphDocument>(
+                BuildRuntimeResolvedGraph(result.artifact, &runtimeResolvedGraphStats));
+            result.artifact.runtimeResolvedGraph = std::move(runtimeResolvedGraph);
+            result.artifact.runtimeResolvedGraphFingerprint = runtimeResolvedGraphFingerprint;
+            resolveScope.AddCounter("dependencyCount", result.artifact.resolvedAssets.size());
+            resolveScope.AddCounter("runtimeResolvedGraphPrimedAfterValidationCount", 1u);
+            resolveScope.AddCounter("runtimeResolvedGraphCopyCount", 1u);
+            AddRuntimeResolvedGraphStatsCounters(resolveScope, runtimeResolvedGraphStats);
+        }
+    }
     return result;
 }
 
@@ -800,9 +1585,10 @@ PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
         NLS::Base::Profiling::PerformanceStageThread::Main);
     totalScope.AddCounter("objectCount", artifact.graph.objects.size());
     totalScope.AddCounter("dependencyCount", artifact.resolvedAssets.size());
+    const auto artifactFingerprint = BuildRuntimeResolvedGraphFingerprint(artifact);
 
     PrefabArtifactInstantiationResult result;
-    result.diagnostics = artifact.Validate();
+    result.diagnostics = artifact.Validate(artifactFingerprint);
     if (result.diagnostics.HasErrors())
         return result;
 
@@ -824,21 +1610,103 @@ PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     const bool needsRuntimeResolvedGraph = !artifact.resolvedAssets.empty();
     const bool needsPrefabDocument = needsRuntimeResolvedGraph || !artifact.graph.overrides.empty();
     Serialize::PrefabDocument document;
+    std::shared_ptr<const Serialize::ObjectGraphDocument> runtimeResolvedGraph;
+    uint64_t runtimeResolvedGraphCopyCount = 0u;
+    uint64_t runtimeResolvedGraphCacheHitCount = 0u;
     {
         NLS::Base::Profiling::PerformanceStageScope resolveScope(
             NLS::Base::Profiling::PerformanceStageDomain::Prefab,
             "ResolveExternalReferences",
             NLS::Base::Profiling::PerformanceStageThread::Main);
+        RuntimeResolvedGraphStats runtimeResolvedGraphStats;
         if (needsRuntimeResolvedGraph)
-            document.graph = BuildRuntimeResolvedGraph(artifact);
+        {
+            bool cacheHit = false;
+            runtimeResolvedGraph = GetOrBuildRuntimeResolvedGraph(
+                artifact,
+                artifactFingerprint,
+                cacheHit,
+                &runtimeResolvedGraphStats);
+            runtimeResolvedGraphCopyCount = cacheHit ? 0u : 1u;
+            runtimeResolvedGraphCacheHitCount = cacheHit ? 1u : 0u;
+        }
         else if (needsPrefabDocument)
             document.graph = artifact.graph;
         resolveScope.AddCounter("dependencyCount", artifact.resolvedAssets.size());
-        resolveScope.AddCounter("runtimeResolvedGraphCopyCount", needsRuntimeResolvedGraph ? 1u : 0u);
+        resolveScope.AddCounter("runtimeResolvedGraphCopyCount", runtimeResolvedGraphCopyCount);
+        if (runtimeResolvedGraphCacheHitCount > 0u)
+            resolveScope.AddCounter("runtimeResolvedGraphCacheHitCount", runtimeResolvedGraphCacheHitCount);
+        if (runtimeResolvedGraphCopyCount > 0u)
+            AddRuntimeResolvedGraphStatsCounters(resolveScope, runtimeResolvedGraphStats);
     }
-    const auto instantiated = needsPrefabDocument
-        ? Serialize::ObjectGraphInstantiator::InstantiatePrefab(document, scene, policy)
-        : Serialize::ObjectGraphInstantiator::InstantiatePrefabGraph(artifact.graph, scene, policy);
+    std::shared_ptr<const Serialize::ObjectGraphInstantiator::PrefabInstantiatePlan> instantiatePlan;
+    {
+        NLS::Base::Profiling::PerformanceStageScope planScope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "PrepareInstantiatePlan",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+
+        const Serialize::ObjectGraphDocument* planGraph = nullptr;
+        if (runtimeResolvedGraph)
+        {
+            if (runtimeResolvedGraph->overrides.empty())
+                planGraph = runtimeResolvedGraph.get();
+        }
+        else if (artifact.graph.overrides.empty())
+        {
+            planGraph = &artifact.graph;
+        }
+
+        uint64_t instantiatePlanBuildCount = 0u;
+        uint64_t instantiatePlanCacheHitCount = 0u;
+        if (planGraph != nullptr)
+        {
+            bool cacheHit = false;
+            instantiatePlan = GetOrBuildPrefabInstantiatePlan(
+                artifact,
+                *planGraph,
+                artifactFingerprint,
+                cacheHit);
+            instantiatePlanBuildCount = cacheHit ? 0u : 1u;
+            instantiatePlanCacheHitCount = cacheHit ? 1u : 0u;
+        }
+
+        planScope.AddCounter("instantiatePlanBuildCount", instantiatePlanBuildCount);
+        planScope.AddCounter("instantiatePlanCacheHitCount", instantiatePlanCacheHitCount);
+        if (instantiatePlan)
+        {
+            planScope.AddCounter("instantiatePlanGameObjectCount", instantiatePlan->gameObjects.size());
+            planScope.AddCounter("instantiatePlanComponentCount", instantiatePlan->componentRecordCount);
+            planScope.AddCounter(
+                "instantiatePlanAssetReferenceBindingCandidateCount",
+                instantiatePlan->assetReferenceBindingCandidateCount);
+        }
+    }
+    const auto instantiated = [&]()
+    {
+        if (runtimeResolvedGraph)
+        {
+            if (runtimeResolvedGraph->overrides.empty())
+            {
+                return Serialize::ObjectGraphInstantiator::InstantiatePrefabGraph(
+                    *runtimeResolvedGraph,
+                    scene,
+                    policy,
+                    instantiatePlan.get());
+            }
+
+            document.graph = *runtimeResolvedGraph;
+            return Serialize::ObjectGraphInstantiator::InstantiatePrefab(document, scene, policy);
+        }
+
+        return needsPrefabDocument
+            ? Serialize::ObjectGraphInstantiator::InstantiatePrefab(document, scene, policy)
+            : Serialize::ObjectGraphInstantiator::InstantiatePrefabGraph(
+                artifact.graph,
+                scene,
+                policy,
+                instantiatePlan.get());
+    }();
     for (const auto& diagnostic : instantiated.diagnostics.GetItems())
         result.diagnostics.Add(diagnostic);
     if (result.diagnostics.HasErrors())

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Rendering/Context/AsyncMeshRuntimeUpload.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <chrono>
@@ -7,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
@@ -99,11 +102,14 @@ namespace NLS::Render::Context
             const FrameSnapshot& snapshot,
             PreparedRenderSceneBuilder renderSceneBuilder,
             size_t* publishedSlotIndex = nullptr,
-            uint64_t* publishedFrameId = nullptr);
+            uint64_t* publishedFrameId = nullptr,
+            bool backgroundPreview = false);
+        static void CancelBackgroundPreviewPublicationRequest(Driver& driver);
         static bool QueueStandalonePostSubmitBufferReadback(
             Driver& driver,
             PostSubmitBufferReadbackRequest request);
         static bool TryDrainThreadedRendering(Driver& driver, bool applyPendingSwapchainResize = true);
+        static bool TryWaitForSubmittedGpuWork(Driver& driver);
         static void DrainThreadedRendering(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
         static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);
@@ -122,7 +128,9 @@ namespace NLS::Render::Context
         static size_t GetFrameContextSlotCount(const Driver& driver);
         static size_t GetLifecycleFrameSlotCount(const Driver& driver);
         static std::optional<size_t> ReserveReusableFrameContextSlotIndex(Driver& driver);
-        static std::optional<size_t> ReserveReusableFrameContextSlotIndexForPreparedPublication(Driver& driver);
+        static std::optional<size_t> ReserveReusableFrameContextSlotIndexForPreparedPublication(
+            Driver& driver,
+            bool waitForRetirement = true);
         static bool ReleaseReservedFrameContextSlotIndex(Driver& driver, size_t slotIndex);
         static std::optional<size_t> GetReservedFrameContextSlotIndex(const Driver& driver);
         static std::shared_ptr<RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer(const Driver& driver);
@@ -228,6 +236,25 @@ namespace NLS::Render::Context
 
     struct NLS_RENDER_API DriverUIAccess final
     {
+        struct Rgba8TextureUploadRequest
+        {
+            uint32_t width = 0u;
+            uint32_t height = 0u;
+            std::vector<uint8_t> rgbaPixels;
+            std::string debugName;
+        };
+
+        struct Rgba8TextureUploadResult
+        {
+            bool ready = false;
+            bool success = false;
+            std::shared_ptr<RHI::RHITexture> texture;
+            std::shared_ptr<RHI::RHITextureView> textureView;
+            uint32_t width = 0u;
+            uint32_t height = 0u;
+            std::string diagnostic;
+        };
+
         struct UICompositionSyncBoundary
         {
             RHI::NativeHandle sceneToUiWaitSemaphore;
@@ -243,7 +270,11 @@ namespace NLS::Render::Context
         static void PresentSwapchain(Driver& driver);
         static void SetPolygonMode(Driver& driver, Settings::ERasterizationMode mode);
         static bool IsRenderDocAvailable(const Driver& driver);
+        static bool ShouldForceRenderDocCaptureFrameRender(const Driver& driver);
         static bool QueueRenderDocCapture(Driver& driver, const std::string& label = {});
+        static bool QueueRenderDocCaptureForNextExternalOutput(Driver& driver, const std::string& label = {});
+        static bool StartRenderDocCapture(Driver& driver);
+        static bool EndRenderDocCapture(Driver& driver);
         static bool OpenLatestRenderDocCapture(const Driver& driver);
         static std::string GetRenderDocCaptureDirectory(const Driver& driver);
         static bool GetRenderDocAutoOpenEnabled(const Driver& driver);
@@ -273,6 +304,15 @@ namespace NLS::Render::Context
         static void ReleaseUiTextureView(
             Driver& driver,
             const std::shared_ptr<RHI::RHITextureView>& textureView);
+        static uint64_t RequestUiRgba8TextureUpload(
+            Driver& driver,
+            Rgba8TextureUploadRequest request);
+        static Rgba8TextureUploadResult ConsumeUiRgba8TextureUploadResult(
+            Driver& driver,
+            uint64_t requestId);
+        static void CancelUiRgba8TextureUpload(
+            Driver& driver,
+            uint64_t requestId);
         static void NotifyUiOverlayFontAtlasChanged(Driver& driver);
         static void NotifyUiOverlaySwapchainWillResize(Driver& driver);
 
@@ -282,6 +322,19 @@ namespace NLS::Render::Context
         static void SetUICompositionSignal(Driver& driver, RHI::NativeHandle semaphore, uint64_t value);
         // UI synchronization - set the semaphore UI signals after rendering (Present waits on this)
         static void SetUISignalSemaphore(Driver& driver, RHI::NativeHandle semaphore, uint64_t value);
+    };
+
+    struct NLS_RENDER_API DriverResourceAccess final
+    {
+        static uint64_t RequestMeshRuntimeUpload(
+            Driver& driver,
+            MeshRuntimeUploadRequest request);
+        static MeshRuntimeUploadResult ConsumeMeshRuntimeUploadResult(
+            Driver& driver,
+            uint64_t requestId);
+        static void CancelMeshRuntimeUpload(
+            Driver& driver,
+            uint64_t requestId);
     };
 
     struct NLS_RENDER_API DriverTestAccess final
@@ -302,6 +355,7 @@ namespace NLS::Render::Context
 #if defined(NLS_ENABLE_TEST_HOOKS)
         static DriverImpl* GetImplForTesting(Driver& driver);
         static void ShutdownRhiResourcesForTesting(Driver& driver);
+        static size_t GetPendingMeshRuntimeUploadCount(const Driver& driver);
 #endif
         static void SetExplicitFrameActive(Driver& driver, bool active);
         static void AgePendingSwapchainResize(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include <Rendering/Entities/Camera.h>
@@ -15,6 +16,7 @@
 #include "Core/Context.h"
 
 namespace NLS::Editor::Panels { class AView; }
+namespace NLS::Render::Debug { class DebugDrawService; }
 
 namespace NLS::Editor::Rendering
 {
@@ -24,17 +26,24 @@ namespace NLS::Editor::Rendering
 	*/
 class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 	{
-	public:
-		struct DebugSceneDescriptor
-		{
-			Engine::GameObject* highlightedGameObject;
-            Engine::GameObject* selectedGameObject;
-            bool requestPickingFrame = false;
-            Engine::SceneSystem::Scene* previewScene = nullptr;
-            bool requestPickingFrameForClick = false;
-            uint64_t hoverPickingVisibleDrawBudget = 1024u;
-            uint64_t clickMinimumPickingFrameSerial = 0u;
-		};
+		public:
+            struct PrefabDragProxyDescriptor
+            {
+                Maths::Vector3 position { 0.0f, 0.0f, 0.0f };
+                float size = 1.25f;
+            };
+
+			struct DebugSceneDescriptor
+			{
+				Engine::GameObject* highlightedGameObject;
+	            Engine::GameObject* selectedGameObject;
+	            bool requestPickingFrame = false;
+	            Engine::SceneSystem::Scene* previewScene = nullptr;
+	            bool requestPickingFrameForClick = false;
+	            uint64_t hoverPickingVisibleDrawBudget = 1024u;
+	            uint64_t clickMinimumPickingFrameSerial = 0u;
+                std::optional<PrefabDragProxyDescriptor> prefabDragProxy;
+			};
 
 		struct CullingOverlayOptions
 		{
@@ -63,14 +72,15 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 			const NLS::Render::Context::FrameSnapshot& snapshot) const;
 
 	protected:
-        std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
+	    std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
 			const NLS::Render::Data::FrameDescriptor& frameDescriptor) const override;
-        NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
-            const NLS::Render::Context::FrameSnapshot& snapshot) const override;
-        bool ShouldPublishCullReasonDebugSnapshots() const override;
-        uint64_t GetCullReasonDebugSnapshotMaxEntries() const override;
-        void OnThreadedFramePublished(uint64_t publishedFrameId) override;
-        void OnThreadedFramePublishFailed() override;
+	    NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
+	        const NLS::Render::Context::FrameSnapshot& snapshot) const override;
+	    bool ShouldPublishCullReasonDebugSnapshots() const override;
+	    uint64_t GetCullReasonDebugSnapshotMaxEntries() const override;
+	    std::vector<const Engine::GameObject*> GetEditorInspectionRoots() const override;
+	    void OnThreadedFramePublished(uint64_t publishedFrameId) override;
+	    void OnThreadedFramePublishFailed() override;
 
 	private:
 		CullingOverlayOptions m_cullingOverlayOptions;
@@ -79,6 +89,9 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 	std::vector<DebugSceneRenderer::CullingOverlayItem> BuildDebugSceneCullingOverlayItems(
 		const NLS::Render::Context::FrameSnapshot& snapshot,
 		const DebugSceneRenderer::CullingOverlayOptions& options);
+    uint32_t SubmitPrefabDragProxyDebugPrimitives(
+        NLS::Render::Debug::DebugDrawService& debugDrawService,
+        const DebugSceneRenderer::PrefabDragProxyDescriptor& descriptor);
 	bool ShouldPublishDebugSceneCullReasonSnapshots(
 		const DebugSceneRenderer::CullingOverlayOptions& options);
 }

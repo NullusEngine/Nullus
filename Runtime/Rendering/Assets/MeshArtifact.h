@@ -32,6 +32,8 @@ NLS_RENDER_API std::optional<MeshArtifactData> DeserializeMeshArtifact(const std
 NLS_RENDER_API std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
     const std::filesystem::path& path,
     uint64_t maxMetadataBytes = UINT64_MAX);
+// Validates the fixed native container header without parsing artifact metadata.
+NLS_RENDER_API bool IsMeshArtifactFile(const std::filesystem::path& path);
 NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifactPreviewSample(
     const std::filesystem::path& path,
     uint32_t maxVertices,

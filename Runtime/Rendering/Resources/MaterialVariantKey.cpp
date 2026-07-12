@@ -92,6 +92,26 @@ namespace NLS::Render::Resources
             }
         }
 
+        void AppendOptionalColorSpaces(
+            std::string& key,
+            const bool hasOverride,
+            const std::span<const NLS::Render::RHI::TextureColorSpace> spaces)
+        {
+            key += "|overrideColorSpaces:";
+            if (!hasOverride)
+            {
+                key += "unset";
+                return;
+            }
+
+            key += std::to_string(spaces.size());
+            for (const auto space : spaces)
+            {
+                key += ",";
+                key += std::to_string(static_cast<uint32_t>(space));
+            }
+        }
+
         void AppendOptionalRenderTargetBlendStates(
             std::string& key,
             const bool hasOverride,
@@ -169,6 +189,10 @@ namespace NLS::Render::Resources
                 key,
                 overrides.HasColorFormatsOverride(),
                 overrides.GetColorFormats());
+            AppendOptionalColorSpaces(
+                key,
+                overrides.HasColorSpacesOverride(),
+                overrides.GetColorSpaces());
             AppendOptionalRenderTargetBlendStates(
                 key,
                 overrides.HasRenderTargetBlendStatesOverride(),

@@ -2,6 +2,7 @@
 #include "UI/UIManager.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <vector>
@@ -694,11 +695,35 @@ void UIManager::Render()
     if (m_currentCanvas == nullptr || m_isRenderingFrame)
         return;
 
+    const bool logStartupRenderStages = []()
+    {
+        static bool shouldLog = true;
+        const bool result = shouldLog;
+        shouldLog = false;
+        return result;
+    }();
+    auto startupStageBegin = std::chrono::steady_clock::now();
+    auto logStartupRenderStage =
+        [&startupStageBegin, logStartupRenderStages](const char* stage)
+        {
+            if (!logStartupRenderStages)
+                return;
+
+            const auto now = std::chrono::steady_clock::now();
+            NLS_LOG_INFO(
+                std::string("[Startup] UIManager::Render stage ") +
+                stage +
+                " elapsedMs=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - startupStageBegin).count()));
+            startupStageBegin = now;
+        };
+
     m_isRenderingFrame = true;
     {
         NLS_PROFILE_NAMED_SCOPE("UIManager::BeginFrame");
         BeginFrame();
     }
+    logStartupRenderStage("BeginFrame");
     if (!m_inFrame)
     {
         m_isRenderingFrame = false;
@@ -708,21 +733,26 @@ void UIManager::Render()
         NLS_PROFILE_NAMED_SCOPE("UIManager::DrawCanvas");
         m_currentCanvas->Draw();
     }
+    logStartupRenderStage("DrawCanvas");
     ReleaseUnrequestedInfiniteDragCursor();
+    logStartupRenderStage("ReleaseUnrequestedInfiniteDragCursor");
 
     {
         NLS_PROFILE_NAMED_SCOPE("ImGui::Render");
         ImGui::Render();
     }
+    logStartupRenderStage("ImGuiRender");
 
     if (ShouldPublishUiSnapshotToFrameGraph())
     {
         NLS_PROFILE_NAMED_SCOPE("UIManager::PublishUiDrawDataSnapshot");
         PublishCurrentUiSnapshotToFrameGraph();
+        logStartupRenderStage("PublishUiDrawDataSnapshot");
     }
     else
     {
         NLS_LOG_WARNING("UIManager::Render: no frame-graph UI overlay renderer is available for this backend.");
+        logStartupRenderStage("SkipUiDrawDataSnapshot");
     }
     m_isRenderingFrame = false;
 }

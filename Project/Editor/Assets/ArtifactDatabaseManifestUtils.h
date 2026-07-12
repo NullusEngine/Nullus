@@ -2,10 +2,21 @@
 
 #include "Assets/ArtifactDatabase.h"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#else
+#include <sys/stat.h>
+#endif
+
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 
@@ -31,18 +42,79 @@ inline std::mutex& GetProjectArtifactDatabaseManifestMutex(const std::filesystem
 inline std::string GetArtifactDatabaseDataFileStamp(const std::filesystem::path& databasePath)
 {
     const auto dataFilePath = databasePath / "data.mdb";
-    std::error_code error;
-    const auto size = std::filesystem::file_size(dataFilePath, error);
-    if (error)
+#if defined(_WIN32)
+    const HANDLE handle = CreateFileW(
+        dataFilePath.c_str(),
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
         return {};
 
-    error.clear();
-    const auto writeTime = std::filesystem::last_write_time(dataFilePath, error);
-    if (error)
+    FILE_BASIC_INFO basicInfo {};
+    if (!GetFileInformationByHandleEx(handle, FileBasicInfo, &basicInfo, sizeof(basicInfo)))
+    {
+        CloseHandle(handle);
+        return {};
+    }
+
+    LARGE_INTEGER fileSize {};
+    if (!GetFileSizeEx(handle, &fileSize))
+    {
+        CloseHandle(handle);
+        return {};
+    }
+
+    FILE_ID_INFO fileId {};
+    if (!GetFileInformationByHandleEx(handle, FileIdInfo, &fileId, sizeof(fileId)))
+    {
+        CloseHandle(handle);
+        return std::to_string(fileSize.QuadPart) + ":" +
+            std::to_string(basicInfo.LastWriteTime.QuadPart) + ":" +
+            std::to_string(basicInfo.ChangeTime.QuadPart);
+    }
+
+    CloseHandle(handle);
+    std::ostringstream stamp;
+    stamp << "win:"
+        << fileId.VolumeSerialNumber << ':';
+    for (const auto byte : fileId.FileId.Identifier)
+        stamp << static_cast<unsigned int>(byte) << '.';
+    stamp << ':' << fileSize.QuadPart
+        << ':' << basicInfo.LastWriteTime.QuadPart
+        << ':' << basicInfo.ChangeTime.QuadPart;
+    return stamp.str();
+#else
+    struct stat fileStat {};
+    if (stat(dataFilePath.string().c_str(), &fileStat) != 0)
         return {};
 
-    return std::to_string(size) + ":" +
-        std::to_string(static_cast<std::intmax_t>(writeTime.time_since_epoch().count()));
+#if defined(__APPLE__)
+    const auto writeSeconds = static_cast<int64_t>(fileStat.st_mtimespec.tv_sec);
+    const auto writeNanoseconds = static_cast<int64_t>(fileStat.st_mtimespec.tv_nsec);
+    const auto changeSeconds = static_cast<int64_t>(fileStat.st_ctimespec.tv_sec);
+    const auto changeNanoseconds = static_cast<int64_t>(fileStat.st_ctimespec.tv_nsec);
+#else
+    const auto writeSeconds = static_cast<int64_t>(fileStat.st_mtim.tv_sec);
+    const auto writeNanoseconds = static_cast<int64_t>(fileStat.st_mtim.tv_nsec);
+    const auto changeSeconds = static_cast<int64_t>(fileStat.st_ctim.tv_sec);
+    const auto changeNanoseconds = static_cast<int64_t>(fileStat.st_ctim.tv_nsec);
+#endif
+
+    std::ostringstream stamp;
+    stamp << "posix:"
+        << static_cast<uint64_t>(fileStat.st_dev)
+        << ':' << static_cast<uint64_t>(fileStat.st_ino)
+        << ':' << static_cast<int64_t>(fileStat.st_size)
+        << ':' << writeSeconds
+        << ':' << writeNanoseconds
+        << ':' << changeSeconds
+        << ':' << changeNanoseconds;
+    return stamp.str();
+#endif
 }
 
 inline std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestFromProjectArtifactDB(

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Assets/ArtifactManifest.h"
 #include "Assets/AssetId.h"
 #include "EngineDef.h"
 #include "Serialize/ObjectGraphDocument.h"
@@ -7,8 +8,11 @@
 #include "Serialize/SerializationDiagnostic.h"
 #include "SceneSystem/Scene.h"
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -30,15 +34,30 @@ struct NLS_ENGINE_API PrefabArtifact
     std::vector<NLS::Core::Assets::AssetId> baseChain;
     std::vector<PrefabResolvedAsset> resolvedAssets;
     std::unordered_map<Serialize::ObjectId, Serialize::ObjectId> sourceToRuntimeObject;
+    mutable std::shared_ptr<const Serialize::ObjectGraphDocument> runtimeResolvedGraph;
+    mutable uint64_t runtimeResolvedGraphFingerprint = 0u;
+    mutable std::shared_ptr<const Serialize::ObjectGraphInstantiator::PrefabInstantiatePlan> instantiatePlan;
+    mutable uint64_t instantiatePlanFingerprint = 0u;
+    mutable std::shared_ptr<const Serialize::SerializationDiagnosticList> validationDiagnostics;
+    mutable uint64_t validationFingerprint = 0u;
 
     const Serialize::ObjectId* FindRuntimeObject(const Serialize::ObjectId& sourceObject) const;
     Serialize::SerializationDiagnosticList Validate() const;
+    Serialize::SerializationDiagnosticList Validate(uint64_t fingerprint) const;
 };
 
 struct PrefabImportResult
 {
     PrefabArtifact artifact;
     Serialize::SerializationDiagnosticList diagnostics;
+};
+
+struct PrefabImportOptions
+{
+    bool trustResolvedAssets = false;
+    bool trustGraphValidation = false;
+    std::string trustedGraphValidationFingerprint;
+    std::vector<PrefabResolvedAsset> trustedGraphValidationResolvedAssets;
 };
 
 NLS_ENGINE_API std::vector<Serialize::ObjectIdentifier> CollectPrefabAssetReferences(
@@ -55,6 +74,20 @@ NLS_ENGINE_API std::vector<PrefabResolvedAsset> BuildPrefabResolvedAssetsFromRef
     const std::vector<PrefabResolvedAsset>& existingResolvedAssets);
 
 NLS_ENGINE_API void RefreshPrefabResolvedAssetsFromReferences(PrefabArtifact& artifact);
+
+NLS_ENGINE_API std::string PrefabResolvedAssetTypeForArtifactType(
+    NLS::Core::Assets::ArtifactType type);
+
+NLS_ENGINE_API std::vector<PrefabResolvedAsset> BuildPrefabValidationResolvedAssetsFromManifest(
+    const NLS::Core::Assets::ArtifactManifest& manifest);
+
+NLS_ENGINE_API uint64_t BuildPrefabRuntimeResolvedGraphFingerprint(const PrefabArtifact& artifact);
+
+NLS_ENGINE_API uint64_t BuildPrefabArtifactValidationFingerprint(const PrefabArtifact& artifact);
+
+NLS_ENGINE_API std::string FindPrefabValidationProofFingerprint(
+    const std::vector<NLS::Core::Assets::AssetDependencyRecord>& dependencies,
+    std::string_view prefabSubAssetKey);
 
 struct PrefabArtifactInstantiationResult
 {
@@ -99,6 +132,12 @@ NLS_ENGINE_API PrefabImportResult ImportPrefabArtifact(
     const std::string& sourceText,
     NLS::Core::Assets::AssetId assetId,
     std::vector<PrefabResolvedAsset> resolvedAssets);
+
+NLS_ENGINE_API PrefabImportResult ImportPrefabArtifact(
+    const std::string& sourceText,
+    NLS::Core::Assets::AssetId assetId,
+    std::vector<PrefabResolvedAsset> resolvedAssets,
+    PrefabImportOptions options);
 
 NLS_ENGINE_API PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     PrefabArtifact& artifact,

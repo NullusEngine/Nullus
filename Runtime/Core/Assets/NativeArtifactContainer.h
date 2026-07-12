@@ -3,6 +3,7 @@
 #include "Assets/ArtifactManifest.h"
 #include "CoreDef.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -47,6 +48,12 @@ struct NativeArtifactPayloadPrefix
     uint64_t payloadOffset = 0u;
 };
 
+struct NativeArtifactPayloadText
+{
+    NativeArtifactMetadata metadata;
+    std::string payload;
+};
+
 NLS_CORE_API size_t NativeArtifactContainerHeaderSize();
 NLS_CORE_API std::string ComputeNativeArtifactPayloadHash(const std::vector<uint8_t>& payload);
 NLS_CORE_API std::string ComputeNativeArtifactPayloadHash(const uint8_t* payload, size_t payloadSize);
@@ -64,10 +71,20 @@ NLS_CORE_API std::optional<NativeArtifactContainerView> ReadNativeArtifactContai
     uint32_t expectedSchemaVersion,
     std::string* diagnostics = nullptr);
 NLS_CORE_API bool IsNativeArtifactContainer(const std::vector<uint8_t>& bytes);
+NLS_CORE_API std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefix(
+    const std::vector<uint8_t>& bytes,
+    ArtifactType expectedType,
+    uint32_t expectedSchemaVersion,
+    size_t prefixSize);
 NLS_CORE_API std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefixFromFile(
     const std::filesystem::path& path,
     ArtifactType expectedType,
     uint32_t expectedSchemaVersion,
     size_t prefixSize,
+    uint64_t maxMetadataBytes = UINT64_MAX);
+NLS_CORE_API std::optional<NativeArtifactPayloadText> ReadNativeArtifactPayloadTextFromFile(
+    const std::filesystem::path& path,
+    ArtifactType expectedType,
+    uint32_t expectedSchemaVersion,
     uint64_t maxMetadataBytes = UINT64_MAX);
 }

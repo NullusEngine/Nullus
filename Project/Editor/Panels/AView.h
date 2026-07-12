@@ -138,7 +138,8 @@ namespace NLS::Editor::Panels
 		/**
 		* Convert a window-space mouse position to view-local render coordinates.
 		*/
-		std::optional<Maths::Vector2> GetLocalViewPosition(const Maths::Vector2& mousePosition) const;
+            std::optional<Maths::Vector2> GetLocalViewPosition(const Maths::Vector2& mousePosition) const;
+            void RequestSkipNextRenderFrame();
 
 	protected:
 		void OnBeforeDrawWidgets() override;
@@ -157,6 +158,7 @@ namespace NLS::Editor::Panels
             uint64_t currentKey) const;
         virtual void CommitStaticFrameCacheKey(uint64_t staticFrameCacheKey);
         virtual bool ShouldForceStaticFrameRender() const;
+        virtual bool ShouldDeferRenderFrame() const;
 		virtual bool RequiresRetiredFrameConsumption() const;
 		void SetRequiresRetiredFrameConsumption(bool requiresRetiredFrameConsumption);
         virtual bool RequiresImmediateRetiredFrameReadback() const;
@@ -210,5 +212,6 @@ namespace NLS::Editor::Panels
         bool m_staticFrameCacheValid = false;
         bool m_resizedViewThisFrame = false;
         bool m_viewportImageAvailableForInput = false;
-	};
+        bool m_skipNextRenderFrame = false;
+		};
 }

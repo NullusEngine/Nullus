@@ -2,12 +2,16 @@
 
 namespace NLS::Editor::Core
 {
-inline bool ShouldTickResizeImmediately(bool isTicking, bool isPollingEvents, bool isResizeTicking)
+inline bool ShouldTickResizeImmediately(
+    bool nativeResizeInProgress,
+    bool isTicking,
+    bool isPollingEvents,
+    bool isResizeTicking)
 {
     if (isResizeTicking)
         return false;
 
-    return !isTicking || isPollingEvents;
+    return nativeResizeInProgress && (!isTicking || isPollingEvents);
 }
 
 inline bool ShouldRunResizeFollowUpFrame(

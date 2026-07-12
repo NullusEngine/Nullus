@@ -816,10 +816,23 @@ std::filesystem::path ResolveManifestStampDependencyPath(
             return dependencyPath;
 
         const auto primaryMetaPath = NormalizeEditorAssetPath(ToEditorAssetPath(roots, record.metaPath));
-        if (record.readOnly &&
+        if (record.readOnly && root->readOnly &&
             !primaryMetaPath.empty() &&
             NormalizeEditorAssetPath(dependencyValue) == primaryMetaPath)
         {
+            std::error_code statusError;
+            const auto metaStatus = std::filesystem::symlink_status(record.metaPath, statusError);
+            if (statusError)
+                return {};
+            if (metaStatus.type() == std::filesystem::file_type::not_found)
+                return record.metaPath;
+            if (!std::filesystem::is_regular_file(record.metaPath, statusError) ||
+                statusError ||
+                !IsPathInsideEditorAssetRoot(record.metaPath, root->path) ||
+                !IsPhysicalPathInsideEditorAssetRoot(record.metaPath, root->path))
+            {
+                return {};
+            }
             return record.metaPath;
         }
     }

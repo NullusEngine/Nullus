@@ -12,6 +12,7 @@
 
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
+#include "Assets/ArtifactWriter.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetDragDropWorkflow.h"
@@ -40,6 +41,7 @@
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/PPtr.h"
 
@@ -429,32 +431,162 @@ void AddCurrentSourceDependencies(
     }
 }
 
+void RegisterCurrentMaterialManifestForMetaFallbackTest(
+    NLS::Editor::Assets::AssetDatabaseFacade& database,
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& sourcePath,
+    const std::string& assetPath)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto assetId = AssetId(NLS::Guid::Parse(database.AssetPathToGUID(assetPath)));
+    ASSERT_TRUE(assetId.IsValid());
+
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = assetId;
+    manifest.importerId = "material";
+    manifest.importerVersion = GetCurrentImporterVersion(AssetType::Material);
+    manifest.targetPlatform = "editor";
+    manifest.primarySubAssetKey = "material:main";
+    manifest.subAssets.push_back(MakeArtifact(
+        assetId,
+        manifest.primarySubAssetKey,
+        ArtifactType::Material,
+        "material"));
+
+    const auto metaPath = GetAssetMetaPath(sourcePath);
+    const auto metaStamp = FileStamp(metaPath);
+    manifest.dependencies = {
+        {AssetDependencyKind::SourceFileHash, assetPath, SourceFileContentHash(sourcePath)},
+        {
+            AssetDependencyKind::PathToGuidMapping,
+            assetPath + ".meta",
+            metaStamp.empty() ? "guid:" + assetId.ToString() : metaStamp
+        },
+        {AssetDependencyKind::ImporterVersion, manifest.importerId, std::to_string(manifest.importerVersion)},
+        {AssetDependencyKind::BuildTarget, manifest.targetPlatform, manifest.targetPlatform}
+    };
+
+    WriteManifestArtifactFiles(projectRoot, manifest);
+    database.AddArtifactManifest(std::move(manifest));
+}
+
 NLS::Core::Assets::AssetId ParseAssetId(const std::string& guid)
 {
     return NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
 }
 
-void RegisterPreparedStandardPbrShaderDependency(
-    NLS::Editor::Assets::AssetDatabaseFacade& database)
+NLS::Render::Assets::ShaderArtifactStage MakeFreshnessOnlyShaderStageForFacadeTests(
+    const NLS::Render::ShaderCompiler::ShaderTargetPlatform targetPlatform)
+{
+    NLS::Render::Assets::ShaderArtifactStage stage;
+    stage.stage = NLS::Render::ShaderCompiler::ShaderStage::Vertex;
+    stage.targetPlatform = targetPlatform;
+    stage.entryPoint = "VSMain";
+    stage.targetProfile = targetPlatform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL
+        ? "glsl-450"
+        : "vs_6_0";
+    stage.output.status = NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded;
+    // These deterministic placeholder bytes are serialized for freshness tests and never reach a rendering backend.
+    stage.output.bytecode = {0x4eu, 0x4cu, 0x53u, static_cast<uint8_t>(targetPlatform)};
+    return stage;
+}
+
+void RegisterStandardPbrFreshnessOnlyDependency(
+    NLS::Editor::Assets::AssetDatabaseFacade& database,
+    const std::filesystem::path& projectRoot)
 {
     using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    constexpr const char* standardPbrAssetPath =
+        "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
+    const auto roots = MakeProjectEditorAssetRoots(projectRoot);
+    const auto shaderRoot = std::find_if(
+        roots.begin(),
+        roots.end(),
+        [](const EditorAssetRoot& candidate)
+        {
+            return candidate.readOnly &&
+                candidate.mountPath == std::filesystem::path("Assets/Engine/Shaders");
+        });
+    ASSERT_NE(shaderRoot, roots.end());
+
+    const auto shaderSourcePath = shaderRoot->path / "ShaderLab" / "StandardPBR.shader";
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderSourcePath));
 
     const auto shaderId = ParseAssetId(
-        database.AssetPathToGUID("Assets/Engine/Shaders/ShaderLab/StandardPBR.shader"));
+        database.AssetPathToGUID(standardPbrAssetPath));
     ASSERT_TRUE(shaderId.IsValid());
 
-    ArtifactManifest manifest;
-    manifest.sourceAssetId = shaderId;
-    manifest.importerId = "shaderlab";
-    manifest.importerVersion = 1u;
-    manifest.targetPlatform = "editor";
-    manifest.primarySubAssetKey = "shader:StandardPBR/Forward#0";
-    manifest.subAssets.push_back(MakeArtifact(
-        shaderId,
-        manifest.primarySubAssetKey,
+    NLS::Render::Assets::ShaderArtifact shaderArtifact;
+    shaderArtifact.sourcePath = standardPbrAssetPath;
+    shaderArtifact.subAssetKey = "shader:StandardPBR/Forward#0";
+    shaderArtifact.stages = {
+        MakeFreshnessOnlyShaderStageForFacadeTests(NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL),
+        MakeFreshnessOnlyShaderStageForFacadeTests(NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV),
+        MakeFreshnessOnlyShaderStageForFacadeTests(NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL)
+    };
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = shaderId;
+    request.importerId = "shader";
+    request.importerVersion = GetCurrentImporterVersion(AssetType::Shader);
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = shaderArtifact.subAssetKey;
+    request.artifacts.push_back({
+        shaderArtifact.subAssetKey,
         ArtifactType::Shader,
-        "shader"));
-    database.AddArtifactManifest(std::move(manifest));
+        "shader",
+        "StandardPBR Forward",
+        "shader",
+        NLS::Render::Assets::SerializeShaderArtifact(shaderArtifact)
+    });
+
+    const auto shaderMetaPath = GetAssetMetaPath(shaderSourcePath);
+    const auto metaStamp = FileStamp(shaderMetaPath);
+    const auto sourceContentHash = SourceFileContentHash(shaderSourcePath);
+    ASSERT_FALSE(sourceContentHash.empty());
+    request.dependencies = {
+        {AssetDependencyKind::SourceFileHash, standardPbrAssetPath, sourceContentHash},
+        {
+            AssetDependencyKind::PathToGuidMapping,
+            std::string(standardPbrAssetPath) + ".meta",
+            metaStamp.empty() ? "guid:" + shaderId.ToString() : metaStamp
+        },
+        {AssetDependencyKind::ImporterVersion, request.importerId, std::to_string(request.importerVersion)},
+        {AssetDependencyKind::BuildTarget, request.targetPlatform, request.targetPlatform},
+        {
+            AssetDependencyKind::PostprocessorVersion,
+            "shader-compiler-toolchain",
+            NLS::Render::ShaderCompiler::BuildShaderCompilerToolchainDependencyFingerprint()
+        }
+    };
+
+    ArtifactWriter writer(
+        projectRoot / "Library" / "ArtifactStaging" / shaderId.ToString(),
+        projectRoot / "Library" / "Artifacts");
+    const auto writeResult = writer.WriteAndCommit(request, nullptr);
+    ASSERT_TRUE(writeResult.committed);
+    ASSERT_TRUE(writeResult.diagnostics.empty());
+    database.AddArtifactManifest(writeResult.manifest);
+
+    AssetDatabaseFacade reloadedDatabase(roots);
+    ASSERT_TRUE(reloadedDatabase.Refresh());
+    const auto persistedManifest = reloadedDatabase.GetArtifactManifestForAssetPath(standardPbrAssetPath);
+    ASSERT_TRUE(persistedManifest.has_value());
+    ASSERT_EQ(persistedManifest->primarySubAssetKey, shaderArtifact.subAssetKey);
+    const auto artifactPath = reloadedDatabase.ResolveArtifactPathAtPath(
+        standardPbrAssetPath,
+        shaderArtifact.subAssetKey);
+    ASSERT_TRUE(std::filesystem::is_regular_file(artifactPath));
+    EXPECT_TRUE(IsArtifactStorageFileName(artifactPath.filename().generic_string()));
+    const auto persistedArtifact = NLS::Render::Assets::LoadShaderArtifact(artifactPath);
+    ASSERT_TRUE(persistedArtifact.has_value());
+    ASSERT_EQ(persistedArtifact->stages.size(), shaderArtifact.stages.size());
+    EXPECT_EQ(persistedArtifact->sourcePath, standardPbrAssetPath);
+    EXPECT_EQ(persistedArtifact->subAssetKey, shaderArtifact.subAssetKey);
+    ASSERT_TRUE(reloadedDatabase.IsArtifactManifestCurrentForAssetPath(standardPbrAssetPath));
 }
 
 template <typename T>
@@ -1214,7 +1346,7 @@ TEST(AssetDatabaseFacadeTests, RefreshAndImportBatchingQueueWorkUntilStopAssetEd
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_FALSE(database.AssetPathToGUID("Assets/Textures/Existing.png").empty());
 
     database.StartAssetEditing();
@@ -1297,7 +1429,7 @@ TEST(AssetDatabaseFacadeTests, ImportModelSceneWritesInternalArtifactsAndGenerat
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
 
     const auto allAssets = database.LoadAllAssetsAtPath("Assets/Models/Hero.gltf");
@@ -1398,7 +1530,7 @@ TEST(AssetDatabaseFacadeTests, ProjectLibraryArtifactDatabaseStoresModelMaterial
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
 
     ArtifactDatabase artifactDatabase;
@@ -3248,7 +3380,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelManifestReloadsInFreshFacadeAfterRef
     {
         AssetDatabaseFacade importer({root});
         ASSERT_TRUE(importer.Refresh());
-        RegisterPreparedStandardPbrShaderDependency(importer);
+        RegisterStandardPbrFreshnessOnlyDependency(importer, root);
         ASSERT_TRUE(importer.ImportAsset("Assets/Models/Hero.gltf"));
     }
 
@@ -3287,7 +3419,7 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsStaleImporterMetada
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/StaleManifestHero.gltf"));
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/StaleManifestHero.gltf"));
 
@@ -3318,7 +3450,7 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsPreDx12TextureBuild
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/LegacyTextureBuildHero.gltf"));
     EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/LegacyTextureBuildHero.gltf"));
 
@@ -3356,7 +3488,7 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsReadOnlyMetaBelowCu
     writableRoots.push_back({packageRoot, false, "Packages", root / "Library"});
     AssetDatabaseFacade importer(writableRoots);
     ASSERT_TRUE(importer.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(importer);
+    RegisterStandardPbrFreshnessOnlyDependency(importer, root);
     ASSERT_TRUE(importer.ImportAsset("Packages/Models/LegacyReadOnlyHero.gltf"));
     {
         const auto sourceId = ParseAssetId(importer.AssetPathToGUID("Packages/Models/LegacyReadOnlyHero.gltf"));
@@ -3379,6 +3511,129 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsReadOnlyMetaBelowCu
     ASSERT_TRUE(readOnlyDatabase.Refresh());
 
     EXPECT_FALSE(readOnlyDatabase.IsArtifactManifestCurrentForAssetPath("Packages/Models/LegacyReadOnlyHero.gltf"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentUsesGuidFallbackForMissingReadOnlyPrimaryMeta)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto packageRoot = root / "Packages";
+    const auto sourcePath = packageRoot / "Materials" / "MissingMeta.mat";
+    WriteTextFile(sourcePath, "material");
+
+    auto roots = MakeProjectEditorAssetRoots(root);
+    roots.push_back({packageRoot, true, "Packages", root / "Library"});
+    AssetDatabaseFacade database(roots);
+    ASSERT_TRUE(database.Refresh());
+    RegisterCurrentMaterialManifestForMetaFallbackTest(
+        database,
+        root,
+        sourcePath,
+        "Packages/Materials/MissingMeta.mat");
+
+    AssetDatabaseFacade restarted(roots);
+    ASSERT_TRUE(restarted.Refresh());
+    EXPECT_TRUE(restarted.IsArtifactManifestCurrentForAssetPath("Packages/Materials/MissingMeta.mat"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentAcceptsContainedReadOnlyPrimaryMeta)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto packageRoot = root / "Packages";
+    const auto sourcePath = packageRoot / "Materials" / "ContainedMeta.mat";
+    WriteTextFile(sourcePath, "material");
+    auto meta = AssetMeta::CreateForAsset(sourcePath);
+    meta.id = ParseAssetId("a1111111-1111-4111-8111-111111111111");
+    ASSERT_TRUE(meta.Save(GetAssetMetaPath(sourcePath)));
+
+    auto roots = MakeProjectEditorAssetRoots(root);
+    roots.push_back({packageRoot, true, "Packages", root / "Library"});
+    AssetDatabaseFacade database(roots);
+    ASSERT_TRUE(database.Refresh());
+    RegisterCurrentMaterialManifestForMetaFallbackTest(
+        database,
+        root,
+        sourcePath,
+        "Packages/Materials/ContainedMeta.mat");
+
+    AssetDatabaseFacade restarted(roots);
+    ASSERT_TRUE(restarted.Refresh());
+    EXPECT_TRUE(restarted.IsArtifactManifestCurrentForAssetPath("Packages/Materials/ContainedMeta.mat"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsReadOnlyPrimaryMetaSymlinkEscape)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto packageRoot = root / "Packages";
+    const auto outside = std::filesystem::temp_directory_path() /
+        ("nullus_readonly_meta_symlink_outside_" + NLS::Guid::New().ToString());
+    const auto sourcePath = packageRoot / "Materials" / "EscapingMeta.mat";
+    const auto outsideMetaPath = outside / "EscapingMeta.mat.meta";
+    WriteTextFile(sourcePath, "material");
+    auto meta = AssetMeta::CreateForAsset(sourcePath);
+    meta.id = ParseAssetId("a2222222-2222-4222-8222-222222222222");
+    ASSERT_TRUE(meta.Save(outsideMetaPath));
+
+    std::error_code error;
+    std::filesystem::create_symlink(outsideMetaPath, GetAssetMetaPath(sourcePath), error);
+    if (error)
+    {
+        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(outside);
+        GTEST_SKIP() << "File symlink creation is not available in this environment.";
+    }
+
+    auto roots = MakeProjectEditorAssetRoots(root);
+    roots.push_back({packageRoot, true, "Packages", root / "Library"});
+    AssetDatabaseFacade database(roots);
+    ASSERT_TRUE(database.Refresh());
+    RegisterCurrentMaterialManifestForMetaFallbackTest(
+        database,
+        root,
+        sourcePath,
+        "Packages/Materials/EscapingMeta.mat");
+
+    AssetDatabaseFacade restarted(roots);
+    ASSERT_TRUE(restarted.Refresh());
+    EXPECT_FALSE(restarted.IsArtifactManifestCurrentForAssetPath("Packages/Materials/EscapingMeta.mat"));
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(outside);
+}
+
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsMissingWritablePrimaryMeta)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto sourcePath = root / "Assets" / "Materials" / "WritableMissingMeta.mat";
+    WriteTextFile(sourcePath, "material");
+
+    const auto roots = MakeProjectEditorAssetRoots(root);
+    AssetDatabaseFacade database(roots);
+    ASSERT_TRUE(database.Refresh());
+    RegisterCurrentMaterialManifestForMetaFallbackTest(
+        database,
+        root,
+        sourcePath,
+        "Assets/Materials/WritableMissingMeta.mat");
+    ASSERT_TRUE(std::filesystem::remove(GetAssetMetaPath(sourcePath)));
+
+    EXPECT_FALSE(database.IsArtifactManifestCurrentForAssetPath("Assets/Materials/WritableMissingMeta.mat"));
 
     std::filesystem::remove_all(root);
 }
@@ -3414,7 +3669,7 @@ f 1/1/1 2/2/1 3/3/1
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/TexturePipelineHero.obj"));
     ASSERT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/TexturePipelineHero.obj"));
 
@@ -3761,7 +4016,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelManifestRecordsExternalSourceDepende
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
 
     const auto sourceId = ParseAssetId(database.AssetPathToGUID("Assets/Models/Hero.gltf"));
@@ -3813,7 +4068,7 @@ f 1/1/1 2/2/1 3/3/1
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.obj"));
 
     const auto sourceId = ParseAssetId(database.AssetPathToGUID("Assets/Models/Hero.obj"));
@@ -3902,7 +4157,7 @@ TEST(AssetDatabaseFacadeTests, FailedAssimpModelImportDoesNotCommitEmptyArtifact
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ImportProgressTracker tracker;
     EXPECT_FALSE(database.ImportAsset("Assets/Models/Broken.fbx", tracker));
 
@@ -3972,7 +4227,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelMeshArtifactMergesMultiplePrimitives
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/TwoTriangles.gltf"));
 
     const auto firstPrimitiveRecord = database.LoadSubAssetAtPath(
@@ -4044,7 +4299,7 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesStaleNativeMeshArtifact)
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Reimported.gltf"));
     auto meshRecord = database.LoadSubAssetAtPath("Assets/Models/Reimported.gltf", "mesh:mesh/0");
     ASSERT_TRUE(meshRecord.has_value());
@@ -4166,7 +4421,7 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesNativeTextureArtifactsAndCe
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Textured.gltf"));
     ASSERT_TRUE(database.ReimportAsset("Assets/Models/Textured.gltf"));
 
@@ -4326,7 +4581,7 @@ TEST(AssetDatabaseFacadeTests, FailedReimportKeepsPreviousNativeMeshArtifact)
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Stable.gltf"));
     const auto meshRecord = database.LoadSubAssetAtPath("Assets/Models/Stable.gltf", "mesh:mesh/0");
     ASSERT_TRUE(meshRecord.has_value());
@@ -4388,7 +4643,7 @@ TEST(AssetDatabaseFacadeTests, FailedReimportRollsBackCommittedArtifactsWhenMani
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Transactional.gltf"));
     const auto meshRecord = database.LoadSubAssetAtPath("Assets/Models/Transactional.gltf", "mesh:mesh/0");
     ASSERT_TRUE(meshRecord.has_value());
@@ -4613,7 +4868,7 @@ TEST(AssetDatabaseFacadeTests, AssetBrowserHidesImportedModelGeneratedPrefabSubA
     {
         AssetDatabaseFacade importer({root});
         ASSERT_TRUE(importer.Refresh());
-        RegisterPreparedStandardPbrShaderDependency(importer);
+        RegisterStandardPbrFreshnessOnlyDependency(importer, root);
         ASSERT_TRUE(importer.ImportAsset("Assets/Models/Hero.gltf"));
     }
 
@@ -4733,7 +4988,7 @@ TEST(AssetDatabaseFacadeTests, ImportedModelGeneratedPrefabLoadsAndInstantiatesT
 
     AssetDatabaseFacade database({root});
     ASSERT_TRUE(database.Refresh());
-    RegisterPreparedStandardPbrShaderDependency(database);
+    RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
 
     auto prefab = database.LoadPrefabArtifactAtPath("Assets/Models/Hero.gltf", "prefab:Hero");
@@ -4809,7 +5064,7 @@ TEST(AssetDatabaseFacadeTests, EditorDragDropBridgeInstantiatesPreimportedModelG
     {
         AssetDatabaseFacade database({root});
         ASSERT_TRUE(database.Refresh());
-        RegisterPreparedStandardPbrShaderDependency(database);
+        RegisterStandardPbrFreshnessOnlyDependency(database, root);
         ASSERT_TRUE(database.ImportAsset("Assets/Models/BridgeHero.gltf"));
     }
     const auto result = bridge.DropModelAssetIntoHierarchy("Models/BridgeHero.gltf", scene);
@@ -4876,7 +5131,7 @@ TEST(AssetDatabaseFacadeTests, EditorDragDropBridgeInstantiatesGeneratedPrefabSu
     {
         AssetDatabaseFacade importer({root});
         ASSERT_TRUE(importer.Refresh());
-        RegisterPreparedStandardPbrShaderDependency(importer);
+        RegisterStandardPbrFreshnessOnlyDependency(importer, root);
         ASSERT_TRUE(importer.ImportAsset("Assets/Models/BridgeHero.gltf"));
     }
 

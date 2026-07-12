@@ -144,7 +144,7 @@ void WriteText(const std::filesystem::path& path, const std::string& text)
     output << text;
 }
 
-std::string FileStampForPreparedManifest(const std::filesystem::path& path)
+std::string FileStampForFreshnessOnlyShaderManifest(const std::filesystem::path& path)
 {
     std::error_code error;
     const auto size = std::filesystem::file_size(path, error);
@@ -160,7 +160,7 @@ std::string FileStampForPreparedManifest(const std::filesystem::path& path)
         std::to_string(static_cast<std::intmax_t>(writeTime.time_since_epoch().count()));
 }
 
-std::string ContentHashForPreparedManifest(const std::filesystem::path& path)
+std::string ContentHashForFreshnessOnlyShaderManifest(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
     const std::vector<uint8_t> bytes {
@@ -172,7 +172,7 @@ std::string ContentHashForPreparedManifest(const std::filesystem::path& path)
     return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
 }
 
-NLS::Render::Assets::ShaderArtifactStage MakePreparedShaderStage(
+NLS::Render::Assets::ShaderArtifactStage MakeFreshnessOnlyShaderStage(
     const NLS::Render::ShaderCompiler::ShaderTargetPlatform targetPlatform)
 {
     NLS::Render::Assets::ShaderArtifactStage stage;
@@ -183,12 +183,12 @@ NLS::Render::Assets::ShaderArtifactStage MakePreparedShaderStage(
         ? "glsl-450"
         : "vs_6_0";
     stage.output.status = NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded;
-    // Freshness tests need loader-usable stages, not compiler-specific production bytecode.
+    // These deterministic placeholder bytes are serialized for freshness tests and never reach a rendering backend.
     stage.output.bytecode = {0x4eu, 0x4cu, 0x53u, static_cast<uint8_t>(targetPlatform)};
     return stage;
 }
 
-void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
+void PrepareStandardPbrFreshnessOnlyDependency(const std::filesystem::path& root)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -218,9 +218,9 @@ void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
     shaderArtifact.sourcePath = standardPbrAssetPath;
     shaderArtifact.subAssetKey = "shader:StandardPBR/Forward#0";
     shaderArtifact.stages = {
-        MakePreparedShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL),
-        MakePreparedShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV),
-        MakePreparedShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL)
+        MakeFreshnessOnlyShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL),
+        MakeFreshnessOnlyShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV),
+        MakeFreshnessOnlyShaderStage(NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL)
     };
 
     ArtifactWriteRequest request;
@@ -239,9 +239,15 @@ void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
     });
 
     const auto shaderMetaPath = GetAssetMetaPath(shaderSourcePath);
-    const auto metaStamp = FileStampForPreparedManifest(shaderMetaPath);
+    const auto metaStamp = FileStampForFreshnessOnlyShaderManifest(shaderMetaPath);
+    const auto sourceContentHash = ContentHashForFreshnessOnlyShaderManifest(shaderSourcePath);
+    ASSERT_FALSE(sourceContentHash.empty());
     request.dependencies = {
-        {AssetDependencyKind::SourceFileHash, standardPbrAssetPath, ContentHashForPreparedManifest(shaderSourcePath)},
+        {
+            AssetDependencyKind::SourceFileHash,
+            standardPbrAssetPath,
+            sourceContentHash
+        },
         {
             AssetDependencyKind::PathToGuidMapping,
             std::string(standardPbrAssetPath) + ".meta",
@@ -272,17 +278,12 @@ void PrepareStandardPbrShaderLabDependency(const std::filesystem::path& root)
         standardPbrAssetPath,
         shaderArtifact.subAssetKey);
     ASSERT_TRUE(std::filesystem::is_regular_file(artifactPath));
+    EXPECT_TRUE(IsArtifactStorageFileName(artifactPath.filename().generic_string()));
     const auto persistedArtifact = NLS::Render::Assets::LoadShaderArtifact(artifactPath);
     ASSERT_TRUE(persistedArtifact.has_value());
-    ASSERT_TRUE(NLS::Render::Assets::HasUsableShaderArtifactStage(
-        *persistedArtifact,
-        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL));
-    ASSERT_TRUE(NLS::Render::Assets::HasUsableShaderArtifactStage(
-        *persistedArtifact,
-        NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV));
-    ASSERT_TRUE(NLS::Render::Assets::HasUsableShaderArtifactStage(
-        *persistedArtifact,
-        NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL));
+    ASSERT_EQ(persistedArtifact->stages.size(), shaderArtifact.stages.size());
+    EXPECT_EQ(persistedArtifact->sourcePath, standardPbrAssetPath);
+    EXPECT_EQ(persistedArtifact->subAssetKey, shaderArtifact.subAssetKey);
     ASSERT_TRUE(reloadedDatabase.IsArtifactManifestCurrentForAssetPath(standardPbrAssetPath));
 }
 
@@ -937,7 +938,7 @@ TEST(EditorAssetDatabaseTests, PreimportPlanSkipsWarmModelArtifacts)
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "WarmHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -968,7 +969,7 @@ TEST(EditorAssetDatabaseTests, StartupRefreshPlansPreimportWhenCentralArtifactDa
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "RollbackWarmHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -1020,7 +1021,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsWarmSceneAssetsWhenDepen
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ChangedHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1054,7 +1055,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStalePlanWhenAssetBecame
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ConcurrentHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade planningDatabase(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(planningDatabase.Refresh());
@@ -1138,7 +1139,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportUsesFilteredBatchSizeAfterSki
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StillColdHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade planningDatabase(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(planningDatabase.Refresh());
@@ -1182,7 +1183,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStartupGeneratedMetaForW
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupGeneratedMetaHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1228,7 +1229,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenS
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ChangedHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1272,7 +1273,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenA
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MissingArtifactHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1317,7 +1318,7 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsWarmSceneAssetsWhe
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupChangedHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1359,7 +1360,7 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsWarmSceneAssetsWhe
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupMissingArtifactHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1402,7 +1403,7 @@ TEST(EditorAssetDatabaseTests, EditorStartupPreimportReimportsMalformedManifestI
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupMalformedManifestHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1443,7 +1444,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportReimportsWarmSceneAssetsWhenM
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MetaChangedHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1499,7 +1500,7 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyManifestStaysWarmWhenDep
             ]
         })");
     WriteText(packageRoot / "Models" / "Hero.bin", "mesh-binary");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {root / "Assets", false, "Assets", root / "Library"},
@@ -1558,7 +1559,7 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyUsesOwningRootWhenAnothe
             ]
         })");
     WriteText(packageRoot / "Models" / "Hero.bin", "mesh-binary");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {projectRoot, false, {}},
@@ -1616,7 +1617,7 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangePlansOwningModel)
             ]
         })");
     WriteText(packageRoot / "Models" / "Hero.bin", "mesh-binary");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {root / "Assets", false, "Assets", root / "Library"},
@@ -1674,7 +1675,7 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangeIgnoresDisjointRoo
                 { "source": 0 }
             ]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {root / "Assets", false, "Assets", root / "Library"},
@@ -1727,7 +1728,7 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangeIgnoresNestedMount
                 { "source": 0 }
             ]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(AppendBuiltInShaderRootForTest(root, {
         EditorAssetRoot {root / "Assets", false, "Assets", root / "Library"},
@@ -1763,7 +1764,7 @@ TEST(EditorAssetDatabaseTests, AssetCopiedOrMovedPreimportSkipsWarmSceneAssetsWh
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "CopiedHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -1934,7 +1935,7 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportPlansModelWhenExternalDepende
             ]
         })");
     WriteText(root / "Assets" / "Models" / "Stable.gltf", R"({"asset":{"version":"2.0"}})");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -2003,7 +2004,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportWarmsColdModelBeforeRetur
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupColdHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -2048,7 +2049,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportSucceedsWhenNoProjectAsse
 
     const auto root = MakeEditorAssetTestRoot();
     std::filesystem::create_directories(root / "Assets");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -2204,7 +2205,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportFallsBackForDefaultFbxRea
                 NLS::Core::Assets::AssetType::ModelScene)) +
             "\n"
         "ASSET_TYPE=model-scene\n");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -2250,7 +2251,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportRunsPlannedImportsAgainstCurrentD
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "PlannedHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -2290,7 +2291,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportReportsPlanningAndCurrentAssetPro
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ProgressHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     std::vector<ImportProgressEvent> events;
     const auto result = RunBlockingStartupAssetPreimport(
@@ -2351,7 +2352,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportReportsOneAggregatedProgressForMu
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "SecondHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     std::vector<ImportProgressEvent> events;
     const auto result = RunBlockingStartupAssetPreimport(
@@ -2419,7 +2420,7 @@ TEST(EditorAssetDatabaseTests, StartupPreparedPrefabPreflightBudgetCapsAttempts)
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "SecondHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());
@@ -2531,7 +2532,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportProducesWarmDragHandleBef
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StartupDragHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -2579,7 +2580,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRepairsUnreadableWarmPref
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "UnreadableWarmHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -2659,7 +2660,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRejectsEscapingDatabaseAr
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "EscapingDatabaseHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -2684,7 +2685,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRejectsEscapingDatabaseAr
             7u,
             outsideArtifactPath.string());
     }
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -2730,7 +2731,7 @@ TEST(EditorAssetDatabaseTests, DatabaseArtifactPathRejectsProjectRelativeTypedPa
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ProjectRelativeArtifactHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -2775,7 +2776,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRejectsArtifactRootRelati
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ArtifactRootRelativeHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -2823,7 +2824,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportScansAssetsButDoesNotImpo
         })");
     WriteText(root / "Library" / "Artifacts" / "cached" / "670d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772", "cached-prefab");
     WriteText(root / "Library" / "Artifacts" / "cached" / "36eee85124b95361c55a48634e6956a87607d0b6a69bfd04ffcd04f145ffa8d7", "cached-mesh");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     const auto result = RunBlockingStartupAssetPreimport({root});
 
@@ -2857,7 +2858,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportUsesCacheForUnchangedRepe
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "CachedStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -2917,7 +2918,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportSkipsAlreadyCurrentAssetsDuringPl
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "PlanSkipWarmHeroBRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -2972,7 +2973,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportLoadsCacheIndexOnceForChangedSour
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "SinglePassChangedHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3033,7 +3034,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportAvoidsFullSourceRefreshForChanged
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "TargetedRefreshChangedHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3086,7 +3087,7 @@ TEST(EditorAssetDatabaseTests, TargetedRefreshLazilyLoadsPersistedManifestForKno
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "LazyTargetedManifestHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade warmDatabase(MakeProjectEditorAssetRoots(root));
@@ -3144,7 +3145,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitAvoidsRecursiveSourceEnum
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "EnumerationFastPathHeroBRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3194,7 +3195,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitAvoidsContentHashReads)
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "FingerprintFastPathHeroBRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3243,7 +3244,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportIndexRebuildUsesManifestContentHa
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "IndexManifestHashSidekickRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3319,7 +3320,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportMissingIndexSkipsImporterFingerpr
 
     const auto root = MakeEditorAssetTestRoot();
     std::filesystem::create_directories(root / "Assets");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3359,7 +3360,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitQueriesFileMetadataOncePe
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MetadataFastPathHeroBRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3413,7 +3414,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheHitReportsValidationProfile)
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ProfiledCacheHeroBRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3457,7 +3458,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheIndexRebuildSkipsUnchangedSh
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ShardWriteHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3497,7 +3498,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportPatchesChangedSourceIndexWhenPlan
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StampOnlyStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3550,7 +3551,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportPatchesChangedSourceIndexWhenPrev
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "StampOnlyStartupHeroMissingHashRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3601,7 +3602,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportPatchesBuiltInShaderSourceWhenPro
 
     const auto root = MakeEditorAssetTestRoot();
     std::filesystem::create_directories(root / "Assets");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3650,7 +3651,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheIndexRecordsManifestFreshnes
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ManifestFreshnessKeyHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3677,7 +3678,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheIgnoresBuiltInShaderTimestam
 
     const auto root = MakeEditorAssetTestRoot();
     WriteText(root / "Assets" / "Models" / "ColdHero.gltf", R"({"asset":{"version":"2.0"}})");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3736,7 +3737,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheMissReportsManifestFreshness
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MissReasonHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3782,7 +3783,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportManifestFreshnessMismatchTargetsA
             "nodes": [{ "name": "ToolchainOnlyHeroRoot" }]
         })");
     WriteBinary(root / "Assets" / "Textures" / "ToolchainOnlyAlbedo.png", TinyPng());
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3837,7 +3838,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportArtifactDatabaseStampMismatchRebu
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ArtifactStampHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3888,7 +3889,7 @@ TEST(EditorAssetDatabaseTests, StartupPreimportDirectoryChangeFallsBackToSourceE
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "DirectoryStampStableHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3945,7 +3946,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportCacheIgnoresNonStartupAss
             "nodes": [{ "name": "CacheIgnoresTextHeroRoot" }]
         })");
     WriteText(root / "Assets" / "Docs" / "notes.txt", "startup cache should not track this file\n");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -3995,7 +3996,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenAsset
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "InvalidatedStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4039,7 +4040,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenMetaC
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MetaInvalidatedStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4075,7 +4076,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenArtif
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MissingPayloadStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4116,7 +4117,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenArtif
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "CorruptPayloadStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4164,7 +4165,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesTruncatedCache
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "TruncatedIndexStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4204,7 +4205,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRejectsEscapingArtifactPa
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "EscapingIndexStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4275,7 +4276,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportFallsBackToFullPlanWhenAr
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "MissingPayloadDuringSourceChangeHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4330,7 +4331,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenExter
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ExternalDependencyHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4368,7 +4369,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenManif
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ManifestVersionStartupHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4420,7 +4421,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportInvalidatesCacheWhenSameS
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ContentHashStartupHeroA" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     StartupAssetPreimportOptions options;
     options.projectRoot = root;
@@ -4488,7 +4489,7 @@ NLS_LONG_RUNNING_TEST(EditorAssetDatabaseIntegrationPerformanceTests, BlockingSt
             "nodes": [{ "name": "LegacyTextureHeroRoot", "mesh": 0 }],
             "meshes": [{ "primitives": [{ "attributes": {}, "material": 0 }] }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -4577,7 +4578,7 @@ TEST(EditorAssetDatabaseTests, DatabaseArtifactPathAcceptsOnlyExtensionlessConte
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "ExtensionlessArtifactHeroRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     {
         AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
@@ -4655,7 +4656,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportDoesNotPrewarmRuntimeMesh
                 { "name": "WarmHeroRoot", "mesh": 0 }
             ]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     const auto projectAssetsRoot = (root / "Assets").string() + "/";
     NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(
@@ -4821,7 +4822,7 @@ TEST(EditorAssetDatabaseTests, ReadOnlySnapshotSharesLargeObjectReferenceSnapsho
             "scenes": [{ "nodes": [0] }],
             "nodes": [{ "name": "HeavyRoot" }]
         })");
-    PrepareStandardPbrShaderLabDependency(root);
+    PrepareStandardPbrFreshnessOnlyDependency(root);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(root));
     ASSERT_TRUE(database.Refresh());

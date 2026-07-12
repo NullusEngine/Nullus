@@ -82,6 +82,27 @@ void CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescripto
     }
 }
 
+void CompositeRenderer::BeginFrameForBackgroundPreview(const Data::FrameDescriptor& p_frameDescriptor)
+{
+    NLS_PROFILE_SCOPE();
+    m_rendererStats.BeginFrame();
+    ABaseRenderer::BeginFrameForBackgroundPreview(p_frameDescriptor);
+    m_compositeFrameActive = IsFrameActive();
+    if (!m_compositeFrameActive)
+        return;
+
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->BeginFrame(p_frameDescriptor);
+
+    for (const auto& [_, pass] : m_passes)
+    {
+        if (pass.second->IsEnabled())
+        {
+            pass.second->OnBeginFrame(p_frameDescriptor);
+        }
+    }
+}
+
 void CompositeRenderer::DrawFrame()
 {
     NLS_PROFILE_SCOPE();

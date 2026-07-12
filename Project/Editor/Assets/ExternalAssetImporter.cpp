@@ -11,6 +11,7 @@
 #include "Engine/Assets/ModelPrefabBuilder.h"
 #include "Profiling/Profiler.h"
 #include "Assets/NativeArtifactContainer.h"
+#include "Assets/SourceFileHashCache.h"
 #include "Rendering/Assets/MaterialConversion.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
@@ -21,6 +22,7 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/FbxSdkParser.h"
+#include "Serialize/ObjectGraphReader.h"
 #include "Serialize/ObjectGraphWriter.h"
 
 #include <Json/json.hpp>
@@ -296,6 +298,149 @@ private:
     std::chrono::steady_clock::time_point m_start;
 };
 
+struct GltfBufferViewPayloadLoadStats
+{
+    size_t requestedBufferViewCount = 0u;
+    size_t totalBufferViewCount = 0u;
+    size_t emittedBufferViewCount = 0u;
+    uint64_t totalBufferViewBytes = 0u;
+    uint64_t loadedBufferBytes = 0u;
+    uint64_t emittedBufferViewBytes = 0u;
+    int64_t sourceReadMilliseconds = 0;
+    int64_t jsonParseMilliseconds = 0;
+    int64_t bufferLoadMilliseconds = 0;
+    int64_t bufferViewReadMilliseconds = 0;
+    int64_t bufferViewCopyMilliseconds = 0;
+    int64_t totalMilliseconds = 0;
+};
+
+struct TexturePayloadLoadStats
+{
+    size_t sceneTextureCount = 0u;
+    size_t texturesWithSourceKey = 0u;
+    size_t dataUriTextureCount = 0u;
+    size_t bufferViewTextureCount = 0u;
+    size_t externalFileTextureCount = 0u;
+    size_t deferredExternalFileTextureCount = 0u;
+    size_t missingTextureCount = 0u;
+    size_t emptyPayloadCount = 0u;
+    size_t uniquePayloadCount = 0u;
+    uint64_t dataUriBytes = 0u;
+    uint64_t bufferViewBytes = 0u;
+    uint64_t externalFileBytes = 0u;
+    uint64_t totalPayloadBytes = 0u;
+    int64_t dataUriMilliseconds = 0;
+    int64_t bufferViewCopyMilliseconds = 0;
+    int64_t externalFileReadMilliseconds = 0;
+    int64_t totalMilliseconds = 0;
+    GltfBufferViewPayloadLoadStats gltfBufferViews;
+};
+
+struct DependencyRebuildStats
+{
+    int64_t externalSourceMilliseconds = 0;
+    int64_t parserExternalMilliseconds = 0;
+    int64_t objMaterialMilliseconds = 0;
+    int64_t resolvedTextureMilliseconds = 0;
+    int64_t textureBuildIdentityMilliseconds = 0;
+    int64_t totalMilliseconds = 0;
+    size_t externalSourceDependencyCount = 0u;
+    size_t totalDependencyCount = 0u;
+};
+
+constexpr size_t kMaxSynchronousProjectTextureAutoImportCount = 8u;
+constexpr size_t kMaxSynchronousModelLocalTextureArtifactCount = 8u;
+
+std::string FormatGltfBufferViewPayloadLoadStats(const GltfBufferViewPayloadLoadStats& stats)
+{
+    return "requestedBufferViews=" + std::to_string(stats.requestedBufferViewCount) +
+        " totalBufferViews=" + std::to_string(stats.totalBufferViewCount) +
+        " emittedBufferViews=" + std::to_string(stats.emittedBufferViewCount) +
+        " totalBufferViewBytes=" + std::to_string(stats.totalBufferViewBytes) +
+        " loadedBufferBytes=" + std::to_string(stats.loadedBufferBytes) +
+        " emittedBufferViewBytes=" + std::to_string(stats.emittedBufferViewBytes) +
+        " sourceReadMs=" + std::to_string(stats.sourceReadMilliseconds) +
+        " parseMs=" + std::to_string(stats.jsonParseMilliseconds) +
+        " bufferLoadMs=" + std::to_string(stats.bufferLoadMilliseconds) +
+        " viewReadMs=" + std::to_string(stats.bufferViewReadMilliseconds) +
+        " viewCopyMs=" + std::to_string(stats.bufferViewCopyMilliseconds) +
+        " totalMs=" + std::to_string(stats.totalMilliseconds);
+}
+
+std::string FormatTexturePayloadLoadStats(const TexturePayloadLoadStats& stats)
+{
+    return "textures=" + std::to_string(stats.sceneTextureCount) +
+        " sourceKeys=" + std::to_string(stats.texturesWithSourceKey) +
+        " uniquePayloads=" + std::to_string(stats.uniquePayloadCount) +
+        " bytes=" + std::to_string(stats.totalPayloadBytes) +
+        " dataUri=" + std::to_string(stats.dataUriTextureCount) +
+        "/" + std::to_string(stats.dataUriBytes) +
+        " bufferView=" + std::to_string(stats.bufferViewTextureCount) +
+        "/" + std::to_string(stats.bufferViewBytes) +
+        " externalFile=" + std::to_string(stats.externalFileTextureCount) +
+        "/" + std::to_string(stats.externalFileBytes) +
+        " deferredExternalFile=" + std::to_string(stats.deferredExternalFileTextureCount) +
+        " empty=" + std::to_string(stats.emptyPayloadCount) +
+        " missing=" + std::to_string(stats.missingTextureCount) +
+        " dataUriMs=" + std::to_string(stats.dataUriMilliseconds) +
+        " bufferViewCopyMs=" + std::to_string(stats.bufferViewCopyMilliseconds) +
+        " externalReadMs=" + std::to_string(stats.externalFileReadMilliseconds) +
+        " totalMs=" + std::to_string(stats.totalMilliseconds) +
+        " " + FormatGltfBufferViewPayloadLoadStats(stats.gltfBufferViews);
+}
+
+std::string FormatDependencyRebuildStats(const DependencyRebuildStats& stats)
+{
+    return "dependencies=" + std::to_string(stats.totalDependencyCount) +
+        " externalSourceDependencies=" + std::to_string(stats.externalSourceDependencyCount) +
+        " externalSourceMs=" + std::to_string(stats.externalSourceMilliseconds) +
+        " parserExternalMs=" + std::to_string(stats.parserExternalMilliseconds) +
+        " objMaterialMs=" + std::to_string(stats.objMaterialMilliseconds) +
+        " resolvedTextureMs=" + std::to_string(stats.resolvedTextureMilliseconds) +
+        " textureBuildIdentityMs=" + std::to_string(stats.textureBuildIdentityMilliseconds) +
+        " totalMs=" + std::to_string(stats.totalMilliseconds);
+}
+
+struct MeshSerializationContext
+{
+    std::unordered_map<std::string, const NLS::Render::Resources::Parsers::ParsedMeshData*> meshesByExactSourceKey;
+    std::unordered_map<std::string, size_t> meshStartIndexBySourceKey;
+    std::unordered_map<std::string, size_t> meshPrimitiveCountBySourceKey;
+};
+
+MeshSerializationContext BuildMeshSerializationContext(
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& sourceMeshes)
+{
+    MeshSerializationContext context;
+    context.meshesByExactSourceKey.reserve(sourceMeshes.size());
+    context.meshStartIndexBySourceKey.reserve(sourceMeshes.size());
+    context.meshPrimitiveCountBySourceKey.reserve(scene.meshes.size());
+
+    for (size_t index = 0u; index < sourceMeshes.size(); ++index)
+    {
+        const auto& mesh = sourceMeshes[index];
+        if (!mesh.sourceKey.empty())
+            context.meshesByExactSourceKey.emplace(mesh.sourceKey, &mesh);
+
+        if (mesh.sourceMeshIndex != std::numeric_limits<uint32_t>::max())
+            context.meshStartIndexBySourceKey.emplace("parser/mesh/" + std::to_string(mesh.sourceMeshIndex), index);
+
+        if (mesh.sourceMeshIndex == std::numeric_limits<uint32_t>::max())
+            context.meshStartIndexBySourceKey.emplace("mesh/" + std::to_string(index), index);
+        else
+            context.meshStartIndexBySourceKey.emplace("mesh/" + std::to_string(mesh.sourceMeshIndex), index);
+    }
+
+    for (const auto& mesh : scene.meshes)
+    {
+        if (!mesh.sourceKey.empty() && mesh.primitiveCount > 0u)
+            context.meshPrimitiveCountBySourceKey.emplace(mesh.sourceKey, static_cast<size_t>(mesh.primitiveCount));
+    }
+
+    return context;
+}
+
 std::optional<size_t> ParseIndexedSourceKey(const std::string& sourceKey, const std::string& prefix)
 {
     const auto expectedPrefix = prefix + "/";
@@ -338,11 +483,30 @@ bool WriteTextFile(const std::filesystem::path& path, const std::string& content
 
 std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
 {
-    std::ifstream input(path, std::ios::binary);
-    return {
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()
-    };
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input)
+        return {};
+
+    const auto endPosition = input.tellg();
+    if (endPosition == std::streampos(-1))
+        return {};
+    const auto fileSize = static_cast<std::streamoff>(endPosition);
+    if (fileSize < 0 ||
+        static_cast<uintmax_t>(fileSize) > static_cast<uintmax_t>((std::numeric_limits<size_t>::max)()) ||
+        static_cast<uintmax_t>(fileSize) > static_cast<uintmax_t>((std::numeric_limits<std::streamsize>::max)()))
+    {
+        return {};
+    }
+
+    std::vector<uint8_t> bytes(static_cast<size_t>(fileSize));
+    input.seekg(0, std::ios::beg);
+    if (!input)
+        return {};
+    if (!bytes.empty())
+        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (input.gcount() != static_cast<std::streamsize>(bytes.size()))
+        return {};
+    return bytes;
 }
 
 uint32_t ReadLittleEndianU32(const std::vector<uint8_t>& bytes, const size_t offset)
@@ -538,9 +702,34 @@ std::string FileStamp(const std::filesystem::path& path)
 
 std::string SourceFileContentHash(const std::filesystem::path& path)
 {
-    const auto bytes = ReadBinaryFile(path);
-    if (bytes.empty() && !std::filesystem::is_regular_file(path))
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error)
         return {};
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return {};
+
+    std::vector<uint8_t> bytes;
+    if (size <= static_cast<uintmax_t>(std::numeric_limits<size_t>::max()))
+        bytes.reserve(static_cast<size_t>(size));
+
+    std::vector<char> buffer(1024 * 1024);
+    while (input)
+    {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto read = input.gcount();
+        if (read <= 0)
+            continue;
+
+        const auto oldSize = bytes.size();
+        bytes.resize(oldSize + static_cast<size_t>(read));
+        std::memcpy(bytes.data() + oldSize, buffer.data(), static_cast<size_t>(read));
+    }
+    if (!input.eof())
+        return {};
+
     return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(bytes);
 }
 
@@ -821,7 +1010,8 @@ void AddResolvedTextureDependencies(
 
 std::vector<NLS::Core::Assets::AssetDependencyRecord> CollectExternalSourceFileDependencies(
     const ExternalModelImportRequest& request,
-    const NLS::Render::Assets::ImportedScene& scene)
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::unordered_set<std::string>* deferredTextureSourceKeys = nullptr)
 {
     std::vector<NLS::Core::Assets::AssetDependencyRecord> dependencies;
     for (const auto& buffer : scene.buffers)
@@ -842,6 +1032,11 @@ std::vector<NLS::Core::Assets::AssetDependencyRecord> CollectExternalSourceFileD
     {
         if (texture.embedded)
             continue;
+        if (deferredTextureSourceKeys != nullptr &&
+            deferredTextureSourceKeys->find(texture.sourceKey) != deferredTextureSourceKeys->end())
+        {
+            continue;
+        }
 
         auto dependency = MakeExternalSourceFileDependency(
             request.projectRoot,
@@ -1012,10 +1207,17 @@ std::vector<GltfAccessorData> ReadGltfAccessors(const ImportedSceneJson& root)
 
 std::unordered_map<std::string, std::vector<uint8_t>> LoadGltfBufferViewPayloads(
     const ExternalModelImportRequest& request,
-    const std::string& extension)
+    const std::string& extension,
+    const std::unordered_set<std::string>* requestedBufferViewKeys = nullptr,
+    GltfBufferViewPayloadLoadStats* stats = nullptr)
 {
+    const auto totalBegin = std::chrono::steady_clock::now();
+    if (stats && requestedBufferViewKeys)
+        stats->requestedBufferViewCount = requestedBufferViewKeys->size();
+
     std::string jsonText;
     std::vector<uint8_t> glbBinaryChunk;
+    auto stageBegin = std::chrono::steady_clock::now();
     if (extension == ".gltf")
     {
         jsonText = ReadTextFile(request.sourcePath);
@@ -1029,18 +1231,51 @@ std::unordered_map<std::string, std::vector<uint8_t>> LoadGltfBufferViewPayloads
     {
         return {};
     }
+    if (stats)
+        stats->sourceReadMilliseconds = MillisecondsSince(stageBegin);
 
+    stageBegin = std::chrono::steady_clock::now();
     const auto root = ImportedSceneJson::parse(jsonText, nullptr, false);
     if (root.is_discarded() || !root.is_object())
         return {};
+    if (stats)
+        stats->jsonParseMilliseconds = MillisecondsSince(stageBegin);
 
     std::vector<std::vector<uint8_t>> buffers;
+    stageBegin = std::chrono::steady_clock::now();
     LoadGltfBuffers(request, root, glbBinaryChunk, buffers);
+    if (stats)
+    {
+        stats->bufferLoadMilliseconds = MillisecondsSince(stageBegin);
+        for (const auto& buffer : buffers)
+            stats->loadedBufferBytes += static_cast<uint64_t>(buffer.size());
+    }
+
+    stageBegin = std::chrono::steady_clock::now();
     const auto bufferViews = ReadGltfBufferViews(root);
+    if (stats)
+    {
+        stats->bufferViewReadMilliseconds = MillisecondsSince(stageBegin);
+        stats->totalBufferViewCount = bufferViews.size();
+        for (const auto& view : bufferViews)
+            stats->totalBufferViewBytes += static_cast<uint64_t>(view.byteLength);
+    }
 
     std::unordered_map<std::string, std::vector<uint8_t>> payloads;
+    payloads.reserve(requestedBufferViewKeys && !requestedBufferViewKeys->empty()
+        ? requestedBufferViewKeys->size()
+        : bufferViews.size());
+    stageBegin = std::chrono::steady_clock::now();
     for (size_t index = 0u; index < bufferViews.size(); ++index)
     {
+        const auto key = "bufferView/" + std::to_string(index);
+        if (requestedBufferViewKeys &&
+            !requestedBufferViewKeys->empty() &&
+            requestedBufferViewKeys->find(key) == requestedBufferViewKeys->end())
+        {
+            continue;
+        }
+
         const auto& view = bufferViews[index];
         if (view.bufferIndex >= buffers.size())
             continue;
@@ -1050,10 +1285,20 @@ std::unordered_map<std::string, std::vector<uint8_t>> LoadGltfBufferViewPayloads
             continue;
 
         payloads.emplace(
-            "bufferView/" + std::to_string(index),
+            key,
             std::vector<uint8_t>(
                 buffer.begin() + static_cast<std::ptrdiff_t>(view.byteOffset),
                 buffer.begin() + static_cast<std::ptrdiff_t>(view.byteOffset + view.byteLength)));
+        if (stats)
+        {
+            ++stats->emittedBufferViewCount;
+            stats->emittedBufferViewBytes += static_cast<uint64_t>(view.byteLength);
+        }
+    }
+    if (stats)
+    {
+        stats->bufferViewCopyMilliseconds = MillisecondsSince(stageBegin);
+        stats->totalMilliseconds = MillisecondsSince(totalBegin);
     }
     return payloads;
 }
@@ -1695,11 +1940,13 @@ std::unordered_map<std::string, std::filesystem::path> BuildTextureArtifactPathM
 }
 
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestForSource(
-    const std::filesystem::path& projectRoot,
+    const ExternalModelImportRequest& request,
     const NLS::Core::Assets::AssetId sourceAssetId,
     const std::string& targetPlatform = "editor")
 {
-    return LoadArtifactManifestFromProjectArtifactDB(projectRoot, sourceAssetId, targetPlatform);
+    if (request.loadArtifactManifest)
+        return request.loadArtifactManifest(sourceAssetId, targetPlatform);
+    return LoadArtifactManifestFromProjectArtifactDB(request.projectRoot, sourceAssetId, targetPlatform);
 }
 
 std::string ArtifactTypeManifestKey(const NLS::Core::Assets::ArtifactType type)
@@ -1981,6 +2228,57 @@ TextureSourceKind TextureSourceKindForRecord(
     return TextureSourceKind::Missing;
 }
 
+bool HasModelLocalTexturePayloadSource(
+    const NLS::Render::Assets::ImportedSceneNamedRecord& texture,
+    const TextureSourceKind kind,
+    const std::unordered_map<std::string, std::vector<uint8_t>>& texturePayloads)
+{
+    if (texture.sourceKey.empty())
+        return false;
+    if (texturePayloads.find(texture.sourceKey) != texturePayloads.end())
+        return true;
+
+    return kind == TextureSourceKind::ExternalFile ||
+        kind == TextureSourceKind::EmbeddedData ||
+        kind == TextureSourceKind::BufferView;
+}
+
+size_t CountExternalFileModelLocalTexturePayloadSources(const std::vector<ModelTextureSourceReference>& sources)
+{
+    return static_cast<size_t>(std::count_if(
+        sources.begin(),
+        sources.end(),
+        [](const ModelTextureSourceReference& source)
+        {
+            return source.hasModelLocalPayload && source.kind == TextureSourceKind::ExternalFile;
+        }));
+}
+
+std::unordered_set<std::string> BuildDeferredBulkModelLocalTextureSourceKeys(
+    const ExternalModelImportRequest& request,
+    const std::vector<ModelTextureSourceReference>& sources)
+{
+    const auto externalTextureCount = CountExternalFileModelLocalTexturePayloadSources(sources);
+    if (!IsGltfModelSourcePath(request.sourcePath) ||
+        externalTextureCount <= kMaxSynchronousModelLocalTextureArtifactCount)
+    {
+        return {};
+    }
+
+    std::unordered_set<std::string> sourceKeys;
+    sourceKeys.reserve(externalTextureCount);
+    for (const auto& source : sources)
+    {
+        if (source.hasModelLocalPayload &&
+            source.kind == TextureSourceKind::ExternalFile &&
+            !source.sourceKey.empty())
+        {
+            sourceKeys.insert(source.sourceKey);
+        }
+    }
+    return sourceKeys;
+}
+
 std::vector<ModelTextureSourceReference> BuildModelTextureSourceReferences(
     const ExternalModelImportRequest& request,
     const NLS::Render::Assets::ImportedScene& scene,
@@ -2008,9 +2306,7 @@ std::vector<ModelTextureSourceReference> BuildModelTextureSourceReferences(
         {
             source.normalizedUri = texture.uri;
         }
-        source.hasModelLocalPayload =
-            !texture.sourceKey.empty() &&
-            texturePayloads.find(texture.sourceKey) != texturePayloads.end();
+        source.hasModelLocalPayload = HasModelLocalTexturePayloadSource(texture, source.kind, texturePayloads);
         sources.push_back(std::move(source));
     }
 
@@ -2161,7 +2457,7 @@ std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForPath(
 
     const auto artifactRoot = request.projectRoot / "Library" / "Artifacts";
     const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
-    auto manifest = LoadArtifactManifestForSource(request.projectRoot, meta.id, textureTargetPlatform);
+    auto manifest = LoadArtifactManifestForSource(request, meta.id, textureTargetPlatform);
     if (!manifest.has_value() && settings.autoImportMissingTextureFiles)
         manifest = AutoImportMissingProjectTextureAsset(request, editorPath, meta, diagnostics, sideEffects, textureEncoders);
     if (manifest.has_value() &&
@@ -2219,7 +2515,7 @@ std::optional<ModelTextureAssetCandidate> BuildTextureAssetCandidateForExistingA
 
     const auto artifactRoot = request.projectRoot / "Library" / "Artifacts";
     const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
-    const auto manifest = LoadArtifactManifestForSource(request.projectRoot, meta->id, textureTargetPlatform);
+    const auto manifest = LoadArtifactManifestForSource(request, meta->id, textureTargetPlatform);
     if (!manifest.has_value())
         return candidate;
 
@@ -2335,7 +2631,7 @@ std::optional<ModelTextureAssetCandidate> BuildTextureAssetCandidateForRemapSett
     candidate.assetId = setting.targetAssetId;
     const auto artifactRoot = request.projectRoot / "Library" / "Artifacts";
     const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
-    const auto manifest = LoadArtifactManifestForSource(request.projectRoot, setting.targetAssetId, textureTargetPlatform);
+    const auto manifest = LoadArtifactManifestForSource(request, setting.targetAssetId, textureTargetPlatform);
     if (!manifest.has_value())
         return candidate;
 
@@ -2350,12 +2646,15 @@ std::optional<ModelTextureAssetCandidate> BuildTextureAssetCandidateForRemapSett
     return candidate;
 }
 
-std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForName(
+std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForNames(
     const ExternalModelImportRequest& request,
-    const std::string& nameQuery)
+    const std::set<std::string>& nameQueries,
+    size_t* scanCount)
 {
     std::vector<ModelTextureAssetCandidate> candidates;
-    if (request.projectRoot.empty() || nameQuery.empty())
+    if (scanCount != nullptr)
+        *scanCount = 0u;
+    if (request.projectRoot.empty() || nameQueries.empty())
         return candidates;
 
     std::error_code error;
@@ -2366,6 +2665,8 @@ std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForName(
     std::filesystem::recursive_directory_iterator iterator(normalizedRoot, error);
     if (error)
         return candidates;
+    if (scanCount != nullptr)
+        *scanCount = 1u;
 
     const std::filesystem::recursive_directory_iterator end;
     for (; iterator != end; iterator.increment(error))
@@ -2409,15 +2710,20 @@ std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForName(
             continue;
         const auto editorPath = ToImportEditorPath(request, projectRelativePath);
 
-        const bool nameMatches = CaseInsensitiveMatch(editorPath.filename().generic_string(), nameQuery) ||
-            CaseInsensitiveMatch(editorPath.stem().generic_string(), nameQuery);
-        if (!nameMatches)
-            continue;
-
-        if (auto candidate = BuildTextureAssetCandidateForExistingAsset(request, editorPath, nameQuery);
-            candidate.has_value())
+        const auto filename = editorPath.filename().generic_string();
+        const auto stem = editorPath.stem().generic_string();
+        for (const auto& nameQuery : nameQueries)
         {
-            candidates.push_back(std::move(*candidate));
+            const bool nameMatches = CaseInsensitiveMatch(filename, nameQuery) ||
+                CaseInsensitiveMatch(stem, nameQuery);
+            if (!nameMatches)
+                continue;
+
+            if (auto candidate = BuildTextureAssetCandidateForExistingAsset(request, editorPath, nameQuery);
+                candidate.has_value())
+            {
+                candidates.push_back(std::move(*candidate));
+            }
         }
     }
 
@@ -2426,6 +2732,8 @@ std::vector<ModelTextureAssetCandidate> BuildTextureAssetCandidatesForName(
         candidates.end(),
         [](const ModelTextureAssetCandidate& lhs, const ModelTextureAssetCandidate& rhs)
         {
+            if (lhs.nameQuery != rhs.nameQuery)
+                return lhs.nameQuery < rhs.nameQuery;
             if (lhs.rootIndex != rhs.rootIndex)
                 return lhs.rootIndex < rhs.rootIndex;
             const auto lhsPath = lhs.editorPath.generic_string();
@@ -2473,6 +2781,7 @@ ModelTextureResolveRequest BuildModelTextureResolveRequest(
     std::vector<ModelTextureAutoImportSideEffect>* sideEffects,
     const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders)
 {
+    const auto resolveBegin = std::chrono::steady_clock::now();
     ModelTextureResolveRequest resolveRequest;
     resolveRequest.settings = LoadModelTextureResolutionSettings(request.meta);
     resolveRequest.remaps = BuildModelTextureExplicitRemaps(request, diagnostics);
@@ -2495,6 +2804,30 @@ ModelTextureResolveRequest BuildModelTextureResolveRequest(
         }
     }
 
+    if (resolveRequest.settings.autoImportMissingTextureFiles &&
+        pathQueries.size() > kMaxSynchronousProjectTextureAutoImportCount)
+    {
+        resolveRequest.settings.autoImportMissingTextureFiles = false;
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.272,
+            "Deferred bulk project texture auto-import | pathQueries=" +
+                std::to_string(pathQueries.size()) +
+                " threshold=" + std::to_string(kMaxSynchronousProjectTextureAutoImportCount) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(resolveBegin)));
+    }
+
+    ReportProgress(
+        request,
+        ImportPhase::IntermediateConversion,
+        0.275,
+        "Model texture resolve queries | sources=" + std::to_string(sources.size()) +
+            " pathQueries=" + std::to_string(pathQueries.size()) +
+            " nameQueries=" + std::to_string(nameQueries.size()) +
+            " elapsedMs=" + std::to_string(MillisecondsSince(resolveBegin)));
+
+    size_t processedPathQueries = 0u;
     for (const auto& path : pathQueries)
     {
         auto candidates = BuildTextureAssetCandidatesForPath(
@@ -2508,15 +2841,36 @@ ModelTextureResolveRequest BuildModelTextureResolveRequest(
             resolveRequest.pathCandidates.end(),
             std::make_move_iterator(candidates.begin()),
             std::make_move_iterator(candidates.end()));
+        ++processedPathQueries;
+        if (processedPathQueries == pathQueries.size() || processedPathQueries % 8u == 0u)
+        {
+            ReportProgress(
+                request,
+                ImportPhase::IntermediateConversion,
+                0.285,
+                "Resolved model texture path candidates | processed=" +
+                    std::to_string(processedPathQueries) +
+                    " total=" + std::to_string(pathQueries.size()) +
+                    " candidates=" + std::to_string(resolveRequest.pathCandidates.size()) +
+                    " elapsedMs=" + std::to_string(MillisecondsSince(resolveBegin)));
+        }
     }
 
-    for (const auto& nameQuery : nameQueries)
+    if (!nameQueries.empty())
     {
-        auto candidates = BuildTextureAssetCandidatesForName(request, nameQuery);
-        resolveRequest.nameCandidates.insert(
-            resolveRequest.nameCandidates.end(),
-            std::make_move_iterator(candidates.begin()),
-            std::make_move_iterator(candidates.end()));
+        size_t nameSearchScanCount = 0u;
+        resolveRequest.nameCandidates =
+            BuildTextureAssetCandidatesForNames(request, nameQueries, &nameSearchScanCount);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.295,
+            "Resolved model texture name candidates | processed=" +
+                std::to_string(nameQueries.size()) +
+                " total=" + std::to_string(nameQueries.size()) +
+                " candidates=" + std::to_string(resolveRequest.nameCandidates.size()) +
+                " scanCount=" + std::to_string(nameSearchScanCount) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(resolveBegin)));
     }
 
     return resolveRequest;
@@ -2657,7 +3011,7 @@ std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextu
         serialized
     });
 
-    const auto previousManifest = LoadArtifactManifestForSource(request.projectRoot, textureMeta.id, textureTargetPlatform);
+    const auto previousManifest = LoadArtifactManifestForSource(request, textureMeta.id, textureTargetPlatform);
     NLS::Core::Assets::ArtifactWriter writer(stagingRoot, artifactRoot);
     const auto writeResult = writer.WriteAndCommit(
         writeRequest,
@@ -2866,11 +3220,56 @@ const NLS::Render::Assets::ImportedSceneNamedRecord* FindTextureRecord(
     return found != scene.textures.end() ? &*found : nullptr;
 }
 
+std::vector<uint8_t> LoadExternalTextureFilePayload(
+    const ExternalModelImportRequest& request,
+    const NLS::Render::Assets::ImportedSceneNamedRecord& texture)
+{
+    if (TextureSourceKindForRecord(texture) != TextureSourceKind::ExternalFile)
+        return {};
+
+    const auto filePath = ResolveExternalSceneResourcePath(request, texture.uri);
+    return filePath.has_value()
+        ? ReadBinaryFile(*filePath)
+        : std::vector<uint8_t> {};
+}
+
 std::unordered_map<std::string, std::vector<uint8_t>> LoadTexturePayloads(
     const ExternalModelImportRequest& request,
     const NLS::Render::Assets::ImportedScene& scene,
-    const std::string& extension)
+    const std::string& extension,
+    TexturePayloadLoadStats* stats = nullptr)
 {
+    const auto totalBegin = std::chrono::steady_clock::now();
+    if (stats)
+        stats->sceneTextureCount = scene.textures.size();
+
+    std::unordered_set<std::string> requestedBufferViewKeys;
+    if (stats || std::any_of(
+        scene.textures.begin(),
+        scene.textures.end(),
+        [](const NLS::Render::Assets::ImportedSceneNamedRecord& texture)
+        {
+            return !texture.bufferViewKey.empty();
+        }))
+    {
+        requestedBufferViewKeys.reserve(scene.textures.size());
+        for (const auto& texture : scene.textures)
+        {
+            if (!texture.sourceKey.empty() && stats)
+                ++stats->texturesWithSourceKey;
+            if (!texture.bufferViewKey.empty())
+                requestedBufferViewKeys.insert(texture.bufferViewKey);
+        }
+    }
+    else if (stats)
+    {
+        for (const auto& texture : scene.textures)
+        {
+            if (!texture.sourceKey.empty())
+                ++stats->texturesWithSourceKey;
+        }
+    }
+
     const auto needsGltfBufferViews = std::any_of(
         scene.textures.begin(),
         scene.textures.end(),
@@ -2879,10 +3278,16 @@ std::unordered_map<std::string, std::vector<uint8_t>> LoadTexturePayloads(
             return !texture.bufferViewKey.empty();
         });
     const auto bufferViewPayloads = needsGltfBufferViews
-        ? LoadGltfBufferViewPayloads(request, extension)
+        ? LoadGltfBufferViewPayloads(
+            request,
+            extension,
+            requestedBufferViewKeys.empty() ? nullptr : &requestedBufferViewKeys,
+            stats ? &stats->gltfBufferViews : nullptr)
         : std::unordered_map<std::string, std::vector<uint8_t>> {};
 
     std::unordered_map<std::string, std::vector<uint8_t>> payloads;
+    payloads.reserve(scene.textures.size());
+    const bool eagerLoadExternalTextureFiles = extension == ".fbx";
     for (const auto& texture : scene.textures)
     {
         if (texture.sourceKey.empty())
@@ -2891,20 +3296,65 @@ std::unordered_map<std::string, std::vector<uint8_t>> LoadTexturePayloads(
         std::vector<uint8_t> bytes;
         if (IsDataUri(texture.uri))
         {
+            const auto stageBegin = std::chrono::steady_clock::now();
             bytes = DecodeDataUri(texture.uri);
+            if (stats)
+            {
+                ++stats->dataUriTextureCount;
+                stats->dataUriBytes += static_cast<uint64_t>(bytes.size());
+                stats->dataUriMilliseconds += MillisecondsSince(stageBegin);
+            }
         }
         else if (!texture.bufferViewKey.empty())
         {
+            const auto stageBegin = std::chrono::steady_clock::now();
             const auto found = bufferViewPayloads.find(texture.bufferViewKey);
             if (found != bufferViewPayloads.end())
                 bytes = found->second;
+            else if (stats)
+                ++stats->missingTextureCount;
+            if (stats)
+            {
+                ++stats->bufferViewTextureCount;
+                stats->bufferViewBytes += static_cast<uint64_t>(bytes.size());
+                stats->bufferViewCopyMilliseconds += MillisecondsSince(stageBegin);
+            }
         }
         else if (auto filePath = ResolveExternalSceneResourcePath(request, texture.uri))
         {
+            if (!eagerLoadExternalTextureFiles)
+            {
+                if (stats)
+                    ++stats->deferredExternalFileTextureCount;
+                continue;
+            }
+
+            const auto stageBegin = std::chrono::steady_clock::now();
             bytes = ReadBinaryFile(*filePath);
+            if (stats)
+            {
+                ++stats->externalFileTextureCount;
+                stats->externalFileBytes += static_cast<uint64_t>(bytes.size());
+                stats->externalFileReadMilliseconds += MillisecondsSince(stageBegin);
+            }
+        }
+        else if (stats)
+        {
+            ++stats->missingTextureCount;
         }
 
+        if (stats)
+        {
+            stats->totalPayloadBytes += static_cast<uint64_t>(bytes.size());
+            if (bytes.empty())
+                ++stats->emptyPayloadCount;
+        }
         payloads.emplace(texture.sourceKey, std::move(bytes));
+    }
+    if (stats)
+    {
+        stats->uniquePayloadCount = payloads.size();
+        stats->totalMilliseconds = MillisecondsSince(totalBegin);
     }
     return payloads;
 }
@@ -3494,7 +3944,18 @@ std::vector<uint8_t> SerializeTextureSubAsset(
     const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders)
 {
     const auto payload = texturePayloads.find(subAsset.sourceKey);
-    const auto* bytes = payload != texturePayloads.end() ? &payload->second : nullptr;
+    const std::vector<uint8_t>* bytes = payload != texturePayloads.end() ? &payload->second : nullptr;
+    std::vector<uint8_t> deferredExternalFileBytes;
+    if (bytes == nullptr)
+    {
+        if (const auto* texture = FindTextureRecord(scene, subAsset.sourceKey);
+            texture != nullptr && TextureSourceKindForRecord(*texture) == TextureSourceKind::ExternalFile)
+        {
+            deferredExternalFileBytes = LoadExternalTextureFilePayload(request, *texture);
+            bytes = &deferredExternalFileBytes;
+        }
+    }
+
     const auto colorSpace = [&]()
     {
         const auto found = textureColorSpaces.find(subAsset.sourceKey);
@@ -3516,7 +3977,7 @@ std::vector<uint8_t> SerializeTextureSubAsset(
             textureBuildTargetPlatform,
             textureEncoders)
         : std::vector<uint8_t> {};
-    if (!serialized.empty())
+    if (!serialized.empty() && payload != texturePayloads.end())
         texturePayloads.erase(payload);
     return serialized;
 }
@@ -3537,10 +3998,29 @@ void RecordTextureSlotColorSpace(
         entry->second = artifactColorSpace;
 }
 
+enum class ProvisionalManifestPathMode
+{
+    LogicalRelativePath,
+    ContentAddressedPath
+};
+
+std::filesystem::path BuildProvisionalArtifactPath(
+    const ExternalModelImportRequest& request,
+    const NLS::Core::Assets::ArtifactPayload& payload,
+    const NLS::Core::Assets::ArtifactWriteRequest& writeRequest,
+    const ProvisionalManifestPathMode pathMode)
+{
+    if (pathMode == ProvisionalManifestPathMode::ContentAddressedPath)
+        return request.committedRoot / NLS::Core::Assets::BuildContentAddressedArtifactRelativePath(writeRequest, payload);
+
+    return request.committedRoot / payload.relativePath;
+}
+
 NLS::Core::Assets::ArtifactManifest MakeProvisionalManifest(
     const ExternalModelImportRequest& request,
     const std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
-    const NLS::Core::Assets::ArtifactWriteRequest& writeRequest)
+    const NLS::Core::Assets::ArtifactWriteRequest& writeRequest,
+    const ProvisionalManifestPathMode pathMode = ProvisionalManifestPathMode::ContentAddressedPath)
 {
     NLS::Core::Assets::ArtifactManifest manifest;
     manifest.sourceAssetId = request.meta.id;
@@ -3557,11 +4037,40 @@ NLS::Core::Assets::ArtifactManifest MakeProvisionalManifest(
             payload.artifactType,
             payload.loaderId,
             request.targetPlatform,
-            (request.committedRoot / NLS::Core::Assets::BuildContentAddressedArtifactRelativePath(writeRequest, payload)).string(),
+            BuildProvisionalArtifactPath(request, payload, writeRequest, pathMode).string(),
             "provisional"
         });
     }
     return manifest;
+}
+
+bool AttachPrefabValidationProofDependencies(
+    std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Engine::Assets::PrefabArtifact& prefabArtifact)
+{
+    bool attachedProof = false;
+    for (auto& payload : payloads)
+    {
+        if (payload.artifactType != NLS::Core::Assets::ArtifactType::Prefab)
+            continue;
+
+        auto proofArtifact = prefabArtifact;
+        const auto serializedPayloadValidationFingerprint =
+            NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(proofArtifact);
+        if (proofArtifact.Validate(serializedPayloadValidationFingerprint).HasErrors())
+            return false;
+        proofArtifact.resolvedAssets = NLS::Engine::Assets::BuildPrefabValidationResolvedAssetsFromManifest(manifest);
+        const auto validationFingerprint =
+            NLS::Engine::Assets::BuildPrefabArtifactValidationFingerprint(proofArtifact);
+        payload.dependencies.push_back({
+            NLS::Core::Assets::AssetDependencyKind::PrefabValidation,
+            payload.subAssetKey,
+            std::to_string(validationFingerprint)
+        });
+        attachedProof = true;
+    }
+    return attachedProof;
 }
 
 NLS::Render::Assets::MaterialSourceModel MaterialSourceForExtension(const std::string& extension)
@@ -3739,7 +4248,8 @@ NLS::Render::Assets::ImportedScene ImportSceneForRequest(
         std::vector<std::string> materialNames;
         const auto parserFlags = extension == ".fbx"
             ? NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE |
-                NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE
+                NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE |
+                NLS::Render::Resources::Parsers::EModelParserFlags::FLIP_UVS
             : NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE;
         NLS::Render::Assets::ImportedScene detailedScene;
         detailedScene.sourceAssetId = request.meta.id;
@@ -3998,40 +4508,21 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(
 std::vector<uint8_t> SerializeMeshSubAsset(
     const NLS::Render::Assets::ImportedScene& scene,
     const NLS::Render::Assets::GeneratedSceneSubAsset& subAsset,
-    const std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& sourceMeshes)
+    const std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& sourceMeshes,
+    const MeshSerializationContext& context)
 {
-    std::unordered_map<std::string, const NLS::Render::Resources::Parsers::ParsedMeshData*> meshesByExactSourceKey;
-    meshesByExactSourceKey.reserve(sourceMeshes.size());
-    std::unordered_map<std::string, size_t> meshStartIndexBySourceKey;
-    meshStartIndexBySourceKey.reserve(sourceMeshes.size());
-    for (size_t index = 0u; index < sourceMeshes.size(); ++index)
+    const auto mappedMesh = context.meshesByExactSourceKey.find(subAsset.sourceKey);
+    const auto primitiveCount = [&context, &subAsset]()
     {
-        const auto& mesh = sourceMeshes[index];
-        if (!mesh.sourceKey.empty())
-            meshesByExactSourceKey.emplace(mesh.sourceKey, &mesh);
-
-        if (mesh.sourceMeshIndex != std::numeric_limits<uint32_t>::max())
-            meshStartIndexBySourceKey.emplace("parser/mesh/" + std::to_string(mesh.sourceMeshIndex), index);
-
-        if (mesh.sourceMeshIndex == std::numeric_limits<uint32_t>::max())
-            meshStartIndexBySourceKey.emplace("mesh/" + std::to_string(index), index);
-        else
-            meshStartIndexBySourceKey.emplace("mesh/" + std::to_string(mesh.sourceMeshIndex), index);
-    }
-
-    const auto mappedMesh = meshesByExactSourceKey.find(subAsset.sourceKey);
-    const auto meshRecord = std::find_if(
-        scene.meshes.begin(),
-        scene.meshes.end(),
-        [&subAsset](const NLS::Render::Assets::ImportedSceneNamedRecord& mesh)
+        if (const auto found = context.meshPrimitiveCountBySourceKey.find(subAsset.sourceKey);
+            found != context.meshPrimitiveCountBySourceKey.end() && found->second > 0u)
         {
-            return mesh.sourceKey == subAsset.sourceKey;
-        });
-    const auto primitiveCount = meshRecord != scene.meshes.end() && meshRecord->primitiveCount > 0u
-        ? static_cast<size_t>(meshRecord->primitiveCount)
-        : 1u;
+            return found->second;
+        }
+        return size_t {1u};
+    }();
 
-    if (mappedMesh != meshesByExactSourceKey.end())
+    if (mappedMesh != context.meshesByExactSourceKey.end())
     {
         NLS::Render::Assets::MeshArtifactData mesh;
         mesh.vertices = mappedMesh->second->vertices;
@@ -4042,8 +4533,8 @@ std::vector<uint8_t> SerializeMeshSubAsset(
     }
 
     std::optional<size_t> sourceIndex;
-    if (const auto foundStartIndex = meshStartIndexBySourceKey.find(subAsset.sourceKey);
-        foundStartIndex != meshStartIndexBySourceKey.end())
+    if (const auto foundStartIndex = context.meshStartIndexBySourceKey.find(subAsset.sourceKey);
+        foundStartIndex != context.meshStartIndexBySourceKey.end())
     {
         sourceIndex = foundStartIndex->second;
     }
@@ -4084,6 +4575,7 @@ void AppendConvertedMaterialPayloads(
     std::string materialShaderResourcePath,
     std::unordered_map<std::string, std::filesystem::path> importedTextureArtifactPaths,
     std::unordered_map<std::string, bool> sourceTextureAlphaEvidence,
+    const std::unordered_set<std::string>& deferredTextureSourceKeys,
     std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
     std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace>& textureColorSpaces)
 {
@@ -4095,7 +4587,8 @@ void AppendConvertedMaterialPayloads(
         std::move(importedTextureArtifactPaths),
         std::move(materialShaderResourcePath),
         scene.importSettings.ignoreFbxTexturedNeutralDiffuseTint,
-        std::move(sourceTextureAlphaEvidence)
+        std::move(sourceTextureAlphaEvidence),
+        deferredTextureSourceKeys
     };
     for (const auto& material : scene.materials)
     {
@@ -4196,10 +4689,19 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     timingStats.diagnosticCount = result.diagnostics.size();
 
     ReportProgress(request, ImportPhase::IntermediateConversion, 0.25, "Converting scene hierarchy and materials");
+    const auto conversionBegin = std::chrono::steady_clock::now();
     std::vector<NLS::Render::Assets::GeneratedSceneSubAsset> subAssets;
     {
+        const auto begin = std::chrono::steady_clock::now();
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::GenerateSubAssets");
         subAssets = NLS::Render::Assets::GenerateSceneSubAssets(scene);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.255,
+            "Generated scene sub-assets | subAssets=" + std::to_string(subAssets.size()) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
+                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
     }
     timingStats.subAssetCount = subAssets.size();
     std::vector<NLS::Core::Assets::ArtifactPayload> payloads;
@@ -4207,15 +4709,20 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
 
     const auto extension = ToLower(request.sourcePath.extension().string());
     std::unordered_map<std::string, std::vector<uint8_t>> texturePayloads;
+    TexturePayloadLoadStats texturePayloadStats;
     const bool needsEarlyTexturePayloads = extension == ".fbx";
     if (needsEarlyTexturePayloads)
     {
         ReportProgress(request, ImportPhase::IntermediateConversion, 0.30, "Loading texture payloads");
         {
             NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::LoadTextures");
-            texturePayloads = LoadTexturePayloads(request, scene, extension);
+            texturePayloads = LoadTexturePayloads(request, scene, extension, &texturePayloadStats);
         }
-        ReportProgress(request, ImportPhase::IntermediateConversion, 0.34, "Loaded texture payloads");
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.34,
+            "Loaded texture payloads | " + FormatTexturePayloadLoadStats(texturePayloadStats));
     }
     const auto decalBaseColorAlphaEvidence = needsEarlyTexturePayloads
         ? BuildFbxDecalBaseColorAlphaEvidence(scene, texturePayloads, request.sourcePath)
@@ -4226,19 +4733,56 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     std::vector<ModelTextureAutoImportSideEffect> autoImportSideEffects;
     ModelTextureAutoImportCleanupGuard autoImportCleanupGuard(autoImportSideEffects);
     std::unordered_set<std::string> externallyResolvedTextureSourceKeys;
+    std::unordered_set<std::string> deferredBulkModelLocalTextureSourceKeys;
     std::unordered_map<std::string, std::filesystem::path> resolvedTextureArtifactPaths;
     NLS::Render::Assets::TextureEncoderRegistry textureEncoders;
 #if NLS_HAS_DIRECTXTEX
     textureEncoders.Register(CreateDirectXTexTextureEncoder());
 #endif
-    textureSources = BuildModelTextureSourceReferences(request, scene, texturePayloads);
     {
+        const auto begin = std::chrono::steady_clock::now();
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.26, "Building model texture source references");
+        textureSources = BuildModelTextureSourceReferences(request, scene, texturePayloads);
+        deferredBulkModelLocalTextureSourceKeys = BuildDeferredBulkModelLocalTextureSourceKeys(request, textureSources);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.265,
+            "Built model texture source references | textures=" + std::to_string(scene.textures.size()) +
+                " sources=" + std::to_string(textureSources.size()) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
+                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
+        if (!deferredBulkModelLocalTextureSourceKeys.empty())
+        {
+            ReportProgress(
+                request,
+                ImportPhase::IntermediateConversion,
+                0.266,
+                "Deferred bulk model-local texture artifacts | modelLocalTextures=" +
+                    std::to_string(deferredBulkModelLocalTextureSourceKeys.size()) +
+                    " threshold=" + std::to_string(kMaxSynchronousModelLocalTextureArtifactCount) +
+                    " reason=external-file-decode");
+        }
+    }
+    {
+        const auto begin = std::chrono::steady_clock::now();
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.27, "Building model texture resolve request");
         const auto resolveRequest = BuildModelTextureResolveRequest(
             request,
             textureSources,
             result.diagnostics,
             &autoImportSideEffects,
             textureEncoders);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.305,
+            "Built model texture resolve request | pathCandidates=" +
+                std::to_string(resolveRequest.pathCandidates.size()) +
+                " nameCandidates=" + std::to_string(resolveRequest.nameCandidates.size()) +
+                " remaps=" + std::to_string(resolveRequest.remaps.size()) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
+                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
         resolvedTextures.reserve(textureSources.size());
         for (const auto& source : textureSources)
             resolvedTextures.push_back(ResolveModelTextureReference(source, resolveRequest));
@@ -4248,14 +4792,34 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             ? std::unordered_set<std::string> {}
             : BuildExternallyResolvedTextureSourceKeys(resolvedTextures);
         resolvedTextureArtifactPaths = BuildResolvedTextureArtifactPathMap(resolvedTextures);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.36,
+            "Resolved model texture references | sources=" + std::to_string(textureSources.size()) +
+                " resolved=" + std::to_string(resolvedTextureArtifactPaths.size()) +
+                " externalSourceKeys=" + std::to_string(externallyResolvedTextureSourceKeys.size()) +
+                " diagnostics=" + std::to_string(result.diagnostics.size()) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
+                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
     }
     {
+        const auto begin = std::chrono::steady_clock::now();
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.37, "Collecting material texture color spaces");
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::CollectMaterialTextureUsage");
         CollectMaterialTextureColorSpaces(
             scene,
             extension,
             decalBaseColorAlphaEvidence,
             textureColorSpaces);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.39,
+            "Collected material texture color spaces | materials=" + std::to_string(scene.materials.size()) +
+                " colorSpaces=" + std::to_string(textureColorSpaces.size()) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
+                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
     }
     if (extension != ".obj" && extension != ".fbx")
     {
@@ -4276,10 +4840,15 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         ReportProgress(request, ImportPhase::IntermediateConversion, 0.42, "Loading texture payloads");
         {
             NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::LoadTextures");
-            texturePayloads = LoadTexturePayloads(request, scene, extension);
+            texturePayloads = LoadTexturePayloads(request, scene, extension, &texturePayloadStats);
         }
-        ReportProgress(request, ImportPhase::IntermediateConversion, 0.44, "Loaded texture payloads");
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.44,
+            "Loaded texture payloads | " + FormatTexturePayloadLoadStats(texturePayloadStats));
     }
+    const auto meshSerializationContext = BuildMeshSerializationContext(scene, sourceMeshes);
     size_t processedSubAssets = 0u;
     const size_t convertibleSubAssetCount = static_cast<size_t>(std::count_if(
         subAssets.begin(),
@@ -4297,7 +4866,9 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                 subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Prefab)
                 continue;
             if (subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture &&
-                externallyResolvedTextureSourceKeys.find(subAsset.sourceKey) != externallyResolvedTextureSourceKeys.end())
+                (externallyResolvedTextureSourceKeys.find(subAsset.sourceKey) != externallyResolvedTextureSourceKeys.end() ||
+                    deferredBulkModelLocalTextureSourceKeys.find(subAsset.sourceKey) !=
+                        deferredBulkModelLocalTextureSourceKeys.end()))
             {
                 ++processedSubAssets;
                 continue;
@@ -4312,7 +4883,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                 subAssetProgress,
                 "Converting " + subAsset.key);
             auto artifactPayload = subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Mesh
-                ? SerializeMeshSubAsset(scene, subAsset, sourceMeshes)
+                ? SerializeMeshSubAsset(scene, subAsset, sourceMeshes, meshSerializationContext)
                 : subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture
                     ? SerializeTextureSubAsset(
                         scene,
@@ -4368,18 +4939,38 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     writeRequest.importerVersion = request.meta.importerVersion;
     writeRequest.targetPlatform = request.targetPlatform;
     writeRequest.primarySubAssetKey = "prefab:" + request.sceneKey;
-    writeRequest.artifacts = payloads;
     auto rebuildWriteDependencies =
-        [&]()
+        [&](const std::vector<NLS::Core::Assets::ArtifactPayload>& artifacts)
     {
+        const auto rebuildBegin = std::chrono::steady_clock::now();
+        DependencyRebuildStats stats;
         writeRequest.dependencies = scene.dependencies;
-        auto externalSourceDependencies = CollectExternalSourceFileDependencies(request, scene);
+
+        auto stageBegin = std::chrono::steady_clock::now();
+        auto externalSourceDependencies = CollectExternalSourceFileDependencies(
+            request,
+            scene,
+            &deferredBulkModelLocalTextureSourceKeys);
+        stats.externalSourceMilliseconds = MillisecondsSince(stageBegin);
+        stats.externalSourceDependencyCount = externalSourceDependencies.size();
+
+        stageBegin = std::chrono::steady_clock::now();
         CollectParserExternalFileDependencies(request, externalSourceDependencies, parserExternalDependencies);
+        stats.parserExternalMilliseconds = MillisecondsSince(stageBegin);
+
+        stageBegin = std::chrono::steady_clock::now();
         CollectObjMaterialFileDependencies(request, externalSourceDependencies);
+        stats.objMaterialMilliseconds = MillisecondsSince(stageBegin);
         for (auto& dependency : externalSourceDependencies)
             AddUniqueDependency(writeRequest.dependencies, std::move(dependency));
+
+        stageBegin = std::chrono::steady_clock::now();
         AddResolvedTextureDependencies(writeRequest.dependencies, request, resolvedTextures);
-        AddTextureBuildIdentityDependencies(writeRequest.dependencies, writeRequest.artifacts);
+        stats.resolvedTextureMilliseconds = MillisecondsSince(stageBegin);
+
+        stageBegin = std::chrono::steady_clock::now();
+        AddTextureBuildIdentityDependencies(writeRequest.dependencies, artifacts);
+        stats.textureBuildIdentityMilliseconds = MillisecondsSince(stageBegin);
         writeRequest.dependencies.push_back({
             NLS::Core::Assets::AssetDependencyKind::ImporterVersion,
             request.meta.importerId,
@@ -4395,8 +4986,16 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             request.targetPlatform,
             request.targetPlatform
         });
+        stats.totalMilliseconds = MillisecondsSince(rebuildBegin);
+        stats.totalDependencyCount = writeRequest.dependencies.size();
+        return stats;
     };
-    rebuildWriteDependencies();
+    auto dependencyStats = rebuildWriteDependencies(payloads);
+    ReportProgress(
+        request,
+        ImportPhase::IntermediateConversion,
+        0.68,
+        "Rebuilt import dependencies | " + FormatDependencyRebuildStats(dependencyStats));
 
     {
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::ConvertFinalMaterials");
@@ -4409,21 +5008,31 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                 BuildTextureArtifactPathMap(payloads, writeRequest, request.committedRoot, request.projectRoot),
                 resolvedTextureArtifactPaths),
             decalBaseColorAlphaEvidence,
+            deferredBulkModelLocalTextureSourceKeys,
             payloads,
             textureColorSpaces);
     }
     timingStats.payloadCount = payloads.size();
-    writeRequest.artifacts = payloads;
 
     ReportProgress(request, ImportPhase::Postprocess, 0.72, "Building generated prefab graph");
-    auto provisionalManifest = MakeProvisionalManifest(request, payloads, writeRequest);
+    const auto prefabGraphBegin = std::chrono::steady_clock::now();
+    const auto provisionalManifestBegin = std::chrono::steady_clock::now();
+    auto provisionalManifest = MakeProvisionalManifest(
+        request,
+        payloads,
+        writeRequest,
+        ProvisionalManifestPathMode::LogicalRelativePath);
+    const auto provisionalManifestMs = MillisecondsSince(provisionalManifestBegin);
     NLS::Engine::Assets::PrefabImportResult prefab;
+    int64_t buildPrefabMs = 0;
     {
+        const auto buildPrefabBegin = std::chrono::steady_clock::now();
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::BuildPrefab");
         prefab = NLS::Engine::Assets::BuildGeneratedModelPrefab(
             scene,
             subAssets,
             provisionalManifest);
+        buildPrefabMs = MillisecondsSince(buildPrefabBegin);
     }
 
     if (prefab.diagnostics.HasErrors())
@@ -4438,6 +5047,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         return result;
     }
 
+    int64_t serializePrefabMs = 0;
     for (const auto& subAsset : subAssets)
     {
         if (subAsset.type != NLS::Render::Assets::ImportedSceneSubAssetType::Prefab)
@@ -4445,8 +5055,10 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
 
         std::vector<uint8_t> prefabBytes;
         {
+            const auto serializePrefabBegin = std::chrono::steady_clock::now();
             NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::SerializePrefab");
             prefabBytes = ToBytes(NLS::Engine::Serialize::ObjectGraphWriter::Write(prefab.artifact.graph));
+            serializePrefabMs += MillisecondsSince(serializePrefabBegin);
         }
         payloads.push_back({
             subAsset.key,
@@ -4458,24 +5070,76 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         });
     }
     timingStats.payloadCount = payloads.size();
+    ReportProgress(
+        request,
+        ImportPhase::Postprocess,
+        0.84,
+        "Built generated prefab graph | provisionalManifestMs=" + std::to_string(provisionalManifestMs) +
+            " buildPrefabMs=" + std::to_string(buildPrefabMs) +
+            " serializePrefabMs=" + std::to_string(serializePrefabMs) +
+            " totalMs=" + std::to_string(MillisecondsSince(prefabGraphBegin)) +
+            " objects=" + std::to_string(prefab.artifact.graph.objects.size()) +
+            " payloads=" + std::to_string(payloads.size()));
 
     ReportProgress(request, ImportPhase::ArtifactWrite, 0.85, "Writing imported artifacts");
     writeRequest.primarySubAssetKey = provisionalManifest.primarySubAssetKey;
     writeRequest.artifacts = std::move(payloads);
-    rebuildWriteDependencies();
+    ReportProgress(
+        request,
+        ImportPhase::ArtifactWrite,
+        0.86,
+        "Reused final import dependencies | dependencies=" +
+            std::to_string(writeRequest.dependencies.size()) +
+            " reused=1 totalMs=0");
+    const auto validationProofBegin = std::chrono::steady_clock::now();
+    const auto contentManifestBegin = std::chrono::steady_clock::now();
+    const auto finalProvisionalManifest = MakeProvisionalManifest(
+        request,
+        writeRequest.artifacts,
+        writeRequest,
+        ProvisionalManifestPathMode::LogicalRelativePath);
+    const auto contentManifestMs = MillisecondsSince(contentManifestBegin);
+    const auto attachProofBegin = std::chrono::steady_clock::now();
+    if (!AttachPrefabValidationProofDependencies(
+            writeRequest.artifacts,
+            finalProvisionalManifest,
+            prefab.artifact))
+    {
+        AddError(
+            result.diagnostics,
+            request.meta.id,
+            request.sourcePath,
+            "external-model-importer-prefab-validation-proof-failed",
+            "Generated model prefab validation proof could not be built from the serialized prefab artifact.");
+        timingStats.diagnosticCount = result.diagnostics.size();
+        return result;
+    }
+    const auto attachProofMs = MillisecondsSince(attachProofBegin);
+    ReportProgress(
+        request,
+        ImportPhase::ArtifactWrite,
+        0.87,
+        "Attached prefab validation proof | contentManifestMs=" + std::to_string(contentManifestMs) +
+            " attachProofMs=" + std::to_string(attachProofMs) +
+            " totalMs=" + std::to_string(MillisecondsSince(validationProofBegin)));
     timingStats.dependencyCount = writeRequest.dependencies.size();
 
     NLS::Core::Assets::ArtifactWriter writer(request.stagingRoot, request.committedRoot);
     NLS::Core::Assets::ArtifactWriteResult writeResult;
     std::optional<ImportCancellationTokenHandle> cancellationToken;
     {
+        const auto writeBegin = std::chrono::steady_clock::now();
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::WriteAndCommit");
         writeResult = writer.WriteAndCommit(
             writeRequest,
             request.previousManifest,
             GetImportCancellation(request, cancellationToken));
+        ReportProgress(
+            request,
+            ImportPhase::Commit,
+            0.95,
+            "Committed imported artifacts | writeAndCommitMs=" + std::to_string(MillisecondsSince(writeBegin)));
     }
-    ReportProgress(request, ImportPhase::Commit, 0.95, "Committing imported artifacts");
 
     result.diagnostics.insert(
         result.diagnostics.end(),
@@ -4499,6 +5163,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     result.imported = writeResult.committed && !HasErrors(result.diagnostics);
     if (result.imported)
     {
+        RememberManifestSourceFileHashes(request.projectRoot, result.manifest);
         result.autoImportedDependencies.reserve(autoImportSideEffects.size());
         for (auto& sideEffect : autoImportSideEffects)
         {

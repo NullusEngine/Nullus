@@ -27,7 +27,10 @@
 #endif
 
 #include "ImGui/imgui.h"
+#include "ImGui/imgui_internal.h"
 #include <Json/json.hpp>
+
+#include "Assets/ArtifactLoadTelemetry.h"
 
 #include <UI/Widgets/Texts/TextClickable.h>
 #include <UI/Widgets/Visual/Image.h>
@@ -76,9 +79,10 @@
 #include "Assets/AssetMeta.h"
 #include "Assets/AssetImporterFacade.h"
 #include "Assets/EditorAssetDatabase.h"
-#include "Assets/AssetDragDropWorkflow.h"
-#include "Assets/PrefabUtilityFacade.h"
 #include "Core/EditorActions.h"
+#include "Assets/AssetDragDropWorkflow.h"
+#include "Assets/ShaderLabMaterialDefaults.h"
+#include "Assets/PrefabUtilityFacade.h"
 #include "Core/EditorResources.h"
 #include "Core/RecentBackgroundWorkGate.h"
 #include "GameObject.h"
@@ -87,6 +91,7 @@
 #include "UI/Widgets/InputFields/InputText.h"
 #include "UI/UIManager.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Resources/Loaders/MaterialLoader.h"
 #include "Rendering/Resources/Texture2D.h"
 
 using namespace NLS;
@@ -96,6 +101,101 @@ using namespace NLS::UI::Widgets;
 #define FILENAMES_CHARS Editor::Panels::AssetBrowser::__FILENAMES_CHARS
 
 const std::string FILENAMES_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-_=+ 0123456789()[]";
+
+namespace
+{
+constexpr size_t kMaxAssetBrowserThumbnailDrawOutcomePaths = 64u;
+constexpr int kAssetBrowserThumbnailDrawOutcomeSamplePeriodFrames = 15;
+
+struct AssetBrowserThumbnailDrawOutcomeTelemetryState
+{
+    std::array<size_t, 3u> counts {};
+    size_t droppedPathCount = 0u;
+    std::unordered_map<std::string, size_t> pathCounts;
+    std::mutex mutex;
+};
+
+AssetBrowserThumbnailDrawOutcomeTelemetryState& ThumbnailDrawOutcomeTelemetryState()
+{
+    static AssetBrowserThumbnailDrawOutcomeTelemetryState state;
+    return state;
+}
+
+size_t ThumbnailDrawOutcomeIndex(const NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcome outcome)
+{
+    return static_cast<size_t>(outcome);
+}
+}
+
+void NLS::Editor::Panels::RecordAssetBrowserThumbnailDrawOutcomeTelemetry(
+    const std::string_view assetPath,
+    const AssetBrowserThumbnailDrawOutcome outcome)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+        return;
+
+    const char* suffix = "|draw=thumbnail";
+    switch (outcome)
+    {
+    case AssetBrowserThumbnailDrawOutcome::Thumbnail:
+        suffix = "|draw=thumbnail";
+        break;
+    case AssetBrowserThumbnailDrawOutcome::Fallback:
+        suffix = "|draw=fallback";
+        break;
+    case AssetBrowserThumbnailDrawOutcome::TypeFallback:
+        suffix = "|draw=type-fallback";
+        break;
+    }
+
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    ++state.counts[ThumbnailDrawOutcomeIndex(outcome)];
+
+    std::string path;
+    path.reserve(assetPath.size() + std::char_traits<char>::length(suffix));
+    path.append(assetPath.data(), assetPath.size());
+    path += suffix;
+    if (auto found = state.pathCounts.find(path); found != state.pathCounts.end())
+    {
+        ++found->second;
+        return;
+    }
+    if (state.pathCounts.size() >= kMaxAssetBrowserThumbnailDrawOutcomePaths)
+    {
+        ++state.droppedPathCount;
+        return;
+    }
+    state.pathCounts.emplace(std::move(path), 1u);
+}
+
+NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot
+NLS::Editor::Panels::SnapshotAssetBrowserThumbnailDrawOutcomeTelemetry()
+{
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+
+    AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot snapshot;
+    snapshot.thumbnailDrawCount = state.counts[ThumbnailDrawOutcomeIndex(AssetBrowserThumbnailDrawOutcome::Thumbnail)];
+    snapshot.fallbackDrawCount = state.counts[ThumbnailDrawOutcomeIndex(AssetBrowserThumbnailDrawOutcome::Fallback)];
+    snapshot.typeFallbackDrawCount = state.counts[ThumbnailDrawOutcomeIndex(AssetBrowserThumbnailDrawOutcome::TypeFallback)];
+    snapshot.droppedPathCount = state.droppedPathCount;
+    snapshot.pathTotals.reserve(state.pathCounts.size());
+    for (const auto& [path, count] : state.pathCounts)
+        snapshot.pathTotals.push_back({ path, count });
+    return snapshot;
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void NLS::Editor::Panels::ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesting()
+{
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    state.counts = {};
+    state.droppedPathCount = 0u;
+    state.pathCounts.clear();
+}
+#endif
 
 template <typename Function>
 auto ScheduleAssetBrowserJobFuture(const char* debugName, Function&& function)
@@ -323,6 +423,13 @@ void DrawAssetBrowserFilmstripPanel(
 	bool continuesLeft = false,
 	bool continuesRight = false);
 
+void DrawAssetBrowserSegmentPanel(
+	ImDrawList* drawList,
+	const ImVec2& min,
+	const ImVec2& max,
+	bool hovered,
+	ImDrawFlags cornerFlags);
+
 std::string EllipsizeAssetBrowserLabel(
 	const std::string& text,
 	const float maxWidth)
@@ -376,31 +483,91 @@ std::string EllipsizeAssetBrowserLabel(
 constexpr size_t kMaxResidentAssetBrowserThumbnailTextures = 256u;
 constexpr size_t kMaxAssetBrowserThumbnailTextureLoadsPerFrame = 4u;
 constexpr size_t kMaxAssetBrowserThumbnailTextureDecodesInFlight = 4u;
-constexpr size_t kMaxAssetBrowserThumbnailTextureUploadsPerFrame = 3u;
+constexpr size_t kMaxAssetBrowserThumbnailTextureUploadsPerFrame = 1u;
 constexpr size_t kMaxAssetBrowserInteractiveThumbnailTextureUploadsPerFrame = 1u;
-constexpr size_t kMaxAssetBrowserSubAssetsMaterializePerFrame = 48u;
-constexpr size_t kMaxAssetBrowserInteractiveSubAssetsMaterializePerFrame = 8u;
-constexpr size_t kMaxAssetBrowserDisplayItemsRebuildPerFrame = 256u;
-constexpr size_t kMaxAssetBrowserInteractiveDisplayItemsRebuildPerFrame = 64u;
-constexpr size_t kMaxAssetBrowserGeneratedSubAssetPlaceholdersPerSource = 1u;
-constexpr size_t kMaxAssetBrowserGeneratedSubAssetRevealStep = 48u;
-constexpr size_t kMaxAssetBrowserInteractiveGeneratedSubAssetRevealStep = 8u;
+constexpr size_t kMaxAssetBrowserThumbnailTextureUploadPollsPerFrame = 128u;
+constexpr size_t kMaxAssetBrowserInteractiveThumbnailTextureUploadPollsPerFrame = 32u;
+constexpr uint64_t kAssetBrowserThumbnailTextureRetryDelayFrames = 30u;
+constexpr uint64_t kMaxAssetBrowserThumbnailTextureUploadMicrosecondsPerFrame = 2000u;
 constexpr size_t kMaxAssetBrowserThumbnailRequestsPerFrame = 8u;
-constexpr size_t kMaxAssetBrowserInteractiveThumbnailRequestsPerFrame = 1u;
-constexpr size_t kMaxAssetBrowserInteractiveThumbnailStartsPerFrame = 1u;
-constexpr size_t kMaxAssetBrowserInteractiveCachedThumbnailTexturePumpsPerFrame = 1u;
+constexpr size_t kMaxAssetBrowserInteractiveThumbnailRequestsPerFrame = 4u;
+constexpr size_t kMaxAssetBrowserInteractiveThumbnailStartsPerFrame = 2u;
+constexpr size_t kMaxAssetBrowserInteractiveCachedThumbnailTexturePumpsPerFrame = 4u;
+constexpr uint64_t kMaxAssetBrowserThumbnailRequestMicrosecondsPerFrame = 2000u;
+constexpr size_t kMaxAssetBrowserCompletedThumbnailConsumesPerPump = 8u;
 constexpr uint32_t kMaxAssetBrowserCachedThumbnailTextureDimension = 512u;
+constexpr uint32_t kAssetBrowserCompactGeneratedThumbnailCacheSize = 72u;
+constexpr uint32_t kAssetBrowserDefaultGeneratedThumbnailCacheSize = 96u;
+constexpr uint32_t kAssetBrowserLargeGeneratedThumbnailCacheSize = 128u;
 constexpr uint32_t kAssetBrowserGeneratedThumbnailCacheSize = 160u;
 constexpr double kAssetBrowserGpuThumbnailIntervalSeconds = 0.08;
-constexpr double kAssetBrowserHeavyGpuThumbnailIntervalSeconds = 1.0;
-constexpr double kAssetBrowserHeavyGpuThumbnailIdleDelaySeconds = 3.0;
+constexpr double kAssetBrowserHeavyGpuThumbnailIntervalSeconds = 0.25;
+constexpr double kAssetBrowserHeavyGpuThumbnailResourcePendingIntervalSeconds = 0.05;
+constexpr double kAssetBrowserHeavyGpuThumbnailIdleDelaySeconds = 0.25;
 constexpr double kAssetBrowserScrollIdleDelaySeconds = 0.75;
 constexpr double kAssetBrowserRefreshDebounceSeconds = 0.20;
 constexpr double kAssetBrowserInlineRenamePendingMaxSeconds = 1.0;
 constexpr size_t kAssetBrowserPrefabHotCachePreloadGateCapacity = 256u;
 constexpr auto kAssetBrowserPrefabHotCachePreloadGateTtl = std::chrono::seconds(3);
+constexpr double kAssetBrowserHoveredPrefabHotCachePreloadRepeatDelaySeconds =
+	static_cast<double>(kAssetBrowserPrefabHotCachePreloadGateTtl.count());
+constexpr auto kAssetBrowserThumbnailUiDrawTelemetryMinimum = std::chrono::microseconds(1000);
 constexpr ImVec2 kAssetBrowserImageUv0(0.0f, 1.0f);
 constexpr ImVec2 kAssetBrowserImageUv1(1.0f, 0.0f);
+
+struct AssetBrowserArtifactTelemetryScope
+{
+	NLS::Core::Assets::ArtifactLoadTelemetryStage stage;
+	std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+	const std::string* path = nullptr;
+	const size_t* byteCount = nullptr;
+	std::chrono::microseconds minimumElapsed {};
+
+	~AssetBrowserArtifactTelemetryScope()
+	{
+		const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now() - begin);
+		if (elapsed < minimumElapsed)
+			return;
+
+		NLS::Core::Assets::RecordArtifactLoadTelemetry({
+			stage,
+			elapsed,
+			byteCount != nullptr ? *byteCount : 0u,
+			path != nullptr ? *path : std::string {}
+		});
+	}
+};
+
+struct AssetBrowserArtifactTelemetryAccumulatorScope
+{
+	std::chrono::microseconds& elapsed;
+	std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+
+	~AssetBrowserArtifactTelemetryAccumulatorScope()
+	{
+		elapsed += std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now() - begin);
+	}
+};
+
+void RecordAssetBrowserArtifactTelemetryStage(
+	const NLS::Core::Assets::ArtifactLoadTelemetryStage stage,
+	const std::chrono::microseconds elapsed,
+	const std::string& path,
+	const size_t itemCount,
+	const std::chrono::microseconds minimumElapsed)
+{
+	if (elapsed < minimumElapsed)
+		return;
+
+	NLS::Core::Assets::RecordArtifactLoadTelemetry({
+		stage,
+		elapsed,
+		itemCount,
+		path
+	});
+}
 
 NLS::Editor::Assets::AssetThumbnailRequestBuildContext MakeAssetBrowserThumbnailRequestBuildContext()
 {
@@ -432,7 +599,12 @@ NLS::Editor::Core::RecentBackgroundWorkGate& AssetBrowserPrefabHotCachePreloadGa
 
 uint32_t AssetBrowserThumbnailRequestSize(const float thumbnailSize)
 {
-	(void)thumbnailSize;
+	if (thumbnailSize <= 84.0f)
+		return kAssetBrowserCompactGeneratedThumbnailCacheSize;
+	if (thumbnailSize <= 112.0f)
+		return kAssetBrowserDefaultGeneratedThumbnailCacheSize;
+	if (thumbnailSize <= 144.0f)
+		return kAssetBrowserLargeGeneratedThumbnailCacheSize;
 	return kAssetBrowserGeneratedThumbnailCacheSize;
 }
 
@@ -543,91 +715,6 @@ bool MatchesProjectAssetDisplayFilter(
 	return LowerAscii(item.displayName).find(normalizedQuery) != std::string::npos;
 }
 
-NLS::Editor::Assets::AssetBrowserItemType AssetBrowserItemTypeFromArtifactType(
-	const NLS::Core::Assets::ArtifactType type)
-{
-	using NLS::Core::Assets::ArtifactType;
-	using NLS::Editor::Assets::AssetBrowserItemType;
-	switch (type)
-	{
-	case ArtifactType::Scene: return AssetBrowserItemType::Scene;
-	case ArtifactType::Prefab: return AssetBrowserItemType::Prefab;
-	case ArtifactType::Mesh: return AssetBrowserItemType::Mesh;
-	case ArtifactType::Material: return AssetBrowserItemType::Material;
-	case ArtifactType::Texture: return AssetBrowserItemType::Texture;
-	case ArtifactType::Shader: return AssetBrowserItemType::Shader;
-	default: return AssetBrowserItemType::Other;
-	}
-}
-
-bool IsAssetBrowserVisibleGeneratedArtifactType(const NLS::Core::Assets::ArtifactType type)
-{
-	using NLS::Core::Assets::ArtifactType;
-	return type == ArtifactType::Prefab ||
-		type == ArtifactType::Mesh ||
-		type == ArtifactType::Material ||
-		type == ArtifactType::Texture ||
-		type == ArtifactType::Shader;
-}
-
-bool SourceAssetCanHaveAssetBrowserSubAssets(const std::string& sourceAssetPath)
-{
-	return NLS::Editor::Assets::AssetBrowserSourceAssetCanHaveGeneratedSubAssets(sourceAssetPath);
-}
-
-std::string AssetBrowserGeneratedSubAssetDisplayName(
-	const NLS::Core::Assets::ArtifactType type,
-	const std::string& subAssetKey)
-{
-	const auto separator = subAssetKey.find(':');
-	auto name = separator == std::string::npos || separator + 1u >= subAssetKey.size()
-		? subAssetKey
-		: subAssetKey.substr(separator + 1u);
-	const auto slash = name.find_last_of("/\\");
-	if (slash != std::string::npos && slash + 1u < name.size())
-		name = name.substr(slash + 1u);
-	if (!name.empty() && !std::all_of(name.begin(), name.end(), [](const unsigned char ch)
-		{
-			return std::isdigit(ch) != 0;
-		}))
-	{
-		return name;
-	}
-
-	switch (type)
-	{
-	case NLS::Core::Assets::ArtifactType::Prefab: return name.empty() ? "Prefab" : "Prefab " + name;
-	case NLS::Core::Assets::ArtifactType::Mesh: return name.empty() ? "Mesh" : "Mesh " + name;
-	case NLS::Core::Assets::ArtifactType::Material: return name.empty() ? "Material" : "Material " + name;
-	case NLS::Core::Assets::ArtifactType::Texture: return name.empty() ? "Texture" : "Texture " + name;
-	case NLS::Core::Assets::ArtifactType::Shader: return name.empty() ? "Shader" : "Shader " + name;
-	default: return name.empty() ? "Sub Asset" : "Sub Asset " + name;
-	}
-}
-
-NLS::Editor::Assets::AssetBrowserItem MakeAssetBrowserGeneratedSubAssetItem(
-	const std::string& sourceAssetPath,
-	const NLS::Core::Assets::AssetId assetId,
-	const NLS::Editor::Assets::ObjectReferencePickerSubAssetSnapshot& subAsset)
-{
-	NLS::Editor::Assets::AssetBrowserItem item;
-	item.displayName = !subAsset.displayName.empty()
-		? subAsset.displayName
-		: AssetBrowserGeneratedSubAssetDisplayName(subAsset.artifactType, subAsset.subAssetKey);
-	item.projectRelativePath = sourceAssetPath + "::" + subAsset.subAssetKey;
-	item.sourceAssetPath = sourceAssetPath;
-	item.kind = NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset;
-	item.type = AssetBrowserItemTypeFromArtifactType(subAsset.artifactType);
-	item.assetId = assetId;
-	item.subAssetKey = subAsset.subAssetKey;
-	item.artifactPath = subAsset.artifactPath;
-	item.dragResourcePath = sourceAssetPath;
-	item.selectionResourcePath = sourceAssetPath + "#" + subAsset.subAssetKey;
-	item.artifactType = subAsset.artifactType;
-	item.generatedReadOnly = true;
-	return item;
-}
-
 std::string EnsureTrailingPathSeparator(std::filesystem::path path)
 {
 	auto text = path.lexically_normal().string();
@@ -652,34 +739,26 @@ std::string ProjectBrowserResourcePathForItem(
 {
 	if (!item.dragResourcePath.empty())
 		return ProjectBrowserLegacyResourcePath(item.dragResourcePath);
-	if (!item.selectionResourcePath.empty())
-	{
-		const auto subAssetDelimiter = item.selectionResourcePath.find('#');
-		return ProjectBrowserLegacyResourcePath(
-			subAssetDelimiter == std::string::npos
-				? item.selectionResourcePath
-				: item.selectionResourcePath.substr(0u, subAssetDelimiter));
-	}
-	return {};
+	const auto& sourcePath = item.sourceAssetPath.empty()
+		? item.projectRelativePath
+		: item.sourceAssetPath;
+	return ProjectBrowserLegacyResourcePath(sourcePath);
 }
 
 std::string ProjectBrowserSelectionPathForItem(
 	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
-	if (!item.selectionResourcePath.empty())
+	const auto& sourcePath = item.sourceAssetPath.empty()
+		? item.projectRelativePath
+		: item.sourceAssetPath;
+	auto legacyPath = ProjectBrowserLegacyResourcePath(sourcePath);
+	if (item.kind == NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset &&
+		!item.subAssetKey.empty())
 	{
-		const auto subAssetDelimiter = item.selectionResourcePath.find('#');
-		auto sourcePath = subAssetDelimiter == std::string::npos
-			? item.selectionResourcePath
-			: item.selectionResourcePath.substr(0u, subAssetDelimiter);
-		auto legacyPath = ProjectBrowserLegacyResourcePath(std::move(sourcePath));
-		if (subAssetDelimiter != std::string::npos)
-			legacyPath += item.selectionResourcePath.substr(subAssetDelimiter);
-		return legacyPath;
+		legacyPath += "#";
+		legacyPath += item.subAssetKey;
 	}
-	if (!item.dragResourcePath.empty())
-		return ProjectBrowserLegacyResourcePath(item.dragResourcePath);
-	return {};
+	return legacyPath;
 }
 
 std::filesystem::path ProjectBrowserAbsolutePathForResourcePath(
@@ -749,6 +828,11 @@ bool CreateNativeMaterialAssetAtPath(
 	material.loaderId = "material";
 	material.serializedPayload = payload;
 	return database.CreateAsset(material, projectRelativePath.generic_string());
+}
+
+std::string BuildDefaultAssetBrowserMaterialPayload()
+{
+	return NLS::Editor::Assets::BuildDefaultShaderLabMaterialPayload();
 }
 
 bool IsPathInsideOrEqual(
@@ -936,20 +1020,6 @@ bool CopyAssetFolderRecursivelyWithoutMeta(
 		}
 	}
 	return true;
-}
-
-void* ResolveAssetBrowserTextureHandle(
-	NLS::Render::Resources::Texture2D* texture,
-	const std::string& debugName)
-{
-	if (texture == nullptr || !NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
-		return nullptr;
-
-	const auto textureView = texture->GetOrCreateExplicitTextureView(debugName);
-	if (textureView == nullptr)
-		return nullptr;
-
-	return NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(textureView);
 }
 
 std::string AssetBrowserFileStamp(const std::filesystem::path& path)
@@ -1324,7 +1394,6 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 	NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
 	std::string subAssetKey;
 	bool imported = false;
-	bool previewPrefabReady = false;
 
 	if (fileType == Utils::PathParser::EFileType::MODEL &&
 		subAssetKey.empty())
@@ -1395,34 +1464,11 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 			if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
 				continue;
 
-			artifactType = subAsset.artifactType;
-			imported = currentManifest && artifactType != NLS::Core::Assets::ArtifactType::Unknown;
-			previewPrefabReady =
-				imported &&
-				artifactType == NLS::Core::Assets::ArtifactType::Prefab;
-			break;
-		}
-
-		if (previewPrefabReady && fileType == Utils::PathParser::EFileType::MODEL)
-		{
-			for (const auto& subAsset : manifest->subAssets)
-			{
-				const bool rendererDependency =
-					subAsset.artifactType == NLS::Core::Assets::ArtifactType::Mesh ||
-					subAsset.artifactType == NLS::Core::Assets::ArtifactType::Material ||
-					subAsset.artifactType == NLS::Core::Assets::ArtifactType::Texture;
-				if (!rendererDependency)
-					continue;
-
-				const auto resolvedArtifactPath = ResolveArtifactPathForManifest(projectRoot, subAsset);
-				if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
-				{
-					previewPrefabReady = false;
-					break;
-				}
+				artifactType = subAsset.artifactType;
+				imported = currentManifest && artifactType != NLS::Core::Assets::ArtifactType::Unknown;
+				break;
 			}
 		}
-	}
 
 	if (!CanStoreEditorAssetDragPayload(resourceFormatPath, meta->id, subAssetKey))
 		return std::nullopt;
@@ -1433,11 +1479,10 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 	return MakeEditorAssetDragPayload(
 		resourceFormatPath,
 		meta->id,
-		subAssetKey,
-		artifactType,
-		generatedModelPrefab,
-		imported,
-		previewPrefabReady);
+			subAssetKey,
+			artifactType,
+			generatedModelPrefab,
+			imported);
 }
 
 void RenameAsset(const std::string& p_prev, const std::string& p_new)
@@ -1763,12 +1808,7 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"shaderLabMaterialVersion=1\n"
-						"shader=?\n"
-						"surfaceMode=Opaque\n"
-						"alphaMode=Opaque\n"
-						"doubleSided=true\n"
-						"depthWrite=true\n"))
+						BuildDefaultAssetBrowserMaterialPayload()))
 				{
 					Close();
 					return;
@@ -1802,12 +1842,7 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"shaderLabMaterialVersion=1\n"
-						"shader=?\n"
-						"surfaceMode=Opaque\n"
-						"alphaMode=Opaque\n"
-						"doubleSided=true\n"
-						"depthWrite=true\n"))
+						BuildDefaultAssetBrowserMaterialPayload()))
 				{
 					Close();
 					return;
@@ -1841,12 +1876,7 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"shaderLabMaterialVersion=1\n"
-						"shader=?\n"
-						"surfaceMode=Opaque\n"
-						"alphaMode=Opaque\n"
-						"doubleSided=true\n"
-						"depthWrite=true\n"))
+						BuildDefaultAssetBrowserMaterialPayload()))
 				{
 					Close();
 					return;
@@ -1881,12 +1911,7 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"shaderLabMaterialVersion=1\n"
-						"shader=?\n"
-						"surfaceMode=Opaque\n"
-						"alphaMode=Opaque\n"
-						"doubleSided=true\n"
-						"depthWrite=true\n"))
+						BuildDefaultAssetBrowserMaterialPayload()))
 				{
 					Close();
 					return;
@@ -1920,12 +1945,7 @@ public:
 				if (!CreateNativeMaterialAssetAtPath(
 						EDITOR_CONTEXT(projectAssetsPath),
 						finalPath,
-						"shaderLabMaterialVersion=1\n"
-						"shader=?\n"
-						"surfaceMode=Opaque\n"
-						"alphaMode=Opaque\n"
-						"doubleSided=true\n"
-						"depthWrite=true\n"))
+						BuildDefaultAssetBrowserMaterialPayload()))
 				{
 					Close();
 					return;
@@ -2293,13 +2313,13 @@ Editor::Panels::AssetBrowser::AssetBrowser
 
 	if (EDITOR_CONTEXT(window) != nullptr)
 	{
-			m_windowDroppedFilesListener = EDITOR_CONTEXT(window)->DroppedFilesEvent.AddListener(
-				[this](std::vector<std::string> paths)
-				{
-					NLS::Editor::Assets::EnqueueAssetBrowserExternalDroppedFiles(
-						m_pendingExternalDroppedFiles,
-						std::move(paths));
-				});
+		m_windowDroppedFilesListener = EDITOR_CONTEXT(window)->DroppedFilesEvent.AddListener(
+			[this](std::vector<std::string> paths)
+			{
+				NLS::Editor::Assets::EnqueueAssetBrowserExternalDroppedFiles(
+					m_pendingExternalDroppedFiles,
+					std::move(paths));
+			});
 	}
 
 	Fill();
@@ -2307,22 +2327,26 @@ Editor::Panels::AssetBrowser::AssetBrowser
 
 Editor::Panels::AssetBrowser::~AssetBrowser()
 {
+	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
+	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
+	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
+
 	if (EDITOR_CONTEXT(window) != nullptr && m_windowDroppedFilesListener != 0u)
 		EDITOR_CONTEXT(window)->DroppedFilesEvent.RemoveListener(m_windowDroppedFilesListener);
 
 	if (m_projectAssetDatabaseRefresh.has_value())
-		AbandonAssetBrowserFuture(m_projectAssetDatabaseRefresh->future);
+		AbandonProjectAssetDatabaseRefreshFuture(m_projectAssetDatabaseRefresh->future);
 	for (auto& refresh : m_retiredProjectAssetDatabaseRefreshes)
-		AbandonAssetBrowserFuture(refresh.future);
+		AbandonProjectAssetDatabaseRefreshFuture(refresh.future);
 	m_projectAssetDatabaseRefresh.reset();
 	m_retiredProjectAssetDatabaseRefreshes.clear();
+	RetireCurrentProjectAssetDatabase();
 
 	if (m_currentFolderItemsRefresh.has_value())
 		AbandonAssetBrowserFuture(m_currentFolderItemsRefresh->future);
-	for (auto& refresh : m_retiredCurrentFolderItemsRefreshes)
-		AbandonAssetBrowserFuture(refresh.future);
 	m_currentFolderItemsRefresh.reset();
-	m_retiredCurrentFolderItemsRefreshes.clear();
+	m_pendingCurrentFolderItemsRefresh.reset();
+	NLS::Editor::Assets::CloseAssetBrowserLatestRequestCoordinator(m_currentFolderItemsRefreshCoordinator);
 
 	if (m_projectFolderTreeRefresh.has_value())
 		AbandonAssetBrowserFuture(m_projectFolderTreeRefresh->future);
@@ -2333,15 +2357,16 @@ Editor::Panels::AssetBrowser::~AssetBrowser()
 
 	if (m_objectReferencePickerRefresh.has_value())
 		AbandonAssetBrowserFuture(m_objectReferencePickerRefresh->future);
-	for (auto& refresh : m_retiredObjectReferencePickerRefreshes)
-		AbandonAssetBrowserFuture(refresh.future);
 	m_objectReferencePickerRefresh.reset();
-	m_retiredObjectReferencePickerRefreshes.clear();
+	m_pendingObjectReferencePickerRefresh.reset();
+	NLS::Editor::Assets::CloseAssetBrowserLatestRequestCoordinator(m_objectReferencePickerRefreshCoordinator);
 
 	AbandonAssetBrowserFuture(m_watcherStartup);
+	AbandonAssetBrowserFuture(m_standardPbrShaderPassPrewarm);
 
 	NLS::Editor::Assets::SetObjectReferencePickerEntriesProvider({});
 	NLS::Editor::Assets::SetObjectReferencePickerEntries({});
+	ReleaseAssetBrowserTextureHandleCache(true);
 	DestroyCachedThumbnailTextures(true);
 }
 
@@ -2355,6 +2380,7 @@ void Editor::Panels::AssetBrowser::Clear()
 {
 	if (m_assetList != nullptr)
 		m_assetList->RemoveAllWidgets();
+	ReleaseAssetBrowserTextureHandleCache(false);
 	DestroyCachedThumbnailTextures(false);
 	m_thumbnailResultsByItemKey.clear();
 	m_thumbnailItemKeyByCacheKey.clear();
@@ -2401,15 +2427,38 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 			now + kAssetBrowserScrollIdleDelaySeconds;
 	}
 	const bool interactive = IsAssetBrowserInteractive();
+	const bool editorWindowClosing = IsEditorWindowClosing();
+	const bool sceneReadbackValidationActive = IsEditorSceneReadbackValidationActive();
+	PumpStandardPbrShaderPassPrewarm();
+	if (!editorWindowClosing &&
+		!sceneReadbackValidationActive &&
+		!interactive &&
+		m_thumbnailPreviewRenderer == nullptr)
+	{
+		(void)EnsureThumbnailPreviewRenderer();
+	}
 	const auto texturePumpDecision = NLS::Editor::Assets::PlanAssetBrowserCachedThumbnailTexturePump({
 		interactive,
 		m_thumbnailTextureLoadQueue.size(),
 		m_thumbnailTextureDecodes.size(),
+		m_pendingThumbnailTextureUploadsByPath.size(),
 		0u,
 		kMaxAssetBrowserInteractiveCachedThumbnailTexturePumpsPerFrame
 	});
 	if (texturePumpDecision.shouldPump)
 	{
+		const std::string texturePumpTelemetryPath = m_selectedProjectFolder + "|texture-pump";
+		const size_t texturePumpTelemetryItemCount =
+			m_thumbnailTextureLoadQueue.size() +
+			m_thumbnailTextureDecodes.size() +
+			m_pendingThumbnailTextureUploadsByPath.size();
+		AssetBrowserArtifactTelemetryScope texturePumpTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePump,
+			std::chrono::steady_clock::now(),
+			&texturePumpTelemetryPath,
+			&texturePumpTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
 		PumpQueuedCachedThumbnailTextureLoads(
 			interactive
 				? kMaxAssetBrowserInteractiveCachedThumbnailTexturePumpsPerFrame
@@ -2418,42 +2467,69 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 	PumpRetiredProjectAssetDatabaseRefreshes();
 	PumpProjectFolderTreeRefresh();
 	PumpCurrentFolderItemsRefresh();
-	PumpProjectAssetSubAssetMaterialization();
 	if (m_projectAssetDatabaseRefresh.has_value())
 	{
 		auto& refresh = *m_projectAssetDatabaseRefresh;
 		if (!refresh.future.valid())
 		{
+			const auto diagnostic = std::string("Asset Browser database refresh future became invalid for project root \"") +
+				refresh.root.generic_string() + "\".";
+			NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState, diagnostic);
+			NLS_LOG_ERROR(diagnostic);
 			m_projectAssetDatabaseRefresh.reset();
 		}
-		else if (!interactive &&
-			refresh.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+		else if (refresh.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
 		{
-			std::unique_ptr<NLS::Editor::Assets::AssetDatabaseFacade> database;
+			AssetDatabaseRefreshResult result;
 			try
 			{
-				database = refresh.future.get();
+				result = refresh.future.get();
+			}
+			catch (const std::exception& exception)
+			{
+				result.diagnostic = std::string("Asset Browser database refresh worker failed for project root \"") +
+					refresh.root.generic_string() + "\": " + exception.what();
 			}
 			catch (...)
 			{
-				database.reset();
+				result.diagnostic = std::string("Asset Browser database refresh worker failed for project root \"") +
+					refresh.root.generic_string() + "\": unknown error.";
 			}
 
 			const auto refreshRoot = refresh.root.lexically_normal();
 			m_projectAssetDatabaseRefresh.reset();
-			if (!refreshRoot.empty() &&
-				refreshRoot == m_projectAssetDatabaseRoot.lexically_normal() &&
-				database)
+			const bool currentRefresh =
+				!refreshRoot.empty() &&
+				refreshRoot == m_projectAssetDatabaseRoot.lexically_normal();
+			if (currentRefresh &&
+				result.database &&
+				result.snapshot)
 			{
-				DiscardObjectReferencePickerEntriesRefresh();
-				m_projectAssetDatabase = std::move(database);
-				m_projectAssetDatabaseSnapshot = NLS::Editor::Assets::AssetDatabaseFacade::CreateReadOnlySnapshot(*m_projectAssetDatabase);
+				InvalidateObjectReferencePickerEntriesRefresh();
+				RetireCurrentProjectAssetDatabase();
+				m_projectAssetDatabase = std::move(result.database);
+				m_projectAssetDatabaseSnapshot = std::move(result.snapshot);
 				m_projectAssetDatabaseReady = true;
+				NLS::Editor::Assets::CompleteAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
 				RefreshProjectAssetSubAssetSnapshotCache();
 				RequestObjectReferencePickerEntriesRefresh();
 				RebuildProjectAssetPresentation(NLS::Editor::Assets::BuildAssetBrowserRefreshPlan(
 					NLS::Editor::Assets::AssetBrowserRefreshReason::AssetDatabaseReady));
 			}
+			else if (currentRefresh)
+			{
+				m_projectAssetDatabaseReady = false;
+				if (result.diagnostic.empty())
+				{
+					result.diagnostic = std::string("Asset Browser database refresh produced no usable snapshot for project root \"") +
+						refreshRoot.generic_string() + "\".";
+				}
+				NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(
+					m_projectAssetDatabaseRefreshState,
+					result.diagnostic);
+				NLS_LOG_ERROR(result.diagnostic);
+			}
+			RetireProjectAssetDatabaseResult(std::move(result));
 			if (m_projectAssetDatabaseRefreshQueuedAfterInFlight)
 			{
 				m_projectAssetDatabaseRefreshQueuedAfterInFlight = false;
@@ -2463,7 +2539,8 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 		}
 	}
 	PumpObjectReferencePickerEntriesRefresh();
-	PumpThumbnailGeneration(true, true);
+	if (!editorWindowClosing && !sceneReadbackValidationActive)
+		PumpThumbnailGeneration(true, false, false);
 
 	if (!m_watchersStartupQueued)
 		StartWatchersAsync();
@@ -2529,21 +2606,35 @@ void Editor::Panels::AssetBrowser::AdoptStartupWatchers(
 	RequestRefresh();
 }
 
-bool Editor::Panels::AssetBrowser::RunStartupWatcherPreimport(
+NLS::Editor::Assets::StartupWatcherPreimportResult Editor::Panels::AssetBrowser::RunStartupWatcherPreimport(
 	const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink)
 {
 	using namespace NLS::Editor::Assets;
 
 	CompleteWatcherStartupIfReady();
-	bool allImported = true;
+	StartupWatcherPreimportResult result;
+	result.succeeded = true;
 	for (;;)
 	{
 		const auto projectAssetChanges = m_projectAssetsWatcher.ConsumeChangedPaths();
 		const auto engineAssetChanges = m_engineAssetsWatcher.ConsumeChangedPaths();
 		if (!engineAssetChanges.empty())
+		{
+			NLS_LOG_INFO(
+				"[Startup] Asset watcher engine changes during startup count=" +
+				std::to_string(engineAssetChanges.size()) +
+				" first=" +
+				engineAssetChanges.front().string());
 			RequestRefresh();
+		}
 		if (projectAssetChanges.empty())
-			return allImported;
+			return result;
+		NLS_LOG_INFO(
+			"[Startup] Asset watcher project changes during startup count=" +
+			std::to_string(projectAssetChanges.size()) +
+			" first=" +
+			projectAssetChanges.front().string());
+		result.requiresRuntimeAssetRefresh = true;
 
 		std::vector<std::filesystem::path> relativeChanges;
 		relativeChanges.reserve(projectAssetChanges.size());
@@ -2565,20 +2656,20 @@ bool Editor::Panels::AssetBrowser::RunStartupWatcherPreimport(
 			database,
 			tracker,
 			{AssetPreimportReason::FileWatcherChanged, std::move(relativeChanges)});
-		allImported = allImported && imported;
+		result.succeeded = result.succeeded && imported;
 	}
 }
 
-bool Editor::Panels::AssetBrowser::CompleteStartupWatcherPreimportGate(
+NLS::Editor::Assets::StartupWatcherPreimportResult Editor::Panels::AssetBrowser::CompleteStartupWatcherPreimportGate(
 	const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink)
 {
 	const auto imported = RunStartupWatcherPreimport(progressSink);
-	if (!imported)
-		return false;
+	if (!imported.succeeded)
+		return imported;
 
 	m_startupWatcherPreimportGateOpen = true;
 	RequestRefresh();
-	return true;
+	return imported;
 }
 
 void Editor::Panels::AssetBrowser::CompleteWatcherStartupIfReady()
@@ -2749,28 +2840,29 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 
 	if (projectRoot.empty())
 	{
-		DiscardObjectReferencePickerEntriesRefresh();
-		m_projectAssetDatabase.reset();
-		m_projectAssetDatabaseSnapshot.reset();
+		InvalidateObjectReferencePickerEntriesRefresh();
+		RetireCurrentProjectAssetDatabase();
 		m_projectAssetDatabaseRoot.clear();
 		m_projectAssetDatabaseReady = false;
+		m_projectAssetSubAssetSnapshotIndex.reset();
 		DiscardProjectAssetDatabaseRefresh();
 		m_projectAssetDatabaseRefreshQueuedAfterInFlight = false;
 		NLS::Editor::Assets::SetObjectReferencePickerEntries({});
-		++m_objectReferencePickerRefreshGeneration;
 		m_objectReferencePickerRefreshRequested = false;
+		NLS::Editor::Assets::ResetAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
+		NLS::Editor::Assets::ResetAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
+		NLS::Editor::Assets::ResetAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 	}
 	else if (m_projectAssetDatabaseRoot.lexically_normal() != projectRoot.lexically_normal())
 	{
-		DiscardObjectReferencePickerEntriesRefresh();
+		InvalidateObjectReferencePickerEntriesRefresh();
 		m_projectAssetDatabaseRoot = projectRoot.lexically_normal();
-		m_projectAssetDatabase.reset();
-		m_projectAssetDatabaseSnapshot.reset();
+		RetireCurrentProjectAssetDatabase();
 		m_projectAssetDatabaseReady = false;
+		m_projectAssetSubAssetSnapshotIndex.reset();
 		DiscardProjectAssetDatabaseRefresh();
 		m_projectAssetDatabaseRefreshQueuedAfterInFlight = false;
 		NLS::Editor::Assets::SetObjectReferencePickerEntries({});
-		++m_objectReferencePickerRefreshGeneration;
 		m_objectReferencePickerRefreshRequested = false;
 	}
 
@@ -2780,73 +2872,124 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 		m_projectAssetDatabaseReady,
 		m_projectAssetDatabaseRefresh.has_value() &&
 			m_projectAssetDatabaseRefresh->root.lexically_normal() == projectRoot.lexically_normal());
-	const bool hasStableProjectAssetDatabase =
-		m_projectAssetDatabaseReady &&
-		m_projectAssetDatabase &&
-		!projectRoot.empty() &&
-		m_projectAssetDatabaseRoot.lexically_normal() == projectRoot.lexically_normal();
 	if (refreshScheduling.queueRefreshAfterInFlight)
 		m_projectAssetDatabaseRefreshQueuedAfterInFlight = true;
-	if (refreshScheduling.startRefresh)
-	{
-		if (!hasStableProjectAssetDatabase)
+		if (refreshScheduling.startRefresh)
 		{
-			DiscardObjectReferencePickerEntriesRefresh();
+			InvalidateObjectReferencePickerEntriesRefresh();
+			NLS::Editor::Assets::SetObjectReferencePickerEntries({});
+			m_objectReferencePickerRefreshRequested = false;
+			NLS::Editor::Assets::ResetAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 			m_projectAssetDatabaseReady = false;
-		}
-		try
-		{
+			m_projectAssetSubAssetSnapshotIndex.reset();
+			m_selectedProjectItem.reset();
+			m_unfilteredCurrentFolderItems.clear();
+			m_currentFolderItems.clear();
+			m_projectDisplayItems.clear();
+			RetireCurrentProjectAssetDatabase();
+			MarkProjectAssetDisplayItemsDirty();
+			m_visibleThumbnailItems.clear();
+			m_visibleThumbnailItemsKnown = false;
+			m_visiblePrefabHotCachePreloadPending = false;
+			m_thumbnailResultsByItemKey.clear();
+			m_thumbnailItemKeyByCacheKey.clear();
+			m_thumbnailService.ClearQueuedRequests();
+			NLS::Editor::Assets::BeginAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
+			try
+			{
 				m_projectAssetDatabaseRefresh = AssetDatabaseRefresh {
 					projectRoot.lexically_normal(),
 					ScheduleAssetBrowserJobFuture(
 						"AssetBrowser.ProjectAssetDatabaseRefresh",
-						[projectRoot = projectRoot.lexically_normal()]() -> std::unique_ptr<NLS::Editor::Assets::AssetDatabaseFacade>
+						[projectRoot = projectRoot.lexically_normal()]() -> AssetDatabaseRefreshResult
 						{
-							auto database = std::make_unique<NLS::Editor::Assets::AssetDatabaseFacade>(
-								NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
-						if (!database->Refresh())
-							return {};
-						return database;
+							AssetDatabaseRefreshResult result;
+							const auto context = std::string("Asset Browser database refresh failed for project root \"") +
+								projectRoot.generic_string() + "\"";
+							try
+							{
+								result.database = std::make_unique<NLS::Editor::Assets::AssetDatabaseFacade>(
+									NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+								if (!result.database->Refresh())
+								{
+									result.database.reset();
+									result.diagnostic = context + ": refresh returned false.";
+									return result;
+								}
+								result.snapshot = NLS::Editor::Assets::AssetDatabaseFacade::CreateReadOnlySnapshot(*result.database);
+							}
+							catch (const std::exception& exception)
+							{
+								result.database.reset();
+								result.snapshot.reset();
+								result.diagnostic = context + ": " + exception.what();
+							}
+							catch (...)
+							{
+								result.database.reset();
+								result.snapshot.reset();
+								result.diagnostic = context + ": unknown error.";
+							}
+						return result;
 					})
 			};
 		}
 		catch (const std::exception& exception)
 		{
 			DiscardProjectAssetDatabaseRefresh();
-			NLS_LOG_ERROR(std::string("Asset Browser database refresh failed to start: ") + exception.what());
+			const auto diagnostic = std::string("Asset Browser database refresh failed to start for project root \"") +
+				projectRoot.generic_string() + "\": " + exception.what();
+			NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState, diagnostic);
+			NLS_LOG_ERROR(diagnostic);
 		}
 		catch (...)
 		{
 			DiscardProjectAssetDatabaseRefresh();
-			NLS_LOG_ERROR("Asset Browser database refresh failed to start.");
+			const auto diagnostic = std::string("Asset Browser database refresh failed to start for project root \"") +
+				projectRoot.generic_string() + "\": unknown error.";
+			NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState, diagnostic);
+			NLS_LOG_ERROR(diagnostic);
 		}
 	}
-	NLS::Editor::Assets::AssetBrowserBuildOptions buildOptions;
-	buildOptions.includeGeneratedSubAssets = true;
-	buildOptions.verifyGeneratedSubAssetManifests = false;
-	buildOptions.expandedSourceAssets = m_expandedProjectAssetItems;
-	buildOptions.searchQuery = m_projectSearchQuery;
-	buildOptions.typeFilter = m_projectTypeFilter;
 	if (refreshPlan.rebuildCurrentFolderItems)
 		{
-			NLS::Editor::Assets::AssetBrowserBuildOptions unfilteredBuildOptions;
-			unfilteredBuildOptions.includeGeneratedSubAssets = true;
-			unfilteredBuildOptions.verifyGeneratedSubAssetManifests = false;
-			unfilteredBuildOptions.loadSourceAssetMetadataWithoutDatabase = !m_projectAssetDatabaseSnapshot;
+			NLS::Editor::Assets::AssetBrowserBuildOptions presentationBuildOptions;
+			presentationBuildOptions.includeGeneratedSubAssets = true;
+			presentationBuildOptions.verifyGeneratedSubAssetManifests = false;
+			presentationBuildOptions.loadSourceAssetMetadataWithoutDatabase = !m_projectAssetDatabaseSnapshot;
+			presentationBuildOptions.expandedSourceAssets = m_expandedProjectAssetItems;
+			presentationBuildOptions.searchQuery = m_projectSearchQuery;
+			presentationBuildOptions.typeFilter = m_projectTypeFilter;
+			if (refreshPlan.clearCurrentFolderItemsBeforeAsyncRefresh)
+			{
+				NLS::Editor::Assets::AssetBrowserBuildOptions fallbackBuildOptions;
+				fallbackBuildOptions.includeGeneratedSubAssets = false;
+				fallbackBuildOptions.verifyGeneratedSubAssetManifests = false;
+				fallbackBuildOptions.loadSourceAssetMetadataWithoutDatabase = true;
+				m_unfilteredCurrentFolderItems = NLS::Editor::Assets::BuildCurrentFolderAssetItems(
+					projectRoot,
+					m_selectedProjectFolder,
+					nullptr,
+					fallbackBuildOptions);
+				NLS::Editor::Assets::AssetBrowserBuildOptions fallbackFilterOptions;
+				fallbackFilterOptions.includeGeneratedSubAssets = false;
+				fallbackFilterOptions.verifyGeneratedSubAssetManifests = false;
+				fallbackFilterOptions.searchQuery = m_projectSearchQuery;
+				fallbackFilterOptions.typeFilter = m_projectTypeFilter;
+				m_currentFolderItems = NLS::Editor::Assets::FilterAssetBrowserItems(
+					m_unfilteredCurrentFolderItems,
+					fallbackFilterOptions);
+				m_projectDisplayItems = NLS::Editor::Assets::BuildAssetBrowserDisplayItems(
+					m_currentFolderItems,
+					{});
+				m_thumbnailGenerationScopeDirty = true;
+			}
 				StartCurrentFolderItemsRefresh(
 					projectRoot,
 					m_selectedProjectFolder,
-					unfilteredBuildOptions,
-					m_projectAssetDatabaseSnapshot.get());
+					presentationBuildOptions);
 				return;
 			}
-	else
-	{
-		DiscardCurrentFolderItemsRefresh();
-	}
-	m_currentFolderItems = NLS::Editor::Assets::FilterAssetBrowserItems(
-		m_unfilteredCurrentFolderItems,
-		buildOptions);
 	MarkProjectAssetDisplayItemsDirty();
 }
 
@@ -2857,60 +3000,21 @@ void Editor::Panels::AssetBrowser::SelectProjectFolder(const std::string& projec
 		return;
 
 	m_selectedProjectFolder = requested;
-	m_selectedProjectItem.clear();
+	m_selectedProjectItem.reset();
 	CancelInlineRenameProjectItem();
-	m_assetBrowserInteractiveUntil = ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds;
-	m_lightGpuThumbnailGenerationDeferredUntil = ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds;
-	m_heavyGpuThumbnailGenerationDeferredUntil = ImGui::GetTime() + kAssetBrowserHeavyGpuThumbnailIdleDelaySeconds;
+	const double now = ImGui::GetTime();
+	m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
+	m_lightGpuThumbnailGenerationDeferredUntil = now + kAssetBrowserScrollIdleDelaySeconds;
+	m_heavyGpuThumbnailGenerationDeferredUntil = now + kAssetBrowserHeavyGpuThumbnailIdleDelaySeconds;
 	m_nextHeavyGpuThumbnailGenerationTime = m_heavyGpuThumbnailGenerationDeferredUntil;
 	AddProjectBrowserAncestorFolders(m_expandedProjectFolders, m_selectedProjectFolder);
 	RebuildProjectAssetPresentation(NLS::Editor::Assets::BuildAssetBrowserRefreshPlan(
 		NLS::Editor::Assets::AssetBrowserRefreshReason::FolderSelection));
 }
 
-void Editor::Panels::AssetBrowser::AdvanceProjectAssetSubAssetRevealCounts(
-	const std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem>& displayItems)
+void Editor::Panels::AssetBrowser::SelectProjectFolderForValidation(const std::string& projectRelativePath)
 {
-	bool revealChanged = false;
-	std::unordered_map<std::string, size_t> childCounts;
-	childCounts.reserve(displayItems.size());
-	for (const auto& displayItem : displayItems)
-	{
-		if (displayItem.subAsset)
-			continue;
-		const auto sourcePath = displayItem.item.sourceAssetPath.empty()
-			? displayItem.item.projectRelativePath
-			: displayItem.item.sourceAssetPath;
-		if (displayItem.expanded && displayItem.childCount > 0u)
-			childCounts[sourcePath] = displayItem.childCount;
-	}
-
-	for (const auto& [sourcePath, childCount] : childCounts)
-	{
-		auto& revealCount = m_projectAssetSubAssetRevealCounts[sourcePath];
-		const auto revealStep = IsAssetBrowserInteractive()
-			? kMaxAssetBrowserInteractiveGeneratedSubAssetRevealStep
-			: kMaxAssetBrowserGeneratedSubAssetRevealStep;
-		const auto nextRevealCount = (std::min)(
-			childCount,
-			revealCount == 0u ? revealStep : revealCount + revealStep);
-		if (nextRevealCount != revealCount)
-		{
-			revealCount = nextRevealCount;
-			revealChanged = true;
-		}
-	}
-	if (revealChanged)
-		m_thumbnailGenerationScopeDirty = true;
-}
-
-std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem> Editor::Panels::AssetBrowser::BuildProgressiveProjectAssetDisplayItems(
-	const std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem>& displayItems) const
-{
-	return NLS::Editor::Assets::BuildProgressiveAssetBrowserDisplayItems(
-		displayItems,
-		m_projectAssetSubAssetRevealCounts,
-		kMaxAssetBrowserGeneratedSubAssetPlaceholdersPerSource);
+	SelectProjectFolder(projectRelativePath);
 }
 
 bool Editor::Panels::AssetBrowser::IsAssetBrowserInteractive() const
@@ -2928,12 +3032,7 @@ bool Editor::Panels::AssetBrowser::IsAssetBrowserInteractive() const
 void Editor::Panels::AssetBrowser::MarkProjectAssetDisplayItemsDirty()
 {
 	m_projectDisplayItemsDirty = true;
-	m_projectDisplayRebuildMergedItems.clear();
-	m_projectDisplayRebuildSourceOffset = 0u;
-	m_projectDisplayRebuildChildSourcePath.clear();
-	m_projectDisplayRebuildChildOffset = 0u;
-	m_projectDisplayRebuildInProgress = false;
-	m_projectDisplayRebuildRestartRequested = false;
+	m_projectDisplayItems.clear();
 	m_thumbnailGenerationScopeDirty = true;
 	m_pendingThumbnailScopeItems.clear();
 	m_pendingThumbnailScopeOffset = 0u;
@@ -2941,13 +3040,103 @@ void Editor::Panels::AssetBrowser::MarkProjectAssetDisplayItemsDirty()
 	m_thumbnailScopeBuildInProgress = false;
 	m_heavyGpuThumbnailGenerationDeferredUntil = (std::max)(
 		m_heavyGpuThumbnailGenerationDeferredUntil,
-		ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds);
-	m_lightGpuThumbnailGenerationDeferredUntil = (std::max)(
-		m_lightGpuThumbnailGenerationDeferredUntil,
-		ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds);
-	m_nextGpuThumbnailGenerationTime = (std::max)(
-		m_nextGpuThumbnailGenerationTime,
-		ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds);
+		ImGui::GetTime() + kAssetBrowserHeavyGpuThumbnailIdleDelaySeconds);
+}
+
+bool Editor::Panels::AssetBrowser::ApplyProjectAssetDisclosureImmediately(
+	const NLS::Editor::Assets::AssetBrowserItem& sourceItem)
+{
+	const auto sourcePath = sourceItem.sourceAssetPath.empty()
+		? sourceItem.projectRelativePath
+		: sourceItem.sourceAssetPath;
+	if (sourcePath.empty())
+		return false;
+
+	const auto sourceIdentity = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(sourceItem);
+	const auto source = std::find_if(
+		m_projectDisplayItems.begin(),
+		m_projectDisplayItems.end(),
+		[&](const NLS::Editor::Assets::AssetBrowserDisplayItem& candidate)
+		{
+			if (candidate.subAsset || candidate.loadingPlaceholder)
+				return false;
+			if (sourceIdentity.has_value())
+				return NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(candidate.item, *sourceIdentity);
+			const auto candidatePath = candidate.item.sourceAssetPath.empty()
+				? candidate.item.projectRelativePath
+				: candidate.item.sourceAssetPath;
+			return candidatePath == sourcePath;
+		});
+	if (source == m_projectDisplayItems.end())
+		return false;
+
+	NLS::Editor::Assets::AssetBrowserBuildOptions options;
+	options.includeGeneratedSubAssets = true;
+	options.verifyGeneratedSubAssetManifests = false;
+	options.loadSourceAssetMetadataWithoutDatabase = !m_projectAssetDatabaseSnapshot;
+	options.expandedSourceAssets = m_expandedProjectAssetItems;
+	options.searchQuery = m_projectSearchQuery;
+	options.typeFilter = m_projectTypeFilter;
+	auto group = NLS::Editor::Assets::BuildAssetBrowserPresentationBundle(
+		{sourceItem},
+		m_projectAssetSubAssetSnapshotIndex.get(),
+		options).displayItems;
+	if (group.empty())
+		return false;
+
+	bool hasAuthoritativeSnapshot = false;
+	if (m_projectAssetSubAssetSnapshotIndex && sourceItem.assetId.IsValid())
+	{
+		const auto canonicalSourcePath = NLS::Editor::Assets::NormalizeEditorProjectAssetPath(
+			NLS::Editor::Assets::NormalizeAssetBrowserProjectRelativePath(sourcePath));
+		const auto snapshot = m_projectAssetSubAssetSnapshotIndex->assetIndexByCanonicalSourcePath.find(
+			canonicalSourcePath);
+		hasAuthoritativeSnapshot =
+			snapshot != m_projectAssetSubAssetSnapshotIndex->assetIndexByCanonicalSourcePath.end() &&
+			snapshot->second < m_projectAssetSubAssetSnapshotIndex->assets.size() &&
+			m_projectAssetSubAssetSnapshotIndex->assets[snapshot->second].assetId == sourceItem.assetId;
+	}
+
+	const bool expanded = m_expandedProjectAssetItems.contains(sourcePath);
+	if (expanded &&
+		!hasAuthoritativeSnapshot &&
+		NLS::Editor::Assets::ShouldShowAssetBrowserSubAssetDisclosure(group.front()))
+	{
+		NLS::Editor::Assets::AssetBrowserDisplayItem placeholder;
+		placeholder.item.projectRelativePath = sourcePath + "::pending";
+		placeholder.item.sourceAssetPath = sourcePath;
+		placeholder.item.kind = NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset;
+		placeholder.groupId = group.front().groupId;
+		placeholder.subAsset = true;
+		placeholder.loadingPlaceholder = true;
+		group.push_back(std::move(placeholder));
+	}
+
+	const auto sourceIndex = static_cast<size_t>(std::distance(m_projectDisplayItems.begin(), source));
+	size_t groupEnd = sourceIndex + 1u;
+	while (groupEnd < m_projectDisplayItems.size() && m_projectDisplayItems[groupEnd].subAsset)
+		++groupEnd;
+	auto insertion = m_projectDisplayItems.erase(
+		m_projectDisplayItems.begin() + static_cast<std::ptrdiff_t>(sourceIndex),
+		m_projectDisplayItems.begin() + static_cast<std::ptrdiff_t>(groupEnd));
+	m_projectDisplayItems.insert(
+		insertion,
+		std::make_move_iterator(group.begin()),
+		std::make_move_iterator(group.end()));
+
+	m_currentFolderItems.clear();
+	m_currentFolderItems.reserve(m_projectDisplayItems.size());
+	for (const auto& displayItem : m_projectDisplayItems)
+	{
+		if (!displayItem.loadingPlaceholder)
+			m_currentFolderItems.push_back(displayItem.item);
+	}
+	++m_projectAssetPresentationGeneration;
+	StartCurrentFolderItemsRefresh(
+		ProjectRootFromAssetsFolder(m_projectAssetFolder),
+		m_selectedProjectFolder,
+		std::move(options));
+	return true;
 }
 
 void Editor::Panels::AssetBrowser::RebuildProjectAssetDisplayItemsIfNeeded()
@@ -2955,137 +3144,103 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetDisplayItemsIfNeeded()
 	if (!m_projectDisplayItemsDirty)
 		return;
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::RebuildProjectAssetDisplayItemsIfNeeded");
-
-	if (!m_projectDisplayRebuildInProgress)
-	{
-		m_projectDisplayRebuildMergedItems.clear();
-		m_projectDisplayRebuildSourceOffset = 0u;
-		m_projectDisplayRebuildChildSourcePath.clear();
-		m_projectDisplayRebuildChildOffset = 0u;
-		m_projectDisplayRebuildInProgress = true;
-		m_projectDisplayRebuildRestartRequested = false;
-		m_projectBaseDisplayItems.clear();
-		if (m_projectDisplayItems.empty())
-			m_projectDisplayItems.clear();
-	}
-
-	const auto normalizedQuery = LowerAscii(TrimAscii(m_projectSearchQuery));
-	const size_t rebuildBudget = IsAssetBrowserInteractive()
-		? kMaxAssetBrowserInteractiveDisplayItemsRebuildPerFrame
-		: kMaxAssetBrowserDisplayItemsRebuildPerFrame;
-	size_t processedThisFrame = 0u;
-	auto publishPartialDisplayItems = [this]()
-	{
-		m_projectBaseDisplayItems = NLS::Editor::Assets::BuildAssetBrowserDisplayItems(
-			m_projectDisplayRebuildMergedItems,
-			m_expandedProjectAssetItems,
-			m_projectAssetSubAssetChildCountHints);
-		AdvanceProjectAssetSubAssetRevealCounts(m_projectBaseDisplayItems);
-		m_projectDisplayItems = BuildProgressiveProjectAssetDisplayItems(m_projectBaseDisplayItems);
-		m_thumbnailGenerationScopeDirty = true;
-	};
-
-	while (
-		m_projectDisplayRebuildSourceOffset < m_currentFolderItems.size() &&
-		processedThisFrame < rebuildBudget)
-	{
-		std::string sourcePath;
-		if (m_projectDisplayRebuildChildSourcePath.empty())
-		{
-			const auto& item = m_currentFolderItems[m_projectDisplayRebuildSourceOffset++];
-			++processedThisFrame;
-			if (item.kind == NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
-				continue;
-			if (MatchesProjectAssetDisplayFilter(item, m_projectTypeFilter, normalizedQuery))
-				m_projectDisplayRebuildMergedItems.push_back(item);
-
-			sourcePath = item.sourceAssetPath.empty()
-				? item.projectRelativePath
-				: item.sourceAssetPath;
-			if (m_expandedProjectAssetItems.find(sourcePath) == m_expandedProjectAssetItems.end())
-				continue;
-		}
-		else
-		{
-			sourcePath = m_projectDisplayRebuildChildSourcePath;
-		}
-
-		const auto generated = m_projectAssetSubAssetItemsBySource.find(sourcePath);
-		if (generated == m_projectAssetSubAssetItemsBySource.end())
-		{
-			m_projectDisplayRebuildChildSourcePath.clear();
-			m_projectDisplayRebuildChildOffset = 0u;
-			continue;
-		}
-
-		size_t childOffset = m_projectDisplayRebuildChildSourcePath == sourcePath
-			? m_projectDisplayRebuildChildOffset
-			: 0u;
-		m_projectDisplayRebuildChildSourcePath = sourcePath;
-		for (; childOffset < generated->second.size(); ++childOffset)
-		{
-			if (processedThisFrame >= rebuildBudget)
-			{
-				m_projectDisplayRebuildChildOffset = childOffset;
-				publishPartialDisplayItems();
-				return;
-			}
-			++processedThisFrame;
-			const auto& child = generated->second[childOffset];
-			if (MatchesProjectAssetDisplayFilter(child, m_projectTypeFilter, normalizedQuery))
-				m_projectDisplayRebuildMergedItems.push_back(child);
-		}
-		m_projectDisplayRebuildChildSourcePath.clear();
-		m_projectDisplayRebuildChildOffset = 0u;
-	}
-
-	if (m_projectDisplayRebuildSourceOffset < m_currentFolderItems.size())
-	{
-		publishPartialDisplayItems();
+	if (m_projectAssetFolder.empty())
 		return;
-	}
 
-	m_projectBaseDisplayItems = NLS::Editor::Assets::BuildAssetBrowserDisplayItems(
-		m_projectDisplayRebuildMergedItems,
-		m_expandedProjectAssetItems,
-		m_projectAssetSubAssetChildCountHints);
-	AdvanceProjectAssetSubAssetRevealCounts(m_projectBaseDisplayItems);
-	m_projectDisplayItems = BuildProgressiveProjectAssetDisplayItems(m_projectBaseDisplayItems);
-	m_projectDisplayItemsDirty = false;
-	m_projectDisplayRebuildInProgress = false;
-	m_projectDisplayRebuildMergedItems.clear();
-	m_projectDisplayRebuildSourceOffset = 0u;
-	m_projectDisplayRebuildChildSourcePath.clear();
-	m_projectDisplayRebuildChildOffset = 0u;
-	if (m_projectDisplayRebuildRestartRequested)
-	{
-		m_projectDisplayItemsDirty = true;
-		m_projectDisplayRebuildRestartRequested = false;
-	}
+	NLS::Editor::Assets::AssetBrowserBuildOptions buildOptions;
+	buildOptions.includeGeneratedSubAssets = true;
+	buildOptions.verifyGeneratedSubAssetManifests = false;
+	buildOptions.loadSourceAssetMetadataWithoutDatabase = !m_projectAssetDatabaseSnapshot;
+	buildOptions.expandedSourceAssets = m_expandedProjectAssetItems;
+	buildOptions.searchQuery = m_projectSearchQuery;
+	buildOptions.typeFilter = m_projectTypeFilter;
+	StartCurrentFolderItemsRefresh(
+		ProjectRootFromAssetsFolder(m_projectAssetFolder),
+		m_selectedProjectFolder,
+		std::move(buildOptions));
 }
 
 void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
 	std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleItems)
 {
+	const std::string visibleSetTelemetryPath = m_selectedProjectFolder + "|visible-set";
+	const size_t visibleSetTelemetryItemCount = visibleItems.size();
+	std::chrono::microseconds hashElapsed {};
+	std::chrono::microseconds applyElapsed {};
+	std::chrono::microseconds flushElapsed {};
 	const auto nextRequestSize = AssetBrowserThumbnailRequestSize(m_thumbnailSize);
-	const auto nextFingerprint = HashVisibleThumbnailItems(
-		visibleItems,
-		nextRequestSize,
-		m_selectedProjectFolder);
+	uint64_t nextFingerprint = 0u;
+	{
+		AssetBrowserArtifactTelemetryAccumulatorScope hashTelemetry {
+			hashElapsed
+		};
+		nextFingerprint = HashVisibleThumbnailItems(
+			visibleItems,
+			nextRequestSize,
+			m_selectedProjectFolder);
+	}
 	if (m_visibleThumbnailItemsKnown &&
 		nextFingerprint == m_visibleThumbnailFingerprint &&
 		visibleItems.size() == m_visibleThumbnailCount &&
 		nextRequestSize == m_visibleThumbnailRequestSize)
 	{
+		{
+			AssetBrowserArtifactTelemetryAccumulatorScope flushTelemetry {
+				flushElapsed
+			};
+			FlushPendingVisiblePrefabHotCachePreload();
+		}
+		RecordAssetBrowserArtifactTelemetryStage(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHash,
+			hashElapsed,
+			visibleSetTelemetryPath,
+			visibleSetTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+		RecordAssetBrowserArtifactTelemetryStage(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHotCacheFlush,
+			flushElapsed,
+			visibleSetTelemetryPath,
+			visibleSetTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum);
 		return;
 	}
 
-	m_visibleThumbnailItems = std::move(visibleItems);
-	m_visibleThumbnailItemsKnown = true;
-	m_visibleThumbnailFingerprint = nextFingerprint;
-	m_visibleThumbnailCount = m_visibleThumbnailItems.size();
-	m_visibleThumbnailRequestSize = nextRequestSize;
-	m_thumbnailGenerationScopeDirty = true;
+	{
+		AssetBrowserArtifactTelemetryAccumulatorScope applyTelemetry {
+			applyElapsed
+		};
+		m_visibleThumbnailItems = std::move(visibleItems);
+		m_visibleThumbnailItemsKnown = true;
+		m_visibleThumbnailFingerprint = nextFingerprint;
+		m_visibleThumbnailCount = m_visibleThumbnailItems.size();
+		m_visibleThumbnailRequestSize = nextRequestSize;
+		m_thumbnailGenerationScopeDirty = true;
+		m_visiblePrefabHotCachePreloadPending = true;
+	}
+	{
+		AssetBrowserArtifactTelemetryAccumulatorScope flushTelemetry {
+			flushElapsed
+		};
+		FlushPendingVisiblePrefabHotCachePreload();
+	}
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHash,
+		hashElapsed,
+		visibleSetTelemetryPath,
+		visibleSetTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetApply,
+		applyElapsed,
+		visibleSetTelemetryPath,
+		visibleSetTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHotCacheFlush,
+		flushElapsed,
+		visibleSetTelemetryPath,
+		visibleSetTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
 }
 
 void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()
@@ -3111,7 +3266,8 @@ void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()
 			ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
 			ImGui::IsMouseDragging(ImGuiMouseButton_Right)))
 	{
-		m_assetBrowserInteractiveUntil = ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds;
+		const double now = ImGui::GetTime();
+		m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
 	}
 	if (m_projectFolderTree.projectRelativePath.empty())
 		RebuildProjectAssetPresentation(NLS::Editor::Assets::BuildAssetBrowserRefreshPlan(
@@ -3142,7 +3298,10 @@ void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()
 			ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
 			ImGui::IsMouseDragging(ImGuiMouseButton_Right));
 	if (currentFolderActive)
-		m_assetBrowserInteractiveUntil = ImGui::GetTime() + kAssetBrowserScrollIdleDelaySeconds;
+	{
+		const double now = ImGui::GetTime();
+		m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
+	}
 	DrawCurrentFolderGrid();
 	if (ImGui::BeginPopupContextWindow(
 			"##AssetBrowserCurrentFolderContext",
@@ -3290,7 +3449,7 @@ void Editor::Panels::AssetBrowser::DrawProjectFilterBar()
 
 	if (filtersChanged)
 	{
-		m_selectedProjectItem.clear();
+		m_selectedProjectItem.reset();
 		MarkProjectAssetDisplayItemsDirty();
 	}
 }
@@ -3552,47 +3711,23 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 		break;
 	}
 	case ProjectBrowserTextDialogKind::CreateEmptyMaterial:
-		if (!createMaterialAsset(
-				"shaderLabMaterialVersion=1\n"
-				"shader=?\n"
-				"surfaceMode=Opaque\n"
-				"alphaMode=Opaque\n"
-				"doubleSided=true\n"
-				"depthWrite=true\n"))
+		if (!createMaterialAsset(BuildDefaultAssetBrowserMaterialPayload()))
 			return false;
 		shouldPreimportCreatedAsset = false;
 		break;
 	case ProjectBrowserTextDialogKind::CreateStandardMaterial:
 	case ProjectBrowserTextDialogKind::CreateStandardPBRMaterial:
-		if (!createMaterialAsset(
-				"shaderLabMaterialVersion=1\n"
-				"shader=?\n"
-				"surfaceMode=Opaque\n"
-				"alphaMode=Opaque\n"
-				"doubleSided=true\n"
-				"depthWrite=true\n"))
+		if (!createMaterialAsset(BuildDefaultAssetBrowserMaterialPayload()))
 			return false;
 		shouldPreimportCreatedAsset = false;
 		break;
 	case ProjectBrowserTextDialogKind::CreateUnlitMaterial:
-		if (!createMaterialAsset(
-				"shaderLabMaterialVersion=1\n"
-				"shader=?\n"
-				"surfaceMode=Opaque\n"
-				"alphaMode=Opaque\n"
-				"doubleSided=true\n"
-				"depthWrite=true\n"))
+		if (!createMaterialAsset(BuildDefaultAssetBrowserMaterialPayload()))
 			return false;
 		shouldPreimportCreatedAsset = false;
 		break;
 	case ProjectBrowserTextDialogKind::CreateDefaultSurfaceMaterial:
-		if (!createMaterialAsset(
-				"shaderLabMaterialVersion=1\n"
-				"shader=?\n"
-				"surfaceMode=Opaque\n"
-				"alphaMode=Opaque\n"
-				"doubleSided=true\n"
-				"depthWrite=true\n"))
+		if (!createMaterialAsset(BuildDefaultAssetBrowserMaterialPayload()))
 			return false;
 		shouldPreimportCreatedAsset = false;
 		break;
@@ -3717,7 +3852,9 @@ bool Editor::Panels::AssetBrowser::RenameProjectItem(
 		const auto changedProjectPath = EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, destination.string());
 		if (m_selectedProjectFolder == item.projectRelativePath)
 			m_selectedProjectFolder = NormalizeProjectBrowserPath(changedProjectPath);
-		m_selectedProjectItem = NormalizeProjectBrowserPath(changedProjectPath);
+		auto renamedItem = item;
+		renamedItem.projectRelativePath = NormalizeProjectBrowserPath(changedProjectPath);
+		m_selectedProjectItem = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(renamedItem);
 		ScheduleProjectAssetPreimportForPath(changedProjectPath);
 		RebuildProjectAssetPresentationAfterWorkflow();
 		return true;
@@ -3740,7 +3877,10 @@ bool Editor::Panels::AssetBrowser::RenameProjectItem(
 	if (EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath() == source.string())
 		EDITOR_CONTEXT(sceneManager).StoreCurrentSceneSourcePath(destination.string());
 	const auto changedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, destination.string());
-	m_selectedProjectItem = NormalizeProjectBrowserPath(changedProjectPath);
+	auto renamedItem = item;
+	renamedItem.projectRelativePath = NormalizeProjectBrowserPath(changedProjectPath);
+	renamedItem.sourceAssetPath = renamedItem.projectRelativePath;
+	m_selectedProjectItem = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(renamedItem);
 	ScheduleProjectAssetPreimportForPath(changedProjectPath);
 	RebuildProjectAssetPresentationAfterWorkflow();
 	return true;
@@ -3755,13 +3895,17 @@ void Editor::Panels::AssetBrowser::ClearProjectAssetClipboard()
 void Editor::Panels::AssetBrowser::CopySelectedProjectItemToClipboard()
 {
 	ClearProjectAssetClipboard();
-	if (m_selectedProjectItem.empty())
+	if (!m_selectedProjectItem.has_value())
 		return;
 
 	const auto selected = std::find_if(
 		m_currentFolderItems.begin(),
 		m_currentFolderItems.end(),
-		[this](const auto& item) { return item.projectRelativePath == m_selectedProjectItem; });
+		[this](const auto& item)
+		{
+			return m_selectedProjectItem.has_value() &&
+				NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
+		});
 	if (selected == m_currentFolderItems.end() ||
 		selected->kind == NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
 	{
@@ -3936,8 +4080,11 @@ bool Editor::Panels::AssetBrowser::DeleteProjectItem(
 			EDITOR_CONTEXT(sceneManager).ForgetCurrentSceneSourcePath();
 	}
 
-	if (m_selectedProjectItem == item.projectRelativePath)
-		m_selectedProjectItem.clear();
+	if (m_selectedProjectItem.has_value() &&
+		NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem))
+	{
+		m_selectedProjectItem.reset();
+	}
 	if (m_projectBrowserInlineRename.sourceProjectRelativePath == item.projectRelativePath)
 		CancelInlineRenameProjectItem();
 	ScheduleProjectAssetPreimportForPath(item.projectRelativePath);
@@ -4133,9 +4280,26 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 		DrawCurrentFolderList(displayItems);
 		return;
 	}
+	const std::string drawTelemetryPath = m_selectedProjectFolder + "|grid";
+	size_t drawTelemetryItemCount = displayItems.size();
+	std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleThumbnailItems;
+	std::chrono::microseconds visibleRowsElapsed {};
+	std::chrono::microseconds interactionsElapsed {};
+	std::chrono::microseconds thumbnailElapsed {};
+	std::chrono::microseconds labelElapsed {};
+	std::chrono::microseconds visibleSetElapsed {};
+	std::chrono::microseconds generationScopeElapsed {};
+	{
+		AssetBrowserArtifactTelemetryScope drawTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDraw,
+			std::chrono::steady_clock::now(),
+			&drawTelemetryPath,
+			&drawTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
 
-	const float cellWidth = (std::max)(96.0f, m_thumbnailSize + 28.0f);
-	const float availableWidth = ImGui::GetContentRegionAvail().x;
+		const float cellWidth = (std::max)(96.0f, m_thumbnailSize + 28.0f);
+		const float availableWidth = ImGui::GetContentRegionAvail().x;
 	const int columns = (std::max)(1, static_cast<int>(std::floor(availableWidth / cellWidth)));
 	const float thumbnailSize = (std::max)(64.0f, m_thumbnailSize);
 	const float labelHeight = 24.0f;
@@ -4178,14 +4342,13 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 			ImGui::TextDisabled("This folder is empty");
 		}
 		return;
-	}
+		}
 
-	const auto itemCount = static_cast<int>(displayItems.size());
-	const auto rowCount = (itemCount + columns - 1) / columns;
-	std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleThumbnailItems;
-	visibleThumbnailItems.reserve(static_cast<size_t>(columns) * 8u);
-	struct DeferredDisclosureButton
-	{
+		const auto itemCount = static_cast<int>(displayItems.size());
+		const auto rowCount = (itemCount + columns - 1) / columns;
+		visibleThumbnailItems.reserve(static_cast<size_t>(columns) * 8u);
+		struct DeferredDisclosureButton
+		{
 		ImDrawList* drawList = nullptr;
 		ImVec2 center;
 		float radius = 0.0f;
@@ -4199,10 +4362,48 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 	ImGui::Columns(columns, "##AssetBrowserGrid", false);
 	while (clipper.Step())
 	{
+		AssetBrowserArtifactTelemetryAccumulatorScope visibleRowsTelemetry {
+			visibleRowsElapsed
+		};
 		NLS_PROFILE_NAMED_SCOPE("AssetBrowser::DrawCurrentFolderGrid.VisibleRows");
 		for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
 		{
 			const auto rowPresentationGeneration = m_projectAssetPresentationGeneration;
+			const auto rowBegin = static_cast<size_t>(row) * static_cast<size_t>(columns);
+			const ImVec2 rowCursor = ImGui::GetCursorScreenPos();
+			auto* rowDrawList = ImGui::GetWindowDrawList();
+			const auto rowSegments = NLS::Editor::Assets::ResolveAssetBrowserGridRowGroupSegments(
+				displayItems,
+				rowBegin,
+				static_cast<size_t>(columns));
+			const ImRect parentClipRect = ImGui::GetCurrentWindow()->DC.CurrentColumns->HostInitialClipRect;
+			ImGui::PushColumnsBackground();
+			rowDrawList->PushClipRect(parentClipRect.Min, parentClipRect.Max, true);
+			for (const auto& segment : rowSegments)
+			{
+				const int firstColumn = static_cast<int>(segment.range.begin - rowBegin);
+				const int lastColumnExclusive = firstColumn + static_cast<int>(segment.range.count);
+				const float segmentMinX =
+					ImGui::GetWindowPos().x + ImGui::GetColumnOffset(firstColumn) + 4.0f;
+				const float segmentMaxX =
+					ImGui::GetWindowPos().x + ImGui::GetColumnOffset(lastColumnExclusive) - 4.0f;
+				const float generatedThumbnailSize = (std::max)(48.0f, thumbnailSize - 18.0f);
+				ImDrawFlags cornerFlags = ImDrawFlags_RoundCornersNone;
+				if (segment.trueSegmentStart)
+					cornerFlags |= ImDrawFlags_RoundCornersLeft;
+				if (segment.trueSegmentEnd)
+					cornerFlags |= ImDrawFlags_RoundCornersRight;
+				DrawAssetBrowserSegmentPanel(
+					rowDrawList,
+					ImVec2(segmentMinX, rowCursor.y + 3.0f),
+					ImVec2(
+						segmentMaxX,
+						rowCursor.y + 8.0f + (thumbnailSize + generatedThumbnailSize) * 0.5f),
+					false,
+					cornerFlags);
+			}
+			rowDrawList->PopClipRect();
+			ImGui::PopColumnsBackground();
 			for (int column = 0; column < columns; ++column)
 			{
 				if (rowPresentationGeneration != m_projectAssetPresentationGeneration)
@@ -4225,7 +4426,8 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 				else
 					ImGui::PushID(item.projectRelativePath.c_str());
 
-				const bool selected = m_selectedProjectItem == item.projectRelativePath;
+				const bool selected = m_selectedProjectItem.has_value() &&
+					NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
 				const ImVec2 cursor = ImGui::GetCursorScreenPos();
 				auto* drawList = ImGui::GetWindowDrawList();
 				if (displayItem.loadingPlaceholder)
@@ -4256,29 +4458,11 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					cursor.x + childIndent + (cardSize.x - childIndent - visibleThumbnailSize) * 0.5f,
 					cursor.y + 4.0f + (thumbnailSize - visibleThumbnailSize) * 0.5f);
 				const ImVec2 iconMax(iconMin.x + visibleThumbnailSize, iconMin.y + visibleThumbnailSize);
-				if (displayItem.subAsset)
-				{
-					const bool continuesLeft =
-						column > 0 &&
-						itemIndex > 0 &&
-						displayItems[static_cast<size_t>(itemIndex - 1)].subAsset &&
-						displayItems[static_cast<size_t>(itemIndex - 1)].item.sourceAssetPath == item.sourceAssetPath;
-					const bool continuesRight =
-						column + 1 < columns &&
-						itemIndex + 1 < itemCount &&
-						displayItems[static_cast<size_t>(itemIndex + 1)].subAsset &&
-						displayItems[static_cast<size_t>(itemIndex + 1)].item.sourceAssetPath == item.sourceAssetPath;
-					DrawAssetBrowserFilmstripPanel(
-						drawList,
-						ImVec2(cursor.x + 4.0f, cursor.y + 3.0f),
-						ImVec2(cursor.x + cardSize.x - 4.0f, iconMax.y + 4.0f),
-						false,
-						continuesLeft,
-						continuesRight);
-				}
-				ImGui::InvisibleButton("##assetCard", cardSize);
-				const bool hovered = ImGui::IsItemHovered();
-				const bool hasDisclosure = displayItem.childCount > 0u;
+					ImGui::InvisibleButton("##assetCard", cardSize);
+					const bool hovered = ImGui::IsItemHovered();
+					SchedulePrefabHotCachePreloadForHoveredItem(item, hovered);
+					const bool hasDisclosure =
+						NLS::Editor::Assets::ShouldShowAssetBrowserSubAssetDisclosure(displayItem);
 				const auto disclosureSourcePath = item.sourceAssetPath.empty()
 					? item.projectRelativePath
 					: item.sourceAssetPath;
@@ -4294,20 +4478,20 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 				if (disclosureClicked)
 				{
+					const auto sourceItem = item;
 					if (displayItem.expanded)
 					{
 						m_expandedProjectAssetItems.erase(disclosureSourcePath);
-						m_projectAssetSubAssetRevealCounts.erase(disclosureSourcePath);
 					}
 					else
 					{
 						m_expandedProjectAssetItems.insert(disclosureSourcePath);
-						m_projectAssetSubAssetRevealCounts[disclosureSourcePath] =
-							IsAssetBrowserInteractive()
-								? kMaxAssetBrowserInteractiveGeneratedSubAssetRevealStep
-								: kMaxAssetBrowserGeneratedSubAssetRevealStep;
 					}
-					MarkProjectAssetDisplayItemsDirty();
+					if (!ApplyProjectAssetDisclosureImmediately(sourceItem))
+						MarkProjectAssetDisplayItemsDirty();
+					ImGui::PopID();
+					ImGui::Columns(1);
+					return;
 				}
 				if (hovered && !selected)
 				{
@@ -4322,8 +4506,13 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					if (!disclosureHovered)
 						SelectProjectGridItem(item);
 				}
-				DrawProjectGridItemDragSource(item);
-				DrawProjectGridItemContextMenu(item);
+				{
+					AssetBrowserArtifactTelemetryAccumulatorScope interactionsTelemetry {
+						interactionsElapsed
+					};
+					DrawProjectGridItemDragSource(item);
+					DrawProjectGridItemContextMenu(item);
+				}
 				if (presentationGeneration != m_projectAssetPresentationGeneration)
 				{
 					ImGui::PopID();
@@ -4331,7 +4520,12 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					return;
 				}
 				if (item.kind == NLS::Editor::Assets::AssetBrowserItemKind::Folder)
+				{
+					AssetBrowserArtifactTelemetryAccumulatorScope interactionsTelemetry {
+						interactionsElapsed
+					};
 					DrawProjectFolderDropTarget(item.projectRelativePath, item.absolutePath);
+				}
 				if (presentationGeneration != m_projectAssetPresentationGeneration)
 				{
 					ImGui::PopID();
@@ -4347,8 +4541,13 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 						ImGui::GetColorU32(ImGuiCol_Header),
 						2.0f);
 				}
-				DrawProjectGridItemThumbnail(item, iconMin, iconMax, visibleThumbnailSize, hovered);
-				if (displayItem.childCount > 0u)
+				{
+					AssetBrowserArtifactTelemetryAccumulatorScope thumbnailTelemetry {
+						thumbnailElapsed
+					};
+					DrawProjectGridItemThumbnail(item, iconMin, iconMax, visibleThumbnailSize, hovered);
+				}
+				if (hasDisclosure)
 				{
 					const bool expanded = m_expandedProjectAssetItems.find(disclosureSourcePath) != m_expandedProjectAssetItems.end();
 					deferredDisclosureButtons.push_back({
@@ -4365,23 +4564,28 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 				const ImVec2 labelMin(selectionMin.x, iconMax.y + labelGap);
 				const ImVec2 labelMax(selectionMax.x, labelMin.y + labelHeight);
 				const bool labelHovered = ImGui::IsMouseHoveringRect(labelMin, labelMax);
-				if (!disclosureHovered &&
-					!labelHovered &&
-					ImGui::IsItemHovered() &&
-					ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
 				{
-					m_projectBrowserInlineRename.pending = false;
-					const bool openingWillInvalidateGrid =
-						NLS::Editor::Assets::ShouldStopDrawingAssetBrowserGridAfterOpeningItem(
-							m_selectedProjectFolder,
-							item);
-					OpenProjectGridItem(item);
-					if (openingWillInvalidateGrid ||
-						presentationGeneration != m_projectAssetPresentationGeneration)
+					AssetBrowserArtifactTelemetryAccumulatorScope interactionsTelemetry {
+						interactionsElapsed
+					};
+					if (!disclosureHovered &&
+						!labelHovered &&
+						ImGui::IsItemHovered() &&
+						ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
 					{
-						ImGui::PopID();
-						ImGui::Columns(1);
-						return;
+						m_projectBrowserInlineRename.pending = false;
+						const bool openingWillInvalidateGrid =
+							NLS::Editor::Assets::ShouldStopDrawingAssetBrowserGridAfterOpeningItem(
+								m_selectedProjectFolder,
+								item);
+						OpenProjectGridItem(item);
+						if (openingWillInvalidateGrid ||
+							presentationGeneration != m_projectAssetPresentationGeneration)
+						{
+							ImGui::PopID();
+							ImGui::Columns(1);
+							return;
+						}
 					}
 				}
 				if (m_projectBrowserInlineRename.pending &&
@@ -4391,41 +4595,46 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					m_projectBrowserInlineRename.pending = false;
 					BeginInlineRenameProjectItem(item);
 				}
-				const float labelPadding = 4.0f;
-				const float labelAvailableWidth = (std::max)(1.0f, labelMax.x - labelMin.x - labelPadding * 2.0f);
-				const auto label = EllipsizeAssetBrowserLabel(item.displayName, labelAvailableWidth);
-				const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
-				const float labelX = labelMin.x + labelPadding + (std::max)(0.0f, (labelAvailableWidth - labelSize.x) * 0.5f);
-				if (selected)
 				{
-					drawList->AddRectFilled(
-						labelMin,
-						labelMax,
-						ImGui::GetColorU32(ImGuiCol_Header),
-						2.0f);
-				}
-				if (!m_projectBrowserInlineRename.active &&
-					selected &&
-					!displayItem.subAsset &&
-					NLS::Editor::Assets::BuildAssetBrowserWorkflowCapabilities(item).canRename &&
-					labelHovered &&
-					ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-				{
-					m_projectBrowserInlineRename.pending = true;
-					m_projectBrowserInlineRename.pendingSince = ImGui::GetTime();
-					m_projectBrowserInlineRename.sourceProjectRelativePath = item.projectRelativePath;
-				}
-				if (m_projectBrowserInlineRename.active &&
-					m_projectBrowserInlineRename.sourceProjectRelativePath == item.projectRelativePath)
-				{
-					DrawProjectGridItemInlineRename(item, labelMin, labelMax);
-				}
-				else
-				{
-					drawList->AddText(
-						ImVec2(labelX, labelMin.y + 4.0f),
-						ImGui::GetColorU32(ImGuiCol_Text),
-						label.c_str());
+					AssetBrowserArtifactTelemetryAccumulatorScope labelTelemetry {
+						labelElapsed
+					};
+					const float labelPadding = 4.0f;
+					const float labelAvailableWidth = (std::max)(1.0f, labelMax.x - labelMin.x - labelPadding * 2.0f);
+					const auto label = EllipsizeAssetBrowserLabel(item.displayName, labelAvailableWidth);
+					const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
+					const float labelX = labelMin.x + labelPadding + (std::max)(0.0f, (labelAvailableWidth - labelSize.x) * 0.5f);
+					if (selected)
+					{
+						drawList->AddRectFilled(
+							labelMin,
+							labelMax,
+							ImGui::GetColorU32(ImGuiCol_Header),
+							2.0f);
+					}
+					if (!m_projectBrowserInlineRename.active &&
+						selected &&
+						!displayItem.subAsset &&
+						NLS::Editor::Assets::BuildAssetBrowserWorkflowCapabilities(item).canRename &&
+						labelHovered &&
+						ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+					{
+						m_projectBrowserInlineRename.pending = true;
+						m_projectBrowserInlineRename.pendingSince = ImGui::GetTime();
+						m_projectBrowserInlineRename.sourceProjectRelativePath = item.projectRelativePath;
+					}
+					if (m_projectBrowserInlineRename.active &&
+						m_projectBrowserInlineRename.sourceProjectRelativePath == item.projectRelativePath)
+					{
+						DrawProjectGridItemInlineRename(item, labelMin, labelMax);
+					}
+					else
+					{
+						drawList->AddText(
+							ImVec2(labelX, labelMin.y + 4.0f),
+							ImGui::GetColorU32(ImGuiCol_Text),
+							label.c_str());
+					}
 				}
 
 				if (hovered)
@@ -4447,11 +4656,68 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 			button.radius,
 			button.expanded,
 			button.hovered,
-			true);
+				true);
+		}
 	}
-	SetVisibleThumbnailItems(std::move(visibleThumbnailItems));
-	UpdateThumbnailGenerationScope();
-		PumpThumbnailGeneration(false, false);
+	{
+		AssetBrowserArtifactTelemetryAccumulatorScope visibleSetTelemetry {
+			visibleSetElapsed
+		};
+		SetVisibleThumbnailItems(std::move(visibleThumbnailItems));
+	}
+	{
+		AssetBrowserArtifactTelemetryAccumulatorScope generationScopeTelemetry {
+			generationScopeElapsed
+		};
+		UpdateThumbnailGenerationScope();
+	}
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGridVisibleRows,
+		visibleRowsElapsed,
+		drawTelemetryPath,
+		drawTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGridItemInteractions,
+		interactionsElapsed,
+		drawTelemetryPath,
+		drawTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGridItemThumbnail,
+		thumbnailElapsed,
+		drawTelemetryPath,
+		drawTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGridItemLabel,
+		labelElapsed,
+		drawTelemetryPath,
+		drawTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSet,
+		visibleSetElapsed,
+		drawTelemetryPath,
+		drawTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScope,
+		generationScopeElapsed,
+		drawTelemetryPath,
+		drawTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+		const auto thumbnailPumpPermissions =
+			NLS::Editor::Assets::PlanAssetBrowserPostDrawThumbnailPump({
+					IsAssetBrowserInteractive(),
+					ImGui::GetTime(),
+					m_lightGpuThumbnailGenerationDeferredUntil,
+					m_heavyGpuThumbnailGenerationDeferredUntil
+				});
+		PumpThumbnailGeneration(
+			thumbnailPumpPermissions.allowGpuPreviewStart,
+			thumbnailPumpPermissions.allowHeavyGpuPreview,
+			true);
 }
 
 void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserDroppedFiles(const std::vector<std::string>& paths)
@@ -4486,7 +4752,11 @@ void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserShortcuts()
 		if (const auto selected = std::find_if(
 				m_currentFolderItems.begin(),
 				m_currentFolderItems.end(),
-				[this](const auto& item) { return item.projectRelativePath == m_selectedProjectItem; });
+				[this](const auto& item)
+				{
+					return m_selectedProjectItem.has_value() &&
+						NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
+				});
 			selected != m_currentFolderItems.end())
 		{
 			BeginInlineRenameProjectItem(*selected);
@@ -4506,7 +4776,11 @@ void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserShortcuts()
 		if (const auto selected = std::find_if(
 				m_currentFolderItems.begin(),
 				m_currentFolderItems.end(),
-				[this](const auto& item) { return item.projectRelativePath == m_selectedProjectItem; });
+				[this](const auto& item)
+				{
+					return m_selectedProjectItem.has_value() &&
+						NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
+				});
 			selected != m_currentFolderItems.end())
 		{
 			(void)DeleteProjectItem(*selected);
@@ -4517,7 +4791,11 @@ void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserShortcuts()
 		if (const auto selected = std::find_if(
 				m_currentFolderItems.begin(),
 				m_currentFolderItems.end(),
-				[this](const auto& item) { return item.projectRelativePath == m_selectedProjectItem; });
+				[this](const auto& item)
+				{
+					return m_selectedProjectItem.has_value() &&
+						NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
+				});
 			selected != m_currentFolderItems.end())
 		{
 			(void)DuplicateProjectItem(*selected);
@@ -4528,8 +4806,20 @@ void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserShortcuts()
 void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 	const std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem>& displayItems)
 {
-	if (displayItems.empty())
+	const std::string drawTelemetryPath = m_selectedProjectFolder + "|list";
+	size_t drawTelemetryItemCount = displayItems.size();
+	std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleThumbnailItems;
 	{
+		AssetBrowserArtifactTelemetryScope drawTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDraw,
+			std::chrono::steady_clock::now(),
+			&drawTelemetryPath,
+			&drawTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
+
+		if (displayItems.empty())
+		{
 		SetVisibleThumbnailItems({});
 		UpdateThumbnailGenerationScope();
 		if (m_currentFolderItemsRefresh.has_value())
@@ -4560,16 +4850,41 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 		{
 			ImGui::TextDisabled("This folder is empty");
 		}
-		return;
-	}
+			return;
+		}
 
-	std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleThumbnailItems;
-	visibleThumbnailItems.reserve(64u);
-	const float rowHeight = 26.0f;
-	ImGuiListClipper clipper;
+		visibleThumbnailItems.reserve(64u);
+		const float rowHeight = 26.0f;
+		ImGuiListClipper clipper;
 	clipper.Begin(static_cast<int>(displayItems.size()), rowHeight);
 	while (clipper.Step())
 	{
+		const ImVec2 visibleSliceCursor = ImGui::GetCursorScreenPos();
+		const float visibleSliceWidth = ImGui::GetContentRegionAvail().x;
+		for (const auto& segment : NLS::Editor::Assets::ResolveAssetBrowserVisibleListGroupSegments(
+			displayItems,
+			static_cast<size_t>(clipper.DisplayStart),
+			static_cast<size_t>(clipper.DisplayEnd)))
+		{
+			const float firstRow = static_cast<float>(segment.range.begin - static_cast<size_t>(clipper.DisplayStart));
+			const float rowCount = static_cast<float>(segment.range.count);
+			ImDrawFlags cornerFlags = ImDrawFlags_RoundCornersNone;
+			if (segment.trueSegmentStart)
+				cornerFlags |= ImDrawFlags_RoundCornersTop;
+			if (segment.trueSegmentEnd)
+				cornerFlags |= ImDrawFlags_RoundCornersBottom;
+			DrawAssetBrowserSegmentPanel(
+				ImGui::GetWindowDrawList(),
+				ImVec2(
+					visibleSliceCursor.x + 18.0f,
+					visibleSliceCursor.y + firstRow * rowHeight + (segment.trueSegmentStart ? 2.0f : 0.0f)),
+				ImVec2(
+					visibleSliceCursor.x + visibleSliceWidth - 8.0f,
+					visibleSliceCursor.y + (firstRow + rowCount) * rowHeight -
+						(segment.trueSegmentEnd ? 2.0f : 0.0f)),
+				false,
+				cornerFlags);
+		}
 		for (int index = clipper.DisplayStart; index < clipper.DisplayEnd; ++index)
 		{
 			const auto& displayItem = displayItems[static_cast<size_t>(index)];
@@ -4595,19 +4910,10 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 				continue;
 			}
 			visibleThumbnailItems.push_back(item);
-			const bool selected = m_selectedProjectItem == item.projectRelativePath;
+			const bool selected = m_selectedProjectItem.has_value() &&
+				NLS::Editor::Assets::AssetBrowserItemMatchesActionIdentity(item, *m_selectedProjectItem);
 			auto* drawList = ImGui::GetWindowDrawList();
 			bool disclosureHovered = false;
-			if (displayItem.subAsset)
-			{
-				DrawAssetBrowserFilmstripPanel(
-					drawList,
-					ImVec2(cursor.x + 18.0f, cursor.y + 2.0f),
-					ImVec2(cursor.x + rowSize.x - 8.0f, cursor.y + rowSize.y - 2.0f),
-					selected,
-					false,
-					false);
-			}
 			ImGui::InvisibleButton("##assetListRow", rowSize);
 			const bool hovered = ImGui::IsItemHovered();
 			if (selected || hovered)
@@ -4618,7 +4924,7 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 					ImGui::GetColorU32(selected ? ImGuiCol_Header : ImGuiCol_HeaderHovered),
 					2.0f);
 			}
-			if (displayItem.childCount > 0u)
+				if (NLS::Editor::Assets::ShouldShowAssetBrowserSubAssetDisclosure(displayItem))
 			{
 				const auto sourcePath = item.sourceAssetPath.empty()
 					? item.projectRelativePath
@@ -4631,20 +4937,19 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 						ImVec2(disclosureCenter.x + disclosureRadius, disclosureCenter.y + disclosureRadius));
 				if (disclosureHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
 				{
+					const auto sourceItem = item;
 					if (displayItem.expanded)
 					{
 						m_expandedProjectAssetItems.erase(sourcePath);
-						m_projectAssetSubAssetRevealCounts.erase(sourcePath);
 					}
 					else
 					{
 						m_expandedProjectAssetItems.insert(sourcePath);
-						m_projectAssetSubAssetRevealCounts[sourcePath] =
-							IsAssetBrowserInteractive()
-								? kMaxAssetBrowserInteractiveGeneratedSubAssetRevealStep
-								: kMaxAssetBrowserGeneratedSubAssetRevealStep;
 					}
-					MarkProjectAssetDisplayItemsDirty();
+					if (!ApplyProjectAssetDisclosureImmediately(sourceItem))
+						MarkProjectAssetDisplayItemsDirty();
+					ImGui::PopID();
+					return;
 				}
 				DrawAssetBrowserDisclosureButton(
 					drawList,
@@ -4754,10 +5059,21 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 			ImGui::PopID();
 		}
 	}
+	}
 
 	SetVisibleThumbnailItems(std::move(visibleThumbnailItems));
 	UpdateThumbnailGenerationScope();
-		PumpThumbnailGeneration(false, false);
+	const auto thumbnailPumpPermissions =
+		NLS::Editor::Assets::PlanAssetBrowserPostDrawThumbnailPump({
+				IsAssetBrowserInteractive(),
+				ImGui::GetTime(),
+				m_lightGpuThumbnailGenerationDeferredUntil,
+				m_heavyGpuThumbnailGenerationDeferredUntil
+			});
+	PumpThumbnailGeneration(
+		thumbnailPumpPermissions.allowGpuPreviewStart,
+		thumbnailPumpPermissions.allowHeavyGpuPreview,
+		true);
 }
 
 Editor::Panels::AssetBrowser::ThumbnailTextureHandle Editor::Panels::AssetBrowser::ResolveCachedThumbnailTextureHandle(
@@ -4772,15 +5088,15 @@ Editor::Panels::AssetBrowser::ThumbnailTextureHandle Editor::Panels::AssetBrowse
 	{
 		m_thumbnailTexturesUsedThisFrame.insert(normalizedPath);
 		found->second.lastUsedFrame = m_thumbnailTextureFrameSerial;
-		if (found->second.textureView != nullptr &&
-			NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
-			{
-				return {
-					NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(found->second.textureView),
-					found->second.width,
-					found->second.height
-				};
-			}
+			if (found->second.textureView != nullptr &&
+				found->second.textureId != nullptr)
+				{
+					return {
+						found->second.textureId,
+						found->second.width,
+						found->second.height
+					};
+				}
 		ReleaseCachedThumbnailTexture(normalizedPath);
 		return {};
 	}
@@ -4815,21 +5131,208 @@ void Editor::Panels::AssetBrowser::ApplyThumbnailServiceResult(
 	}
 }
 
+bool Editor::Panels::AssetBrowser::EnsureThumbnailPreviewRenderer()
+{
+	if (m_thumbnailPreviewRenderer != nullptr)
+		return true;
+	if (IsEditorWindowClosing())
+		return false;
+	if (IsEditorSceneReadbackValidationActive())
+		return false;
+
+	auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+	if (driver == nullptr)
+		return false;
+
+	const std::string telemetryPath = m_selectedProjectFolder + "|preview-renderer-create";
+	const size_t telemetryItemCount = m_thumbnailService.GetQueuedRequestCount();
+	AssetBrowserArtifactTelemetryScope createTelemetry {
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpCreatePreviewRenderer,
+		std::chrono::steady_clock::now(),
+		&telemetryPath,
+		&telemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum
+	};
+	m_thumbnailPreviewRenderer =
+		std::make_shared<NLS::Editor::Assets::EditorThumbnailPreviewRenderer>(*driver);
+	return m_thumbnailPreviewRenderer != nullptr;
+}
+
+bool Editor::Panels::AssetBrowser::IsEditorWindowClosing() const
+{
+	return EDITOR_CONTEXT(window) != nullptr && EDITOR_CONTEXT(window)->ShouldClose();
+}
+
+bool Editor::Panels::AssetBrowser::IsEditorSceneReadbackValidationActive() const
+{
+	auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+	if (driver == nullptr)
+		return false;
+
+	const auto& diagnostics = NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(*driver);
+	return !diagnostics.editorValidationSceneReadbackOutput.empty() ||
+		!diagnostics.editorValidationSceneReadbackSummary.empty();
+}
+
+bool Editor::Panels::AssetBrowser::IsStandardPbrShaderPassPrewarmPending() const
+{
+	return m_standardPbrShaderPassPrewarmQueued &&
+		!m_standardPbrShaderPassPrewarmCompleted &&
+		m_standardPbrShaderPassPrewarm.valid();
+}
+
+void Editor::Panels::AssetBrowser::PumpStandardPbrShaderPassPrewarm()
+{
+	if (m_standardPbrShaderPassPrewarmCompleted)
+		return;
+
+	if (m_standardPbrShaderPassPrewarmQueued)
+	{
+		if (!m_standardPbrShaderPassPrewarm.valid())
+		{
+			m_standardPbrShaderPassPrewarmQueued = false;
+			m_standardPbrShaderPassPrewarmCompleted = true;
+			return;
+		}
+		if (m_standardPbrShaderPassPrewarm.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+			return;
+
+		try
+		{
+			const size_t loadedPasses = m_standardPbrShaderPassPrewarm.get();
+			NLS_LOG_INFO(
+				"Standard PBR thumbnail shader pass prewarm completed: loadedPasses=" +
+				std::to_string(loadedPasses));
+		}
+		catch (const std::exception& exception)
+		{
+			NLS_LOG_WARNING(std::string("Standard PBR thumbnail shader pass prewarm failed: ") + exception.what());
+		}
+		catch (...)
+		{
+			NLS_LOG_WARNING("Standard PBR thumbnail shader pass prewarm failed with an unknown exception.");
+		}
+		m_standardPbrShaderPassPrewarmQueued = false;
+		m_standardPbrShaderPassPrewarmCompleted = true;
+		return;
+	}
+
+	if (IsAssetBrowserInteractive() || !m_projectAssetDatabaseReady)
+		return;
+
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	const auto artifactDatabasePath = NLS::Editor::Assets::GetProjectArtifactDatabasePath(projectRoot);
+	if (projectRoot.empty() || !std::filesystem::exists(artifactDatabasePath / "data.mdb"))
+		return;
+
+	try
+	{
+			m_standardPbrShaderPassPrewarm = ScheduleAssetBrowserJobFuture(
+				"AssetBrowser.StandardPbrShaderPassPrewarm",
+				[artifactDatabasePath]
+				{
+					NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions options;
+					options.loadMissingTextures = false;
+					options.loadMissingShaders = true;
+					options.artifactDatabasePath = artifactDatabasePath;
+					options.targetPlatform = "editor";
+					options.shaderPassLoadTelemetryStage =
+						NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewBackgroundMaterialShaderPassLoad;
+					return NLS::Render::Resources::Loaders::MaterialLoader::PreloadShaderLabPassArtifacts(
+						{},
+						NLS::Editor::Assets::kDefaultShaderLabMaterialShaderPath,
+						options);
+				});
+		m_standardPbrShaderPassPrewarmQueued = true;
+	}
+	catch (const std::exception& exception)
+	{
+		m_standardPbrShaderPassPrewarmCompleted = true;
+		NLS_LOG_WARNING(std::string("Standard PBR thumbnail shader pass prewarm could not be queued: ") + exception.what());
+	}
+	catch (...)
+	{
+		m_standardPbrShaderPassPrewarmCompleted = true;
+		NLS_LOG_WARNING("Standard PBR thumbnail shader pass prewarm could not be queued.");
+	}
+}
+
+void Editor::Panels::AssetBrowser::PumpThumbnailPreviewRenderWarmup()
+{
+	if (m_thumbnailPreviewRenderWarmupCompleted ||
+		IsEditorWindowClosing() ||
+		IsEditorSceneReadbackValidationActive() ||
+		IsAssetBrowserInteractive() ||
+		!m_standardPbrShaderPassPrewarmCompleted ||
+		IsStandardPbrShaderPassPrewarmPending())
+	{
+		return;
+	}
+
+	if (!EnsureThumbnailPreviewRenderer())
+		return;
+
+	constexpr uint32_t kThumbnailPreviewRenderWarmupSize = 96u;
+	if (m_thumbnailPreviewRenderer->PrewarmMaterialPreviewRenderPath(kThumbnailPreviewRenderWarmupSize))
+	{
+		m_thumbnailPreviewRenderWarmupCompleted = true;
+		NLS_LOG_INFO("Thumbnail material preview render path warmup completed.");
+	}
+}
+
 void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
-	const bool allowGpuPreviewStart,
-	const bool allowHeavyGpuPreview)
+		const bool allowGpuPreviewStart,
+		const bool allowHeavyGpuPreview,
+		const bool allowPreviewRenderWarmup)
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration");
+	const std::string pumpTelemetryPath = m_selectedProjectFolder + "|post-draw-pump";
+	const size_t pumpTelemetryItemCount = m_thumbnailService.GetQueuedRequestCount();
+	AssetBrowserArtifactTelemetryScope pumpTelemetry {
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPump,
+		std::chrono::steady_clock::now(),
+		&pumpTelemetryPath,
+		&pumpTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum
+	};
 	{
 		NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.ConsumeCompleted");
-		if (const auto generated = m_thumbnailService.ConsumeCompletedThumbnail();
-			generated.has_value())
+		AssetBrowserArtifactTelemetryScope consumeCompletedTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpConsumeCompleted,
+			std::chrono::steady_clock::now(),
+			&pumpTelemetryPath,
+			&pumpTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
+		size_t completedThumbnailsConsumedThisPump = 0u;
+		bool completedThumbnailQueuedTextureLoad = false;
+		while (completedThumbnailsConsumedThisPump < kMaxAssetBrowserCompletedThumbnailConsumesPerPump)
 		{
+			const auto generated = m_thumbnailService.ConsumeCompletedThumbnail();
+			if (!generated.has_value())
+				break;
+
+			completedThumbnailQueuedTextureLoad =
+				completedThumbnailQueuedTextureLoad ||
+				(generated->status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
+					!generated->imagePath.empty());
 			ApplyThumbnailServiceResult(*generated);
+			++completedThumbnailsConsumedThisPump;
+		}
+		if (completedThumbnailQueuedTextureLoad)
+		{
+			StartQueuedCachedThumbnailTextureDecodes(
+				IsAssetBrowserInteractive()
+					? kMaxAssetBrowserInteractiveCachedThumbnailTexturePumpsPerFrame
+					: kMaxAssetBrowserThumbnailTextureLoadsPerFrame);
 		}
 	}
 	if (m_thumbnailService.GetQueuedRequestCount() == 0u &&
 		!m_thumbnailService.HasInFlightRequest())
+		return;
+	if (IsEditorWindowClosing())
+		return;
+	if (IsEditorSceneReadbackValidationActive())
 		return;
 
 	const double now = ImGui::GetTime();
@@ -4837,86 +5340,133 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 		m_thumbnailPreviewRenderer != nullptr ||
 		NLS::Render::Context::TryGetLocatedDriver() != nullptr;
 
-	auto ensurePreviewRenderer = [this]() -> bool
+	if (allowPreviewRenderWarmup &&
+		allowGpuPreviewStart &&
+		!IsAssetBrowserInteractive() &&
+		m_standardPbrShaderPassPrewarmCompleted &&
+		!IsStandardPbrShaderPassPrewarmPending() &&
+		m_thumbnailService.GetQueuedRequestCount() > 0u)
 	{
-		if (!m_thumbnailPreviewRenderer)
-		{
-			auto* driver = NLS::Render::Context::TryGetLocatedDriver();
-			if (driver != nullptr)
-				m_thumbnailPreviewRenderer =
-					std::make_unique<NLS::Editor::Assets::EditorThumbnailPreviewRenderer>(*driver);
-		}
-		return m_thumbnailPreviewRenderer != nullptr;
-	};
+		const bool warmedPreviewRenderPath = !m_thumbnailPreviewRenderWarmupCompleted;
+		PumpThumbnailPreviewRenderWarmup();
+		if (warmedPreviewRenderPath && m_thumbnailPreviewRenderWarmupCompleted)
+			return;
+	}
 
-	const auto lightGpuPumpDecision = NLS::Editor::Assets::PlanAssetBrowserLightGpuThumbnailPump({
-		allowGpuPreviewStart,
-		IsAssetBrowserInteractive(),
-		m_thumbnailService.GetQueuedRequestCount() > 0u,
-		m_thumbnailService.HasInFlightRequest(),
-		hasPreviewRenderer,
-		now,
-		m_lightGpuThumbnailGenerationDeferredUntil,
-		m_nextGpuThumbnailGenerationTime
-	});
+	NLS::Editor::Assets::AssetBrowserLightGpuThumbnailPumpInput lightGpuPumpInput;
+	lightGpuPumpInput.allowGpuPreviewStart = allowGpuPreviewStart;
+	lightGpuPumpInput.interactive = IsAssetBrowserInteractive();
+	lightGpuPumpInput.hasQueuedWork = m_thumbnailService.GetQueuedRequestCount() > 0u;
+	lightGpuPumpInput.hasInFlightWork = m_thumbnailService.HasInFlightRequest();
+	lightGpuPumpInput.hasPreviewRenderer = hasPreviewRenderer;
+	lightGpuPumpInput.standardPbrShaderPassPrewarmPending = IsStandardPbrShaderPassPrewarmPending();
+	lightGpuPumpInput.nowSeconds = now;
+	lightGpuPumpInput.deferredUntilSeconds = m_lightGpuThumbnailGenerationDeferredUntil;
+	lightGpuPumpInput.nextAllowedSeconds = m_nextGpuThumbnailGenerationTime;
+	const auto lightGpuPumpDecision =
+		NLS::Editor::Assets::PlanAssetBrowserLightGpuThumbnailPump(lightGpuPumpInput);
 	if (lightGpuPumpDecision.shouldPump)
-	{
-		if (ensurePreviewRenderer())
 		{
-			NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartLightGpuPreview");
-			const auto generated = m_thumbnailService.GenerateNextThumbnail(*m_thumbnailPreviewRenderer, false);
-			m_nextGpuThumbnailGenerationTime = now + kAssetBrowserGpuThumbnailIntervalSeconds;
-			if (generated.has_value())
+			if (EnsureThumbnailPreviewRenderer())
 			{
-				ApplyThumbnailServiceResult(*generated);
-				return;
+				NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartLightGpuPreview");
+				AssetBrowserArtifactTelemetryScope startLightGpuTelemetry {
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartLightGpu,
+					std::chrono::steady_clock::now(),
+					&pumpTelemetryPath,
+					&pumpTelemetryItemCount,
+					kAssetBrowserThumbnailUiDrawTelemetryMinimum
+				};
+					const auto generated =
+						m_thumbnailService.GenerateNextThumbnail(*m_thumbnailPreviewRenderer, false);
+					if (generated.has_value())
+					{
+						ApplyThumbnailServiceResult(*generated);
+						m_nextGpuThumbnailGenerationTime = now + kAssetBrowserGpuThumbnailIntervalSeconds;
+						return;
+					}
 			}
 		}
-	}
 
-	const auto heavyGpuPumpDecision = NLS::Editor::Assets::PlanAssetBrowserHeavyGpuThumbnailPump({
-		allowHeavyGpuPreview,
-		IsAssetBrowserInteractive(),
-		m_thumbnailService.GetQueuedRequestCount() > 0u,
-		m_thumbnailService.HasInFlightRequest(),
-		hasPreviewRenderer,
-		now,
-		m_heavyGpuThumbnailGenerationDeferredUntil,
-		m_nextHeavyGpuThumbnailGenerationTime
-	});
+	NLS::Editor::Assets::AssetBrowserHeavyGpuThumbnailPumpInput heavyGpuPumpInput;
+	heavyGpuPumpInput.allowHeavyGpuPreview = allowHeavyGpuPreview;
+	heavyGpuPumpInput.interactive = IsAssetBrowserInteractive();
+	heavyGpuPumpInput.hasQueuedWork = m_thumbnailService.GetQueuedRequestCount() > 0u;
+	heavyGpuPumpInput.hasInFlightWork = m_thumbnailService.HasInFlightRequest();
+	heavyGpuPumpInput.hasQueuedReadback = m_thumbnailService.HasQueuedGpuPreviewReadback();
+	heavyGpuPumpInput.hasPreviewRenderer = hasPreviewRenderer;
+	heavyGpuPumpInput.sceneLoadRendererResourcesPending =
+		NLS::Editor::Core::HasActiveSceneLoadRendererResourceResolution();
+	heavyGpuPumpInput.nowSeconds = now;
+	heavyGpuPumpInput.deferredUntilSeconds = m_heavyGpuThumbnailGenerationDeferredUntil;
+	heavyGpuPumpInput.nextAllowedSeconds = m_nextHeavyGpuThumbnailGenerationTime;
+	const auto heavyGpuPumpDecision =
+		NLS::Editor::Assets::PlanAssetBrowserHeavyGpuThumbnailPump(heavyGpuPumpInput);
 	if (heavyGpuPumpDecision.shouldPump)
-	{
-		if (ensurePreviewRenderer())
 		{
-			NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartHeavyGpuPreview");
-			const auto generated = m_thumbnailService.GenerateNextThumbnail(*m_thumbnailPreviewRenderer, true);
-			m_nextHeavyGpuThumbnailGenerationTime =
-				now + kAssetBrowserHeavyGpuThumbnailIntervalSeconds;
-			if (generated.has_value())
+			if (EnsureThumbnailPreviewRenderer())
 			{
-				ApplyThumbnailServiceResult(*generated);
-				return;
-			}
+				NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartHeavyGpuPreview");
+				AssetBrowserArtifactTelemetryScope startHeavyGpuTelemetry {
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartHeavyGpu,
+					std::chrono::steady_clock::now(),
+					&pumpTelemetryPath,
+					&pumpTelemetryItemCount,
+					kAssetBrowserThumbnailUiDrawTelemetryMinimum
+				};
+					const auto generated =
+						m_thumbnailService.GenerateNextThumbnail(*m_thumbnailPreviewRenderer, true);
+					if (generated.has_value())
+					{
+						ApplyThumbnailServiceResult(*generated);
+						const bool resourcesPending =
+							generated->status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
+							generated->diagnostic.rfind("thumbnail-gpu-preview-resources-pending", 0u) == 0u;
+						const bool readbackPending =
+							generated->status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
+							generated->diagnostic.rfind("thumbnail-gpu-preview-readback-pending", 0u) == 0u;
+						m_nextHeavyGpuThumbnailGenerationTime = now + (
+							readbackPending
+								? 0.0
+								: resourcesPending
+								? kAssetBrowserHeavyGpuThumbnailResourcePendingIntervalSeconds
+								: kAssetBrowserHeavyGpuThumbnailIntervalSeconds);
+						return;
+					}
+				}
 		}
-	}
 
-	const auto pumpDecision = NLS::Editor::Assets::PlanAssetBrowserThumbnailPump({
-		IsAssetBrowserInteractive(),
-		m_thumbnailService.GetQueuedRequestCount() > 0u,
-		m_thumbnailService.HasInFlightRequest(),
-		0u,
-		kMaxAssetBrowserInteractiveThumbnailStartsPerFrame
-	});
-	if (pumpDecision.shouldStartBackgroundWork)
+	size_t thumbnailStartsThisFrame = 0u;
+	while (true)
 	{
+		const auto pumpDecision = NLS::Editor::Assets::PlanAssetBrowserThumbnailPump({
+			IsAssetBrowserInteractive(),
+			m_thumbnailService.GetQueuedRequestCount() > 0u,
+			m_thumbnailService.HasInFlightRequest(),
+			thumbnailStartsThisFrame,
+			kMaxAssetBrowserInteractiveThumbnailStartsPerFrame
+		});
+		if (!pumpDecision.shouldStartBackgroundWork)
+			break;
+
 		NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartBackground");
-		(void)m_thumbnailService.StartNextThumbnailGeneration();
+		AssetBrowserArtifactTelemetryScope startBackgroundTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartBackground,
+			std::chrono::steady_clock::now(),
+			&pumpTelemetryPath,
+			&pumpTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
+		if (!m_thumbnailService.StartNextThumbnailGeneration())
+			break;
+		++thumbnailStartsThisFrame;
 	}
 }
 
 void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForDragPayload(
 	const NLS::Editor::Assets::EditorAssetDragPayload& payload)
 {
+	const auto begin = std::chrono::steady_clock::now();
 	const auto path = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
 	if (path.empty())
 		return;
@@ -4925,51 +5475,165 @@ void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForDragPayload(
 		NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(payload);
 	{
 		std::lock_guard lock(AssetBrowserPrefabHotCachePreloadMutex());
-		if (!AssetBrowserPrefabHotCachePreloadGate().TryBegin(
-				key,
-				NLS::Editor::Core::RecentBackgroundWorkGate::Clock::now()))
-			return;
+			if (!AssetBrowserPrefabHotCachePreloadGate().TryBegin(
+					key,
+					NLS::Editor::Core::RecentBackgroundWorkGate::Clock::now()))
+			{
+				NLS::Core::Assets::RecordArtifactLoadTelemetry({
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::PrefabVisiblePrewarmSchedule,
+					std::chrono::duration_cast<std::chrono::microseconds>(
+						std::chrono::steady_clock::now() - begin),
+					0u,
+					path});
+				return;
+			}
 	}
 
-	const bool scheduled = NLS::Editor::Assets::SchedulePreviewPrefabHotCachePreload(
-		payload,
-		std::filesystem::path(m_projectAssetFolder),
-		[key](std::function<void()> task)
+	const auto projectAssetsPath = std::filesystem::path(m_projectAssetFolder);
+	const bool scheduled = EDITOR_EXEC(TrackOpportunisticBackgroundTask(
+		[payload, projectAssetsPath, key, path]
 		{
-			return EDITOR_EXEC(TrackOpportunisticBackgroundTask(
-				[task = std::move(task), key]
-				{
-					auto completion = AssetBrowserPrefabHotCachePreloadGate().CompleteOnScopeExit(key);
-					if (task)
-						task();
-				}));
-		});
+			const auto preloadBegin = std::chrono::steady_clock::now();
+			auto completion = AssetBrowserPrefabHotCachePreloadGate().CompleteOnScopeExit(key);
+			try
+			{
+				NLS_LOG_INFO("Prefab hot-cache prewarm started: " + path);
+				NLS::Editor::Assets::EditorAssetDragDropBridge bridge(projectAssetsPath);
+				const bool ready = bridge.PreloadImportedAssetHandlePrefabHotCache(payload);
+				const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - preloadBegin);
+				NLS_LOG_INFO(
+					std::string("Prefab hot-cache prewarm ") +
+					(ready ? "ready: " : "not ready: ") +
+					path +
+					" elapsedMs=" +
+					std::to_string(elapsedMs.count()));
+			}
+			catch (const std::exception& exception)
+			{
+				NLS_LOG_WARNING(std::string("Imported prefab hot-cache preload failed: ") + exception.what());
+			}
+			catch (...)
+			{
+				NLS_LOG_WARNING("Imported prefab hot-cache preload failed with an unknown exception.");
+			}
+		}));
 	if (!scheduled)
 	{
 		AssetBrowserPrefabHotCachePreloadGate().End(key);
+		NLS_LOG_WARNING("Prefab hot-cache prewarm failed to schedule: " + path);
+	}
+	else
+	{
+		NLS_LOG_INFO("Prefab hot-cache prewarm queued: " + path);
+	}
+	NLS::Core::Assets::RecordArtifactLoadTelemetry({
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::PrefabVisiblePrewarmSchedule,
+		std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now() - begin),
+		scheduled ? 1u : 0u,
+		path});
+}
+
+void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForHoveredItem(
+	const NLS::Editor::Assets::AssetBrowserItem& item,
+	const bool hovered)
+{
+	if (!hovered ||
+		(item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
+		 item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab))
+	{
+		return;
+	}
+
+	if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
+		item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
+	{
+		return;
+	}
+
+	const double now = ImGui::GetTime();
+	if (m_lastHoveredPrefabHotCachePreloadIdentity.Matches(item) &&
+		now - m_lastHoveredPrefabHotCachePreloadTime < kAssetBrowserHoveredPrefabHotCachePreloadRepeatDelaySeconds)
+	{
+		return;
+	}
+	m_lastHoveredPrefabHotCachePreloadIdentity.Store(item);
+	m_lastHoveredPrefabHotCachePreloadTime = now;
+
+	auto payload = NLS::Editor::Assets::MakeAssetBrowserItemDragPayload(
+		item,
+		nullptr);
+	if (payload.has_value())
+		SchedulePrefabHotCachePreloadForDragPayload(*payload);
+}
+
+void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForVisibleItems(
+	const std::vector<NLS::Editor::Assets::AssetBrowserItem>& visibleItems)
+{
+	for (const auto& item : visibleItems)
+	{
+		if (item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
+			item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab)
+		{
+			continue;
+		}
+
+		if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
+			item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
+		{
+			continue;
+		}
+
+		auto payload = NLS::Editor::Assets::MakeAssetBrowserItemDragPayload(
+			item,
+			nullptr);
+		if (payload.has_value())
+		{
+			SchedulePrefabHotCachePreloadForDragPayload(*payload);
+		}
 	}
 }
 
+void Editor::Panels::AssetBrowser::FlushPendingVisiblePrefabHotCachePreload()
+{
+	if (!m_visiblePrefabHotCachePreloadPending || IsAssetBrowserInteractive())
+		return;
+
+	m_visiblePrefabHotCachePreloadPending = false;
+	SchedulePrefabHotCachePreloadForVisibleItems(m_visibleThumbnailItems);
+}
+
 bool Editor::Panels::AssetBrowser::LoadCachedThumbnailTexture(
-		const std::string& normalizedPath)
+			const std::string& normalizedPath)
 {
 	return LoadDecodedCachedThumbnailTexture(DecodeCachedThumbnailTexture(normalizedPath));
+}
+
+void Editor::Panels::AssetBrowser::MarkCachedThumbnailTextureUploadRetryableFailure(
+	const std::string& normalizedPath)
+{
+	if (normalizedPath.empty())
+		return;
+	m_thumbnailTextureRetryAfterFrameByPath[normalizedPath] =
+		m_thumbnailTextureFrameSerial + kAssetBrowserThumbnailTextureRetryDelayFrames;
 }
 
 bool Editor::Panels::AssetBrowser::LoadDecodedCachedThumbnailTexture(
 	ThumbnailTextureDecodeResult result)
 {
 	const auto normalizedPath = std::move(result.normalizedPath);
-	if (normalizedPath.empty() ||
-		result.rgbaPixels.empty() ||
-		result.width == 0u ||
-		result.height == 0u ||
-		!NLS::Editor::Assets::IsAssetBrowserCachedThumbnailTextureSizeAllowed(
-			result.width,
-			result.height,
-			kMaxAssetBrowserCachedThumbnailTextureDimension) ||
-		m_thumbnailTexturesByPath.find(normalizedPath) != m_thumbnailTexturesByPath.end() ||
-		m_thumbnailTexturesFailedToLoad.find(normalizedPath) != m_thumbnailTexturesFailedToLoad.end())
+		if (normalizedPath.empty() ||
+			result.rgbaPixels.empty() ||
+			result.width == 0u ||
+			result.height == 0u ||
+			!NLS::Editor::Assets::IsAssetBrowserCachedThumbnailTextureSizeAllowed(
+				result.width,
+				result.height,
+				kMaxAssetBrowserCachedThumbnailTextureDimension) ||
+			m_thumbnailTexturesByPath.find(normalizedPath) != m_thumbnailTexturesByPath.end() ||
+			m_pendingThumbnailTextureUploadsByPath.find(normalizedPath) != m_pendingThumbnailTextureUploadsByPath.end() ||
+			m_thumbnailTexturesFailedToLoad.find(normalizedPath) != m_thumbnailTexturesFailedToLoad.end())
 	{
 		if (!normalizedPath.empty() && result.rgbaPixels.empty())
 		{
@@ -4979,48 +5643,44 @@ bool Editor::Panels::AssetBrowser::LoadDecodedCachedThumbnailTexture(
 		return false;
 	}
 
-	auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreateFromMemory(
-		result.rgbaPixels.data(),
-		result.width,
-		result.height,
-		NLS::Render::Settings::ETextureFilteringMode::LINEAR,
-		NLS::Render::Settings::ETextureFilteringMode::LINEAR,
-		false);
-	if (texture == nullptr)
-	{
-		InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
-		m_thumbnailTexturesFailedToLoad.insert(normalizedPath);
-		return false;
-	}
+		const size_t uploadByteCount = result.rgbaPixels.size();
+		AssetBrowserArtifactTelemetryScope uploadTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadEnqueue,
+			std::chrono::steady_clock::now(),
+				&normalizedPath,
+				&uploadByteCount
+		};
+		auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+		if (driver == nullptr)
+		{
+			InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
+			MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
+			return false;
+		}
 
-	const auto textureView = texture->GetOrCreateExplicitTextureView("AssetBrowser.Thumbnail");
-	if (textureView == nullptr || !NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
-	{
-		NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture);
-		InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
-		m_thumbnailTexturesFailedToLoad.insert(normalizedPath);
-		return false;
-	}
+		const uint64_t requestId = NLS::Render::Context::DriverUIAccess::RequestUiRgba8TextureUpload(
+			*driver,
+			{
+				result.width,
+				result.height,
+				std::move(result.rgbaPixels),
+				normalizedPath
+			});
+		if (requestId == 0u)
+		{
+			InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
+			MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
+			return false;
+		}
+		m_thumbnailTextureRetryAfterFrameByPath.erase(normalizedPath);
 
-	if (NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(textureView) == nullptr)
-	{
-		NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(textureView);
-		NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture);
-		InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
-		m_thumbnailTexturesFailedToLoad.insert(normalizedPath);
-		return false;
+		m_pendingThumbnailTextureUploadsByPath[normalizedPath] = {
+			requestId,
+			result.width,
+			result.height
+		};
+		return true;
 	}
-
-	m_thumbnailTexturesByPath.emplace(normalizedPath, ThumbnailTextureCacheEntry {
-		texture,
-		textureView,
-		result.width,
-		result.height,
-		m_thumbnailTextureFrameSerial
-	});
-	m_thumbnailTextureLru.push_back(normalizedPath);
-	return true;
-}
 
 Editor::Panels::AssetBrowser::ThumbnailTextureDecodeResult
 Editor::Panels::AssetBrowser::DecodeCachedThumbnailTexture(
@@ -5028,6 +5688,13 @@ Editor::Panels::AssetBrowser::DecodeCachedThumbnailTexture(
 {
 	ThumbnailTextureDecodeResult result;
 	result.normalizedPath = std::move(normalizedPath);
+	size_t decodeByteCount = 0u;
+	AssetBrowserArtifactTelemetryScope decodeTelemetry {
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureDecode,
+		std::chrono::steady_clock::now(),
+		&result.normalizedPath,
+		&decodeByteCount
+	};
 	if (result.normalizedPath.empty())
 		return result;
 
@@ -5101,6 +5768,7 @@ Editor::Panels::AssetBrowser::DecodeCachedThumbnailTexture(
 		result.width = 0u;
 		result.height = 0u;
 	}
+	decodeByteCount = result.rgbaPixels.size();
 	return result;
 }
 
@@ -5110,17 +5778,25 @@ void Editor::Panels::AssetBrowser::QueueCachedThumbnailTextureLoad(
 	if (imagePath.empty())
 		return;
 
-	const auto normalizedPath = imagePath.lexically_normal().generic_string();
-	if (normalizedPath.empty() ||
-		m_thumbnailTexturesByPath.find(normalizedPath) != m_thumbnailTexturesByPath.end() ||
-		m_thumbnailTexturesQueuedForLoad.find(normalizedPath) != m_thumbnailTexturesQueuedForLoad.end() ||
-		m_thumbnailTexturesFailedToLoad.find(normalizedPath) != m_thumbnailTexturesFailedToLoad.end())
-	{
-		return;
-	}
+		const auto normalizedPath = imagePath.lexically_normal().generic_string();
+			if (normalizedPath.empty() ||
+				m_thumbnailTexturesByPath.find(normalizedPath) != m_thumbnailTexturesByPath.end() ||
+				m_pendingThumbnailTextureUploadsByPath.find(normalizedPath) != m_pendingThumbnailTextureUploadsByPath.end() ||
+				m_thumbnailTexturesQueuedForLoad.find(normalizedPath) != m_thumbnailTexturesQueuedForLoad.end() ||
+				m_thumbnailTexturesFailedToLoad.find(normalizedPath) != m_thumbnailTexturesFailedToLoad.end())
+			{
+			return;
+		}
+		if (const auto retry = m_thumbnailTextureRetryAfterFrameByPath.find(normalizedPath);
+			retry != m_thumbnailTextureRetryAfterFrameByPath.end())
+		{
+			if (m_thumbnailTextureFrameSerial < retry->second)
+				return;
+			m_thumbnailTextureRetryAfterFrameByPath.erase(retry);
+		}
 
-	m_thumbnailTextureLoadQueue.push_back(normalizedPath);
-	m_thumbnailTexturesQueuedForLoad.insert(normalizedPath);
+		m_thumbnailTextureLoadQueue.push_back(normalizedPath);
+		m_thumbnailTexturesQueuedForLoad.insert(normalizedPath);
 }
 
 void Editor::Panels::AssetBrowser::PumpQueuedCachedThumbnailTextureLoads(const size_t maxDecodeStartsPerFrame)
@@ -5131,6 +5807,15 @@ void Editor::Panels::AssetBrowser::PumpQueuedCachedThumbnailTextureLoads(const s
 
 void Editor::Panels::AssetBrowser::StartQueuedCachedThumbnailTextureDecodes(const size_t maxDecodeStartsPerFrame)
 {
+	const std::string telemetryPath = m_selectedProjectFolder + "|texture-pump-start-decodes";
+	const size_t telemetryItemCount = m_thumbnailTextureLoadQueue.size() + m_thumbnailTextureDecodes.size();
+	AssetBrowserArtifactTelemetryScope startTelemetry {
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpStartDecodes,
+		std::chrono::steady_clock::now(),
+		&telemetryPath,
+		&telemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum
+	};
 	const auto startBudget = NLS::Editor::Assets::AssetBrowserThumbnailTextureDecodeStartBudget(
 		m_thumbnailTextureDecodes.size(),
 		kMaxAssetBrowserThumbnailTextureDecodesInFlight);
@@ -5138,35 +5823,68 @@ void Editor::Panels::AssetBrowser::StartQueuedCachedThumbnailTextureDecodes(cons
 		return;
 
 	std::unordered_set<std::string> residentKeys;
-	residentKeys.reserve(m_thumbnailTexturesByPath.size());
-	for (const auto& [key, _] : m_thumbnailTexturesByPath)
-		residentKeys.insert(key);
-
-	const auto candidates = NLS::Editor::Assets::SelectAssetBrowserThumbnailTextureDecodeCandidates(
-			m_thumbnailTextureLoadQueue,
-			residentKeys,
-			m_thumbnailTexturesDecoding,
-			std::min({ kMaxAssetBrowserThumbnailTextureLoadsPerFrame, maxDecodeStartsPerFrame, startBudget }));
-	for (const auto& key : candidates)
 	{
-		m_thumbnailTexturesDecoding.insert(key);
-		try
+		const std::string residentTelemetryPath = m_selectedProjectFolder + "|texture-pump-resident-set";
+		const size_t residentTelemetryItemCount = m_thumbnailTexturesByPath.size();
+		AssetBrowserArtifactTelemetryScope residentTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpBuildResidentSet,
+			std::chrono::steady_clock::now(),
+			&residentTelemetryPath,
+			&residentTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
+		residentKeys.reserve(m_thumbnailTexturesByPath.size());
+		for (const auto& [key, _] : m_thumbnailTexturesByPath)
+			residentKeys.insert(key);
+	}
+
+	std::vector<std::string> candidates;
+	{
+		const std::string selectTelemetryPath = m_selectedProjectFolder + "|texture-pump-select-decodes";
+		const size_t selectTelemetryItemCount = m_thumbnailTextureLoadQueue.size();
+		AssetBrowserArtifactTelemetryScope selectTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpSelectDecodeCandidates,
+			std::chrono::steady_clock::now(),
+			&selectTelemetryPath,
+			&selectTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
+		candidates = NLS::Editor::Assets::SelectAssetBrowserThumbnailTextureDecodeCandidates(
+				m_thumbnailTextureLoadQueue,
+				residentKeys,
+				m_thumbnailTexturesDecoding,
+				std::min({ kMaxAssetBrowserThumbnailTextureLoadsPerFrame, maxDecodeStartsPerFrame, startBudget }));
+	}
+	{
+		const std::string scheduleTelemetryPath = m_selectedProjectFolder + "|texture-pump-schedule-decodes";
+		const size_t scheduleTelemetryItemCount = candidates.size();
+		AssetBrowserArtifactTelemetryScope scheduleTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpScheduleDecodeJobs,
+			std::chrono::steady_clock::now(),
+			&scheduleTelemetryPath,
+			&scheduleTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
+		for (const auto& key : candidates)
 		{
-			m_thumbnailTextureDecodes.push_back({
-				key,
-				ScheduleAssetBrowserJobFuture(
-					"AssetBrowser.DecodeCachedThumbnailTexture",
-					[key]
-					{
-						return DecodeCachedThumbnailTexture(key);
-					})
-			});
-		}
-		catch (...)
-		{
-			m_thumbnailTexturesDecoding.erase(key);
-			m_thumbnailTexturesQueuedForLoad.erase(key);
-			m_thumbnailTexturesFailedToLoad.insert(key);
+			m_thumbnailTexturesDecoding.insert(key);
+			try
+			{
+				m_thumbnailTextureDecodes.push_back({
+					key,
+					ScheduleAssetBrowserJobFuture(
+						"AssetBrowser.DecodeCachedThumbnailTexture",
+						[key]
+						{
+							return DecodeCachedThumbnailTexture(key);
+						})
+				});
+			}
+			catch (...)
+			{
+				m_thumbnailTexturesDecoding.erase(key);
+				m_thumbnailTexturesQueuedForLoad.erase(key);
+			}
 		}
 	}
 
@@ -5185,96 +5903,368 @@ void Editor::Panels::AssetBrowser::StartQueuedCachedThumbnailTextureDecodes(cons
 
 void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes()
 {
-	size_t uploadedThisFrame = 0u;
-	const size_t uploadBudget = IsAssetBrowserInteractive()
-		? kMaxAssetBrowserInteractiveThumbnailTextureUploadsPerFrame
-		: kMaxAssetBrowserThumbnailTextureUploadsPerFrame;
-	for (auto iterator = m_thumbnailTextureDecodes.begin(); iterator != m_thumbnailTextureDecodes.end();)
+	const auto pumpBegin = std::chrono::steady_clock::now();
+	const std::string consumeTelemetryPath = m_selectedProjectFolder + "|texture-pump-consume";
+	const size_t consumeTelemetryItemCount =
+		m_pendingThumbnailTextureUploadsByPath.size() + m_thumbnailTextureDecodes.size();
+	AssetBrowserArtifactTelemetryScope consumeTelemetry {
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpConsumeCompleted,
+		pumpBegin,
+		&consumeTelemetryPath,
+		&consumeTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum
+	};
+		size_t completedUploadsPublishedThisFrame = 0u;
+		size_t queuedUploadsThisFrame = 0u;
+		size_t deferredReadyUploadsThisFrame = 0u;
+		std::string deferredReadyUploadTelemetryPath;
+		const size_t uploadBudget = IsAssetBrowserInteractive()
+			? kMaxAssetBrowserInteractiveThumbnailTextureUploadsPerFrame
+			: kMaxAssetBrowserThumbnailTextureUploadsPerFrame;
+		const size_t completedPublishBudget = IsAssetBrowserInteractive()
+			? kMaxAssetBrowserInteractiveCachedThumbnailTexturePumpsPerFrame
+			: kMaxAssetBrowserThumbnailTextureLoadsPerFrame;
+		size_t pendingUploadsPolledThisFrame = 0u;
+		const size_t pendingUploadPollBudget = IsAssetBrowserInteractive()
+			? kMaxAssetBrowserInteractiveThumbnailTextureUploadPollsPerFrame
+			: kMaxAssetBrowserThumbnailTextureUploadPollsPerFrame;
+		if (!m_pendingThumbnailTextureUploadsByPath.empty())
+		{
+			auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+		{
+			const std::string pollTelemetryPath = m_selectedProjectFolder + "|texture-pump-pending-uploads";
+			const size_t pollTelemetryItemCount = m_pendingThumbnailTextureUploadsByPath.size();
+			AssetBrowserArtifactTelemetryScope pollTelemetry {
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadPoll,
+				std::chrono::steady_clock::now(),
+				&pollTelemetryPath,
+				&pollTelemetryItemCount,
+				kAssetBrowserThumbnailUiDrawTelemetryMinimum
+			};
+				auto iterator = m_nextPendingThumbnailTextureUploadPollPath.empty()
+					? m_pendingThumbnailTextureUploadsByPath.begin()
+					: m_pendingThumbnailTextureUploadsByPath.find(m_nextPendingThumbnailTextureUploadPollPath);
+				if (iterator == m_pendingThumbnailTextureUploadsByPath.end())
+					iterator = m_pendingThumbnailTextureUploadsByPath.begin();
+				for (; driver != nullptr && iterator != m_pendingThumbnailTextureUploadsByPath.end();)
+			{
+				const auto elapsedMicroseconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - pumpBegin).count());
+					if (!NLS::Editor::Assets::ShouldContinueAssetBrowserThumbnailTextureUploads({
+							completedUploadsPublishedThisFrame,
+							completedPublishBudget,
+							pendingUploadsPolledThisFrame,
+							pendingUploadPollBudget,
+							elapsedMicroseconds,
+							kMaxAssetBrowserThumbnailTextureUploadMicrosecondsPerFrame }))
+					{
+						break;
+					}
+
+					const std::string normalizedPath = iterator->first;
+					const auto pendingUpload = iterator->second;
+					++pendingUploadsPolledThisFrame;
+					decltype(NLS::Render::Context::DriverUIAccess::ConsumeUiRgba8TextureUploadResult(
+						*driver,
+						pendingUpload.requestId)) result;
+					{
+						const size_t pendingUploadCount = m_pendingThumbnailTextureUploadsByPath.size();
+						AssetBrowserArtifactTelemetryScope consumeResultTelemetry {
+							NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadConsumeResult,
+							std::chrono::steady_clock::now(),
+							&normalizedPath,
+							&pendingUploadCount
+						};
+						result = NLS::Render::Context::DriverUIAccess::ConsumeUiRgba8TextureUploadResult(
+							*driver,
+							pendingUpload.requestId);
+					}
+					if (!result.ready)
+					{
+						++iterator;
+						continue;
+					}
+
+				if (!result.success || result.texture == nullptr || result.textureView == nullptr ||
+				!NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+				{
+					InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
+					MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
+					iterator = m_pendingThumbnailTextureUploadsByPath.erase(iterator);
+					continue;
+				}
+
+				const size_t uploadByteCount =
+					static_cast<size_t>(result.width) *
+					static_cast<size_t>(result.height) *
+					4u;
+					void* textureId = nullptr;
+					{
+						AssetBrowserArtifactTelemetryScope resolveUploadTelemetry {
+							NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadResolveUiId,
+							std::chrono::steady_clock::now(),
+							&normalizedPath,
+							&uploadByteCount
+						};
+						AssetBrowserArtifactTelemetryScope resolveUiIdTelemetry {
+							NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadResolveUiId,
+							std::chrono::steady_clock::now(),
+							&normalizedPath,
+							&uploadByteCount
+						};
+						textureId = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(result.textureView);
+					}
+				if (textureId == nullptr)
+				{
+					NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(result.textureView);
+					InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
+					MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
+					iterator = m_pendingThumbnailTextureUploadsByPath.erase(iterator);
+					continue;
+				}
+
+					std::unique_ptr<NLS::Render::Resources::Texture2D> texture;
+					{
+						AssetBrowserArtifactTelemetryScope wrapTextureTelemetry {
+							NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadWrapTexture,
+							std::chrono::steady_clock::now(),
+							&normalizedPath,
+							&uploadByteCount
+						};
+						texture = NLS::Render::Resources::Texture2D::WrapExternal(
+							result.texture,
+							result.width,
+							result.height);
+					}
+				if (texture == nullptr)
+				{
+					NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(result.textureView);
+					InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
+					MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
+					iterator = m_pendingThumbnailTextureUploadsByPath.erase(iterator);
+					continue;
+				}
+
+					texture->firstFilter = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
+					texture->secondFilter = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
+					texture->bitsPerPixel = 4u;
+					{
+						AssetBrowserArtifactTelemetryScope cachePublishTelemetry {
+							NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadCachePublish,
+							std::chrono::steady_clock::now(),
+							&normalizedPath,
+							&uploadByteCount
+						};
+						m_thumbnailTexturesByPath.emplace(normalizedPath, ThumbnailTextureCacheEntry {
+							texture.release(),
+							std::move(result.textureView),
+							textureId,
+							result.width,
+							result.height,
+							m_thumbnailTextureFrameSerial
+							});
+							m_thumbnailTextureLru.push_back(normalizedPath);
+							m_thumbnailTextureRetryAfterFrameByPath.erase(normalizedPath);
+							iterator = m_pendingThumbnailTextureUploadsByPath.erase(iterator);
+						}
+					++completedUploadsPublishedThisFrame;
+				}
+				m_nextPendingThumbnailTextureUploadPollPath =
+					iterator != m_pendingThumbnailTextureUploadsByPath.end()
+						? iterator->first
+						: std::string {};
+			}
+		}
+		else
+		{
+			m_nextPendingThumbnailTextureUploadPollPath.clear();
+		}
 	{
-		if (!iterator->future.valid())
+		const std::string readyTelemetryPath = m_selectedProjectFolder + "|texture-pump-ready-decodes";
+		const size_t readyTelemetryItemCount = m_thumbnailTextureDecodes.size();
+		AssetBrowserArtifactTelemetryScope readyTelemetry {
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpReadyDecodePoll,
+			std::chrono::steady_clock::now(),
+			&readyTelemetryPath,
+			&readyTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum
+		};
+		for (auto iterator = m_thumbnailTextureDecodes.begin(); iterator != m_thumbnailTextureDecodes.end();)
 		{
-			m_thumbnailTexturesDecoding.erase(iterator->normalizedPath);
+			if (!iterator->future.valid())
+			{
+				m_thumbnailTexturesDecoding.erase(iterator->normalizedPath);
+				iterator = m_thumbnailTextureDecodes.erase(iterator);
+				continue;
+			}
+
+			if (iterator->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+			{
+				++iterator;
+				continue;
+			}
+
+				const auto elapsedMicroseconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - pumpBegin).count());
+				if (!NLS::Editor::Assets::ShouldContinueAssetBrowserThumbnailTextureUploads({
+						queuedUploadsThisFrame,
+						uploadBudget,
+						0u,
+						0u,
+						elapsedMicroseconds,
+						kMaxAssetBrowserThumbnailTextureUploadMicrosecondsPerFrame }))
+				{
+				++deferredReadyUploadsThisFrame;
+				if (deferredReadyUploadTelemetryPath.empty())
+					deferredReadyUploadTelemetryPath = iterator->normalizedPath;
+				++iterator;
+				continue;
+			}
+
+			ThumbnailTextureDecodeResult result;
+			try
+			{
+				result = iterator->future.get();
+			}
+			catch (const std::bad_alloc&)
+			{
+				result.normalizedPath = iterator->normalizedPath;
+			}
+			catch (...)
+			{
+				result.normalizedPath = iterator->normalizedPath;
+			}
+			const auto normalizedPath = result.normalizedPath;
+			{
+				const size_t loadByteCount = result.rgbaPixels.size();
+					AssetBrowserArtifactTelemetryScope loadTelemetry {
+						NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpReadyDecodeLoad,
+						std::chrono::steady_clock::now(),
+						&normalizedPath,
+						&loadByteCount,
+						kAssetBrowserThumbnailUiDrawTelemetryMinimum
+					};
+					if (LoadDecodedCachedThumbnailTexture(std::move(result)))
+						++queuedUploadsThisFrame;
+				}
+				m_thumbnailTexturesQueuedForLoad.erase(normalizedPath);
+				m_thumbnailTexturesDecoding.erase(normalizedPath);
 			iterator = m_thumbnailTextureDecodes.erase(iterator);
-			continue;
 		}
-
-		if (iterator->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-		{
-			++iterator;
-			continue;
-		}
-
-		if (uploadedThisFrame >= uploadBudget)
-		{
-			++iterator;
-			continue;
-		}
-
-		ThumbnailTextureDecodeResult result;
-		try
-		{
-			result = iterator->future.get();
-		}
-		catch (const std::bad_alloc&)
-		{
-			result.normalizedPath = iterator->normalizedPath;
-		}
-		catch (...)
-		{
-			result.normalizedPath = iterator->normalizedPath;
-		}
-		const auto normalizedPath = result.normalizedPath;
-		(void)LoadDecodedCachedThumbnailTexture(std::move(result));
-		++uploadedThisFrame;
-		m_thumbnailTexturesQueuedForLoad.erase(normalizedPath);
-		m_thumbnailTexturesDecoding.erase(normalizedPath);
-		iterator = m_thumbnailTextureDecodes.erase(iterator);
+	}
+	if (deferredReadyUploadsThisFrame > 0u)
+	{
+		NLS::Core::Assets::RecordArtifactLoadTelemetry({
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadDeferred,
+			std::chrono::microseconds(0),
+			deferredReadyUploadsThisFrame,
+			deferredReadyUploadTelemetryPath
+		});
 	}
 }
 
 void Editor::Panels::AssetBrowser::StartCurrentFolderItemsRefresh(
 	const std::filesystem::path& projectRoot,
 	std::string selectedFolder,
-	NLS::Editor::Assets::AssetBrowserBuildOptions buildOptions,
-	const NLS::Editor::Assets::AssetDatabaseFacade* database)
+	NLS::Editor::Assets::AssetBrowserBuildOptions buildOptions)
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::StartCurrentFolderItemsRefresh");
-	DiscardCurrentFolderItemsRefresh();
-	const auto generation = ++m_projectAssetPresentationGeneration;
-	const auto normalizedRoot = projectRoot.lexically_normal();
-	const auto databaseSnapshot = m_projectAssetDatabaseSnapshot;
+	CurrentFolderItemsRefreshRequest request;
+	request.databaseSnapshot = m_projectAssetDatabaseSnapshot;
+	request.snapshotIndex = m_projectAssetSubAssetSnapshotIndex;
+	request.key.projectRoot = projectRoot.lexically_normal();
+	request.key.selectedFolder = std::move(selectedFolder);
+	request.key.databaseSnapshotIdentity = request.databaseSnapshot.get();
+	request.key.snapshotIndexIdentity = request.snapshotIndex.get();
+	request.key.sourceStateIdentity = std::make_shared<const uint8_t>(0u);
+	request.key.buildOptions = std::move(buildOptions);
+	m_projectDisplayItemsDirty = false;
+	const auto disposition = NLS::Editor::Assets::QueueAssetBrowserLatestRequest(
+		m_currentFolderItemsRefreshCoordinator,
+		request.key);
+	if (disposition == NLS::Editor::Assets::AssetBrowserLatestRequestDisposition::ActiveUnchanged)
+	{
+		m_pendingCurrentFolderItemsRefresh.reset();
+		return;
+	}
+	m_pendingCurrentFolderItemsRefresh = std::move(request);
+	if (disposition == NLS::Editor::Assets::AssetBrowserLatestRequestDisposition::StartNow)
+		StartNextCurrentFolderItemsRefresh();
+}
+
+void Editor::Panels::AssetBrowser::StartNextCurrentFolderItemsRefresh()
+{
+	if (m_currentFolderItemsRefresh.has_value() || !m_pendingCurrentFolderItemsRefresh.has_value())
+		return;
+	const auto activatedKey = NLS::Editor::Assets::ActivateAssetBrowserLatestRequest(
+		m_currentFolderItemsRefreshCoordinator);
+	if (!activatedKey.has_value() || !(m_pendingCurrentFolderItemsRefresh->key == *activatedKey))
+		return;
+	auto request = std::move(*m_pendingCurrentFolderItemsRefresh);
+	m_pendingCurrentFolderItemsRefresh.reset();
+	NLS::Editor::Assets::BeginAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
 
 	try
 	{
-		(void)database;
 		m_currentFolderItemsRefresh = CurrentFolderItemsRefresh {
-				generation,
-				normalizedRoot,
-				selectedFolder,
+				request.key,
 				ScheduleAssetBrowserJobFuture(
 					"AssetBrowser.CurrentFolderItemsRefresh",
-					[normalizedRoot,
-					 selectedFolder = std::move(selectedFolder),
-					 buildOptions,
-					 databaseSnapshot]() mutable
-				{
-					return NLS::Editor::Assets::BuildCurrentFolderAssetItems(
-						normalizedRoot,
-						selectedFolder,
-						databaseSnapshot.get(),
-						buildOptions);
+					[request = std::move(request)]() mutable
+			{
+					CurrentFolderItemsRefresh::Result result;
+					const auto context = std::string("Asset Browser folder refresh failed for folder \"") +
+						request.key.selectedFolder + "\".";
+					try
+					{
+						auto rootBuildOptions = request.key.buildOptions;
+						rootBuildOptions.includeGeneratedSubAssets = false;
+						rootBuildOptions.expandedSourceAssets.clear();
+						rootBuildOptions.searchQuery.clear();
+						rootBuildOptions.typeFilter = NLS::Editor::Assets::AssetBrowserItemType::All;
+						auto rootItems = NLS::Editor::Assets::BuildCurrentFolderAssetItems(
+							request.key.projectRoot,
+							request.key.selectedFolder,
+							request.databaseSnapshot.get(),
+							rootBuildOptions);
+						result.bundle = NLS::Editor::Assets::BuildAssetBrowserPresentationBundle(
+							std::move(rootItems),
+							request.snapshotIndex.get(),
+							request.key.buildOptions);
+					}
+					catch (const std::exception& exception)
+					{
+						result.diagnostic = context + " " + exception.what();
+					}
+					catch (...)
+					{
+						result.diagnostic = context + " Unknown error.";
+					}
+					return result;
 				})
 		};
 	}
 	catch (const std::exception& exception)
 	{
-		DiscardCurrentFolderItemsRefresh();
-		NLS_LOG_ERROR(std::string("Asset Browser folder items refresh failed to start: ") + exception.what());
+		const auto diagnostic = std::string("Asset Browser folder items refresh failed to start for folder \"") +
+			activatedKey->selectedFolder + "\": " + exception.what();
+		(void)NLS::Editor::Assets::CompleteAssetBrowserLatestRequest(
+			m_currentFolderItemsRefreshCoordinator,
+			*activatedKey);
+		NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState, diagnostic);
+		NLS_LOG_ERROR(diagnostic);
+		StartNextCurrentFolderItemsRefresh();
 	}
 	catch (...)
 	{
-		DiscardCurrentFolderItemsRefresh();
-		NLS_LOG_ERROR("Asset Browser folder items refresh failed to start.");
+		const auto diagnostic = std::string("Asset Browser folder items refresh failed to start for folder \"") +
+			activatedKey->selectedFolder + "\": unknown error.";
+		(void)NLS::Editor::Assets::CompleteAssetBrowserLatestRequest(
+			m_currentFolderItemsRefreshCoordinator,
+			*activatedKey);
+		NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState, diagnostic);
+		NLS_LOG_ERROR(diagnostic);
+		StartNextCurrentFolderItemsRefresh();
 	}
 }
 
@@ -5285,35 +6275,55 @@ void Editor::Panels::AssetBrowser::PumpCurrentFolderItemsRefresh()
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpCurrentFolderItemsRefresh");
 
 	auto& refresh = *m_currentFolderItemsRefresh;
+	const auto completedKey = refresh.key;
+	CurrentFolderItemsRefresh::Result result;
 	if (!refresh.future.valid())
 	{
-		m_currentFolderItemsRefresh.reset();
-		return;
+		result.diagnostic = std::string("Asset Browser folder refresh future became invalid for folder \"") +
+			completedKey.selectedFolder + "\".";
 	}
-	if (refresh.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+	else if (refresh.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
 		return;
-
-	std::vector<NLS::Editor::Assets::AssetBrowserItem> items;
-	try
+	else try
 	{
-		items = refresh.future.get();
+		result = refresh.future.get();
+	}
+	catch (const std::exception& exception)
+	{
+		result.diagnostic = std::string("Asset Browser folder refresh worker failed for folder \"") +
+			completedKey.selectedFolder + "\": " + exception.what();
 	}
 	catch (...)
 	{
-		items.clear();
+		result.diagnostic = std::string("Asset Browser folder refresh worker failed for folder \"") +
+			completedKey.selectedFolder + "\": unknown error.";
 	}
-
-	const bool stillCurrent =
-		refresh.generation == m_projectAssetPresentationGeneration &&
-		refresh.projectRoot.lexically_normal() == ProjectRootFromAssetsFolder(m_projectAssetFolder).lexically_normal() &&
-		refresh.selectedFolder == m_selectedProjectFolder;
 	m_currentFolderItemsRefresh.reset();
-	if (!stillCurrent)
-		return;
-
-	m_unfilteredCurrentFolderItems = std::move(items);
-	m_currentFolderItems = m_unfilteredCurrentFolderItems;
-	MarkProjectAssetDisplayItemsDirty();
+	const auto completion = NLS::Editor::Assets::CompleteAssetBrowserLatestRequest(
+		m_currentFolderItemsRefreshCoordinator,
+		completedKey);
+	if (completion.publish && !result.diagnostic.empty())
+	{
+		NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(
+			m_currentFolderItemsRefreshState,
+			result.diagnostic);
+		NLS_LOG_ERROR(result.diagnostic);
+	}
+	else if (completion.publish)
+	{
+		NLS::Editor::Assets::CompleteAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
+		++m_projectAssetPresentationGeneration;
+		m_unfilteredCurrentFolderItems = std::move(result.bundle.rootItems);
+		m_currentFolderItems = std::move(result.bundle.visibleItems);
+		m_projectDisplayItems = std::move(result.bundle.displayItems);
+		m_projectDisplayItemsDirty = false;
+		m_thumbnailGenerationScopeDirty = true;
+		m_pendingThumbnailScopeItems.clear();
+		m_pendingThumbnailScopeOffset = 0u;
+		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
+		m_thumbnailScopeBuildInProgress = false;
+	}
+	StartNextCurrentFolderItemsRefresh();
 }
 
 void Editor::Panels::AssetBrowser::StartProjectFolderTreeRefresh(
@@ -5395,133 +6405,23 @@ void Editor::Panels::AssetBrowser::RefreshProjectAssetSubAssetSnapshotCache()
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::RefreshProjectAssetSubAssetSnapshotCache");
 	if (!m_projectAssetDatabaseReady || !m_projectAssetDatabase)
 	{
+		m_projectAssetSubAssetSnapshotIndex.reset();
+		MarkProjectAssetDisplayItemsDirty();
 		return;
 	}
 
-	std::unordered_set<std::string> liveSources;
-	m_projectAssetSubAssetSnapshotView = m_projectAssetDatabase->GetObjectReferencePickerAssetSnapshotsView();
-	if (!m_projectAssetSubAssetSnapshotView)
-		return;
-	for (const auto& snapshot : *m_projectAssetSubAssetSnapshotView)
+	m_projectAssetSubAssetSnapshotIndex.reset();
+
+	const auto publishedState = m_projectAssetDatabase->GetPublishedState();
+	if (!publishedState || !publishedState->snapshotIndex ||
+		publishedState->snapshotIndex->status != NLS::Editor::Assets::EditorAssetSnapshotStatus::Valid)
 	{
-		if (snapshot.sourceAssetPath.empty())
-			continue;
-		if (!SourceAssetCanHaveAssetBrowserSubAssets(snapshot.sourceAssetPath))
-			continue;
-
-		size_t visibleSubAssetCount = 0u;
-		for (const auto& subAsset : snapshot.subAssets)
-		{
-			if (IsAssetBrowserVisibleGeneratedArtifactType(subAsset.artifactType))
-				++visibleSubAssetCount;
-		}
-		if (visibleSubAssetCount == 0u)
-			continue;
-
-		liveSources.insert(snapshot.sourceAssetPath);
-		const auto previousCount = m_projectAssetSubAssetChildCountHints[snapshot.sourceAssetPath];
-		m_projectAssetSubAssetChildCountHints[snapshot.sourceAssetPath] = visibleSubAssetCount;
-		m_projectAssetSubAssetSnapshotsBySource[snapshot.sourceAssetPath] = &snapshot;
-		if (previousCount != visibleSubAssetCount)
-		{
-			m_projectAssetSubAssetItemsBySource.erase(snapshot.sourceAssetPath);
-			m_projectAssetSubAssetMaterializeOffsets.erase(snapshot.sourceAssetPath);
-		}
-	}
-
-	for (auto iterator = m_projectAssetSubAssetSnapshotsBySource.begin();
-		iterator != m_projectAssetSubAssetSnapshotsBySource.end();)
-	{
-		if (liveSources.find(iterator->first) == liveSources.end())
-			iterator = m_projectAssetSubAssetSnapshotsBySource.erase(iterator);
-		else
-			++iterator;
-	}
-	for (auto iterator = m_projectAssetSubAssetChildCountHints.begin();
-		iterator != m_projectAssetSubAssetChildCountHints.end();)
-	{
-		if (liveSources.find(iterator->first) == liveSources.end())
-			iterator = m_projectAssetSubAssetChildCountHints.erase(iterator);
-		else
-			++iterator;
-	}
-}
-
-void Editor::Panels::AssetBrowser::PumpProjectAssetSubAssetMaterialization()
-{
-	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpProjectAssetSubAssetMaterialization");
-	size_t materializedThisFrame = 0u;
-	size_t scannedThisFrame = 0u;
-	const size_t materializeBudget = IsAssetBrowserInteractive()
-		? kMaxAssetBrowserInteractiveSubAssetsMaterializePerFrame
-		: kMaxAssetBrowserSubAssetsMaterializePerFrame;
-	bool changed = false;
-	for (const auto& sourcePath : m_expandedProjectAssetItems)
-	{
-		if (materializedThisFrame >= materializeBudget ||
-			scannedThisFrame >= materializeBudget)
-			break;
-		if (!SourceAssetCanHaveAssetBrowserSubAssets(sourcePath))
-		{
-			m_projectAssetSubAssetItemsBySource.erase(sourcePath);
-			m_projectAssetSubAssetMaterializeOffsets.erase(sourcePath);
-			continue;
-		}
-		const auto snapshot = m_projectAssetSubAssetSnapshotsBySource.find(sourcePath);
-		if (snapshot == m_projectAssetSubAssetSnapshotsBySource.end())
-			continue;
-
-		auto& items = m_projectAssetSubAssetItemsBySource[sourcePath];
-		auto& offset = m_projectAssetSubAssetMaterializeOffsets[sourcePath];
-		const auto* snapshotValue = snapshot->second;
-		if (snapshotValue == nullptr)
-			continue;
-		while (offset < snapshotValue->subAssets.size() &&
-			materializedThisFrame < materializeBudget &&
-			scannedThisFrame < materializeBudget)
-		{
-			const auto& subAsset = snapshotValue->subAssets[offset++];
-			++scannedThisFrame;
-			if (!IsAssetBrowserVisibleGeneratedArtifactType(subAsset.artifactType))
-				continue;
-			items.push_back(MakeAssetBrowserGeneratedSubAssetItem(sourcePath, snapshotValue->assetId, subAsset));
-			++materializedThisFrame;
-			changed = true;
-		}
-	}
-
-	if (!changed)
-		return;
-	if (m_projectDisplayItemsDirty || m_projectDisplayRebuildInProgress)
-	{
-		m_projectDisplayItemsDirty = true;
-		if (m_projectDisplayRebuildInProgress)
-			m_projectDisplayRebuildRestartRequested = true;
-		m_thumbnailGenerationScopeDirty = true;
+		MarkProjectAssetDisplayItemsDirty();
 		return;
 	}
+
+	m_projectAssetSubAssetSnapshotIndex = publishedState->snapshotIndex;
 	MarkProjectAssetDisplayItemsDirty();
-}
-
-void Editor::Panels::AssetBrowser::DiscardCurrentFolderItemsRefresh()
-{
-	if (m_currentFolderItemsRefresh.has_value() &&
-		m_currentFolderItemsRefresh->future.valid() &&
-		m_currentFolderItemsRefresh->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-	{
-		m_retiredCurrentFolderItemsRefreshes.push_back(std::move(*m_currentFolderItemsRefresh));
-	}
-	m_currentFolderItemsRefresh.reset();
-	m_retiredCurrentFolderItemsRefreshes.erase(
-		std::remove_if(
-			m_retiredCurrentFolderItemsRefreshes.begin(),
-			m_retiredCurrentFolderItemsRefreshes.end(),
-			[](CurrentFolderItemsRefresh& refresh)
-			{
-				return !refresh.future.valid() ||
-					refresh.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
-			}),
-			m_retiredCurrentFolderItemsRefreshes.end());
 }
 
 void Editor::Panels::AssetBrowser::DiscardProjectFolderTreeRefresh()
@@ -5548,8 +6448,141 @@ void Editor::Panels::AssetBrowser::DiscardProjectFolderTreeRefresh()
 void Editor::Panels::AssetBrowser::RequestObjectReferencePickerEntriesRefresh()
 {
 	NLS::Editor::Assets::MarkObjectReferencePickerEntriesDirty();
-	++m_objectReferencePickerRefreshGeneration;
+	const auto publishedState = m_projectAssetDatabase ? m_projectAssetDatabase->GetPublishedState() : nullptr;
+	auto snapshotIndex = publishedState ? publishedState->snapshotIndex : nullptr;
+	if (!snapshotIndex ||
+		snapshotIndex->status != NLS::Editor::Assets::EditorAssetSnapshotStatus::Valid)
+	{
+		m_objectReferencePickerRefreshRequested = false;
+		NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(
+			m_objectReferencePickerRefreshState,
+			"Asset Browser object-reference picker refresh has no valid published snapshot index.");
+		return;
+	}
+	ObjectReferencePickerRefreshRequest request;
+	request.snapshotIndex = std::move(snapshotIndex);
+	request.key.snapshotIndexIdentity = request.snapshotIndex.get();
+	request.key.lifetimeIdentity = m_objectReferencePickerLifetimeIdentity.get();
+	const auto disposition = NLS::Editor::Assets::QueueAssetBrowserLatestRequest(
+		m_objectReferencePickerRefreshCoordinator,
+		request.key);
+	if (disposition == NLS::Editor::Assets::AssetBrowserLatestRequestDisposition::ActiveUnchanged)
+	{
+		m_pendingObjectReferencePickerRefresh.reset();
+		m_objectReferencePickerRefreshRequested = false;
+		return;
+	}
+	m_pendingObjectReferencePickerRefresh = std::move(request);
+	if (disposition == NLS::Editor::Assets::AssetBrowserLatestRequestDisposition::StartNow)
+		NLS::Editor::Assets::ResetAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 	m_objectReferencePickerRefreshRequested = true;
+}
+
+std::shared_ptr<Editor::Panels::AssetBrowser::AssetDatabaseRetirementState>
+Editor::Panels::AssetBrowser::SharedProjectAssetDatabaseRetirementState()
+{
+	static const auto retirementState = std::make_shared<AssetDatabaseRetirementState>();
+	return retirementState;
+}
+
+void Editor::Panels::AssetBrowser::AbandonProjectAssetDatabaseRefreshFuture(
+	std::future<AssetDatabaseRefreshResult>& future)
+{
+	if (!future.valid())
+		return;
+	if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+	{
+		AssetDatabaseRefreshResult result;
+		try
+		{
+			result = future.get();
+		}
+		catch (...)
+		{
+		}
+		RetireProjectAssetDatabaseResult(std::move(result));
+		return;
+	}
+
+	{
+		std::lock_guard lock(m_projectAssetDatabaseRetirementState->mutex);
+		m_projectAssetDatabaseRetirementState->pendingFutures.push_back(std::move(future));
+	}
+	ScheduleProjectAssetDatabaseRetirementWorker();
+}
+
+void Editor::Panels::AssetBrowser::RetireProjectAssetDatabaseResult(
+	AssetDatabaseRefreshResult result)
+{
+	if (!result.database && !result.snapshot)
+		return;
+
+	{
+		std::lock_guard lock(m_projectAssetDatabaseRetirementState->mutex);
+		m_projectAssetDatabaseRetirementState->pending.push_back(std::move(result));
+	}
+	ScheduleProjectAssetDatabaseRetirementWorker();
+}
+
+void Editor::Panels::AssetBrowser::ScheduleProjectAssetDatabaseRetirementWorker()
+{
+	{
+		std::lock_guard lock(m_projectAssetDatabaseRetirementState->mutex);
+		if (m_projectAssetDatabaseRetirementState->workerRunning)
+			return;
+		m_projectAssetDatabaseRetirementState->workerRunning = true;
+	}
+
+	try
+	{
+		(void)ScheduleAssetBrowserJobFuture(
+			"AssetBrowser.RetireProjectAssetDatabase",
+			[retirementState = m_projectAssetDatabaseRetirementState]
+			{
+				for (;;)
+				{
+					std::vector<AssetDatabaseRefreshResult> retired;
+					std::vector<std::future<AssetDatabaseRefreshResult>> retiredFutures;
+					{
+						std::lock_guard lock(retirementState->mutex);
+						if (retirementState->pending.empty() &&
+							retirementState->pendingFutures.empty())
+						{
+							retirementState->workerRunning = false;
+							return;
+						}
+						retirementState->pending.swap(retired);
+						retirementState->pendingFutures.swap(retiredFutures);
+					}
+					for (auto& future : retiredFutures)
+					{
+						AssetDatabaseRefreshResult result;
+						try
+						{
+							result = future.get();
+						}
+						catch (...)
+						{
+						}
+						retired.push_back(std::move(result));
+					}
+					retired.clear();
+				}
+			});
+	}
+	catch (...)
+	{
+		std::lock_guard lock(m_projectAssetDatabaseRetirementState->mutex);
+		m_projectAssetDatabaseRetirementState->workerRunning = false;
+	}
+}
+
+void Editor::Panels::AssetBrowser::RetireCurrentProjectAssetDatabase()
+{
+	AssetDatabaseRefreshResult result;
+	result.database = std::move(m_projectAssetDatabase);
+	result.snapshot = std::move(m_projectAssetDatabaseSnapshot);
+	RetireProjectAssetDatabaseResult(std::move(result));
 }
 
 void Editor::Panels::AssetBrowser::PumpRetiredProjectAssetDatabaseRefreshes()
@@ -5567,13 +6600,15 @@ void Editor::Panels::AssetBrowser::PumpRetiredProjectAssetDatabaseRefreshes()
 			++iterator;
 			continue;
 		}
+		AssetDatabaseRefreshResult result;
 		try
 		{
-			(void)iterator->future.get();
+			result = iterator->future.get();
 		}
 		catch (...)
 		{
 		}
+		RetireProjectAssetDatabaseResult(std::move(result));
 		iterator = m_retiredProjectAssetDatabaseRefreshes.erase(iterator);
 	}
 }
@@ -5585,6 +6620,20 @@ void Editor::Panels::AssetBrowser::DiscardProjectAssetDatabaseRefresh()
 	{
 		const bool ready =
 			m_projectAssetDatabaseRefresh->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+		if (ready)
+		{
+			AssetDatabaseRefreshResult result;
+			try
+			{
+				result = m_projectAssetDatabaseRefresh->future.get();
+			}
+			catch (...)
+			{
+			}
+			RetireProjectAssetDatabaseResult(std::move(result));
+			m_projectAssetDatabaseRefresh.reset();
+			return;
+		}
 		if (NLS::Editor::Assets::PlanAssetDatabaseRefreshDiscardAction(true, ready) ==
 			NLS::Editor::Assets::AssetDatabaseRefreshDiscardAction::Retire)
 		{
@@ -5596,112 +6645,143 @@ void Editor::Panels::AssetBrowser::DiscardProjectAssetDatabaseRefresh()
 	m_projectAssetDatabaseRefresh.reset();
 }
 
-void Editor::Panels::AssetBrowser::DiscardObjectReferencePickerEntriesRefresh()
+void Editor::Panels::AssetBrowser::InvalidateObjectReferencePickerEntriesRefresh()
 {
-	if (m_objectReferencePickerRefresh.has_value() &&
-		m_objectReferencePickerRefresh->future.valid())
-	{
-		m_retiredObjectReferencePickerRefreshes.push_back(std::move(*m_objectReferencePickerRefresh));
-	}
-	m_objectReferencePickerRefresh.reset();
+	m_objectReferencePickerRefreshCoordinator.desiredKey.reset();
+	m_objectReferencePickerRefreshCoordinator.pendingKey.reset();
+	m_pendingObjectReferencePickerRefresh.reset();
+	m_objectReferencePickerRefreshRequested = false;
 }
 
 void Editor::Panels::AssetBrowser::PumpObjectReferencePickerEntriesRefresh()
 {
 	const bool interactive = IsAssetBrowserInteractive();
-	for (auto iterator = m_retiredObjectReferencePickerRefreshes.begin();
-		iterator != m_retiredObjectReferencePickerRefreshes.end();)
-	{
-		if (!iterator->future.valid())
-		{
-			iterator = m_retiredObjectReferencePickerRefreshes.erase(iterator);
-			continue;
-		}
-		if (iterator->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-		{
-			++iterator;
-			continue;
-		}
-		if (interactive)
-		{
-			++iterator;
-			continue;
-		}
-		try
-		{
-			(void)iterator->future.get();
-		}
-		catch (...)
-		{
-		}
-		iterator = m_retiredObjectReferencePickerRefreshes.erase(iterator);
-	}
-
-		if (m_objectReferencePickerRefresh.has_value())
+	if (m_objectReferencePickerRefresh.has_value())
 	{
 		auto& refresh = *m_objectReferencePickerRefresh;
+		const auto completedKey = refresh.key;
+		ObjectReferencePickerRefresh::Result result;
+		bool completed = false;
 		if (!refresh.future.valid())
 		{
-			m_objectReferencePickerRefresh.reset();
+			result.diagnostic = "Asset Browser object-reference picker refresh future became invalid.";
+			completed = true;
 		}
 		else if (!interactive &&
 			refresh.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
 		{
-			std::vector<NLS::Editor::Assets::ObjectReferencePickerEntry> entries;
-			bool refreshSucceeded = true;
 			try
 			{
-				entries = refresh.future.get();
+				result = refresh.future.get();
+			}
+			catch (const std::exception& exception)
+			{
+				result.diagnostic = std::string("Asset Browser object-reference picker refresh worker failed: ") +
+					exception.what();
 			}
 			catch (...)
 			{
-				refreshSucceeded = false;
+				result.diagnostic = "Asset Browser object-reference picker refresh worker failed: unknown error.";
 			}
-			const bool currentGeneration = refresh.generation == m_objectReferencePickerRefreshGeneration;
+			completed = true;
+		}
+		if (completed)
+		{
 			m_objectReferencePickerRefresh.reset();
-			if (currentGeneration && refreshSucceeded)
+			const auto completion = NLS::Editor::Assets::CompleteAssetBrowserLatestRequest(
+				m_objectReferencePickerRefreshCoordinator,
+				completedKey);
+			if (completion.publish && result.diagnostic.empty())
 			{
-				NLS::Editor::Assets::SetObjectReferencePickerEntries(std::move(entries));
+				NLS::Editor::Assets::SetObjectReferencePickerEntries(std::move(result.entries));
 				m_objectReferencePickerRefreshRequested = false;
+				NLS::Editor::Assets::CompleteAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 			}
-			else if (currentGeneration)
+			else if (completion.publish)
 			{
-				NLS::Editor::Assets::MarkObjectReferencePickerEntriesDirty();
-				m_objectReferencePickerRefreshRequested = true;
+				m_objectReferencePickerRefreshRequested = false;
+				NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(
+					m_objectReferencePickerRefreshState,
+					result.diagnostic.empty()
+						? "Asset Browser object-reference picker refresh failed."
+						: result.diagnostic);
+				NLS_LOG_ERROR(m_objectReferencePickerRefreshState.diagnostic);
 			}
+			StartNextObjectReferencePickerEntriesRefresh();
 		}
 	}
 
 	if (m_objectReferencePickerRefresh.has_value() ||
-		!m_objectReferencePickerRefreshRequested ||
-		interactive ||
-		!m_projectAssetDatabaseReady ||
-		!m_projectAssetDatabase ||
-		!NLS::Editor::Assets::ShouldDeferObjectReferencePickerEntriesRefresh())
+			!m_objectReferencePickerRefreshRequested ||
+			interactive ||
+			m_projectAssetDatabaseRefresh.has_value() ||
+			m_projectAssetDatabaseRefreshQueuedAfterInFlight ||
+			!m_projectAssetDatabaseReady ||
+			!m_projectAssetDatabase ||
+			!NLS::Editor::Assets::ShouldDeferObjectReferencePickerEntriesRefresh())
 	{
 		return;
 	}
+	StartNextObjectReferencePickerEntriesRefresh();
+}
 
-	const auto generation = m_objectReferencePickerRefreshGeneration;
-	auto databaseSnapshot = m_projectAssetDatabaseSnapshot;
-	if (!databaseSnapshot)
+void Editor::Panels::AssetBrowser::StartNextObjectReferencePickerEntriesRefresh()
+{
+	if (m_objectReferencePickerRefresh.has_value() || !m_pendingObjectReferencePickerRefresh.has_value())
 		return;
+	const auto activatedKey = NLS::Editor::Assets::ActivateAssetBrowserLatestRequest(
+		m_objectReferencePickerRefreshCoordinator);
+	if (!activatedKey.has_value() || !(m_pendingObjectReferencePickerRefresh->key == *activatedKey))
+		return;
+	auto request = std::move(*m_pendingObjectReferencePickerRefresh);
+	m_pendingObjectReferencePickerRefresh.reset();
+	m_objectReferencePickerRefreshRequested = false;
+	NLS::Editor::Assets::BeginAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
 	try
-		{
-			m_objectReferencePickerRefresh = ObjectReferencePickerRefresh {
-				generation,
-				ScheduleAssetBrowserJobFuture(
-					"AssetBrowser.ObjectReferencePickerRefresh",
-					[databaseSnapshot = std::move(databaseSnapshot)]() mutable
+	{
+		m_objectReferencePickerRefresh = ObjectReferencePickerRefresh {
+			request.key,
+			ScheduleAssetBrowserJobFuture(
+				"AssetBrowser.ObjectReferencePickerRefresh",
+				[snapshotIndex = std::move(request.snapshotIndex)]() mutable
+				{
+					ObjectReferencePickerRefresh::Result result;
+					try
 					{
-						return NLS::Editor::Assets::BuildObjectReferencePickerEntries(*databaseSnapshot);
-					})
+						result.entries = NLS::Editor::Assets::BuildObjectReferencePickerEntriesFromSnapshots(
+							snapshotIndex->assets);
+					}
+					catch (const std::exception& exception)
+					{
+						result.diagnostic = std::string("Asset Browser object-reference picker refresh failed: ") +
+							exception.what();
+					}
+					catch (...)
+					{
+						result.diagnostic = "Asset Browser object-reference picker refresh failed: unknown error.";
+					}
+					return result;
+				})
 		};
+	}
+	catch (const std::exception& exception)
+	{
+		const auto diagnostic = std::string("Asset Browser object-reference picker refresh failed to start: ") +
+			exception.what();
+		(void)NLS::Editor::Assets::CompleteAssetBrowserLatestRequest(
+			m_objectReferencePickerRefreshCoordinator,
+			*activatedKey);
+		NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState, diagnostic);
+		NLS_LOG_ERROR(diagnostic);
 	}
 	catch (...)
 	{
-		NLS::Editor::Assets::MarkObjectReferencePickerEntriesDirty();
-		m_objectReferencePickerRefreshRequested = true;
+		const std::string diagnostic = "Asset Browser object-reference picker refresh failed to start: unknown error.";
+		(void)NLS::Editor::Assets::CompleteAssetBrowserLatestRequest(
+			m_objectReferencePickerRefreshCoordinator,
+			*activatedKey);
+		NLS::Editor::Assets::FailAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState, diagnostic);
+		NLS_LOG_ERROR(diagnostic);
 	}
 }
 
@@ -5786,16 +6866,93 @@ void Editor::Panels::AssetBrowser::DestroyCachedThumbnailTextures(const bool for
 		m_thumbnailTexturesUsedThisFrame.clear();
 		m_thumbnailTexturesPendingRelease.clear();
 	}
-	m_thumbnailTextureLoadQueue.clear();
-	m_thumbnailTexturesQueuedForLoad.clear();
-	m_thumbnailTexturesFailedToLoad.clear();
-	if (force)
-		m_thumbnailTexturesDecoding.clear();
+		m_thumbnailTextureLoadQueue.clear();
+		m_thumbnailTexturesQueuedForLoad.clear();
+		if (!m_pendingThumbnailTextureUploadsByPath.empty())
+		{
+			if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
+			{
+				for (const auto& [_, pendingUpload] : m_pendingThumbnailTextureUploadsByPath)
+				{
+					NLS::Render::Context::DriverUIAccess::CancelUiRgba8TextureUpload(
+						*driver,
+						pendingUpload.requestId);
+				}
+			}
+		}
+		m_pendingThumbnailTextureUploadsByPath.clear();
+		m_thumbnailTexturesFailedToLoad.clear();
+		if (force)
+			m_thumbnailTexturesDecoding.clear();
+	}
+
+void Editor::Panels::AssetBrowser::ReleaseAssetBrowserTextureHandleCache(const bool force)
+{
+	if (NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+	{
+		std::unordered_set<NLS::Render::RHI::RHITextureView*> releasedTextureViews;
+		for (const auto& [_, entry] : m_assetBrowserTextureHandleCache)
+		{
+			if (entry.textureView == nullptr)
+				continue;
+			if (!releasedTextureViews.insert(entry.textureView.get()).second)
+				continue;
+			if (force)
+				NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(entry.textureView);
+			else
+				NLS_SERVICE(NLS::UI::UIManager).RetireTextureViewHandle(entry.textureView);
+		}
+	}
+	m_assetBrowserTextureHandleCache.clear();
+}
+
+void* Editor::Panels::AssetBrowser::ResolveAssetBrowserTextureHandle(
+	NLS::Render::Resources::Texture2D* texture,
+	const std::string& debugName)
+{
+	if (texture == nullptr || !NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+		return nullptr;
+
+	const auto resolvedTextureView = texture->GetOrCreateExplicitTextureView(debugName);
+	if (resolvedTextureView == nullptr)
+		return nullptr;
+
+	if (const auto found = m_assetBrowserTextureHandleCache.find(texture);
+		found != m_assetBrowserTextureHandleCache.end())
+	{
+		if (found->second.textureView == resolvedTextureView && found->second.textureId != nullptr)
+			return found->second.textureId;
+
+		if (found->second.textureView != nullptr)
+			NLS_SERVICE(NLS::UI::UIManager).RetireTextureViewHandle(found->second.textureView);
+		m_assetBrowserTextureHandleCache.erase(found);
+	}
+
+	void* textureId = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(resolvedTextureView);
+	if (textureId == nullptr)
+		return nullptr;
+
+	m_assetBrowserTextureHandleCache.emplace(texture, AssetBrowserTextureHandleCacheEntry {
+		resolvedTextureView,
+		textureId
+	});
+	return textureId;
 }
 
 void Editor::Panels::AssetBrowser::ReleaseCachedThumbnailTexture(
 	const std::string& normalizedPath)
 {
+	if (const auto pending = m_pendingThumbnailTextureUploadsByPath.find(normalizedPath);
+		pending != m_pendingThumbnailTextureUploadsByPath.end())
+	{
+		if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
+		{
+			NLS::Render::Context::DriverUIAccess::CancelUiRgba8TextureUpload(
+				*driver,
+				pending->second.requestId);
+		}
+		m_pendingThumbnailTextureUploadsByPath.erase(pending);
+	}
 	const auto found = m_thumbnailTexturesByPath.find(normalizedPath);
 	if (found == m_thumbnailTexturesByPath.end())
 		return;
@@ -5858,6 +7015,16 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 	if (!m_thumbnailGenerationScopeDirty && !m_thumbnailScopeBuildInProgress)
 		return;
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::UpdateThumbnailGenerationScope");
+	const std::string scopeTelemetryPath = m_selectedProjectFolder + "|generation-scope";
+	const size_t scopeTelemetryItemCount = m_visibleThumbnailItemsKnown
+		? m_visibleThumbnailItems.size()
+		: m_currentFolderItems.size();
+		std::chrono::microseconds selectItemsElapsed {};
+		std::chrono::microseconds buildKeyElapsed {};
+		std::chrono::microseconds itemKeyElapsed {};
+		std::chrono::microseconds resultLookupElapsed {};
+		std::chrono::microseconds buildRequestElapsed {};
+		std::chrono::microseconds requestPreviewElapsed {};
 
 	const auto nextSize = AssetBrowserThumbnailRequestSize(m_thumbnailSize);
 	if (m_thumbnailGenerationScopeDirty && m_thumbnailScopeBuildInProgress)
@@ -5869,20 +7036,27 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 	}
 	if (!m_thumbnailScopeBuildInProgress)
 	{
-			const auto thumbnailItems = NLS::Editor::Assets::SelectAssetBrowserThumbnailGenerationItems(
+		std::vector<NLS::Editor::Assets::AssetBrowserItem> scopedThumbnailItems;
+		{
+			AssetBrowserArtifactTelemetryAccumulatorScope selectItemsTelemetry {
+				selectItemsElapsed
+			};
+			scopedThumbnailItems = NLS::Editor::Assets::SelectAssetBrowserThumbnailGenerationItems(
 				m_currentFolderItems,
 				m_visibleThumbnailItems,
 				m_visibleThumbnailItemsKnown);
-		std::vector<NLS::Editor::Assets::AssetBrowserItem> scopedThumbnailItems = thumbnailItems;
-		std::unordered_set<std::string> scopedThumbnailKeys;
-		scopedThumbnailKeys.reserve(scopedThumbnailItems.size());
-		for (const auto& item : scopedThumbnailItems)
-			scopedThumbnailKeys.insert(item.projectRelativePath);
+		}
 		const auto nextFolder = NormalizeProjectBrowserPath(m_selectedProjectFolder);
-		const auto nextScopeKey = NLS::Editor::Assets::BuildAssetBrowserThumbnailGenerationScopeKey(
-			nextFolder,
-			nextSize,
-			scopedThumbnailItems);
+		std::string nextScopeKey;
+		{
+			AssetBrowserArtifactTelemetryAccumulatorScope buildKeyTelemetry {
+				buildKeyElapsed
+			};
+			nextScopeKey = NLS::Editor::Assets::BuildAssetBrowserThumbnailGenerationScopeKey(
+				nextFolder,
+				nextSize,
+				scopedThumbnailItems);
+		}
 		const auto decision = NLS::Editor::Assets::EvaluateAssetBrowserThumbnailGenerationScope(
 			m_lastThumbnailGenerationScopeKey,
 			m_lastThumbnailRequestSize,
@@ -5893,62 +7067,137 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 		{
 			m_thumbnailGenerationScopeDirty = false;
 			return;
-		}
+			}
 
-		m_lastThumbnailRequestSize = nextSize;
-		m_lastThumbnailGenerationScopeKey = nextScopeKey;
-		m_lastThumbnailGenerationScopeInteractive = interactive;
+			m_lastThumbnailRequestSize = nextSize;
+			m_lastThumbnailGenerationScopeKey = nextScopeKey;
+			m_lastThumbnailGenerationScopeInteractive = interactive;
 		m_thumbnailGenerationScopeDirty = false;
-		m_pendingThumbnailScopeItems = std::move(scopedThumbnailItems);
-		m_pendingThumbnailScopeOffset = 0u;
-		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
-		m_thumbnailScopeBuildInProgress = true;
+			m_pendingThumbnailScopeItems = std::move(scopedThumbnailItems);
+			m_pendingThumbnailScopeOffset = 0u;
+			m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
+			m_thumbnailScopeBuildInProgress = true;
 		if (decision.scopeChanged)
 			m_thumbnailService.SupersedeQueuedRequestsForGeneration(nextScopeKey);
-		else
-			m_thumbnailService.ClearQueuedRequests();
 	}
 
 	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
-	const size_t requestBudget = IsAssetBrowserInteractive()
-		? kMaxAssetBrowserInteractiveThumbnailRequestsPerFrame
-		: kMaxAssetBrowserThumbnailRequestsPerFrame;
-	size_t processedThisFrame = 0u;
-	while (m_pendingThumbnailScopeOffset < m_pendingThumbnailScopeItems.size() &&
-		processedThisFrame < requestBudget)
+		const size_t requestBudget = IsAssetBrowserInteractive()
+			? kMaxAssetBrowserInteractiveThumbnailRequestsPerFrame
+			: kMaxAssetBrowserThumbnailRequestsPerFrame;
+		const auto requestBudgetStart = std::chrono::steady_clock::now();
+		size_t processedThisFrame = 0u;
+		while (m_pendingThumbnailScopeOffset < m_pendingThumbnailScopeItems.size() &&
+			NLS::Editor::Assets::ShouldContinueAssetBrowserThumbnailRequests({
+			processedThisFrame,
+			requestBudget,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - requestBudgetStart).count()),
+			kMaxAssetBrowserThumbnailRequestMicrosecondsPerFrame }))
 	{
-		const auto& item = m_pendingThumbnailScopeItems[m_pendingThumbnailScopeOffset++];
-		++processedThisFrame;
-		if (const auto request = NLS::Editor::Assets::BuildAssetThumbnailRequestForItem(
+			const auto& item = m_pendingThumbnailScopeItems[m_pendingThumbnailScopeOffset++];
+			++processedThisFrame;
+			std::string itemThumbnailKey;
+			{
+				AssetBrowserArtifactTelemetryAccumulatorScope itemKeyTelemetry {
+					itemKeyElapsed
+				};
+				itemThumbnailKey =
+					NLS::Editor::Assets::BuildAssetBrowserThumbnailItemKey(item, nextSize);
+			}
+			decltype(m_thumbnailResultsByItemKey)::iterator foundThumbnail;
+			{
+				AssetBrowserArtifactTelemetryAccumulatorScope resultLookupTelemetry {
+					resultLookupElapsed
+				};
+				foundThumbnail = m_thumbnailResultsByItemKey.find(itemThumbnailKey);
+			}
+			const auto ThumbnailResultMatchesRequestCacheKey = [](
+				const NLS::Editor::Assets::AssetThumbnailServiceResult& result,
+				const std::string& currentRequestCacheKey)
+			{
+				return result.cacheEntry.has_value() &&
+					result.cacheEntry->cacheKey == currentRequestCacheKey;
+			};
+			if (foundThumbnail != m_thumbnailResultsByItemKey.end() &&
+				foundThumbnail->second.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
+				NLS::Editor::Assets::AssetBrowserThumbnailResultHasDisplayImage(foundThumbnail->second))
+			{
+				const auto key = foundThumbnail->second.imagePath.lexically_normal().generic_string();
+				m_thumbnailTexturesFailedToLoad.erase(key);
+				QueueCachedThumbnailTextureLoad(foundThumbnail->second.imagePath);
+			}
+			std::optional<NLS::Editor::Assets::AssetThumbnailRequest> request;
+			{
+				AssetBrowserArtifactTelemetryAccumulatorScope buildRequestTelemetry {
+				buildRequestElapsed
+			};
+			request = NLS::Editor::Assets::BuildAssetThumbnailRequestForItem(
 					projectRoot,
 					item,
 					nextSize,
-					m_pendingThumbnailRequestContext))
-		{
-			auto prioritizedRequest = *request;
-			prioritizedRequest.priority = NLS::Editor::Assets::ThumbnailRequestPriority::Visible;
-			const auto itemThumbnailKey =
-				NLS::Editor::Assets::BuildAssetBrowserThumbnailItemKey(item, nextSize);
-			if (ShouldBypassAssetBrowserThumbnailService(prioritizedRequest.kind))
-			{
-				const auto evaluation = NLS::Editor::Assets::EvaluateAssetThumbnailCache(
-					prioritizedRequest,
-					NLS::Editor::Assets::AssetThumbnailCacheIntegrityMode::Fast);
-				if (evaluation.status == NLS::Editor::Assets::AssetThumbnailCacheStatus::Fresh &&
-					evaluation.entry.has_value())
-				{
-					NLS::Editor::Assets::AssetThumbnailServiceResult cached;
-					cached.status = NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh;
-					cached.cacheEntry = evaluation.entry;
-					cached.imagePath = evaluation.entry->imagePath;
-					m_thumbnailResultsByItemKey[itemThumbnailKey] = cached;
-					if (!cached.imagePath.empty())
-						QueueCachedThumbnailTextureLoad(cached.imagePath);
-				}
-				continue;
+					m_pendingThumbnailRequestContext);
 			}
-				const auto thumbnail = m_thumbnailService.RequestAssetPreview(prioritizedRequest);
-			auto foundThumbnail = m_thumbnailResultsByItemKey.find(itemThumbnailKey);
+				if (!request)
+					continue;
+				const auto currentRequestCacheKey = NLS::Editor::Assets::BuildAssetThumbnailCacheKey(*request);
+				const auto PromoteFreshThumbnailCache = [&](const NLS::Editor::Assets::AssetThumbnailCacheEvaluation& evaluation)
+				{
+					if (evaluation.status == NLS::Editor::Assets::AssetThumbnailCacheStatus::Fresh &&
+						evaluation.entry.has_value())
+					{
+						NLS::Editor::Assets::AssetThumbnailServiceResult cached;
+						cached.status = NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh;
+						cached.cacheEntry = evaluation.entry;
+						cached.imagePath = evaluation.entry->imagePath;
+						m_thumbnailResultsByItemKey[itemThumbnailKey] = cached;
+						if (!cached.imagePath.empty())
+						{
+							const auto key = cached.imagePath.lexically_normal().generic_string();
+							m_thumbnailTexturesFailedToLoad.erase(key);
+							QueueCachedThumbnailTextureLoad(cached.imagePath);
+						}
+						return true;
+					}
+					return false;
+				};
+				if (foundThumbnail != m_thumbnailResultsByItemKey.end())
+				{
+					if (foundThumbnail->second.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
+						NLS::Editor::Assets::AssetBrowserThumbnailResultHasDisplayImage(foundThumbnail->second) &&
+						ThumbnailResultMatchesRequestCacheKey(foundThumbnail->second, currentRequestCacheKey))
+				{
+					continue;
+					}
+					if (foundThumbnail->second.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
+						ThumbnailResultMatchesRequestCacheKey(foundThumbnail->second, currentRequestCacheKey))
+					{
+						const auto evaluation = NLS::Editor::Assets::EvaluateAssetThumbnailCache(
+							*request,
+							NLS::Editor::Assets::AssetThumbnailCacheIntegrityMode::Fast);
+						if (PromoteFreshThumbnailCache(evaluation))
+							continue;
+					}
+				}
+				{
+					auto prioritizedRequest = *request;
+			prioritizedRequest.priority = NLS::Editor::Assets::ThumbnailRequestPriority::Visible;
+					if (ShouldBypassAssetBrowserThumbnailService(prioritizedRequest.kind))
+					{
+						const auto evaluation = NLS::Editor::Assets::EvaluateAssetThumbnailCache(
+							prioritizedRequest,
+							NLS::Editor::Assets::AssetThumbnailCacheIntegrityMode::Fast);
+						(void)PromoteFreshThumbnailCache(evaluation);
+						continue;
+					}
+			NLS::Editor::Assets::AssetThumbnailServiceResult thumbnail;
+			{
+				AssetBrowserArtifactTelemetryAccumulatorScope requestPreviewTelemetry {
+					requestPreviewElapsed
+				};
+				thumbnail = m_thumbnailService.RequestAssetPreview(prioritizedRequest);
+			}
+			foundThumbnail = m_thumbnailResultsByItemKey.find(itemThumbnailKey);
 			if (foundThumbnail == m_thumbnailResultsByItemKey.end() ||
 				foundThumbnail->second.status != NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh ||
 				thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh)
@@ -5978,6 +7227,42 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
 		m_thumbnailScopeBuildInProgress = false;
 	}
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeSelectItems,
+		selectItemsElapsed,
+		scopeTelemetryPath,
+		scopeTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+		RecordAssetBrowserArtifactTelemetryStage(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildKey,
+			buildKeyElapsed,
+			scopeTelemetryPath,
+			scopeTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+		RecordAssetBrowserArtifactTelemetryStage(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeItemKey,
+			itemKeyElapsed,
+			scopeTelemetryPath,
+			scopeTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+		RecordAssetBrowserArtifactTelemetryStage(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeResultLookup,
+			resultLookupElapsed,
+			scopeTelemetryPath,
+			scopeTelemetryItemCount,
+			kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+		RecordAssetBrowserArtifactTelemetryStage(
+			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeBuildRequest,
+		buildRequestElapsed,
+		scopeTelemetryPath,
+		scopeTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
+	RecordAssetBrowserArtifactTelemetryStage(
+		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeRequestPreview,
+		requestPreviewElapsed,
+		scopeTelemetryPath,
+		scopeTelemetryItemCount,
+		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
 }
 
 NLS::Editor::Assets::AssetBrowserRect MakeAssetBrowserRect(
@@ -6059,18 +7344,23 @@ void DrawAssetBrowserFilmstripPanel(
 		cornerFlags = ImDrawFlags_RoundCornersRight;
 	else if (continuesRight)
 		cornerFlags = ImDrawFlags_RoundCornersLeft;
+	DrawAssetBrowserSegmentPanel(drawList, min, max, hovered, cornerFlags);
+}
 
-	const ImVec2 windowMin = ImGui::GetWindowPos();
-	const ImVec2 windowMax(windowMin.x + ImGui::GetWindowSize().x, windowMin.y + ImGui::GetWindowSize().y);
+void DrawAssetBrowserSegmentPanel(
+	ImDrawList* drawList,
+	const ImVec2& min,
+	const ImVec2& max,
+	const bool hovered,
+	const ImDrawFlags cornerFlags)
+{
 	const ImU32 fillColor = hovered ? IM_COL32(88, 88, 88, 255) : IM_COL32(74, 74, 74, 255);
-	drawList->PushClipRect(windowMin, windowMax, false);
 	drawList->AddRectFilled(
 		min,
 		max,
 		fillColor,
 		10.0f,
 		cornerFlags);
-	drawList->PopClipRect();
 }
 
 void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
@@ -6083,21 +7373,37 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::DrawProjectGridItemThumbnail");
 	auto* drawList = ImGui::GetWindowDrawList();
+	auto recordDrawPath = [&](const char* drawKind, const AssetBrowserThumbnailDrawOutcome outcome)
+	{
+		if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+			return;
+		const int frameCount = ImGui::GetFrameCount();
+		if (frameCount > 0 && frameCount % kAssetBrowserThumbnailDrawOutcomeSamplePeriodFrames != 0)
+			return;
+
+		std::string telemetryPath = item.projectRelativePath.empty()
+			? item.absolutePath.lexically_normal().generic_string()
+			: item.projectRelativePath;
+		(void)drawKind;
+		RecordAssetBrowserThumbnailDrawOutcomeTelemetry(telemetryPath, outcome);
+	};
 	auto drawFallbackBlock = [&]()
 	{
 		const char* iconId = NLS::Editor::Assets::AssetBrowserFallbackIconId(item.type);
-			if (void* textureHandle = ResolveAssetBrowserTextureHandle(
-					EDITOR_CONTEXT(editorResources)->GetTexture(iconId),
+				if (void* textureHandle = ResolveAssetBrowserTextureHandle(
+						EDITOR_CONTEXT(editorResources)->GetTexture(iconId),
 					"AssetBrowser.TypeIcon"))
-			{
-				drawList->PushClipRect(iconMin, iconMax, true);
-				drawList->AddImage(textureHandle, iconMin, iconMax, kAssetBrowserImageUv0, kAssetBrowserImageUv1);
-				drawList->PopClipRect();
-				return;
-			}
+				{
+					drawList->PushClipRect(iconMin, iconMax, true);
+					drawList->AddImage(textureHandle, iconMin, iconMax, kAssetBrowserImageUv0, kAssetBrowserImageUv1);
+					drawList->PopClipRect();
+					recordDrawPath("|draw=type-fallback", AssetBrowserThumbnailDrawOutcome::TypeFallback);
+					return;
+				}
 
 		const auto color = AssetBrowserItemColor(item.type);
 		drawList->AddRectFilled(iconMin, iconMax, color, compact ? 2.0f : 6.0f);
+		recordDrawPath("|draw=type-fallback", AssetBrowserThumbnailDrawOutcome::TypeFallback);
 	};
 
 	if (item.kind == NLS::Editor::Assets::AssetBrowserItemKind::Folder)
@@ -6134,19 +7440,18 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 					MakeAssetBrowserRect(iconMin, iconMax),
 					textureInfo.width,
 					textureInfo.height);
-				if (NLS::Editor::Assets::ShouldDrawAssetBrowserThumbnailLetterboxBackground(item.type))
-					drawList->AddRectFilled(iconMin, iconMax, IM_COL32(0, 0, 0, 255), compact ? 2.0f : 6.0f);
 				drawList->PushClipRect(iconMin, iconMax, true);
-				drawList->AddImage(
-					textureInfo.textureHandle,
-					ToImVec2(thumbnailRect.min),
-					ToImVec2(thumbnailRect.max),
-					kAssetBrowserImageUv0,
-					kAssetBrowserImageUv1);
-				drawList->PopClipRect();
-				return;
+					drawList->AddImage(
+						textureInfo.textureHandle,
+						ToImVec2(thumbnailRect.min),
+						ToImVec2(thumbnailRect.max),
+						kAssetBrowserImageUv0,
+						kAssetBrowserImageUv1);
+					drawList->PopClipRect();
+					recordDrawPath("|draw=thumbnail", AssetBrowserThumbnailDrawOutcome::Thumbnail);
+					return;
+				}
 			}
-		}
 
 		const auto fallbackIconId =
 			NLS::Editor::Assets::ResolveAssetBrowserDisplayFallbackIconId(
@@ -6158,18 +7463,19 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 			if (void* textureHandle = ResolveAssetBrowserTextureHandle(
 					EDITOR_CONTEXT(editorResources)->GetTexture(fallbackIconKey),
 					"AssetBrowser.Fallback"))
-			{
-				drawList->PushClipRect(iconMin, iconMax, true);
-				drawList->AddImage(
-					textureHandle,
-					iconMin,
+				{
+					drawList->PushClipRect(iconMin, iconMax, true);
+					drawList->AddImage(
+						textureHandle,
+						iconMin,
 					iconMax,
-					kAssetBrowserImageUv0,
-					kAssetBrowserImageUv1);
-				drawList->PopClipRect();
-				return;
+						kAssetBrowserImageUv0,
+						kAssetBrowserImageUv1);
+					drawList->PopClipRect();
+					recordDrawPath("|draw=fallback", AssetBrowserThumbnailDrawOutcome::Fallback);
+					return;
+				}
 			}
-		}
 	}
 
 	drawFallbackBlock();
@@ -6540,7 +7846,7 @@ bool Editor::Panels::AssetBrowser::SaveHierarchyObjectAsPrefabIntoFolder(
 void Editor::Panels::AssetBrowser::SelectProjectGridItem(
 	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
-	m_selectedProjectItem = item.projectRelativePath;
+	m_selectedProjectItem = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(item);
 }
 
 void Editor::Panels::AssetBrowser::OpenProjectGridItem(
@@ -6960,15 +8266,14 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 					auto& subAssetDragSource = subAssetText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
 						NLS::Editor::Assets::kEditorAssetDragPayloadType,
 						subAsset.dragResourcePath,
-						NLS::Editor::Assets::MakeEditorAssetDragPayload(
-							subAsset.dragResourcePath,
-							subAsset.assetId,
-							subAsset.subAssetKey,
-							subAsset.artifactType,
-							false,
-							true,
-							false,
-							true));
+							NLS::Editor::Assets::MakeEditorAssetDragPayload(
+								subAsset.dragResourcePath,
+								subAsset.assetId,
+								subAsset.subAssetKey,
+								subAsset.artifactType,
+								false,
+								true,
+								true));
 					subAssetDragSource.hasTooltip = false;
 				}
 			}

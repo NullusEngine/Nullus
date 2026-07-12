@@ -538,6 +538,31 @@ TEST(FrameGraphSceneTargetsTests, FramebufferSameSizeResizeReusesExplicitResourc
     EXPECT_EQ(outputBuffer.GetOrCreateExplicitDepthStencilView("SceneDepthView"), depthView);
 }
 
+TEST(FrameGraphSceneTargetsTests, FramebufferCanCreateSrgbColorAttachmentForDisplayReadyReadback)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(
+        96u,
+        96u,
+        NLS::Render::RHI::TextureColorSpace::SRGB);
+
+    ASSERT_NE(outputBuffer.GetExplicitTextureHandle(), nullptr);
+    EXPECT_EQ(
+        outputBuffer.GetExplicitTextureHandle()->GetDesc().colorSpace,
+        NLS::Render::RHI::TextureColorSpace::SRGB);
+    const auto colorView = outputBuffer.GetOrCreateExplicitColorView("DisplayReadyPreviewColor");
+    ASSERT_NE(colorView, nullptr);
+    EXPECT_EQ(colorView->GetDesc().colorSpace, NLS::Render::RHI::TextureColorSpace::SRGB);
+}
+
 TEST(FrameGraphSceneTargetsTests, FramebufferClearValueRebuildRetainsPreviousExplicitResourcesTemporarily)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -986,6 +1011,57 @@ TEST(FrameGraphSceneTargetsTests, ImportSceneRenderTargetsAddsExternalFramebuffe
     EXPECT_NE(outputBuffer.GetOrCreateExplicitColorView("SceneOutputColorView"), nullptr);
     EXPECT_NE(outputBuffer.GetExplicitDepthStencilTextureHandle(), nullptr);
     EXPECT_NE(outputBuffer.GetOrCreateExplicitDepthStencilView("SceneOutputDepthView"), nullptr);
+}
+
+TEST(FrameGraphSceneTargetsTests, CaptureExternalSceneOutputSnapshotRefreshesFramebufferHandles)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+    const auto staleColorTexture = std::make_shared<TestTexture>(
+        MakeTestTextureDesc("StaleSceneColor"));
+    const auto staleDepthTexture = std::make_shared<TestTexture>(
+        MakeTestTextureDesc(
+            "StaleSceneDepth",
+            NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+            NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment));
+    NLS::Render::RHI::RHITextureViewDesc staleColorViewDesc {};
+    staleColorViewDesc.debugName = "StaleSceneColorView";
+    staleColorViewDesc.format = staleColorTexture->GetDesc().format;
+    const auto staleColorView = std::make_shared<TestTextureView>(staleColorTexture, staleColorViewDesc);
+    NLS::Render::RHI::RHITextureViewDesc staleDepthViewDesc {};
+    staleDepthViewDesc.debugName = "StaleSceneDepthView";
+    staleDepthViewDesc.format = staleDepthTexture->GetDesc().format;
+    const auto staleDepthView = std::make_shared<TestTextureView>(staleDepthTexture, staleDepthViewDesc);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputBuffer = &outputBuffer;
+    frameDescriptor.outputColorTexture = staleColorTexture;
+    frameDescriptor.outputDepthStencilTexture = staleDepthTexture;
+    frameDescriptor.outputColorView = staleColorView;
+    frameDescriptor.outputDepthStencilView = staleDepthView;
+
+    const auto snapshot = NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(frameDescriptor);
+
+    EXPECT_EQ(snapshot.renderWidth, frameDescriptor.renderWidth);
+    EXPECT_EQ(snapshot.renderHeight, frameDescriptor.renderHeight);
+    EXPECT_EQ(snapshot.camera, frameDescriptor.camera);
+    EXPECT_EQ(snapshot.outputBuffer, nullptr);
+    EXPECT_EQ(snapshot.outputColorTexture, outputBuffer.GetExplicitTextureHandle());
+    EXPECT_EQ(snapshot.outputDepthStencilTexture, outputBuffer.GetExplicitDepthStencilTextureHandle());
+    EXPECT_EQ(snapshot.outputColorView, outputBuffer.GetOrCreateExplicitColorView("SceneOutputColorView"));
+    EXPECT_EQ(snapshot.outputDepthStencilView, outputBuffer.GetOrCreateExplicitDepthStencilView("SceneOutputDepthView"));
 }
 
 TEST(FrameGraphSceneTargetsTests, FrameGraphCreatedResourcesRegisterAndRetireTransientLifetime)
@@ -1817,10 +1893,10 @@ TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionDeclaresDepthStencilW
     NLS::Render::Context::RenderScenePackage package;
     package.opaqueDrawCount = 1u;
     package.helperDrawCount = 1u;
-    package.drawCommandCount = 2u;
+    package.drawCommandCount = 1u;
     package.renderWidth = 320u;
     package.renderHeight = 180u;
-    package.recordedDrawCommands.resize(2u);
+    package.recordedDrawCommands.resize(1u);
     package.targetsSwapchain = true;
 
     NLS::Render::Context::RenderPassCommandInput helperPass;
@@ -2076,6 +2152,123 @@ TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionSlicesTransparentBefo
     EXPECT_FALSE(transparentPass.clearColor);
     EXPECT_FALSE(transparentPass.clearDepth);
     EXPECT_FALSE(transparentPass.clearStencil);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionAllowsMultipleDrawsInAggregateHelperPass)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.helperDrawCount = 1u;
+    package.visibleDrawCount = 3u;
+    package.drawCommandCount = 5u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.targetsSwapchain = false;
+
+    auto gbufferPipeline = std::make_shared<TestGraphicsPipeline>("DeferredGBufferPipeline");
+    auto lightingPipeline = std::make_shared<TestGraphicsPipeline>("DeferredLightingPipeline");
+    auto helperPipeline = std::make_shared<TestGraphicsPipeline>("DeferredAggregateHelperPipeline");
+    package.recordedDrawCommands = {
+        { gbufferPipeline, nullptr, nullptr, nullptr, nullptr, nullptr, 1u },
+        { lightingPipeline, nullptr, nullptr, nullptr, nullptr, nullptr, 1u },
+        { helperPipeline, nullptr, nullptr, nullptr, nullptr, nullptr, 1u },
+        { helperPipeline, nullptr, nullptr, nullptr, nullptr, nullptr, 1u },
+        { helperPipeline, nullptr, nullptr, nullptr, nullptr, nullptr, 1u }
+    };
+    const auto helperMetadata = MakeThreadedPassMetadata(
+        NLS::Render::Context::RenderPassCommandKind::Helper,
+        NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper,
+        "EditorHelperPass");
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
+
+    ASSERT_NO_THROW({
+        NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+            package,
+            lightGridContext,
+            resources,
+            {},
+            { helperMetadata },
+            MakeDeferredQueuedDrawCounts(1u, 0u, 0u));
+    });
+
+    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    const auto& helperPass = package.passCommandInputs[2];
+    EXPECT_EQ(helperPass.kind, NLS::Render::Context::RenderPassCommandKind::Helper);
+    EXPECT_EQ(helperPass.debugName, "EditorHelperPass");
+    EXPECT_EQ(helperPass.drawCount, 3u);
+    EXPECT_EQ(helperPass.recordedDrawCommands.size(), 3u);
+    EXPECT_EQ(package.helperDrawCount, 3u);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionRejectsAggregateDrawsWithoutAggregateHelperMetadata)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.helperDrawCount = 1u;
+    package.visibleDrawCount = 3u;
+    package.drawCommandCount = 3u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.targetsSwapchain = false;
+    package.recordedDrawCommands.resize(3u);
+
+    const auto unrelatedHelperMetadata = MakeThreadedPassMetadata(
+        NLS::Render::Context::RenderPassCommandKind::Helper,
+        NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper,
+        "EditorGridPass");
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
+
+    EXPECT_THROW(
+        NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+            package,
+            lightGridContext,
+            resources,
+            {},
+            { unrelatedHelperMetadata },
+            MakeDeferredQueuedDrawCounts(1u, 0u, 0u)),
+        std::invalid_argument);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredAggregateHelperInputPreservesHelperOnlyRecordedDraws)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.helperDrawCount = 1u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.targetsSwapchain = false;
+
+    auto helperPipeline = std::make_shared<TestGraphicsPipeline>("DeferredHelperOnlyPipeline");
+    package.recordedDrawCommands = {
+        { helperPipeline, nullptr, nullptr, nullptr, nullptr, nullptr, 1u }
+    };
+
+    const auto helperInput =
+        NLS::Render::FrameGraph::BuildDeferredAggregateHelperPassInput(package);
+
+    ASSERT_TRUE(helperInput.has_value());
+    EXPECT_EQ(helperInput->kind, NLS::Render::Context::RenderPassCommandKind::Helper);
+    EXPECT_EQ(helperInput->debugName, "EditorHelperPass");
+    EXPECT_EQ(helperInput->drawCount, 1u);
+    ASSERT_EQ(helperInput->recordedDrawCommands.size(), 1u);
+    EXPECT_EQ(helperInput->recordedDrawCommands[0].pipeline, helperPipeline);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredAggregateHelperInputSkipsEmptyPackage)
+{
+    NLS::Render::Context::RenderScenePackage package;
+
+    EXPECT_FALSE(
+        NLS::Render::FrameGraph::BuildDeferredAggregateHelperPassInput(package).has_value());
 }
 
 TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionRejectsPostOpaqueSceneDrawsWithoutQueuedCounts)
@@ -5325,6 +5518,43 @@ TEST(FrameGraphSceneTargetsTests, LightGridCompileContextCarriesUEForwardLightin
     EXPECT_EQ(context.forwardLightingResources.lightLinkStride, 2u);
     EXPECT_EQ(context.forwardLightingResources.lightGridInjectionGroupSize, 4u);
     EXPECT_EQ(context.graphicsPassBindingSet, lightGridBindingSet);
+}
+
+TEST(FrameGraphSceneTargetsTests, LightGridCompileContextDoesNotOwnExternalSceneOutputHandles)
+{
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.outputColorTexture = std::make_shared<TestTexture>(
+        MakeTestTextureDesc("SceneViewExternalColor"));
+    frameDescriptor.outputDepthStencilTexture = std::make_shared<TestTexture>(
+        MakeTestTextureDesc(
+            "SceneViewExternalDepth",
+            NLS::Render::RHI::TextureFormat::Depth24Stencil8,
+            NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment));
+    NLS::Render::RHI::RHITextureViewDesc colorViewDesc;
+    colorViewDesc.debugName = "SceneViewExternalColorView";
+    frameDescriptor.outputColorView = std::make_shared<TestTextureView>(
+        frameDescriptor.outputColorTexture,
+        colorViewDesc);
+    NLS::Render::RHI::RHITextureViewDesc depthViewDesc;
+    depthViewDesc.debugName = "SceneViewExternalDepthView";
+    frameDescriptor.outputDepthStencilView = std::make_shared<TestTextureView>(
+        frameDescriptor.outputDepthStencilTexture,
+        depthViewDesc);
+
+    const auto context = NLS::Render::FrameGraph::BuildLightGridCompileContext(
+        frameDescriptor,
+        {},
+        nullptr);
+
+    EXPECT_EQ(context.frameDescriptor.renderWidth, frameDescriptor.renderWidth);
+    EXPECT_EQ(context.frameDescriptor.renderHeight, frameDescriptor.renderHeight);
+    EXPECT_EQ(context.frameDescriptor.outputBuffer, nullptr);
+    EXPECT_EQ(context.frameDescriptor.outputColorTexture, nullptr);
+    EXPECT_EQ(context.frameDescriptor.outputDepthStencilTexture, nullptr);
+    EXPECT_EQ(context.frameDescriptor.outputColorView, nullptr);
+    EXPECT_EQ(context.frameDescriptor.outputDepthStencilView, nullptr);
 }
 
 TEST(FrameGraphSceneTargetsTests, BuildPreparedComputeDispatchSourceCarriesDispatchInputsAndMetadataInOrder)

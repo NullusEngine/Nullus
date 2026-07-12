@@ -277,6 +277,22 @@ namespace
         }
     };
 
+    class ScopedTrustedBuiltInShaderAssetsRoot final
+    {
+    public:
+        explicit ScopedTrustedBuiltInShaderAssetsRoot(const std::string& engineAssetsPath)
+        {
+            NLS::Render::Resources::Loaders::ShaderLoader::SetTrustedBuiltInShaderEngineAssetsPath(
+                engineAssetsPath);
+        }
+
+        ~ScopedTrustedBuiltInShaderAssetsRoot()
+        {
+            NLS::Render::Resources::Loaders::ShaderLoader::SetTrustedBuiltInShaderEngineAssetsPath(
+                (std::filesystem::path(NLS_ROOT_DIR) / "App" / "Assets" / "Engine").string());
+        }
+    };
+
     class ScopedShaderManagerAssetPaths final
     {
     public:
@@ -1215,6 +1231,8 @@ TEST(ShaderCompilerTests, ShaderLoaderCreateRoutesConfiguredEngineShaderCacheToP
         ("nullus_shader_loader_create_no_app_library_" + NLS::Guid::New().ToString());
     const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
     const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "DebugPrimitive.hlsl";
+    const ScopedTrustedBuiltInShaderAssetsRoot scopedTrustedRoot(
+        (root / "App" / "Assets" / "Engine").string());
     std::filesystem::create_directories(engineShader.parent_path());
     std::filesystem::create_directories(root / "Project" / "Assets");
     std::ofstream shaderFile(engineShader, std::ios::binary);
@@ -1267,6 +1285,8 @@ TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslWithoutActiveDriverDoesNotGener
         ("nullus_shader_loader_no_driver_no_glsl_" + NLS::Guid::New().ToString());
     const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
     const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "NoDriver.hlsl";
+    const ScopedTrustedBuiltInShaderAssetsRoot scopedTrustedRoot(
+        (root / "App" / "Assets" / "Engine").string());
     std::filesystem::create_directories(engineShader.parent_path());
     std::filesystem::create_directories(root / "Project" / "Assets");
     std::ofstream shaderFile(engineShader, std::ios::binary);
@@ -1343,12 +1363,192 @@ TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslAllowsPackagedRuntimeSharedEdit
         << "}\n";
     shaderFile.close();
 
+    const ScopedTrustedBuiltInShaderAssetsRoot scopedTrustedRoot(
+        (root / "App" / "Win64_Release_Runtime_Shared" / "Assets" / "Engine").string());
+
     auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
         shaderPath.string(),
         projectAssets);
 
     EXPECT_NE(shader, nullptr);
     NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsBuildOutputEditorShaderWithoutConfiguredRoot)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_build_output_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "TestProject" / "Assets").string() +
+        std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = root / "Build" / "bin" / "Release" /
+        "Assets" / "Editor" / "Shaders" / "Grid.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(root / "TestProject" / "Assets");
+    std::ofstream(root / "Build" / "bin" / "Release" / "Editor.exe", std::ios::binary).close();
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile << "float4 PSMain() : SV_Target0 { return float4(1, 1, 1, 1); }\n";
+    shaderFile.close();
+
+    {
+        const ScopedCurrentPath scopedCurrentPath(root / "Build" / "bin" / "Release");
+        EXPECT_FALSE(NLS::Render::Resources::Loaders::ShaderLoader::IsBuiltInHlslSourcePath(
+            shaderPath.string(),
+            projectAssets));
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsBuildOutputEditorShaderWithoutConfiguredRootOrExeExtension)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_build_output_no_ext_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "TestProject" / "Assets").string() +
+        std::string(1, std::filesystem::path::preferred_separator);
+    const auto outputRoot = root / "Build" / "bin" / "Release";
+    const auto shaderPath = outputRoot / "Assets" / "Editor" / "Shaders" / "Grid.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(root / "TestProject" / "Assets");
+    std::ofstream(outputRoot / "Editor", std::ios::binary).close();
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile << "float4 PSMain() : SV_Target0 { return float4(1, 1, 1, 1); }\n";
+    shaderFile.close();
+
+    {
+        const ScopedCurrentPath scopedCurrentPath(outputRoot);
+        EXPECT_FALSE(NLS::Render::Resources::Loaders::ShaderLoader::IsBuiltInHlslSourcePath(
+            shaderPath.string(),
+            projectAssets));
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsForgedSourceWorkspaceRoot)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_repo_root_project_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Assets").string() +
+        std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = root / "App" / "Assets" / "Engine" / "Shaders" / "DeferredGBuffer.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(root / "Assets");
+    std::filesystem::create_directories(root / "Runtime" / "Rendering" / "Resources" / "Loaders");
+    std::filesystem::create_directories(root / "Project" / "Editor");
+    std::filesystem::create_directories(root / "Project" / "Game");
+    std::ofstream(root / "CMakeLists.txt") << "project(Nullus VERSION 1.0.0 LANGUAGES C CXX)\n";
+    std::ofstream(root / "Runtime" / "Rendering" / "Resources" / "Loaders" / "ShaderLoader.cpp").close();
+    std::ofstream(root / "Project" / "Editor" / "CMakeLists.txt").close();
+    std::ofstream(root / "Project" / "Game" / "CMakeLists.txt").close();
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile << "float4 PSMain() : SV_Target0 { return float4(1, 1, 1, 1); }\n";
+    shaderFile.close();
+
+    const ScopedTrustedBuiltInShaderAssetsRoot scopedTrustedRoot({});
+
+    EXPECT_FALSE(NLS::Render::Resources::Loaders::ShaderLoader::IsBuiltInHlslSourcePath(
+        shaderPath.string(),
+        projectAssets));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslAllowsVerifiedWorkspaceShaderForPreparedExternalProject)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_prepared_external_project_" + NLS::Guid::New().ToString());
+    const auto workspaceRoot = root / "Workspace";
+    const auto preparedProjectRoot = root / "Benchmarks" / "PreparedProject";
+    const auto projectAssets = (preparedProjectRoot / "Assets").string() +
+        std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = workspaceRoot / "App" / "Assets" / "Engine" / "Shaders" /
+        "DeferredGBuffer.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(preparedProjectRoot / "Assets");
+    std::filesystem::create_directories(workspaceRoot / "Runtime" / "Rendering" / "Resources" / "Loaders");
+    std::filesystem::create_directories(workspaceRoot / "Project" / "Editor");
+    std::filesystem::create_directories(workspaceRoot / "Project" / "Game");
+    std::ofstream(workspaceRoot / "CMakeLists.txt") << "project(Nullus VERSION 1.0.0 LANGUAGES C CXX)\n";
+    std::ofstream(workspaceRoot / "Runtime" / "Rendering" / "Resources" / "Loaders" / "ShaderLoader.cpp").close();
+    std::ofstream(workspaceRoot / "Project" / "Editor" / "CMakeLists.txt").close();
+    std::ofstream(workspaceRoot / "Project" / "Game" / "CMakeLists.txt").close();
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile << "float4 PSMain() : SV_Target0 { return float4(1, 1, 1, 1); }\n";
+    shaderFile.close();
+
+    const ScopedTrustedBuiltInShaderAssetsRoot scopedTrustedRoot(
+        (workspaceRoot / "App" / "Assets" / "Engine").string());
+
+    {
+        const ScopedCurrentPath scopedCurrentPath(preparedProjectRoot);
+        EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::IsBuiltInHlslSourcePath(
+            shaderPath.string(),
+            projectAssets));
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, TrustedBuiltInEngineShaderResolverRejectsParentTraversal)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_traversal_" + NLS::Guid::New().ToString());
+    const auto engineAssetsRoot = root / "Assets" / "Engine";
+    const auto escapedShader = engineAssetsRoot / "Outside.hlsl";
+    std::filesystem::create_directories(engineAssetsRoot / "Shaders");
+    std::ofstream(escapedShader, std::ios::binary) <<
+        "float4 PSMain() : SV_Target0 { return float4(1, 1, 1, 1); }\n";
+
+    const ScopedTrustedBuiltInShaderAssetsRoot scopedTrustedRoot(engineAssetsRoot.string());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::ResolveTrustedBuiltInEngineShaderPath(
+        "../Outside.hlsl").empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsProjectLocalAppShaderDirectory)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_rejects_project_local_app_" + NLS::Guid::New().ToString());
+    const auto projectRoot = root / "Project";
+    const auto projectAssets = (projectRoot / "Assets").string() +
+        std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = projectRoot / "App" / "Assets" / "Engine" / "Shaders" / "DeferredGBuffer.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(projectRoot / "Assets");
+    std::filesystem::create_directories(projectRoot / "Runtime");
+    std::filesystem::create_directories(projectRoot / "Project");
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile << "float4 PSMain() : SV_Target0 { return float4(1, 1, 1, 1); }\n";
+    shaderFile.close();
+
+    EXPECT_FALSE(NLS::Render::Resources::Loaders::ShaderLoader::IsBuiltInHlslSourcePath(
+        shaderPath.string(),
+        projectAssets));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsBuildShapedDirectoryWithoutExecutable)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_build_shape_without_exe_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "TestProject" / "Assets").string() +
+        std::string(1, std::filesystem::path::preferred_separator);
+    const auto fakeOutputRoot = root / "Build" / "bin" / "Release";
+    const auto shaderPath = fakeOutputRoot / "Assets" / "Editor" / "Shaders" / "Grid.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(root / "TestProject" / "Assets");
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile << "float4 PSMain() : SV_Target0 { return float4(1, 1, 1, 1); }\n";
+    shaderFile.close();
+
+    {
+        const ScopedCurrentPath scopedCurrentPath(fakeOutputRoot);
+        EXPECT_FALSE(NLS::Render::Resources::Loaders::ShaderLoader::IsBuiltInHlslSourcePath(
+            shaderPath.string(),
+            projectAssets));
+    }
     std::filesystem::remove_all(root);
 }
 
@@ -1444,6 +1644,28 @@ TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsProjectSourcePath)
         projectAssets);
 
     EXPECT_EQ(shader, nullptr);
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderBuiltInHlslRejectsProjectEditorShaderWhenCurrentPathIsProjectRoot)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_builtin_rejects_project_cwd_" + NLS::Guid::New().ToString());
+    const auto projectRoot = root / "Project";
+    const auto projectAssets = (projectRoot / "Assets").string() +
+        std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = projectRoot / "Assets" / "Editor" / "Shaders" / "ProjectGrid.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile << "float4 PSMain() : SV_Target0 { return float4(1, 1, 1, 1); }\n";
+    shaderFile.close();
+
+    {
+        const ScopedCurrentPath scopedCurrentPath(projectRoot);
+        EXPECT_FALSE(NLS::Render::Resources::Loaders::ShaderLoader::IsBuiltInHlslSourcePath(
+            shaderPath.string(),
+            projectAssets));
+    }
     std::filesystem::remove_all(root);
 }
 

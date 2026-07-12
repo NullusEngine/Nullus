@@ -7,6 +7,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <vector>
 
 namespace NLS::Editor::Assets
@@ -30,6 +32,9 @@ struct ExternalModelImportRequest
     std::string materialShaderResourcePath;
     std::filesystem::path editorPathRoot;
     bool preserveModelLocalTextureArtifacts = false;
+    std::function<std::optional<NLS::Core::Assets::ArtifactManifest>(
+        NLS::Core::Assets::AssetId,
+        const std::string&)> loadArtifactManifest;
 };
 
 struct ExternalModelAutoImportedDependency

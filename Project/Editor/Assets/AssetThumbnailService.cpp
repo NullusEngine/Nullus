@@ -4443,6 +4443,20 @@ AssetThumbnailServiceResult GeneratePrefabThumbnail(
             NLS::Core::Assets::ArtifactType::Prefab,
             1u))
     {
+        if (ShouldRetryLegacyImportedPrefabBudgetFailure(previewRequest))
+        {
+            const auto meshPaths = ResolveMeshArtifactPaths(previewRequest);
+            if (!meshPaths.empty())
+            {
+                return GenerateMeshSetThumbnail(
+                    request,
+                    meshPaths,
+                    "thumbnail-prefab-preview-mesh-artifact-missing",
+                    cancelToken,
+                    &metadataRequest);
+            }
+        }
+
         result.status = AssetThumbnailServiceStatus::Fallback;
         result.diagnostic = kPrefabPreviewBudgetExceededDiagnostic;
         WriteThumbnailMetadataForEvaluation(
@@ -5044,7 +5058,7 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     request.requestedSize = request.kind == AssetThumbnailKind::Texture
         ? (std::min)(std::max(1u, requestedSize), kMaxTextureThumbnailGenerationSize)
         : std::max(1u, requestedSize);
-    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v5";
+    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v7";
     if (request.kind == AssetThumbnailKind::Texture)
     {
         request.settingsFingerprint = "asset-browser-thumbnail:v15-lowres-image-thumbnails";
@@ -5404,7 +5418,10 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Queued;
             return std::nullopt;
         }
-        if (ShouldDeferBackgroundCpuThumbnailToPreviewRenderer(request.kind))
+        if (ShouldDeferBackgroundCpuThumbnailToPreviewRenderer(request.kind) &&
+            (!ShouldRetryLegacyImportedPrefabBudgetFailure(request) ||
+                m_resolvedPreviewRequestsByCacheKey.find(*cacheKey) != m_resolvedPreviewRequestsByCacheKey.end() ||
+                m_gpuDeferredHeavyPreviewCacheKeys.find(*cacheKey) != m_gpuDeferredHeavyPreviewCacheKeys.end()))
         {
             deferredCacheKeys.push_back(*cacheKey);
             continue;

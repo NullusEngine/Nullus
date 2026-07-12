@@ -2855,7 +2855,7 @@ TEST(AssetThumbnailBehaviorTests, TextureManagerSharedRequestRevivesCanceledInFl
 #else
     using namespace NLS::Core::ResourceManagement;
 
-    EnsureThumbnailPerformanceTestDriver();
+    EnsureThumbnailPerformanceGpuTestDriver();
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
     const auto root = MakeThumbnailPerformanceRoot();
@@ -2895,7 +2895,7 @@ TEST(AssetThumbnailBehaviorTests, TextureManagerCancelableRequestRevivesCanceled
 #else
     using namespace NLS::Core::ResourceManagement;
 
-    EnsureThumbnailPerformanceTestDriver();
+    EnsureThumbnailPerformanceGpuTestDriver();
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
     const auto root = MakeThumbnailPerformanceRoot();

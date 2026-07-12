@@ -450,8 +450,9 @@ TEST(AssetPrefabBehaviorTests, PrefabArtifactLoadTrustsManifestResolvedAssets)
 {
     const auto prefabSource = ReadRepositoryTextFile(
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Assets/PrefabAsset.cpp");
-    const auto importStart = prefabSource.find(
-        "PrefabImportResult ImportPrefabArtifact(\n    const std::string& sourceText,");
+    const auto optionsParameter = prefabSource.find("PrefabImportOptions options)");
+    ASSERT_NE(optionsParameter, std::string::npos);
+    const auto importStart = prefabSource.rfind("PrefabImportResult ImportPrefabArtifact(", optionsParameter);
     ASSERT_NE(importStart, std::string::npos);
     const auto importEnd = prefabSource.find("PrefabArtifactInstantiationResult InstantiatePrefabArtifact", importStart);
     ASSERT_NE(importEnd, std::string::npos);
@@ -482,8 +483,9 @@ TEST(AssetPrefabBehaviorTests, GeneratedModelPrefabArtifactLoadSkipsRepeatedGrap
 {
     const auto prefabSource = ReadRepositoryTextFile(
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Assets/PrefabAsset.cpp");
-    const auto importStart = prefabSource.find(
-        "PrefabImportResult ImportPrefabArtifact(\n    const std::string& sourceText,");
+    const auto optionsParameter = prefabSource.find("PrefabImportOptions options)");
+    ASSERT_NE(optionsParameter, std::string::npos);
+    const auto importStart = prefabSource.rfind("PrefabImportResult ImportPrefabArtifact(", optionsParameter);
     ASSERT_NE(importStart, std::string::npos);
     const auto importEnd = prefabSource.find("PrefabArtifactInstantiationResult InstantiatePrefabArtifact", importStart);
     ASSERT_NE(importEnd, std::string::npos);

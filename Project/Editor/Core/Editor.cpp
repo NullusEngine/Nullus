@@ -1,23 +1,35 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 #include <Debug/Logger.h>
+#include <Assets/ArtifactLoadTelemetry.h>
 #include <Jobs/BackgroundJobQueue.h>
 #include <Jobs/JobSystem.h>
+#include <Profiling/PerformanceStageStats.h>
 #include <Profiling/Profiler.h>
 #include <Profiling/TracyProfiler.h>
 #include <Reflection/ReflectionDiagnostics.h>
+#include <Rendering/Debug/DebugDrawService.h>
 #include <ServiceLocator.h>
 #include <imgui.h>
 
 #include "Core/Editor.h"
+#include "Core/EditorJobSystemPolicy.h"
 #include "UI/Settings/PanelWindowSettings.h"
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
@@ -56,8 +68,8 @@ namespace
 {
 NLS::Base::Profiling::TracyProfiler g_tracyProfiler;
 std::size_t g_publishedReflectionDiagnosticCount = 0;
-constexpr uint32_t kEditorJobSystemBackgroundWorkerCount = 2u;
 constexpr uint32_t kEditorMainThreadContinuationDrainBudget = 64u;
+constexpr auto kThumbnailTelemetrySummaryWriteInterval = std::chrono::seconds(2);
 
 enum class ValidationFocusTarget
 {
@@ -186,14 +198,458 @@ void PublishReflectionDiagnosticsToLog()
 
     g_publishedReflectionDiagnosticCount = diagnostics.size();
 }
+
+bool IsThumbnailLatencyStage(const NLS::Core::Assets::ArtifactLoadTelemetryStage stage)
+{
+    return std::string_view(NLS::Core::Assets::ArtifactLoadTelemetryStageName(stage))
+        .starts_with("Thumbnail");
+}
+
+std::string FormatTelemetryDurationMs(const std::chrono::microseconds elapsed)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3)
+        << (static_cast<double>(elapsed.count()) / 1000.0);
+    return stream.str();
+}
+
+std::string BuildThumbnailTelemetrySummaryReport()
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+    using NLS::Core::Assets::ArtifactLoadTelemetryStageName;
+
+    struct StageAggregate
+    {
+        ArtifactLoadTelemetryStage stage = ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender;
+        size_t recordCount = 0u;
+        size_t totalBytes = 0u;
+        std::chrono::microseconds totalElapsed {};
+        std::chrono::microseconds maxElapsed {};
+        std::string slowestPath;
+    };
+
+    const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    const auto summaries = NLS::Core::Assets::SummarizeArtifactLoadTelemetry();
+    auto allStageTotals = summaries;
+    std::sort(
+        allStageTotals.begin(),
+        allStageTotals.end(),
+        [](const auto& left, const auto& right)
+        {
+            return left.totalElapsed > right.totalElapsed;
+        });
+
+    std::unordered_map<uint8_t, StageAggregate> stageAggregates;
+    for (const auto& record : records)
+    {
+        if (!IsThumbnailLatencyStage(record.stage))
+            continue;
+
+        auto& aggregate = stageAggregates[static_cast<uint8_t>(record.stage)];
+        aggregate.stage = record.stage;
+        ++aggregate.recordCount;
+        aggregate.totalBytes += record.byteCount;
+        aggregate.totalElapsed += record.elapsed;
+        if (record.elapsed >= aggregate.maxElapsed)
+        {
+            aggregate.maxElapsed = record.elapsed;
+            aggregate.slowestPath = record.path;
+        }
+    }
+
+    std::vector<StageAggregate> stageTotals;
+    stageTotals.reserve(stageAggregates.size());
+    for (const auto& [_, aggregate] : stageAggregates)
+        stageTotals.push_back(aggregate);
+    std::sort(
+        stageTotals.begin(),
+        stageTotals.end(),
+        [](const StageAggregate& left, const StageAggregate& right)
+        {
+            return left.totalElapsed > right.totalElapsed;
+        });
+
+    std::vector<NLS::Core::Assets::ArtifactLoadTelemetryStageSummary> thumbnailBuckets;
+    thumbnailBuckets.reserve(summaries.size());
+    for (const auto& summary : summaries)
+    {
+        if (IsThumbnailLatencyStage(summary.stage))
+            thumbnailBuckets.push_back(summary);
+    }
+    std::sort(
+        thumbnailBuckets.begin(),
+        thumbnailBuckets.end(),
+        [](const auto& left, const auto& right)
+        {
+            return left.totalElapsed > right.totalElapsed;
+        });
+
+    const auto thumbnailDrawOutcomes =
+        NLS::Editor::Panels::SnapshotAssetBrowserThumbnailDrawOutcomeTelemetry();
+    auto thumbnailDrawOutcomePathTotals = thumbnailDrawOutcomes.pathTotals;
+    std::sort(
+        thumbnailDrawOutcomePathTotals.begin(),
+        thumbnailDrawOutcomePathTotals.end(),
+        [](const NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcomePathTotal& left,
+           const NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcomePathTotal& right)
+        {
+            if (left.count != right.count)
+                return left.count > right.count;
+            return left.path < right.path;
+        });
+
+    std::ostringstream report;
+    report << "Thumbnail telemetry summary\n";
+    report << "telemetryEnabled=" << (NLS::Core::Assets::IsArtifactLoadTelemetryEnabled() ? "true" : "false") << '\n';
+    report << "thumbnailRecordCount=";
+    size_t thumbnailRecordCount = 0u;
+    for (const auto& aggregate : stageTotals)
+        thumbnailRecordCount += aggregate.recordCount;
+    report << thumbnailRecordCount << '\n';
+    report << "stageBucketCount=" << thumbnailBuckets.size() << "\n\n";
+
+    report << "Thumbnail draw outcomes\n";
+    report << "- |draw=thumbnail records=" << thumbnailDrawOutcomes.thumbnailDrawCount << '\n';
+    report << "- |draw=fallback records=" << thumbnailDrawOutcomes.fallbackDrawCount << '\n';
+    report << "- |draw=type-fallback records=" << thumbnailDrawOutcomes.typeFallbackDrawCount << '\n';
+    report << "- droppedPathRecords=" << thumbnailDrawOutcomes.droppedPathCount << "\n\n";
+
+    report << "Thumbnail draw outcome paths\n";
+    const size_t maxDrawOutcomePaths = std::min<size_t>(thumbnailDrawOutcomePathTotals.size(), 32u);
+    for (size_t index = 0u; index < maxDrawOutcomePaths; ++index)
+    {
+        const auto& total = thumbnailDrawOutcomePathTotals[index];
+        report << "- " << total.path << " records=" << total.count << '\n';
+    }
+    report << '\n';
+
+    report << "Artifact stage totals (sorted by total elapsed)\n";
+    for (const auto& total : allStageTotals)
+    {
+        report
+            << "- " << ArtifactLoadTelemetryStageName(total.stage)
+            << " records=" << total.recordCount
+            << " totalMs=" << FormatTelemetryDurationMs(total.totalElapsed)
+            << " totalBytes=" << total.totalBytes
+            << '\n';
+    }
+    report << '\n';
+
+    if (stageTotals.empty())
+    {
+        report << "No thumbnail telemetry records were captured.\n";
+        report << "Browse Asset Browser thumbnails before closing the editor.\n";
+        return report.str();
+    }
+
+    report << "Stage totals (sorted by total elapsed)\n";
+    for (const auto& aggregate : stageTotals)
+    {
+        report
+            << "- " << ArtifactLoadTelemetryStageName(aggregate.stage)
+            << " records=" << aggregate.recordCount
+            << " totalMs=" << FormatTelemetryDurationMs(aggregate.totalElapsed)
+            << " avgMs=" << FormatTelemetryDurationMs(
+                aggregate.recordCount == 0u
+                    ? std::chrono::microseconds {}
+                    : std::chrono::microseconds(
+                        aggregate.totalElapsed.count() / static_cast<long long>(aggregate.recordCount)))
+            << " maxMs=" << FormatTelemetryDurationMs(aggregate.maxElapsed)
+            << " totalBytes=" << aggregate.totalBytes
+            << " slowestPath=" << aggregate.slowestPath
+            << '\n';
+    }
+
+    std::unordered_map<std::string, size_t> gpuPreviewQueueDecisionPathCounts;
+    for (const auto& record : records)
+    {
+        if (record.stage != ArtifactLoadTelemetryStage::ThumbnailServiceGpuPreviewQueueDecision)
+            continue;
+        ++gpuPreviewQueueDecisionPathCounts[record.path];
+    }
+    std::vector<std::pair<std::string, size_t>> gpuPreviewQueueDecisionPaths;
+    gpuPreviewQueueDecisionPaths.reserve(gpuPreviewQueueDecisionPathCounts.size());
+    for (const auto& [path, count] : gpuPreviewQueueDecisionPathCounts)
+        gpuPreviewQueueDecisionPaths.emplace_back(path, count);
+    std::sort(
+        gpuPreviewQueueDecisionPaths.begin(),
+        gpuPreviewQueueDecisionPaths.end(),
+        [](const auto& left, const auto& right)
+        {
+            if (left.second != right.second)
+                return left.second > right.second;
+            return left.first < right.first;
+        });
+
+    report << "\nGPU preview queue decisions\n";
+    const size_t maxGpuPreviewQueueDecisionPaths =
+        std::min<size_t>(gpuPreviewQueueDecisionPaths.size(), 32u);
+    for (size_t index = 0u; index < maxGpuPreviewQueueDecisionPaths; ++index)
+    {
+        const auto& [path, count] = gpuPreviewQueueDecisionPaths[index];
+        report << "- " << path << " records=" << count << '\n';
+    }
+
+    report << "\nTop buckets (stage + path)\n";
+    const size_t maxBuckets = std::min<size_t>(thumbnailBuckets.size(), 16u);
+    for (size_t index = 0u; index < maxBuckets; ++index)
+    {
+        const auto& bucket = thumbnailBuckets[index];
+        report
+            << "- " << ArtifactLoadTelemetryStageName(bucket.stage)
+            << " path=" << bucket.path
+            << " records=" << bucket.recordCount
+            << " totalMs=" << FormatTelemetryDurationMs(bucket.totalElapsed)
+            << " avgMs=" << FormatTelemetryDurationMs(
+                bucket.recordCount == 0u
+                    ? std::chrono::microseconds {}
+                    : std::chrono::microseconds(
+                        bucket.totalElapsed.count() / static_cast<long long>(bucket.recordCount)))
+            << " totalBytes=" << bucket.totalBytes
+            << '\n';
+    }
+    return report.str();
+}
+
+void WriteThumbnailTelemetrySummaryIfRequested(
+    const NLS::Editor::Core::Context& context,
+    const bool logSuccess = true)
+{
+    const auto& outputSetting = context.GetDiagnosticsSettings().editorThumbnailTelemetrySummaryOutput;
+    if (outputSetting.empty())
+        return;
+
+    auto outputPath = std::filesystem::path(outputSetting);
+    if (outputPath.is_relative())
+        outputPath = std::filesystem::path(context.projectPath) / outputPath;
+
+    std::error_code error;
+    if (!outputPath.parent_path().empty())
+        std::filesystem::create_directories(outputPath.parent_path(), error);
+
+    std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+    if (!output.is_open())
+    {
+        NLS_LOG_ERROR("Failed to open thumbnail telemetry summary output: " + outputPath.generic_string());
+        return;
+    }
+
+    output << BuildThumbnailTelemetrySummaryReport();
+    output.close();
+    if (logSuccess)
+        NLS_LOG_INFO("Wrote thumbnail telemetry summary: " + outputPath.generic_string());
+}
+
+std::string FormatValidationVector3(const NLS::Maths::Vector3& value)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3)
+        << value.x << ','
+        << value.y << ','
+        << value.z;
+    return stream.str();
+}
+
+std::string BuildPrefabDragProxyValidationSummaryReport(NLS::Editor::Panels::SceneView* sceneView = nullptr)
+{
+    const std::array<NLS::Maths::Vector3, 3u> placements = {
+        NLS::Maths::Vector3 { 0.0f, 0.0f, 0.0f },
+        NLS::Maths::Vector3 { 1.5f, 0.25f, -2.0f },
+        NLS::Maths::Vector3 { -0.75f, 1.0f, 3.25f }
+    };
+
+    NLS::Render::Debug::DebugDrawService debugDrawService;
+    debugDrawService.SetEnabled(false);
+    debugDrawService.SetCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::General, false);
+
+    bool proxyVisibleBeforeRoot = false;
+    bool debugDrawForcedVisible = false;
+    bool followedPlacement = true;
+    size_t visibleLineCount = 0u;
+    uint32_t submittedPrimitiveGroups = 0u;
+    std::chrono::microseconds totalSubmitTime {};
+    std::vector<NLS::Maths::Vector3> reportedPlacements;
+    reportedPlacements.reserve(placements.size());
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Editor::Panels::SceneView::PrefabDragProxySceneViewLoopValidation sceneViewLoopValidation;
+    if (sceneView != nullptr)
+    {
+        const NLS::Editor::Assets::EditorAssetDragPayload validationPayload {};
+        sceneViewLoopValidation = sceneView->ValidatePrefabDragProxySceneViewLoopForTesting(
+            validationPayload,
+            std::vector<NLS::Maths::Vector3>(placements.begin(), placements.end()));
+    }
+#endif
+
+    for (const auto& placement : placements)
+    {
+        const auto begin = std::chrono::steady_clock::now();
+        const auto descriptor = NLS::Editor::Panels::BuildSceneViewPrefabDragProxyDescriptor(
+            std::optional<NLS::Maths::Vector3> { placement },
+            true,
+            nullptr);
+        totalSubmitTime += std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - begin);
+
+        if (!descriptor.has_value())
+        {
+            followedPlacement = false;
+            continue;
+        }
+
+        proxyVisibleBeforeRoot = true;
+        followedPlacement = followedPlacement &&
+            descriptor->position.x == placement.x &&
+            descriptor->position.y == placement.y &&
+            descriptor->position.z == placement.z;
+        reportedPlacements.push_back(descriptor->position);
+
+        const auto submitBegin = std::chrono::steady_clock::now();
+        submittedPrimitiveGroups += NLS::Editor::Rendering::SubmitPrefabDragProxyDebugPrimitives(
+            debugDrawService,
+            *descriptor);
+        debugDrawForcedVisible = debugDrawForcedVisible ||
+            (debugDrawService.IsEnabled() &&
+                debugDrawService.IsCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::General));
+        totalSubmitTime += std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - submitBegin);
+
+        visibleLineCount += debugDrawService.CollectVisibleLines().size();
+        debugDrawService.Clear();
+        debugDrawService.SetEnabled(false);
+        debugDrawService.SetCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::General, false);
+    }
+
+    std::ostringstream report;
+    report << "Prefab drag proxy validation summary\n";
+    report << (proxyVisibleBeforeRoot ? "proxyVisibleBeforeRoot=true\n" : "proxyVisibleBeforeRoot=false\n");
+    report << (followedPlacement ? "followedPlacement=true\n" : "followedPlacement=false\n");
+    report << "samplePlacementCount=" << placements.size() << '\n';
+    report << "reportedPlacementCount=" << reportedPlacements.size() << '\n';
+    report << "visibleLineCount=" << visibleLineCount << '\n';
+    report << "submittedPrimitiveGroups=" << submittedPrimitiveGroups << '\n';
+    report << "debugDrawForcedVisible=" << (debugDrawForcedVisible ? "true" : "false") << '\n';
+    report << "sceneRootCreatedByProxy=false\n";
+    report << "prefabArtifactLoadRequested=false\n";
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    report << (sceneViewLoopValidation.dragLoopExercised
+        ? "sceneViewDragLoopExercised=true\n"
+        : "sceneViewDragLoopExercised=false\n");
+    report << (sceneViewLoopValidation.payloadAcceptedBeforeDelivery
+        ? "sceneViewDragLoopPayloadAcceptedBeforeDelivery=true\n"
+        : "sceneViewDragLoopPayloadAcceptedBeforeDelivery=false\n");
+    report << (sceneViewLoopValidation.followedPlacement
+        ? "sceneViewDragLoopFollowedPlacement=true\n"
+        : "sceneViewDragLoopFollowedPlacement=false\n");
+    report << (sceneViewLoopValidation.sceneRootCreatedByProxy
+        ? "sceneViewDragLoopSceneRootCreated=true\n"
+        : "sceneViewDragLoopSceneRootCreated=false\n");
+    report << "sceneViewDragLoopProxyDescriptorCount="
+        << sceneViewLoopValidation.descriptorPlacements.size() << '\n';
+#else
+    report << "sceneViewDragLoopExercised=false\n";
+    report << "sceneViewDragLoopPayloadAcceptedBeforeDelivery=false\n";
+    report << "sceneViewDragLoopFollowedPlacement=false\n";
+    report << "sceneViewDragLoopSceneRootCreated=false\n";
+    report << "sceneViewDragLoopProxyDescriptorCount=0\n";
+#endif
+    report << "totalProxySubmitMicros=" << totalSubmitTime.count() << '\n';
+    for (size_t index = 0u; index < reportedPlacements.size(); ++index)
+    {
+        report << "placement" << index << '=' << FormatValidationVector3(reportedPlacements[index]) << '\n';
+    }
+    return report.str();
+}
+
+void WritePrefabDragProxyValidationSummaryIfRequested(
+    const NLS::Editor::Core::Context& context,
+    NLS::Editor::Panels::SceneView* sceneView,
+    const bool logSuccess = true)
+{
+    const auto& outputSetting = context.GetDiagnosticsSettings().editorValidationPrefabDragProxySummaryOutput;
+    if (outputSetting.empty())
+        return;
+
+    auto outputPath = std::filesystem::path(outputSetting);
+    if (outputPath.is_relative())
+        outputPath = std::filesystem::path(context.projectPath) / outputPath;
+
+    std::error_code error;
+    if (!outputPath.parent_path().empty())
+        std::filesystem::create_directories(outputPath.parent_path(), error);
+
+    std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+    if (!output.is_open())
+    {
+        NLS_LOG_ERROR("Failed to open prefab drag proxy validation summary output: " + outputPath.generic_string());
+        return;
+    }
+
+    output << BuildPrefabDragProxyValidationSummaryReport(sceneView);
+    output.close();
+    if (logSuccess)
+        NLS_LOG_INFO("Wrote prefab drag proxy validation summary: " + outputPath.generic_string());
+}
+}
+
+Editor::Core::EditorJobWorkerBudget Editor::Core::ResolveEditorJobWorkerBudget(
+    const uint32_t hardwareConcurrency,
+    const std::optional<uint32_t> backgroundWorkerOverride)
+{
+    constexpr uint32_t kFallbackHardwareConcurrency = 4u;
+    constexpr uint32_t kMaximumBackgroundWorkerCount = 16u;
+    const uint32_t availableConcurrency = hardwareConcurrency == 0u
+        ? kFallbackHardwareConcurrency
+        : hardwareConcurrency;
+    constexpr uint32_t kReservedEditorExecutionLanes = 3u;
+    const uint32_t totalWorkerBudget = std::min(
+        std::max(
+            2u,
+            availableConcurrency > kReservedEditorExecutionLanes
+                ? availableConcurrency - kReservedEditorExecutionLanes
+                : 2u),
+        31u);
+    const uint32_t automaticBackgroundWorkerCount = totalWorkerBudget >= 15u
+        ? std::min(kMaximumBackgroundWorkerCount, totalWorkerBudget - 1u)
+        : std::max(1u, totalWorkerBudget * 3u / 4u);
+    const uint32_t backgroundWorkerCount = backgroundWorkerOverride.has_value()
+        ? std::clamp(*backgroundWorkerOverride, 1u, std::min(kMaximumBackgroundWorkerCount, totalWorkerBudget - 1u))
+        : automaticBackgroundWorkerCount;
+    return {
+        totalWorkerBudget - backgroundWorkerCount,
+        backgroundWorkerCount};
 }
 
 Editor::Core::Editor::JobSystemLifetime::JobSystemLifetime()
 {
+    std::optional<uint32_t> backgroundWorkerOverride;
+    if (const char* value = std::getenv("NLS_EDITOR_BACKGROUND_WORKERS"))
+    {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (end != value && *end == '\0' && parsed <= std::numeric_limits<uint32_t>::max())
+            backgroundWorkerOverride = static_cast<uint32_t>(parsed);
+    }
+    const auto workerBudget = ResolveEditorJobWorkerBudget(
+        std::thread::hardware_concurrency(),
+        backgroundWorkerOverride);
     NLS::Base::Jobs::JobSystemConfig config;
-    config.workerCount = NLS::Base::Jobs::kAutoJobWorkerCount;
-    config.backgroundWorkerCount = kEditorJobSystemBackgroundWorkerCount;
+    config.workerCount = workerBudget.foregroundWorkerCount;
+    config.backgroundWorkerCount = workerBudget.backgroundWorkerCount;
     ownsJobSystem = NLS::Base::Jobs::TryInitializeJobSystem(config);
+    NLS_LOG_INFO(
+        "Editor job system foregroundWorkers=" +
+        std::to_string(NLS::Base::Jobs::GetJobWorkerCount()) +
+        " backgroundWorkers=" +
+        std::to_string(NLS::Base::Jobs::GetBackgroundJobWorkerCount()) +
+        " requestedForegroundWorkers=" +
+        std::to_string(config.workerCount) +
+        " requestedBackgroundWorkers=" +
+        std::to_string(config.backgroundWorkerCount) +
+        " hardwareConcurrency=" +
+        std::to_string(std::thread::hardware_concurrency()) +
+        " ownsJobSystem=" +
+        (ownsJobSystem ? "true" : "false"));
 }
 
 Editor::Core::Editor::JobSystemLifetime::~JobSystemLifetime()
@@ -214,7 +670,16 @@ Editor::Core::Editor::Editor(Context& p_context)
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Editor>(*this);
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Shortcuts::EditorShortcutService>(m_shortcutService);
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
-	
+
+    if (!m_context.GetDiagnosticsSettings().editorThumbnailTelemetrySummaryOutput.empty())
+    {
+        NLS::Core::Assets::SetArtifactLoadTelemetryEnabled(true);
+        NLS::Core::Assets::ClearArtifactLoadTelemetry();
+        NLS_LOG_INFO(
+            "Thumbnail telemetry summary export enabled: " +
+            m_context.GetDiagnosticsSettings().editorThumbnailTelemetrySummaryOutput);
+    }
+
     m_context.PresentStartupProgressFrame("Preparing editor panels", 0.55f);
     NLS_LOG_INFO("[Startup] SetupUI begin");
     SetupUI();
@@ -266,6 +731,7 @@ Editor::Core::Editor::~Editor()
     NLS::Base::Profiling::Profiler::UnregisterDestination(
         m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").GetTimelineSink());
     m_editorActions.PromptSaveCurrentSceneIfDirty();
+    WriteThumbnailTelemetrySummaryIfRequested(m_context);
     m_panelsManager.DestroyPanels();
     m_context.sceneManager.CurrentSceneSourcePathChangedEvent -= m_sceneSourcePathChangedListener;
     m_context.sceneManager.UnloadCurrentScene();
@@ -273,6 +739,19 @@ Editor::Core::Editor::~Editor()
 
 void Editor::Core::Editor::SetupUI()
 {
+    const auto setupUiBegin = std::chrono::steady_clock::now();
+    auto logSetupStep =
+        [last = setupUiBegin](const char* step) mutable
+        {
+            const auto now = std::chrono::steady_clock::now();
+            NLS_LOG_INFO(
+                std::string("[Startup] SetupUI step ") +
+                step +
+                " elapsedMs=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count()));
+            last = now;
+        };
+
     NLS::UI::PanelWindowSettings settings;
     settings.closable = true;
     settings.collapsable = true;
@@ -281,22 +760,37 @@ void Editor::Core::Editor::SetupUI()
     frameInfoSettings.autoSize = true;
 
     m_panelsManager.CreatePanel<Panels::EditorTopBar>("Editor Top Bar");
+    logSetupStep("EditorTopBar");
     m_panelsManager.CreatePanel<Panels::EditorStatusBar>("Editor Status Bar");
+    logSetupStep("EditorStatusBar");
     m_panelsManager.CreatePanel<Panels::AssetBrowser>("Asset Browser", true, settings, m_context.engineAssetsPath, m_context.projectAssetsPath);
+    logSetupStep("AssetBrowser");
     m_panelsManager.CreatePanel<Panels::ProfilerPanel>("Profiler", false, settings);
+    logSetupStep("Profiler");
     auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
     NLS::Base::Profiling::Profiler::RegisterDestination(profilerPanel.GetTimelineSink());
+    logSetupStep("RegisterProfiler");
     m_panelsManager.CreatePanel<Panels::Console>("Console", false, settings);
+    logSetupStep("Console");
     m_panelsManager.CreatePanel<Panels::AssetView>("Asset View", false, settings);
+    logSetupStep("AssetView");
     m_panelsManager.CreatePanel<Panels::Hierarchy>("Hierarchy", true, settings);
+    logSetupStep("Hierarchy");
     m_panelsManager.CreatePanel<Panels::Inspector>("Inspector", true, settings);
+    logSetupStep("Inspector");
     m_panelsManager.CreatePanel<Panels::SceneView>("Scene View", true, settings);
-    m_panelsManager.CreatePanel<Panels::GameView>("Game View", true, settings);
+    logSetupStep("SceneView");
+    m_panelsManager.CreatePanel<Panels::GameView>("Game View", false, settings);
+    logSetupStep("GameView");
     m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, frameInfoSettings);
+    logSetupStep("FrameInfo");
     m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor", false, settings);
+    logSetupStep("MaterialEditor");
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
+    logSetupStep("ProjectSettings");
     m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings").enabled = false;
     m_panelsManager.CreatePanel<Panels::AssetProperties>("Asset Properties", false, settings);
+    logSetupStep("AssetProperties");
     auto& topBar = m_panelsManager.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar");
     topBar.RegisterProjectSettingsPanel(m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings"));
     topBar.RegisterWindowPanel("Asset Browser", m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser"));
@@ -310,11 +804,18 @@ void Editor::Core::Editor::SetupUI()
     topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
     topBar.RegisterWindowPanel("Material Editor", m_panelsManager.GetPanelAs<Panels::MaterialEditor>("Material Editor"));
     topBar.RegisterWindowPanel("Asset Properties", m_panelsManager.GetPanelAs<Panels::AssetProperties>("Asset Properties"));
+    logSetupStep("RegisterWindows");
     // Needs to be called after all panels got created, because some settings in this menu depend on other panels
     topBar.InitializeSettingsMenu();
+    logSetupStep("InitializeSettingsMenu");
     m_canvas.MakeDockspace(true);
+    logSetupStep("MakeDockspace");
     m_context.uiManager->SetCanvas(m_canvas);
+    logSetupStep("SetCanvas");
     m_context.uiManager->ResetLayout(m_context.projectPath + "/UserSettings/layout.ini");
+    logSetupStep("ResetLayout");
+    m_panelsManager.GetPanelAs<Panels::GameView>("Game View").SetOpened(false);
+    logSetupStep("CloseGameViewForStartup");
 }
 
 void Editor::Core::Editor::PreUpdate()
@@ -382,14 +883,55 @@ void Editor::Core::Editor::UpdateValidationTimelineTraceExport()
             m_validationTracePath.string() +
             " exportedFrames=" +
             std::to_string(timelineSink.GetTraceExportedFrameCount()));
+        WriteThumbnailTelemetrySummaryIfRequested(m_context, false);
         if (m_context.window != nullptr)
             m_context.window->SetShouldClose(true);
     }
 }
 
+void Editor::Core::Editor::UpdateThumbnailTelemetrySummaryExport()
+{
+    if (m_context.GetDiagnosticsSettings().editorThumbnailTelemetrySummaryOutput.empty())
+        return;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_lastThumbnailTelemetrySummaryWriteTime.time_since_epoch().count() != 0 &&
+        now - m_lastThumbnailTelemetrySummaryWriteTime < kThumbnailTelemetrySummaryWriteInterval)
+    {
+        return;
+    }
+
+    if (!m_thumbnailTelemetrySummaryWriteAttemptLogged)
+    {
+        NLS_LOG_INFO("Thumbnail telemetry summary export tick reached.");
+        m_thumbnailTelemetrySummaryWriteAttemptLogged = true;
+    }
+
+    WriteThumbnailTelemetrySummaryIfRequested(m_context, false);
+    m_lastThumbnailTelemetrySummaryWriteTime = now;
+}
+
 void Editor::Core::Editor::Update(float p_deltaTime)
 {
     NLS_PROFILE_SCOPE();
+
+    const bool logUpdateStages = m_logNextUpdateStages;
+    m_logNextUpdateStages = false;
+    auto updateStageBegin = std::chrono::steady_clock::now();
+    auto logUpdateStage =
+        [&updateStageBegin, logUpdateStages](const char* stage)
+        {
+            if (!logUpdateStages)
+                return;
+
+            const auto now = std::chrono::steady_clock::now();
+            NLS_LOG_INFO(
+                std::string("[Startup] FirstEditorUpdate stage ") +
+                stage +
+                " elapsedMs=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - updateStageBegin).count()));
+            updateStageBegin = now;
+        };
 
     m_currentDeltaTime = p_deltaTime;
     if (p_deltaTime > std::numeric_limits<float>::epsilon())
@@ -407,36 +949,53 @@ void Editor::Core::Editor::Update(float p_deltaTime)
             m_frameRateSampleCount = 0;
         }
     }
+    logUpdateStage("FrameRate");
+
+    UpdateThumbnailTelemetrySummaryExport();
+    logUpdateStage("UpdateThumbnailTelemetrySummaryExport");
 
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::HandleGlobalShortcuts");
         HandleGlobalShortcuts();
     }
+    logUpdateStage("HandleGlobalShortcuts");
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UpdateCurrentEditorMode");
         UpdateCurrentEditorMode(p_deltaTime);
     }
+    logUpdateStage("UpdateCurrentEditorMode");
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UpdateViews");
         UpdateViews(p_deltaTime);
     }
+    logUpdateStage("UpdateViews");
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UpdateEditorPanels");
         UpdateEditorPanels(p_deltaTime);
     }
+    logUpdateStage("UpdateEditorPanels");
     RenderEditorUI(p_deltaTime);
+    logUpdateStage("RenderEditorUI");
     {
         NLS_PROFILE_NAMED_SCOPE("EditorActions::ExecuteDelayedActions");
         m_editorActions.ExecuteDelayedActions();
     }
+    logUpdateStage("ExecuteDelayedActions");
     {
         NLS_PROFILE_NAMED_SCOPE("JobSystem::DrainMainThreadContinuations");
         NLS::Base::Jobs::DrainMainThreadContinuations(kEditorMainThreadContinuationDrainBudget);
     }
+    logUpdateStage("DrainMainThreadContinuations");
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::PublishReflectionDiagnosticsToLog");
         PublishReflectionDiagnosticsToLog();
     }
+    logUpdateStage("PublishReflectionDiagnosticsToLog");
+}
+
+void Editor::Core::Editor::LogNextUpdateStages()
+{
+    m_logNextUpdateStages = true;
 }
 
 void Editor::Core::Editor::RefreshProfilerRecordingState()
@@ -451,6 +1010,12 @@ void Editor::Core::Editor::RefreshProfilerRecordingState()
 bool Editor::Core::Editor::IsProfilerRecordingEnabled()
 {
     return m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").IsRecordingEnabled();
+}
+
+void Editor::Core::Editor::DeferStartupSceneViewRenderForNextFrame()
+{
+    auto& sceneView = m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View");
+    sceneView.RequestSkipNextRenderFrame();
 }
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
@@ -744,16 +1309,68 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
 
 void Editor::Core::Editor::RestoreStartupScene()
 {
+    const auto restoreStartupSceneBegin = std::chrono::steady_clock::now();
     const auto restoreLoadedScenePrefabs = [this]()
     {
+        const auto prefabRestoreBegin = std::chrono::steady_clock::now();
+        NLS_LOG_INFO("[Startup] RestoreStartupScene prefab restore begin");
         m_context.PresentStartupProgressFrame("Restoring startup scene prefab instances", 0.87f);
         const bool prefabRestoreSucceeded = m_editorActions.RestorePrefabInstancesForCurrentSceneFromDisk();
+        NLS_LOG_INFO(
+            "[Startup] RestoreStartupScene prefab restore end elapsedMs=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - prefabRestoreBegin).count()));
         m_context.PresentStartupProgressFrame(
             prefabRestoreSucceeded ? "Startup scene loaded" : "Startup scene loaded with prefab restore warnings",
             0.89f);
     };
+    const auto loadSceneWithStartupTelemetry = [this](const std::filesystem::path& resolvedPath) -> bool
+    {
+        const auto loadSceneBegin = std::chrono::steady_clock::now();
+        NLS_LOG_INFO("[Startup] RestoreStartupScene LoadScene begin: " + resolvedPath.string());
 
-    const auto loadRememberedScene = [this, &restoreLoadedScenePrefabs](const std::string& scenePath) -> bool
+        NLS::Base::Profiling::PerformanceStageStats sceneLoadStageStats;
+        bool sceneLoaded = false;
+        {
+            NLS::Base::Profiling::PerformanceStageStatsCapture capture(sceneLoadStageStats);
+            sceneLoaded = m_context.sceneManager.LoadScene(
+                resolvedPath.string(),
+                true,
+                [this](const Engine::SceneSystem::SceneLoadProgress& progress)
+                {
+                    const float startupProgress = 0.65f + progress.normalizedProgress * 0.22f;
+                    m_context.PresentStartupProgressFrame(progress.message, startupProgress);
+                });
+        }
+
+        for (const auto& stage : sceneLoadStageStats.TopBottlenecks(
+            NLS::Base::Profiling::PerformanceStageDomain::Unknown,
+            12u))
+        {
+            if (stage.stageName.rfind("SceneLoad.", 0u) != 0u)
+                continue;
+
+            NLS_LOG_INFO(
+                "[Startup] RestoreStartupScene scene load stage " +
+                stage.stageName +
+                " totalMs=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(stage.totalDuration).count()) +
+                " calls=" +
+                std::to_string(stage.callCount));
+        }
+
+        if (!sceneLoaded)
+            return false;
+
+        NLS_LOG_INFO(
+            "[Startup] RestoreStartupScene LoadScene end elapsedMs=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - loadSceneBegin).count()));
+        return true;
+    };
+
+    const auto loadRememberedScene =
+        [this, &loadSceneWithStartupTelemetry, &restoreLoadedScenePrefabs, &restoreStartupSceneBegin](const std::string& scenePath) -> bool
     {
         if (scenePath.empty() || scenePath == "NULL")
             return false;
@@ -766,19 +1383,14 @@ void Editor::Core::Editor::RestoreStartupScene()
         if (!std::filesystem::exists(resolvedPath))
             return false;
 
-        if (!m_context.sceneManager.LoadScene(
-            resolvedPath.string(),
-            true,
-            [this](const Engine::SceneSystem::SceneLoadProgress& progress)
-            {
-                const float startupProgress = 0.65f + progress.normalizedProgress * 0.22f;
-                m_context.PresentStartupProgressFrame(progress.message, startupProgress);
-            }))
-        {
+        if (!loadSceneWithStartupTelemetry(resolvedPath))
             return false;
-        }
 
         restoreLoadedScenePrefabs();
+        NLS_LOG_INFO(
+            "[Startup] RestoreStartupScene total elapsedMs=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - restoreStartupSceneBegin).count()));
         return true;
     };
 
@@ -790,16 +1402,13 @@ void Editor::Core::Editor::RestoreStartupScene()
     const auto startScenePath = m_context.projectAssetsPath + startScene;
     if (!startScene.empty() && startScene != "NULL" && std::filesystem::exists(startScenePath))
     {
-        if (m_context.sceneManager.LoadScene(
-            startScenePath,
-            true,
-            [this](const Engine::SceneSystem::SceneLoadProgress& progress)
-            {
-                const float startupProgress = 0.65f + progress.normalizedProgress * 0.22f;
-                m_context.PresentStartupProgressFrame(progress.message, startupProgress);
-            }))
+        if (loadSceneWithStartupTelemetry(startScenePath))
         {
             restoreLoadedScenePrefabs();
+            NLS_LOG_INFO(
+                "[Startup] RestoreStartupScene total elapsedMs=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - restoreStartupSceneBegin).count()));
             return;
         }
     }
@@ -828,13 +1437,13 @@ void Editor::Core::Editor::AdoptStartupAssetWatchers(
         std::move(projectAssetsWatcher));
 }
 
-bool Editor::Core::Editor::RunStartupWatcherPreimport(
+NLS::Editor::Assets::StartupWatcherPreimportResult Editor::Core::Editor::RunStartupWatcherPreimport(
     const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink)
 {
     return m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").RunStartupWatcherPreimport(progressSink);
 }
 
-bool Editor::Core::Editor::CompleteStartupWatcherPreimportGate(
+NLS::Editor::Assets::StartupWatcherPreimportResult Editor::Core::Editor::CompleteStartupWatcherPreimportGate(
     const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink)
 {
     return m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").CompleteStartupWatcherPreimportGate(progressSink);
@@ -870,9 +1479,10 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
 {
     const auto& diagnostics = m_context.GetDiagnosticsSettings();
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
-    auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
-    auto& frameInfo = m_panelsManager.GetPanelAs<NLS::Editor::Panels::FrameInfo>("Frame Info");
-    auto& profilerPanel = m_panelsManager.GetPanelAs<NLS::Editor::Panels::ProfilerPanel>("Profiler");
+	    auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
+	    auto& frameInfo = m_panelsManager.GetPanelAs<NLS::Editor::Panels::FrameInfo>("Frame Info");
+	    auto& profilerPanel = m_panelsManager.GetPanelAs<NLS::Editor::Panels::ProfilerPanel>("Profiler");
+	    auto& assetBrowser = m_panelsManager.GetPanelAs<NLS::Editor::Panels::AssetBrowser>("Asset Browser");
 
     switch (ResolveValidationFocusTarget(diagnostics.editorValidationExclusiveView))
     {
@@ -918,14 +1528,22 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
         NLS_LOG_INFO("Editor validation opened Profiler.");
     }
 
-    if (diagnostics.editorValidationDisableHZBOcclusion)
-        NLS_LOG_INFO("Editor validation requested HZB occlusion disable override.");
+	    if (diagnostics.editorValidationDisableHZBOcclusion)
+	        NLS_LOG_INFO("Editor validation requested HZB occlusion disable override.");
 
-    if (diagnostics.editorValidationOcclusionStackCount != 0u)
+	    if (!diagnostics.editorValidationAssetBrowserFolder.empty())
+	    {
+	        assetBrowser.SelectProjectFolderForValidation(diagnostics.editorValidationAssetBrowserFolder);
+	        NLS_LOG_INFO("Editor validation selected Asset Browser folder: " + diagnostics.editorValidationAssetBrowserFolder);
+	    }
+
+	    if (diagnostics.editorValidationOcclusionStackCount != 0u)
     {
         if (auto* camera = sceneView.GetCamera(); camera != nullptr)
             CreateValidationOcclusionStack(m_editorActions, *camera, diagnostics.editorValidationOcclusionStackCount);
     }
+
+    WritePrefabDragProxyValidationSummaryIfRequested(m_context, &sceneView);
 
     if (!diagnostics.editorValidationCreateAsset.empty())
     {

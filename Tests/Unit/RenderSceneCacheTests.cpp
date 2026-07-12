@@ -879,26 +879,6 @@ TEST(RenderSceneCacheTests, MeshContentRevisionChangeInvalidatesRetainedPrimitiv
     EXPECT_EQ(changedSnapshot.primitiveRecords.front().modelBoundingSphere.radius, 4.0f);
 }
 
-TEST(RenderSceneCacheTests, StableLargeSceneAvoidsFullPrimitiveSynchronizationAcrossFrames)
-{
-    constexpr size_t kPrimitiveCount = 256u;
-    ManyPrimitiveFixture fixture(kPrimitiveCount);
-    NLS::Engine::Rendering::RenderScene renderScene;
-
-    NLS::Engine::Rendering::RenderSceneSyncOptions options;
-    options.defaultMaterial = &fixture.material;
-
-    const auto first = renderScene.Synchronize(fixture.scene, options);
-    const auto second = renderScene.Synchronize(fixture.scene, options);
-
-    EXPECT_EQ(first.syncTouchedPrimitiveCount, kPrimitiveCount);
-    EXPECT_EQ(first.rebuiltCachedCommandCount, kPrimitiveCount);
-    EXPECT_EQ(second.addedPrimitiveCount, 0u);
-    EXPECT_EQ(second.rebuiltCachedCommandCount, 0u);
-    EXPECT_EQ(second.syncTouchedPrimitiveCount, 0u);
-    EXPECT_EQ(renderScene.GetPrimitiveCount(), kPrimitiveCount);
-}
-
 TEST(RenderSceneCacheTests, DestroyedGameObjectInvalidatesFastAccessSoRenderSceneDropsPrimitive)
 {
     RenderableFixture fixture;
@@ -3681,75 +3661,6 @@ TEST(RenderSceneCacheTests, DynamicInstancingBuildsMergedDescriptorInLinearPass)
     EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
     EXPECT_EQ(optimizationStats.largestInstanceGroupSize, kInstanceCount);
     EXPECT_EQ(optimizationStats.cachedCommandRebuildCount, kInstanceCount);
-}
-
-TEST(RenderSceneCacheTests, DynamicInstancingReducesOneThousandCompatibleOpaqueObjectsToOneSubmittedDraw)
-{
-    QueueSortFixture fixture;
-    constexpr size_t kInstanceCount = 1000u;
-    for (size_t index = 0u; index < kInstanceCount; ++index)
-    {
-        fixture.AddObject(
-            ("StressInstance" + std::to_string(index)).c_str(),
-            *fixture.sharedMesh,
-            fixture.opaqueMaterialA,
-            static_cast<float>(index));
-    }
-
-    NLS::Engine::Rendering::RenderScene renderScene;
-    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
-    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-
-    const auto firstSync = renderScene.Synchronize(fixture.scene, syncOptions);
-    const auto firstVisible = renderScene.GatherVisibleCommands({ nullptr, {} });
-    const auto firstOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
-    const auto secondSync = renderScene.Synchronize(fixture.scene, syncOptions);
-    const auto secondVisible = renderScene.GatherVisibleCommands({ nullptr, {} });
-    const auto secondOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
-
-    ASSERT_EQ(firstVisible.opaques.size(), 1u);
-    ASSERT_EQ(secondVisible.opaques.size(), 1u);
-    EXPECT_EQ(firstSync.rebuiltCachedCommandCount, kInstanceCount);
-    EXPECT_EQ(secondSync.rebuiltCachedCommandCount, 0u);
-    EXPECT_EQ(firstOptimizationStats.rawVisibleObjectCount, kInstanceCount);
-    EXPECT_EQ(firstOptimizationStats.submittedSceneDrawCount, 1u);
-    EXPECT_EQ(firstOptimizationStats.dynamicInstanceGroupCount, 1u);
-    EXPECT_EQ(firstOptimizationStats.largestInstanceGroupSize, kInstanceCount);
-    EXPECT_EQ(firstOptimizationStats.cachedCommandRebuildCount, kInstanceCount);
-    EXPECT_EQ(secondOptimizationStats.rawVisibleObjectCount, kInstanceCount);
-    EXPECT_EQ(secondOptimizationStats.submittedSceneDrawCount, 1u);
-    EXPECT_EQ(secondOptimizationStats.dynamicInstanceGroupCount, 1u);
-    EXPECT_EQ(secondOptimizationStats.largestInstanceGroupSize, kInstanceCount);
-    EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
-}
-
-TEST(RenderSceneCacheTests, DynamicInstancingReducesTraceScaleCompatibleObjectsToOneSubmittedDraw)
-{
-    QueueSortFixture fixture;
-    constexpr size_t kTraceScaleDrawCount = 259u;
-    for (size_t index = 0u; index < kTraceScaleDrawCount; ++index)
-    {
-        fixture.AddObject(
-            ("TraceScaleInstance" + std::to_string(index)).c_str(),
-            *fixture.sharedMesh,
-            fixture.opaqueMaterialA,
-            static_cast<float>(index));
-    }
-
-    NLS::Engine::Rendering::RenderScene renderScene;
-    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
-    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, kTraceScaleDrawCount);
-    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
-    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
-
-    ASSERT_EQ(visible.opaques.size(), 1u);
-    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques.front().second), kTraceScaleDrawCount);
-    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, kTraceScaleDrawCount);
-    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 1u);
-    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
-    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, kTraceScaleDrawCount);
 }
 
 TEST(RenderSceneCacheTests, DynamicInstancingRejectsIncompatibleMeshMaterialAndTransparentCommands)

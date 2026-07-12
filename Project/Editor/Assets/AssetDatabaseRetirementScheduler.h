@@ -6,11 +6,17 @@
 
 namespace NLS::Editor::Assets
 {
-// Returns an exceptional completion future when scheduling is rejected. The
-// worker owns the normal workerRunning=false transition while draining state.
+using AssetDatabaseRetirementSchedule = std::function<bool(
+    std::function<void()> run,
+    std::function<void()> cancel)>;
+
+// Every accepted, rejected, failed, or cancelled attempt completes the returned
+// future and releases workerRunning so a later retirement can be scheduled.
+// hasPendingWork is called with mutex held and must not lock it recursively.
 std::future<void> ScheduleAssetDatabaseRetirementWorker(
     std::mutex& mutex,
     bool& workerRunning,
-    std::function<void(std::function<void()>)> schedule,
-    std::function<void()> worker);
+    AssetDatabaseRetirementSchedule schedule,
+    std::function<void()> worker,
+    std::function<bool()> hasPendingWork = {});
 }

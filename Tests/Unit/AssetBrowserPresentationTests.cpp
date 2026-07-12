@@ -2202,8 +2202,10 @@ TEST(AssetBrowserPresentationTests, AssetDatabaseRefreshResultsRetireOffTheUiThr
     EXPECT_NE(schedulerBody.find("pendingFutures.swap(retiredFutures)"), std::string::npos);
     EXPECT_NE(schedulerBody.find("result = future.get()"), std::string::npos)
         << "Only the retirement worker may wait for unfinished refresh results.";
-    EXPECT_NE(schedulerBody.find("workerRunning = false"), std::string::npos)
-        << "Scheduling rejection must retain queued ownership for a later enqueue event.";
+    EXPECT_EQ(schedulerBody.find("workerRunning = false"), std::string::npos)
+        << "The scheduler terminal state must exclusively own the running flag.";
+    EXPECT_NE(schedulerBody.find("pending.empty()"), std::string::npos)
+        << "The terminal idle check must keep draining work queued during an active batch.";
 
     const auto pumpBody = ExtractFunctionBody(
         source,
@@ -2239,7 +2241,7 @@ TEST(AssetBrowserPresentationTests, AssetDatabaseRetirementSchedulingRejectionRe
     auto completion = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
         mutex,
         workerRunning,
-        [](std::function<void()>)
+        [](std::function<void()>, std::function<void()>) -> bool
         {
             throw std::runtime_error("forced retirement scheduling rejection");
         },
@@ -2253,6 +2255,166 @@ TEST(AssetBrowserPresentationTests, AssetDatabaseRetirementSchedulingRejectionRe
     EXPECT_THROW(completion.get(), std::runtime_error);
     EXPECT_FALSE(workerRunning);
     EXPECT_FALSE(workerCalled);
+}
+
+TEST(AssetBrowserPresentationTests, AssetDatabaseRetirementExplicitRejectionCompletesFailureAndAllowsRetry)
+{
+    std::mutex mutex;
+    bool workerRunning = false;
+    bool workerCalled = false;
+
+    auto rejected = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [](std::function<void()>, std::function<void()>)
+        {
+            return false;
+        },
+        [&workerCalled]
+        {
+            workerCalled = true;
+        });
+
+    ASSERT_TRUE(rejected.valid());
+    EXPECT_EQ(rejected.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    EXPECT_THROW(rejected.get(), std::runtime_error);
+    EXPECT_FALSE(workerRunning);
+    EXPECT_FALSE(workerCalled);
+
+    auto retry = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [](std::function<void()> run, std::function<void()>)
+        {
+            run();
+            return true;
+        },
+        [&workerCalled]
+        {
+            workerCalled = true;
+        });
+    ASSERT_TRUE(retry.valid());
+    EXPECT_NO_THROW(retry.get());
+    EXPECT_FALSE(workerRunning);
+    EXPECT_TRUE(workerCalled);
+}
+
+TEST(AssetBrowserPresentationTests, AssetDatabaseRetirementWorkerFailureCompletesFailureAndAllowsRetry)
+{
+    std::mutex mutex;
+    bool workerRunning = false;
+
+    auto failed = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [](std::function<void()> run, std::function<void()>)
+        {
+            run();
+            return true;
+        },
+        []
+        {
+            throw std::runtime_error("forced retirement worker failure");
+        });
+    ASSERT_TRUE(failed.valid());
+    EXPECT_THROW(failed.get(), std::runtime_error);
+    EXPECT_FALSE(workerRunning);
+
+    auto retry = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [](std::function<void()> run, std::function<void()>)
+        {
+            run();
+            return true;
+        },
+        [] {});
+    ASSERT_TRUE(retry.valid());
+    EXPECT_NO_THROW(retry.get());
+    EXPECT_FALSE(workerRunning);
+}
+
+TEST(AssetBrowserPresentationTests, AssetDatabaseRetirementCancellationCompletesFailureAndAllowsRetry)
+{
+    std::mutex mutex;
+    bool workerRunning = false;
+    std::function<void()> acceptedCancellation;
+
+    auto cancelledSynchronously = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [](std::function<void()>, std::function<void()> cancel)
+        {
+            cancel();
+            return true;
+        },
+        [] {});
+    ASSERT_TRUE(cancelledSynchronously.valid());
+    EXPECT_EQ(cancelledSynchronously.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    EXPECT_THROW(cancelledSynchronously.get(), std::runtime_error);
+    EXPECT_FALSE(workerRunning);
+
+    auto cancelledAfterAcceptance = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [&acceptedCancellation](std::function<void()>, std::function<void()> cancel)
+        {
+            acceptedCancellation = std::move(cancel);
+            return true;
+        },
+        [] {});
+    ASSERT_TRUE(cancelledAfterAcceptance.valid());
+    ASSERT_TRUE(acceptedCancellation);
+    EXPECT_EQ(cancelledAfterAcceptance.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+    acceptedCancellation();
+    EXPECT_EQ(cancelledAfterAcceptance.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    EXPECT_THROW(cancelledAfterAcceptance.get(), std::runtime_error);
+    EXPECT_FALSE(workerRunning);
+
+    auto retry = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [](std::function<void()> run, std::function<void()>)
+        {
+            run();
+            return true;
+        },
+        [] {});
+    ASSERT_TRUE(retry.valid());
+    EXPECT_NO_THROW(retry.get());
+    EXPECT_FALSE(workerRunning);
+}
+
+TEST(AssetBrowserPresentationTests, AssetDatabaseRetirementDrainsWorkQueuedDuringActiveBatch)
+{
+    std::mutex mutex;
+    bool workerRunning = false;
+    bool pending = false;
+    int workerCalls = 0;
+
+    auto completion = NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
+        mutex,
+        workerRunning,
+        [](std::function<void()> run, std::function<void()>)
+        {
+            run();
+            return true;
+        },
+        [&]
+        {
+            std::lock_guard lock(mutex);
+            ++workerCalls;
+            pending = workerCalls == 1;
+        },
+        [&pending]
+        {
+            return pending;
+        });
+
+    ASSERT_TRUE(completion.valid());
+    EXPECT_NO_THROW(completion.get());
+    EXPECT_EQ(workerCalls, 2);
+    EXPECT_FALSE(workerRunning);
 }
 
 TEST(AssetBrowserPresentationTests, AssetDatabaseRefreshShutdownNeverWaitsOrOwnsRetirementLifetime)
@@ -2833,6 +2995,26 @@ TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryIncludesGlobalArtif
         << "Equal elapsed totals must use the stage name as a deterministic tie-break.";
 }
 
+TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryUsesDeterministicSlowestPathTieBreak)
+{
+    using namespace std::chrono_literals;
+    using NLS::Core::Assets::ArtifactLoadTelemetryRecord;
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+
+    std::vector<ArtifactLoadTelemetryRecord> records {
+        { ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender, 2ms, 1u, "zeta" },
+        { ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender, 2ms, 1u, "" },
+        { ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender, 2ms, 1u, "alpha" }
+    };
+    const auto forwardReport = NLS::Editor::Core::BuildThumbnailTelemetrySummaryReport(records, {}, true);
+    std::reverse(records.begin(), records.end());
+    const auto reversedReport = NLS::Editor::Core::BuildThumbnailTelemetrySummaryReport(records, {}, true);
+
+    EXPECT_EQ(forwardReport, reversedReport);
+    EXPECT_NE(forwardReport.find("maxMs=2.000 totalBytes=3 slowestPath="), std::string::npos)
+        << "Lexical ordering treats an empty path as the first deterministic tie candidate.";
+}
+
 TEST(AssetBrowserPresentationTests, TextureRevivalTestsUseBackendNeutralExplicitDevice)
 {
     const auto source = ReadSourceText(RepoPath("Tests/Unit/AssetThumbnailBehaviorTests.cpp"));
@@ -2898,6 +3080,13 @@ TEST(AssetBrowserPresentationTests, SharedRuntimeCMakeStagesDynamicLibrariesOnEv
     EXPECT_EQ(copyHelper.find("WIN32"), std::string::npos)
         << "Shared .so and .dylib deployment must not be gated to Windows.";
     EXPECT_NE(copyHelper.find("${NLS_RUNTIME_OUTPUT_PATH}"), std::string::npos);
+    EXPECT_NE(copyHelper.find("DeployRuntime.cmake"), std::string::npos);
+    EXPECT_EQ(copyHelper.find("copy_directory"), std::string::npos)
+        << "Parallel executable builds must use the locked deployment script.";
+
+    const auto deploymentScript = ReadSourceText(RepoPath("Tools/CMake/DeployRuntime.cmake"));
+    EXPECT_NE(deploymentScript.find("file(LOCK"), std::string::npos);
+    EXPECT_NE(deploymentScript.find("MANIFEST"), std::string::npos);
 }
 
 TEST(AssetBrowserPresentationTests, PendingThumbnailResultDoesNotReplaceFreshVisibleResult)

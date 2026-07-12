@@ -276,6 +276,7 @@ std::string FormatThumbnailTelemetrySummaryReport(
         std::chrono::microseconds totalElapsed {};
         std::chrono::microseconds maxElapsed {};
         std::string slowestPath;
+        bool hasSlowestPath = false;
     };
 
     auto reportSummaries = BuildArtifactTelemetryReportSummaries(records);
@@ -303,10 +304,13 @@ std::string FormatThumbnailTelemetrySummaryReport(
         ++aggregate.recordCount;
         aggregate.totalBytes += record.byteCount;
         aggregate.totalElapsed += record.elapsed;
-        if (record.elapsed >= aggregate.maxElapsed)
+        if (!aggregate.hasSlowestPath ||
+            record.elapsed > aggregate.maxElapsed ||
+            (record.elapsed == aggregate.maxElapsed && record.path < aggregate.slowestPath))
         {
             aggregate.maxElapsed = record.elapsed;
             aggregate.slowestPath = record.path;
+            aggregate.hasSlowestPath = true;
         }
     }
 

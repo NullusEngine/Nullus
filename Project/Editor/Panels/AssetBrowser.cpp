@@ -198,8 +198,11 @@ void NLS::Editor::Panels::ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesti
 }
 #endif
 
-template <typename Function>
-auto ScheduleAssetBrowserJobFuture(const char* debugName, Function&& function)
+template <typename Function, typename CancelFunction>
+auto ScheduleAssetBrowserJobFuture(
+	const char* debugName,
+	Function&& function,
+	CancelFunction&& cancelFunction)
 {
 	using Result = std::invoke_result_t<std::decay_t<Function>&>;
 
@@ -207,11 +210,13 @@ auto ScheduleAssetBrowserJobFuture(const char* debugName, Function&& function)
 	{
 		std::promise<Result> promise;
 		std::decay_t<Function> function;
+		std::decay_t<CancelFunction> cancelFunction;
 	};
 
 	auto state = std::make_unique<JobState>(JobState {
 		std::promise<Result> {},
 		std::forward<Function>(function),
+		std::forward<CancelFunction>(cancelFunction),
 	});
 	auto future = state->promise.get_future();
 	auto* statePtr = state.release();
@@ -243,14 +248,11 @@ auto ScheduleAssetBrowserJobFuture(const char* debugName, Function&& function)
 	desc.cancelFunction = [](void* userData)
 	{
 		std::unique_ptr<JobState> ownedState(static_cast<JobState*>(userData));
-		try
-		{
-			throw std::runtime_error("asset browser background job cancelled before execution");
-		}
-		catch (...)
-		{
-			ownedState->promise.set_exception(std::current_exception());
-		}
+		auto failure = std::make_exception_ptr(
+			std::runtime_error("asset browser background job cancelled before execution"));
+		try { ownedState->cancelFunction(); }
+		catch (...) { failure = std::current_exception(); }
+		ownedState->promise.set_exception(std::move(failure));
 	};
 
 	const auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
@@ -263,6 +265,15 @@ auto ScheduleAssetBrowserJobFuture(const char* debugName, Function&& function)
 	}
 
 	return future;
+}
+
+template <typename Function>
+auto ScheduleAssetBrowserJobFuture(const char* debugName, Function&& function)
+{
+	return ScheduleAssetBrowserJobFuture(
+		debugName,
+		std::forward<Function>(function),
+		[] {});
 }
 
 std::string GetAssociatedMetaFile(const std::string& p_assetPath)
@@ -6530,43 +6541,41 @@ void Editor::Panels::AssetBrowser::ScheduleProjectAssetDatabaseRetirementWorker(
 	(void)NLS::Editor::Assets::ScheduleAssetDatabaseRetirementWorker(
 		m_projectAssetDatabaseRetirementState->mutex,
 		m_projectAssetDatabaseRetirementState->workerRunning,
-		[](std::function<void()> worker)
+		[](std::function<void()> worker, std::function<void()> cancel)
 		{
 			(void)ScheduleAssetBrowserJobFuture(
 				"AssetBrowser.RetireProjectAssetDatabase",
-				std::move(worker));
+				std::move(worker),
+				std::move(cancel));
+			return true;
 		},
 		[retirementState = m_projectAssetDatabaseRetirementState]
 		{
-			for (;;)
+			std::vector<AssetDatabaseRefreshResult> retired;
+			std::vector<std::future<AssetDatabaseRefreshResult>> retiredFutures;
 			{
-				std::vector<AssetDatabaseRefreshResult> retired;
-				std::vector<std::future<AssetDatabaseRefreshResult>> retiredFutures;
-				{
-					std::lock_guard lock(retirementState->mutex);
-					if (retirementState->pending.empty() &&
-						retirementState->pendingFutures.empty())
-					{
-						retirementState->workerRunning = false;
-						return;
-					}
-					retirementState->pending.swap(retired);
-					retirementState->pendingFutures.swap(retiredFutures);
-				}
-				for (auto& future : retiredFutures)
-				{
-					AssetDatabaseRefreshResult result;
-					try
-					{
-						result = future.get();
-					}
-					catch (...)
-					{
-					}
-					retired.push_back(std::move(result));
-				}
-				retired.clear();
+				std::lock_guard lock(retirementState->mutex);
+				retirementState->pending.swap(retired);
+				retirementState->pendingFutures.swap(retiredFutures);
 			}
+			for (auto& future : retiredFutures)
+			{
+				AssetDatabaseRefreshResult result;
+				try
+				{
+					result = future.get();
+				}
+				catch (...)
+				{
+				}
+				retired.push_back(std::move(result));
+			}
+			retired.clear();
+		},
+		[retirementState = m_projectAssetDatabaseRetirementState]
+		{
+			return !retirementState->pending.empty() ||
+				!retirementState->pendingFutures.empty();
 		});
 }
 

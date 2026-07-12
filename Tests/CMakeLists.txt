@@ -98,6 +98,11 @@ function(nls_configure_test_target target_name)
 endfunction()
 
 if(NLS_BUILD_TESTS)
+    add_test(
+        NAME DeployRuntimeTests
+        COMMAND ${CMAKE_COMMAND}
+            "-DNLS_ROOT_DIR=${CMAKE_SOURCE_DIR}"
+            -P "${CMAKE_SOURCE_DIR}/Tests/CMake/DeployRuntimeTests.cmake")
     add_subdirectory(Unit)
 endif()
 

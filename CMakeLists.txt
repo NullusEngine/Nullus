@@ -213,11 +213,13 @@ endfunction()
 function(nls_copy_shared_runtime_to_target TARGET_NAME)
     if(NLS_USE_SHARED_LIBRARY)
         add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${NLS_RUNTIME_OUTPUT_PATH}"
-                "$<TARGET_FILE_DIR:${TARGET_NAME}>"
+            COMMAND ${CMAKE_COMMAND}
+                "-DSTAGE_DIR=${NLS_RUNTIME_OUTPUT_PATH}"
+                "-DDEST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>"
+                "-DCONFIG=$<CONFIG>"
+                -P "${NLS_ROOT_DIR}/Tools/CMake/DeployRuntime.cmake"
             VERBATIM
-            COMMENT "Copying Nullus runtime DLLs for ${TARGET_NAME}"
+            COMMENT "Deploying Nullus runtime libraries for ${TARGET_NAME}"
         )
     endif()
 endfunction()

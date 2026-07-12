@@ -52,7 +52,7 @@ endif()
 
 # 指定输出路径
 set_target_properties(ImGui PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+    RUNTIME_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
 )
 
 # 设置包含路径

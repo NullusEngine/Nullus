@@ -14,6 +14,8 @@
 #include "GameObject.h"
 #include "Guid.h"
 #include "ImGui/imgui_internal.h"
+#include "Widgets/Layout/Group.h"
+#include "Panels/AssetBrowser.h"
 #include "Utils/PathParser.h"
 
 #include <algorithm>
@@ -2193,10 +2195,8 @@ TEST(AssetBrowserPresentationTests, AssetDatabaseRefreshResultsRetireOffTheUiThr
         source,
         "void Editor::Panels::AssetBrowser::ScheduleProjectAssetDatabaseRetirementWorker()");
     EXPECT_NE(schedulerBody.find("workerRunning = true"), std::string::npos);
-    EXPECT_NE(schedulerBody.find("std::thread worker("), std::string::npos);
-    EXPECT_NE(schedulerBody.find(".detach()"), std::string::npos);
-    EXPECT_EQ(schedulerBody.find("ScheduleAssetBrowserJobFuture"), std::string::npos)
-        << "A one-worker JobSystem would deadlock if retirement waits ahead of its producer.";
+    EXPECT_NE(schedulerBody.find("ScheduleAssetBrowserJobFuture"), std::string::npos)
+        << "Retirement must use the editor's unified JobSystem ownership path.";
     EXPECT_NE(
         schedulerBody.find("[retirementState = m_projectAssetDatabaseRetirementState]"),
         std::string::npos)
@@ -2752,17 +2752,30 @@ TEST(AssetBrowserPresentationTests, GridThumbnailDrawPathTelemetrySeparatesThumb
 
 TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryReportsGridDrawOutcomes)
 {
-    const auto source = ReadSourceText(RepoPath("Project/Editor/Core/Editor.cpp"));
-    const auto body = ExtractFunctionBody(source, "std::string BuildThumbnailTelemetrySummaryReport()");
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to isolate draw outcome telemetry.";
+#else
+    using namespace NLS::Editor::Panels;
 
-    EXPECT_NE(body.find("Thumbnail draw outcomes"), std::string::npos);
-    EXPECT_NE(body.find("Thumbnail draw outcome paths"), std::string::npos);
-    EXPECT_NE(body.find("SnapshotAssetBrowserThumbnailDrawOutcomeTelemetry"), std::string::npos);
-    EXPECT_NE(body.find("maxDrawOutcomePaths"), std::string::npos)
-        << "Draw outcome path reporting must stay bounded so telemetry export cannot grow with every visible item and frame.";
-    EXPECT_NE(body.find("|draw=thumbnail"), std::string::npos);
-    EXPECT_NE(body.find("|draw=fallback"), std::string::npos);
-    EXPECT_NE(body.find("|draw=type-fallback"), std::string::npos);
+    const bool wasEnabled = NLS::Core::Assets::IsArtifactLoadTelemetryEnabled();
+    NLS::Core::Assets::SetArtifactLoadTelemetryEnabled(true);
+    ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesting();
+    RecordAssetBrowserThumbnailDrawOutcomeTelemetry("Assets/thumbnail.prefab", AssetBrowserThumbnailDrawOutcome::Thumbnail);
+    RecordAssetBrowserThumbnailDrawOutcomeTelemetry("Assets/fallback.prefab", AssetBrowserThumbnailDrawOutcome::Fallback);
+    RecordAssetBrowserThumbnailDrawOutcomeTelemetry("Assets/type-fallback.prefab", AssetBrowserThumbnailDrawOutcome::TypeFallback);
+
+    const auto report = NLS::Editor::Core::Testing::BuildThumbnailTelemetrySummaryReportForTesting({});
+
+    ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesting();
+    NLS::Core::Assets::SetArtifactLoadTelemetryEnabled(wasEnabled);
+    EXPECT_NE(report.find("Thumbnail draw outcomes"), std::string::npos);
+    EXPECT_NE(report.find("- |draw=thumbnail records=1"), std::string::npos);
+    EXPECT_NE(report.find("- |draw=fallback records=1"), std::string::npos);
+    EXPECT_NE(report.find("- |draw=type-fallback records=1"), std::string::npos);
+    EXPECT_NE(report.find("Assets/thumbnail.prefab|draw=thumbnail records=1"), std::string::npos);
+    EXPECT_NE(report.find("Assets/fallback.prefab|draw=fallback records=1"), std::string::npos);
+    EXPECT_NE(report.find("Assets/type-fallback.prefab|draw=type-fallback records=1"), std::string::npos);
+#endif
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailTelemetrySummaryIncludesGlobalArtifactStageTotals)

@@ -394,7 +394,7 @@ function(nls_add_target)
     endif()
 
     set_target_properties(${TARGET_NAME} PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+      RUNTIME_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
       FOLDER ${TARGET_CATEGORY}
     )
 
@@ -441,7 +441,7 @@ function(nls_add_runtime_target)
     endif()
 
     set_target_properties(${TARGET_NAME} PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+      RUNTIME_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}"
       FOLDER Runtime
     )
 

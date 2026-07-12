@@ -984,8 +984,11 @@ MeshManager::Mesh* MeshManager::RequestAsyncArtifact(const std::string& path, co
         return cached;
 
     const auto realPath = ResolveArtifactResourcePath(path);
-    if (auto* cached = FindCachedMeshByEquivalentArtifactPath(*this, realPath))
-        return cached;
+    if (!std::filesystem::path(path).is_absolute())
+    {
+        if (auto* cached = FindCachedMeshByEquivalentArtifactPath(*this, realPath))
+            return cached;
+    }
     if (!IsMeshArtifactPath(realPath))
         return nullptr;
 

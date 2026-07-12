@@ -156,11 +156,11 @@ function(nls_find_fbx_sdk)
     set(NLS_BUNDLED_FBX_SDK_DEBUG_RUNTIME_LIBRARY "${_fbx_debug_runtime_library}" CACHE FILEPATH "Resolved bundled Autodesk FBX SDK debug runtime library" FORCE)
 
     add_custom_target(AutodeskFbxSdkRuntime
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${NLS_APP_OUTPUT_PATH}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${NLS_RUNTIME_OUTPUT_PATH}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<IF:$<AND:$<BOOL:${WIN32}>,$<CONFIG:Debug>>,${_fbx_debug_runtime_library},${_fbx_runtime_library}>"
-            "${NLS_APP_OUTPUT_PATH}/$<IF:$<BOOL:${WIN32}>,libfbxsdk.dll,$<IF:$<BOOL:${APPLE}>,libfbxsdk.dylib,libfbxsdk.so>>"
-        COMMENT "Copying Autodesk FBX SDK runtime to ${NLS_APP_OUTPUT_PATH}"
+            "${NLS_RUNTIME_OUTPUT_PATH}/$<IF:$<BOOL:${WIN32}>,libfbxsdk.dll,$<IF:$<BOOL:${APPLE}>,libfbxsdk.dylib,libfbxsdk.so>>"
+        COMMENT "Copying Autodesk FBX SDK runtime to ${NLS_RUNTIME_OUTPUT_PATH}"
         VERBATIM)
     set_target_properties(AutodeskFbxSdkRuntime PROPERTIES FOLDER ${third_party_folder}/FBX)
 
@@ -237,7 +237,7 @@ if(NOT TARGET glfw)
     add_subdirectory(glfw)
     set_target_properties(glfw PROPERTIES FOLDER ${third_party_folder}/glfw)
     set_target_properties(update_mappings PROPERTIES FOLDER ${third_party_folder}/glfw)
-    set_target_properties(glfw PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}")
+    set_target_properties(glfw PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}")
 endif()
 
 if(NOT TARGET assimp)
@@ -282,7 +282,7 @@ if(NOT TARGET assimp)
         endif()
     endif()
     set_target_properties(assimp PROPERTIES FOLDER ${third_party_folder}/assimp)
-    set_target_properties(assimp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}")
+    set_target_properties(assimp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${NLS_RUNTIME_OUTPUT_PATH}")
     if(MSVC)
         target_compile_options(assimp PRIVATE "$<$<CONFIG:Debug>:/O2>")
     endif()

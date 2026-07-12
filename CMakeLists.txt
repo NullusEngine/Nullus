@@ -199,11 +199,15 @@ else()
     endif()
 endif()
 
+# Shared libraries are build artifacts, so keep them isolated from other CMake
+# build trees. Executable targets explicitly deploy this directory to App.
+set(NLS_RUNTIME_OUTPUT_PATH "${CMAKE_BINARY_DIR}/runtime/$<CONFIGURATION>")
+
 function(nls_copy_shared_runtime_to_target TARGET_NAME)
-    if(WIN32 AND NLS_USE_SHARED_LIBRARY)
+    if(NLS_USE_SHARED_LIBRARY)
         add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${NLS_APP_OUTPUT_PATH}"
+                "${NLS_RUNTIME_OUTPUT_PATH}"
                 "$<TARGET_FILE_DIR:${TARGET_NAME}>"
             VERBATIM
             COMMENT "Copying Nullus runtime DLLs for ${TARGET_NAME}"

@@ -1,11 +1,14 @@
 #include <gtest/gtest.h>
 
+#include "Assets/ArtifactManifest.h"
+#include "Assets/AssetDatabaseFacade.h"
+#include "Assets/EditorAssetDragDropBridge.h"
+#include "Assets/EditorAssetPath.h"
 #include "Engine/Assets/PrefabAsset.h"
 #include "Engine/SceneSystem/Scene.h"
 #include "GameObject.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
-#include "Components/TransformComponent.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ServiceLocator.h"
@@ -15,12 +18,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace
@@ -187,28 +192,135 @@ PerformanceStageStatsSnapshot RunPrefabInstantiationScenario(
     return snapshot;
 }
 
-const NLS::Engine::Serialize::ObjectRecord* FindObjectRecordByType(
-    const NLS::Engine::Serialize::ObjectGraphDocument& document,
-    std::string_view typeName)
+bool IsEnvironmentFlagEnabled(const char* name)
 {
-    for (const auto& record : document.objects)
-    {
-        if (record.typeName == typeName)
-            return &record;
-    }
-    return nullptr;
+    const auto* value = std::getenv(name);
+    if (value == nullptr)
+        return false;
+
+    const std::string flag(value);
+    std::string normalized = flag;
+    std::transform(
+        normalized.begin(),
+        normalized.end(),
+        normalized.begin(),
+        [](const unsigned char character)
+        {
+            return static_cast<char>(std::tolower(character));
+        });
+    return !normalized.empty() &&
+        normalized != "0" &&
+        normalized != "false" &&
+        normalized != "off" &&
+        normalized != "no";
 }
 
-const NLS::Engine::Serialize::PropertyRecord* FindProperty(
-    const NLS::Engine::Serialize::ObjectRecord& record,
-    std::string_view propertyName)
+std::string FindPrimaryPrefabSubAssetKey(const NLS::Core::Assets::ArtifactManifest& manifest)
 {
-    for (const auto& property : record.properties)
+    const auto isPrefabSubAsset = [](const NLS::Core::Assets::ImportedArtifact& artifact)
     {
-        if (property.name == propertyName)
-            return &property;
+        return artifact.artifactType == NLS::Core::Assets::ArtifactType::Prefab;
+    };
+
+    if (!manifest.primarySubAssetKey.empty())
+    {
+        const auto primary = std::find_if(
+            manifest.subAssets.begin(),
+            manifest.subAssets.end(),
+            [&manifest, &isPrefabSubAsset](const NLS::Core::Assets::ImportedArtifact& artifact)
+            {
+                return artifact.subAssetKey == manifest.primarySubAssetKey &&
+                    isPrefabSubAsset(artifact);
+            });
+        if (primary != manifest.subAssets.end())
+            return primary->subAssetKey;
     }
-    return nullptr;
+
+    const auto firstPrefab = std::find_if(
+        manifest.subAssets.begin(),
+        manifest.subAssets.end(),
+        isPrefabSubAsset);
+    return firstPrefab != manifest.subAssets.end() ? firstPrefab->subAssetKey : std::string {};
+}
+
+void WriteTextPerformanceReportIfRequested(
+    const std::string& reportName,
+    const std::string& contents)
+{
+    const auto* reportDirectory = std::getenv("NLS_PERFORMANCE_REPORT_DIR");
+    if (reportDirectory == nullptr || std::string(reportDirectory).empty())
+        return;
+
+    std::filesystem::create_directories(reportDirectory);
+    std::ofstream output(
+        std::filesystem::path(reportDirectory) / (reportName + ".txt"),
+        std::ios::binary | std::ios::trunc);
+    output << contents;
+}
+
+void AppendTextPerformanceReportIfRequested(
+    const std::string& reportName,
+    const std::string& contents)
+{
+    const auto* reportDirectory = std::getenv("NLS_PERFORMANCE_REPORT_DIR");
+    if (reportDirectory == nullptr || std::string(reportDirectory).empty())
+        return;
+
+    std::filesystem::create_directories(reportDirectory);
+    std::ofstream output(
+        std::filesystem::path(reportDirectory) / (reportName + ".txt"),
+        std::ios::binary | std::ios::app);
+    output << contents;
+    output.flush();
+}
+
+void AppendNewSponzaProgressIfRequested(const std::string& step)
+{
+    AppendTextPerformanceReportIfRequested(
+        "NewSponza_PreparedCacheProgress",
+        step + "\n");
+}
+
+const char* ImportPhaseToString(const NLS::Editor::Assets::ImportPhase phase)
+{
+    using NLS::Editor::Assets::ImportPhase;
+    switch (phase)
+    {
+    case ImportPhase::Queued:
+        return "Queued";
+    case ImportPhase::DependencyCopy:
+        return "DependencyCopy";
+    case ImportPhase::SourceParse:
+        return "SourceParse";
+    case ImportPhase::IntermediateConversion:
+        return "IntermediateConversion";
+    case ImportPhase::ArtifactWrite:
+        return "ArtifactWrite";
+    case ImportPhase::Postprocess:
+        return "Postprocess";
+    case ImportPhase::Commit:
+        return "Commit";
+    case ImportPhase::Finished:
+        return "Finished";
+    }
+    return "Unknown";
+}
+
+const char* ImportTerminalStatusToString(const NLS::Editor::Assets::ImportJobTerminalStatus status)
+{
+    using NLS::Editor::Assets::ImportJobTerminalStatus;
+    switch (status)
+    {
+    case ImportJobTerminalStatus::None:
+        return "None";
+    case ImportJobTerminalStatus::Succeeded:
+        return "Succeeded";
+    case ImportJobTerminalStatus::Failed:
+        return "Failed";
+    case ImportJobTerminalStatus::Cancelled:
+        return "Cancelled";
+    }
+    return "Unknown";
 }
 
 void WritePrefabPerformanceReportIfRequested(
@@ -232,169 +344,6 @@ void WritePrefabPerformanceReportIfRequested(
         std::ios::binary | std::ios::trunc);
     output << FormatPerformanceBenchmarkReport(run);
 }
-}
-
-TEST(AssetPrefabPerformanceTests, PrefabImportAndInstantiateEmitDiagnosticStages)
-{
-    PerformanceStageStats stats;
-    PerformanceStageStatsCapture capture(stats);
-
-    const auto scenarioBegin = std::chrono::steady_clock::now();
-    auto artifact = MakePrefabArtifact(
-        "ProfiledPrefab",
-        "10101010-1010-4010-8010-101010101010");
-
-    NLS::Engine::SceneSystem::Scene scene;
-    const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(artifact, scene);
-    const auto scenarioElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - scenarioBegin);
-
-    ASSERT_FALSE(instance.diagnostics.HasErrors());
-    ASSERT_NE(instance.root, nullptr);
-
-    const auto snapshot = stats.Snapshot();
-    ASSERT_NE(FindStage(snapshot, "ParsePreparedPrefab"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "ResolveDependencies"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "TotalInstantiate"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "AllocateInstanceObjects"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "DeserializeComponents"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "FixupInternalReferences"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "ResolveExternalReferences"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "RegisterRenderers"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "RegisterPhysics"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "RegisterScripts"), nullptr);
-    ASSERT_NE(FindStage(snapshot, "InvokeLifecycle"), nullptr);
-    EXPECT_EQ(FindStage(snapshot, "WaitForResources"), nullptr);
-    EXPECT_EQ(FindStage(snapshot, "UploadGpuResources"), nullptr);
-
-    const auto* total = FindStage(snapshot, "TotalInstantiate");
-    ASSERT_NE(total, nullptr);
-    EXPECT_GE(total->counters.at("objectCount"), 1u);
-
-    const auto* deserialize = FindStage(snapshot, "DeserializeComponents");
-    ASSERT_NE(deserialize, nullptr);
-    EXPECT_GE(deserialize->counters.at("componentCount"), 1u);
-
-    const auto* externalReferences = FindStage(snapshot, "ResolveExternalReferences");
-    ASSERT_NE(externalReferences, nullptr);
-    ASSERT_TRUE(externalReferences->counters.contains("dependencyCount"));
-
-    WritePrefabPerformanceReportIfRequested(
-        "Prefab_ImportAndInstantiate",
-        snapshot,
-        scenarioElapsed);
-}
-
-TEST(AssetPrefabPerformanceTests, PrefabInstantiationDoesNotSynchronouslyPrewarmResourcesByDefault)
-{
-    auto artifact = MakePrefabArtifact(
-        "Prefab_NoSyncResourcePrewarm",
-        "1c1c1c1c-1c1c-4c1c-8c1c-1c1c1c1c1c1c",
-        1u,
-        1u);
-    artifact.resolvedAssets.push_back({
-        NLS::Core::Assets::AssetId(NLS::Guid::Parse("2c2c2c2c-2c2c-4c2c-8c2c-2c2c2c2c2c2c")),
-        "Mesh",
-        "mesh:body",
-        "Library/Artifacts/body.nmesh"
-    });
-    artifact.resolvedAssets.push_back({
-        NLS::Core::Assets::AssetId(NLS::Guid::Parse("3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c")),
-        "Material",
-        "material:body",
-        "Library/Artifacts/body.nmat"
-    });
-
-    PerformanceStageStats stats;
-    PerformanceStageStatsCapture capture(stats);
-
-    NLS::Engine::SceneSystem::Scene scene;
-    const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(artifact, scene);
-
-    ASSERT_FALSE(instance.diagnostics.HasErrors());
-    ASSERT_NE(instance.root, nullptr);
-
-    const auto snapshot = stats.Snapshot();
-    EXPECT_EQ(FindStage(snapshot, "WaitForResources"), nullptr);
-    EXPECT_EQ(FindStage(snapshot, "UploadGpuResources"), nullptr);
-}
-
-TEST(AssetPrefabPerformanceTests, ExplicitSynchronousResourcePrewarmRetainsDiagnosticStages)
-{
-    NLS::Core::ResourceManagement::MeshManager meshManager;
-    ScopedServiceOverride<NLS::Core::ResourceManagement::MeshManager> meshManagerService(meshManager);
-
-    auto artifact = MakePrefabArtifact(
-        "Prefab_ExplicitSyncResourcePrewarm",
-        "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d",
-        1u,
-        1u);
-    artifact.resolvedAssets.push_back({
-        NLS::Core::Assets::AssetId(NLS::Guid::Parse("2d2d2d2d-2d2d-4d2d-8d2d-2d2d2d2d2d2d")),
-        "Mesh",
-        "mesh:body",
-        "Library/Artifacts/body.nmesh"
-    });
-    artifact.resolvedAssets.push_back({
-        NLS::Core::Assets::AssetId(NLS::Guid::Parse("3d3d3d3d-3d3d-4d3d-8d3d-3d3d3d3d3d3d")),
-        "Material",
-        "material:body",
-        "Library/Artifacts/body.nmat"
-    });
-
-    PerformanceStageStats stats;
-    PerformanceStageStatsCapture capture(stats);
-
-    NLS::Engine::Serialize::LoadPolicy policy;
-    policy.synchronousAssetReferencePrewarm = true;
-
-    NLS::Engine::SceneSystem::Scene scene;
-    const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(artifact, scene, policy);
-
-    ASSERT_FALSE(instance.diagnostics.HasErrors());
-    ASSERT_NE(instance.root, nullptr);
-
-    const auto snapshot = stats.Snapshot();
-    const auto* waitForResources = FindStage(snapshot, "WaitForResources");
-    ASSERT_NE(waitForResources, nullptr);
-    const auto* uploadGpuResources = FindStage(snapshot, "UploadGpuResources");
-    ASSERT_NE(uploadGpuResources, nullptr);
-    ASSERT_TRUE(uploadGpuResources->counters.contains("dependencyCount"));
-    EXPECT_GE(uploadGpuResources->counters.at("dependencyCount"), 2u);
-    ASSERT_TRUE(uploadGpuResources->counters.contains("synchronousResourceLoadCount"));
-    EXPECT_EQ(uploadGpuResources->counters.at("synchronousResourceLoadCount"), 1u);
-}
-
-TEST(AssetPrefabPerformanceTests, DeferredAssetResolutionSuppressesSynchronousPrewarmOptIn)
-{
-    auto artifact = MakePrefabArtifact(
-        "Prefab_DeferSuppressesSyncResourcePrewarm",
-        "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e",
-        1u,
-        1u);
-    artifact.resolvedAssets.push_back({
-        NLS::Core::Assets::AssetId(NLS::Guid::Parse("2e2e2e2e-2e2e-4e2e-8e2e-2e2e2e2e2e2e")),
-        "Mesh",
-        "mesh:body",
-        "Library/Artifacts/body.nmesh"
-    });
-
-    PerformanceStageStats stats;
-    PerformanceStageStatsCapture capture(stats);
-
-    NLS::Engine::Serialize::LoadPolicy policy;
-    policy.deferAssetReferenceResolution = true;
-    policy.synchronousAssetReferencePrewarm = true;
-
-    NLS::Engine::SceneSystem::Scene scene;
-    const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(artifact, scene, policy);
-
-    ASSERT_FALSE(instance.diagnostics.HasErrors());
-    ASSERT_NE(instance.root, nullptr);
-
-    const auto snapshot = stats.Snapshot();
-    EXPECT_EQ(FindStage(snapshot, "WaitForResources"), nullptr);
-    EXPECT_EQ(FindStage(snapshot, "UploadGpuResources"), nullptr);
 }
 
 TEST(AssetPrefabPerformanceTests, MissingBaselineAndMismatchedScenarioComparisonsAreInvalid)
@@ -464,6 +413,334 @@ TEST(AssetPrefabPerformanceTests, PrefabReportIncludesTopFiveAndComparisonOutput
     EXPECT_NE(comparison.find("change="), std::string::npos);
     EXPECT_NE(comparison.find("BaselineTotal="), std::string::npos);
     EXPECT_NE(comparison.find("OptimizedTotal="), std::string::npos);
+}
+
+TEST(AssetPrefabPerformanceTests, NewSponzaImportedPrefabPerformanceReport)
+{
+    if (!IsEnvironmentFlagEnabled("NLS_RUN_NEWSPONZA_PREFAB_PERF"))
+        GTEST_SKIP() << "Set NLS_RUN_NEWSPONZA_PREFAB_PERF=1 to run the real NewSponza prefab benchmark.";
+
+    constexpr const char* kAssetPath = "Assets/Model/main_sponza/NewSponza_Main_glTF_003.gltf";
+    const auto projectRoot = std::filesystem::path(NLS_ROOT_DIR) / "TestProject";
+    const auto absoluteAssetPath = projectRoot / "Assets" / "Model" / "main_sponza" /
+        "NewSponza_Main_glTF_003.gltf";
+    if (!std::filesystem::exists(absoluteAssetPath))
+        GTEST_SKIP() << "NewSponza test asset is missing: " << absoluteAssetPath.generic_string();
+
+    NLS::Editor::Assets::AssetDatabaseFacade database(
+        NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+
+    WriteTextPerformanceReportIfRequested(
+        "NewSponza_SetupProgress",
+        std::string("Asset: ") + kAssetPath + '\n');
+    AppendTextPerformanceReportIfRequested(
+        "NewSponza_SetupProgress",
+        "RefreshKnownSourceAssets begin\n");
+    const auto refreshBegin = std::chrono::steady_clock::now();
+    const std::vector<std::filesystem::path> refreshPaths {absoluteAssetPath};
+    ASSERT_TRUE(database.RefreshKnownSourceAssets(refreshPaths));
+    const auto refreshElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - refreshBegin);
+    AppendTextPerformanceReportIfRequested(
+        "NewSponza_SetupProgress",
+        "RefreshKnownSourceAssets end elapsedUs=" + std::to_string(refreshElapsed.count()) + "\n");
+
+    std::chrono::microseconds importElapsed{0};
+    PerformanceStageStats importStats;
+    NLS::Editor::Assets::ImportProgressTracker importProgress;
+    WriteTextPerformanceReportIfRequested(
+        "NewSponza_ImportProgress",
+        std::string("Asset: ") + kAssetPath + '\n');
+    const auto importProgressTraceBegin = std::chrono::steady_clock::now();
+    auto lastLoggedPhase = std::make_shared<NLS::Editor::Assets::ImportPhase>(
+        NLS::Editor::Assets::ImportPhase::Finished);
+    auto lastLoggedProgressBucket = std::make_shared<int>(-1);
+    importProgress.Subscribe(
+        [importProgressTraceBegin, lastLoggedPhase, lastLoggedProgressBucket](
+            const NLS::Editor::Assets::ImportProgressEvent& event)
+    {
+        const bool meshProgressMessage =
+            event.message.rfind("Converting mesh:", 0u) == 0u ||
+            event.message.rfind("Converted mesh:", 0u) == 0u;
+        const auto progressBucket = static_cast<int>(event.normalizedProgress * 100.0);
+        if (meshProgressMessage &&
+            event.phase == *lastLoggedPhase &&
+            progressBucket == *lastLoggedProgressBucket &&
+            event.terminalStatus == NLS::Editor::Assets::ImportJobTerminalStatus::None)
+        {
+            return;
+        }
+        *lastLoggedPhase = event.phase;
+        *lastLoggedProgressBucket = progressBucket;
+
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - importProgressTraceBegin).count();
+        std::ostringstream line;
+        line << "elapsedMs=" << elapsedMs
+            << " job=" << event.jobId.value
+            << " phase=" << ImportPhaseToString(event.phase)
+            << " progress=" << event.normalizedProgress
+            << " terminal=" << ImportTerminalStatusToString(event.terminalStatus)
+            << " message=\"" << event.message << "\""
+            << " source=\"" << event.sourcePath << "\""
+            << '\n';
+        AppendTextPerformanceReportIfRequested("NewSponza_ImportProgress", line.str());
+    });
+    bool imported = false;
+    {
+        PerformanceStageStatsCapture capture(importStats);
+        const auto importBegin = std::chrono::steady_clock::now();
+        imported = IsEnvironmentFlagEnabled("NLS_NEWSPONZA_FORCE_REIMPORT")
+            ? database.ReimportAssetFromCurrentDatabase(kAssetPath, importProgress, 1u)
+            : database.ImportAssetFromCurrentDatabase(kAssetPath, importProgress, 1u);
+        importElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - importBegin);
+    }
+    WritePrefabPerformanceReportIfRequested(
+        "NewSponza_ImportAsset",
+        importStats.Snapshot(),
+        importElapsed);
+    ASSERT_TRUE(imported);
+
+    const auto manifest = database.GetArtifactManifestForAssetPath(kAssetPath);
+    ASSERT_TRUE(manifest.has_value());
+    const auto prefabSubAssetKey = FindPrimaryPrefabSubAssetKey(*manifest);
+    ASSERT_FALSE(prefabSubAssetKey.empty());
+
+    std::chrono::microseconds loadElapsed{0};
+    PerformanceStageStats loadStats;
+    std::optional<NLS::Engine::Assets::PrefabArtifact> prefab;
+    {
+        PerformanceStageStatsCapture capture(loadStats);
+        const auto loadBegin = std::chrono::steady_clock::now();
+        prefab = database.LoadPrefabArtifactAtPath(kAssetPath, prefabSubAssetKey);
+        loadElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - loadBegin);
+    }
+    const auto loadSnapshot = loadStats.Snapshot();
+    WritePrefabPerformanceReportIfRequested(
+        "NewSponza_LoadPrefabArtifact",
+        loadSnapshot,
+        loadElapsed);
+    ASSERT_TRUE(prefab.has_value());
+    EXPECT_TRUE(prefab->generatedModelPrefab);
+
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    auto runInstantiation = [&prefab](const std::string& scenarioName, std::chrono::microseconds& elapsed)
+    {
+        PerformanceStageStats stats;
+        PerformanceStageStatsCapture capture(stats);
+
+        const auto scenarioBegin = std::chrono::steady_clock::now();
+        NLS::Engine::SceneSystem::Scene scene;
+        const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, scene);
+        elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - scenarioBegin);
+
+        EXPECT_FALSE(instance.diagnostics.HasErrors());
+        EXPECT_NE(instance.root, nullptr);
+
+        const auto snapshot = stats.Snapshot();
+        WritePrefabPerformanceReportIfRequested(scenarioName, snapshot, elapsed);
+        return snapshot;
+    };
+    auto runInstantiationNoCapture = [&prefab](std::chrono::microseconds& elapsed)
+    {
+        const auto scenarioBegin = std::chrono::steady_clock::now();
+        NLS::Engine::SceneSystem::Scene scene;
+        const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, scene);
+        elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - scenarioBegin);
+
+        EXPECT_FALSE(instance.diagnostics.HasErrors());
+        EXPECT_NE(instance.root, nullptr);
+        return scene.GetGameObjects().size();
+    };
+
+    std::chrono::microseconds coldElapsed{0};
+    const auto coldSnapshot = runInstantiation("NewSponza_ColdInstantiate", coldElapsed);
+    std::chrono::microseconds hotElapsed{0};
+    const auto hotSnapshot = runInstantiation("NewSponza_HotInstantiate", hotElapsed);
+    std::chrono::microseconds hotNoCaptureElapsed{0};
+    const auto hotNoCaptureSceneObjectCount = runInstantiationNoCapture(hotNoCaptureElapsed);
+
+    const auto* coldTotal = FindStage(coldSnapshot, "TotalInstantiate");
+    ASSERT_NE(coldTotal, nullptr);
+    ASSERT_TRUE(coldTotal->counters.contains("objectCount"));
+    const auto* hotTotal = FindStage(hotSnapshot, "TotalInstantiate");
+    ASSERT_NE(hotTotal, nullptr);
+    ASSERT_TRUE(hotTotal->counters.contains("objectCount"));
+    EXPECT_EQ(hotTotal->counters.at("objectCount"), coldTotal->counters.at("objectCount"));
+
+    const auto* hotPlan = FindStage(hotSnapshot, "PrepareInstantiatePlan");
+    ASSERT_NE(hotPlan, nullptr);
+    ASSERT_TRUE(hotPlan->counters.contains("instantiatePlanCacheHitCount"));
+    const auto* hotResolve = FindStage(hotSnapshot, "ResolveExternalReferences");
+    ASSERT_NE(hotResolve, nullptr);
+    ASSERT_TRUE(hotResolve->counters.contains("runtimeResolvedGraphCopyCount"));
+
+    std::ostringstream summary;
+    summary << "Asset: " << kAssetPath << '\n';
+    summary << "ProjectRoot: " << projectRoot.generic_string() << '\n';
+    summary << "PrefabSubAssetKey: " << prefabSubAssetKey << '\n';
+    summary << "ManifestSubAssetCount: " << manifest->subAssets.size() << '\n';
+    summary << "Refresh: " << refreshElapsed.count() << "us\n";
+    summary << "ImportAsset: " << importElapsed.count() << "us\n";
+    summary << "LoadPrefabArtifact: " << loadElapsed.count() << "us\n";
+    summary << "ColdInstantiate: " << coldElapsed.count() << "us\n";
+    summary << "HotInstantiate: " << hotElapsed.count() << "us\n";
+    summary << "HotInstantiateNoCapture: " << hotNoCaptureElapsed.count() << "us\n";
+    summary << "HotInstantiateNoCaptureSceneObjectCount: " << hotNoCaptureSceneObjectCount << '\n';
+    summary << "ObjectCount: " << hotTotal->counters.at("objectCount") << '\n';
+    summary << "DependencyCount: " << hotTotal->counters.at("dependencyCount") << '\n';
+    summary << "HotInstantiatePlanCacheHitCount: "
+        << hotPlan->counters.at("instantiatePlanCacheHitCount") << '\n';
+    summary << "HotRuntimeResolvedGraphCopyCount: "
+        << hotResolve->counters.at("runtimeResolvedGraphCopyCount") << '\n';
+    if (hotResolve->counters.contains("runtimeResolvedGraphCacheHitCount"))
+    {
+        summary << "HotRuntimeResolvedGraphCacheHitCount: "
+            << hotResolve->counters.at("runtimeResolvedGraphCacheHitCount") << '\n';
+    }
+    WriteTextPerformanceReportIfRequested("NewSponza_Summary", summary.str());
+}
+
+TEST(AssetPrefabPerformanceTests, NewSponzaPreparedPrefabCacheRestartPerformanceReport)
+{
+    if (!IsEnvironmentFlagEnabled("NLS_RUN_NEWSPONZA_PREFAB_PERF"))
+        GTEST_SKIP() << "Set NLS_RUN_NEWSPONZA_PREFAB_PERF=1 to run the real NewSponza prefab benchmark.";
+
+    constexpr const char* kAssetPath = "Assets/Model/main_sponza/NewSponza_Main_glTF_003.gltf";
+    const auto projectRoot = std::filesystem::path(NLS_ROOT_DIR) / "TestProject";
+    const auto absoluteAssetPath = projectRoot / "Assets" / "Model" / "main_sponza" /
+        "NewSponza_Main_glTF_003.gltf";
+    if (!std::filesystem::exists(absoluteAssetPath))
+        GTEST_SKIP() << "NewSponza test asset is missing: " << absoluteAssetPath.generic_string();
+
+    if (IsEnvironmentFlagEnabled("NLS_NEWSPONZA_RESET_PREPARED_PREFAB_CACHE"))
+    {
+        std::error_code error;
+        std::filesystem::remove_all(projectRoot / "Library" / "PreparedPrefabCache", error);
+        ASSERT_FALSE(error) << error.message();
+    }
+
+    NLS::Editor::Assets::AssetDatabaseFacade database(
+        NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+    const std::vector<std::filesystem::path> refreshPaths {absoluteAssetPath};
+    ASSERT_TRUE(database.RefreshKnownSourceAssets(refreshPaths));
+
+    NLS::Editor::Assets::ImportProgressTracker importProgress;
+    const bool imported = IsEnvironmentFlagEnabled("NLS_NEWSPONZA_FORCE_REIMPORT")
+        ? database.ReimportAssetFromCurrentDatabase(kAssetPath, importProgress, 1u)
+        : database.ImportAssetFromCurrentDatabase(kAssetPath, importProgress, 1u);
+    ASSERT_TRUE(imported);
+
+    const auto guid = database.AssetPathToGUID(kAssetPath);
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+    const auto manifest = database.GetArtifactManifestForAssetPath(kAssetPath);
+    ASSERT_TRUE(manifest.has_value());
+    const auto prefabSubAssetKey = FindPrimaryPrefabSubAssetKey(*manifest);
+    ASSERT_FALSE(prefabSubAssetKey.empty());
+
+    NLS::Editor::Assets::UnifiedPrefabLoadRequest request;
+    request.source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+        projectRoot,
+        kAssetPath,
+        prefabSubAssetKey,
+        assetId,
+        NLS::Core::Assets::AssetType::ModelScene);
+    request.loadMode = NLS::Editor::Assets::UnifiedPrefabLoadMode::SceneRestore;
+    request.ownerKind = NLS::Editor::Assets::UnifiedPrefabOwnerKind::SceneInstance;
+    request.ownerScopeId = "scene:new-sponza-prepared-cache-performance";
+    request.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::PrefabGraphOnly;
+    request.allowPending = false;
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(projectRoot / "Assets");
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+    AppendNewSponzaProgressIfRequested("before-cold-load");
+
+    std::chrono::microseconds coldElapsed{0};
+    PerformanceStageStats coldStats;
+    NLS::Editor::Assets::UnifiedPrefabSharedLoadResult coldLoad;
+    {
+        PerformanceStageStatsCapture capture(coldStats);
+        const auto begin = std::chrono::steady_clock::now();
+        coldLoad = bridge.LoadUnifiedPrefabShared(request);
+        coldElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - begin);
+    }
+    AppendNewSponzaProgressIfRequested("after-cold-load");
+    if (coldLoad.prefab == nullptr || !coldLoad.key.has_value())
+    {
+        std::ostringstream failure;
+        failure << "Asset: " << kAssetPath << '\n';
+        failure << "ProjectRoot: " << projectRoot.generic_string() << '\n';
+        failure << "PrefabSubAssetKey: " << prefabSubAssetKey << '\n';
+        failure << "ColdUnifiedSharedLoad: " << coldElapsed.count() << "us\n";
+        failure << "HasPrefab: " << (coldLoad.prefab != nullptr ? 1 : 0) << '\n';
+        failure << "HasKey: " << (coldLoad.key.has_value() ? 1 : 0) << '\n';
+        failure << "Pending: " << (coldLoad.pending ? 1 : 0) << '\n';
+        failure << "RendererDependencyMissing: " << (coldLoad.rendererDependencyMissing ? 1 : 0) << '\n';
+        failure << "DiagnosticCode: " << coldLoad.diagnosticCode << '\n';
+        failure << "DiagnosticMessage: " << coldLoad.diagnosticMessage << '\n';
+        WriteTextPerformanceReportIfRequested("NewSponza_PreparedCacheColdLoadFailure", failure.str());
+    }
+    ASSERT_NE(coldLoad.prefab, nullptr);
+    ASSERT_TRUE(coldLoad.key.has_value());
+    AppendNewSponzaProgressIfRequested("after-cold-prefab-key-asserts");
+    WritePrefabPerformanceReportIfRequested(
+        "NewSponza_PreparedCacheColdLoad",
+        coldStats.Snapshot(),
+        coldElapsed);
+    ASSERT_NE(coldLoad.prefab->runtimeResolvedGraph, nullptr);
+    AppendNewSponzaProgressIfRequested("after-cold-runtime-graph-assert");
+
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+    ASSERT_EQ(NLS::Editor::Assets::GetImportedPrefabHotCacheEntryCountForTesting(), 0u);
+    AppendNewSponzaProgressIfRequested("before-prepared-restart-load");
+
+    std::chrono::microseconds preparedElapsed{0};
+    PerformanceStageStats preparedStats;
+    NLS::Editor::Assets::UnifiedPrefabSharedLoadResult preparedLoad;
+    {
+        PerformanceStageStatsCapture capture(preparedStats);
+        const auto begin = std::chrono::steady_clock::now();
+        preparedLoad = bridge.LoadUnifiedPrefabShared(request);
+        preparedElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - begin);
+    }
+    AppendNewSponzaProgressIfRequested("after-prepared-restart-load");
+    ASSERT_NE(preparedLoad.prefab, nullptr);
+    ASSERT_TRUE(preparedLoad.key.has_value());
+    ASSERT_NE(preparedLoad.prefab->runtimeResolvedGraph, nullptr);
+    AppendNewSponzaProgressIfRequested("after-prepared-runtime-graph-assert");
+    EXPECT_EQ(preparedLoad.key->runtimeCacheIdentity, coldLoad.key->runtimeCacheIdentity);
+    EXPECT_EQ(
+        preparedLoad.prefab->runtimeResolvedGraphFingerprint,
+        coldLoad.prefab->runtimeResolvedGraphFingerprint);
+    AppendNewSponzaProgressIfRequested("after-prepared-fingerprint-asserts");
+    WritePrefabPerformanceReportIfRequested(
+        "NewSponza_PreparedCacheRestartLoad",
+        preparedStats.Snapshot(),
+        preparedElapsed);
+
+    std::ostringstream summary;
+    summary << "Asset: " << kAssetPath << '\n';
+    summary << "ProjectRoot: " << projectRoot.generic_string() << '\n';
+    summary << "PrefabSubAssetKey: " << prefabSubAssetKey << '\n';
+    summary << "ManifestSubAssetCount: " << manifest->subAssets.size() << '\n';
+    summary << "ColdUnifiedSharedLoad: " << coldElapsed.count() << "us\n";
+    summary << "PreparedRestartUnifiedSharedLoad: " << preparedElapsed.count() << "us\n";
+    if (coldElapsed.count() > 0)
+    {
+        const auto savedPercent =
+            (coldElapsed.count() - preparedElapsed.count()) * 100 / coldElapsed.count();
+        summary << "PreparedRestartSavedPercent: " << savedPercent << "%\n";
+    }
+    summary << "ObjectCount: " << preparedLoad.prefab->graph.objects.size() << '\n';
+    summary << "DependencyCount: " << preparedLoad.prefab->resolvedAssets.size() << '\n';
+    WriteTextPerformanceReportIfRequested("NewSponza_PreparedCacheSummary", summary.str());
 }
 
 TEST(AssetPrefabPerformanceTests, LargePrefabScenariosEmitObjectAndComponentScaleCounters)
@@ -546,26 +823,10 @@ TEST(AssetPrefabPerformanceTests, LargePrefabSceneRegistrationDefersFastAccessRe
     EXPECT_GT(elapsed.count(), 0);
 }
 
-TEST(AssetPrefabPerformanceTests, DeferredSceneRegistrationPreservesFastAccessComponents)
+TEST(AssetPrefabPerformanceTests, LargePrefabComponentRestoreUsesCompiledComponentPlan)
 {
     auto artifact = MakePrefabArtifact(
-        "Prefab_FastAccessPreserved",
-        "16161616-1616-4616-8616-161616161616",
-        8u,
-        2u);
-
-    NLS::Engine::SceneSystem::Scene scene;
-    const auto instance = NLS::Engine::Assets::InstantiatePrefabArtifact(artifact, scene);
-
-    ASSERT_FALSE(instance.diagnostics.HasErrors());
-    ASSERT_NE(instance.root, nullptr);
-    EXPECT_EQ(scene.GetFastAccessComponents().modelRenderers.size(), 3u);
-}
-
-TEST(AssetPrefabPerformanceTests, LargePrefabComponentRestoreUsesIndexedRecordLookup)
-{
-    auto artifact = MakePrefabArtifact(
-        "Prefab_IndexedRecordLookup",
+        "Prefab_CompiledComponentPlan",
         "17171717-1717-4717-8717-171717171717",
         1000u);
 
@@ -579,80 +840,13 @@ TEST(AssetPrefabPerformanceTests, LargePrefabComponentRestoreUsesIndexedRecordLo
     ASSERT_NE(deserialize, nullptr);
     ASSERT_TRUE(deserialize->counters.contains("indexedRecordLookupCount"));
     ASSERT_TRUE(deserialize->counters.contains("linearRecordLookupCount"));
-    EXPECT_GE(deserialize->counters.at("indexedRecordLookupCount"), 1000u);
+    ASSERT_TRUE(deserialize->counters.contains("directComponentBindingPopulateCount"));
+    EXPECT_EQ(deserialize->counters.at("indexedRecordLookupCount"), 0u);
     EXPECT_EQ(deserialize->counters.at("linearRecordLookupCount"), 0u);
-    EXPECT_GT(elapsed.count(), 0);
-}
-
-TEST(AssetPrefabPerformanceTests, PrefabInstantiationReportsBatchCreatePopulateAndBindPhases)
-{
-    auto artifact = MakePrefabArtifact(
-        "Prefab_BatchCreatePopulateBind",
-        "1b1b1b1b-1b1b-4b1b-8b1b-1b1b1b1b1b1b",
-        32u,
-        2u);
-
-    std::chrono::microseconds elapsed{0};
-    const auto snapshot = RunPrefabInstantiationScenario(
-        "Prefab_BatchCreatePopulateBind",
-        std::move(artifact),
-        &elapsed);
-
-    const auto* allocate = FindStage(snapshot, "AllocateInstanceObjects");
-    ASSERT_NE(allocate, nullptr);
-    ASSERT_TRUE(allocate->counters.contains("objectCount"));
-    ASSERT_TRUE(allocate->counters.contains("reservedObjectCount"));
-    EXPECT_EQ(allocate->counters.at("objectCount"), 32u);
-    EXPECT_EQ(allocate->counters.at("reservedObjectCount"), 32u);
-
-    const auto* restoreGameObjects = FindStage(snapshot, "RestoreGameObjectState");
-    ASSERT_NE(restoreGameObjects, nullptr);
-    ASSERT_TRUE(restoreGameObjects->counters.contains("restoredGameObjectCount"));
-    EXPECT_EQ(restoreGameObjects->counters.at("restoredGameObjectCount"), 32u);
-
-    const auto* createComponents = FindStage(snapshot, "CreateComponents");
-    ASSERT_NE(createComponents, nullptr);
-    ASSERT_TRUE(createComponents->counters.contains("createdComponentCount"));
-    ASSERT_TRUE(createComponents->counters.contains("componentRecordCount"));
-    ASSERT_TRUE(createComponents->counters.contains("indexedRecordLookupCount"));
-    ASSERT_TRUE(createComponents->counters.contains("linearRecordLookupCount"));
-    EXPECT_GE(createComponents->counters.at("createdComponentCount"), 32u);
     EXPECT_EQ(
-        createComponents->counters.at("createdComponentCount"),
-        createComponents->counters.at("componentRecordCount"));
-    EXPECT_GE(createComponents->counters.at("indexedRecordLookupCount"), 32u);
-    EXPECT_EQ(createComponents->counters.at("linearRecordLookupCount"), 0u);
-
-    const auto* deserialize = FindStage(snapshot, "DeserializeComponents");
-    ASSERT_NE(deserialize, nullptr);
-    ASSERT_TRUE(deserialize->counters.contains("restoredGameObjectCount"));
-    ASSERT_TRUE(deserialize->counters.contains("restoredComponentCount"));
-    ASSERT_TRUE(deserialize->counters.contains("indexedRecordLookupCount"));
-    ASSERT_TRUE(deserialize->counters.contains("linearRecordLookupCount"));
-    EXPECT_EQ(deserialize->counters.at("restoredGameObjectCount"), 32u);
-    EXPECT_EQ(
-        deserialize->counters.at("restoredComponentCount"),
-        createComponents->counters.at("createdComponentCount"));
-    EXPECT_EQ(
-        deserialize->counters.at("indexedRecordLookupCount"),
-        deserialize->counters.at("restoredComponentCount"));
-    EXPECT_EQ(deserialize->counters.at("linearRecordLookupCount"), 0u);
-
-    const auto* bindExternalReferences = FindStage(snapshot, "BindExternalAssetReferences");
-    ASSERT_NE(bindExternalReferences, nullptr);
-    ASSERT_TRUE(bindExternalReferences->counters.contains("assetReferenceBindingCount"));
-    ASSERT_TRUE(bindExternalReferences->counters.contains("assetReferenceElementBindingCount"));
-    ASSERT_TRUE(bindExternalReferences->counters.contains("componentCount"));
-    EXPECT_GE(bindExternalReferences->counters.at("assetReferenceBindingCount"), 16u);
-    EXPECT_EQ(
-        bindExternalReferences->counters.at("componentCount"),
-        createComponents->counters.at("createdComponentCount"));
-
-    const auto* fixup = FindStage(snapshot, "FixupInternalReferences");
-    ASSERT_NE(fixup, nullptr);
-    ASSERT_TRUE(fixup->counters.contains("parentFixupCount"));
-    EXPECT_EQ(fixup->counters.at("parentFixupCount"), 31u);
-
+        deserialize->counters.at("directComponentBindingPopulateCount"),
+        deserialize->counters.at("restoredComponentCount"))
+        << "Compiled prefab instantiation should populate the component records it just bound instead of re-resolving component ids through the object graph.";
     EXPECT_GT(elapsed.count(), 0);
 }
 
@@ -684,60 +878,6 @@ TEST(AssetPrefabPerformanceTests, LargePrefabComponentRestoreReportsReflectionSu
     EXPECT_LT(deserializeValue->counters.at("propertyCount"), 100u);
     EXPECT_LT(setField->counters.at("propertyCount"), 100u);
     EXPECT_GT(elapsed.count(), 0);
-}
-
-TEST(AssetPrefabPerformanceTests, TransformMathPropertiesAreSerializedAsDirectlyReadableObjects)
-{
-    NLS::Engine::GameObject root("Prefab_DirectMathShape", "Prefab");
-    const auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializePrefab(root).graph;
-
-    const auto* transformRecord = FindObjectRecordByType(
-        document,
-        "NLS::Engine::Components::TransformComponent");
-    ASSERT_NE(transformRecord, nullptr);
-
-    const auto transformType =
-        NLS::meta::Type::GetFromName("NLS::Engine::Components::TransformComponent");
-    ASSERT_TRUE(transformType.IsValid());
-
-    struct ExpectedMathProperty
-    {
-        const char* propertyName;
-        const char* typeName;
-        std::vector<std::string> expectedKeys;
-    };
-
-    const ExpectedMathProperty expectedProperties[] = {
-        {"localPosition", "NLS::Maths::Vector3", {"x", "y", "z"}},
-        {"localRotation", "NLS::Maths::Quaternion", {"x", "y", "z", "w"}},
-        {"localScale", "NLS::Maths::Vector3", {"x", "y", "z"}}
-    };
-
-    for (const auto& expected : expectedProperties)
-    {
-        const auto field = transformType.GetField(expected.propertyName);
-        ASSERT_TRUE(field.IsValid()) << expected.propertyName;
-        EXPECT_EQ(field.GetType().GetName(), expected.typeName) << expected.propertyName;
-
-        const auto* property = FindProperty(*transformRecord, expected.propertyName);
-        ASSERT_NE(property, nullptr) << expected.propertyName;
-        ASSERT_EQ(property->value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::Object)
-            << expected.propertyName;
-
-        for (const auto& key : expected.expectedKeys)
-        {
-            EXPECT_NE(
-                std::find_if(
-                    property->value.GetObject().begin(),
-                    property->value.GetObject().end(),
-                    [&key](const auto& item)
-                    {
-                        return item.first == key;
-                    }),
-                property->value.GetObject().end())
-                << expected.propertyName << "." << key;
-        }
-    }
 }
 
 TEST(AssetPrefabPerformanceTests, LargePrefabComponentRestoreAppliesSimplePropertiesDirectly)
@@ -940,24 +1080,4 @@ TEST(AssetPrefabPerformanceTests, LargePrefabGameObjectStateBypassesReflectionFi
     EXPECT_LT(fieldLookup->counters.at("propertyCount"), 2000u)
         << "GameObject name/tag/active/layer should restore without the generic reflection field lookup loop.";
     EXPECT_GT(elapsed.count(), 0);
-}
-
-TEST(AssetPrefabPerformanceTests, MultiRendererPrefabReportsRendererCount)
-{
-    auto artifact = MakePrefabArtifact(
-        "Prefab_MultiRenderer",
-        "14141414-1414-4414-8414-141414141414",
-        64u,
-        2u);
-
-    std::chrono::microseconds elapsed{0};
-    const auto snapshot = RunPrefabInstantiationScenario(
-        "Prefab_MultiRenderer",
-        std::move(artifact),
-        &elapsed);
-
-    const auto* registerRenderers = FindStage(snapshot, "RegisterRenderers");
-    ASSERT_NE(registerRenderers, nullptr);
-    ASSERT_TRUE(registerRenderers->counters.contains("rendererCount"));
-    EXPECT_GE(registerRenderers->counters.at("rendererCount"), 31u);
 }

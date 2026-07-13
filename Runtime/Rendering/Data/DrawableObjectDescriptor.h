@@ -8,6 +8,9 @@
 
 namespace NLS::Render::Data
 {
+    inline constexpr uint32_t kDrawableObjectFlagReceiveShadows = 1u << 0u;
+    inline constexpr uint32_t kDrawableObjectFlagCastShadows = 1u << 1u;
+
     struct DrawableObjectDescriptor
     {
         static constexpr uint32_t kInvalidObjectIndex = (std::numeric_limits<uint32_t>::max)();
@@ -17,5 +20,18 @@ namespace NLS::Render::Data
         uint32_t objectIndex = kInvalidObjectIndex;
         uint32_t objectCount = 1u;
         std::vector<Maths::Matrix4> instanceModelMatrices;
+        uint32_t objectFlags = kDrawableObjectFlagReceiveShadows |
+            kDrawableObjectFlagCastShadows;
     };
+
+    struct ObjectDrawConstants
+    {
+        uint32_t objectIndex = DrawableObjectDescriptor::kInvalidObjectIndex;
+        uint32_t objectFlags = kDrawableObjectFlagReceiveShadows |
+            kDrawableObjectFlagCastShadows;
+        uint32_t padding0 = 0u;
+        uint32_t padding1 = 0u;
+    };
+
+    static_assert(sizeof(ObjectDrawConstants) == 16u);
 }

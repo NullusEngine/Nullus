@@ -278,7 +278,7 @@ void CompositeRenderer::DrawEntity(
         {
             preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
             preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
-            preparedDraw.objectIndex = bindingSets.objectIndex;
+            preparedDraw.objectConstants = bindingSets.objectConstants;
             preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
         }
     }
@@ -347,7 +347,7 @@ void CompositeRenderer::DrawEntity(
         {
             preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
             preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
-            preparedDraw.objectIndex = bindingSets.objectIndex;
+            preparedDraw.objectConstants = bindingSets.objectConstants;
             preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
         }
     }
@@ -399,7 +399,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         outDraw.instanceCount = preparedDraw.instanceCount;
         outDraw.vertexStart = preparedDraw.vertexStart;
         outDraw.vertexCount = preparedDraw.vertexCount;
-        outDraw.objectIndex = preparedDraw.objectIndex;
+        outDraw.objectConstants = preparedDraw.objectConstants;
         outDraw.usesObjectIndex = preparedDraw.usesObjectIndex;
         return true;
     };
@@ -423,7 +423,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         {
             preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
             preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
-            preparedDraw.objectIndex = bindingSets.objectIndex;
+            preparedDraw.objectConstants = bindingSets.objectConstants;
             preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
         }
     }
@@ -475,7 +475,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         outDraw.instanceCount = preparedDraw.instanceCount;
         outDraw.vertexStart = preparedDraw.vertexStart;
         outDraw.vertexCount = preparedDraw.vertexCount;
-        outDraw.objectIndex = preparedDraw.objectIndex;
+        outDraw.objectConstants = preparedDraw.objectConstants;
         outDraw.usesObjectIndex = preparedDraw.usesObjectIndex;
         return true;
     };
@@ -500,7 +500,7 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         {
             preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
             preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
-            preparedDraw.objectIndex = bindingSets.objectIndex;
+            preparedDraw.objectConstants = bindingSets.objectConstants;
             preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
         }
     }

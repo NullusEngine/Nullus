@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "Rendering/RHI/BindingPointMap.h"
+#include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
@@ -270,8 +271,7 @@ namespace NLS::Render::Resources
                 member.name == "ObjectIndexConstants" &&
                 member.type == RHI::BindingType::UniformBuffer &&
                 member.binding == 1u &&
-                member.byteSize >= sizeof(uint32_t) &&
-                member.byteSize <= 16u;
+                member.byteSize == sizeof(NLS::Render::Data::ObjectDrawConstants);
         };
 
         RHI::RHIBindingLayoutDesc desc;
@@ -333,8 +333,7 @@ namespace NLS::Render::Resources
                     member.name == "ObjectIndexConstants" &&
                     member.type == RHI::BindingType::UniformBuffer &&
                     member.binding == 1u &&
-                    member.byteSize >= sizeof(uint32_t) &&
-                    member.byteSize <= 16u)
+                    member.byteSize == sizeof(NLS::Render::Data::ObjectDrawConstants))
                 {
                     continue;
                 }

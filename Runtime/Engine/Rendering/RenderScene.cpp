@@ -162,7 +162,8 @@ namespace
 		const NLS::Engine::Rendering::EngineDrawableDescriptor& lhs,
 		const NLS::Engine::Rendering::EngineDrawableDescriptor& rhs)
 	{
-		return NLS::Maths::Matrix4::AreEquals(lhs.userMatrix, rhs.userMatrix);
+		return lhs.objectFlags == rhs.objectFlags &&
+			NLS::Maths::Matrix4::AreEquals(lhs.userMatrix, rhs.userMatrix);
 	}
 
 	bool CanMergeOpaqueDrawables(
@@ -2949,6 +2950,13 @@ void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& 
 	opaques = std::move(merged);
 }
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void RenderScene::FinalizeOpaqueQueueForTesting(RenderSceneVisibleQueues::SceneDrawables& opaques) const
+{
+	FinalizeOpaqueQueue(opaques);
+}
+#endif
+
 void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) const
 {
 	uint32_t nextObjectIndex = 0u;
@@ -3015,6 +3023,7 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 						chunkDescriptor.userMatrix = descriptor.userMatrix;
 						chunkDescriptor.objectIndex = objectIndex;
 						chunkDescriptor.objectCount = chunkObjectCount;
+						chunkDescriptor.objectFlags = descriptor.objectFlags;
 						if (!descriptor.instanceModelMatrices.empty())
 						{
 							const auto sliceBegin = std::min(

@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "Rendering/Data/FrameDescriptor.h"
+#include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/Entities/Drawable.h"
 #include "RenderDef.h"
@@ -26,7 +27,7 @@ public:
     {
         std::shared_ptr<RHI::RHIBindingSet> frameBindingSet;
         std::shared_ptr<RHI::RHIBindingSet> objectBindingSet;
-        uint32_t objectIndex = 0u;
+        Data::ObjectDrawConstants objectConstants;
         bool usesObjectIndex = false;
     };
 

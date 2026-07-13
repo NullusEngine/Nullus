@@ -43,19 +43,88 @@ namespace
 	using ShaderSourceLanguage = NLS::Render::ShaderCompiler::ShaderSourceLanguage;
 	using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
 	using UniformType = NLS::Render::Resources::UniformType;
+	constexpr std::string_view kIndexedObjectDataDiagnosticBindingName = "ObjectIndexConstants";
 
-	std::string BuildExplicitShaderCacheKey(
+	void ClearNonIndexedObjectDataBindingDiagnostics(
+		std::vector<NLS::Render::Resources::MaterialBindingDiagnostic>& diagnostics)
+	{
+		diagnostics.erase(
+			std::remove_if(
+				diagnostics.begin(),
+				diagnostics.end(),
+				[](const NLS::Render::Resources::MaterialBindingDiagnostic& diagnostic)
+				{
+					return diagnostic.bindingName != kIndexedObjectDataDiagnosticBindingName;
+				}),
+			diagnostics.end());
+	}
+
+	struct ExplicitShaderCacheKey
+	{
+		uint64_t deviceIdentity = 0u;
+		NLS::Render::RHI::NativeBackendType backend = NLS::Render::RHI::NativeBackendType::None;
+		uint64_t shaderInstanceId = 0u;
+		uint64_t shaderGeneration = 0u;
+
+		bool operator==(const ExplicitShaderCacheKey& rhs) const = default;
+	};
+
+	struct ExplicitShaderCacheKeyHash
+	{
+		size_t operator()(const ExplicitShaderCacheKey& key) const
+		{
+			size_t hash = std::hash<uint64_t>{}(key.deviceIdentity);
+			auto combine = [&hash](const size_t value)
+			{
+				hash ^= value + 0x9e3779b9u + (hash << 6u) + (hash >> 2u);
+			};
+			combine(std::hash<uint32_t>{}(static_cast<uint32_t>(key.backend)));
+			combine(std::hash<uint64_t>{}(key.shaderInstanceId));
+			combine(std::hash<uint64_t>{}(key.shaderGeneration));
+			return hash;
+		}
+	};
+
+	struct IndexedObjectDataBindingDiagnosticSource
+	{
+		uint64_t shaderInstanceId = 0u;
+		uint64_t shaderGeneration = 0u;
+		std::string message;
+	};
+
+	void RefreshIndexedObjectDataBindingDiagnostics(
+		std::vector<NLS::Render::Resources::MaterialBindingDiagnostic>& diagnostics,
+		const std::vector<IndexedObjectDataBindingDiagnosticSource>& sources)
+	{
+		diagnostics.erase(
+			std::remove_if(
+				diagnostics.begin(),
+				diagnostics.end(),
+				[](const NLS::Render::Resources::MaterialBindingDiagnostic& diagnostic)
+				{
+					return diagnostic.bindingName == kIndexedObjectDataDiagnosticBindingName;
+				}),
+			diagnostics.end());
+		for (const auto& source : sources)
+		{
+			diagnostics.push_back({
+				NLS::Render::Resources::MaterialBindingDiagnosticSeverity::Error,
+				std::string(kIndexedObjectDataDiagnosticBindingName),
+				source.message
+			});
+		}
+	}
+
+	ExplicitShaderCacheKey BuildExplicitShaderCacheKey(
 		const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device,
 		const NLS::Render::Resources::Shader* shader)
 	{
-		const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
-		const auto backend = device != nullptr ? device->GetNativeDeviceInfo().backend : NLS::Render::RHI::NativeBackendType::None;
-		const auto shaderInstanceId = shader != nullptr ? shader->GetInstanceId() : 0u;
-		const auto shaderGeneration = shader != nullptr ? shader->GetGeneration() : 0u;
-		return std::to_string(deviceIdentity) + "|" +
-			std::to_string(static_cast<uint32_t>(backend)) + "|" +
-			std::to_string(shaderInstanceId) + "|" +
-			std::to_string(shaderGeneration);
+		return {
+			device != nullptr ? device->GetCacheIdentity() : 0u,
+			device != nullptr ? device->GetNativeDeviceInfo().backend : NLS::Render::RHI::NativeBackendType::None,
+			shader != nullptr ? shader->GetInstanceId() : 0u,
+			shader != nullptr ? shader->GetGeneration() : 0u
+		};
 	}
 
 	uint64_t NextMaterialInstanceId()
@@ -930,10 +999,14 @@ namespace NLS::Render::Resources
 		std::shared_ptr<RHI::RHIBindingLayout> explicitBindingLayout;
 		std::shared_ptr<RHI::RHIBindingSet> explicitBindingSet;
 		std::shared_ptr<RHI::RHIPipelineLayout> explicitPipelineLayout;
-		std::unordered_map<std::string, std::shared_ptr<RHI::RHIBindingLayout>> explicitBindingLayoutsByShaderKey;
-		std::unordered_map<std::string, std::shared_ptr<RHI::RHIBindingSet>> explicitBindingSetsByShaderKey;
-		std::unordered_map<std::string, std::shared_ptr<RHI::RHIPipelineLayout>> explicitPipelineLayoutsByShaderKey;
+		std::unordered_map<ExplicitShaderCacheKey, std::shared_ptr<RHI::RHIBindingLayout>, ExplicitShaderCacheKeyHash>
+			explicitBindingLayoutsByShaderKey;
+		std::unordered_map<ExplicitShaderCacheKey, std::shared_ptr<RHI::RHIBindingSet>, ExplicitShaderCacheKeyHash>
+			explicitBindingSetsByShaderKey;
+		std::unordered_map<ExplicitShaderCacheKey, std::shared_ptr<RHI::RHIPipelineLayout>, ExplicitShaderCacheKeyHash>
+			explicitPipelineLayoutsByShaderKey;
 		std::vector<MaterialBindingDiagnostic> explicitBindingDiagnostics;
+		std::vector<IndexedObjectDataBindingDiagnosticSource> indexedObjectDataBindingDiagnosticSources;
 		std::vector<MaterialBindingDiagnostic> materialConstantBufferDiagnostics;
         uint64_t explicitBindingLayoutDeviceIdentity = 0u;
         uint64_t explicitBindingSetDeviceIdentity = 0u;
@@ -950,6 +1023,9 @@ namespace NLS::Render::Resources
 		uint64_t shaderGeneration = 0u;
 		uint64_t explicitBindingSetCreationCount = 0u;
 		uint64_t explicitSnapshotBufferCreationCount = 0u;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		uint64_t indexedObjectDataShaderValidationCount = 0u;
+#endif
 		bool explicitBindingLayoutDirty = true;
 		bool explicitBindingSetDirty = true;
 	};
@@ -973,6 +1049,7 @@ namespace NLS::Render::Resources
 		state.explicitBindingSetsByShaderKey.clear();
 		state.explicitPipelineLayoutsByShaderKey.clear();
 		state.explicitBindingDiagnostics.clear();
+		state.indexedObjectDataBindingDiagnosticSources.clear();
 		state.materialConstantBufferDiagnostics.clear();
         state.explicitBindingLayoutDeviceIdentity = 0u;
         state.explicitBindingSetDeviceIdentity = 0u;
@@ -1019,6 +1096,78 @@ namespace NLS::Render::Resources
 		GetRuntimeState().shaderGeneration = currentGeneration;
 	}
 
+	void Material::PruneStaleExplicitShaderGenerationEntries(
+		const uint64_t shaderInstanceId,
+		const uint64_t shaderGeneration) const
+	{
+		if (shaderInstanceId == 0u)
+			return;
+
+		auto& state = GetRuntimeState();
+		const auto isStaleGeneration = [shaderInstanceId, shaderGeneration](const ExplicitShaderCacheKey& key)
+		{
+			return key.shaderInstanceId == shaderInstanceId &&
+				key.shaderGeneration != shaderGeneration;
+		};
+		auto eraseStaleEntries = [&isStaleGeneration](auto& entries)
+		{
+			for (auto entry = entries.begin(); entry != entries.end();)
+			{
+				if (isStaleGeneration(entry->first))
+					entry = entries.erase(entry);
+				else
+					++entry;
+			}
+		};
+
+		if (state.explicitBindingSetShaderInstanceId == shaderInstanceId &&
+			state.explicitBindingSetShaderGeneration != shaderGeneration)
+		{
+			state.explicitBindingSet.reset();
+			state.explicitBindingSetDeviceIdentity = 0u;
+			state.explicitBindingSetBackend = RHI::NativeBackendType::None;
+			state.explicitBindingSetShaderInstanceId = 0u;
+			state.explicitBindingSetShaderGeneration = 0u;
+			state.explicitBindingSetDirty = true;
+		}
+		if (state.explicitPipelineLayoutShaderInstanceId == shaderInstanceId &&
+			state.explicitPipelineLayoutShaderGeneration != shaderGeneration)
+		{
+			state.explicitPipelineLayout.reset();
+			state.explicitPipelineLayoutDeviceIdentity = 0u;
+			state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+			state.explicitPipelineLayoutShaderInstanceId = 0u;
+			state.explicitPipelineLayoutShaderGeneration = 0u;
+		}
+		if (state.explicitBindingLayoutShaderInstanceId == shaderInstanceId &&
+			state.explicitBindingLayoutShaderGeneration != shaderGeneration)
+		{
+			state.explicitBindingLayout.reset();
+			state.explicitBindingLayoutDeviceIdentity = 0u;
+			state.explicitBindingLayoutBackend = RHI::NativeBackendType::None;
+			state.explicitBindingLayoutShaderInstanceId = 0u;
+			state.explicitBindingLayoutShaderGeneration = 0u;
+			state.explicitBindingLayoutDirty = true;
+		}
+
+		eraseStaleEntries(state.explicitBindingSetsByShaderKey);
+		eraseStaleEntries(state.explicitPipelineLayoutsByShaderKey);
+		eraseStaleEntries(state.explicitBindingLayoutsByShaderKey);
+		state.indexedObjectDataBindingDiagnosticSources.erase(
+			std::remove_if(
+				state.indexedObjectDataBindingDiagnosticSources.begin(),
+				state.indexedObjectDataBindingDiagnosticSources.end(),
+				[shaderInstanceId, shaderGeneration](const IndexedObjectDataBindingDiagnosticSource& source)
+				{
+					return source.shaderInstanceId == shaderInstanceId &&
+						source.shaderGeneration != shaderGeneration;
+				}),
+			state.indexedObjectDataBindingDiagnosticSources.end());
+		RefreshIndexedObjectDataBindingDiagnostics(
+			state.explicitBindingDiagnostics,
+			state.indexedObjectDataBindingDiagnosticSources);
+	}
+
 	void Material::InvalidateExplicitBindingSetCache() const
 	{
 		auto& state = GetRuntimeState();
@@ -1028,6 +1177,7 @@ namespace NLS::Render::Resources
 		state.explicitBindingSetsByShaderKey.clear();
 		state.explicitPipelineLayoutsByShaderKey.clear();
 		state.explicitBindingDiagnostics.clear();
+		state.indexedObjectDataBindingDiagnosticSources.clear();
         state.explicitBindingSetDeviceIdentity = 0u;
         state.explicitPipelineLayoutDeviceIdentity = 0u;
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
@@ -1785,6 +1935,7 @@ namespace NLS::Render::Resources
 			state.explicitBindingLayoutDirty = false;
 			return state.explicitBindingLayout;
 		}
+		PruneStaleExplicitShaderGenerationEntries(shaderInstanceId, shaderGeneration);
 		if (!state.explicitBindingLayoutDirty &&
 			state.explicitBindingLayout != nullptr &&
             state.explicitBindingLayoutDeviceIdentity == deviceIdentity &&
@@ -1796,7 +1947,7 @@ namespace NLS::Render::Resources
 		}
 
 		state.explicitBindingLayout.reset();
-		state.explicitBindingDiagnostics.clear();
+		ClearNonIndexedObjectDataBindingDiagnostics(state.explicitBindingDiagnostics);
         state.explicitBindingLayoutDeviceIdentity = deviceIdentity;
 		state.explicitBindingLayoutBackend = backend;
 		state.explicitBindingLayoutShaderInstanceId = shaderInstanceId;
@@ -1873,6 +2024,7 @@ namespace NLS::Render::Resources
 			state.explicitBindingSetDirty = false;
 			return state.explicitBindingSet;
 		}
+		PruneStaleExplicitShaderGenerationEntries(shaderInstanceId, shaderGeneration);
 		if (!state.explicitBindingSetDirty &&
 			state.explicitBindingSet != nullptr &&
             state.explicitBindingSetDeviceIdentity == deviceIdentity &&
@@ -1900,7 +2052,7 @@ namespace NLS::Render::Resources
 		RHI::RHIBindingSetDesc bindingSetDesc;
 		bindingSetDesc.layout = explicitLayout;
 		bindingSetDesc.debugName = path.empty() ? "MaterialBindingSet" : path + ":MaterialBindingSet";
-		state.explicitBindingDiagnostics.clear();
+		ClearNonIndexedObjectDataBindingDiagnostics(state.explicitBindingDiagnostics);
 		state.explicitBindingDiagnostics.insert(
 			state.explicitBindingDiagnostics.end(),
 			state.materialConstantBufferDiagnostics.begin(),
@@ -2116,6 +2268,7 @@ namespace NLS::Render::Resources
 			state.explicitPipelineLayoutShaderGeneration = shaderGeneration;
 			return state.explicitPipelineLayout;
 		}
+		PruneStaleExplicitShaderGenerationEntries(shaderInstanceId, shaderGeneration);
 		if (state.explicitPipelineLayout != nullptr &&
             state.explicitPipelineLayoutDeviceIdentity == deviceIdentity &&
             state.explicitPipelineLayoutBackend == backend &&
@@ -2129,29 +2282,74 @@ namespace NLS::Render::Resources
 		state.explicitPipelineLayoutShaderInstanceId = shaderInstanceId;
 		state.explicitPipelineLayoutShaderGeneration = shaderGeneration;
 		if (device == nullptr)
+		{
+			state.explicitPipelineLayoutsByShaderKey[cacheKey] = state.explicitPipelineLayout;
 			return state.explicitPipelineLayout;
+		}
 
 		if (shader == nullptr)
+		{
+			state.explicitPipelineLayoutsByShaderKey[cacheKey] = state.explicitPipelineLayout;
 			return state.explicitPipelineLayout;
+		}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		++state.indexedObjectDataShaderValidationCount;
+#endif
+		const auto indexedObjectDataValidation = ValidateIndexedObjectDataShader(*shader);
+		if (indexedObjectDataValidation.status == IndexedObjectDataShaderStatus::Incompatible)
+		{
+			const auto existingDiagnostic = std::find_if(
+				state.indexedObjectDataBindingDiagnosticSources.begin(),
+				state.indexedObjectDataBindingDiagnosticSources.end(),
+				[shaderInstanceId, shaderGeneration](const IndexedObjectDataBindingDiagnosticSource& source)
+				{
+					return source.shaderInstanceId == shaderInstanceId &&
+						source.shaderGeneration == shaderGeneration;
+				});
+			if (existingDiagnostic == state.indexedObjectDataBindingDiagnosticSources.end())
+			{
+				state.indexedObjectDataBindingDiagnosticSources.push_back({
+					shaderInstanceId,
+					shaderGeneration,
+					indexedObjectDataValidation.diagnostic
+				});
+			}
+			else
+			{
+				existingDiagnostic->message = indexedObjectDataValidation.diagnostic;
+			}
+			RefreshIndexedObjectDataBindingDiagnostics(
+				state.explicitBindingDiagnostics,
+				state.indexedObjectDataBindingDiagnosticSources);
+			state.explicitPipelineLayoutsByShaderKey[cacheKey] = state.explicitPipelineLayout;
+			return state.explicitPipelineLayout;
+		}
 
 		const auto layoutDescs = BuildExplicitBindingLayoutDescs(
 			*shader,
 			path.empty() ? "Material" : path);
 		if (layoutDescs.empty())
+		{
+			state.explicitPipelineLayoutsByShaderKey[cacheKey] = state.explicitPipelineLayout;
 			return state.explicitPipelineLayout;
+		}
 
-		const bool requiresIndexedObjectData = ShaderSupportsIndexedObjectData(*shader);
+		const bool requiresIndexedObjectData = indexedObjectDataValidation.IsCompatible();
 		if (requiresIndexedObjectData && !BackendSupportsIndexedObjectDataPushConstants(backend))
+		{
+			state.explicitPipelineLayoutsByShaderKey[cacheKey] = state.explicitPipelineLayout;
 			return state.explicitPipelineLayout;
+		}
 
 		RHI::RHIPipelineLayoutDesc pipelineLayoutDesc;
 		pipelineLayoutDesc.debugName = path.empty() ? "MaterialPipelineLayout" : path + ":MaterialPipelineLayout";
 		if (requiresIndexedObjectData)
 		{
 			pipelineLayoutDesc.pushConstants.push_back({
-				RHI::ShaderStageMask::Vertex,
+				kIndexedObjectDataPushConstantStageMask,
 				0u,
-				sizeof(uint32_t),
+				kIndexedObjectDataPushConstantSize,
 				1u,
 				NLS::Render::RHI::BindingPointMap::kObjectBindingSpace
 			});
@@ -2239,6 +2437,49 @@ namespace NLS::Render::Resources
 	uint64_t Material::GetCachedShaderGenerationForTesting() const
 	{
 		return GetRuntimeState().shaderGeneration;
+	}
+
+	uint64_t Material::GetIndexedObjectDataShaderValidationCountForTesting() const
+	{
+		return GetRuntimeState().indexedObjectDataShaderValidationCount;
+	}
+
+	Material::ExplicitShaderCacheEntryCountsForTesting Material::GetExplicitShaderCacheEntryCountsForTesting(
+		const uint64_t shaderInstanceId,
+		const uint64_t shaderGeneration) const
+	{
+		const auto& state = GetRuntimeState();
+		auto countEntries = [shaderInstanceId, shaderGeneration](const auto& entries)
+		{
+			return static_cast<size_t>(std::count_if(
+				entries.begin(),
+				entries.end(),
+				[shaderInstanceId, shaderGeneration](const auto& entry)
+				{
+					return entry.first.shaderInstanceId == shaderInstanceId &&
+						entry.first.shaderGeneration == shaderGeneration;
+				}));
+		};
+		return {
+			countEntries(state.explicitBindingLayoutsByShaderKey),
+			countEntries(state.explicitBindingSetsByShaderKey),
+			countEntries(state.explicitPipelineLayoutsByShaderKey)
+		};
+	}
+
+	size_t Material::GetExplicitBindingDiagnosticCountForTesting(
+		const uint64_t shaderInstanceId,
+		const uint64_t shaderGeneration) const
+	{
+		const auto& diagnostics = GetRuntimeState().indexedObjectDataBindingDiagnosticSources;
+		return static_cast<size_t>(std::count_if(
+			diagnostics.begin(),
+			diagnostics.end(),
+			[shaderInstanceId, shaderGeneration](const IndexedObjectDataBindingDiagnosticSource& diagnostic)
+			{
+				return diagnostic.shaderInstanceId == shaderInstanceId &&
+					diagnostic.shaderGeneration == shaderGeneration;
+			}));
 	}
 #endif
 

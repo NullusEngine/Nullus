@@ -82,7 +82,7 @@ private:
     bool m_currentDrawRequiresIndexedObjectData = false;
     bool m_currentDrawPrepared = true;
     bool m_preparedFrameObjectDataSlotUnavailable = false;
-    uint32_t m_currentDrawObjectIndex = 0u;
+    NLS::Render::Data::ObjectDrawConstants m_currentDrawObjectConstants;
     bool m_preparedFrameHasObjectDataSlot = false;
     bool m_preparedFrameObjectDataSlotReserved = false;
     bool m_useAltObjectBuffer = false;

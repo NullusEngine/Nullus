@@ -232,7 +232,7 @@ protected:
         uint32_t instanceCount = 0u;
         uint32_t vertexStart = 0u;
         uint32_t vertexCount = 0u;
-        uint32_t objectIndex = Data::DrawableObjectDescriptor::kInvalidObjectIndex;
+        Data::ObjectDrawConstants objectConstants;
         bool usesObjectIndex = false;
     };
 

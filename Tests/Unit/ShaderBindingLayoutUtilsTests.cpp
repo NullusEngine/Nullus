@@ -258,6 +258,40 @@ TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedF
     EXPECT_NE(layouts[2].entries[0].name, "ObjectIndexConstants");
 }
 
+TEST(ShaderBindingLayoutUtilsTests, LegacyFourByteObjectIndexConstantsRemainExplicitReflectionBindings)
+{
+    ShaderReflection reflection;
+    reflection.constantBuffers = {
+        { "ObjectIndexConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 1u, sizeof(uint32_t), {} }
+    };
+
+    const auto layouts = NLS::Render::Resources::BuildExplicitBindingLayoutDescsBySet(
+        reflection,
+        "LegacyIndexedShader");
+
+    ASSERT_EQ(layouts.size(), 3u);
+    ASSERT_EQ(layouts[2].entries.size(), 1u);
+    EXPECT_EQ(layouts[2].entries[0].name, "ObjectIndexConstants");
+    EXPECT_EQ(layouts[2].entries[0].type, NLS::Render::RHI::BindingType::UniformBuffer);
+    EXPECT_EQ(layouts[2].entries[0].binding, 1u);
+
+    const auto groups = NLS::Render::Resources::BuildShaderParameterGroupContracts(
+        reflection,
+        "LegacyIndexedShader");
+    ASSERT_EQ(groups.size(), 4u);
+    const auto objectGroup = std::find_if(
+        groups.begin(),
+        groups.end(),
+        [](const NLS::Render::Resources::ShaderParameterGroupContract& group)
+        {
+            return group.groupKind == NLS::Render::Resources::ShaderParameterGroupKind::Object;
+        });
+    ASSERT_NE(objectGroup, groups.end());
+    ASSERT_EQ(objectGroup->parameters.size(), 1u);
+    EXPECT_EQ(objectGroup->parameters[0].name, "ObjectIndexConstants");
+    EXPECT_EQ(objectGroup->parameters[0].binding, 1u);
+}
+
 TEST(ShaderBindingLayoutUtilsTests, ReflectionStructuredBuffersCarryElementStrideFromByteSize)
 {
     ShaderReflection reflection;
@@ -280,7 +314,7 @@ TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedF
 {
     ShaderReflection reflection;
     reflection.constantBuffers = {
-        { "ObjectIndexConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 1u, sizeof(uint32_t), {} }
+        { "ObjectIndexConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 1u, sizeof(NLS::Render::Data::ObjectDrawConstants), {} }
     };
     reflection.properties = {
         { "ObjectData", UniformType::UNIFORM_FLOAT_MAT4, ShaderResourceKind::StructuredBuffer, ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 0u, -1, 1, 0u, sizeof(NLS::Maths::Matrix4), {} }
@@ -317,7 +351,7 @@ TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedF
             .AddUniformBuffer(
                 "ObjectIndexConstants",
                 1u,
-                sizeof(uint32_t),
+                sizeof(NLS::Render::Data::ObjectDrawConstants),
                 NLS::Render::RHI::ShaderStageMask::Vertex)
             .Build()
     };
@@ -331,6 +365,33 @@ TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedF
     EXPECT_EQ(layouts[2].entries[0].name, "ObjectData");
     EXPECT_EQ(layouts[2].entries[0].binding, 0u);
     EXPECT_EQ(layouts[2].entries[0].type, NLS::Render::RHI::BindingType::StructuredBuffer);
+}
+
+TEST(ShaderBindingLayoutUtilsTests, LegacyFourByteObjectIndexConstantsRemainShaderParameterBindings)
+{
+    const auto parameters = NLS::Render::Resources::ShaderParameterStructBuilder("LegacyIndexedObjectParameters")
+        .SetGroup(NLS::Render::Resources::ShaderParameterGroupKind::Object)
+        .AddUniformBuffer(
+            "ObjectIndexConstants",
+            1u,
+            sizeof(uint32_t),
+            NLS::Render::RHI::ShaderStageMask::Vertex)
+        .Build();
+
+    const auto layout = NLS::Render::Resources::BuildBindingLayoutDescFromShaderParameters(parameters);
+    ASSERT_EQ(layout.entries.size(), 1u);
+    EXPECT_EQ(layout.entries[0].name, "ObjectIndexConstants");
+    EXPECT_EQ(layout.entries[0].type, NLS::Render::RHI::BindingType::UniformBuffer);
+    EXPECT_EQ(layout.entries[0].binding, 1u);
+
+    const auto layouts = NLS::Render::Resources::BuildBindingLayoutDescsFromShaderParameters(
+        { parameters },
+        "LegacyIndexedShader");
+    ASSERT_EQ(layouts.size(), 3u);
+    ASSERT_EQ(layouts[2].entries.size(), 1u);
+    EXPECT_EQ(layouts[2].entries[0].name, "ObjectIndexConstants");
+    EXPECT_EQ(layouts[2].entries[0].type, NLS::Render::RHI::BindingType::UniformBuffer);
+    EXPECT_EQ(layouts[2].entries[0].binding, 1u);
 }
 
 TEST(ShaderBindingLayoutUtilsTests, ReflectionParameterGroupContractsCarryStructuredBufferElementStride)

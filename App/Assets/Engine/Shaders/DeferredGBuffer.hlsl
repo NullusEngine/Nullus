@@ -1,5 +1,6 @@
 #include "CommonTypes.hlsli"
 #include "NullusShaderLibrary/PBRNormals.hlsl"
+#include "NullusShaderLibrary/StandardPBRSurface.hlsl"
 
 cbuffer FrameConstants : register(b0, space0)
 {
@@ -50,38 +51,16 @@ VSOutput VSMain(VSInput input, uint instanceId : SV_InstanceID)
     output.PositionCS = mul(u_ViewProjection, worldPosition);
     output.PositionWS = worldPosition.xyz;
     const float3x3 model3x3 = (float3x3)model;
-    const NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
-        NLSTransformNormalDirection(model3x3, input.Normal),
-        mul(model3x3, input.Tangent),
-        mul(model3x3, input.Bitangent));
+    const NLSTangentFrame tangentFrame = NLSBuildStandardPbrTangentFrame(
+        model3x3,
+        input.Normal,
+        input.Tangent,
+        input.Bitangent);
     output.NormalWS = tangentFrame.normalWS;
     output.TangentWS = tangentFrame.tangentWS;
     output.BitangentWS = tangentFrame.bitangentWS;
     output.TexCoord = input.TexCoord;
     return output;
-}
-
-float3 DecodeNormalMapSample(float4 normalSample)
-{
-    const float2 xy = normalSample.xy * 2.0f - 1.0f;
-    const float rgbZ = normalSample.z * 2.0f - 1.0f;
-    const float reconstructedZ = sqrt(saturate(1.0f - dot(xy, xy)));
-    const float useRgbZ = step(0.0039f, normalSample.z);
-    return NLSSafeNormalize(float3(xy, lerp(reconstructedZ, rgbZ, useRgbZ)), float3(0.0f, 0.0f, 1.0f));
-}
-
-float3 ComputeShadingNormal(
-    VSOutput input,
-    float2 texCoord,
-    bool isFrontFace)
-{
-    NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
-        input.NormalWS,
-        input.TangentWS,
-        input.BitangentWS);
-    tangentFrame = NLSOrientTangentFrameForFace(tangentFrame, isFrontFace);
-    const float3 tangentNormal = DecodeNormalMapSample(u_NormalMap.Sample(u_LinearWrapSampler, texCoord));
-    return NLSApplyTangentNormal(tangentNormal, tangentFrame);
 }
 
 GBufferOutput PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace)
@@ -102,15 +81,28 @@ GBufferOutput PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace)
     if (u_EnableNormalMapping > 0.5f)
     {
         shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
-            ComputeShadingNormal(input, texCoord, isFrontFace),
+            NLSApplyStandardPbrNormalMap(
+                input.NormalWS,
+                input.TangentWS,
+                input.BitangentWS,
+                isFrontFace,
+                u_NormalMap.Sample(u_LinearWrapSampler, texCoord),
+                1.0f),
             geometryNormalWS);
     }
-    const float2 geometryNormalOct = NLSOctEncodeNormal(geometryNormalWS);
     const float receiveShadows =
         (u_ObjectFlags & NLS_OBJECT_FLAG_RECEIVE_SHADOWS) != 0u ? 1.0f : 0.0f;
 
-    output.Albedo = float4(albedo, geometryNormalOct.x);
-    output.Normal = float4(shadingNormalWS * 0.5f + 0.5f, geometryNormalOct.y);
-    output.Material = float4(metallic, roughness, ao, receiveShadows);
+    NLSPackStandardPbrGBuffer(
+        albedo,
+        geometryNormalWS,
+        shadingNormalWS,
+        metallic,
+        roughness,
+        ao,
+        receiveShadows,
+        output.Albedo,
+        output.Normal,
+        output.Material);
     return output;
 }

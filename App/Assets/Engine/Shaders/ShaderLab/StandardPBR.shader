@@ -56,6 +56,7 @@ Shader "Nullus/StandardPBR"
             #define NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
             #include "CommonTypes.hlsli"
             #undef NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
+            #include "NullusShaderLibrary/StandardPBRSurface.hlsl"
             #include "LightGridCommon.hlsli"
 
             struct Attributes
@@ -111,72 +112,14 @@ Shader "Nullus/StandardPBR"
                 float _Cutoff;
             };
 
-            float3 TransformStandardPbrNormal(float3 normalOS)
-            {
-                const float3x3 model = (float3x3)u_Model;
-                const float3 fallback = mul(model, normalOS);
-                const float3 row0 = float3(model._11, model._12, model._13);
-                const float3 row1 = float3(model._21, model._22, model._23);
-                const float3 row2 = float3(model._31, model._32, model._33);
-                const float determinant = dot(row0, cross(row1, row2));
-                const float3x3 cofactors = float3x3(
-                    cross(row1, row2),
-                    cross(row2, row0),
-                    cross(row0, row1));
-                const float orientation = determinant < 0.0f ? -1.0f : 1.0f;
-                const float3 transformed = abs(determinant) > NLS_SAFE_EPSILON
-                    ? mul(cofactors, normalOS) * orientation
-                    : fallback;
-                return NLSSafeNormalize(transformed, NLSSafeNormalize(fallback, float3(0.0f, 0.0f, 1.0f)));
-            }
-
-            NLSTangentFrame BuildStandardPbrTangentFrame(
-                float3 normalOS,
-                float3 tangentOS,
-                float3 bitangentOS)
-            {
-                const float3x3 model = (float3x3)u_Model;
-                return NLSBuildSafeTangentFrame(
-                    TransformStandardPbrNormal(normalOS),
-                    mul(model, tangentOS),
-                    mul(model, bitangentOS));
-            }
-
-            float3 DecodeStandardPbrNormal(float4 normalSample)
-            {
-                const float2 xy = normalSample.xy * 2.0f - 1.0f;
-                const float rgbZ = normalSample.z * 2.0f - 1.0f;
-                const float reconstructedZ = sqrt(saturate(1.0f - dot(xy, xy)));
-                const float useRgbZ = step(0.0039f, normalSample.z);
-                const float3 decoded = float3(xy * _NormalScale, lerp(reconstructedZ, rgbZ, useRgbZ));
-                return NLSSafeNormalize(decoded, float3(0.0f, 0.0f, 1.0f));
-            }
-
-            float3 ComputeStandardPbrNormal(Varyings input, bool isFrontFace)
-            {
-            #if !defined(_NORMALMAP)
-                const float faceSign = isFrontFace ? 1.0f : -1.0f;
-                const float3 normalWS = NLSSafeNormalize(input.normalWS, float3(0.0f, 0.0f, 1.0f));
-                return normalWS * faceSign;
-            #else
-                NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
-                    input.normalWS,
-                    input.tangentWS,
-                    input.bitangentWS);
-                tangentFrame = NLSOrientTangentFrameForFace(tangentFrame, isFrontFace);
-                const float3 tangentNormal = DecodeStandardPbrNormal(
-                    _NormalMap.Sample(sampler_NormalMap, input.uv));
-                return NLSApplyTangentNormal(tangentNormal, tangentFrame);
-            #endif
-            }
-
             Varyings VSMain(Attributes input)
             {
                 Varyings output;
                 output.positionWS = TransformObjectToWorld(input.positionOS);
                 output.positionCS = TransformWorldToHClip(output.positionWS);
                 output.uv = input.uv;
-                const NLSTangentFrame tangentFrame = BuildStandardPbrTangentFrame(
+                const NLSTangentFrame tangentFrame = NLSBuildStandardPbrTangentFrame(
+                    (float3x3)u_Model,
                     input.normalOS,
                     input.tangentOS,
                     input.bitangentOS);
@@ -204,7 +147,13 @@ Shader "Nullus/StandardPBR"
                 float3 shadingNormalWS = geometryNormalWS;
             #if defined(_NORMALMAP)
                 shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
-                    ComputeStandardPbrNormal(input, isFrontFace),
+                    NLSApplyStandardPbrNormalMap(
+                        input.normalWS,
+                        input.tangentWS,
+                        input.bitangentWS,
+                        isFrontFace,
+                        _NormalMap.Sample(sampler_NormalMap, input.uv),
+                        _NormalScale),
                     geometryNormalWS);
             #endif
                 const float3 lighting = NLSAccumulateClusteredLightingPBR(
@@ -256,6 +205,7 @@ Shader "Nullus/StandardPBR"
             #undef NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
             #include "NullusShaderLibrary/Instancing.hlsl"
             #include "NullusShaderLibrary/PBRNormals.hlsl"
+            #include "NullusShaderLibrary/StandardPBRSurface.hlsl"
 
             struct Attributes
             {
@@ -309,71 +259,13 @@ Shader "Nullus/StandardPBR"
                 float _Cutoff;
             };
 
-            float3 TransformStandardPbrGBufferNormal(float3 normalOS)
-            {
-                const float3x3 model = (float3x3)u_Model;
-                const float3 fallback = mul(model, normalOS);
-                const float3 row0 = float3(model._11, model._12, model._13);
-                const float3 row1 = float3(model._21, model._22, model._23);
-                const float3 row2 = float3(model._31, model._32, model._33);
-                const float determinant = dot(row0, cross(row1, row2));
-                const float3x3 cofactors = float3x3(
-                    cross(row1, row2),
-                    cross(row2, row0),
-                    cross(row0, row1));
-                const float orientation = determinant < 0.0f ? -1.0f : 1.0f;
-                const float3 transformed = abs(determinant) > NLS_SAFE_EPSILON
-                    ? mul(cofactors, normalOS) * orientation
-                    : fallback;
-                return NLSSafeNormalize(
-                    transformed,
-                    NLSSafeNormalize(fallback, float3(0.0f, 0.0f, 1.0f)));
-            }
-
-            NLSTangentFrame BuildStandardPbrGBufferTangentFrame(
-                float3 normalOS,
-                float3 tangentOS,
-                float3 bitangentOS)
-            {
-                const float3x3 model = (float3x3)u_Model;
-                return NLSBuildSafeTangentFrame(
-                    TransformStandardPbrGBufferNormal(normalOS),
-                    mul(model, tangentOS),
-                    mul(model, bitangentOS));
-            }
-
-            float3 DecodeStandardPbrGBufferNormal(float4 normalSample)
-            {
-                const float2 xy = normalSample.xy * 2.0f - 1.0f;
-                const float rgbZ = normalSample.z * 2.0f - 1.0f;
-                const float reconstructedZ = sqrt(saturate(1.0f - dot(xy, xy)));
-                const float useRgbZ = step(0.0039f, normalSample.z);
-                const float3 decoded = float3(
-                    xy * _NormalScale,
-                    lerp(reconstructedZ, rgbZ, useRgbZ));
-                return NLSSafeNormalize(decoded, float3(0.0f, 0.0f, 1.0f));
-            }
-
-            float3 ComputeStandardPbrGBufferShadingNormal(
-                Varyings input,
-                bool isFrontFace)
-            {
-                NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
-                    input.normalWS,
-                    input.tangentWS,
-                    input.bitangentWS);
-                tangentFrame = NLSOrientTangentFrameForFace(tangentFrame, isFrontFace);
-                const float3 tangentNormal = DecodeStandardPbrGBufferNormal(
-                    _NormalMap.Sample(sampler_NormalMap, input.uv));
-                return NLSApplyTangentNormal(tangentNormal, tangentFrame);
-            }
-
             Varyings VSMain(Attributes input)
             {
                 Varyings output;
                 output.positionCS = TransformObjectToHClip(input.positionOS);
                 output.uv = input.uv;
-                const NLSTangentFrame tangentFrame = BuildStandardPbrGBufferTangentFrame(
+                const NLSTangentFrame tangentFrame = NLSBuildStandardPbrTangentFrame(
+                    (float3x3)u_Model,
                     input.normalOS,
                     input.tangentOS,
                     input.bitangentOS);
@@ -409,16 +301,29 @@ Shader "Nullus/StandardPBR"
                 float3 shadingNormalWS = geometryNormalWS;
             #if defined(_NORMALMAP)
                 shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
-                    ComputeStandardPbrGBufferShadingNormal(input, isFrontFace),
+                    NLSApplyStandardPbrNormalMap(
+                        input.normalWS,
+                        input.tangentWS,
+                        input.bitangentWS,
+                        isFrontFace,
+                        _NormalMap.Sample(sampler_NormalMap, input.uv),
+                        _NormalScale),
                     geometryNormalWS);
             #endif
-                const float2 geometryNormalOct = NLSOctEncodeNormal(geometryNormalWS);
                 const float receiveShadows =
                     (u_ObjectFlags & NLS_OBJECT_FLAG_RECEIVE_SHADOWS) != 0u ? 1.0f : 0.0f;
 
-                output.Albedo = float4(albedo, geometryNormalOct.x);
-                output.Normal = float4(shadingNormalWS * 0.5f + 0.5f, geometryNormalOct.y);
-                output.Material = float4(metallic, roughness, ao, receiveShadows);
+                NLSPackStandardPbrGBuffer(
+                    albedo,
+                    geometryNormalWS,
+                    shadingNormalWS,
+                    metallic,
+                    roughness,
+                    ao,
+                    receiveShadows,
+                    output.Albedo,
+                    output.Normal,
+                    output.Material);
                 return output;
             }
             ENDHLSL

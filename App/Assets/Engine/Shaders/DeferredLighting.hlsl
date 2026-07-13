@@ -40,42 +40,9 @@ struct VSOutput
     float2 TexCoord : TEXCOORD0;
 };
 
-static const float NLS_DEFERRED_SAFE_NORMAL_EPSILON = 1.0e-8f;
-static const float NLS_DEFERRED_SAFE_NORMAL_MAX_LENGTH_SQ = 1.0e+20f;
-static const float NLS_DEFERRED_SAFE_NORMAL_MAX_COMPONENT = 1.0e+30f;
-
-bool NLSDeferredIsFinite3(float3 value)
-{
-    return all(value == value) && all(abs(value) < NLS_DEFERRED_SAFE_NORMAL_MAX_COMPONENT);
-}
-
-float3 NLSDeferredSafeNormalize(float3 value, float3 fallback)
-{
-    const float lengthSq = dot(value, value);
-    if (NLSDeferredIsFinite3(value) &&
-        lengthSq > NLS_DEFERRED_SAFE_NORMAL_EPSILON &&
-        lengthSq < NLS_DEFERRED_SAFE_NORMAL_MAX_LENGTH_SQ)
-    {
-        return value * rsqrt(lengthSq);
-    }
-
-    const float fallbackLengthSq = dot(fallback, fallback);
-    if (NLSDeferredIsFinite3(fallback) &&
-        fallbackLengthSq > NLS_DEFERRED_SAFE_NORMAL_EPSILON &&
-        fallbackLengthSq < NLS_DEFERRED_SAFE_NORMAL_MAX_LENGTH_SQ)
-    {
-        return fallback * rsqrt(fallbackLengthSq);
-    }
-
-    return float3(0.0f, 0.0f, 1.0f);
-}
-
 float NLSResolveDeferredDirectVisibility(bool receiveShadows)
 {
-    if (!receiveShadows)
-        return 1.0f;
-
-    // Deferred shadow sampling will replace this neutral receiver path.
+    // The receiver bit is retained for the future shadow-data contract.
     return 1.0f;
 }
 
@@ -150,10 +117,10 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float4 albedoSample = u_GBufferAlbedo.Sample(u_LinearWrapSampler, input.TexCoord);
     const float4 normalSample = u_GBufferNormal.Sample(u_LinearWrapSampler, input.TexCoord);
     const float4 materialSample = u_GBufferMaterial.Sample(u_LinearWrapSampler, input.TexCoord);
-    const float3 geometryNormalWS = NLSOctDecodeNormal(float2(albedoSample.a, normalSample.a));
-    float3 shadingNormalWS = NLSDeferredSafeNormalize(normalSample.rgb * 2.0f - 1.0f, geometryNormalWS);
-    shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
-        shadingNormalWS,
+    const float3 geometryNormalWS = NLSOctDecodeNormal(NLSUnpackOctNormalFromUnorm(
+        float2(albedoSample.a, normalSample.a)));
+    const float3 shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
+        normalSample.rgb * 2.0f - 1.0f,
         geometryNormalWS);
     const bool receiveShadows = materialSample.a >= 0.5f;
     const float directVisibility = NLSResolveDeferredDirectVisibility(receiveShadows);

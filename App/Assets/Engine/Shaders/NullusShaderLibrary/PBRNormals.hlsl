@@ -33,6 +33,16 @@ float2 NLSOctEncodeNormal(float3 normalWS)
     return encoded;
 }
 
+float2 NLSPackOctNormalToUnorm(float2 encoded)
+{
+    return saturate(encoded * 0.5f + 0.5f);
+}
+
+float2 NLSUnpackOctNormalFromUnorm(float2 packed)
+{
+    return saturate(packed) * 2.0f - 1.0f;
+}
+
 float3 NLSOctDecodeNormal(float2 encoded)
 {
     float3 normal = float3(encoded, 1.0f - abs(encoded.x) - abs(encoded.y));

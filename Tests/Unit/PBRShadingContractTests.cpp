@@ -283,6 +283,21 @@ Vector3 OctDecode(const Vector2& encoded)
     return Normalize(normal);
 }
 
+float QuantizeUnorm8(float value)
+{
+    return std::round(std::clamp(value, 0.0f, 1.0f) * 255.0f) / 255.0f;
+}
+
+Vector2 PackOctNormalToUnorm(const Vector2& encoded)
+{
+    return {encoded.x * 0.5f + 0.5f, encoded.y * 0.5f + 0.5f};
+}
+
+Vector2 UnpackOctNormalFromUnorm(const Vector2& packed)
+{
+    return {packed.x * 2.0f - 1.0f, packed.y * 2.0f - 1.0f};
+}
+
 float GeometryFade(float ndotDirection)
 {
     if (ndotDirection <= 0.0f)
@@ -487,6 +502,42 @@ TEST(PBRShadingContractTests, OctGeometryNormalRoundTripsBothHemispheres)
     {
         EXPECT_GT(Dot(normal, OctDecode(OctEncode(normal))), 1.0f - kNormalTolerance);
     }
+}
+
+TEST(PBRShadingContractTests, OctGeometryNormalSurvivesEightBitUnormGbufferStorage)
+{
+    const std::array normals{
+        Normalize(Vector3{-1.0f, 2.0f, 3.0f}),
+        Normalize(Vector3{1.0f, -2.0f, 3.0f}),
+        Normalize(Vector3{-1.0f, -2.0f, 3.0f}),
+        Normalize(Vector3{-1.0f, 2.0f, -3.0f}),
+        Normalize(Vector3{1.0f, -2.0f, -3.0f}),
+        Normalize(Vector3{-1.0f, -2.0f, -3.0f})};
+
+    size_t oldStorageCorruptions = 0u;
+    for (const auto& normal : normals)
+    {
+        const auto encoded = OctEncode(normal);
+        const Vector2 oldStored{
+            QuantizeUnorm8(encoded.x),
+            QuantizeUnorm8(encoded.y)};
+        if (Dot(normal, OctDecode(oldStored)) < 0.99f)
+            ++oldStorageCorruptions;
+
+        const auto packed = PackOctNormalToUnorm(encoded);
+        const Vector2 stored{
+            QuantizeUnorm8(packed.x),
+            QuantizeUnorm8(packed.y)};
+        const auto decoded = OctDecode(UnpackOctNormalFromUnorm(stored));
+        EXPECT_TRUE(IsFinite(decoded));
+        EXPECT_GT(Dot(normal, decoded), 0.999f);
+    }
+    EXPECT_GE(oldStorageCorruptions, 4u)
+        << "Writing signed oct coordinates directly to RGBA8_UNORM must be proven lossy.";
+
+    const auto source = ReadTextFile(PBRNormalsPath());
+    EXPECT_NE(source.find("NLSPackOctNormalToUnorm"), std::string::npos);
+    EXPECT_NE(source.find("NLSUnpackOctNormalFromUnorm"), std::string::npos);
 }
 
 TEST(PBRShadingContractTests, GeometryNormalOrientationHandlesFrontAndBackFaces)
@@ -866,12 +917,19 @@ TEST(PBRShadingContractTests, DeferredGbuffersStoreGeometryShadingAndReceiverCha
     {
         std::string_view name;
         std::string source;
-        std::string_view interpolatedNormalName;
-        std::string_view normalMapCondition;
     };
 
     const auto builtInSource = ReadTextFile(ShaderRootPath() / "DeferredGBuffer.hlsl");
     ASSERT_FALSE(builtInSource.empty());
+    const auto sharedSurfaceSource = ReadTextFile(
+        ShaderRootPath() / "NullusShaderLibrary/StandardPBRSurface.hlsl");
+    ASSERT_FALSE(sharedSurfaceSource.empty());
+    const auto sharedDefinitions = FindNLSFunctionDefinitions(sharedSurfaceSource);
+    EXPECT_EQ(sharedDefinitions.count("NLSTransformStandardPbrNormal"), 1u);
+    EXPECT_EQ(sharedDefinitions.count("NLSBuildStandardPbrTangentFrame"), 1u);
+    EXPECT_EQ(sharedDefinitions.count("NLSDecodeStandardPbrNormalSample"), 1u);
+    EXPECT_EQ(sharedDefinitions.count("NLSApplyStandardPbrNormalMap"), 1u);
+    EXPECT_EQ(sharedDefinitions.count("NLSPackStandardPbrGBuffer"), 1u);
 
     const auto shaderLabPath = ShaderRootPath() / "ShaderLab/StandardPBR.shader";
     const auto shaderLabSource = ReadTextFile(shaderLabPath);
@@ -894,77 +952,29 @@ TEST(PBRShadingContractTests, DeferredGbuffersStoreGeometryShadingAndReceiverCha
         << "StandardPBR ShaderLab materials need a real GBuffer pass for Deferred rendering.";
 
     const std::array shaders{
-        GBufferContract{
-            "BuiltIn",
-            builtInSource,
-            "input.NormalWS",
-            "u_EnableNormalMapping > 0.5f"},
-        GBufferContract{
-            "ShaderLab",
-            gbuffer->hlslSource,
-            "input.normalWS",
-            "#if defined(_NORMALMAP)"}};
+        GBufferContract{"BuiltIn", builtInSource},
+        GBufferContract{"ShaderLab", gbuffer->hlslSource}};
 
     for (const auto& shader : shaders)
     {
         SCOPED_TRACE(shader.name);
+        EXPECT_NE(
+            shader.source.find("#include \"NullusShaderLibrary/StandardPBRSurface.hlsl\""),
+            std::string::npos);
         const auto pixel = ExtractFunctionDefinition(shader.source, "PSMain");
         ASSERT_FALSE(pixel.empty());
         EXPECT_NE(pixel.find("bool isFrontFace : SV_IsFrontFace"), std::string::npos);
-
-        const std::string safeGeometryDefinition =
-            "const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(" +
-            std::string(shader.interpolatedNormalName) +
-            ", float3(0.0f, 0.0f, 1.0f));";
-        const auto safeGeometry = pixel.find(safeGeometryDefinition);
-        const auto orientGeometry = pixel.find(
-            "const float3 geometryNormalWS = NLSOrientGeometryNormal("
-            "interpolatedGeometryNormalWS, isFrontFace);");
-        const auto initializeShading = pixel.find("shadingNormalWS = geometryNormalWS;");
-        const auto normalMapCondition = pixel.find(shader.normalMapCondition);
-        const auto constrainShading = pixel.find(
-            "NLSConstrainShadingNormalToGeometryHemisphere(");
-        const auto encodeGeometry = pixel.find(
-            "const float2 geometryNormalOct = NLSOctEncodeNormal(geometryNormalWS);");
-        ASSERT_NE(safeGeometry, std::string::npos);
-        ASSERT_NE(orientGeometry, std::string::npos);
-        ASSERT_NE(initializeShading, std::string::npos);
-        ASSERT_NE(normalMapCondition, std::string::npos);
-        ASSERT_NE(constrainShading, std::string::npos);
-        ASSERT_NE(encodeGeometry, std::string::npos);
-        EXPECT_LT(safeGeometry, orientGeometry);
-        EXPECT_LT(orientGeometry, initializeShading);
-        EXPECT_LT(initializeShading, normalMapCondition);
-        EXPECT_LT(normalMapCondition, constrainShading);
-        EXPECT_LT(constrainShading, encodeGeometry);
-
-        const auto compactPixel = RemoveWhitespace(pixel);
-        EXPECT_NE(
-            compactPixel.find(RemoveWhitespace(
-                "const float receiveShadows = "
-                "(u_ObjectFlags & NLS_OBJECT_FLAG_RECEIVE_SHADOWS) != 0u ? 1.0f : 0.0f;")),
-            std::string::npos);
-        EXPECT_EQ(
-            CountOccurrences(
-                compactPixel,
-                RemoveWhitespace("output.Albedo = float4(albedo, geometryNormalOct.x);")),
-            1u);
-        EXPECT_EQ(
-            CountOccurrences(
-                compactPixel,
-                RemoveWhitespace(
-                    "output.Normal = float4(shadingNormalWS * 0.5f + 0.5f, geometryNormalOct.y);")),
-            1u);
-        EXPECT_EQ(
-            CountOccurrences(
-                compactPixel,
-                RemoveWhitespace(
-                    "output.Material = float4(metallic, roughness, ao, receiveShadows);")),
-            1u);
-        EXPECT_EQ(pixel.find("output.Albedo = float4(albedo, surfaceAlpha);"), std::string::npos);
-        EXPECT_EQ(pixel.find("output.Normal = float4(normalWS * 0.5f + 0.5f, surfaceAlpha);"), std::string::npos);
-        EXPECT_EQ(pixel.find("output.Material = float4(metallic, roughness, ao, surfaceAlpha);"), std::string::npos);
+        EXPECT_NE(pixel.find("NLSPackStandardPbrGBuffer("), std::string::npos);
+        EXPECT_EQ(pixel.find("NLSOctEncodeNormal("), std::string::npos)
+            << "GBuffer storage encoding belongs to the shared pack helper.";
+        EXPECT_EQ(pixel.find("output.Albedo = float4("), std::string::npos);
+        EXPECT_EQ(pixel.find("output.Normal = float4("), std::string::npos);
+        EXPECT_EQ(pixel.find("output.Material = float4("), std::string::npos);
     }
+
+    EXPECT_EQ(shaderLabSource.find("TransformStandardPbrGBufferNormal"), std::string::npos);
+    EXPECT_EQ(shaderLabSource.find("BuildStandardPbrGBufferTangentFrame"), std::string::npos);
+    EXPECT_EQ(shaderLabSource.find("DecodeStandardPbrGBufferNormal"), std::string::npos);
 }
 
 TEST(PBRShadingContractTests, DeferredLightingDecodesDualNormalsAndSamplesEachGbufferOnce)
@@ -992,28 +1002,39 @@ TEST(PBRShadingContractTests, DeferredLightingDecodesDualNormalsAndSamplesEachGb
             "const float4 materialSample = "
             "u_GBufferMaterial.Sample(u_LinearWrapSampler, input.TexCoord);"),
         std::string::npos);
+    const auto compactPixel = RemoveWhitespace(pixel);
     EXPECT_NE(
-        pixel.find(
-            "const float3 geometryNormalWS = "
-            "NLSOctDecodeNormal(float2(albedoSample.a, normalSample.a));"),
+        compactPixel.find(RemoveWhitespace(
+            "NLSOctDecodeNormal(NLSUnpackOctNormalFromUnorm("
+            "float2(albedoSample.a, normalSample.a)))")),
         std::string::npos);
-    const auto safeShading = pixel.find(
-        "NLSDeferredSafeNormalize(normalSample.rgb * 2.0f - 1.0f, geometryNormalWS)");
     const auto constrainShading = pixel.find(
         "NLSConstrainShadingNormalToGeometryHemisphere(");
-    ASSERT_NE(safeShading, std::string::npos);
     ASSERT_NE(constrainShading, std::string::npos);
+    EXPECT_NE(
+        pixel.find("normalSample.rgb * 2.0f - 1.0f"),
+        std::string::npos);
     EXPECT_EQ(
         CountOccurrences(pixel, "NLSConstrainShadingNormalToGeometryHemisphere("),
         1u);
-    EXPECT_LT(safeShading, constrainShading);
+    EXPECT_EQ(deferredSource.find("NLSDeferredSafeNormalize"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("NLSDeferredIsFinite3"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("rsqrt("), std::string::npos)
+        << "Deferred normal safety and normalization must have one shared implementation.";
     EXPECT_NE(
         pixel.find("const bool receiveShadows = materialSample.a >= 0.5f;"),
         std::string::npos);
     EXPECT_NE(
         pixel.find("NLSResolveDeferredDirectVisibility(receiveShadows)"),
         std::string::npos)
-        << "The decoded receiver bit must feed the explicit future direct-visibility entry point.";
+        << "The receiver bit remains decoded as a future shadow-data contract.";
+    const auto visibility = ExtractFunctionDefinition(
+        deferredSource,
+        "NLSResolveDeferredDirectVisibility");
+    ASSERT_FALSE(visibility.empty());
+    EXPECT_EQ(CountOccurrences(visibility, "return 1.0f;"), 1u);
+    EXPECT_EQ(visibility.find("if ("), std::string::npos)
+        << "Until shadow data exists, the receiver contract must resolve neutral visibility.";
 
     const auto lightingArguments = ExtractCallArguments(
         pixel,
@@ -1026,6 +1047,15 @@ TEST(PBRShadingContractTests, DeferredLightingDecodesDualNormalsAndSamplesEachGb
 
 TEST(PBRShadingContractTests, ForwardPixelShadersOrientConstrainAndPassGeometryThenShadingNormals)
 {
+    const auto sharedSurfaceSource = ReadTextFile(
+        ShaderRootPath() / "NullusShaderLibrary/StandardPBRSurface.hlsl");
+    ASSERT_FALSE(sharedSurfaceSource.empty());
+    const auto orientFrame = sharedSurfaceSource.find("NLSOrientTangentFrameForFace(");
+    const auto applyNormalMap = sharedSurfaceSource.find("NLSApplyTangentNormal(");
+    ASSERT_NE(orientFrame, std::string::npos);
+    ASSERT_NE(applyNormalMap, std::string::npos);
+    EXPECT_LT(orientFrame, applyNormalMap);
+
     struct ForwardShaderContract
     {
         std::filesystem::path path;
@@ -1050,6 +1080,9 @@ TEST(PBRShadingContractTests, ForwardPixelShadersOrientConstrainAndPassGeometryT
         SCOPED_TRACE(shader.path.string());
         const auto source = ReadTextFile(shader.path);
         ASSERT_FALSE(source.empty());
+        EXPECT_NE(
+            source.find("#include \"NullusShaderLibrary/StandardPBRSurface.hlsl\""),
+            std::string::npos);
         const auto pixel = ExtractFunctionDefinition(source, "PSMain");
         ASSERT_FALSE(pixel.empty());
         EXPECT_NE(pixel.find("bool isFrontFace : SV_IsFrontFace"), std::string::npos);
@@ -1085,11 +1118,7 @@ TEST(PBRShadingContractTests, ForwardPixelShadersOrientConstrainAndPassGeometryT
         EXPECT_NE(pixel.find("lighting + emissive"), std::string::npos);
         EXPECT_EQ(pixel.find("geometryFade"), std::string::npos);
 
-        const auto orientFrame = source.find("NLSOrientTangentFrameForFace(");
-        const auto applyNormalMap = source.find("NLSApplyTangentNormal(");
-        ASSERT_NE(orientFrame, std::string::npos);
-        ASSERT_NE(applyNormalMap, std::string::npos);
-        EXPECT_LT(orientFrame, applyNormalMap);
+        EXPECT_NE(pixel.find("NLSApplyStandardPbrNormalMap("), std::string::npos);
     }
 }
 
@@ -1106,6 +1135,8 @@ TEST(PBRShadingContractTests, SharedNormalShaderDefinesPublicMathAndFallbackCont
         "NLSOrientGeometryNormal",
         "NLSConstrainShadingNormalToGeometryHemisphere",
         "NLSOctEncodeNormal",
+        "NLSPackOctNormalToUnorm",
+        "NLSUnpackOctNormalFromUnorm",
         "NLSOctDecodeNormal",
         "NLSGeometryHorizonFade"};
     EXPECT_EQ(FindNLSFunctionDefinitions(source), expectedEntryPoints);
@@ -1591,16 +1622,20 @@ TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirv
     {
         std::string_view name;
         bool normalMap;
+        bool alphaTest;
         NLS::Render::ShaderLab::ShaderLabCullMode cullMode;
     };
     const std::array variants{
-        ShaderLabVariant{"Default", false, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
-        ShaderLabVariant{"NormalMap", true, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
-        ShaderLabVariant{"CullOff", false, NLS::Render::ShaderLab::ShaderLabCullMode::Off}};
+        ShaderLabVariant{"Default", false, false, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
+        ShaderLabVariant{"NormalMap", true, false, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
+        ShaderLabVariant{"AlphaTest", false, true, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
+        ShaderLabVariant{"AlphaTestNormalMap", true, true, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
+        ShaderLabVariant{"CullOff", false, false, NLS::Render::ShaderLab::ShaderLabCullMode::Off}};
 
     for (const auto& target : targets)
     {
         std::vector<uint8_t> defaultPixelBytecode;
+        std::vector<uint8_t> alphaTestPixelBytecode;
         std::vector<uint8_t> cullOffPixelBytecode;
         for (const auto& variant : variants)
         {
@@ -1635,6 +1670,8 @@ TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirv
                         std::string(target.name) / std::string(variant.name));
                 if (variant.normalMap)
                     input.options.macros.push_back({"_NORMALMAP", "1"});
+                if (variant.alphaTest)
+                    input.options.macros.push_back({"_ALPHATEST_ON", "1"});
 
                 const auto output = compiler.Compile(input);
                 ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
@@ -1647,6 +1684,8 @@ TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirv
                 {
                     if (variant.name == "Default")
                         defaultPixelBytecode = output.bytecode;
+                    else if (variant.name == "AlphaTest")
+                        alphaTestPixelBytecode = output.bytecode;
                     else if (variant.name == "CullOff")
                         cullOffPixelBytecode = output.bytecode;
                 }
@@ -1654,7 +1693,10 @@ TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirv
         }
 
         ASSERT_FALSE(defaultPixelBytecode.empty());
+        ASSERT_FALSE(alphaTestPixelBytecode.empty());
         ASSERT_FALSE(cullOffPixelBytecode.empty());
+        EXPECT_NE(defaultPixelBytecode, alphaTestPixelBytecode)
+            << target.name << ": AlphaTest must compile the GBuffer clip path.";
         EXPECT_EQ(defaultPixelBytecode, cullOffPixelBytecode)
             << target.name << ": Cull Off must reuse the same SV_IsFrontFace-aware pixel bytecode.";
     }

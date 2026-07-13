@@ -421,6 +421,8 @@ float3 NLSEvaluateCookTorranceShadingDirect(
 {
     const float ndotv = saturate(dot(shadingNormalWS, viewDir));
     const float ndotl = saturate(dot(shadingNormalWS, lightDir));
+    if (ndotl <= 0.0f)
+        return 0.0f.xxx;
 
     const float3 dielectricF0 = NLS_PBR_DIELECTRIC_F0.xxx;
     const float3 f0 = lerp(dielectricF0, safeAlbedo, safeMetallic);

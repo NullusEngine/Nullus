@@ -581,6 +581,37 @@ TEST(PBRShadingContractTests, ForwardDirectBrdfUsesGeometryGateAndShadingNormal)
     EXPECT_NE(direct.find("return shadingDirect * geometryFade;"), std::string::npos);
 }
 
+TEST(PBRShadingContractTests, ShadingDirectSkipsBrdfOutsideLightHemisphereOnly)
+{
+    const auto source = ReadTextFile(ShaderRootPath() / "LightGridCommon.hlsli");
+    ASSERT_FALSE(source.empty());
+
+    const auto shadingDirect = ExtractFunctionDefinition(
+        source,
+        "NLSEvaluateCookTorranceShadingDirect");
+    ASSERT_FALSE(shadingDirect.empty());
+
+    const auto ndotv = shadingDirect.find(
+        "const float ndotv = saturate(dot(shadingNormalWS, viewDir));");
+    const auto ndotl = shadingDirect.find(
+        "const float ndotl = saturate(dot(shadingNormalWS, lightDir));");
+    const auto lightHemisphereGate = shadingDirect.find(
+        "if (ndotl <= 0.0f)\n"
+        "        return 0.0f.xxx;");
+    const auto brdfWork = shadingDirect.find(
+        "const float3 dielectricF0 = NLS_PBR_DIELECTRIC_F0.xxx;");
+    ASSERT_NE(ndotv, std::string::npos);
+    ASSERT_NE(ndotl, std::string::npos);
+    ASSERT_NE(lightHemisphereGate, std::string::npos);
+    ASSERT_NE(brdfWork, std::string::npos);
+    EXPECT_LT(ndotv, lightHemisphereGate);
+    EXPECT_LT(ndotl, lightHemisphereGate);
+    EXPECT_LT(lightHemisphereGate, brdfWork)
+        << "A non-positive shading NdotL contributes zero and must skip all BRDF work.";
+    EXPECT_EQ(shadingDirect.find("if (ndotv <= 0.0f"), std::string::npos)
+        << "Shading NdotV must only gate specular so back-facing-view diffuse remains visible.";
+}
+
 TEST(PBRShadingContractTests, ForwardAccumulatorsKeepAmbientOutsideGeometryGatedDirectLoop)
 {
     const auto source = ReadTextFile(ShaderRootPath() / "LightGridCommon.hlsli");

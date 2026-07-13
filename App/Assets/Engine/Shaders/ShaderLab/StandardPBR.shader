@@ -199,13 +199,21 @@ Shader "Nullus/StandardPBR"
                 const float opacity = _OpacityMap.Sample(sampler_OpacityMap, input.uv).r;
                 const float3 emissive =
                     _EmissiveColor.rgb * _EmissiveMap.Sample(sampler_EmissiveMap, input.uv).rgb;
-                const float3 normalWS = ComputeStandardPbrNormal(input, isFrontFace);
+                const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(input.normalWS, float3(0.0f, 0.0f, 1.0f));
+                const float3 geometryNormalWS = NLSOrientGeometryNormal(interpolatedGeometryNormalWS, isFrontFace);
+                float3 shadingNormalWS = geometryNormalWS;
+            #if defined(_NORMALMAP)
+                shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
+                    ComputeStandardPbrNormal(input, isFrontFace),
+                    geometryNormalWS);
+            #endif
                 const float3 lighting = NLSAccumulateClusteredLightingPBR(
                     u_ForwardLocalLightBuffer,
                     u_NumCulledLightsGrid,
                     u_CulledLightDataGrid,
                     input.positionWS,
-                    normalWS,
+                    geometryNormalWS,
+                    shadingNormalWS,
                     albedo,
                     metallic,
                     roughness,

@@ -18,6 +18,8 @@
 #include "Math/Vector2.h"
 #include "Math/Vector3.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
+#include "Rendering/ShaderLab/ShaderLabParser.h"
+#include "Rendering/ShaderLab/ShaderLabTypes.h"
 
 namespace
 {
@@ -30,6 +32,128 @@ std::filesystem::path PBRNormalsPath()
 {
     return std::filesystem::path(NLS_ROOT_DIR) /
         "App/Assets/Engine/Shaders/NullusShaderLibrary/PBRNormals.hlsl";
+}
+
+std::filesystem::path ShaderRootPath()
+{
+    return std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders";
+}
+
+std::string ReadTextFile(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    return {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+}
+
+std::string_view TrimWhitespace(std::string_view value)
+{
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos)
+        return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1u);
+}
+
+std::string ExtractFunctionDefinition(const std::string& source, std::string_view functionName)
+{
+    size_t nameOffset = 0u;
+    while ((nameOffset = source.find(functionName, nameOffset)) != std::string::npos)
+    {
+        size_t parameterStart = nameOffset + functionName.size();
+        while (parameterStart < source.size() &&
+            std::string_view(" \t\r\n").find(source[parameterStart]) != std::string_view::npos)
+        {
+            ++parameterStart;
+        }
+        if (parameterStart < source.size() && source[parameterStart] == '(')
+            break;
+        nameOffset += functionName.size();
+    }
+    if (nameOffset == std::string::npos)
+        return {};
+
+    const auto lineStart = source.rfind('\n', nameOffset);
+    const auto bodyStart = source.find('{', nameOffset + functionName.size());
+    if (bodyStart == std::string::npos)
+        return {};
+
+    size_t depth = 0u;
+    for (size_t offset = bodyStart; offset < source.size(); ++offset)
+    {
+        if (source[offset] == '{')
+            ++depth;
+        else if (source[offset] == '}' && --depth == 0u)
+            return source.substr(
+                lineStart == std::string::npos ? 0u : lineStart + 1u,
+                offset - (lineStart == std::string::npos ? 0u : lineStart + 1u) + 1u);
+    }
+    return {};
+}
+
+std::vector<std::string> ExtractCallArguments(
+    const std::string& source,
+    std::string_view functionName,
+    size_t occurrence = 0u)
+{
+    size_t nameOffset = 0u;
+    for (size_t index = 0u; index <= occurrence; ++index)
+    {
+        nameOffset = source.find(functionName, nameOffset);
+        if (nameOffset == std::string::npos)
+            return {};
+        if (index != occurrence)
+            nameOffset += functionName.size();
+    }
+
+    const auto argumentsStart = source.find('(', nameOffset + functionName.size());
+    if (argumentsStart == std::string::npos)
+        return {};
+
+    std::vector<std::string> arguments;
+    size_t argumentStart = argumentsStart + 1u;
+    size_t depth = 1u;
+    for (size_t offset = argumentStart; offset < source.size(); ++offset)
+    {
+        if (source[offset] == '(')
+        {
+            ++depth;
+        }
+        else if (source[offset] == ')')
+        {
+            if (--depth == 0u)
+            {
+                arguments.emplace_back(TrimWhitespace(
+                    std::string_view(source).substr(argumentStart, offset - argumentStart)));
+                return arguments;
+            }
+        }
+        else if (source[offset] == ',' && depth == 1u)
+        {
+            arguments.emplace_back(TrimWhitespace(
+                std::string_view(source).substr(argumentStart, offset - argumentStart)));
+            argumentStart = offset + 1u;
+        }
+    }
+    return {};
+}
+
+std::vector<std::string> ExtractFunctionParameterNames(
+    const std::string& source,
+    std::string_view functionName)
+{
+    const auto definition = ExtractFunctionDefinition(source, functionName);
+    auto parameters = ExtractCallArguments(definition, functionName);
+    for (auto& parameter : parameters)
+    {
+        const auto nameStart = parameter.find_last_of(" \t\r\n");
+        parameter = std::string(TrimWhitespace(
+            nameStart == std::string::npos
+                ? std::string_view(parameter)
+                : std::string_view(parameter).substr(nameStart + 1u)));
+    }
+    return parameters;
 }
 
 std::filesystem::path NormalizeComparablePath(const std::filesystem::path& path)
@@ -155,6 +279,26 @@ bool IsDxcUnavailableDiagnostic(const std::string& diagnostics)
         diagnostics.find("Failed to spawn shader compiler process (") != std::string::npos ||
         diagnostics.find("[dxc-exit-code] 126") != std::string::npos ||
         diagnostics.find("[dxc-exit-code] 127") != std::string::npos;
+}
+
+NLS::Render::ShaderCompiler::ShaderCompilationInput MakeNativeShaderCompileInput(
+    const std::filesystem::path& sourcePath,
+    NLS::Render::ShaderCompiler::ShaderStage stage,
+    NLS::Render::ShaderCompiler::ShaderTargetPlatform target,
+    const std::filesystem::path& artifactDirectory)
+{
+    NLS::Render::ShaderCompiler::ShaderCompilationInput input;
+    input.assetPath = sourcePath.string();
+    input.stage = stage;
+    input.options.targetPlatform = target;
+    input.options.targetProfile =
+        stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex ? "vs_6_0" : "ps_6_0";
+    input.options.entryPoint =
+        stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex ? "VSMain" : "PSMain";
+    input.options.treatWarningsAsErrors = true;
+    input.options.artifactDirectory = artifactDirectory.string();
+    input.options.includeDirectories.push_back(ShaderRootPath().string());
+    return input;
 }
 
 class ScopedTemporaryDirectory final
@@ -298,6 +442,194 @@ TEST(PBRShadingContractTests, GeometryHorizonRejectsWrongHemisphereAndFadesConti
     EXPECT_FLOAT_EQ(GeometryFade(0.0f), 0.0f);
     EXPECT_NEAR(GeometryFade(0.05f), 0.5f, 1.0e-5f);
     EXPECT_FLOAT_EQ(GeometryFade(0.10f), 1.0f);
+}
+
+TEST(PBRShadingContractTests, ForwardDirectBrdfUsesGeometryGateAndShadingNormal)
+{
+    const auto source = ReadTextFile(ShaderRootPath() / "LightGridCommon.hlsli");
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(
+        source.find("#include \"NullusShaderLibrary/PBRNormals.hlsl\""),
+        std::string::npos);
+
+    const auto direct = ExtractFunctionDefinition(source, "NLSEvaluateCookTorranceDirect");
+    ASSERT_FALSE(direct.empty());
+    const std::vector<std::string> expectedParameters{
+        "geometryNormalWS",
+        "shadingNormalWS",
+        "viewDir",
+        "lightDir",
+        "safeAlbedo",
+        "safeMetallic",
+        "safeRoughness",
+        "lightColor",
+        "lightIntensity",
+        "attenuation"};
+    EXPECT_EQ(
+        ExtractFunctionParameterNames(source, "NLSEvaluateCookTorranceDirect"),
+        expectedParameters);
+
+    const auto geometryNdotL = direct.find(
+        "const float geometryNdotL = dot(geometryNormalWS, lightDir);");
+    const auto geometryNdotV = direct.find(
+        "const float geometryNdotV = dot(geometryNormalWS, viewDir);");
+    const auto geometryGate = direct.find(
+        "if (geometryNdotL <= 0.0f || geometryNdotV <= 0.0f)");
+    const auto geometryFade = direct.find(
+        "const float geometryFade = NLSGeometryHorizonFade(geometryNdotL) *\n"
+        "        NLSGeometryHorizonFade(geometryNdotV);");
+    ASSERT_NE(geometryNdotL, std::string::npos);
+    ASSERT_NE(geometryNdotV, std::string::npos);
+    ASSERT_NE(geometryGate, std::string::npos);
+    ASSERT_NE(geometryFade, std::string::npos);
+    EXPECT_LT(geometryNdotL, geometryGate);
+    EXPECT_LT(geometryNdotV, geometryGate);
+    EXPECT_LT(geometryGate, geometryFade);
+    EXPECT_EQ(direct.find("saturate(dot(geometryNormalWS"), std::string::npos)
+        << "Geometry hemisphere rejection must observe the signed dot product.";
+
+    const auto shadingDirect = ExtractFunctionDefinition(
+        source,
+        "NLSEvaluateCookTorranceShadingDirect");
+    ASSERT_FALSE(shadingDirect.empty());
+    const std::string shadingNormalTokens[] = {
+        "const float ndotv = saturate(dot(shadingNormalWS, viewDir));",
+        "const float ndotl = saturate(dot(shadingNormalWS, lightDir));",
+        "NLSSafeLightingNormalize(lightDir + viewDir, shadingNormalWS)",
+        "saturate(dot(shadingNormalWS, halfVector))",
+        "NLSGeometrySmith(ndotv, ndotl, safeRoughness)"};
+    for (const auto& token : shadingNormalTokens)
+        EXPECT_NE(shadingDirect.find(token), std::string::npos) << token;
+
+    EXPECT_NE(
+        shadingDirect.find("return brdf * radiance * ndotl * visibility;"),
+        std::string::npos);
+    const auto shadingArguments = ExtractCallArguments(
+        direct,
+        "NLSEvaluateCookTorranceShadingDirect");
+    ASSERT_EQ(shadingArguments.size(), 9u);
+    EXPECT_EQ(shadingArguments[0], "shadingNormalWS");
+    EXPECT_EQ(shadingArguments[1], "viewDir");
+    EXPECT_EQ(shadingArguments[2], "lightDir");
+    EXPECT_NE(direct.find("return shadingDirect * geometryFade;"), std::string::npos);
+}
+
+TEST(PBRShadingContractTests, ForwardAccumulatorsKeepAmbientOutsideGeometryGatedDirectLoop)
+{
+    const auto source = ReadTextFile(ShaderRootPath() / "LightGridCommon.hlsli");
+    ASSERT_FALSE(source.empty());
+
+    const auto clustered = ExtractFunctionDefinition(source, "NLSAccumulateClusteredLightingPBR");
+    ASSERT_FALSE(clustered.empty());
+    const auto clusteredParameters = ExtractFunctionParameterNames(
+        source,
+        "NLSAccumulateClusteredLightingPBR");
+    ASSERT_GE(clusteredParameters.size(), 6u);
+    EXPECT_EQ(clusteredParameters[4], "geometryNormalWS");
+    EXPECT_EQ(clusteredParameters[5], "shadingNormalWS");
+    EXPECT_NE(
+        clustered.find("NLSFilterPerceptualRoughness(safeShadingNormalWS, roughness)"),
+        std::string::npos);
+
+    const auto ambientFloor = clustered.find(
+        "float3 lighting = safeAlbedo * (NLSGetVisibleAmbientFloor() * safeAo);");
+    const auto directLoop = clustered.find("[loop]");
+    const auto directCall = clustered.find("NLSEvaluateCookTorranceDirect(");
+    ASSERT_NE(ambientFloor, std::string::npos);
+    ASSERT_NE(directLoop, std::string::npos);
+    ASSERT_NE(directCall, std::string::npos);
+    EXPECT_LT(ambientFloor, directLoop);
+    EXPECT_LT(directLoop, directCall);
+
+    const auto directArguments = ExtractCallArguments(
+        clustered,
+        "NLSEvaluateCookTorranceDirect");
+    ASSERT_EQ(directArguments.size(), 10u);
+    EXPECT_EQ(directArguments[0], "safeGeometryNormalWS");
+    EXPECT_EQ(directArguments[1], "safeShadingNormalWS");
+    EXPECT_EQ(directArguments[2], "viewDir");
+    EXPECT_EQ(directArguments[3], "lightDir");
+    EXPECT_EQ(
+        std::find(directArguments.begin(), directArguments.end(), "safeAo"),
+        directArguments.end());
+
+    const auto scene = ExtractFunctionDefinition(source, "NLSAccumulateSceneLightingPBR");
+    const auto sceneDirectArguments = ExtractCallArguments(
+        scene,
+        "NLSEvaluateCookTorranceDirect");
+    ASSERT_EQ(sceneDirectArguments.size(), 9u);
+    EXPECT_EQ(sceneDirectArguments[0], "safeNormalWS");
+    EXPECT_EQ(sceneDirectArguments[1], "viewDir")
+        << "Deferred must not apply a geometry gate until it stores a separate geometry normal.";
+}
+
+TEST(PBRShadingContractTests, ForwardPixelShadersOrientConstrainAndPassGeometryThenShadingNormals)
+{
+    struct ForwardShaderContract
+    {
+        std::filesystem::path path;
+        std::string_view positionName;
+        std::string_view interpolatedNormalName;
+        std::string_view normalMapCondition;
+    };
+    const std::array shaders{
+        ForwardShaderContract{
+            ShaderRootPath() / "StandardPBR.hlsl",
+            "input.PositionWS",
+            "input.NormalWS",
+            "u_EnableNormalMapping > 0.5f"},
+        ForwardShaderContract{
+            ShaderRootPath() / "ShaderLab/StandardPBR.shader",
+            "input.positionWS",
+            "input.normalWS",
+            "#if defined(_NORMALMAP)"}};
+
+    for (const auto& shader : shaders)
+    {
+        SCOPED_TRACE(shader.path.string());
+        const auto source = ReadTextFile(shader.path);
+        ASSERT_FALSE(source.empty());
+        const auto pixel = ExtractFunctionDefinition(source, "PSMain");
+        ASSERT_FALSE(pixel.empty());
+        EXPECT_NE(pixel.find("bool isFrontFace : SV_IsFrontFace"), std::string::npos);
+
+        const std::string safeGeometryDefinition =
+            "const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(" +
+            std::string(shader.interpolatedNormalName) +
+            ", float3(0.0f, 0.0f, 1.0f));";
+        const auto safeGeometryOffset = pixel.find(safeGeometryDefinition);
+        const auto geometryOffset = pixel.find(
+            "const float3 geometryNormalWS = NLSOrientGeometryNormal("
+            "interpolatedGeometryNormalWS, isFrontFace);");
+        const auto normalMapCondition = pixel.find(shader.normalMapCondition);
+        const auto constrainOffset = pixel.find(
+            "NLSConstrainShadingNormalToGeometryHemisphere(");
+        ASSERT_NE(safeGeometryOffset, std::string::npos);
+        ASSERT_NE(geometryOffset, std::string::npos);
+        ASSERT_NE(normalMapCondition, std::string::npos);
+        ASSERT_NE(constrainOffset, std::string::npos);
+        EXPECT_LT(safeGeometryOffset, geometryOffset);
+        EXPECT_LT(geometryOffset, normalMapCondition);
+        EXPECT_LT(normalMapCondition, constrainOffset);
+        EXPECT_NE(pixel.find("shadingNormalWS = geometryNormalWS;"), std::string::npos)
+            << "The no-normal-map path must use the exact geometry normal value.";
+
+        const auto lightingArguments = ExtractCallArguments(
+            pixel,
+            "NLSAccumulateClusteredLightingPBR");
+        ASSERT_GE(lightingArguments.size(), 6u);
+        EXPECT_EQ(lightingArguments[3], shader.positionName);
+        EXPECT_EQ(lightingArguments[4], "geometryNormalWS");
+        EXPECT_EQ(lightingArguments[5], "shadingNormalWS");
+        EXPECT_NE(pixel.find("lighting + emissive"), std::string::npos);
+        EXPECT_EQ(pixel.find("geometryFade"), std::string::npos);
+
+        const auto orientFrame = source.find("NLSOrientTangentFrameForFace(");
+        const auto applyNormalMap = source.find("NLSApplyTangentNormal(");
+        ASSERT_NE(orientFrame, std::string::npos);
+        ASSERT_NE(applyNormalMap, std::string::npos);
+        EXPECT_LT(orientFrame, applyNormalMap);
+    }
 }
 
 TEST(PBRShadingContractTests, SharedNormalShaderDefinesPublicMathAndFallbackContracts)
@@ -449,5 +781,121 @@ TEST(PBRShadingContractTests, SharedNormalShaderCompilesThroughNativeDxcForDxilA
         EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
         EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
         EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath().parent_path() / "Common.hlsl"));
+    }
+}
+
+TEST(PBRShadingContractTests, ForwardShadersCompileThroughNativeDxcForDxilSpirvAndShaderLabVariants)
+{
+    struct CompileTarget
+    {
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform platform;
+        std::string_view extension;
+    };
+    const std::array targets{
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL, ".dxil"},
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV, ".spv"}};
+
+    ScopedTemporaryDirectory temporaryDirectory;
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+    const auto builtInPath = ShaderRootPath() / "StandardPBR.hlsl";
+    for (const auto& target : targets)
+    {
+        for (const auto stage : {
+                 NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                 NLS::Render::ShaderCompiler::ShaderStage::Pixel})
+        {
+            const auto input = MakeNativeShaderCompileInput(
+                builtInPath,
+                stage,
+                target.platform,
+                temporaryDirectory.GetPath() / "BuiltInArtifacts");
+
+            const auto output = compiler.Compile(input);
+            if (output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded &&
+                IsDxcUnavailableDiagnostic(output.diagnostics))
+            {
+                GTEST_SKIP() << "Native DXC is unavailable for Forward PBR compilation: "
+                             << output.diagnostics;
+            }
+            ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                << output.diagnostics;
+            EXPECT_FALSE(output.bytecode.empty());
+            EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
+            EXPECT_TRUE(HasDependency(output.dependencyPaths, builtInPath));
+            EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
+        }
+    }
+
+    const auto shaderLabPath = ShaderRootPath() / "ShaderLab/StandardPBR.shader";
+    const auto shaderLabSource = ReadTextFile(shaderLabPath);
+    ASSERT_FALSE(shaderLabSource.empty());
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(
+        shaderLabSource,
+        shaderLabPath.generic_string());
+    ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    ASSERT_FALSE(parsed.asset.subShaders.empty());
+    ASSERT_FALSE(parsed.asset.subShaders.front().passes.empty());
+    const auto& parsedForward = parsed.asset.subShaders.front().passes.front();
+    ASSERT_EQ(parsedForward.state.cullMode, NLS::Render::ShaderLab::ShaderLabCullMode::Back);
+
+    struct ShaderLabVariant
+    {
+        std::string_view name;
+        bool normalMap;
+        NLS::Render::ShaderLab::ShaderLabCullMode cullMode;
+    };
+    const std::array variants{
+        ShaderLabVariant{"Default", false, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
+        ShaderLabVariant{"NormalMap", true, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
+        ShaderLabVariant{"CullOff", false, NLS::Render::ShaderLab::ShaderLabCullMode::Off}};
+
+    for (const auto& variant : variants)
+    {
+        auto forward = parsedForward;
+        forward.state.cullMode = variant.cullMode;
+        ASSERT_EQ(forward.state.cullMode, variant.cullMode);
+
+        const auto compileSourcePath =
+            temporaryDirectory.GetPath() /
+            ("StandardPBRForward" + std::string(variant.name) + ".hlsl");
+        std::ofstream compileSource(compileSourcePath, std::ios::binary);
+        ASSERT_TRUE(compileSource.is_open()) << compileSourcePath.string();
+        compileSource << NLS::Render::ShaderLab::BuildShaderLabHlslForCompile(forward);
+        compileSource.close();
+
+        for (const auto& target : targets)
+        {
+            for (const auto stage : {
+                     NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                     NLS::Render::ShaderCompiler::ShaderStage::Pixel})
+            {
+                if (stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex &&
+                    variant.name != "Default")
+                {
+                    continue;
+                }
+
+                auto input = MakeNativeShaderCompileInput(
+                    compileSourcePath,
+                    stage,
+                    target.platform,
+                    temporaryDirectory.GetPath() / "ShaderLabArtifacts");
+                if (variant.normalMap)
+                    input.options.macros.push_back({"_NORMALMAP", "1"});
+
+                const auto output = compiler.Compile(input);
+                if (output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded &&
+                    IsDxcUnavailableDiagnostic(output.diagnostics))
+                {
+                    GTEST_SKIP() << "Native DXC is unavailable for ShaderLab Forward PBR compilation: "
+                                 << output.diagnostics;
+                }
+                ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                    << variant.name << " " << output.diagnostics;
+                EXPECT_FALSE(output.bytecode.empty()) << variant.name;
+                EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
+                EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
+            }
+        }
     }
 }

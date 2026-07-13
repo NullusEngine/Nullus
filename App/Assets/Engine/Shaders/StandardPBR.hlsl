@@ -95,13 +95,22 @@ float4 PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     const float opacity = u_OpacityMap.Sample(u_LinearWrapSampler, texCoord).r;
     const float3 emissive = u_EmissiveMap.Sample(u_LinearWrapSampler, texCoord).rgb * u_Emissive.rgb;
 
-    const float3 normalWS = ComputeNormal(input, texCoord, isFrontFace);
+    const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
+    const float3 geometryNormalWS = NLSOrientGeometryNormal(interpolatedGeometryNormalWS, isFrontFace);
+    float3 shadingNormalWS = geometryNormalWS;
+    if (u_EnableNormalMapping > 0.5f)
+    {
+        shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
+            ComputeNormal(input, texCoord, isFrontFace),
+            geometryNormalWS);
+    }
     const float3 lighting = NLSAccumulateClusteredLightingPBR(
         u_ForwardLocalLightBuffer,
         u_NumCulledLightsGrid,
         u_CulledLightDataGrid,
         input.PositionWS,
-        normalWS,
+        geometryNormalWS,
+        shadingNormalWS,
         albedo,
         metallic,
         roughness,

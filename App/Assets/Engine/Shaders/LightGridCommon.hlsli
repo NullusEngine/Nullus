@@ -1,6 +1,17 @@
 #ifndef NLS_ENGINE_LIGHT_GRID_COMMON_HLSLI
 #define NLS_ENGINE_LIGHT_GRID_COMMON_HLSLI
 
+// Built-in HLSL already provides the shared normalization helpers through CommonTypes.hlsli.
+#if defined(NLS_ENGINE_COMMON_TYPES_HLSLI) && !defined(NULLUS_SHADER_LIBRARY_COMMON_INCLUDED)
+#define NLS_LIGHT_GRID_PBR_NORMALS_USE_ENGINE_COMMON
+#define NULLUS_SHADER_LIBRARY_COMMON_INCLUDED
+#endif
+#include "NullusShaderLibrary/PBRNormals.hlsl"
+#if defined(NLS_LIGHT_GRID_PBR_NORMALS_USE_ENGINE_COMMON)
+#undef NULLUS_SHADER_LIBRARY_COMMON_INCLUDED
+#undef NLS_LIGHT_GRID_PBR_NORMALS_USE_ENGINE_COMMON
+#endif
+
 static const uint NLS_LIGHT_TYPE_POINT = 0u;
 static const uint NLS_LIGHT_TYPE_DIRECTIONAL = 1u;
 static const uint NLS_LIGHT_TYPE_SPOT = 2u;
@@ -406,8 +417,8 @@ float3 NLSFresnelSchlick(float viewDotHalf, float3 f0)
     return f0 + (1.0f.xxx - f0) * fresnelFactor;
 }
 
-float3 NLSEvaluateCookTorranceDirect(
-    float3 normalWS,
+float3 NLSEvaluateCookTorranceShadingDirect(
+    float3 shadingNormalWS,
     float3 viewDir,
     float3 lightDir,
     float3 safeAlbedo,
@@ -417,10 +428,8 @@ float3 NLSEvaluateCookTorranceDirect(
     float lightIntensity,
     float attenuation)
 {
-    const float ndotv = saturate(dot(normalWS, viewDir));
-    const float ndotl = saturate(dot(normalWS, lightDir));
-    if (ndotl <= 0.0f)
-        return 0.0f.xxx;
+    const float ndotv = saturate(dot(shadingNormalWS, viewDir));
+    const float ndotl = saturate(dot(shadingNormalWS, lightDir));
 
     const float3 dielectricF0 = NLS_PBR_DIELECTRIC_F0.xxx;
     const float3 f0 = lerp(dielectricF0, safeAlbedo, safeMetallic);
@@ -428,26 +437,84 @@ float3 NLSEvaluateCookTorranceDirect(
     float3 specular = 0.0f.xxx;
     if (ndotv > 0.0f)
     {
-        const float3 halfVector = NLSSafeLightingNormalize(lightDir + viewDir, normalWS);
-        const float ndoth = saturate(dot(normalWS, halfVector));
+        const float3 halfVector = NLSSafeLightingNormalize(lightDir + viewDir, shadingNormalWS);
+        const float ndoth = saturate(dot(shadingNormalWS, halfVector));
         const float viewDotHalf = saturate(dot(viewDir, halfVector));
         fresnel = NLSFresnelSchlick(viewDotHalf, f0);
         const float distribution = NLSDistributionGGX(ndoth, safeRoughness);
         const float geometry = NLSGeometrySmith(ndotv, ndotl, safeRoughness);
         const float3 numerator = distribution * geometry * fresnel;
-        const float denominator = max(4.0f * ndotv * ndotl, NLS_PBR_MIN_DENOMINATOR);
+        const float denominator = max(
+            4.0f * ndotv * ndotl,
+            NLS_PBR_MIN_DENOMINATOR);
         specular = numerator / denominator;
     }
     const float3 kd = (1.0f.xxx - fresnel) * (1.0f - safeMetallic);
     const float3 diffuse = kd * safeAlbedo * NLS_PBR_INV_PI;
+    const float3 brdf = diffuse + specular;
 
     const float3 safeLightColor = NLSIsFiniteLighting3(lightColor) ? max(lightColor, 0.0f.xxx) : 0.0f.xxx;
     const float safeIntensity = isfinite(lightIntensity) ? max(lightIntensity, 0.0f) : 0.0f;
-    const float safeAttenuation = isfinite(attenuation) ? max(attenuation, 0.0f) : 0.0f;
+    const float visibility = isfinite(attenuation) ? max(attenuation, 0.0f) : 0.0f;
     const float3 radiance = safeLightColor *
-        (safeIntensity * NLS_PBR_ARTIST_LIGHT_INTENSITY_TO_RADIANCE) *
-        safeAttenuation;
-    return (diffuse + specular) * radiance * ndotl;
+        (safeIntensity * NLS_PBR_ARTIST_LIGHT_INTENSITY_TO_RADIANCE);
+    return brdf * radiance * ndotl * visibility;
+}
+
+float3 NLSEvaluateCookTorranceDirect(
+    float3 geometryNormalWS,
+    float3 shadingNormalWS,
+    float3 viewDir,
+    float3 lightDir,
+    float3 safeAlbedo,
+    float safeMetallic,
+    float safeRoughness,
+    float3 lightColor,
+    float lightIntensity,
+    float attenuation)
+{
+    const float geometryNdotL = dot(geometryNormalWS, lightDir);
+    const float geometryNdotV = dot(geometryNormalWS, viewDir);
+    if (geometryNdotL <= 0.0f || geometryNdotV <= 0.0f)
+        return 0.0f.xxx;
+    const float geometryFade = NLSGeometryHorizonFade(geometryNdotL) *
+        NLSGeometryHorizonFade(geometryNdotV);
+
+    const float3 shadingDirect = NLSEvaluateCookTorranceShadingDirect(
+        shadingNormalWS,
+        viewDir,
+        lightDir,
+        safeAlbedo,
+        safeMetallic,
+        safeRoughness,
+        lightColor,
+        lightIntensity,
+        attenuation);
+    return shadingDirect * geometryFade;
+}
+
+// Compatibility overload until Deferred stores geometry and shading normals separately.
+float3 NLSEvaluateCookTorranceDirect(
+    float3 shadingNormalWS,
+    float3 viewDir,
+    float3 lightDir,
+    float3 safeAlbedo,
+    float safeMetallic,
+    float safeRoughness,
+    float3 lightColor,
+    float lightIntensity,
+    float attenuation)
+{
+    return NLSEvaluateCookTorranceShadingDirect(
+        shadingNormalWS,
+        viewDir,
+        lightDir,
+        safeAlbedo,
+        safeMetallic,
+        safeRoughness,
+        lightColor,
+        lightIntensity,
+        attenuation);
 }
 
 float3 NLSAccumulateClusteredLightingPhong(
@@ -516,7 +583,8 @@ float3 NLSAccumulateClusteredLightingPBR(
     StructuredBuffer<uint> numCulledLightsGrid,
     StructuredBuffer<uint> culledLightDataGrid,
     float3 worldPosition,
-    float3 normalWS,
+    float3 geometryNormalWS,
+    float3 shadingNormalWS,
     float3 albedo,
     float metallic,
     float roughness,
@@ -526,11 +594,18 @@ float3 NLSAccumulateClusteredLightingPBR(
     const uint recordBase = clusterIndex * NLS_NUM_CULLED_LIGHTS_GRID_STRIDE;
     const uint offset = numCulledLightsGrid[recordBase + 0u];
     const uint count = numCulledLightsGrid[recordBase + 1u];
-    const float3 safeNormalWS = NLSSafeLightingNormalize(normalWS, float3(0.0f, 0.0f, 1.0f));
-    const float3 viewDir = NLSSafeLightingNormalize(NLSGetCameraWorldPosition() - worldPosition, safeNormalWS);
+    const float3 safeGeometryNormalWS = NLSSafeLightingNormalize(
+        geometryNormalWS,
+        float3(0.0f, 0.0f, 1.0f));
+    const float3 safeShadingNormalWS = NLSSafeLightingNormalize(
+        shadingNormalWS,
+        safeGeometryNormalWS);
+    const float3 viewDir = NLSSafeLightingNormalize(
+        NLSGetCameraWorldPosition() - worldPosition,
+        safeGeometryNormalWS);
     const float3 safeAlbedo = NLSSafePbrAlbedo(albedo);
     const float safeMetallic = NLSSafePbrMetallic(metallic);
-    const float filteredRoughness = NLSFilterPerceptualRoughness(safeNormalWS, roughness);
+    const float filteredRoughness = NLSFilterPerceptualRoughness(safeShadingNormalWS, roughness);
     const float safeAo = NLSSafePbrAo(ao);
     float3 lighting = safeAlbedo * (NLSGetVisibleAmbientFloor() * safeAo);
 
@@ -557,7 +632,7 @@ float3 NLSAccumulateClusteredLightingPBR(
             if (distanceToLight > max(light.range, 0.0001f))
                 continue;
 
-            lightDir = NLSSafeLightingNormalize(toLight, safeNormalWS);
+            lightDir = NLSSafeLightingNormalize(toLight, safeGeometryNormalWS);
             attenuation = NLSComputePointAttenuation(light, distanceToLight);
             if (light.type == NLS_LIGHT_TYPE_SPOT)
             {
@@ -568,7 +643,8 @@ float3 NLSAccumulateClusteredLightingPBR(
         }
 
         lighting += NLSEvaluateCookTorranceDirect(
-            safeNormalWS,
+            safeGeometryNormalWS,
+            safeShadingNormalWS,
             viewDir,
             lightDir,
             safeAlbedo,

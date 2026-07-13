@@ -250,6 +250,15 @@ namespace
 		bool coveredSceneOutputFrameCompleted = false;
 		std::unordered_set<std::string> knownCaptureFiles;
 
+		bool IsAvailable() const
+		{
+#if defined(_WIN32)
+			return settings.enabled && api != nullptr;
+#else
+			return false;
+#endif
+		}
+
 #if defined(_WIN32)
 		std::filesystem::path renderDocDllPath;
 		std::filesystem::path qrenderdocPath;
@@ -264,11 +273,6 @@ namespace
 		{
 			if (ownsRenderDocModule && renderDocModule != nullptr)
 				::FreeLibrary(renderDocModule);
-		}
-
-		bool IsAvailable() const
-		{
-			return settings.enabled && api != nullptr;
 		}
 
 		void ConfigureCaptureKeysAndPath(const char* context)
@@ -706,11 +710,7 @@ namespace
 	bool RenderDocCaptureController::IsAvailable() const
 	{
 		std::lock_guard lock(m_impl->stateMutex);
-#if defined(_WIN32)
 		return m_impl->IsAvailable();
-#else
-		return false;
-#endif
 	}
 
 	bool RenderDocCaptureController::ShouldForceCaptureFrameRender() const

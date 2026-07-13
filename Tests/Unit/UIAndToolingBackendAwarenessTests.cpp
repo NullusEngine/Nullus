@@ -284,6 +284,27 @@ TEST(UIAndToolingBackendAwarenessTests, ResolvesRenderDocCaptureDeviceByNativeBa
     EXPECT_EQ(NLS::Render::Tooling::ResolveRenderDocCaptureDevice(info), info.device);
 }
 
+#if !defined(_WIN32)
+TEST(UIAndToolingBackendAwarenessTests, RenderDocControllerRejectsCaptureWhenNativeApiIsUnavailable)
+{
+    NLS::Render::Settings::RenderDocSettings settings;
+    settings.enabled = true;
+
+    NLS::Render::Tooling::RenderDocCaptureController controller(std::move(settings));
+
+    EXPECT_FALSE(controller.IsAvailable());
+    EXPECT_FALSE(controller.QueueCapture("unsupported-platform"));
+
+    NLS::Render::Settings::RenderDocSettings queuedSettings;
+    queuedSettings.enabled = true;
+    queuedSettings.startupCaptureAfterFrames = 1u;
+    NLS::Render::Tooling::RenderDocCaptureController queuedController(std::move(queuedSettings));
+
+    EXPECT_FALSE(queuedController.IsAvailable());
+    EXPECT_FALSE(queuedController.ShouldForceCaptureFrameRender());
+}
+#endif
+
 TEST(UIAndToolingBackendAwarenessTests, NativeRenderDeviceInfoExposesTaggedHandlesForToolingBoundaries)
 {
     NLS::Render::RHI::NativeRenderDeviceInfo info;

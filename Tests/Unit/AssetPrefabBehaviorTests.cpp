@@ -713,10 +713,10 @@ TEST(AssetPrefabBehaviorTests, ManifestDependencyFreshnessRestoresSourceHashCach
     EXPECT_TRUE(current);
 }
 
-TEST(AssetPrefabBehaviorTests, ManifestDependencyFreshnessRejectsSameSizeSameMtimeSourceChangesOnWindows)
+TEST(AssetPrefabBehaviorTests, ManifestDependencyFreshnessRejectsSameSizeSameMtimeSourceReplacementOnWindows)
 {
 #if !defined(_WIN32)
-    GTEST_SKIP() << "Windows change-time file stamps are required for this cache invalidation edge case.";
+    GTEST_SKIP() << "Windows file-identity stamps are required for this cache invalidation edge case.";
 #else
     using namespace NLS::Editor::Assets;
     using namespace NLS::Core::Assets;
@@ -766,15 +766,23 @@ TEST(AssetPrefabBehaviorTests, ManifestDependencyFreshnessRejectsSameSizeSameMti
         1u);
     EXPECT_TRUE(current);
 
-    WriteTextFileForTest(assetPath, changedSourceText);
+    const auto originalCacheStamp = BuildSourceFileHashCacheFileStamp(assetPath);
+    const auto replacementPath = assetPath.string() + ".replacement";
+    WriteTextFileForTest(replacementPath, changedSourceText);
     std::error_code error;
-    std::filesystem::last_write_time(assetPath, originalWriteTime, error);
+    std::filesystem::last_write_time(replacementPath, originalWriteTime, error);
     ASSERT_FALSE(error) << error.message();
+    std::filesystem::remove(assetPath, error);
+    ASSERT_FALSE(error) << error.message();
+    std::filesystem::rename(replacementPath, assetPath, error);
+    ASSERT_FALSE(error) << error.message();
+    ASSERT_NE(BuildSourceFileHashCacheFileStamp(assetPath), originalCacheStamp)
+        << "Replacing the source must produce a distinct Windows file-identity stamp.";
 
     EXPECT_EQ(
         SourceHashContentReadsForFreshnessCheck(manifest, meta, projectRoot, assetPath, &current),
         1u)
-        << "Windows change time/file id must invalidate same-size source edits even when an external tool restores mtime.";
+        << "Windows file identity must invalidate same-size source replacements that preserve mtime.";
     EXPECT_FALSE(current);
 #endif
 }

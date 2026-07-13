@@ -305,6 +305,69 @@ NLS::Render::ShaderCompiler::ShaderCompilationInput MakeNativeShaderCompileInput
     return input;
 }
 
+void ExpectSpirvReturnsFiniteUnitPositiveZ(
+    const std::string& dxcPath,
+    const std::filesystem::path& wrapperPath,
+    const std::filesystem::path& artifactDirectory)
+{
+    std::filesystem::create_directories(artifactDirectory);
+    const auto artifactPath = artifactDirectory / "ExpectedOutput.spv";
+    const auto assemblyPath = artifactDirectory / "ExpectedOutput.spv.txt";
+    const auto compile = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+        dxcPath,
+        {
+            "-nologo",
+            "-spirv",
+            "-E", "PSMain",
+            "-T", "ps_6_0",
+            "-O3",
+            "-Fo", artifactPath.string(),
+            "-Fc", assemblyPath.string(),
+            "-I", ShaderRootPath().string(),
+            wrapperPath.string()});
+    ASSERT_EQ(compile.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::Succeeded)
+        << compile.diagnostics;
+
+    const auto assembly = ReadTextFile(assemblyPath);
+    const std::regex expectedOutputPattern(
+        R"((%[A-Za-z0-9_]+)\s*=\s*OpConstantComposite\s+%v4float\s+%float_0\s+%float_0\s+%float_1\s+%float_1)");
+    std::smatch expectedOutput;
+    ASSERT_TRUE(std::regex_search(assembly, expectedOutput, expectedOutputPattern))
+        << assembly;
+    EXPECT_NE(
+        assembly.find("OpStore %out_var_SV_Target0 " + expectedOutput[1].str()),
+        std::string::npos)
+        << assembly;
+}
+
+void ExpectGuardedDxilReturnsFiniteUnitPositiveZ(const std::string& assembly)
+{
+    const std::regex fallbackXPattern(
+        R"((%[0-9]+)\s*=\s*phi float \[ %[0-9]+, %[0-9]+ \], \[ 0\.000000e\+00, %0 \])");
+    const std::regex fallbackZPattern(
+        R"((%[0-9]+)\s*=\s*phi float \[ 0\.000000e\+00, %[0-9]+ \], \[ 1\.000000e\+00, %0 \])");
+    std::smatch fallbackX;
+    std::smatch fallbackZ;
+    ASSERT_TRUE(std::regex_search(assembly, fallbackX, fallbackXPattern)) << assembly;
+    ASSERT_TRUE(std::regex_search(assembly, fallbackZ, fallbackZPattern)) << assembly;
+    EXPECT_NE(
+        assembly.find("i8 0, float " + fallbackX[1].str()),
+        std::string::npos)
+        << assembly;
+    EXPECT_NE(
+        assembly.find("i8 1, float 0.000000e+00"),
+        std::string::npos)
+        << assembly;
+    EXPECT_NE(
+        assembly.find("i8 2, float " + fallbackZ[1].str()),
+        std::string::npos)
+        << assembly;
+    EXPECT_NE(
+        assembly.find("i8 3, float 1.000000e+00"),
+        std::string::npos)
+        << assembly;
+}
+
 class ScopedTemporaryDirectory final
 {
 public:
@@ -827,15 +890,20 @@ TEST(PBRShadingContractTests, SafeNormalizeSemanticsAreIndependentOfPbrIncludeOr
         Vector3 cpuValue;
         Vector3 cpuFallback;
         bool expectConstantDxilOutput;
+        bool expectCanonicalSpirvOutput;
+        bool expectGuardedDxilOutput;
     };
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float infinity = std::numeric_limits<float>::infinity();
     const std::array cases{
-        NormalCase{"NonUnitFallback", "0.0f.xxx", "float3(0.0f, 0.0f, 2.0f)", Vector3::Zero, {0.0f, 0.0f, 2.0f}, true},
-        NormalCase{"ZeroFallback", "0.0f.xxx", "0.0f.xxx", Vector3::Zero, Vector3::Zero, true},
-        NormalCase{"NanInput", "float3(asfloat(0x7fc00000u), 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {nan, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, true},
-        NormalCase{"InfinityInput", "float3(asfloat(0x7f800000u), 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {infinity, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, false},
-        NormalCase{"NearZeroInput", "float3(1.0e-12f, 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {1.0e-12f, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, true}};
+        NormalCase{"NonUnitFallback", "0.0f.xxx", "float3(0.0f, 0.0f, 2.0f)", Vector3::Zero, {0.0f, 0.0f, 2.0f}, true, false, false},
+        NormalCase{"ZeroFallback", "0.0f.xxx", "0.0f.xxx", Vector3::Zero, Vector3::Zero, true, false, false},
+        NormalCase{"NanInput", "float3(asfloat(0x7fc00000u), 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {nan, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, true, false, false},
+        NormalCase{"InfinityInput", "float3(asfloat(0x7f800000u), 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {infinity, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, false, false, false},
+        NormalCase{"NearZeroInput", "float3(1.0e-12f, 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {1.0e-12f, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, true, false, false},
+        NormalCase{"NanFallback", "0.0f.xxx", "float3(asfloat(0x7fc00000u), 0.0f, 0.0f)", Vector3::Zero, {nan, 0.0f, 0.0f}, true, true, false},
+        NormalCase{"InfinityFallback", "0.0f.xxx", "float3(asfloat(0x7f800000u), 0.0f, 0.0f)", Vector3::Zero, {infinity, 0.0f, 0.0f}, false, true, true},
+        NormalCase{"NearZeroFallback", "0.0f.xxx", "float3(1.0e-12f, 0.0f, 0.0f)", Vector3::Zero, {1.0e-12f, 0.0f, 0.0f}, true, true, false}};
 
     struct IncludeOrder
     {
@@ -904,17 +972,33 @@ TEST(PBRShadingContractTests, SafeNormalizeSemanticsAreIndependentOfPbrIncludeOr
                 EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
 
                 if (target.platform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL &&
-                    normalCase.expectConstantDxilOutput)
+                    (normalCase.expectConstantDxilOutput || normalCase.expectGuardedDxilOutput))
                 {
                     const auto dump = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
                         dxcPath,
                         {"-dumpbin", output.artifactPath});
                     ASSERT_EQ(dump.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::Succeeded)
                         << dump.diagnostics;
-                    EXPECT_NE(dump.output.find("i8 0, float 0.000000e+00"), std::string::npos);
-                    EXPECT_NE(dump.output.find("i8 1, float 0.000000e+00"), std::string::npos);
-                    EXPECT_NE(dump.output.find("i8 2, float 1.000000e+00"), std::string::npos);
-                    EXPECT_NE(dump.output.find("i8 3, float 1.000000e+00"), std::string::npos);
+                    if (normalCase.expectConstantDxilOutput)
+                    {
+                        EXPECT_NE(dump.output.find("i8 0, float 0.000000e+00"), std::string::npos);
+                        EXPECT_NE(dump.output.find("i8 1, float 0.000000e+00"), std::string::npos);
+                        EXPECT_NE(dump.output.find("i8 2, float 1.000000e+00"), std::string::npos);
+                        EXPECT_NE(dump.output.find("i8 3, float 1.000000e+00"), std::string::npos);
+                    }
+                    else
+                    {
+                        ExpectGuardedDxilReturnsFiniteUnitPositiveZ(dump.output);
+                    }
+                }
+                else if (target.platform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV &&
+                    normalCase.expectCanonicalSpirvOutput)
+                {
+                    ExpectSpirvReturnsFiniteUnitPositiveZ(
+                        dxcPath,
+                        wrapperPath,
+                        temporaryDirectory.GetPath() / "SafeNormalizeAssembly" /
+                            std::string(normalCase.name) / std::string(includeOrder.name));
                 }
             }
 

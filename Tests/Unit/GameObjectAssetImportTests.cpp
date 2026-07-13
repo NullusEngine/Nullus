@@ -4633,7 +4633,7 @@ TEST(GameObjectAssetImportTests, GeneratedModelSceneRestoreSynchronouslyPrewarms
     EXPECT_NE(meshFilter->ResolveMesh(), nullptr);
     ASSERT_EQ(meshRenderer->GetMaterialPaths().size(), 1u);
     EXPECT_EQ(meshRenderer->GetMaterialPaths()[0], materialPath);
-    EXPECT_NE(meshRenderer->GetMaterialAtIndex(0), nullptr);
+    EXPECT_NE(meshRenderer->ResolveMaterialAtIndex(0), nullptr);
     EXPECT_TRUE(meshManager.IsResourceRegistered(meshPath))
         << "Scene restore must synchronously prewarm mesh artifacts so loaded scenes are immediately visible.";
     EXPECT_TRUE(materialManager.IsResourceRegistered(materialPath))

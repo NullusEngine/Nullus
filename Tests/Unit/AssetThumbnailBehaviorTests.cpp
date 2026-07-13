@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -1605,6 +1606,9 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewDetectsTerminalAsyncMeshFailur
         0u);
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
+    std::optional<NLS::Core::ResourceManagement::MeshManager> meshManagerStorage;
+    meshManagerStorage.emplace();
+    const auto* failingMeshManagerAddress = &*meshManagerStorage;
     auto corruptMeshArtifact = NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact());
     ASSERT_FALSE(corruptMeshArtifact.empty());
     // Preserve the container and mesh header so the failure occurs in the async full-payload load.
@@ -1613,7 +1617,7 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewDetectsTerminalAsyncMeshFailur
     ASSERT_TRUE(NLS::Render::Assets::ReadMeshArtifactHeaderPreview(root / meshArtifactPath).has_value());
     NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
     {
-        NLS::Core::ResourceManagement::MeshManager failingMeshManager;
+        auto& failingMeshManager = *meshManagerStorage;
         ScopedServiceOverride<NLS::Core::ResourceManagement::MeshManager> failingMeshManagerOverride(
             failingMeshManager);
 
@@ -1653,12 +1657,15 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewDetectsTerminalAsyncMeshFailur
         NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
         failingMeshManager.UnloadResources();
     }
+    meshManagerStorage.reset();
 
     WriteBinaryFile(
         root / meshArtifactPath,
         NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
+    meshManagerStorage.emplace();
+    ASSERT_EQ(&*meshManagerStorage, failingMeshManagerAddress);
     {
-        NLS::Core::ResourceManagement::MeshManager recoveredMeshManager;
+        auto& recoveredMeshManager = *meshManagerStorage;
         ScopedServiceOverride<NLS::Core::ResourceManagement::MeshManager> recoveredMeshManagerOverride(
             recoveredMeshManager);
         const auto readyMeshArtifact = TriangleMeshArtifact();

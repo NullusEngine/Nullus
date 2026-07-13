@@ -10025,6 +10025,8 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesPreparedRend
         {{0.0f, 0.0f, 0.0f}, 1.0f});
     auto* gbufferShader = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferShader(renderer);
     ASSERT_NE(gbufferShader, nullptr);
+    if (gbufferShader->GetCompiledArtifacts().empty())
+        GTEST_SKIP() << "Deferred threaded scene packaging requires compiled shader artifacts.";
     NLS::Render::Resources::Material sceneMaterial;
     sceneMaterial.SetShader(gbufferShader);
     NLS::Engine::SceneSystem::Scene scene;

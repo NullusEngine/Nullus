@@ -3,6 +3,7 @@
 #include "Assets/AssetPath.h"
 #include "Platform/Process/Process.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -26,10 +27,21 @@ inline std::string NormalizeEditorAssetPath(std::filesystem::path path)
 
 inline std::string NormalizeEditorProjectAssetPath(std::filesystem::path path)
 {
-    if (path.empty() || path.is_absolute())
+    if (path.empty())
         return {};
 
-    const auto normalizedPath = path.lexically_normal();
+    auto normalizedInput = path.generic_string();
+    std::replace(normalizedInput.begin(), normalizedInput.end(), '\\', '/');
+    const bool hasWindowsAbsolutePrefix =
+        normalizedInput.size() >= 3u &&
+        ((normalizedInput[0] >= 'A' && normalizedInput[0] <= 'Z') ||
+            (normalizedInput[0] >= 'a' && normalizedInput[0] <= 'z')) &&
+        normalizedInput[1] == ':' &&
+        normalizedInput[2] == '/';
+    if (path.is_absolute() || normalizedInput.starts_with('/') || hasWindowsAbsolutePrefix)
+        return {};
+
+    const auto normalizedPath = std::filesystem::path(normalizedInput).lexically_normal();
     for (const auto& part : normalizedPath)
     {
         if (part == "..")

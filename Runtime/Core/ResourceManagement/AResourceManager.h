@@ -1,6 +1,8 @@
 ﻿#pragma once
 
+#include <atomic>
 #include <any>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -57,6 +59,13 @@ namespace NLS::Core::ResourceManagement
 	class AResourceManager
 	{
 	public:
+		AResourceManager()
+			: m_instanceId(__NEXT_INSTANCE_ID.fetch_add(1u, std::memory_order_relaxed))
+		{
+		}
+
+		uint64_t GetInstanceId() const { return m_instanceId; }
+
 		/**
 		* Handle the creation of a resource and register it
 		* @param p_path
@@ -162,7 +171,9 @@ namespace NLS::Core::ResourceManagement
 	private:
 		inline static std::string __PROJECT_ASSETS_PATH = "";
 		inline static std::string __ENGINE_ASSETS_PATH = "";
+		inline static std::atomic<uint64_t> __NEXT_INSTANCE_ID { 1u };
 
+		const uint64_t m_instanceId;
 		mutable std::recursive_mutex m_resourcesMutex;
 		std::unordered_map<std::string, T*> m_resources;
 		std::unordered_set<std::string> m_lifetimeManagedResources;

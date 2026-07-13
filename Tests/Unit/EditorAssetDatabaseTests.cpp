@@ -3666,7 +3666,14 @@ TEST(EditorAssetDatabaseTests, StartupPreimportCacheIndexRecordsManifestFreshnes
     EXPECT_NE(indexText.find("postprocessor:external-texture-build-pipeline"), std::string::npos);
     EXPECT_NE(indexText.find("postprocessor:shader-compiler-toolchain"), std::string::npos);
     const auto textureType = static_cast<uint32_t>(NLS::Core::Assets::AssetType::Texture);
-    EXPECT_NE(indexText.find("build-target:" + std::to_string(textureType) + "=win64-dx12"), std::string::npos);
+#if defined(_WIN32)
+    constexpr std::string_view textureBuildTarget = "win64-dx12";
+#else
+    constexpr std::string_view textureBuildTarget = "editor";
+#endif
+    EXPECT_NE(
+        indexText.find("build-target:" + std::to_string(textureType) + "=" + std::string(textureBuildTarget)),
+        std::string::npos);
 
     std::filesystem::remove_all(root);
 }

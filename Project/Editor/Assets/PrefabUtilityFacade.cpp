@@ -1359,7 +1359,7 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     request.sceneAssetId = sceneAssetId;
     const bool deferGeneratedModelResources = sourcePrefab->generatedModelPrefab;
     request.deferAssetReferenceResolution = deferGeneratedModelResources;
-    request.synchronousAssetReferencePrewarm = !deferGeneratedModelResources;
+    request.synchronousAssetReferencePrewarm = true;
     request.skipDeferredAssetReferenceCacheLookup = deferGeneratedModelResources;
 
     auto instantiate = ConvertResult(PrefabEditorWorkflow().InstantiatePrefab({

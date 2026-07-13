@@ -1592,7 +1592,7 @@ PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     if (result.diagnostics.HasErrors())
         return result;
 
-    if (policy.synchronousAssetReferencePrewarm && !policy.deferAssetReferenceResolution)
+    if (policy.synchronousAssetReferencePrewarm)
     {
         NLS::Base::Profiling::PerformanceStageScope waitScope(
             NLS::Base::Profiling::PerformanceStageDomain::Prefab,

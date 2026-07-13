@@ -7261,6 +7261,8 @@ TEST(AssetBrowserPresentationTests, NormalizesOnlyCanonicalProjectAssetPaths)
     EXPECT_TRUE(NormalizeEditorProjectAssetPath({}).empty());
     EXPECT_TRUE(NormalizeEditorProjectAssetPath("Packages/Model.fbx").empty());
     EXPECT_TRUE(NormalizeEditorProjectAssetPath("Assets/../../Outside.fbx").empty());
+    EXPECT_TRUE(NormalizeEditorProjectAssetPath("C:\\Project\\Assets\\Model.fbx").empty());
+    EXPECT_TRUE(NormalizeEditorProjectAssetPath("\\\\server\\share\\Assets\\Model.fbx").empty());
     EXPECT_TRUE(NormalizeEditorProjectAssetPath(std::filesystem::absolute("Assets/Model.fbx")).empty());
 }
 

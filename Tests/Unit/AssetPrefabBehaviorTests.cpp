@@ -1482,10 +1482,10 @@ TEST(AssetPrefabBehaviorTests, ExplicitSynchronousResourcePrewarmRetainsDiagnost
     EXPECT_EQ(uploadGpuResources->counters.at("synchronousResourceLoadCount"), 1u);
 }
 
-TEST(AssetPrefabBehaviorTests, DeferredAssetResolutionSuppressesSynchronousPrewarmOptIn)
+TEST(AssetPrefabBehaviorTests, DeferredAssetResolutionPreservesSynchronousPrewarmOptIn)
 {
     auto artifact = MakePrefabArtifact(
-        "Prefab_DeferSuppressesSyncResourcePrewarm",
+        "Prefab_DeferPreservesSyncResourcePrewarm",
         "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e",
         1u,
         1u);
@@ -1510,8 +1510,12 @@ TEST(AssetPrefabBehaviorTests, DeferredAssetResolutionSuppressesSynchronousPrewa
     ASSERT_NE(instance.root, nullptr);
 
     const auto snapshot = stats.Snapshot();
-    EXPECT_EQ(FindStage(snapshot, "WaitForResources"), nullptr);
-    EXPECT_EQ(FindStage(snapshot, "UploadGpuResources"), nullptr);
+    const auto* waitForResources = FindStage(snapshot, "WaitForResources");
+    ASSERT_NE(waitForResources, nullptr);
+    const auto* uploadGpuResources = FindStage(snapshot, "UploadGpuResources");
+    ASSERT_NE(uploadGpuResources, nullptr);
+    ASSERT_TRUE(uploadGpuResources->counters.contains("dependencyCount"));
+    EXPECT_GE(uploadGpuResources->counters.at("dependencyCount"), 1u);
 }
 
 TEST(AssetPrefabBehaviorTests, DeferredSceneRegistrationPreservesFastAccessComponents)

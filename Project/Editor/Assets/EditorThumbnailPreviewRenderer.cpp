@@ -1010,6 +1010,8 @@ struct PrefabPreviewResourcePumpState
         NLS::Core::ResourceManagement::ResourceHandle<NLS::Render::Resources::Material>> materialHandles;
     const NLS::Core::ResourceManagement::MeshManager* meshManager = nullptr;
     const NLS::Core::ResourceManagement::MaterialManager* materialManager = nullptr;
+    uint64_t meshManagerInstanceId = 0u;
+    uint64_t materialManagerInstanceId = 0u;
     NLS::Core::ResourceManagement::ResourceLifetimeRegistry* resourceLifetimeRegistry = nullptr;
     std::string ownerToken;
     bool resourcePlanTruncated = false;
@@ -1034,6 +1036,8 @@ void ResetPrefabPreviewResourcePumpStateForManagers(
 {
     if (state.meshManager == &meshManager &&
         state.materialManager == &materialManager &&
+        state.meshManagerInstanceId == meshManager.GetInstanceId() &&
+        state.materialManagerInstanceId == materialManager.GetInstanceId() &&
         state.resourceLifetimeRegistry == resourceLifetimeRegistry)
     {
         return;
@@ -1062,6 +1066,8 @@ void ResetPrefabPreviewResourcePumpStateForManagers(
     state.terminalDiagnostic.clear();
     state.meshManager = &meshManager;
     state.materialManager = &materialManager;
+    state.meshManagerInstanceId = meshManager.GetInstanceId();
+    state.materialManagerInstanceId = materialManager.GetInstanceId();
     state.resourceLifetimeRegistry = resourceLifetimeRegistry;
     state.ownerToken = std::move(ownerToken);
 }

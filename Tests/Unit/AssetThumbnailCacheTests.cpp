@@ -3484,18 +3484,20 @@ TEST(AssetThumbnailCacheTests, DeferredSourceModelGpuPreviewUsesManifestPrimaryP
     ASSERT_TRUE(deferredRequest->subAssetKey.empty());
     ASSERT_TRUE(deferredRequest->artifactPath.empty());
 
-    CapturingThumbnailPreviewRenderer renderer;
-    AssetThumbnailService service;
-    ASSERT_EQ(service.GetThumbnail(*deferredRequest).status, AssetThumbnailServiceStatus::Pending);
-    const auto pending = service.GenerateNextThumbnail(renderer, true);
-    ASSERT_TRUE(pending.has_value());
-    EXPECT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_TRUE(renderer.lastSupportsRequest.has_value());
-    EXPECT_EQ(renderer.lastSupportsRequest->subAssetKey, "prefab:Heavy");
-    EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastSupportsRequest->artifactPath));
-    ASSERT_TRUE(renderer.lastRenderRequest.has_value());
-    EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "prefab:Heavy");
-    EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastRenderRequest->artifactPath));
+    {
+        CapturingThumbnailPreviewRenderer renderer;
+        AssetThumbnailService service;
+        ASSERT_EQ(service.GetThumbnail(*deferredRequest).status, AssetThumbnailServiceStatus::Pending);
+        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        ASSERT_TRUE(pending.has_value());
+        EXPECT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_TRUE(renderer.lastSupportsRequest.has_value());
+        EXPECT_EQ(renderer.lastSupportsRequest->subAssetKey, "prefab:Heavy");
+        EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastSupportsRequest->artifactPath));
+        ASSERT_TRUE(renderer.lastRenderRequest.has_value());
+        EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "prefab:Heavy");
+        EXPECT_TRUE(NLS::Core::Assets::IsContentStorageArtifactPath(renderer.lastRenderRequest->artifactPath));
+    }
 
     std::filesystem::remove_all(root);
 }
@@ -4390,27 +4392,29 @@ TEST(AssetThumbnailCacheTests, DuplicateRequestDoesNotOverwriteGpuReadbackPollin
     const auto request = BuildAssetThumbnailRequestForItem(root, item, 48u, context);
     ASSERT_TRUE(request.has_value());
 
-    PendingThenReadyThumbnailPreviewRenderer renderer;
-    AssetThumbnailService service;
-    ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
-    const auto pending = service.GenerateNextThumbnail(renderer, true);
-    ASSERT_TRUE(pending.has_value());
-    EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu);
-
-    EXPECT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu)
-        << "Duplicate UI thumbnail requests must not demote an in-flight GPU readback to Queued.";
-
-    PerformanceStageStats stats;
     {
-        PerformanceStageStatsCapture capture(stats);
-        const auto repolled = service.GenerateNextThumbnail(renderer, false);
-        ASSERT_TRUE(repolled.has_value());
-        EXPECT_EQ(repolled->status, AssetThumbnailServiceStatus::Pending);
-    }
+        PendingThenReadyThumbnailPreviewRenderer renderer;
+        AssetThumbnailService service;
+        ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
+        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        ASSERT_TRUE(pending.has_value());
+        EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu);
 
-    EXPECT_EQ(renderer.renderCount, 2u);
-    EXPECT_EQ(FindThumbnailPerformanceStage(stats.Snapshot(), "ThumbnailManifestLookup"), nullptr);
+        EXPECT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
+        EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu)
+            << "Duplicate UI thumbnail requests must not demote an in-flight GPU readback to Queued.";
+
+        PerformanceStageStats stats;
+        {
+            PerformanceStageStatsCapture capture(stats);
+            const auto repolled = service.GenerateNextThumbnail(renderer, false);
+            ASSERT_TRUE(repolled.has_value());
+            EXPECT_EQ(repolled->status, AssetThumbnailServiceStatus::Pending);
+        }
+
+        EXPECT_EQ(renderer.renderCount, 2u);
+        EXPECT_EQ(FindThumbnailPerformanceStage(stats.Snapshot(), "ThumbnailManifestLookup"), nullptr);
+    }
 
     std::filesystem::remove_all(root);
 }

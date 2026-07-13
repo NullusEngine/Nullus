@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -198,6 +199,35 @@ std::string RemoveWhitespace(std::string_view source)
             return value != ' ' && value != '\t' && value != '\r' && value != '\n';
         });
     return compact;
+}
+
+std::vector<std::string> ExtractReturnExpressions(const std::string& functionDefinition)
+{
+    std::vector<std::string> expressions;
+    size_t offset = 0u;
+    while ((offset = functionDefinition.find("return", offset)) != std::string::npos)
+    {
+        const bool startsToken = offset == 0u ||
+            !std::isalnum(static_cast<unsigned char>(functionDefinition[offset - 1u]));
+        const auto afterKeyword = offset + std::string_view("return").size();
+        const bool endsToken = afterKeyword >= functionDefinition.size() ||
+            !std::isalnum(static_cast<unsigned char>(functionDefinition[afterKeyword]));
+        if (!startsToken || !endsToken)
+        {
+            offset = afterKeyword;
+            continue;
+        }
+
+        const auto semicolon = functionDefinition.find(';', afterKeyword);
+        if (semicolon == std::string::npos)
+            break;
+        expressions.emplace_back(TrimWhitespace(
+            std::string_view(functionDefinition).substr(
+                afterKeyword,
+                semicolon - afterKeyword)));
+        offset = semicolon + 1u;
+    }
+    return expressions;
 }
 
 std::multiset<std::string> FindNLSFunctionDefinitions(const std::string& source)
@@ -691,6 +721,13 @@ TEST(PBRShadingContractTests, ForwardAccumulatorsKeepAmbientOutsideGeometryGated
     ASSERT_NE(sceneDirectCall, std::string::npos);
     EXPECT_LT(sceneAmbientFloor, sceneDirectLoop);
     EXPECT_LT(sceneDirectLoop, sceneDirectCall);
+
+    const auto sceneReturns = ExtractReturnExpressions(scene);
+    ASSERT_EQ(sceneReturns.size(), 1u);
+    EXPECT_EQ(
+        RemoveWhitespace(sceneReturns.front()),
+        "lighting+directLighting*safeDirectVisibility")
+        << "Deferred direct visibility must not gate the ambient lighting accumulator.";
 
     const auto sceneDirectArguments = ExtractCallArguments(
         scene,

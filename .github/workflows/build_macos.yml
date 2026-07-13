@@ -34,7 +34,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Build
-        timeout-minutes: 60
+        timeout-minutes: 90
         shell: bash
         run: |
           set -o pipefail

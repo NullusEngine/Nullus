@@ -53,6 +53,9 @@ Shader "Nullus/StandardPBR"
             #pragma multi_compile _ MAIN_LIGHT_SHADOWS
 
             #include "NullusShaderLibrary/Core.hlsl"
+            #define NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
+            #include "CommonTypes.hlsli"
+            #undef NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
             #include "LightGridCommon.hlsli"
 
             struct Attributes
@@ -108,13 +111,6 @@ Shader "Nullus/StandardPBR"
                 float _Cutoff;
             };
 
-            struct StandardPbrTangentFrame
-            {
-                float3 normalWS;
-                float3 tangentWS;
-                float3 bitangentWS;
-            };
-
             float3 TransformStandardPbrNormal(float3 normalOS)
             {
                 const float3x3 model = (float3x3)u_Model;
@@ -134,40 +130,16 @@ Shader "Nullus/StandardPBR"
                 return NLSSafeNormalize(transformed, NLSSafeNormalize(fallback, float3(0.0f, 0.0f, 1.0f)));
             }
 
-            float3 StandardPbrPerpendicular(float3 normalWS)
-            {
-                const float3 reference = abs(normalWS.z) < 0.999f
-                    ? float3(0.0f, 0.0f, 1.0f)
-                    : float3(0.0f, 1.0f, 0.0f);
-                return NLSSafeNormalize(cross(reference, normalWS), float3(1.0f, 0.0f, 0.0f));
-            }
-
-            StandardPbrTangentFrame BuildStandardPbrTangentFrame(
+            NLSTangentFrame BuildStandardPbrTangentFrame(
                 float3 normalOS,
                 float3 tangentOS,
                 float3 bitangentOS)
             {
-                StandardPbrTangentFrame frame;
-                frame.normalWS = TransformStandardPbrNormal(normalOS);
-
                 const float3x3 model = (float3x3)u_Model;
-                const float3 transformedTangent = mul(model, tangentOS);
-                const float3 tangentCandidate = transformedTangent -
-                    frame.normalWS * dot(transformedTangent, frame.normalWS);
-                frame.tangentWS = NLSSafeNormalize(
-                    tangentCandidate,
-                    StandardPbrPerpendicular(frame.normalWS));
-
-                const float3 transformedBitangent = mul(model, bitangentOS);
-                const float3 bitangentCandidate = transformedBitangent -
-                    frame.normalWS * dot(transformedBitangent, frame.normalWS) -
-                    frame.tangentWS * dot(transformedBitangent, frame.tangentWS);
-                frame.bitangentWS = NLSSafeNormalize(
-                    bitangentCandidate,
-                    NLSSafeNormalize(
-                        cross(frame.normalWS, frame.tangentWS),
-                        float3(0.0f, 1.0f, 0.0f)));
-                return frame;
+                return NLSBuildSafeTangentFrame(
+                    TransformStandardPbrNormal(normalOS),
+                    mul(model, tangentOS),
+                    mul(model, bitangentOS));
             }
 
             float3 DecodeStandardPbrNormal(float4 normalSample)
@@ -180,19 +152,21 @@ Shader "Nullus/StandardPBR"
                 return NLSSafeNormalize(decoded, float3(0.0f, 0.0f, 1.0f));
             }
 
-            float3 ComputeStandardPbrNormal(Varyings input)
+            float3 ComputeStandardPbrNormal(Varyings input, bool isFrontFace)
             {
-                const float3 geometryNormal = NLSSafeNormalize(input.normalWS, float3(0.0f, 0.0f, 1.0f));
-            #if defined(_NORMALMAP)
+            #if !defined(_NORMALMAP)
+                const float faceSign = isFrontFace ? 1.0f : -1.0f;
+                const float3 normalWS = NLSSafeNormalize(input.normalWS, float3(0.0f, 0.0f, 1.0f));
+                return normalWS * faceSign;
+            #else
+                NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
+                    input.normalWS,
+                    input.tangentWS,
+                    input.bitangentWS);
+                tangentFrame = NLSOrientTangentFrameForFace(tangentFrame, isFrontFace);
                 const float3 tangentNormal = DecodeStandardPbrNormal(
                     _NormalMap.Sample(sampler_NormalMap, input.uv));
-                const float3x3 tangentToWorld = float3x3(
-                    NLSSafeNormalize(input.tangentWS, StandardPbrPerpendicular(geometryNormal)),
-                    NLSSafeNormalize(input.bitangentWS, cross(geometryNormal, input.tangentWS)),
-                    geometryNormal);
-                return NLSSafeNormalize(mul(tangentNormal, tangentToWorld), geometryNormal);
-            #else
-                return geometryNormal;
+                return NLSApplyTangentNormal(tangentNormal, tangentFrame);
             #endif
             }
 
@@ -202,7 +176,7 @@ Shader "Nullus/StandardPBR"
                 output.positionWS = TransformObjectToWorld(input.positionOS);
                 output.positionCS = TransformWorldToHClip(output.positionWS);
                 output.uv = input.uv;
-                const StandardPbrTangentFrame tangentFrame = BuildStandardPbrTangentFrame(
+                const NLSTangentFrame tangentFrame = BuildStandardPbrTangentFrame(
                     input.normalOS,
                     input.tangentOS,
                     input.bitangentOS);
@@ -212,7 +186,7 @@ Shader "Nullus/StandardPBR"
                 return output;
             }
 
-            float4 PSMain(Varyings input) : SV_Target0
+            float4 PSMain(Varyings input, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             {
                 const float4 baseSample = _BaseMap.Sample(sampler_BaseMap, input.uv);
                 const float3 albedo = baseSample.rgb * _BaseColor.rgb;
@@ -225,7 +199,7 @@ Shader "Nullus/StandardPBR"
                 const float opacity = _OpacityMap.Sample(sampler_OpacityMap, input.uv).r;
                 const float3 emissive =
                     _EmissiveColor.rgb * _EmissiveMap.Sample(sampler_EmissiveMap, input.uv).rgb;
-                const float3 normalWS = ComputeStandardPbrNormal(input);
+                const float3 normalWS = ComputeStandardPbrNormal(input, isFrontFace);
                 const float3 lighting = NLSAccumulateClusteredLightingPBR(
                     u_ForwardLocalLightBuffer,
                     u_NumCulledLightsGrid,
@@ -240,8 +214,9 @@ Shader "Nullus/StandardPBR"
             #if defined(_ALPHATEST_ON)
                 clip(alpha - _Cutoff);
             #endif
+                // The shared LDR transform preserves highlight hue and softens isolated specular peaks.
                 return float4(
-                    lighting + emissive,
+                    NLSToneMapACES(lighting + emissive),
                     alpha);
             }
             ENDHLSL

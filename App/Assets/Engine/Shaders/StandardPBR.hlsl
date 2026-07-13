@@ -66,21 +66,23 @@ float3 DecodeNormalMapSample(float4 normalSample)
     return NLSSafeNormalize(float3(xy, lerp(reconstructedZ, rgbZ, useRgbZ)), float3(0.0f, 0.0f, 1.0f));
 }
 
-float3 ComputeNormal(VSOutput input, float2 texCoord)
+float3 ComputeNormal(VSOutput input, float2 texCoord, bool isFrontFace)
 {
-    float3 normalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
+    const float faceSign = isFrontFace ? 1.0f : -1.0f;
+    const float3 normalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
+    if (u_EnableNormalMapping <= 0.5f)
+        return normalWS * faceSign;
 
-    if (u_EnableNormalMapping > 0.5f)
-    {
-        const NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(normalWS, input.TangentWS, input.BitangentWS);
-        const float3 tangentNormal = DecodeNormalMapSample(u_NormalMap.Sample(u_LinearWrapSampler, texCoord));
-        normalWS = NLSApplyTangentNormal(tangentNormal, tangentFrame);
-    }
-
-    return normalWS;
+    NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
+        normalWS,
+        input.TangentWS,
+        input.BitangentWS);
+    tangentFrame = NLSOrientTangentFrameForFace(tangentFrame, isFrontFace);
+    const float3 tangentNormal = DecodeNormalMapSample(u_NormalMap.Sample(u_LinearWrapSampler, texCoord));
+    return NLSApplyTangentNormal(tangentNormal, tangentFrame);
 }
 
-float4 PSMain(VSOutput input) : SV_Target0
+float4 PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 {
     const float2 texCoord = input.TexCoord;
     const float4 albedoSample = u_AlbedoMap.Sample(u_LinearWrapSampler, texCoord);
@@ -93,7 +95,7 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float opacity = u_OpacityMap.Sample(u_LinearWrapSampler, texCoord).r;
     const float3 emissive = u_EmissiveMap.Sample(u_LinearWrapSampler, texCoord).rgb * u_Emissive.rgb;
 
-    const float3 normalWS = ComputeNormal(input, texCoord);
+    const float3 normalWS = ComputeNormal(input, texCoord, isFrontFace);
     const float3 lighting = NLSAccumulateClusteredLightingPBR(
         u_ForwardLocalLightBuffer,
         u_NumCulledLightsGrid,
@@ -104,5 +106,8 @@ float4 PSMain(VSOutput input) : SV_Target0
         metallic,
         roughness,
         ao);
-    return float4(lighting + emissive, u_Albedo.a * albedoSample.a * opacity);
+    // The shared LDR transform preserves highlight hue and softens isolated specular peaks.
+    return float4(
+        NLSToneMapACES(lighting + emissive),
+        u_Albedo.a * albedoSample.a * opacity);
 }

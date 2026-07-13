@@ -127,10 +127,13 @@ float4 PSMain(VSOutput input) : SV_Target0
     {
         const float3 skyDirection = ReconstructFarWorldDirection(input.TexCoord);
         if (u_LightGridLightingParams.w > 0.5f)
-            return u_SkyboxCube.Sample(u_LinearWrapSampler, skyDirection);
+        {
+            const float4 skyboxColor = u_SkyboxCube.Sample(u_LinearWrapSampler, skyDirection);
+            return float4(NLSToneMapACES(skyboxColor.rgb), skyboxColor.a);
+        }
 
         if (u_UseProceduralSky != 0)
-            return float4(EvalProceduralSky(skyDirection), 1.0f);
+            return float4(NLSToneMapACES(EvalProceduralSky(skyDirection)), 1.0f);
 
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
@@ -153,5 +156,6 @@ float4 PSMain(VSOutput input) : SV_Target0
         roughness,
         ao);
 
-    return float4(litColor, 1.0f);
+    // The shared LDR transform preserves highlight hue and softens isolated specular peaks.
+    return float4(NLSToneMapACES(litColor), 1.0f);
 }

@@ -5058,7 +5058,7 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     request.requestedSize = request.kind == AssetThumbnailKind::Texture
         ? (std::min)(std::max(1u, requestedSize), kMaxTextureThumbnailGenerationSize)
         : std::max(1u, requestedSize);
-    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v7";
+    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v8";
     if (request.kind == AssetThumbnailKind::Texture)
     {
         request.settingsFingerprint = "asset-browser-thumbnail:v15-lowres-image-thumbnails";

@@ -14,6 +14,7 @@ static const float NLS_LIGHTING_SAFE_NORMAL_MAX_LENGTH_SQ = 1.0e+20f;
 static const float NLS_LIGHTING_SAFE_NORMAL_MAX_COMPONENT = 1.0e+30f;
 static const float NLS_PBR_PI = 3.14159265358979323846f;
 static const float NLS_PBR_INV_PI = 0.31830988618379067154f;
+static const float NLS_PBR_ARTIST_LIGHT_INTENSITY_TO_RADIANCE = NLS_PBR_PI;
 static const float NLS_PBR_DIELECTRIC_F0 = 0.04f;
 static const float NLS_PBR_MIN_PERCEPTUAL_ROUGHNESS = 0.045f;
 static const float NLS_PBR_MAX_NORMAL_VARIANCE = 0.18f;
@@ -187,6 +188,26 @@ bool NLSIsAabbOutsideInfiniteAcuteConeApprox(
 float NLSClamp01(float value)
 {
     return clamp(value, 0.0f, 1.0f);
+}
+
+float3 NLSToneMapACES(float3 hdrColor)
+{
+    hdrColor = NLSIsFiniteLighting3(hdrColor) ? max(hdrColor, 0.0f.xxx) : 0.0f.xxx;
+    const float peakChannel = max(hdrColor.r, max(hdrColor.g, hdrColor.b));
+    if (peakChannel > 1.0f)
+    {
+        const float shoulderExcess = peakChannel - 1.0f;
+        const float compressedPeak = 1.0f + shoulderExcess / (1.0f + shoulderExcess);
+        hdrColor *= compressedPeak / peakChannel;
+    }
+    const float a = 2.51f;
+    const float b = 0.03f;
+    const float c = 2.43f;
+    const float d = 0.59f;
+    const float e = 0.14f;
+    return saturate(
+        (hdrColor * (a * hdrColor + b)) /
+        max(hdrColor * (c * hdrColor + d) + e, NLS_PBR_MIN_DENOMINATOR.xxx));
 }
 
 uint NLSGetClusterIndex(uint x, uint y, uint z)
@@ -398,27 +419,34 @@ float3 NLSEvaluateCookTorranceDirect(
 {
     const float ndotv = saturate(dot(normalWS, viewDir));
     const float ndotl = saturate(dot(normalWS, lightDir));
-    if (ndotv <= 0.0f || ndotl <= 0.0f)
+    if (ndotl <= 0.0f)
         return 0.0f.xxx;
 
-    const float3 halfVector = NLSSafeLightingNormalize(lightDir + viewDir, normalWS);
-    const float ndoth = saturate(dot(normalWS, halfVector));
-    const float viewDotHalf = saturate(dot(viewDir, halfVector));
     const float3 dielectricF0 = NLS_PBR_DIELECTRIC_F0.xxx;
     const float3 f0 = lerp(dielectricF0, safeAlbedo, safeMetallic);
-    const float3 fresnel = NLSFresnelSchlick(viewDotHalf, f0);
-    const float distribution = NLSDistributionGGX(ndoth, safeRoughness);
-    const float geometry = NLSGeometrySmith(ndotv, ndotl, safeRoughness);
-    const float3 numerator = distribution * geometry * fresnel;
-    const float denominator = max(4.0f * ndotv * ndotl, NLS_PBR_MIN_DENOMINATOR);
-    const float3 specular = numerator / denominator;
+    float3 fresnel = f0;
+    float3 specular = 0.0f.xxx;
+    if (ndotv > 0.0f)
+    {
+        const float3 halfVector = NLSSafeLightingNormalize(lightDir + viewDir, normalWS);
+        const float ndoth = saturate(dot(normalWS, halfVector));
+        const float viewDotHalf = saturate(dot(viewDir, halfVector));
+        fresnel = NLSFresnelSchlick(viewDotHalf, f0);
+        const float distribution = NLSDistributionGGX(ndoth, safeRoughness);
+        const float geometry = NLSGeometrySmith(ndotv, ndotl, safeRoughness);
+        const float3 numerator = distribution * geometry * fresnel;
+        const float denominator = max(4.0f * ndotv * ndotl, NLS_PBR_MIN_DENOMINATOR);
+        specular = numerator / denominator;
+    }
     const float3 kd = (1.0f.xxx - fresnel) * (1.0f - safeMetallic);
     const float3 diffuse = kd * safeAlbedo * NLS_PBR_INV_PI;
 
     const float3 safeLightColor = NLSIsFiniteLighting3(lightColor) ? max(lightColor, 0.0f.xxx) : 0.0f.xxx;
     const float safeIntensity = isfinite(lightIntensity) ? max(lightIntensity, 0.0f) : 0.0f;
     const float safeAttenuation = isfinite(attenuation) ? max(attenuation, 0.0f) : 0.0f;
-    const float3 radiance = safeLightColor * safeIntensity * safeAttenuation;
+    const float3 radiance = safeLightColor *
+        (safeIntensity * NLS_PBR_ARTIST_LIGHT_INTENSITY_TO_RADIANCE) *
+        safeAttenuation;
     return (diffuse + specular) * radiance * ndotl;
 }
 

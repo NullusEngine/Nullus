@@ -6407,11 +6407,77 @@ TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)
         EXPECT_NE(shader.find("DecodeNormalMapSample"), std::string::npos);
         EXPECT_NE(shader.find("_NormalMap.Sample"), std::string::npos);
         EXPECT_NE(shader.find("sqrt(saturate(1.0f - dot(xy, xy)))"), std::string::npos);
-        EXPECT_NE(shader.find("u_EnableNormalMapping > 0.5f"), std::string::npos);
+        EXPECT_TRUE(
+            shader.find("u_EnableNormalMapping > 0.5f") != std::string::npos ||
+            shader.find("u_EnableNormalMapping <= 0.5f") != std::string::npos);
     };
     expectBc5CompatibleNormalDecode(standard);
     expectBc5CompatibleNormalDecode(standardPbr);
     expectBc5CompatibleNormalDecode(deferredGBuffer);
+}
+
+TEST(AssetMaterialConversionTests, PbrForwardShadersOrientBackFaceTangentFramesBeforeNormalMapping)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders";
+    const auto read = [](const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>());
+    };
+
+    const auto commonTypes = read(root / "CommonTypes.hlsli");
+    const auto builtIn = read(root / "StandardPBR.hlsl");
+    const auto shaderLab = read(root / "ShaderLab" / "StandardPBR.shader");
+    ASSERT_FALSE(commonTypes.empty());
+    ASSERT_FALSE(builtIn.empty());
+    ASSERT_FALSE(shaderLab.empty());
+
+    EXPECT_NE(
+        commonTypes.find("NLSTangentFrame NLSOrientTangentFrameForFace("),
+        std::string::npos);
+    EXPECT_NE(
+        commonTypes.find("const float faceSign = isFrontFace ? 1.0f : -1.0f"),
+        std::string::npos);
+    EXPECT_NE(commonTypes.find("frame.normalWS *= faceSign"), std::string::npos);
+    EXPECT_NE(commonTypes.find("frame.bitangentWS *= faceSign"), std::string::npos);
+    EXPECT_EQ(commonTypes.find("frame.tangentWS *= faceSign"), std::string::npos)
+        << "Back-face orientation must preserve the tangent while flipping normal and bitangent.";
+
+    for (const auto* forwardSource : {&builtIn, &shaderLab})
+    {
+        EXPECT_NE(forwardSource->find("SV_IsFrontFace"), std::string::npos);
+        const auto orientFrame = forwardSource->find("NLSOrientTangentFrameForFace(");
+        const auto applyNormalMap = forwardSource->find("NLSApplyTangentNormal(");
+        EXPECT_NE(orientFrame, std::string::npos);
+        EXPECT_NE(applyNormalMap, std::string::npos);
+        EXPECT_LT(orientFrame, applyNormalMap)
+            << "The face orientation must be applied before the tangent-space normal map.";
+    }
+
+    const auto builtInDisabledMapping = builtIn.find("if (u_EnableNormalMapping <= 0.5f)");
+    const auto builtInBuildFrame = builtIn.find("NLSBuildSafeTangentFrame(", builtIn.find("float3 ComputeNormal("));
+    EXPECT_NE(builtInDisabledMapping, std::string::npos);
+    EXPECT_NE(builtInBuildFrame, std::string::npos);
+    EXPECT_LT(builtInDisabledMapping, builtInBuildFrame)
+        << "The built-in forward path must skip full TBN construction when normal mapping is disabled.";
+
+    const auto shaderLabDisabledMapping = shaderLab.find("#if !defined(_NORMALMAP)");
+    const auto shaderLabBuildFrame = shaderLab.find(
+        "NLSBuildSafeTangentFrame(",
+        shaderLab.find("float3 ComputeStandardPbrNormal("));
+    EXPECT_NE(shaderLabDisabledMapping, std::string::npos);
+    EXPECT_NE(shaderLabBuildFrame, std::string::npos);
+    EXPECT_LT(shaderLabDisabledMapping, shaderLabBuildFrame)
+        << "The ShaderLab forward variant must omit full TBN construction without _NORMALMAP.";
+    EXPECT_NE(builtIn.find("normalWS * faceSign"), std::string::npos);
+    EXPECT_NE(shaderLab.find("normalWS * faceSign"), std::string::npos);
+
+    EXPECT_NE(shaderLab.find("#pragma shader_feature _ALPHATEST_ON"), std::string::npos);
+    EXPECT_NE(shaderLab.find("#pragma multi_compile _ _NORMALMAP"), std::string::npos);
+    EXPECT_NE(shaderLab.find("#pragma multi_compile _ MAIN_LIGHT_SHADOWS"), std::string::npos);
 }
 
 TEST(AssetMaterialConversionTests, PbrShadersGuardDegenerateNormalMapInputs)
@@ -6509,6 +6575,86 @@ TEST(AssetMaterialConversionTests, PbrDirectLightingUsesEnergyConservingCookTorr
     }
     EXPECT_GE(evaluatorOccurrences, 3u)
         << "The evaluator definition plus forward-clustered and deferred-scene call sites must share one BRDF.";
+}
+
+TEST(AssetMaterialConversionTests, PbrDirectLightingPreservesArtistLightIntensityUnits)
+{
+    const auto path = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders" / "LightGridCommon.hlsli";
+    std::ifstream input(path, std::ios::binary);
+    const std::string shader {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shader.empty());
+    EXPECT_NE(shader.find("NLS_PBR_ARTIST_LIGHT_INTENSITY_TO_RADIANCE"), std::string::npos);
+    EXPECT_NE(
+        shader.find("safeIntensity * NLS_PBR_ARTIST_LIGHT_INTENSITY_TO_RADIANCE"),
+        std::string::npos)
+        << "Cook-Torrance's 1/pi diffuse normalization must be paired with the existing "
+           "artist-authored light intensity convention so point lights do not become three times dimmer.";
+}
+
+TEST(AssetMaterialConversionTests, PbrDiffuseLightingDoesNotDisappearWhenMappedNormalFacesAwayFromView)
+{
+    const auto path = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders" / "LightGridCommon.hlsli";
+    std::ifstream input(path, std::ios::binary);
+    const std::string shader {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shader.empty());
+    EXPECT_EQ(shader.find("NLS_PBR_MIN_NDOTV"), std::string::npos)
+        << "A negative mapped NdotV must not be promoted to an epsilon that still evaluates GGX specular.";
+    EXPECT_EQ(shader.find("ndotv <= 0.0f || ndotl <= 0.0f"), std::string::npos)
+        << "NdotV only participates in the specular visibility term. Rejecting the entire BRDF on NdotV "
+           "creates a hard camera-following black region when a normal map tilts the shading normal away.";
+    EXPECT_NE(shader.find("float3 specular = 0.0f.xxx"), std::string::npos);
+    EXPECT_NE(shader.find("if (ndotv > 0.0f)"), std::string::npos)
+        << "Back-facing mapped normals may keep diffuse lighting, but must not evaluate the GGX specular lobe.";
+}
+
+TEST(AssetMaterialConversionTests, PbrLdrOutputsToneMapHdrHighlightsInsteadOfClippingFireflies)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR) /
+        "App" / "Assets" / "Engine" / "Shaders";
+    const auto read = [](const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>());
+    };
+
+    const auto common = read(root / "LightGridCommon.hlsli");
+    const auto builtIn = read(root / "StandardPBR.hlsl");
+    const auto shaderLab = read(root / "ShaderLab" / "StandardPBR.shader");
+    const auto deferred = read(root / "DeferredLighting.hlsl");
+    ASSERT_FALSE(common.empty());
+    ASSERT_FALSE(builtIn.empty());
+    ASSERT_FALSE(shaderLab.empty());
+    ASSERT_FALSE(deferred.empty());
+
+    EXPECT_NE(common.find("float3 NLSToneMapACES("), std::string::npos);
+    EXPECT_NE(common.find("peakChannel - 1.0f"), std::string::npos)
+        << "The firefly shoulder must preserve the normal 0..1 lighting range.";
+    EXPECT_NE(common.find("compressedPeak"), std::string::npos)
+        << "Finite firefly peaks need a hue-preserving soft shoulder before the ACES fit; ACES alone "
+           "approaches display white too quickly for isolated GGX samples.";
+    EXPECT_EQ(common.find("hdrColor /= 1.0f + peakChannel"), std::string::npos)
+        << "A global Reinhard compression darkens ordinary material colors before ACES.";
+    EXPECT_NE(common.find("hdrColor * (a * hdrColor + b)"), std::string::npos);
+    for (const auto* outputShader : {&builtIn, &shaderLab, &deferred})
+    {
+        EXPECT_NE(outputShader->find("NLSToneMapACES("), std::string::npos)
+            << "Every PBR path that writes HDR lighting into an LDR target must use the shared output transform.";
+    }
+    EXPECT_NE(deferred.find("NLSToneMapACES(skyboxColor.rgb)"), std::string::npos);
+    EXPECT_NE(deferred.find("NLSToneMapACES(EvalProceduralSky(skyDirection))"), std::string::npos)
+        << "Deferred geometry and sky branches share one LDR target and must use the same output transform.";
+    EXPECT_EQ(common.find("clamp(lighting"), std::string::npos)
+        << "Fireflies must be compressed at the output transform, not by clipping BRDF energy.";
 }
 
 TEST(AssetMaterialConversionTests, PbrDirectLightingFiltersSubpixelNormalVarianceIntoRoughness)

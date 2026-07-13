@@ -784,6 +784,51 @@ TEST(PBRShadingContractTests, SharedNormalShaderCompilesThroughNativeDxcForDxilA
     }
 }
 
+TEST(PBRShadingContractTests, PbrShaderIncludesComposeWhenLightGridPrecedesCommonTypes)
+{
+    ScopedTemporaryDirectory temporaryDirectory;
+    const auto wrapperPath = temporaryDirectory.GetPath() / "PBRReverseIncludeOrder.hlsl";
+    std::ofstream wrapper(wrapperPath, std::ios::binary);
+    ASSERT_TRUE(wrapper.is_open()) << wrapperPath.string();
+    wrapper
+        << "#include \"LightGridCommon.hlsli\"\n"
+        << "#include \"CommonTypes.hlsli\"\n"
+        << "float4 PSMain(float4 position : SV_Position) : SV_Target0\n"
+        << "{\n"
+        << "    const float3 geometryNormal = NLSOrientGeometryNormal(float3(0.0f, 0.0f, 1.0f), true);\n"
+        << "    const NLSTangentFrame frame = NLSBuildSafeTangentFrame(geometryNormal, float3(1.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f));\n"
+        << "    return float4(frame.normalWS, 1.0f);\n"
+        << "}\n";
+    wrapper.close();
+
+    struct CompileTarget
+    {
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform platform;
+        std::string_view extension;
+    };
+    const std::array targets{
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL, ".dxil"},
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV, ".spv"}};
+
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+    for (const auto& target : targets)
+    {
+        const auto input = MakeNativeShaderCompileInput(
+            wrapperPath,
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            target.platform,
+            temporaryDirectory.GetPath() / "ReverseIncludeArtifacts");
+        const auto output = compiler.Compile(input);
+        ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+            << output.diagnostics;
+        EXPECT_FALSE(output.bytecode.empty());
+        EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
+        EXPECT_TRUE(HasDependency(output.dependencyPaths, ShaderRootPath() / "LightGridCommon.hlsli"));
+        EXPECT_TRUE(HasDependency(output.dependencyPaths, ShaderRootPath() / "CommonTypes.hlsli"));
+        EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
+    }
+}
+
 TEST(PBRShadingContractTests, ForwardShadersCompileThroughNativeDxcForDxilSpirvAndShaderLabVariants)
 {
     struct CompileTarget

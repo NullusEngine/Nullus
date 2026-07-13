@@ -1,16 +1,7 @@
 #ifndef NLS_ENGINE_LIGHT_GRID_COMMON_HLSLI
 #define NLS_ENGINE_LIGHT_GRID_COMMON_HLSLI
 
-// Built-in HLSL already provides the shared normalization helpers through CommonTypes.hlsli.
-#if defined(NLS_ENGINE_COMMON_TYPES_HLSLI) && !defined(NULLUS_SHADER_LIBRARY_COMMON_INCLUDED)
-#define NLS_LIGHT_GRID_PBR_NORMALS_USE_ENGINE_COMMON
-#define NULLUS_SHADER_LIBRARY_COMMON_INCLUDED
-#endif
 #include "NullusShaderLibrary/PBRNormals.hlsl"
-#if defined(NLS_LIGHT_GRID_PBR_NORMALS_USE_ENGINE_COMMON)
-#undef NULLUS_SHADER_LIBRARY_COMMON_INCLUDED
-#undef NLS_LIGHT_GRID_PBR_NORMALS_USE_ENGINE_COMMON
-#endif
 
 static const uint NLS_LIGHT_TYPE_POINT = 0u;
 static const uint NLS_LIGHT_TYPE_DIRECTIONAL = 1u;

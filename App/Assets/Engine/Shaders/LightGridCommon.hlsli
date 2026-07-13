@@ -627,6 +627,14 @@ float3 NLSAccumulateClusteredLightingPBR(
     return lighting;
 }
 
+float3 NLSCombineAmbientAndDirectLighting(
+    float3 ambientLighting,
+    float3 directLighting,
+    float directVisibility)
+{
+    return ambientLighting + directLighting * directVisibility;
+}
+
 float3 NLSAccumulateSceneLightingPBR(
     StructuredBuffer<uint> forwardLocalLightBuffer,
     float3 worldPosition,
@@ -698,7 +706,10 @@ float3 NLSAccumulateSceneLightingPBR(
             attenuation);
     }
 
-    return lighting + directLighting * safeDirectVisibility;
+    return NLSCombineAmbientAndDirectLighting(
+        lighting,
+        directLighting,
+        safeDirectVisibility);
 }
 
 #endif

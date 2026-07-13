@@ -201,35 +201,6 @@ std::string RemoveWhitespace(std::string_view source)
     return compact;
 }
 
-std::vector<std::string> ExtractReturnExpressions(const std::string& functionDefinition)
-{
-    std::vector<std::string> expressions;
-    size_t offset = 0u;
-    while ((offset = functionDefinition.find("return", offset)) != std::string::npos)
-    {
-        const bool startsToken = offset == 0u ||
-            !std::isalnum(static_cast<unsigned char>(functionDefinition[offset - 1u]));
-        const auto afterKeyword = offset + std::string_view("return").size();
-        const bool endsToken = afterKeyword >= functionDefinition.size() ||
-            !std::isalnum(static_cast<unsigned char>(functionDefinition[afterKeyword]));
-        if (!startsToken || !endsToken)
-        {
-            offset = afterKeyword;
-            continue;
-        }
-
-        const auto semicolon = functionDefinition.find(';', afterKeyword);
-        if (semicolon == std::string::npos)
-            break;
-        expressions.emplace_back(TrimWhitespace(
-            std::string_view(functionDefinition).substr(
-                afterKeyword,
-                semicolon - afterKeyword)));
-        offset = semicolon + 1u;
-    }
-    return expressions;
-}
-
 std::multiset<std::string> FindNLSFunctionDefinitions(const std::string& source)
 {
     const std::regex definitionPattern(
@@ -379,6 +350,69 @@ void ExpectSpirvReturnsFiniteUnitPositiveZ(
     std::smatch expectedOutput;
     ASSERT_TRUE(std::regex_search(assembly, expectedOutput, expectedOutputPattern))
         << assembly;
+    EXPECT_NE(
+        assembly.find("OpStore %out_var_SV_Target0 " + expectedOutput[1].str()),
+        std::string::npos)
+        << assembly;
+}
+
+void ExpectDxilReturnsFloat4(
+    const std::string& assembly,
+    const std::array<std::string_view, 4u>& expectedValues)
+{
+    for (size_t component = 0u; component < expectedValues.size(); ++component)
+    {
+        EXPECT_NE(
+            assembly.find(
+                "i8 " + std::to_string(component) + ", float " +
+                std::string(expectedValues[component])),
+            std::string::npos)
+            << assembly;
+    }
+}
+
+void ExpectSpirvReturnsFloat4(
+    const std::string& dxcPath,
+    const std::filesystem::path& wrapperPath,
+    const std::filesystem::path& artifactDirectory,
+    const std::array<std::string_view, 4u>& expectedValuePatterns)
+{
+    std::filesystem::create_directories(artifactDirectory);
+    const auto artifactPath = artifactDirectory / "ExpectedOutput.spv";
+    const auto assemblyPath = artifactDirectory / "ExpectedOutput.spv.txt";
+    const auto compile = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+        dxcPath,
+        {
+            "-nologo",
+            "-spirv",
+            "-E", "PSMain",
+            "-T", "ps_6_0",
+            "-O3",
+            "-Fo", artifactPath.string(),
+            "-Fc", assemblyPath.string(),
+            "-I", ShaderRootPath().string(),
+            wrapperPath.string()});
+    ASSERT_EQ(compile.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::Succeeded)
+        << compile.diagnostics;
+
+    const auto assembly = ReadTextFile(assemblyPath);
+    std::array<std::string, 4u> constantIds;
+    for (size_t component = 0u; component < expectedValuePatterns.size(); ++component)
+    {
+        const std::regex constantPattern(
+            "(%[A-Za-z0-9_]+)\\s*=\\s*OpConstant\\s+%float\\s+" +
+            std::string(expectedValuePatterns[component]));
+        std::smatch constant;
+        ASSERT_TRUE(std::regex_search(assembly, constant, constantPattern)) << assembly;
+        constantIds[component] = constant[1].str();
+    }
+
+    const std::regex expectedOutputPattern(
+        "(%[A-Za-z0-9_]+)\\s*=\\s*OpConstantComposite\\s+%v4float\\s+" +
+        constantIds[0] + "\\s+" + constantIds[1] + "\\s+" + constantIds[2] +
+        "\\s+" + constantIds[3]);
+    std::smatch expectedOutput;
+    ASSERT_TRUE(std::regex_search(assembly, expectedOutput, expectedOutputPattern)) << assembly;
     EXPECT_NE(
         assembly.find("OpStore %out_var_SV_Target0 " + expectedOutput[1].str()),
         std::string::npos)
@@ -659,6 +693,88 @@ TEST(PBRShadingContractTests, ShadingDirectSkipsBrdfOutsideLightHemisphereOnly)
 
 TEST(PBRShadingContractTests, ForwardAccumulatorsKeepAmbientOutsideGeometryGatedDirectLoop)
 {
+    ScopedTemporaryDirectory temporaryDirectory;
+    const auto wrapperPath = temporaryDirectory.GetPath() / "DeferredAmbientVisibilityContract.hlsl";
+    struct VisibilityCase
+    {
+        std::string_view name;
+        std::string_view visibility;
+        std::array<std::string_view, 4u> dxilValues;
+        std::array<std::string_view, 4u> spirvValuePatterns;
+    };
+    const std::array visibilityCases{
+        VisibilityCase{
+            "ZeroVisibility",
+            "0.0f",
+            {"1.000000e+00", "2.000000e+00", "3.000000e+00", "1.000000e+00"},
+            {R"(1(?:\.0+)?)", R"(2(?:\.0+)?)", R"(3(?:\.0+)?)", R"(1(?:\.0+)?)"}},
+        VisibilityCase{
+            "HalfVisibility",
+            "0.5f",
+            {"3.000000e+00", "4.500000e+00", "6.000000e+00", "1.000000e+00"},
+            {R"(3(?:\.0+)?)", R"(4\.5(?:0+)?)", R"(6(?:\.0+)?)", R"(1(?:\.0+)?)"}}};
+    struct CompileTarget
+    {
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform platform;
+        std::string_view name;
+    };
+    const std::array targets{
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL, "DXIL"},
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV, "SPIRV"}};
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+    const auto dxcPath =
+        NLS::Render::ShaderCompiler::GetCurrentShaderCompilerToolchainIdentity().compilerPath;
+    ASSERT_FALSE(dxcPath.empty());
+    for (const auto& visibilityCase : visibilityCases)
+    {
+        std::ofstream wrapper(wrapperPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(wrapper.is_open()) << wrapperPath.string();
+        wrapper
+            << "#include \"LightGridCommon.hlsli\"\n"
+            << "float4 PSMain(float4 position : SV_Position) : SV_Target0\n"
+            << "{\n"
+            << "    return float4(NLSCombineAmbientAndDirectLighting(\n"
+            << "        float3(1.0f, 2.0f, 3.0f),\n"
+            << "        float3(4.0f, 5.0f, 6.0f),\n"
+            << "        " << visibilityCase.visibility << "), 1.0f);\n"
+            << "}\n";
+        wrapper.close();
+
+        for (const auto& target : targets)
+        {
+            SCOPED_TRACE(std::string(visibilityCase.name) + "/" + std::string(target.name));
+            if (target.platform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV)
+            {
+                ExpectSpirvReturnsFloat4(
+                    dxcPath,
+                    wrapperPath,
+                    temporaryDirectory.GetPath() / "Assembly" /
+                        std::string(visibilityCase.name),
+                    visibilityCase.spirvValuePatterns);
+                continue;
+            }
+
+            const auto input = MakeNativeShaderCompileInput(
+                wrapperPath,
+                NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                target.platform,
+                temporaryDirectory.GetPath() / "Artifacts" /
+                    std::string(visibilityCase.name) / std::string(target.name));
+            const auto output = compiler.Compile(input);
+            EXPECT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                << output.diagnostics;
+            if (output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                continue;
+
+            const auto dump = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+                dxcPath,
+                {"-dumpbin", output.artifactPath});
+            ASSERT_EQ(dump.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::Succeeded)
+                << dump.diagnostics;
+            ExpectDxilReturnsFloat4(dump.output, visibilityCase.dxilValues);
+        }
+    }
+
     const auto source = ReadTextFile(ShaderRootPath() / "LightGridCommon.hlsli");
     ASSERT_FALSE(source.empty());
 
@@ -722,12 +838,13 @@ TEST(PBRShadingContractTests, ForwardAccumulatorsKeepAmbientOutsideGeometryGated
     EXPECT_LT(sceneAmbientFloor, sceneDirectLoop);
     EXPECT_LT(sceneDirectLoop, sceneDirectCall);
 
-    const auto sceneReturns = ExtractReturnExpressions(scene);
-    ASSERT_EQ(sceneReturns.size(), 1u);
-    EXPECT_EQ(
-        RemoveWhitespace(sceneReturns.front()),
-        "lighting+directLighting*safeDirectVisibility")
-        << "Deferred direct visibility must not gate the ambient lighting accumulator.";
+    const auto combineArguments = ExtractCallArguments(
+        scene,
+        "NLSCombineAmbientAndDirectLighting");
+    ASSERT_EQ(combineArguments.size(), 3u);
+    EXPECT_EQ(combineArguments[0], "lighting");
+    EXPECT_EQ(combineArguments[1], "directLighting");
+    EXPECT_EQ(combineArguments[2], "safeDirectVisibility");
 
     const auto sceneDirectArguments = ExtractCallArguments(
         scene,

@@ -69,21 +69,23 @@ float3 DecodeNormalMapSample(float4 normalSample)
     return NLSSafeNormalize(float3(xy, lerp(reconstructedZ, rgbZ, useRgbZ)), float3(0.0f, 0.0f, 1.0f));
 }
 
-float3 ComputeNormal(VSOutput input, float2 texCoord)
+float3 ComputeNormal(VSOutput input, float2 texCoord, bool isFrontFace)
 {
-    float3 normalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
+    const float faceSign = isFrontFace ? 1.0f : -1.0f;
+    const float3 normalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
+    if (u_EnableNormalMapping <= 0.5f)
+        return normalWS * faceSign;
 
-    if (u_EnableNormalMapping > 0.5f)
-    {
-        const NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(normalWS, input.TangentWS, input.BitangentWS);
-        const float3 tangentNormal = DecodeNormalMapSample(u_NormalMap.Sample(u_LinearWrapSampler, texCoord));
-        normalWS = NLSApplyTangentNormal(tangentNormal, tangentFrame);
-    }
-
-    return normalWS;
+    NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
+        normalWS,
+        input.TangentWS,
+        input.BitangentWS);
+    tangentFrame = NLSOrientTangentFrameForFace(tangentFrame, isFrontFace);
+    const float3 tangentNormal = DecodeNormalMapSample(u_NormalMap.Sample(u_LinearWrapSampler, texCoord));
+    return NLSApplyTangentNormal(tangentNormal, tangentFrame);
 }
 
-GBufferOutput PSMain(VSOutput input)
+GBufferOutput PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace)
 {
     GBufferOutput output;
 
@@ -96,7 +98,7 @@ GBufferOutput PSMain(VSOutput input)
         dot(u_RoughnessMap.Sample(u_LinearWrapSampler, texCoord), u_RoughnessMapChannel);
     const float ao = u_AmbientOcclusionMap.Sample(u_LinearWrapSampler, texCoord).r * u_AmbientOcclusion;
     const float opacity = u_OpacityMap.Sample(u_LinearWrapSampler, texCoord).r;
-    const float3 normalWS = ComputeNormal(input, texCoord);
+    const float3 normalWS = ComputeNormal(input, texCoord, isFrontFace);
     const float surfaceAlpha = u_Albedo.a * albedoSample.a * opacity;
 
     output.Albedo = float4(albedo, surfaceAlpha);

@@ -6416,7 +6416,7 @@ TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)
     expectBc5CompatibleNormalDecode(deferredGBuffer);
 }
 
-TEST(AssetMaterialConversionTests, PbrForwardShadersOrientBackFaceTangentFramesBeforeNormalMapping)
+TEST(AssetMaterialConversionTests, PbrShadersOrientBackFaceTangentFramesBeforeNormalMapping)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR) /
         "App" / "Assets" / "Engine" / "Shaders";
@@ -6430,9 +6430,11 @@ TEST(AssetMaterialConversionTests, PbrForwardShadersOrientBackFaceTangentFramesB
 
     const auto commonTypes = read(root / "CommonTypes.hlsli");
     const auto builtIn = read(root / "StandardPBR.hlsl");
+    const auto deferredGBuffer = read(root / "DeferredGBuffer.hlsl");
     const auto shaderLab = read(root / "ShaderLab" / "StandardPBR.shader");
     ASSERT_FALSE(commonTypes.empty());
     ASSERT_FALSE(builtIn.empty());
+    ASSERT_FALSE(deferredGBuffer.empty());
     ASSERT_FALSE(shaderLab.empty());
 
     EXPECT_NE(
@@ -6446,23 +6448,41 @@ TEST(AssetMaterialConversionTests, PbrForwardShadersOrientBackFaceTangentFramesB
     EXPECT_EQ(commonTypes.find("frame.tangentWS *= faceSign"), std::string::npos)
         << "Back-face orientation must preserve the tangent while flipping normal and bitangent.";
 
-    for (const auto* forwardSource : {&builtIn, &shaderLab})
+    for (const auto* pbrSource : {&builtIn, &deferredGBuffer, &shaderLab})
     {
-        EXPECT_NE(forwardSource->find("SV_IsFrontFace"), std::string::npos);
-        const auto orientFrame = forwardSource->find("NLSOrientTangentFrameForFace(");
-        const auto applyNormalMap = forwardSource->find("NLSApplyTangentNormal(");
+        EXPECT_NE(pbrSource->find("SV_IsFrontFace"), std::string::npos);
+        const auto orientFrame = pbrSource->find("NLSOrientTangentFrameForFace(");
+        const auto applyNormalMap = pbrSource->find("NLSApplyTangentNormal(");
         EXPECT_NE(orientFrame, std::string::npos);
         EXPECT_NE(applyNormalMap, std::string::npos);
         EXPECT_LT(orientFrame, applyNormalMap)
             << "The face orientation must be applied before the tangent-space normal map.";
     }
 
-    const auto builtInDisabledMapping = builtIn.find("if (u_EnableNormalMapping <= 0.5f)");
-    const auto builtInBuildFrame = builtIn.find("NLSBuildSafeTangentFrame(", builtIn.find("float3 ComputeNormal("));
-    EXPECT_NE(builtInDisabledMapping, std::string::npos);
-    EXPECT_NE(builtInBuildFrame, std::string::npos);
-    EXPECT_LT(builtInDisabledMapping, builtInBuildFrame)
-        << "The built-in forward path must skip full TBN construction when normal mapping is disabled.";
+    for (const auto* nativeSource : {&builtIn, &deferredGBuffer})
+    {
+        EXPECT_NE(nativeSource->find("ComputeNormal(input, texCoord, isFrontFace)"), std::string::npos);
+        const auto disabledMapping = nativeSource->find("if (u_EnableNormalMapping <= 0.5f)");
+        const auto faceOrientedReturn = nativeSource->find("return normalWS * faceSign");
+        const auto buildFrame = nativeSource->find(
+            "NLSBuildSafeTangentFrame(",
+            nativeSource->find("float3 ComputeNormal("));
+        EXPECT_NE(disabledMapping, std::string::npos);
+        EXPECT_NE(faceOrientedReturn, std::string::npos);
+        EXPECT_NE(buildFrame, std::string::npos);
+        EXPECT_LT(disabledMapping, buildFrame)
+            << "Native PBR paths must skip full TBN construction when normal mapping is disabled.";
+        EXPECT_LT(faceOrientedReturn, buildFrame)
+            << "Native PBR paths must return the face-oriented geometric normal before full TBN construction.";
+    }
+
+    const auto deferredSafeGeometryNormal = deferredGBuffer.find(
+        "const float3 normalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));");
+    const auto deferredFaceOrientedReturn = deferredGBuffer.find("return normalWS * faceSign");
+    EXPECT_NE(deferredSafeGeometryNormal, std::string::npos);
+    EXPECT_NE(deferredFaceOrientedReturn, std::string::npos);
+    EXPECT_LT(deferredSafeGeometryNormal, deferredFaceOrientedReturn)
+        << "Deferred normal encoding must safely normalize the geometry normal before face orientation.";
 
     const auto shaderLabDisabledMapping = shaderLab.find("#if !defined(_NORMALMAP)");
     const auto shaderLabBuildFrame = shaderLab.find(
@@ -6472,7 +6492,6 @@ TEST(AssetMaterialConversionTests, PbrForwardShadersOrientBackFaceTangentFramesB
     EXPECT_NE(shaderLabBuildFrame, std::string::npos);
     EXPECT_LT(shaderLabDisabledMapping, shaderLabBuildFrame)
         << "The ShaderLab forward variant must omit full TBN construction without _NORMALMAP.";
-    EXPECT_NE(builtIn.find("normalWS * faceSign"), std::string::npos);
     EXPECT_NE(shaderLab.find("normalWS * faceSign"), std::string::npos);
 
     EXPECT_NE(shaderLab.find("#pragma shader_feature _ALPHATEST_ON"), std::string::npos);

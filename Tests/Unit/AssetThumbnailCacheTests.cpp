@@ -8871,25 +8871,27 @@ TEST(AssetThumbnailCacheTests, ExplicitCacheWriteBudgetDoesNotIncreaseCurrentGen
     for (int index = 0; index < 5; ++index)
         WriteBinaryFile(root / "Assets" / "Textures" / ("Visible" + std::to_string(index) + ".png"), TinyPng());
 
-    AssetThumbnailService service;
-    ThumbnailGenerationBudget budget;
-    budget.cacheWriteCountBudget = 4u;
-    service.SetThumbnailGenerationBudget(budget);
-
-    for (int index = 0; index < 5; ++index)
     {
-        auto request = MakeThumbnailRequest(root, "texture:Visible" + std::to_string(index));
-        request.sourceAssetPath = "Assets/Textures/Visible" + std::to_string(index) + ".png";
-        request.kind = AssetThumbnailKind::Texture;
-        request.priority = ThumbnailRequestPriority::Visible;
-        request.freshnessInputs = {{"source", "visible:" + std::to_string(index) + ":v1"}};
-        ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
-    }
+        AssetThumbnailService service;
+        ThumbnailGenerationBudget budget;
+        budget.cacheWriteCountBudget = 4u;
+        service.SetThumbnailGenerationBudget(budget);
 
-    EXPECT_TRUE(service.StartNextThumbnailGeneration());
-    EXPECT_TRUE(service.StartNextThumbnailGeneration());
-    EXPECT_FALSE(service.StartNextThumbnailGeneration())
-        << "Cache-write budget controls publication work, not current-generation worker fan-out.";
+        for (int index = 0; index < 5; ++index)
+        {
+            auto request = MakeThumbnailRequest(root, "texture:Visible" + std::to_string(index));
+            request.sourceAssetPath = "Assets/Textures/Visible" + std::to_string(index) + ".png";
+            request.kind = AssetThumbnailKind::Texture;
+            request.priority = ThumbnailRequestPriority::Visible;
+            request.freshnessInputs = {{"source", "visible:" + std::to_string(index) + ":v1"}};
+            ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+        }
+
+        EXPECT_TRUE(service.StartNextThumbnailGeneration());
+        EXPECT_TRUE(service.StartNextThumbnailGeneration());
+        EXPECT_FALSE(service.StartNextThumbnailGeneration())
+            << "Cache-write budget controls publication work, not current-generation worker fan-out.";
+    }
 
     std::filesystem::remove_all(root);
 }
@@ -8914,26 +8916,28 @@ TEST(AssetThumbnailCacheTests, ObsoleteGenerationCompletionDoesNotConsumeCurrent
     currentRequest.kind = AssetThumbnailKind::Texture;
     currentRequest.freshnessInputs = {{"source", "current:v1"}};
 
-    AssetThumbnailService service;
-    ThumbnailGenerationBudget budget;
-    budget.cacheWriteCountBudget = 1u;
-    service.SetThumbnailGenerationBudget(budget);
-
-    ASSERT_EQ(service.GetThumbnail(oldRequest).status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_TRUE(service.StartNextThumbnailGeneration());
-    service.SupersedeQueuedRequestsForGeneration("Assets/Textures#current");
-
-    for (int attempt = 0; attempt < 100 && service.HasInFlightRequest(); ++attempt)
     {
-        (void)service.ConsumeCompletedThumbnail();
-        if (service.HasInFlightRequest())
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    ASSERT_FALSE(service.HasInFlightRequest());
+        AssetThumbnailService service;
+        ThumbnailGenerationBudget budget;
+        budget.cacheWriteCountBudget = 1u;
+        service.SetThumbnailGenerationBudget(budget);
 
-    ASSERT_EQ(service.GetThumbnail(currentRequest).status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_TRUE(service.StartNextThumbnailGeneration())
-        << "Obsolete thumbnail completions must not steal the explicit cache-write budget from the current visible scope.";
+        ASSERT_EQ(service.GetThumbnail(oldRequest).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_TRUE(service.StartNextThumbnailGeneration());
+        service.SupersedeQueuedRequestsForGeneration("Assets/Textures#current");
+
+        for (int attempt = 0; attempt < 100 && service.HasInFlightRequest(); ++attempt)
+        {
+            (void)service.ConsumeCompletedThumbnail();
+            if (service.HasInFlightRequest())
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_FALSE(service.HasInFlightRequest());
+
+        ASSERT_EQ(service.GetThumbnail(currentRequest).status, AssetThumbnailServiceStatus::Pending);
+        EXPECT_TRUE(service.StartNextThumbnailGeneration())
+            << "Obsolete thumbnail completions must not steal the explicit cache-write budget from the current visible scope.";
+    }
 
     std::filesystem::remove_all(root);
 }
@@ -8957,36 +8961,38 @@ TEST(AssetThumbnailCacheTests, ServiceSupersedeStartsNewGenerationWhileOldInFlig
     second.sourceAssetPath = "Assets/Textures/Second.png";
     second.freshnessInputs = {{"source", "second:v1"}};
 
-    AssetThumbnailService service;
-    ASSERT_EQ(service.GetThumbnail(first).status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_EQ(service.GetQueuedRequestCount(), 2u);
-    ASSERT_TRUE(service.StartNextThumbnailGeneration());
-    EXPECT_TRUE(service.HasInFlightRequest());
-    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
-
-    service.SupersedeQueuedRequestsForGeneration("Assets/Other#96");
-    EXPECT_TRUE(service.HasInFlightRequest());
-    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
-
-    ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_TRUE(service.StartNextThumbnailGeneration());
-    EXPECT_TRUE(service.HasInFlightRequest());
-
-    std::optional<AssetThumbnailServiceResult> generated;
-    for (int attempt = 0; attempt < 100 && !generated.has_value(); ++attempt)
     {
-        generated = service.ConsumeCompletedThumbnail();
-        if (!generated.has_value())
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
+        AssetThumbnailService service;
+        ASSERT_EQ(service.GetThumbnail(first).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_EQ(service.GetQueuedRequestCount(), 2u);
+        ASSERT_TRUE(service.StartNextThumbnailGeneration());
+        EXPECT_TRUE(service.HasInFlightRequest());
+        EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
 
-    const auto secondEntry = ResolveAssetThumbnailCacheEntry(second);
-    ASSERT_TRUE(secondEntry.has_value());
-    EXPECT_EQ(generated->imagePath, secondEntry->imagePath);
-    EXPECT_TRUE(std::filesystem::exists(secondEntry->metadataPath));
+        service.SupersedeQueuedRequestsForGeneration("Assets/Other#96");
+        EXPECT_TRUE(service.HasInFlightRequest());
+        EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+
+        ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
+        EXPECT_TRUE(service.StartNextThumbnailGeneration());
+        EXPECT_TRUE(service.HasInFlightRequest());
+
+        std::optional<AssetThumbnailServiceResult> generated;
+        for (int attempt = 0; attempt < 100 && !generated.has_value(); ++attempt)
+        {
+            generated = service.ConsumeCompletedThumbnail();
+            if (!generated.has_value())
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(generated.has_value());
+        EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
+
+        const auto secondEntry = ResolveAssetThumbnailCacheEntry(second);
+        ASSERT_TRUE(secondEntry.has_value());
+        EXPECT_EQ(generated->imagePath, secondEntry->imagePath);
+        EXPECT_TRUE(std::filesystem::exists(secondEntry->metadataPath));
+    }
 
     std::filesystem::remove_all(root);
 }

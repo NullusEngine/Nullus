@@ -1,6 +1,8 @@
 #ifndef NLS_ENGINE_COMMON_TYPES_HLSLI
 #define NLS_ENGINE_COMMON_TYPES_HLSLI
 
+#include "NullusShaderLibrary/Common.hlsl"
+
 #if !defined(NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP)
 struct VSInput
 {
@@ -43,40 +45,6 @@ static const uint NLS_OBJECT_FLAG_CAST_SHADOWS = 2u;
 
 static const float NLS_SAFE_NORMAL_EPSILON = 1.0e-8f;
 static const float NLS_SAFE_NORMAL_MAX_LENGTH_SQ = 1.0e+20f;
-static const float NLS_SAFE_NORMAL_MAX_COMPONENT = 1.0e+30f;
-
-#if !defined(NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP) && !defined(NLS_COMMON_NORMAL_HELPERS_DEFINED)
-#define NLS_COMMON_TYPES_DEFINE_NORMAL_HELPERS
-#define NLS_COMMON_NORMAL_HELPERS_DEFINED
-#endif
-
-#if defined(NLS_COMMON_TYPES_DEFINE_NORMAL_HELPERS)
-bool NLSIsFinite3(float3 value)
-{
-    return all(value == value) && all(abs(value) < NLS_SAFE_NORMAL_MAX_COMPONENT);
-}
-#endif
-
-float3 NLSNormalizeFallback(float3 fallback)
-{
-    const float lengthSq = dot(fallback, fallback);
-    if (NLSIsFinite3(fallback) && lengthSq > NLS_SAFE_NORMAL_EPSILON && lengthSq < NLS_SAFE_NORMAL_MAX_LENGTH_SQ)
-        return fallback * rsqrt(lengthSq);
-
-    return float3(0.0f, 0.0f, 1.0f);
-}
-
-#if defined(NLS_COMMON_TYPES_DEFINE_NORMAL_HELPERS)
-float3 NLSSafeNormalize(float3 value, float3 fallback)
-{
-    const float lengthSq = dot(value, value);
-    if (NLSIsFinite3(value) && lengthSq > NLS_SAFE_NORMAL_EPSILON && lengthSq < NLS_SAFE_NORMAL_MAX_LENGTH_SQ)
-        return value * rsqrt(lengthSq);
-
-    return NLSNormalizeFallback(fallback);
-}
-#undef NLS_COMMON_TYPES_DEFINE_NORMAL_HELPERS
-#endif
 
 float3 NLSTransformNormalDirection(float3x3 model, float3 normal)
 {

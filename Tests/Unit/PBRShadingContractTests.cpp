@@ -219,7 +219,11 @@ Vector3 SafeNormalize(const Vector3& value, const Vector3& fallback)
     const float lengthSquared = Dot(value, value);
     if (IsFinite(value) && lengthSquared > 1.0e-8f && lengthSquared < 1.0e+20f)
         return value * (1.0f / std::sqrt(lengthSquared));
-    return fallback;
+
+    const float fallbackLengthSquared = Dot(fallback, fallback);
+    if (IsFinite(fallback) && fallbackLengthSquared > 1.0e-8f && fallbackLengthSquared < 1.0e+20f)
+        return fallback * (1.0f / std::sqrt(fallbackLengthSquared));
+    return Vector3::Forward;
 }
 
 Vector3 OrientGeometryNormal(const Vector3& normal, bool isFrontFace)
@@ -726,6 +730,32 @@ TEST(PBRShadingContractTests, NLSFunctionDefinitionMatcherRecognizesAllHlslRetur
     EXPECT_EQ(FindNLSFunctionDefinitions(source), expected);
 }
 
+TEST(PBRShadingContractTests, SharedSafeNormalizeHasOneImplementationAndNormalizesFallback)
+{
+    const auto commonTypesSource = ReadTextFile(ShaderRootPath() / "CommonTypes.hlsli");
+    const auto shaderLibraryCommonSource = ReadTextFile(
+        ShaderRootPath() / "NullusShaderLibrary/Common.hlsl");
+
+    EXPECT_NE(
+        commonTypesSource.find("#include \"NullusShaderLibrary/Common.hlsl\""),
+        std::string::npos);
+    const auto commonTypesDefinitions = FindNLSFunctionDefinitions(commonTypesSource);
+    EXPECT_EQ(commonTypesDefinitions.count("NLSIsFinite3"), 0u);
+    EXPECT_EQ(commonTypesDefinitions.count("NLSNormalizeFallback"), 0u);
+    EXPECT_EQ(commonTypesDefinitions.count("NLSSafeNormalize"), 0u);
+
+    const auto shaderLibraryDefinitions = FindNLSFunctionDefinitions(shaderLibraryCommonSource);
+    EXPECT_EQ(shaderLibraryDefinitions.count("NLSIsFinite3"), 1u);
+    EXPECT_EQ(shaderLibraryDefinitions.count("NLSNormalizeFallback"), 1u);
+    EXPECT_EQ(shaderLibraryDefinitions.count("NLSSafeNormalize"), 1u);
+    const auto safeNormalizeDefinition = ExtractFunctionDefinition(
+        shaderLibraryCommonSource,
+        "NLSSafeNormalize");
+    EXPECT_NE(
+        safeNormalizeDefinition.find("return NLSNormalizeFallback(fallback);"),
+        std::string::npos);
+}
+
 TEST(PBRShadingContractTests, SharedNormalShaderCompilesThroughNativeDxcForDxilAndSpirv)
 {
     ScopedTemporaryDirectory temporaryDirectory;
@@ -784,48 +814,113 @@ TEST(PBRShadingContractTests, SharedNormalShaderCompilesThroughNativeDxcForDxilA
     }
 }
 
-TEST(PBRShadingContractTests, PbrShaderIncludesComposeWhenLightGridPrecedesCommonTypes)
+TEST(PBRShadingContractTests, SafeNormalizeSemanticsAreIndependentOfPbrIncludeOrder)
 {
     ScopedTemporaryDirectory temporaryDirectory;
-    const auto wrapperPath = temporaryDirectory.GetPath() / "PBRReverseIncludeOrder.hlsl";
-    std::ofstream wrapper(wrapperPath, std::ios::binary);
-    ASSERT_TRUE(wrapper.is_open()) << wrapperPath.string();
-    wrapper
-        << "#include \"LightGridCommon.hlsli\"\n"
-        << "#include \"CommonTypes.hlsli\"\n"
-        << "float4 PSMain(float4 position : SV_Position) : SV_Target0\n"
-        << "{\n"
-        << "    const float3 geometryNormal = NLSOrientGeometryNormal(float3(0.0f, 0.0f, 1.0f), true);\n"
-        << "    const NLSTangentFrame frame = NLSBuildSafeTangentFrame(geometryNormal, float3(1.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f));\n"
-        << "    return float4(frame.normalWS, 1.0f);\n"
-        << "}\n";
-    wrapper.close();
+    const auto wrapperPath = temporaryDirectory.GetPath() / "PBRSafeNormalizeSemantics.hlsl";
+
+    struct NormalCase
+    {
+        std::string_view name;
+        std::string_view value;
+        std::string_view fallback;
+        Vector3 cpuValue;
+        Vector3 cpuFallback;
+        bool expectConstantDxilOutput;
+    };
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+    const std::array cases{
+        NormalCase{"NonUnitFallback", "0.0f.xxx", "float3(0.0f, 0.0f, 2.0f)", Vector3::Zero, {0.0f, 0.0f, 2.0f}, true},
+        NormalCase{"ZeroFallback", "0.0f.xxx", "0.0f.xxx", Vector3::Zero, Vector3::Zero, true},
+        NormalCase{"NanInput", "float3(asfloat(0x7fc00000u), 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {nan, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, true},
+        NormalCase{"InfinityInput", "float3(asfloat(0x7f800000u), 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {infinity, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, false},
+        NormalCase{"NearZeroInput", "float3(1.0e-12f, 0.0f, 0.0f)", "float3(0.0f, 0.0f, 2.0f)", {1.0e-12f, 0.0f, 0.0f}, {0.0f, 0.0f, 2.0f}, true}};
+
+    struct IncludeOrder
+    {
+        std::string_view name;
+        std::string_view first;
+        std::string_view second;
+    };
+    const std::array includeOrders{
+        IncludeOrder{"CommonTypesFirst", "CommonTypes.hlsli", "LightGridCommon.hlsli"},
+        IncludeOrder{"LightGridFirst", "LightGridCommon.hlsli", "CommonTypes.hlsli"}};
 
     struct CompileTarget
     {
         NLS::Render::ShaderCompiler::ShaderTargetPlatform platform;
+        std::string_view name;
         std::string_view extension;
     };
     const std::array targets{
-        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL, ".dxil"},
-        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV, ".spv"}};
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL, "DXIL", ".dxil"},
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV, "SPIRV", ".spv"}};
 
     NLS::Render::ShaderCompiler::ShaderCompiler compiler;
-    for (const auto& target : targets)
+    const auto dxcPath = NLS::Render::ShaderCompiler::GetCurrentShaderCompilerToolchainIdentity().compilerPath;
+    ASSERT_FALSE(dxcPath.empty());
+    for (const auto& normalCase : cases)
     {
-        const auto input = MakeNativeShaderCompileInput(
-            wrapperPath,
-            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
-            target.platform,
-            temporaryDirectory.GetPath() / "ReverseIncludeArtifacts");
-        const auto output = compiler.Compile(input);
-        ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
-            << output.diagnostics;
-        EXPECT_FALSE(output.bytecode.empty());
-        EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
-        EXPECT_TRUE(HasDependency(output.dependencyPaths, ShaderRootPath() / "LightGridCommon.hlsli"));
-        EXPECT_TRUE(HasDependency(output.dependencyPaths, ShaderRootPath() / "CommonTypes.hlsli"));
-        EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
+        const auto expected = SafeNormalize(normalCase.cpuValue, normalCase.cpuFallback);
+        EXPECT_TRUE(IsFinite(expected)) << normalCase.name;
+        EXPECT_NEAR(Dot(expected, expected), 1.0f, kNormalTolerance) << normalCase.name;
+        EXPECT_NEAR(expected.x, 0.0f, kNormalTolerance) << normalCase.name;
+        EXPECT_NEAR(expected.y, 0.0f, kNormalTolerance) << normalCase.name;
+        EXPECT_NEAR(expected.z, 1.0f, kNormalTolerance) << normalCase.name;
+
+        for (const auto& target : targets)
+        {
+            std::array<NLS::Render::ShaderCompiler::ShaderCompilationOutput, 2u> outputs;
+            for (size_t orderIndex = 0u; orderIndex < includeOrders.size(); ++orderIndex)
+            {
+                const auto& includeOrder = includeOrders[orderIndex];
+                SCOPED_TRACE(std::string(normalCase.name) + "/" + std::string(target.name) + "/" + std::string(includeOrder.name));
+
+                std::ofstream wrapper(wrapperPath, std::ios::binary | std::ios::trunc);
+                ASSERT_TRUE(wrapper.is_open()) << wrapperPath.string();
+                wrapper
+                    << "#include \"" << includeOrder.first << "\"\n"
+                    << "#include \"" << includeOrder.second << "\"\n"
+                    << "float4 PSMain(float4 position : SV_Position) : SV_Target0\n"
+                    << "{\n"
+                    << "    return float4(NLSSafeNormalize(" << normalCase.value << ", " << normalCase.fallback << "), 1.0f);\n"
+                    << "}\n";
+                wrapper.close();
+
+                const auto input = MakeNativeShaderCompileInput(
+                    wrapperPath,
+                    NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                    target.platform,
+                    temporaryDirectory.GetPath() / "SafeNormalizeArtifacts" / std::string(normalCase.name) / std::string(includeOrder.name));
+                outputs[orderIndex] = compiler.Compile(input);
+                const auto& output = outputs[orderIndex];
+                ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                    << output.diagnostics;
+                EXPECT_FALSE(output.bytecode.empty());
+                EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
+                EXPECT_TRUE(HasDependency(output.dependencyPaths, ShaderRootPath() / "LightGridCommon.hlsli"));
+                EXPECT_TRUE(HasDependency(output.dependencyPaths, ShaderRootPath() / "CommonTypes.hlsli"));
+                EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
+
+                if (target.platform == NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL &&
+                    normalCase.expectConstantDxilOutput)
+                {
+                    const auto dump = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+                        dxcPath,
+                        {"-dumpbin", output.artifactPath});
+                    ASSERT_EQ(dump.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::Succeeded)
+                        << dump.diagnostics;
+                    EXPECT_NE(dump.output.find("i8 0, float 0.000000e+00"), std::string::npos);
+                    EXPECT_NE(dump.output.find("i8 1, float 0.000000e+00"), std::string::npos);
+                    EXPECT_NE(dump.output.find("i8 2, float 1.000000e+00"), std::string::npos);
+                    EXPECT_NE(dump.output.find("i8 3, float 1.000000e+00"), std::string::npos);
+                }
+            }
+
+            EXPECT_EQ(outputs[0].bytecode, outputs[1].bytecode)
+                << normalCase.name << "/" << target.name;
+        }
     }
 }
 

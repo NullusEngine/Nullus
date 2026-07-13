@@ -6401,9 +6401,11 @@ TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)
     ASSERT_FALSE(standardPbr.empty());
     ASSERT_FALSE(deferredGBuffer.empty());
 
-    const auto expectBc5CompatibleNormalDecode = [](const std::string& shader)
+    const auto expectBc5CompatibleNormalDecode = [](
+        const std::string& shader,
+        const std::string_view normalFunction)
     {
-        EXPECT_NE(shader.find("ComputeNormal"), std::string::npos);
+        EXPECT_NE(shader.find(normalFunction), std::string::npos);
         EXPECT_NE(shader.find("DecodeNormalMapSample"), std::string::npos);
         EXPECT_NE(shader.find("_NormalMap.Sample"), std::string::npos);
         EXPECT_NE(shader.find("sqrt(saturate(1.0f - dot(xy, xy)))"), std::string::npos);
@@ -6411,9 +6413,9 @@ TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)
             shader.find("u_EnableNormalMapping > 0.5f") != std::string::npos ||
             shader.find("u_EnableNormalMapping <= 0.5f") != std::string::npos);
     };
-    expectBc5CompatibleNormalDecode(standard);
-    expectBc5CompatibleNormalDecode(standardPbr);
-    expectBc5CompatibleNormalDecode(deferredGBuffer);
+    expectBc5CompatibleNormalDecode(standard, "ComputeNormal");
+    expectBc5CompatibleNormalDecode(standardPbr, "ComputeNormal");
+    expectBc5CompatibleNormalDecode(deferredGBuffer, "ComputeShadingNormal");
 }
 
 TEST(AssetMaterialConversionTests, PbrShadersOrientBackFaceTangentFramesBeforeNormalMapping)
@@ -6459,30 +6461,48 @@ TEST(AssetMaterialConversionTests, PbrShadersOrientBackFaceTangentFramesBeforeNo
             << "The face orientation must be applied before the tangent-space normal map.";
     }
 
-    for (const auto* nativeSource : {&builtIn, &deferredGBuffer})
-    {
-        EXPECT_NE(nativeSource->find("ComputeNormal(input, texCoord, isFrontFace)"), std::string::npos);
-        const auto disabledMapping = nativeSource->find("if (u_EnableNormalMapping <= 0.5f)");
-        const auto faceOrientedReturn = nativeSource->find("return normalWS * faceSign");
-        const auto buildFrame = nativeSource->find(
-            "NLSBuildSafeTangentFrame(",
-            nativeSource->find("float3 ComputeNormal("));
-        EXPECT_NE(disabledMapping, std::string::npos);
-        EXPECT_NE(faceOrientedReturn, std::string::npos);
-        EXPECT_NE(buildFrame, std::string::npos);
-        EXPECT_LT(disabledMapping, buildFrame)
-            << "Native PBR paths must skip full TBN construction when normal mapping is disabled.";
-        EXPECT_LT(faceOrientedReturn, buildFrame)
-            << "Native PBR paths must return the face-oriented geometric normal before full TBN construction.";
-    }
+    EXPECT_NE(builtIn.find("ComputeNormal(input, texCoord, isFrontFace)"), std::string::npos);
+    const auto builtInDisabledMapping = builtIn.find("if (u_EnableNormalMapping <= 0.5f)");
+    const auto builtInFaceOrientedReturn = builtIn.find("return normalWS * faceSign");
+    const auto builtInBuildFrame = builtIn.find(
+        "NLSBuildSafeTangentFrame(",
+        builtIn.find("float3 ComputeNormal("));
+    EXPECT_NE(builtInDisabledMapping, std::string::npos);
+    EXPECT_NE(builtInFaceOrientedReturn, std::string::npos);
+    EXPECT_NE(builtInBuildFrame, std::string::npos);
+    EXPECT_LT(builtInDisabledMapping, builtInBuildFrame);
+    EXPECT_LT(builtInFaceOrientedReturn, builtInBuildFrame);
 
     const auto deferredSafeGeometryNormal = deferredGBuffer.find(
-        "const float3 normalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));");
-    const auto deferredFaceOrientedReturn = deferredGBuffer.find("return normalWS * faceSign");
+        "const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));");
+    const auto deferredOrientGeometry = deferredGBuffer.find(
+        "NLSOrientGeometryNormal(interpolatedGeometryNormalWS, isFrontFace)");
+    const auto deferredNoMapShading = deferredGBuffer.find("shadingNormalWS = geometryNormalWS");
+    const auto deferredNormalMapBranch = deferredGBuffer.find("if (u_EnableNormalMapping > 0.5f)");
+    const auto deferredConstrainShading = deferredGBuffer.find(
+        "NLSConstrainShadingNormalToGeometryHemisphere(",
+        deferredNormalMapBranch);
+    const auto deferredBuildFrame = deferredGBuffer.find(
+        "NLSBuildSafeTangentFrame(",
+        deferredGBuffer.find("float3 ComputeShadingNormal("));
+    const auto deferredMappedNormalCall = deferredGBuffer.find(
+        "ComputeShadingNormal(input, texCoord, isFrontFace)",
+        deferredNormalMapBranch);
     EXPECT_NE(deferredSafeGeometryNormal, std::string::npos);
-    EXPECT_NE(deferredFaceOrientedReturn, std::string::npos);
-    EXPECT_LT(deferredSafeGeometryNormal, deferredFaceOrientedReturn)
-        << "Deferred normal encoding must safely normalize the geometry normal before face orientation.";
+    EXPECT_NE(deferredOrientGeometry, std::string::npos);
+    EXPECT_NE(deferredNoMapShading, std::string::npos);
+    EXPECT_NE(deferredNormalMapBranch, std::string::npos);
+    EXPECT_NE(deferredConstrainShading, std::string::npos);
+    EXPECT_NE(deferredBuildFrame, std::string::npos);
+    EXPECT_NE(deferredMappedNormalCall, std::string::npos);
+    EXPECT_LT(deferredSafeGeometryNormal, deferredOrientGeometry)
+        << "Deferred geometry normals must be safely normalized before face orientation.";
+    EXPECT_LT(deferredOrientGeometry, deferredNoMapShading)
+        << "The no-normal-map path must preserve the exact oriented geometry normal.";
+    EXPECT_LT(deferredNormalMapBranch, deferredMappedNormalCall)
+        << "Deferred must only call the TBN normal-map helper inside the enabled branch.";
+    EXPECT_LT(deferredNormalMapBranch, deferredConstrainShading)
+        << "Only mapped shading normals are constrained to the oriented geometry hemisphere.";
 
     const auto shaderLabDisabledMapping = shaderLab.find("#if !defined(_NORMALMAP)");
     const auto shaderLabBuildFrame = shaderLab.find(
@@ -6493,6 +6513,18 @@ TEST(AssetMaterialConversionTests, PbrShadersOrientBackFaceTangentFramesBeforeNo
     EXPECT_LT(shaderLabDisabledMapping, shaderLabBuildFrame)
         << "The ShaderLab forward variant must omit full TBN construction without _NORMALMAP.";
     EXPECT_NE(shaderLab.find("normalWS * faceSign"), std::string::npos);
+    const auto shaderLabGBuffer = shaderLab.find("Name \"GBuffer\"");
+    const auto shaderLabGBufferOrient = shaderLab.find(
+        "NLSOrientGeometryNormal(interpolatedGeometryNormalWS, isFrontFace)",
+        shaderLabGBuffer);
+    const auto shaderLabGBufferConstrain = shaderLab.find(
+        "NLSConstrainShadingNormalToGeometryHemisphere(",
+        shaderLabGBufferOrient);
+    EXPECT_NE(shaderLabGBuffer, std::string::npos);
+    EXPECT_NE(shaderLabGBufferOrient, std::string::npos);
+    EXPECT_NE(shaderLabGBufferConstrain, std::string::npos);
+    EXPECT_LT(shaderLabGBufferOrient, shaderLabGBufferConstrain)
+        << "ShaderLab GBuffer normal maps must preserve the oriented geometry hemisphere.";
 
     EXPECT_NE(shaderLab.find("#pragma shader_feature _ALPHATEST_ON"), std::string::npos);
     EXPECT_NE(shaderLab.find("#pragma multi_compile _ _NORMALMAP"), std::string::npos);
@@ -6549,11 +6581,49 @@ TEST(AssetMaterialConversionTests, PbrShadersGuardDegenerateNormalMapInputs)
     expectSafeNormalMapping(standard);
     expectSafeNormalMapping(standardPbr);
     expectSafeNormalMapping(deferredGBuffer);
-    EXPECT_NE(deferredGBuffer.find("const float surfaceAlpha = u_Albedo.a * albedoSample.a * opacity"), std::string::npos);
-    EXPECT_NE(deferredGBuffer.find("output.Normal = float4(normalWS * 0.5f + 0.5f, surfaceAlpha)"), std::string::npos);
-    EXPECT_NE(deferredGBuffer.find("output.Material = float4(metallic, roughness, ao, surfaceAlpha)"), std::string::npos);
-    EXPECT_NE(deferredLighting.find("NLSDeferredSafeNormalize(encodedNormal * 2.0f - 1.0f"), std::string::npos);
-    EXPECT_EQ(deferredLighting.find("normalize(encodedNormal * 2.0f - 1.0f)"), std::string::npos);
+    EXPECT_NE(deferredGBuffer.find("NLSOctEncodeNormal(geometryNormalWS)"), std::string::npos);
+    EXPECT_NE(deferredGBuffer.find("float4(albedo, geometryNormalOct.x)"), std::string::npos);
+    EXPECT_NE(
+        deferredGBuffer.find(
+            "float4(shadingNormalWS * 0.5f + 0.5f, geometryNormalOct.y)"),
+        std::string::npos);
+    EXPECT_NE(
+        deferredGBuffer.find("float4(metallic, roughness, ao, receiveShadows)"),
+        std::string::npos);
+    EXPECT_NE(
+        deferredGBuffer.find("u_ObjectFlags & NLS_OBJECT_FLAG_RECEIVE_SHADOWS"),
+        std::string::npos);
+    EXPECT_NE(
+        deferredLighting.find(
+            "NLSOctDecodeNormal(float2(albedoSample.a, normalSample.a))"),
+        std::string::npos);
+    EXPECT_NE(
+        deferredLighting.find(
+            "NLSDeferredSafeNormalize(normalSample.rgb * 2.0f - 1.0f, geometryNormalWS)"),
+        std::string::npos);
+    EXPECT_NE(
+        deferredLighting.find("NLSConstrainShadingNormalToGeometryHemisphere("),
+        std::string::npos);
+    EXPECT_NE(
+        deferredLighting.find("const bool receiveShadows = materialSample.a >= 0.5f"),
+        std::string::npos);
+    const auto countSamples = [](const std::string& source, const std::string_view texture)
+    {
+        size_t count = 0u;
+        for (size_t offset = 0u;
+             (offset = source.find(texture, offset)) != std::string::npos;
+             offset += texture.size())
+        {
+            ++count;
+        }
+        return count;
+    };
+    EXPECT_EQ(countSamples(deferredLighting, "u_GBufferAlbedo.Sample("), 1u);
+    EXPECT_EQ(countSamples(deferredLighting, "u_GBufferNormal.Sample("), 1u);
+    EXPECT_EQ(countSamples(deferredLighting, "u_GBufferMaterial.Sample("), 1u);
+    EXPECT_EQ(
+        deferredLighting.find("normalize(normalSample.rgb * 2.0f - 1.0f)"),
+        std::string::npos);
 }
 
 TEST(AssetMaterialConversionTests, PbrDirectLightingUsesEnergyConservingCookTorranceBrdf)

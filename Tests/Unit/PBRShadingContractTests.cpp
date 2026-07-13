@@ -185,6 +185,21 @@ size_t CountOccurrences(const std::string& source, std::string_view needle)
     return count;
 }
 
+std::string RemoveWhitespace(std::string_view source)
+{
+    std::string compact;
+    compact.reserve(source.size());
+    std::copy_if(
+        source.begin(),
+        source.end(),
+        std::back_inserter(compact),
+        [](const char value)
+        {
+            return value != ' ' && value != '\t' && value != '\r' && value != '\n';
+        });
+    return compact;
+}
+
 std::multiset<std::string> FindNLSFunctionDefinitions(const std::string& source)
 {
     const std::regex definitionPattern(
@@ -652,13 +667,207 @@ TEST(PBRShadingContractTests, ForwardAccumulatorsKeepAmbientOutsideGeometryGated
         directArguments.end());
 
     const auto scene = ExtractFunctionDefinition(source, "NLSAccumulateSceneLightingPBR");
+    ASSERT_FALSE(scene.empty());
+    EXPECT_EQ(
+        CountOccurrences(scene, "NLSConstrainShadingNormalToGeometryHemisphere("),
+        0u)
+        << "DeferredLighting owns decode-time hemisphere validation; the scene loop consumes it.";
+    const auto sceneParameters = ExtractFunctionParameterNames(
+        source,
+        "NLSAccumulateSceneLightingPBR");
+    ASSERT_GE(sceneParameters.size(), 5u);
+    EXPECT_EQ(sceneParameters[2], "geometryNormalWS");
+    EXPECT_EQ(sceneParameters[3], "shadingNormalWS");
+    EXPECT_NE(
+        scene.find("NLSFilterPerceptualRoughness(safeShadingNormalWS, roughness)"),
+        std::string::npos);
+
+    const auto sceneAmbientFloor = scene.find(
+        "float3 lighting = safeAlbedo * (NLSGetVisibleAmbientFloor() * safeAo);");
+    const auto sceneDirectLoop = scene.find("[loop]");
+    const auto sceneDirectCall = scene.find("NLSEvaluateCookTorranceDirect(");
+    ASSERT_NE(sceneAmbientFloor, std::string::npos);
+    ASSERT_NE(sceneDirectLoop, std::string::npos);
+    ASSERT_NE(sceneDirectCall, std::string::npos);
+    EXPECT_LT(sceneAmbientFloor, sceneDirectLoop);
+    EXPECT_LT(sceneDirectLoop, sceneDirectCall);
+
     const auto sceneDirectArguments = ExtractCallArguments(
         scene,
         "NLSEvaluateCookTorranceDirect");
-    ASSERT_EQ(sceneDirectArguments.size(), 9u);
-    EXPECT_EQ(sceneDirectArguments[0], "safeNormalWS");
-    EXPECT_EQ(sceneDirectArguments[1], "viewDir")
-        << "Deferred must not apply a geometry gate until it stores a separate geometry normal.";
+    ASSERT_EQ(sceneDirectArguments.size(), 10u);
+    EXPECT_EQ(sceneDirectArguments[0], "safeGeometryNormalWS");
+    EXPECT_EQ(sceneDirectArguments[1], "safeShadingNormalWS");
+    EXPECT_EQ(sceneDirectArguments[2], "viewDir");
+    EXPECT_EQ(sceneDirectArguments[3], "lightDir");
+    EXPECT_EQ(
+        FindNLSFunctionDefinitions(source).count("NLSEvaluateCookTorranceDirect"),
+        1u)
+        << "The temporary nine-parameter Deferred compatibility overload must be removed.";
+}
+
+TEST(PBRShadingContractTests, DeferredGbuffersStoreGeometryShadingAndReceiverChannels)
+{
+    struct GBufferContract
+    {
+        std::string_view name;
+        std::string source;
+        std::string_view interpolatedNormalName;
+        std::string_view normalMapCondition;
+    };
+
+    const auto builtInSource = ReadTextFile(ShaderRootPath() / "DeferredGBuffer.hlsl");
+    ASSERT_FALSE(builtInSource.empty());
+
+    const auto shaderLabPath = ShaderRootPath() / "ShaderLab/StandardPBR.shader";
+    const auto shaderLabSource = ReadTextFile(shaderLabPath);
+    ASSERT_FALSE(shaderLabSource.empty());
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(
+        shaderLabSource,
+        shaderLabPath.generic_string());
+    ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    ASSERT_FALSE(parsed.asset.subShaders.empty());
+    const auto& passes = parsed.asset.subShaders.front().passes;
+    const auto gbuffer = std::find_if(
+        passes.begin(),
+        passes.end(),
+        [](const NLS::Render::ShaderLab::ShaderLabPassDesc& pass)
+        {
+            const auto lightMode = pass.tags.values.find("LightMode");
+            return lightMode != pass.tags.values.end() && lightMode->second == "GBuffer";
+        });
+    ASSERT_NE(gbuffer, passes.end())
+        << "StandardPBR ShaderLab materials need a real GBuffer pass for Deferred rendering.";
+
+    const std::array shaders{
+        GBufferContract{
+            "BuiltIn",
+            builtInSource,
+            "input.NormalWS",
+            "u_EnableNormalMapping > 0.5f"},
+        GBufferContract{
+            "ShaderLab",
+            gbuffer->hlslSource,
+            "input.normalWS",
+            "#if defined(_NORMALMAP)"}};
+
+    for (const auto& shader : shaders)
+    {
+        SCOPED_TRACE(shader.name);
+        const auto pixel = ExtractFunctionDefinition(shader.source, "PSMain");
+        ASSERT_FALSE(pixel.empty());
+        EXPECT_NE(pixel.find("bool isFrontFace : SV_IsFrontFace"), std::string::npos);
+
+        const std::string safeGeometryDefinition =
+            "const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(" +
+            std::string(shader.interpolatedNormalName) +
+            ", float3(0.0f, 0.0f, 1.0f));";
+        const auto safeGeometry = pixel.find(safeGeometryDefinition);
+        const auto orientGeometry = pixel.find(
+            "const float3 geometryNormalWS = NLSOrientGeometryNormal("
+            "interpolatedGeometryNormalWS, isFrontFace);");
+        const auto initializeShading = pixel.find("shadingNormalWS = geometryNormalWS;");
+        const auto normalMapCondition = pixel.find(shader.normalMapCondition);
+        const auto constrainShading = pixel.find(
+            "NLSConstrainShadingNormalToGeometryHemisphere(");
+        const auto encodeGeometry = pixel.find(
+            "const float2 geometryNormalOct = NLSOctEncodeNormal(geometryNormalWS);");
+        ASSERT_NE(safeGeometry, std::string::npos);
+        ASSERT_NE(orientGeometry, std::string::npos);
+        ASSERT_NE(initializeShading, std::string::npos);
+        ASSERT_NE(normalMapCondition, std::string::npos);
+        ASSERT_NE(constrainShading, std::string::npos);
+        ASSERT_NE(encodeGeometry, std::string::npos);
+        EXPECT_LT(safeGeometry, orientGeometry);
+        EXPECT_LT(orientGeometry, initializeShading);
+        EXPECT_LT(initializeShading, normalMapCondition);
+        EXPECT_LT(normalMapCondition, constrainShading);
+        EXPECT_LT(constrainShading, encodeGeometry);
+
+        const auto compactPixel = RemoveWhitespace(pixel);
+        EXPECT_NE(
+            compactPixel.find(RemoveWhitespace(
+                "const float receiveShadows = "
+                "(u_ObjectFlags & NLS_OBJECT_FLAG_RECEIVE_SHADOWS) != 0u ? 1.0f : 0.0f;")),
+            std::string::npos);
+        EXPECT_EQ(
+            CountOccurrences(
+                compactPixel,
+                RemoveWhitespace("output.Albedo = float4(albedo, geometryNormalOct.x);")),
+            1u);
+        EXPECT_EQ(
+            CountOccurrences(
+                compactPixel,
+                RemoveWhitespace(
+                    "output.Normal = float4(shadingNormalWS * 0.5f + 0.5f, geometryNormalOct.y);")),
+            1u);
+        EXPECT_EQ(
+            CountOccurrences(
+                compactPixel,
+                RemoveWhitespace(
+                    "output.Material = float4(metallic, roughness, ao, receiveShadows);")),
+            1u);
+        EXPECT_EQ(pixel.find("output.Albedo = float4(albedo, surfaceAlpha);"), std::string::npos);
+        EXPECT_EQ(pixel.find("output.Normal = float4(normalWS * 0.5f + 0.5f, surfaceAlpha);"), std::string::npos);
+        EXPECT_EQ(pixel.find("output.Material = float4(metallic, roughness, ao, surfaceAlpha);"), std::string::npos);
+    }
+}
+
+TEST(PBRShadingContractTests, DeferredLightingDecodesDualNormalsAndSamplesEachGbufferOnce)
+{
+    const auto deferredSource = ReadTextFile(ShaderRootPath() / "DeferredLighting.hlsl");
+    ASSERT_FALSE(deferredSource.empty());
+    const auto pixel = ExtractFunctionDefinition(deferredSource, "PSMain");
+    ASSERT_FALSE(pixel.empty());
+
+    EXPECT_EQ(CountOccurrences(pixel, "u_GBufferAlbedo.Sample("), 1u);
+    EXPECT_EQ(CountOccurrences(pixel, "u_GBufferNormal.Sample("), 1u);
+    EXPECT_EQ(CountOccurrences(pixel, "u_GBufferMaterial.Sample("), 1u);
+    EXPECT_NE(
+        pixel.find(
+            "const float4 albedoSample = "
+            "u_GBufferAlbedo.Sample(u_LinearWrapSampler, input.TexCoord);"),
+        std::string::npos);
+    EXPECT_NE(
+        pixel.find(
+            "const float4 normalSample = "
+            "u_GBufferNormal.Sample(u_LinearWrapSampler, input.TexCoord);"),
+        std::string::npos);
+    EXPECT_NE(
+        pixel.find(
+            "const float4 materialSample = "
+            "u_GBufferMaterial.Sample(u_LinearWrapSampler, input.TexCoord);"),
+        std::string::npos);
+    EXPECT_NE(
+        pixel.find(
+            "const float3 geometryNormalWS = "
+            "NLSOctDecodeNormal(float2(albedoSample.a, normalSample.a));"),
+        std::string::npos);
+    const auto safeShading = pixel.find(
+        "NLSDeferredSafeNormalize(normalSample.rgb * 2.0f - 1.0f, geometryNormalWS)");
+    const auto constrainShading = pixel.find(
+        "NLSConstrainShadingNormalToGeometryHemisphere(");
+    ASSERT_NE(safeShading, std::string::npos);
+    ASSERT_NE(constrainShading, std::string::npos);
+    EXPECT_EQ(
+        CountOccurrences(pixel, "NLSConstrainShadingNormalToGeometryHemisphere("),
+        1u);
+    EXPECT_LT(safeShading, constrainShading);
+    EXPECT_NE(
+        pixel.find("const bool receiveShadows = materialSample.a >= 0.5f;"),
+        std::string::npos);
+    EXPECT_NE(
+        pixel.find("NLSResolveDeferredDirectVisibility(receiveShadows)"),
+        std::string::npos)
+        << "The decoded receiver bit must feed the explicit future direct-visibility entry point.";
+
+    const auto lightingArguments = ExtractCallArguments(
+        pixel,
+        "NLSAccumulateSceneLightingPBR");
+    ASSERT_EQ(lightingArguments.size(), 9u);
+    EXPECT_EQ(lightingArguments[2], "geometryNormalWS");
+    EXPECT_EQ(lightingArguments[3], "shadingNormalWS");
+    EXPECT_EQ(lightingArguments[8], "directVisibility");
 }
 
 TEST(PBRShadingContractTests, ForwardPixelShadersOrientConstrainAndPassGeometryThenShadingNormals)
@@ -1152,5 +1361,147 @@ TEST(PBRShadingContractTests, ForwardShadersCompileThroughNativeDxcForDxilSpirvA
                 EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
             }
         }
+    }
+}
+
+TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirvAndShaderLabVariants)
+{
+    struct CompileTarget
+    {
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform platform;
+        std::string_view name;
+        std::string_view extension;
+    };
+    const std::array targets{
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL, "DXIL", ".dxil"},
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV, "SPIRV", ".spv"}};
+
+    ScopedTemporaryDirectory temporaryDirectory;
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+    ASSERT_FALSE(
+        NLS::Render::ShaderCompiler::GetCurrentShaderCompilerToolchainIdentity().compilerPath.empty())
+        << "The repository native DXC toolchain must be available for Deferred shader contracts.";
+
+    const std::array builtInShaders{
+        ShaderRootPath() / "DeferredGBuffer.hlsl",
+        ShaderRootPath() / "DeferredLighting.hlsl"};
+    for (const auto& target : targets)
+    {
+        for (const auto& builtInPath : builtInShaders)
+        {
+            for (const auto stage : {
+                     NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                     NLS::Render::ShaderCompiler::ShaderStage::Pixel})
+            {
+                SCOPED_TRACE(
+                    builtInPath.filename().string() + "/" + std::string(target.name) + "/" +
+                    (stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex ? "VS" : "PS"));
+                const auto input = MakeNativeShaderCompileInput(
+                    builtInPath,
+                    stage,
+                    target.platform,
+                    temporaryDirectory.GetPath() / "BuiltInDeferredArtifacts" /
+                        std::string(target.name) / builtInPath.stem());
+                const auto output = compiler.Compile(input);
+                ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                    << output.diagnostics;
+                EXPECT_FALSE(output.bytecode.empty());
+                EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
+                EXPECT_TRUE(HasDependency(output.dependencyPaths, builtInPath));
+                EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
+            }
+        }
+    }
+
+    const auto shaderLabPath = ShaderRootPath() / "ShaderLab/StandardPBR.shader";
+    const auto shaderLabSource = ReadTextFile(shaderLabPath);
+    ASSERT_FALSE(shaderLabSource.empty());
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(
+        shaderLabSource,
+        shaderLabPath.generic_string());
+    ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    ASSERT_FALSE(parsed.asset.subShaders.empty());
+    const auto& passes = parsed.asset.subShaders.front().passes;
+    const auto parsedGbuffer = std::find_if(
+        passes.begin(),
+        passes.end(),
+        [](const NLS::Render::ShaderLab::ShaderLabPassDesc& pass)
+        {
+            const auto lightMode = pass.tags.values.find("LightMode");
+            return lightMode != pass.tags.values.end() && lightMode->second == "GBuffer";
+        });
+    ASSERT_NE(parsedGbuffer, passes.end());
+    ASSERT_EQ(parsedGbuffer->state.cullMode, NLS::Render::ShaderLab::ShaderLabCullMode::Back);
+
+    struct ShaderLabVariant
+    {
+        std::string_view name;
+        bool normalMap;
+        NLS::Render::ShaderLab::ShaderLabCullMode cullMode;
+    };
+    const std::array variants{
+        ShaderLabVariant{"Default", false, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
+        ShaderLabVariant{"NormalMap", true, NLS::Render::ShaderLab::ShaderLabCullMode::Back},
+        ShaderLabVariant{"CullOff", false, NLS::Render::ShaderLab::ShaderLabCullMode::Off}};
+
+    for (const auto& target : targets)
+    {
+        std::vector<uint8_t> defaultPixelBytecode;
+        std::vector<uint8_t> cullOffPixelBytecode;
+        for (const auto& variant : variants)
+        {
+            auto gbuffer = *parsedGbuffer;
+            gbuffer.state.cullMode = variant.cullMode;
+            const auto compileSourcePath =
+                temporaryDirectory.GetPath() /
+                ("StandardPBRGBuffer" + std::string(variant.name) + ".hlsl");
+            std::ofstream compileSource(compileSourcePath, std::ios::binary);
+            ASSERT_TRUE(compileSource.is_open()) << compileSourcePath.string();
+            compileSource << NLS::Render::ShaderLab::BuildShaderLabHlslForCompile(gbuffer);
+            compileSource.close();
+
+            for (const auto stage : {
+                     NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                     NLS::Render::ShaderCompiler::ShaderStage::Pixel})
+            {
+                if (stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex &&
+                    variant.name != "Default")
+                {
+                    continue;
+                }
+
+                SCOPED_TRACE(
+                    std::string(target.name) + "/" + std::string(variant.name) + "/" +
+                    (stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex ? "VS" : "PS"));
+                auto input = MakeNativeShaderCompileInput(
+                    compileSourcePath,
+                    stage,
+                    target.platform,
+                    temporaryDirectory.GetPath() / "ShaderLabGBufferArtifacts" /
+                        std::string(target.name) / std::string(variant.name));
+                if (variant.normalMap)
+                    input.options.macros.push_back({"_NORMALMAP", "1"});
+
+                const auto output = compiler.Compile(input);
+                ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                    << output.diagnostics;
+                EXPECT_FALSE(output.bytecode.empty());
+                EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
+                EXPECT_TRUE(HasDependency(output.dependencyPaths, PBRNormalsPath()));
+
+                if (stage == NLS::Render::ShaderCompiler::ShaderStage::Pixel)
+                {
+                    if (variant.name == "Default")
+                        defaultPixelBytecode = output.bytecode;
+                    else if (variant.name == "CullOff")
+                        cullOffPixelBytecode = output.bytecode;
+                }
+            }
+        }
+
+        ASSERT_FALSE(defaultPixelBytecode.empty());
+        ASSERT_FALSE(cullOffPixelBytecode.empty());
+        EXPECT_EQ(defaultPixelBytecode, cullOffPixelBytecode)
+            << target.name << ": Cull Off must reuse the same SV_IsFrontFace-aware pixel bytecode.";
     }
 }

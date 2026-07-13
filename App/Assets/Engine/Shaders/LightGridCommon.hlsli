@@ -486,30 +486,6 @@ float3 NLSEvaluateCookTorranceDirect(
     return shadingDirect * geometryFade;
 }
 
-// Compatibility overload until Deferred stores geometry and shading normals separately.
-float3 NLSEvaluateCookTorranceDirect(
-    float3 shadingNormalWS,
-    float3 viewDir,
-    float3 lightDir,
-    float3 safeAlbedo,
-    float safeMetallic,
-    float safeRoughness,
-    float3 lightColor,
-    float lightIntensity,
-    float attenuation)
-{
-    return NLSEvaluateCookTorranceShadingDirect(
-        shadingNormalWS,
-        viewDir,
-        lightDir,
-        safeAlbedo,
-        safeMetallic,
-        safeRoughness,
-        lightColor,
-        lightIntensity,
-        attenuation);
-}
-
 float3 NLSAccumulateClusteredLightingPhong(
     StructuredBuffer<uint> forwardLocalLightBuffer,
     StructuredBuffer<uint> numCulledLightsGrid,
@@ -654,19 +630,27 @@ float3 NLSAccumulateClusteredLightingPBR(
 float3 NLSAccumulateSceneLightingPBR(
     StructuredBuffer<uint> forwardLocalLightBuffer,
     float3 worldPosition,
-    float3 normalWS,
+    float3 geometryNormalWS,
+    float3 shadingNormalWS,
     float3 albedo,
     float metallic,
     float roughness,
-    float ao)
+    float ao,
+    float directVisibility)
 {
-    const float3 safeNormalWS = NLSSafeLightingNormalize(normalWS, float3(0.0f, 0.0f, 1.0f));
-    const float3 viewDir = NLSSafeLightingNormalize(NLSGetCameraWorldPosition() - worldPosition, safeNormalWS);
+    // DeferredLighting decodes and constrains both normals before entering the shared light loop.
+    const float3 safeGeometryNormalWS = geometryNormalWS;
+    const float3 safeShadingNormalWS = shadingNormalWS;
+    const float3 viewDir = NLSSafeLightingNormalize(
+        NLSGetCameraWorldPosition() - worldPosition,
+        safeGeometryNormalWS);
     const float3 safeAlbedo = NLSSafePbrAlbedo(albedo);
     const float safeMetallic = NLSSafePbrMetallic(metallic);
-    const float filteredRoughness = NLSFilterPerceptualRoughness(safeNormalWS, roughness);
+    const float filteredRoughness = NLSFilterPerceptualRoughness(safeShadingNormalWS, roughness);
     const float safeAo = NLSSafePbrAo(ao);
+    const float safeDirectVisibility = isfinite(directVisibility) ? saturate(directVisibility) : 1.0f;
     float3 lighting = safeAlbedo * (NLSGetVisibleAmbientFloor() * safeAo);
+    float3 directLighting = 0.0f.xxx;
 
     [loop]
     for (uint lightIndex = 0u; lightIndex < NLSGetSceneLightCount(); ++lightIndex)
@@ -691,7 +675,7 @@ float3 NLSAccumulateSceneLightingPBR(
             if (distanceToLight > max(light.range, 0.0001f))
                 continue;
 
-            lightDir = NLSSafeLightingNormalize(toLight, safeNormalWS);
+            lightDir = NLSSafeLightingNormalize(toLight, safeGeometryNormalWS);
             attenuation = NLSComputePointAttenuation(light, distanceToLight);
             if (light.type == NLS_LIGHT_TYPE_SPOT)
             {
@@ -701,8 +685,9 @@ float3 NLSAccumulateSceneLightingPBR(
             }
         }
 
-        lighting += NLSEvaluateCookTorranceDirect(
-            safeNormalWS,
+        directLighting += NLSEvaluateCookTorranceDirect(
+            safeGeometryNormalWS,
+            safeShadingNormalWS,
             viewDir,
             lightDir,
             safeAlbedo,
@@ -713,7 +698,7 @@ float3 NLSAccumulateSceneLightingPBR(
             attenuation);
     }
 
-    return lighting;
+    return lighting + directLighting * safeDirectVisibility;
 }
 
 #endif

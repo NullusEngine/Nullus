@@ -1,4 +1,5 @@
 #include "CommonTypes.hlsli"
+#include "NullusShaderLibrary/PBRNormals.hlsl"
 
 cbuffer FrameConstants : register(b0, space0)
 {
@@ -69,15 +70,13 @@ float3 DecodeNormalMapSample(float4 normalSample)
     return NLSSafeNormalize(float3(xy, lerp(reconstructedZ, rgbZ, useRgbZ)), float3(0.0f, 0.0f, 1.0f));
 }
 
-float3 ComputeNormal(VSOutput input, float2 texCoord, bool isFrontFace)
+float3 ComputeShadingNormal(
+    VSOutput input,
+    float2 texCoord,
+    bool isFrontFace)
 {
-    const float faceSign = isFrontFace ? 1.0f : -1.0f;
-    const float3 normalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
-    if (u_EnableNormalMapping <= 0.5f)
-        return normalWS * faceSign;
-
     NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
-        normalWS,
+        input.NormalWS,
         input.TangentWS,
         input.BitangentWS);
     tangentFrame = NLSOrientTangentFrameForFace(tangentFrame, isFrontFace);
@@ -97,12 +96,21 @@ GBufferOutput PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace)
     const float roughness = u_Roughness *
         dot(u_RoughnessMap.Sample(u_LinearWrapSampler, texCoord), u_RoughnessMapChannel);
     const float ao = u_AmbientOcclusionMap.Sample(u_LinearWrapSampler, texCoord).r * u_AmbientOcclusion;
-    const float opacity = u_OpacityMap.Sample(u_LinearWrapSampler, texCoord).r;
-    const float3 normalWS = ComputeNormal(input, texCoord, isFrontFace);
-    const float surfaceAlpha = u_Albedo.a * albedoSample.a * opacity;
+    const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
+    const float3 geometryNormalWS = NLSOrientGeometryNormal(interpolatedGeometryNormalWS, isFrontFace);
+    float3 shadingNormalWS = geometryNormalWS;
+    if (u_EnableNormalMapping > 0.5f)
+    {
+        shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
+            ComputeShadingNormal(input, texCoord, isFrontFace),
+            geometryNormalWS);
+    }
+    const float2 geometryNormalOct = NLSOctEncodeNormal(geometryNormalWS);
+    const float receiveShadows =
+        (u_ObjectFlags & NLS_OBJECT_FLAG_RECEIVE_SHADOWS) != 0u ? 1.0f : 0.0f;
 
-    output.Albedo = float4(albedo, surfaceAlpha);
-    output.Normal = float4(normalWS * 0.5f + 0.5f, surfaceAlpha);
-    output.Material = float4(metallic, roughness, ao, surfaceAlpha);
+    output.Albedo = float4(albedo, geometryNormalOct.x);
+    output.Normal = float4(shadingNormalWS * 0.5f + 0.5f, geometryNormalOct.y);
+    output.Material = float4(metallic, roughness, ao, receiveShadows);
     return output;
 }

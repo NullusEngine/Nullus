@@ -70,6 +70,15 @@ float3 NLSDeferredSafeNormalize(float3 value, float3 fallback)
     return float3(0.0f, 0.0f, 1.0f);
 }
 
+float NLSResolveDeferredDirectVisibility(bool receiveShadows)
+{
+    if (!receiveShadows)
+        return 1.0f;
+
+    // Deferred shadow sampling will replace this neutral receiver path.
+    return 1.0f;
+}
+
 VSOutput VSMain(VSInput input)
 {
     VSOutput output;
@@ -138,23 +147,31 @@ float4 PSMain(VSOutput input) : SV_Target0
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
-    const float4 albedo = u_GBufferAlbedo.Sample(u_LinearWrapSampler, input.TexCoord);
-    const float3 encodedNormal = u_GBufferNormal.Sample(u_LinearWrapSampler, input.TexCoord).xyz;
-    const float3 normalWS = NLSDeferredSafeNormalize(encodedNormal * 2.0f - 1.0f, float3(0.0f, 0.0f, 1.0f));
-    const float3 materialParams = u_GBufferMaterial.Sample(u_LinearWrapSampler, input.TexCoord).xyz;
+    const float4 albedoSample = u_GBufferAlbedo.Sample(u_LinearWrapSampler, input.TexCoord);
+    const float4 normalSample = u_GBufferNormal.Sample(u_LinearWrapSampler, input.TexCoord);
+    const float4 materialSample = u_GBufferMaterial.Sample(u_LinearWrapSampler, input.TexCoord);
+    const float3 geometryNormalWS = NLSOctDecodeNormal(float2(albedoSample.a, normalSample.a));
+    float3 shadingNormalWS = NLSDeferredSafeNormalize(normalSample.rgb * 2.0f - 1.0f, geometryNormalWS);
+    shadingNormalWS = NLSConstrainShadingNormalToGeometryHemisphere(
+        shadingNormalWS,
+        geometryNormalWS);
+    const bool receiveShadows = materialSample.a >= 0.5f;
+    const float directVisibility = NLSResolveDeferredDirectVisibility(receiveShadows);
     const float3 worldPosition = ReconstructWorldPosition(input.TexCoord, depth01);
 
-    const float metallic = materialParams.x;
-    const float roughness = materialParams.y;
-    const float ao = materialParams.z;
+    const float metallic = materialSample.x;
+    const float roughness = materialSample.y;
+    const float ao = materialSample.z;
     const float3 litColor = NLSAccumulateSceneLightingPBR(
         u_ForwardLocalLightBuffer,
         worldPosition,
-        normalWS,
-        albedo.rgb,
+        geometryNormalWS,
+        shadingNormalWS,
+        albedoSample.rgb,
         metallic,
         roughness,
-        ao);
+        ao,
+        directVisibility);
 
     // The shared LDR transform preserves highlight hue and softens isolated specular peaks.
     return float4(NLSToneMapACES(litColor), 1.0f);

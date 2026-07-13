@@ -42,6 +42,9 @@ public:
     std::vector<LauncherInstallView> GetEngineInstallationViews() const;
     bool HasAnyValidEngineInstallations() const;
 
+    /** Returns true when the path is both usable and present in the configured installation list. */
+    bool IsRegisteredEngineExecutablePath(const std::filesystem::path& executablePath) const;
+
     static bool IsValidEngineExecutablePath(const std::filesystem::path& executablePath);
     static std::string DescribeEngineVersion(const std::filesystem::path& executablePath);
 

@@ -313,7 +313,7 @@ public:
         m_path = p_path;
         m_projectName = Utils::PathParser::GetElementName(m_path);
         const auto boundEditorExecutablePath = ReadProjectLastEditorExecutable(p_path);
-        if (LauncherSettings::IsValidEngineExecutablePath(boundEditorExecutablePath))
+        if (m_settings.IsRegisteredEngineExecutablePath(boundEditorExecutablePath))
         {
             m_editorExecutablePath = boundEditorExecutablePath;
         }
@@ -1129,6 +1129,10 @@ Launcher::Launcher(
 
     m_uiManager->SetCanvas(m_canvas);
     m_canvas.AddPanel(*m_mainPanel);
+
+    if (Core::ServiceLocator::Contains<ShaderManager>())
+        throw std::runtime_error("Launcher startup failed: a ShaderManager service is already registered.");
+    Core::ServiceLocator::Provide<ShaderManager>(m_shaderManager);
 }
 
 Launcher::~Launcher()
@@ -1141,7 +1145,11 @@ Launcher::~Launcher()
     m_brandTextureView.reset();
     NLS::Render::Resources::Loaders::TextureLoader::Destroy(m_brandTextureResource);
     m_shaderManager.UnloadResources();
-    Core::ServiceLocator::Remove<ShaderManager>();
+    if (Core::ServiceLocator::Contains<ShaderManager>() &&
+        &Core::ServiceLocator::Get<ShaderManager>() == &m_shaderManager)
+    {
+        Core::ServiceLocator::Remove<ShaderManager>();
+    }
 }
 
 LauncherRunResult Launcher::Run()
@@ -1165,7 +1173,6 @@ void Launcher::SetupContext()
     const auto assetsRoot = ResolveLauncherAssetsRoot();
     const auto engineAssetsRoot = EnsureTrailingPathSeparator(assetsRoot / "Engine");
     ShaderManager::ProvideAssetPaths({}, engineAssetsRoot);
-    Core::ServiceLocator::Provide<ShaderManager>(m_shaderManager);
     GetLauncherLocalization().Load(assetsRoot / "Localization" / "Launcher", ResolveLauncherLocale());
 
     Windowing::Settings::DeviceSettings deviceSettings;

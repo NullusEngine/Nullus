@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 
@@ -69,6 +71,29 @@ TEST(LauncherSettingsTests, RejectsMissingEngineExecutablePath)
     NLS::LauncherSettings settings(root / "launcher.ini");
     EXPECT_FALSE(settings.AddEngineExecutablePath(root / "MissingEditor.exe"));
     EXPECT_FALSE(settings.HasValidDefaultEngineExecutablePath());
+}
+
+TEST(LauncherSettingsTests, RecognizesOnlyRegisteredValidEngineExecutablePaths)
+{
+    const auto root = std::filesystem::temp_directory_path() / "NullusLauncherRegisteredEngineTests";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+
+    const auto registeredEditor = MakeExecutableFile(root, "RegisteredEditor.exe");
+    const auto staleEditor = MakeExecutableFile(root, "StaleEditor.exe");
+    NLS::LauncherSettings settings(root / "launcher.ini");
+    ASSERT_TRUE(settings.AddEngineExecutablePath(registeredEditor));
+
+    EXPECT_TRUE(settings.IsRegisteredEngineExecutablePath(registeredEditor));
+    EXPECT_FALSE(settings.IsRegisteredEngineExecutablePath(staleEditor));
+
+#ifdef _WIN32
+    auto caseVariant = registeredEditor.string();
+    std::transform(caseVariant.begin(), caseVariant.end(), caseVariant.begin(), [](unsigned char value) {
+        return static_cast<char>(std::toupper(value));
+    });
+    EXPECT_TRUE(settings.IsRegisteredEngineExecutablePath(caseVariant));
+#endif
 }
 
 #ifdef _WIN32

@@ -200,6 +200,16 @@ bool LauncherSettings::HasAnyValidEngineInstallations() const
     });
 }
 
+bool LauncherSettings::IsRegisteredEngineExecutablePath(const std::filesystem::path& executablePath) const
+{
+    if (!IsValidEngineExecutablePath(executablePath))
+        return false;
+
+    return std::any_of(m_engineInstallations.begin(), m_engineInstallations.end(), [&](const LauncherInstallEntry& entry) {
+        return PathsEqual(entry.executablePath, executablePath);
+    });
+}
+
 bool LauncherSettings::IsValidEngineExecutablePath(const std::filesystem::path& executablePath)
 {
     std::error_code ec;

@@ -143,11 +143,27 @@ TEST(RHIUiOverlaySourceGuardTests, LauncherAlwaysEnablesThreadedLifecycleForUiOn
         << "The Launcher UI presentation path must not depend on an opt-in environment variable.";
 }
 
+TEST(RHIUiOverlaySourceGuardTests, LauncherUsesOnlyRegisteredProjectEditorBinding)
+{
+    const auto launcherSource = ReadSourceText(RepoPath("Project/Launcher/Core/Launcher.cpp"));
+    const auto openProjectBody = ExtractFunctionBody(launcherSource, "void OpenProject(");
+
+    EXPECT_NE(
+        openProjectBody.find("m_settings.IsRegisteredEngineExecutablePath(boundEditorExecutablePath)"),
+        std::string::npos)
+        << "A project-bound Editor must still belong to the Launcher's current installation list.";
+    EXPECT_EQ(
+        openProjectBody.find("LauncherSettings::IsValidEngineExecutablePath(boundEditorExecutablePath)"),
+        std::string::npos)
+        << "An existing stale Editor executable must not override the configured default installation.";
+}
+
 TEST(RHIUiOverlaySourceGuardTests, LauncherProvidesShaderManagerForUiOverlayBuiltInShader)
 {
     const auto launcherSource = ReadSourceText(RepoPath("Project/Launcher/Core/Launcher.cpp"));
     const auto launcherHeader = ReadSourceText(RepoPath("Project/Launcher/Core/Launcher.h"));
     const auto setupContextBody = ExtractFunctionBody(launcherSource, "void Launcher::SetupContext(");
+    const auto constructorBody = ExtractFunctionBody(launcherSource, "Launcher::Launcher(");
     const auto destructorBody = ExtractFunctionBody(launcherSource, "Launcher::~Launcher(");
 
     EXPECT_NE(
@@ -160,10 +176,20 @@ TEST(RHIUiOverlaySourceGuardTests, LauncherProvidesShaderManagerForUiOverlayBuil
         std::string::npos)
         << "The Launcher must authorize its deployed Assets/Engine root before loading the built-in "
            "RHIImGuiOverlay HLSL shader.";
-    EXPECT_NE(
+    EXPECT_EQ(
         setupContextBody.find("ServiceLocator::Provide<ShaderManager>(m_shaderManager)"),
         std::string::npos)
+        << "Registering during SetupContext leaves a dangling service if later Launcher construction throws.";
+    const auto existingServiceGuard = constructorBody.find("ServiceLocator::Contains<ShaderManager>()");
+    const auto addPanel = constructorBody.find("m_canvas.AddPanel(*m_mainPanel)");
+    const auto provideService = constructorBody.find("ServiceLocator::Provide<ShaderManager>(m_shaderManager)");
+    EXPECT_NE(existingServiceGuard, std::string::npos)
+        << "Launcher must not overwrite a ShaderManager owned by another context.";
+    EXPECT_NE(provideService, std::string::npos)
         << "RHIImGuiOverlayRenderer resolves the overlay shader through the ShaderManager service.";
+    EXPECT_LT(existingServiceGuard, provideService);
+    EXPECT_LT(addPanel, provideService)
+        << "Service registration must be the final potentially persistent action in Launcher construction.";
     EXPECT_NE(launcherHeader.find("ShaderManager m_shaderManager"), std::string::npos)
         << "The ShaderManager service must outlive all Launcher UI frame recording.";
     const auto threadedShutdown = destructorBody.find("m_driver->ShutdownThreadedRendering()");
@@ -172,6 +198,14 @@ TEST(RHIUiOverlaySourceGuardTests, LauncherProvidesShaderManagerForUiOverlayBuil
         << "Launcher must stop the RHI worker before releasing its overlay shader resources.";
     EXPECT_NE(shaderUnload, std::string::npos)
         << "Launcher-owned shader resources must be released before process teardown.";
+    const auto ownedServiceCheck = destructorBody.find(
+        "&Core::ServiceLocator::Get<ShaderManager>() == &m_shaderManager");
+    const auto removeService = destructorBody.find("ServiceLocator::Remove<ShaderManager>()");
+    EXPECT_NE(ownedServiceCheck, std::string::npos)
+        << "Launcher must not remove a ShaderManager that replaced its own service registration.";
+    EXPECT_NE(removeService, std::string::npos)
+        << "Launcher must unregister its ShaderManager before the member is destroyed.";
+    EXPECT_LT(ownedServiceCheck, removeService);
     EXPECT_LT(threadedShutdown, shaderUnload)
         << "The RHI worker may still reference the UI overlay shader until threaded rendering stops.";
 }

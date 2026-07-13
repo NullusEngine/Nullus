@@ -127,6 +127,55 @@ TEST(RHIUiOverlaySourceGuardTests, EditorAndLauncherDoNotSubmitLegacyUiRendering
     EXPECT_EQ(launcherRunBody.find("SubmitUIRendering()"), std::string::npos);
 }
 
+TEST(RHIUiOverlaySourceGuardTests, LauncherAlwaysEnablesThreadedLifecycleForUiOnlyFrameGraphRendering)
+{
+    const auto launcherSource = ReadSourceText(RepoPath("Project/Launcher/Core/Launcher.cpp"));
+    const auto setupContextBody = ExtractFunctionBody(launcherSource, "void Launcher::SetupContext(");
+
+    EXPECT_NE(
+        setupContextBody.find("driverSettings.enableThreadedRendering = true"),
+        std::string::npos)
+        << "Launcher has no scene renderer, so its migrated UI-only frame must always create the "
+           "threaded lifecycle used by PublishUiOnlyFrame.";
+    EXPECT_EQ(
+        setupContextBody.find("IsEnvironmentFlagEnabled(\"NLS_ENABLE_THREADED_RENDERING\")"),
+        std::string::npos)
+        << "The Launcher UI presentation path must not depend on an opt-in environment variable.";
+}
+
+TEST(RHIUiOverlaySourceGuardTests, LauncherProvidesShaderManagerForUiOverlayBuiltInShader)
+{
+    const auto launcherSource = ReadSourceText(RepoPath("Project/Launcher/Core/Launcher.cpp"));
+    const auto launcherHeader = ReadSourceText(RepoPath("Project/Launcher/Core/Launcher.h"));
+    const auto setupContextBody = ExtractFunctionBody(launcherSource, "void Launcher::SetupContext(");
+    const auto destructorBody = ExtractFunctionBody(launcherSource, "Launcher::~Launcher(");
+
+    EXPECT_NE(
+        setupContextBody.find("const auto engineAssetsRoot = EnsureTrailingPathSeparator(assetsRoot / \"Engine\")"),
+        std::string::npos)
+        << "Built-in resource virtual paths are appended to the configured root, so Launcher must "
+           "preserve the trailing path separator contract used by Editor and Game.";
+    EXPECT_NE(
+        setupContextBody.find("ShaderManager::ProvideAssetPaths({}, engineAssetsRoot)"),
+        std::string::npos)
+        << "The Launcher must authorize its deployed Assets/Engine root before loading the built-in "
+           "RHIImGuiOverlay HLSL shader.";
+    EXPECT_NE(
+        setupContextBody.find("ServiceLocator::Provide<ShaderManager>(m_shaderManager)"),
+        std::string::npos)
+        << "RHIImGuiOverlayRenderer resolves the overlay shader through the ShaderManager service.";
+    EXPECT_NE(launcherHeader.find("ShaderManager m_shaderManager"), std::string::npos)
+        << "The ShaderManager service must outlive all Launcher UI frame recording.";
+    const auto threadedShutdown = destructorBody.find("m_driver->ShutdownThreadedRendering()");
+    const auto shaderUnload = destructorBody.find("m_shaderManager.UnloadResources()");
+    EXPECT_NE(threadedShutdown, std::string::npos)
+        << "Launcher must stop the RHI worker before releasing its overlay shader resources.";
+    EXPECT_NE(shaderUnload, std::string::npos)
+        << "Launcher-owned shader resources must be released before process teardown.";
+    EXPECT_LT(threadedShutdown, shaderUnload)
+        << "The RHI worker may still reference the UI overlay shader until threaded rendering stops.";
+}
+
 TEST(RHIUiOverlaySourceGuardTests, OverlayRendererFontAtlasAndTextureRegistryDoNotOwnNativeDx12QueueWork)
 {
     const std::vector<std::filesystem::path> migratedFiles = {

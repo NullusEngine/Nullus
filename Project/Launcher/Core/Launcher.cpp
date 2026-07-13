@@ -45,8 +45,18 @@
 
 namespace NLS
 {
+using Core::ResourceManagement::ShaderManager;
+
 namespace
 {
+std::string EnsureTrailingPathSeparator(const std::filesystem::path& path)
+{
+    auto text = path.lexically_normal().string();
+    if (!text.empty() && text.back() != '\\' && text.back() != '/')
+        text += Utils::PathParser::Separator();
+    return text;
+}
+
 std::filesystem::path ResolveLauncherAssetsRoot()
 {
     return Platform::Process::ResolveInstallResourceRoots().assetsRoot;
@@ -1124,9 +1134,14 @@ Launcher::Launcher(
 Launcher::~Launcher()
 {
     if (m_driver != nullptr)
+    {
         m_driver->SetSwapchainWillResizeCallback(nullptr);
+        m_driver->ShutdownThreadedRendering();
+    }
     m_brandTextureView.reset();
     NLS::Render::Resources::Loaders::TextureLoader::Destroy(m_brandTextureResource);
+    m_shaderManager.UnloadResources();
+    Core::ServiceLocator::Remove<ShaderManager>();
 }
 
 LauncherRunResult Launcher::Run()
@@ -1148,6 +1163,9 @@ LauncherRunResult Launcher::Run()
 void Launcher::SetupContext()
 {
     const auto assetsRoot = ResolveLauncherAssetsRoot();
+    const auto engineAssetsRoot = EnsureTrailingPathSeparator(assetsRoot / "Engine");
+    ShaderManager::ProvideAssetPaths({}, engineAssetsRoot);
+    Core::ServiceLocator::Provide<ShaderManager>(m_shaderManager);
     GetLauncherLocalization().Load(assetsRoot / "Localization" / "Launcher", ResolveLauncherLocale());
 
     Windowing::Settings::DeviceSettings deviceSettings;
@@ -1181,7 +1199,8 @@ void Launcher::SetupContext()
 
     Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = m_graphicsBackend;
-    driverSettings.enableThreadedRendering = Render::Settings::IsEnvironmentFlagEnabled("NLS_ENABLE_THREADED_RENDERING");
+    // The Launcher's UI-only frame graph publishes through the threaded lifecycle.
+    driverSettings.enableThreadedRendering = true;
     driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
     if (m_renderDocOverride.has_value() &&
         (m_renderDocOverride->enabled || m_renderDocOverride->startupCaptureAfterFrames > 0))

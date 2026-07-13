@@ -3,6 +3,7 @@
 
 #include <Windowing/Context/Device.h>
 #include <Windowing/Window.h>
+#include <Core/ResourceManagement/ShaderManager.h>
 #include <Rendering/Context/Driver.h>
 #include <Rendering/Settings/EGraphicsBackend.h>
 #include <Rendering/Settings/DriverSettings.h>
@@ -68,6 +69,7 @@ private:
     std::shared_ptr<NLS::Render::RHI::RHITextureView> m_brandTextureView;
     NLS::Render::Resources::Texture2D* m_brandTextureResource = nullptr;
 
+    Core::ResourceManagement::ShaderManager m_shaderManager;
     std::unique_ptr<Context::Device> m_device;
     std::unique_ptr<Windowing::Window> m_window;
     std::unique_ptr<Render::Context::Driver> m_driver;

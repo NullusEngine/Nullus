@@ -108,11 +108,12 @@ Dynamic instancing may combine drawables only when their shadow-casting and
 shadow-receiving flags match. A receiver bit is included in prepared draw
 identity and push constants, so shared materials do not need to be cloned.
 The expanded object draw constants are 16 bytes and contain object index,
-receive-shadows, and explicit padding. They are visible to vertex and fragment
-stages. Forward shaders consume the bit directly. Deferred GBuffer writes the
-bit to the material attachment alpha channel; decal pipelines must preserve
-that channel by disabling writes to non-albedo attachments. Tests protect this
-MRT write-mask contract.
+cast/receive flag bits, and two explicit padding words. They are visible to
+vertex and fragment stages and propagate intact through immediate, prepared,
+and threaded recorded-draw paths. Forward shaders consume the receiver bit
+directly. Deferred GBuffer writes the bit to the material attachment alpha
+channel; decal pipelines must preserve that channel by disabling writes to
+non-albedo attachments. Tests protect this MRT write-mask contract.
 
 ## Shadow Quality Profile
 
@@ -361,6 +362,19 @@ PBR paths keep two normals:
   `SV_IsFrontFace` for two-sided materials;
 - `shadingNormalWS`: the normal-map result from the oriented tangent frame.
 
+Deferred preserves both normals without adding another GBuffer attachment. The
+oriented `geometryNormalWS` is octahedrally encoded into two scalar channels:
+oct X is stored in `GBuffer Albedo.a`, and oct Y is stored in
+`GBuffer Normal.a`. `GBuffer Normal.rgb` continues to store the encoded
+`shadingNormalWS`; `GBuffer Material.rgb` continues to store metallic,
+roughness, and AO. `GBuffer Material.a` stores `ReceiveShadows` as an exact
+zero-or-one receiver bit. Opaque and AlphaTest visibility has already been
+resolved before these writes, so deferred lighting does not require surface
+alpha afterward. Deferred decal passes write only `GBuffer Albedo.rgb`, disable
+writes to the Normal and Material attachments, and preserve all three alpha
+control channels; a decal may not replace the receiver bit or either
+geometric-normal component.
+
 The shading normal is normalized, finite-checked, and constrained to the
 geometry-normal hemisphere. Direct-light evaluation computes geometric
 `N_g dot L` and `N_g dot V` first. A non-positive value rejects that direct
@@ -528,8 +542,10 @@ Measurements are performed in linear color before PNG encoding:
 
 On the recorded DX12 adapter, run repeatable camera paths for a static cached
 scene, a moving local light, moving casters, and an intentionally over-budget
-scene. Record p50/p95/p99 for shadow planning CPU time, shadow GPU time, total
-editor frame time, views, draws, triangles, cache hits, and suppressed lights.
+scene. Record OS/build, CPU/GPU hardware, driver, fixture parameters, the
+deterministic camera path, and comparable before/after per-stage baselines.
+Record p50/p95/p99 for shadow planning CPU time, shadow GPU time, total editor
+frame time, views, draws, triangles, cache hits, and suppressed lights.
 After warmup, the balanced-profile sign-off thresholds are:
 
 - shadow planning CPU p95 at most 0.50 ms;

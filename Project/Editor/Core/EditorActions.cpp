@@ -231,7 +231,7 @@ std::optional<ArtifactSourcePathIndexStamp> GetArtifactDatabaseStamp(const std::
         return std::nullopt;
 
     return ArtifactSourcePathIndexStamp {
-        writeTime.time_since_epoch().count(),
+        static_cast<int64_t>(writeTime.time_since_epoch().count()),
         size
     };
 }

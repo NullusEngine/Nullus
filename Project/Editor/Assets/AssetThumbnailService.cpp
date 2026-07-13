@@ -428,6 +428,9 @@ AssetThumbnailKind ThumbnailKindForItem(const AssetBrowserItem& item)
     }
 }
 
+constexpr const char* kLegacyThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v8";
+constexpr const char* kDoubleSidedPbrThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v9";
+
 std::string FallbackIconForKind(const AssetThumbnailKind kind)
 {
     const auto* policy = PolicyForKind(kind);
@@ -5058,7 +5061,9 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     request.requestedSize = request.kind == AssetThumbnailKind::Texture
         ? (std::min)(std::max(1u, requestedSize), kMaxTextureThumbnailGenerationSize)
         : std::max(1u, requestedSize);
-    request.previewRendererVersion = "asset-browser-thumbnail-renderer:v8";
+    request.previewRendererVersion = SupportsGpuThumbnailPreview(request)
+        ? kDoubleSidedPbrThumbnailRendererVersion
+        : kLegacyThumbnailRendererVersion;
     if (request.kind == AssetThumbnailKind::Texture)
     {
         request.settingsFingerprint = "asset-browser-thumbnail:v15-lowres-image-thumbnails";

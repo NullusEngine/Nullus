@@ -3087,7 +3087,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto materialRequest = BuildAssetThumbnailRequestForItem(root, material, 96u);
     ASSERT_TRUE(materialRequest.has_value());
     EXPECT_EQ(materialRequest->kind, AssetThumbnailKind::MaterialSphere);
-    EXPECT_EQ(materialRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v8");
+    EXPECT_EQ(materialRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v9");
     EXPECT_EQ(materialRequest->settingsFingerprint, "asset-browser-thumbnail:v20-gpu-black-frame-fallback");
     EXPECT_FALSE(materialRequest->dependencyStamp.empty());
     EXPECT_EQ(materialRequest->colorSpaceMode, "srgb");
@@ -3122,7 +3122,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto modelRequest = BuildAssetThumbnailRequestForItem(root, modelSource, 96u);
     ASSERT_TRUE(modelRequest.has_value());
     EXPECT_EQ(modelRequest->kind, AssetThumbnailKind::PrefabPreview);
-    EXPECT_EQ(modelRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v8");
+    EXPECT_EQ(modelRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v9");
     EXPECT_EQ(modelRequest->settingsFingerprint, "asset-browser-thumbnail:v32-prefab-full-gpu-streaming");
     EXPECT_FALSE(modelRequest->dependencyStamp.empty());
     EXPECT_EQ(modelRequest->colorSpaceMode, "srgb");
@@ -3159,7 +3159,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto prefabRequest = BuildAssetThumbnailRequestForItem(root, prefab, 96u);
     ASSERT_TRUE(prefabRequest.has_value());
     EXPECT_EQ(prefabRequest->kind, AssetThumbnailKind::PrefabPreview);
-    EXPECT_EQ(prefabRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v8");
+    EXPECT_EQ(prefabRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v9");
     EXPECT_EQ(prefabRequest->settingsFingerprint, "asset-browser-thumbnail:v32-prefab-full-gpu-streaming");
     EXPECT_FALSE(prefabRequest->dependencyStamp.empty());
     EXPECT_EQ(prefabRequest->colorSpaceMode, "srgb");

@@ -43,9 +43,11 @@ std::filesystem::path ShaderRootPath()
 std::string ReadTextFile(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
-    return {
+    std::string source{
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>()};
+    source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
+    return source;
 }
 
 std::string_view TrimWhitespace(std::string_view value)
@@ -1125,12 +1127,8 @@ TEST(PBRShadingContractTests, ForwardPixelShadersOrientConstrainAndPassGeometryT
 TEST(PBRShadingContractTests, SharedNormalShaderDefinesPublicMathAndFallbackContracts)
 {
     const auto shaderPath = PBRNormalsPath();
-    std::ifstream input(shaderPath, std::ios::binary);
-    ASSERT_TRUE(input.is_open()) << "Failed to open source file: " << shaderPath.string();
-
-    const std::string source{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()};
+    const auto source = ReadTextFile(shaderPath);
+    ASSERT_FALSE(source.empty()) << "Failed to read source file: " << shaderPath.string();
     const std::multiset<std::string> expectedEntryPoints{
         "NLSOrientGeometryNormal",
         "NLSConstrainShadingNormalToGeometryHemisphere",

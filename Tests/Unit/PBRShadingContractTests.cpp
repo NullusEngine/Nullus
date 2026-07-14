@@ -1701,9 +1701,16 @@ TEST(PBRShadingContractTests, DeferredDecalPassesAreColorOnlyAndIndependentOfGBu
 
     const auto shaderLabPixel = ExtractFunctionDefinition(decal->hlslSource, "PSMain");
     ASSERT_FALSE(shaderLabPixel.empty());
+    EXPECT_NE(
+        decal->hlslSource.find("#pragma shader_feature _ALPHATEST_ON"),
+        std::string::npos);
+    EXPECT_NE(decal->hlslSource.find("float _Cutoff;"), std::string::npos);
     EXPECT_NE(shaderLabPixel.find(": SV_Target0"), std::string::npos);
     EXPECT_NE(
         shaderLabPixel.find("NLSEvaluateStandardPbrBaseColorAndOpacity("),
+        std::string::npos);
+    EXPECT_NE(
+        RemoveWhitespace(shaderLabPixel).find("clip(surface.a-_Cutoff);"),
         std::string::npos);
 
     for (const auto& source : {builtInSource, decal->hlslSource})
@@ -1780,6 +1787,8 @@ TEST(PBRShadingContractTests, DeferredDecalShadersCompileThroughNativeDxcForDxil
         });
     ASSERT_NE(decal, passes.end());
 
+    std::array<std::vector<uint8_t>, 2u> defaultPixelBytecode;
+    std::array<std::vector<uint8_t>, 2u> alphaTestPixelBytecode;
     for (const bool alphaTest : {false, true})
     {
         const std::string variantName = alphaTest ? "AlphaTest" : "Default";
@@ -1790,8 +1799,9 @@ TEST(PBRShadingContractTests, DeferredDecalShadersCompileThroughNativeDxcForDxil
         compileSource << NLS::Render::ShaderLab::BuildShaderLabHlslForCompile(*decal);
         compileSource.close();
 
-        for (const auto& target : targets)
+        for (size_t targetIndex = 0u; targetIndex < targets.size(); ++targetIndex)
         {
+            const auto& target = targets[targetIndex];
             SCOPED_TRACE("ShaderLab/" + std::string(target.name) + "/" + variantName + "/PS");
             auto input = MakeNativeShaderCompileInput(
                 compileSourcePath,
@@ -1808,7 +1818,20 @@ TEST(PBRShadingContractTests, DeferredDecalShadersCompileThroughNativeDxcForDxil
             EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
             EXPECT_TRUE(HasDependency(output.dependencyPaths, compileSourcePath));
             EXPECT_TRUE(HasDependency(output.dependencyPaths, sharedSurfacePath));
+            if (alphaTest)
+                alphaTestPixelBytecode[targetIndex] = output.bytecode;
+            else
+                defaultPixelBytecode[targetIndex] = output.bytecode;
         }
+    }
+
+    for (size_t targetIndex = 0u; targetIndex < targets.size(); ++targetIndex)
+    {
+        SCOPED_TRACE(targets[targetIndex].name);
+        ASSERT_FALSE(defaultPixelBytecode[targetIndex].empty());
+        ASSERT_FALSE(alphaTestPixelBytecode[targetIndex].empty());
+        EXPECT_NE(defaultPixelBytecode[targetIndex], alphaTestPixelBytecode[targetIndex])
+            << "AlphaTest must compile the DeferredDecal clip/cutoff path.";
     }
 }
 

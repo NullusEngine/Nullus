@@ -132,14 +132,18 @@ Shader "Nullus/StandardPBR"
             float4 PSMain(Varyings input, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             {
                 const float4 baseSample = _BaseMap.Sample(sampler_BaseMap, input.uv);
-                const float3 albedo = baseSample.rgb * _BaseColor.rgb;
+                const float opacity = _OpacityMap.Sample(sampler_OpacityMap, input.uv).r;
+                const float4 surface = NLSEvaluateStandardPbrBaseColorAndOpacity(
+                    baseSample,
+                    _BaseColor,
+                    opacity);
+                const float3 albedo = surface.rgb;
                 const float metallic = saturate(
                     _Metallic * dot(_MetallicMap.Sample(sampler_MetallicMap, input.uv), _MetallicMapChannel));
                 const float roughness = saturate(
                     _Roughness * dot(_RoughnessMap.Sample(sampler_RoughnessMap, input.uv), _RoughnessMapChannel));
                 const float occlusion = saturate(
                     _AmbientOcclusion * _OcclusionMap.Sample(sampler_OcclusionMap, input.uv).r);
-                const float opacity = _OpacityMap.Sample(sampler_OpacityMap, input.uv).r;
                 const float3 emissive =
                     _EmissiveColor.rgb * _EmissiveMap.Sample(sampler_EmissiveMap, input.uv).rgb;
                 const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(input.normalWS, float3(0.0f, 0.0f, 1.0f));
@@ -167,14 +171,13 @@ Shader "Nullus/StandardPBR"
                     metallic,
                     roughness,
                     occlusion);
-                const float alpha = _BaseColor.a * baseSample.a * opacity;
             #if defined(_ALPHATEST_ON)
-                clip(alpha - _Cutoff);
+                clip(surface.a - _Cutoff);
             #endif
                 // The shared LDR transform preserves highlight hue and softens isolated specular peaks.
                 return float4(
                     NLSToneMapACES(lighting + emissive),
-                    alpha);
+                    surface.a);
             }
             ENDHLSL
         }
@@ -279,7 +282,11 @@ Shader "Nullus/StandardPBR"
             {
                 GBufferOutput output;
                 const float4 baseSample = _BaseMap.Sample(sampler_BaseMap, input.uv);
-                const float3 albedo = baseSample.rgb * _BaseColor.rgb;
+                const float opacity = _OpacityMap.Sample(sampler_OpacityMap, input.uv).r;
+                const float4 surface = NLSEvaluateStandardPbrBaseColorAndOpacity(
+                    baseSample,
+                    _BaseColor,
+                    opacity);
                 const float metallic = saturate(
                     _Metallic * dot(
                         _MetallicMap.Sample(sampler_MetallicMap, input.uv),
@@ -290,10 +297,8 @@ Shader "Nullus/StandardPBR"
                         _RoughnessMapChannel));
                 const float ao = saturate(
                     _AmbientOcclusion * _OcclusionMap.Sample(sampler_OcclusionMap, input.uv).r);
-                const float opacity = _OpacityMap.Sample(sampler_OpacityMap, input.uv).r;
-                const float surfaceAlpha = _BaseColor.a * baseSample.a * opacity;
             #if defined(_ALPHATEST_ON)
-                clip(surfaceAlpha - _Cutoff);
+                clip(surface.a - _Cutoff);
             #endif
 
                 const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(input.normalWS, float3(0.0f, 0.0f, 1.0f));
@@ -314,7 +319,7 @@ Shader "Nullus/StandardPBR"
                     (u_ObjectFlags & NLS_OBJECT_FLAG_RECEIVE_SHADOWS) != 0u ? 1.0f : 0.0f;
 
                 NLSPackStandardPbrGBuffer(
-                    albedo,
+                    surface.rgb,
                     geometryNormalWS,
                     shadingNormalWS,
                     metallic,
@@ -325,6 +330,78 @@ Shader "Nullus/StandardPBR"
                     output.Normal,
                     output.Material);
                 return output;
+            }
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "DeferredDecal"
+
+            Tags
+            {
+                "LightMode" = "DeferredDecal"
+            }
+
+            Cull Back
+            ZWrite Off
+            ZTest LessEqual
+            Blend SrcAlpha OneMinusSrcAlpha
+
+            HLSLPROGRAM
+            #pragma vertex VSMain
+            #pragma fragment PSMain
+            #pragma shader_feature _ALPHATEST_ON
+
+            #include "NullusShaderLibrary/Core.hlsl"
+            #define NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
+            #include "CommonTypes.hlsli"
+            #undef NLS_COMMON_TYPES_SHADER_LIBRARY_INTEROP
+            #include "NullusShaderLibrary/StandardPBRSurface.hlsl"
+
+            struct Attributes
+            {
+                float3 positionOS : POSITION;
+                float2 uv : TEXCOORD0;
+            };
+
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+                float2 uv : TEXCOORD0;
+            };
+
+            Texture2D _BaseMap : register(t0, space2);
+            Texture2D _OpacityMap : register(t5, space2);
+            SamplerState sampler_BaseMap : register(s0, space2);
+            SamplerState sampler_OpacityMap : register(s5, space2);
+
+            cbuffer MaterialProperties : register(b0, space2)
+            {
+                float4 _BaseColor;
+                float _Cutoff;
+            };
+
+            Varyings VSMain(Attributes input)
+            {
+                Varyings output;
+                output.positionCS = TransformObjectToHClip(input.positionOS);
+                output.uv = input.uv;
+                return output;
+            }
+
+            float4 PSMain(Varyings input) : SV_Target0
+            {
+                const float4 baseSample = _BaseMap.Sample(sampler_BaseMap, input.uv);
+                const float opacity = _OpacityMap.Sample(sampler_OpacityMap, input.uv).r;
+                const float4 surface = NLSEvaluateStandardPbrBaseColorAndOpacity(
+                    baseSample,
+                    _BaseColor,
+                    opacity);
+            #if defined(_ALPHATEST_ON)
+                clip(surface.a - _Cutoff);
+            #endif
+                return surface;
             }
             ENDHLSL
         }

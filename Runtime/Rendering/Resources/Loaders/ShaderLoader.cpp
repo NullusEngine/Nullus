@@ -84,6 +84,11 @@ namespace
 		{
 			return "GBuffer";
 		}
+		if (normalized.ends_with("app/assets/engine/shaders/deferreddecal.hlsl") ||
+			normalized.ends_with("assets/engine/shaders/deferreddecal.hlsl"))
+		{
+			return "DeferredDecal";
+		}
 
 		return {};
 	}

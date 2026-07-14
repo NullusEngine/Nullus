@@ -1549,6 +1549,269 @@ TEST(PBRShadingContractTests, ForwardShadersCompileThroughNativeDxcForDxilSpirvA
     }
 }
 
+TEST(PBRShadingContractTests, DeferredDecalSharedBaseColorAndOpacityHelperOwnsEveryConsumer)
+{
+    constexpr std::string_view helperName = "NLSEvaluateStandardPbrBaseColorAndOpacity";
+    const auto sharedSurfacePath =
+        ShaderRootPath() / "NullusShaderLibrary/StandardPBRSurface.hlsl";
+    const auto sharedSurfaceSource = ReadTextFile(sharedSurfacePath);
+    ASSERT_FALSE(sharedSurfaceSource.empty());
+    EXPECT_EQ(FindNLSFunctionDefinitions(sharedSurfaceSource).count(std::string(helperName)), 1u);
+
+    const auto helper = ExtractFunctionDefinition(sharedSurfaceSource, helperName);
+    ASSERT_FALSE(helper.empty());
+    const std::vector<std::string> expectedParameters{
+        "baseSample", "baseColor", "opacity"};
+    EXPECT_EQ(ExtractFunctionParameterNames(sharedSurfaceSource, helperName), expectedParameters);
+    EXPECT_NE(
+        RemoveWhitespace(helper).find(RemoveWhitespace(
+            "return float4("
+            "baseSample.rgb * baseColor.rgb, "
+            "saturate(baseColor.a * baseSample.a * opacity));")),
+        std::string::npos);
+
+    const auto builtInForward = ReadTextFile(ShaderRootPath() / "StandardPBR.hlsl");
+    const auto builtInDecal = ReadTextFile(ShaderRootPath() / "DeferredDecal.hlsl");
+    ASSERT_FALSE(builtInForward.empty());
+    ASSERT_FALSE(builtInDecal.empty());
+
+    const auto shaderLabPath = ShaderRootPath() / "ShaderLab/StandardPBR.shader";
+    const auto shaderLabSource = ReadTextFile(shaderLabPath);
+    ASSERT_FALSE(shaderLabSource.empty());
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(
+        shaderLabSource,
+        shaderLabPath.generic_string());
+    ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    ASSERT_FALSE(parsed.asset.subShaders.empty());
+
+    auto findPass = [&parsed](std::string_view lightMode)
+        -> const NLS::Render::ShaderLab::ShaderLabPassDesc*
+    {
+        const auto& passes = parsed.asset.subShaders.front().passes;
+        const auto found = std::find_if(
+            passes.begin(),
+            passes.end(),
+            [lightMode](const NLS::Render::ShaderLab::ShaderLabPassDesc& pass)
+            {
+                const auto tag = pass.tags.values.find("LightMode");
+                return tag != pass.tags.values.end() && tag->second == lightMode;
+            });
+        return found == passes.end() ? nullptr : &*found;
+    };
+
+    const auto* shaderLabForward = findPass("Forward");
+    const auto* shaderLabGBuffer = findPass("GBuffer");
+    const auto* shaderLabDecal = findPass("DeferredDecal");
+    ASSERT_NE(shaderLabForward, nullptr);
+    ASSERT_NE(shaderLabGBuffer, nullptr);
+    ASSERT_NE(shaderLabDecal, nullptr);
+
+    struct Consumer
+    {
+        std::string_view name;
+        std::string source;
+    };
+    const std::array consumers{
+        Consumer{"BuiltInForward", builtInForward},
+        Consumer{"BuiltInDeferredDecal", builtInDecal},
+        Consumer{"ShaderLabForward", shaderLabForward->hlslSource},
+        Consumer{"ShaderLabGBuffer", shaderLabGBuffer->hlslSource},
+        Consumer{"ShaderLabDeferredDecal", shaderLabDecal->hlslSource}};
+    for (const auto& consumer : consumers)
+    {
+        SCOPED_TRACE(consumer.name);
+        EXPECT_NE(
+            consumer.source.find("#include \"NullusShaderLibrary/StandardPBRSurface.hlsl\""),
+            std::string::npos);
+        const auto pixel = ExtractFunctionDefinition(consumer.source, "PSMain");
+        ASSERT_FALSE(pixel.empty());
+        EXPECT_EQ(CountOccurrences(pixel, std::string(helperName) + "("), 1u);
+    }
+
+    const auto builtInForwardPixel = ExtractFunctionDefinition(builtInForward, "PSMain");
+    EXPECT_NE(builtInForwardPixel.find("surface.rgb"), std::string::npos);
+    EXPECT_NE(builtInForwardPixel.find("surface.a"), std::string::npos);
+    const auto shaderLabForwardPixel = ExtractFunctionDefinition(shaderLabForward->hlslSource, "PSMain");
+    EXPECT_NE(shaderLabForwardPixel.find("surface.rgb"), std::string::npos);
+    EXPECT_NE(shaderLabForwardPixel.find("surface.a"), std::string::npos);
+    const auto shaderLabGBufferPixel = ExtractFunctionDefinition(shaderLabGBuffer->hlslSource, "PSMain");
+    EXPECT_NE(shaderLabGBufferPixel.find("surface.rgb"), std::string::npos);
+    EXPECT_NE(shaderLabGBufferPixel.find("surface.a"), std::string::npos);
+
+    const auto depthOnly = findPass("DepthOnly");
+    ASSERT_NE(depthOnly, nullptr);
+    EXPECT_EQ(depthOnly->hlslSource.find(helperName), std::string::npos)
+        << "DepthOnly intentionally does not bind the opacity map.";
+    const auto builtInGBuffer = ReadTextFile(ShaderRootPath() / "DeferredGBuffer.hlsl");
+    const auto builtInGBufferPixel = ExtractFunctionDefinition(builtInGBuffer, "PSMain");
+    EXPECT_EQ(builtInGBufferPixel.find(helperName), std::string::npos);
+    EXPECT_EQ(builtInGBufferPixel.find("u_OpacityMap.Sample("), std::string::npos)
+        << "The legacy built-in GBuffer must not gain a useless opacity sample.";
+}
+
+TEST(PBRShadingContractTests, DeferredDecalPassesAreColorOnlyAndIndependentOfGBufferPacking)
+{
+    const auto builtInSource = ReadTextFile(ShaderRootPath() / "DeferredDecal.hlsl");
+    ASSERT_FALSE(builtInSource.empty());
+    const auto builtInPixel = ExtractFunctionDefinition(builtInSource, "PSMain");
+    ASSERT_FALSE(builtInPixel.empty());
+    EXPECT_NE(builtInPixel.find("NLSEvaluateStandardPbrBaseColorAndOpacity("), std::string::npos);
+    EXPECT_NE(builtInPixel.find(": SV_Target0"), std::string::npos);
+
+    const auto shaderLabPath = ShaderRootPath() / "ShaderLab/StandardPBR.shader";
+    const auto shaderLabSource = ReadTextFile(shaderLabPath);
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(
+        shaderLabSource,
+        shaderLabPath.generic_string());
+    ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    ASSERT_FALSE(parsed.asset.subShaders.empty());
+    const auto& passes = parsed.asset.subShaders.front().passes;
+    const auto deferredDecalCount = std::count_if(
+        passes.begin(),
+        passes.end(),
+        [](const NLS::Render::ShaderLab::ShaderLabPassDesc& pass)
+        {
+            const auto tag = pass.tags.values.find("LightMode");
+            return tag != pass.tags.values.end() && tag->second == "DeferredDecal";
+        });
+    ASSERT_EQ(deferredDecalCount, 1u);
+    const auto decal = std::find_if(
+        passes.begin(),
+        passes.end(),
+        [](const NLS::Render::ShaderLab::ShaderLabPassDesc& pass)
+        {
+            const auto tag = pass.tags.values.find("LightMode");
+            return tag != pass.tags.values.end() && tag->second == "DeferredDecal";
+        });
+    ASSERT_NE(decal, passes.end());
+    EXPECT_EQ(decal->name, "DeferredDecal");
+    EXPECT_EQ(decal->state.cullMode, NLS::Render::ShaderLab::ShaderLabCullMode::Back);
+    EXPECT_FALSE(decal->state.depthWrite);
+    EXPECT_EQ(
+        decal->state.depthCompare,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL);
+    EXPECT_TRUE(decal->state.blend.enabled);
+    ASSERT_EQ(decal->state.blend.renderTargets.size(), 1u);
+    EXPECT_EQ(
+        decal->state.blend.renderTargets.front().srcColor,
+        NLS::Render::RHI::RHIBlendFactor::SrcAlpha);
+    EXPECT_EQ(
+        decal->state.blend.renderTargets.front().dstColor,
+        NLS::Render::RHI::RHIBlendFactor::InvSrcAlpha);
+
+    const auto shaderLabPixel = ExtractFunctionDefinition(decal->hlslSource, "PSMain");
+    ASSERT_FALSE(shaderLabPixel.empty());
+    EXPECT_NE(shaderLabPixel.find(": SV_Target0"), std::string::npos);
+    EXPECT_NE(
+        shaderLabPixel.find("NLSEvaluateStandardPbrBaseColorAndOpacity("),
+        std::string::npos);
+
+    for (const auto& source : {builtInSource, decal->hlslSource})
+    {
+        EXPECT_EQ(source.find("u_GBuffer"), std::string::npos);
+        EXPECT_EQ(source.find("NLSOctEncodeNormal"), std::string::npos);
+        EXPECT_EQ(source.find("NLSPackStandardPbrGBuffer"), std::string::npos);
+        EXPECT_EQ(source.find("SV_Target1"), std::string::npos);
+        EXPECT_EQ(source.find("SV_Target2"), std::string::npos);
+    }
+}
+
+TEST(PBRShadingContractTests, DeferredDecalShadersCompileThroughNativeDxcForDxilAndSpirv)
+{
+    struct CompileTarget
+    {
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform platform;
+        std::string_view name;
+        std::string_view extension;
+    };
+    const std::array targets{
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL, "DXIL", ".dxil"},
+        CompileTarget{NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV, "SPIRV", ".spv"}};
+
+    ScopedTemporaryDirectory temporaryDirectory;
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+    ASSERT_FALSE(
+        NLS::Render::ShaderCompiler::GetCurrentShaderCompilerToolchainIdentity().compilerPath.empty())
+        << "The repository native DXC toolchain must be available for DeferredDecal contracts.";
+    const auto sharedSurfacePath =
+        ShaderRootPath() / "NullusShaderLibrary/StandardPBRSurface.hlsl";
+    const auto builtInPath = ShaderRootPath() / "DeferredDecal.hlsl";
+
+    for (const auto& target : targets)
+    {
+        for (const auto stage : {
+                 NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                 NLS::Render::ShaderCompiler::ShaderStage::Pixel})
+        {
+            SCOPED_TRACE(
+                std::string("BuiltIn/") + std::string(target.name) + "/" +
+                (stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex ? "VS" : "PS"));
+            const auto input = MakeNativeShaderCompileInput(
+                builtInPath,
+                stage,
+                target.platform,
+                temporaryDirectory.GetPath() / "BuiltInDeferredDecalArtifacts" /
+                    std::string(target.name));
+            const auto output = compiler.Compile(input);
+            ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                << output.diagnostics;
+            EXPECT_FALSE(output.bytecode.empty());
+            EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
+            EXPECT_TRUE(HasDependency(output.dependencyPaths, builtInPath));
+            EXPECT_TRUE(HasDependency(output.dependencyPaths, sharedSurfacePath));
+        }
+    }
+
+    const auto shaderLabPath = ShaderRootPath() / "ShaderLab/StandardPBR.shader";
+    const auto shaderLabSource = ReadTextFile(shaderLabPath);
+    const auto parsed = NLS::Render::ShaderLab::ParseShaderLabSource(
+        shaderLabSource,
+        shaderLabPath.generic_string());
+    ASSERT_TRUE(parsed.Succeeded()) << parsed.DiagnosticsToString();
+    ASSERT_FALSE(parsed.asset.subShaders.empty());
+    const auto& passes = parsed.asset.subShaders.front().passes;
+    const auto decal = std::find_if(
+        passes.begin(),
+        passes.end(),
+        [](const NLS::Render::ShaderLab::ShaderLabPassDesc& pass)
+        {
+            const auto tag = pass.tags.values.find("LightMode");
+            return tag != pass.tags.values.end() && tag->second == "DeferredDecal";
+        });
+    ASSERT_NE(decal, passes.end());
+
+    for (const bool alphaTest : {false, true})
+    {
+        const std::string variantName = alphaTest ? "AlphaTest" : "Default";
+        const auto compileSourcePath =
+            temporaryDirectory.GetPath() / ("StandardPBRDeferredDecal" + variantName + ".hlsl");
+        std::ofstream compileSource(compileSourcePath, std::ios::binary);
+        ASSERT_TRUE(compileSource.is_open()) << compileSourcePath.string();
+        compileSource << NLS::Render::ShaderLab::BuildShaderLabHlslForCompile(*decal);
+        compileSource.close();
+
+        for (const auto& target : targets)
+        {
+            SCOPED_TRACE("ShaderLab/" + std::string(target.name) + "/" + variantName + "/PS");
+            auto input = MakeNativeShaderCompileInput(
+                compileSourcePath,
+                NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                target.platform,
+                temporaryDirectory.GetPath() / "ShaderLabDeferredDecalArtifacts" /
+                    std::string(target.name) / variantName);
+            if (alphaTest)
+                input.options.macros.push_back({"_ALPHATEST_ON", "1"});
+            const auto output = compiler.Compile(input);
+            ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                << output.diagnostics;
+            EXPECT_FALSE(output.bytecode.empty());
+            EXPECT_EQ(std::filesystem::path(output.artifactPath).extension(), target.extension);
+            EXPECT_TRUE(HasDependency(output.dependencyPaths, compileSourcePath));
+            EXPECT_TRUE(HasDependency(output.dependencyPaths, sharedSurfacePath));
+        }
+    }
+}
+
 TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirvAndShaderLabVariants)
 {
     struct CompileTarget

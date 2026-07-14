@@ -63,13 +63,17 @@ float4 PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 {
     const float2 texCoord = input.TexCoord;
     const float4 albedoSample = u_AlbedoMap.Sample(u_LinearWrapSampler, texCoord);
-    const float3 albedo = albedoSample.rgb * u_Albedo.rgb;
+    const float opacity = u_OpacityMap.Sample(u_LinearWrapSampler, texCoord).r;
+    const float4 surface = NLSEvaluateStandardPbrBaseColorAndOpacity(
+        albedoSample,
+        u_Albedo,
+        opacity);
+    const float3 albedo = surface.rgb;
     const float metallic = u_Metallic *
         dot(u_MetallicMap.Sample(u_LinearWrapSampler, texCoord), u_MetallicMapChannel);
     const float roughness = u_Roughness *
         dot(u_RoughnessMap.Sample(u_LinearWrapSampler, texCoord), u_RoughnessMapChannel);
     const float ao = u_AmbientOcclusionMap.Sample(u_LinearWrapSampler, texCoord).r * u_AmbientOcclusion;
-    const float opacity = u_OpacityMap.Sample(u_LinearWrapSampler, texCoord).r;
     const float3 emissive = u_EmissiveMap.Sample(u_LinearWrapSampler, texCoord).rgb * u_Emissive.rgb;
 
     const float3 interpolatedGeometryNormalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
@@ -101,5 +105,5 @@ float4 PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     // The shared LDR transform preserves highlight hue and softens isolated specular peaks.
     return float4(
         NLSToneMapACES(lighting + emissive),
-        u_Albedo.a * albedoSample.a * opacity);
+        surface.a);
 }

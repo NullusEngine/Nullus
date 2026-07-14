@@ -4,6 +4,16 @@
 #include "../CommonTypes.hlsli"
 #include "PBRNormals.hlsl"
 
+float4 NLSEvaluateStandardPbrBaseColorAndOpacity(
+    float4 baseSample,
+    float4 baseColor,
+    float opacity)
+{
+    return float4(
+        baseSample.rgb * baseColor.rgb,
+        saturate(baseColor.a * baseSample.a * opacity));
+}
+
 float3 NLSTransformStandardPbrNormal(float3x3 model, float3 normalOS)
 {
     return NLSTransformNormalDirection(model, normalOS);

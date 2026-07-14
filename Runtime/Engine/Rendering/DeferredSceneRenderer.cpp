@@ -363,9 +363,12 @@ namespace
 		const NLS::Render::Resources::Material& sourceMaterial)
 	{
 		auto overrides = BuildGBufferMaterialOverrides(sourceMaterial);
+		constexpr auto kDeferredDecalColorWriteMask = NLS::Render::RHI::RHIColorWriteMask::Red |
+			NLS::Render::RHI::RHIColorWriteMask::Green |
+			NLS::Render::RHI::RHIColorWriteMask::Blue;
 		NLS::Render::RHI::RHIRenderTargetBlendStateDesc blendedTarget;
 		blendedTarget.blendEnable = true;
-		blendedTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::All;
+		blendedTarget.colorWriteMask = kDeferredDecalColorWriteMask;
 		NLS::Render::RHI::RHIRenderTargetBlendStateDesc suppressedTarget;
 		suppressedTarget.blendEnable = false;
 		suppressedTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::None;

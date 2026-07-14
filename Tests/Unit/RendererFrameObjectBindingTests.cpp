@@ -5716,32 +5716,9 @@ TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesCanUseIndependent
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
     auto pipelineCache = NLS::Render::RHI::CreateDefaultPipelineCache();
 
-    static constexpr NLS::Render::RHI::TextureFormat kGBufferFormats[] = {
-        NLS::Render::RHI::TextureFormat::RGBA8,
-        NLS::Render::RHI::TextureFormat::RGBA8,
-        NLS::Render::RHI::TextureFormat::RGBA8
-    };
-
-    NLS::Render::RHI::RHIRenderTargetBlendStateDesc albedoTarget;
-    albedoTarget.blendEnable = true;
-    albedoTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::All;
-
-    NLS::Render::RHI::RHIRenderTargetBlendStateDesc suppressedTarget;
-    suppressedTarget.blendEnable = false;
-    suppressedTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::None;
-
-    NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
-    overrides.SetColorFormats(kGBufferFormats);
-    overrides.blending = true;
-    overrides.colorWrite = true;
-    const std::array<NLS::Render::RHI::RHIRenderTargetBlendStateDesc, 3u> decalTargets = {
-        albedoTarget,
-        suppressedTarget,
-        suppressedTarget
-    };
-    overrides.SetRenderTargetBlendStates(decalTargets);
-    overrides.stencilTest = false;
-    overrides.stencilWriteMask = 0u;
+    const auto overrides =
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::BuildDeferredDecalMaterialOverridesForTesting(
+            material);
 
     NLS::Render::Data::PipelineState pipelineState;
     pipelineState.stencilTest = true;
@@ -5756,11 +5733,16 @@ TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesCanUseIndependent
 
     ASSERT_NE(pipeline, nullptr);
     const auto& desc = explicitDevice->lastGraphicsPipelineDesc;
+    constexpr auto rgbMask = NLS::Render::RHI::RHIColorWriteMask::Red |
+        NLS::Render::RHI::RHIColorWriteMask::Green |
+        NLS::Render::RHI::RHIColorWriteMask::Blue;
     EXPECT_TRUE(desc.blendState.enabled);
     EXPECT_TRUE(desc.blendState.independentBlendEnable);
     ASSERT_EQ(desc.blendState.renderTargets.size(), 3u);
     EXPECT_TRUE(desc.blendState.renderTargets[0].blendEnable);
-    EXPECT_EQ(desc.blendState.renderTargets[0].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::All);
+    EXPECT_EQ(desc.blendState.renderTargets[0].colorWriteMask, rgbMask);
+    EXPECT_EQ(desc.blendState.renderTargets[0].srcColor, NLS::Render::RHI::RHIBlendFactor::SrcAlpha);
+    EXPECT_EQ(desc.blendState.renderTargets[0].dstColor, NLS::Render::RHI::RHIBlendFactor::InvSrcAlpha);
     EXPECT_FALSE(desc.blendState.renderTargets[1].blendEnable);
     EXPECT_EQ(desc.blendState.renderTargets[1].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::None);
     EXPECT_FALSE(desc.blendState.renderTargets[2].blendEnable);
@@ -5858,8 +5840,14 @@ TEST(RendererFrameObjectBindingTests, DeferredDecalOverridesBlendAlbedoOnlyAndDi
     ASSERT_TRUE(overrides.HasRenderTargetBlendStatesOverride());
     const auto targets = overrides.GetRenderTargetBlendStates();
     ASSERT_EQ(targets.size(), NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount);
+    constexpr auto rgbMask = NLS::Render::RHI::RHIColorWriteMask::Red |
+        NLS::Render::RHI::RHIColorWriteMask::Green |
+        NLS::Render::RHI::RHIColorWriteMask::Blue;
     EXPECT_TRUE(targets[0].blendEnable);
-    EXPECT_EQ(targets[0].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::All);
+    EXPECT_EQ(targets[0].colorWriteMask, rgbMask);
+    EXPECT_FALSE(NLS::Render::RHI::HasColorWriteMask(
+        targets[0].colorWriteMask,
+        NLS::Render::RHI::RHIColorWriteMask::Alpha));
     EXPECT_FALSE(targets[1].blendEnable);
     EXPECT_EQ(targets[1].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::None);
     EXPECT_FALSE(targets[2].blendEnable);

@@ -188,10 +188,16 @@ namespace
 		const NLS::Render::Resources::Material& source,
 		const char* sourceName)
 	{
-		CopyMaterialParameterIfPresent(target, targetName, source, sourceName);
-
+		const auto* value = FindMaterialParameter(source, sourceName);
 		const auto path = source.GetTextureResourcePath(sourceName);
-		if (!path.empty())
+		if (value == nullptr && path.empty())
+			return;
+
+		if (value != nullptr)
+			SetMaterialParameter(target, targetName, *value);
+		if (path.empty())
+			target.ClearTextureResourcePath(targetName);
+		else
 			target.SetTextureResourcePath(targetName, path);
 	}
 
@@ -308,10 +314,8 @@ namespace
 	void EnsureDeferredDecalFallbackParameters(NLS::Render::Resources::Material& target)
 	{
 		const auto& parameters = target.GetParameterBlock();
-		auto* albedo = parameters.TryGet("u_Albedo");
-		if (albedo == nullptr ||
-			(albedo->type() == typeid(NLS::Maths::Vector4) &&
-				IsZeroColor(std::any_cast<const NLS::Maths::Vector4&>(*albedo))))
+		const auto* albedo = parameters.TryGet("u_Albedo");
+		if (albedo == nullptr || albedo->type() != typeid(NLS::Maths::Vector4))
 		{
 			target.SetRawParameter("u_Albedo", NLS::Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
 		}
@@ -503,20 +507,8 @@ namespace
 			"DeferredDecal",
 			pipelineState,
 			BuildDeferredDecalMaterialOverrides(sourceMaterial)).stableKey;
-		const auto& parameters = sourceMaterial.GetParameterBlock().Data();
-		const bool hasRuntimeTextureBinding = std::any_of(
-			parameters.begin(),
-			parameters.end(),
-			[](const auto& entry)
-			{
-				return entry.second.type() == typeid(NLS::Render::Resources::Texture2D*) &&
-					std::any_cast<NLS::Render::Resources::Texture2D*>(entry.second) != nullptr;
-			});
-		if (sourceMaterial.path.empty() || hasRuntimeTextureBinding)
-		{
-			key += "|source:";
-			key += std::to_string(sourceMaterial.GetInstanceId());
-		}
+		key += "|source:";
+		key += std::to_string(sourceMaterial.GetInstanceId());
 		return key;
 	}
 
@@ -972,6 +964,7 @@ namespace NLS::Engine::Rendering
 		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 		uint64_t queuedGBufferDrawCount = 0u;
 		uint64_t queuedDecalDrawCount = 0u;
+		uint64_t unresolvedDecalDrawCount = 0u;
 		uint64_t queuedLightingDrawCount = 0u;
 		uint64_t queuedTransparentDrawCount = 0u;
 		m_threadedQueuedGBufferDrawCount = 0u;
@@ -1163,7 +1156,10 @@ namespace NLS::Engine::Rendering
 							auto decalDrawable = drawable;
 							decalDrawable.material = ResolveDeferredDecalDrawableMaterial(*drawable.material);
 							if (decalDrawable.material == nullptr)
+							{
+								++unresolvedDecalDrawCount;
 								continue;
+							}
 
 							const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
 
@@ -1289,6 +1285,13 @@ namespace NLS::Engine::Rendering
 						publishStageBegin = now;
 					};
 			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
+			if (usesThreadedRendering && unresolvedDecalDrawCount > 0u)
+			{
+				if (unresolvedDecalDrawCount <= pendingFrameSnapshot->visibleDecalDrawCount)
+					pendingFrameSnapshot->visibleDecalDrawCount -= unresolvedDecalDrawCount;
+				else
+					m_skipThreadedFramePublish = true;
+			}
 				logStartupPublishStage("RefreshFrameSnapshotVisibility");
 			if (usesThreadedRendering &&
 				ShouldSkipThreadedDeferredFramePublish(
@@ -1389,7 +1392,7 @@ namespace NLS::Engine::Rendering
 				{
 					EnsureGBufferTargets(frame.renderWidth, frame.renderHeight);
 
-					if (!m_gBufferShader || !m_deferredDecalShader || !m_lightingMaterial || !m_fullscreenQuad)
+					if (!m_gBufferShader || !m_lightingMaterial || !m_fullscreenQuad)
 					{
 						NLS_LOG_WARNING("DeferredSceneRenderer is missing shader or mesh resources; skipping deferred frame.");
 						return;
@@ -1700,7 +1703,6 @@ namespace NLS::Engine::Rendering
 	bool DeferredSceneRenderer::HasDeferredThreadedPipelineResources() const
 	{
 		return m_gBufferShader != nullptr &&
-			m_deferredDecalShader != nullptr &&
 			m_lightingMaterial != nullptr &&
 			m_fullscreenQuad != nullptr &&
 			m_gBufferAlbedoTexture != nullptr &&
@@ -2671,6 +2673,7 @@ namespace NLS::Engine::Rendering
 		if (m_deferredDecalShader == nullptr)
 			return nullptr;
 		auto material = std::make_unique<NLS::Render::Resources::Material>(m_deferredDecalShader);
+		material->SetRawParameter("u_Albedo", NLS::Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
 		material->SetBlendable(true);
 		material->SetColorWriting(true);
 		return material;
@@ -2761,6 +2764,8 @@ namespace NLS::Engine::Rendering
 		}
 
 		CopyMaterialParameterIfPresent(target, "u_Albedo", sourceMaterial, "u_Diffuse");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AlbedoMap", sourceMaterial, "u_AlbedoMap");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_OpacityMap", sourceMaterial, "u_OpacityMap");
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AlbedoMap", sourceMaterial, "u_DiffuseMap");
 		CopyMaterialParameterIfPresent(target, "u_Albedo", sourceMaterial, "_BaseColor");
 		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AlbedoMap", sourceMaterial, "_BaseMap");
@@ -2794,9 +2799,6 @@ namespace NLS::Engine::Rendering
 	void DeferredSceneRenderer::DrawDecals(NLS::Render::Data::PipelineState pso)
 	{
 		NLS_PROFILE_SCOPE();
-		if (!m_deferredDecalShader)
-			return;
-
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 
 		for (const auto& entry : scene.drawables.decals)

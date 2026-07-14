@@ -1250,14 +1250,11 @@ namespace
         if (drawCommand.passBindingSet != nullptr)
             commandBuffer.BindBindingSet(::NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, drawCommand.passBindingSet);
         commandBuffer.BindBindingSet(::NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet, drawCommand.materialBindingSet);
-        if (drawCommand.usesObjectIndex)
-        {
-            commandBuffer.PushConstants(
-                ::NLS::Render::Resources::kIndexedObjectDataPushConstantStageMask,
-                0u,
-                ::NLS::Render::Resources::kIndexedObjectDataPushConstantSize,
-                &drawCommand.objectConstants);
-        }
+        commandBuffer.PushConstants(
+            ::NLS::Render::Resources::kIndexedObjectDataPushConstantStageMask,
+            0u,
+            ::NLS::Render::Resources::kIndexedObjectDataPushConstantSize,
+            &drawCommand.objectConstants);
 
         const auto vertexBuffer = drawCommand.mesh->GetVertexBuffer();
         if (vertexBuffer == nullptr)

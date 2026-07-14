@@ -11280,7 +11280,7 @@ TEST(ThreadedRenderingLifecycleTests, RecordedObjectConstantsRemainImmutableAndV
     ASSERT_TRUE(lifecycle->TryBeginNextRenderScene(&slotIndex, &publishedSnapshot));
 
     NLS::Render::Data::DrawableObjectDescriptor mutableDescriptor;
-    mutableDescriptor.objectIndex = 7u;
+    mutableDescriptor.objectIndex = NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
     mutableDescriptor.objectFlags = NLS::Render::Data::kDrawableObjectFlagReceiveShadows;
 
     NLS::Render::Context::RecordedDrawCommandInput recordedDraw;
@@ -11290,7 +11290,7 @@ TEST(ThreadedRenderingLifecycleTests, RecordedObjectConstantsRemainImmutableAndV
     recordedDraw.instanceCount = 1u;
     recordedDraw.objectConstants.objectIndex = mutableDescriptor.objectIndex;
     recordedDraw.objectConstants.objectFlags = mutableDescriptor.objectFlags;
-    recordedDraw.usesObjectIndex = true;
+    recordedDraw.usesObjectIndex = false;
 
     NLS::Render::Context::RenderPassCommandInput passInput;
     passInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
@@ -11341,7 +11341,8 @@ TEST(ThreadedRenderingLifecycleTests, RecordedObjectConstantsRemainImmutableAndV
         &capturedConstants,
         submittedCommandBuffer->lastPushConstantsBytes.data(),
         sizeof(capturedConstants));
-    EXPECT_EQ(capturedConstants.objectIndex, 7u);
+    EXPECT_EQ(capturedConstants.objectIndex,
+        NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex);
     EXPECT_EQ(capturedConstants.objectFlags, NLS::Render::Data::kDrawableObjectFlagReceiveShadows);
     EXPECT_EQ(capturedConstants.padding0, 0u);
     EXPECT_EQ(capturedConstants.padding1, 0u);

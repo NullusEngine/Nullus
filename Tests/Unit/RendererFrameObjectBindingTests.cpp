@@ -930,14 +930,16 @@ namespace
             commandBuffer = std::make_shared<TestCommandBuffer>();
         }
 
-        void SubmitWithObjectConstants(const NLS::Render::Data::ObjectDrawConstants& objectConstants) const
+        void SubmitWithObjectConstants(
+            const NLS::Render::Data::ObjectDrawConstants& objectConstants,
+            const bool usesObjectIndex = true) const
         {
             PreparedRecordedDraw draw;
             draw.commandBuffer = commandBuffer;
             draw.mesh = mesh;
             draw.instanceCount = 1u;
             draw.objectConstants = objectConstants;
-            draw.usesObjectIndex = true;
+            draw.usesObjectIndex = usesObjectIndex;
             SubmitPreparedDraw(draw);
         }
 
@@ -1703,10 +1705,13 @@ TEST(RendererFrameObjectBindingTests, EngineProviderCapturesObjectConstantsFromC
         NLS::Maths::Matrix4::Translation({ 2.0f, 3.0f, 5.0f }) *
         NLS::Maths::Matrix4::Scaling({ 1.5f, 1.5f, 1.5f });
     NLS::Render::Entities::Drawable drawable;
-    drawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
+    NLS::Engine::Rendering::EngineDrawableDescriptor descriptor {
         modelMatrix,
-        NLS::Maths::Matrix4::Identity
-    });
+        NLS::Maths::Matrix4::Identity,
+        NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex
+    };
+    descriptor.objectFlags = NLS::Render::Data::kDrawableObjectFlagReceiveShadows;
+    drawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(std::move(descriptor));
 
     NLS::Render::Data::PipelineState pso;
     provider.PrepareDraw(pso, drawable);
@@ -1714,6 +1719,13 @@ TEST(RendererFrameObjectBindingTests, EngineProviderCapturesObjectConstantsFromC
     NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
     ASSERT_TRUE(provider.CapturePreparedBindingSets(pso, drawable, bindingSets));
     ASSERT_NE(bindingSets.objectBindingSet, nullptr);
+    EXPECT_FALSE(bindingSets.usesObjectIndex);
+    EXPECT_EQ(bindingSets.objectConstants.objectIndex,
+        NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex);
+    EXPECT_EQ(bindingSets.objectConstants.objectFlags,
+        NLS::Render::Data::kDrawableObjectFlagReceiveShadows);
+    EXPECT_EQ(bindingSets.objectConstants.padding0, 0u);
+    EXPECT_EQ(bindingSets.objectConstants.padding1, 0u);
     ASSERT_EQ(bindingSets.objectBindingSet->GetDesc().entries.size(), 1u);
     const auto& objectEntry = bindingSets.objectBindingSet->GetDesc().entries[0];
     ASSERT_NE(objectEntry.buffer, nullptr);
@@ -3918,6 +3930,82 @@ TEST(RendererFrameObjectBindingTests, ImmediateIndexedDrawPushesReceiveShadowObj
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 
+TEST(RendererFrameObjectBindingTests, ImmediateNonIndexedDrawPushesCompleteObjectConstants)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 39u;
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+
+    ImmediateObjectIndexRenderer renderer(driver);
+    renderer.SetFrameObjectBindingProvider(
+        std::make_unique<NLS::Engine::Rendering::EngineFrameObjectBindingProvider>(renderer));
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    renderer.BeginFrame(frameDescriptor);
+
+    auto reflection = MakeFrameConstantOnlyReflection("FrameConstants");
+    reflection.constantBuffers.push_back(MakeObjectDrawConstantsReflection(
+        sizeof(NLS::Render::Data::ObjectDrawConstants),
+        NLS::Render::RHI::ShaderStageMask::Fragment));
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/NonIndexedObjectConstants.hlsl",
+        reflection,
+        "shader:non-indexed-object-constants");
+    ASSERT_NE(shader, nullptr);
+    ASSERT_FALSE(NLS::Render::Resources::ShaderSupportsIndexedObjectData(*shader));
+
+    NLS::Render::Resources::Material material(shader);
+    NLS::Render::Entities::Drawable drawable;
+    drawable.material = &material;
+    drawable.instanceCount = 1u;
+    NLS::Engine::Rendering::EngineDrawableDescriptor descriptor {
+        NLS::Maths::Matrix4::Identity,
+        NLS::Maths::Matrix4::Identity,
+        NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex
+    };
+    descriptor.objectFlags = NLS::Render::Data::kDrawableObjectFlagReceiveShadows;
+    drawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(std::move(descriptor));
+
+    NLS::Render::Data::PipelineState pso;
+    renderer.DrawEntity(pso, drawable);
+
+    EXPECT_EQ(renderer.commandBuffer()->bindGraphicsPipelineCalls, 1u);
+    EXPECT_EQ(renderer.commandBuffer()->pushConstantCalls, 1u);
+    ASSERT_EQ(renderer.commandBuffer()->lastPushConstantBytes.size(),
+        sizeof(NLS::Render::Data::ObjectDrawConstants));
+    NLS::Render::Data::ObjectDrawConstants capturedConstants;
+    std::memcpy(
+        &capturedConstants,
+        renderer.commandBuffer()->lastPushConstantBytes.data(),
+        sizeof(capturedConstants));
+    EXPECT_EQ(capturedConstants.objectIndex,
+        NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex);
+    EXPECT_EQ(capturedConstants.objectFlags,
+        NLS::Render::Data::kDrawableObjectFlagReceiveShadows);
+    EXPECT_EQ(capturedConstants.padding0, 0u);
+    EXPECT_EQ(capturedConstants.padding1, 0u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    renderer.EndFrame();
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
 TEST(RendererFrameObjectBindingTests, ImmediateIndexedShaderDrawAssignsObjectIndexWhenMissing)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -4009,6 +4097,32 @@ TEST(RendererFrameObjectBindingTests, PreparedDrawPushesReceiveShadowObjectConst
     EXPECT_TRUE(NLS::Render::RHI::HasShaderStage(
         renderer.commandBuffer->lastPushConstantStageMask,
         NLS::Render::RHI::ShaderStageMask::Fragment));
+    ASSERT_EQ(renderer.commandBuffer->lastPushConstantBytes.size(), sizeof(constants));
+    NLS::Render::Data::ObjectDrawConstants capturedConstants;
+    std::memcpy(&capturedConstants, renderer.commandBuffer->lastPushConstantBytes.data(), sizeof(capturedConstants));
+    EXPECT_EQ(capturedConstants.objectIndex, constants.objectIndex);
+    EXPECT_EQ(capturedConstants.objectFlags, constants.objectFlags);
+    EXPECT_EQ(capturedConstants.padding0, 0u);
+    EXPECT_EQ(capturedConstants.padding1, 0u);
+}
+
+TEST(RendererFrameObjectBindingTests, PreparedNonIndexedDrawPushesCompleteObjectConstantsBeforeSubmission)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    ObjectIndexSubmitRenderer renderer(*driver);
+    NLS::Render::Data::ObjectDrawConstants constants;
+    constants.objectIndex = NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
+    constants.objectFlags = NLS::Render::Data::kDrawableObjectFlagReceiveShadows;
+    renderer.SubmitWithObjectConstants(constants, false);
+
+    EXPECT_EQ(renderer.commandBuffer->pushConstantCalls, 1u);
+    EXPECT_EQ(renderer.commandBuffer->lastPushConstantSize, sizeof(constants));
     ASSERT_EQ(renderer.commandBuffer->lastPushConstantBytes.size(), sizeof(constants));
     NLS::Render::Data::ObjectDrawConstants capturedConstants;
     std::memcpy(&capturedConstants, renderer.commandBuffer->lastPushConstantBytes.data(), sizeof(capturedConstants));
@@ -5099,6 +5213,184 @@ TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutUsesShadowObjectCons
     EXPECT_TRUE(NLS::Render::RHI::HasShaderStage(
         objectConstantRange.stageMask,
         NLS::Render::RHI::ShaderStageMask::Fragment));
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutUsesObjectConstantsWithoutIndexedObjectDataOnDx12)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto reflection = MakeFrameConstantOnlyReflection("FrameConstants");
+    reflection.constantBuffers.push_back(MakeObjectDrawConstantsReflection(
+        sizeof(NLS::Render::Data::ObjectDrawConstants),
+        NLS::Render::RHI::ShaderStageMask::Fragment));
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/NonIndexedObjectConstants.hlsl",
+        reflection,
+        "shader:non-indexed-object-constants-layout");
+    ASSERT_NE(shader, nullptr);
+    EXPECT_EQ(
+        NLS::Render::Resources::ValidateObjectDrawConstants(*shader).status,
+        NLS::Render::Resources::ObjectDrawConstantsStatus::Compatible);
+    EXPECT_EQ(
+        NLS::Render::Resources::ValidateIndexedObjectDataShader(*shader).status,
+        NLS::Render::Resources::IndexedObjectDataShaderStatus::NotIndexed);
+    EXPECT_FALSE(NLS::Render::Resources::ShaderSupportsIndexedObjectData(*shader));
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->SetNativeBackendType(NLS::Render::RHI::NativeBackendType::DX12);
+
+    const auto& pipelineLayout = material.GetExplicitPipelineLayout(explicitDevice);
+    ASSERT_NE(pipelineLayout, nullptr);
+    ASSERT_EQ(explicitDevice->lastPipelineLayoutDesc.pushConstants.size(), 1u);
+    const auto& objectConstantRange = explicitDevice->lastPipelineLayoutDesc.pushConstants.front();
+    EXPECT_EQ(objectConstantRange.shaderRegister, 1u);
+    EXPECT_EQ(objectConstantRange.registerSpace,
+        NLS::Render::RHI::BindingPointMap::kObjectBindingSpace);
+    EXPECT_EQ(objectConstantRange.size, sizeof(NLS::Render::Data::ObjectDrawConstants));
+    EXPECT_EQ(objectConstantRange.stageMask,
+        NLS::Render::RHI::ShaderStageMask::Vertex |
+            NLS::Render::RHI::ShaderStageMask::Fragment);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutPreservesLegacyObjectIndexConstantsAsDescriptorOnDx12)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto reflection = MakeFrameConstantOnlyReflection("FrameConstants");
+    reflection.constantBuffers.push_back(MakeObjectDrawConstantsReflection(
+        sizeof(uint32_t),
+        NLS::Render::RHI::ShaderStageMask::Vertex));
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/LegacyObjectIndexConstants.hlsl",
+        reflection,
+        "shader:legacy-object-index-constants-layout");
+    ASSERT_NE(shader, nullptr);
+    EXPECT_EQ(
+        NLS::Render::Resources::ValidateObjectDrawConstants(*shader).status,
+        NLS::Render::Resources::ObjectDrawConstantsStatus::Absent);
+    EXPECT_EQ(
+        NLS::Render::Resources::ValidateIndexedObjectDataShader(*shader).status,
+        NLS::Render::Resources::IndexedObjectDataShaderStatus::NotIndexed);
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->SetNativeBackendType(NLS::Render::RHI::NativeBackendType::DX12);
+
+    const auto& pipelineLayout = material.GetExplicitPipelineLayout(explicitDevice);
+    ASSERT_NE(pipelineLayout, nullptr);
+    EXPECT_TRUE(explicitDevice->lastPipelineLayoutDesc.pushConstants.empty());
+
+    const auto& bindingLayouts = explicitDevice->lastPipelineLayoutDesc.bindingLayouts;
+    const auto objectLayout = std::find_if(
+        bindingLayouts.begin(),
+        bindingLayouts.end(),
+        [](const std::shared_ptr<NLS::Render::RHI::RHIBindingLayout>& layout)
+        {
+            return layout != nullptr &&
+                std::any_of(
+                    layout->GetDesc().entries.begin(),
+                    layout->GetDesc().entries.end(),
+                    [](const NLS::Render::RHI::RHIBindingLayoutEntry& entry)
+                    {
+                        return entry.name == "ObjectIndexConstants";
+                    });
+        });
+    ASSERT_NE(objectLayout, bindingLayouts.end());
+    const auto& objectEntries = (*objectLayout)->GetDesc().entries;
+    ASSERT_EQ(objectEntries.size(), 1u);
+    EXPECT_EQ(objectEntries[0].name, "ObjectIndexConstants");
+    EXPECT_EQ(objectEntries[0].type, NLS::Render::RHI::BindingType::UniformBuffer);
+    EXPECT_EQ(objectEntries[0].binding, 1u);
+    EXPECT_EQ(objectEntries[0].registerSpace,
+        NLS::Render::RHI::BindingPointMap::kObjectBindingSpace);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutRejectsWrongBindingObjectIndexConstantsOnDx12)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto reflection = MakeFrameConstantOnlyReflection("FrameConstants");
+    auto objectConstants = MakeObjectDrawConstantsReflection();
+    objectConstants.bindingIndex = 2u;
+    reflection.constantBuffers.push_back(std::move(objectConstants));
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/WrongBindingObjectIndexConstants.hlsl",
+        reflection,
+        "shader:wrong-binding-object-index-constants-layout");
+    ASSERT_NE(shader, nullptr);
+
+    const auto validation = NLS::Render::Resources::ValidateObjectDrawConstants(*shader);
+    EXPECT_EQ(validation.status, NLS::Render::Resources::ObjectDrawConstantsStatus::Incompatible);
+    EXPECT_NE(validation.diagnostic.find("ObjectIndexConstants"), std::string::npos);
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->SetNativeBackendType(NLS::Render::RHI::NativeBackendType::DX12);
+
+    EXPECT_EQ(material.GetExplicitPipelineLayout(explicitDevice), nullptr);
+    EXPECT_EQ(explicitDevice->pipelineLayoutCreateCalls, 0u);
+    EXPECT_TRUE(material.HasExplicitBindingErrors());
+    const auto& diagnostics = material.GetLastExplicitBindingDiagnostics();
+    ASSERT_FALSE(diagnostics.empty());
+    EXPECT_NE(diagnostics.back().message.find("ObjectIndexConstants"), std::string::npos);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutRejectsMixedLegacyAndRendererObjectIndexConstantsOnDx12)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto reflection = MakeFrameConstantOnlyReflection("FrameConstants");
+    reflection.constantBuffers.push_back(MakeObjectDrawConstantsReflection());
+    reflection.constantBuffers.push_back(MakeObjectDrawConstantsReflection(sizeof(uint32_t)));
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/DuplicateObjectIndexConstants.hlsl",
+        reflection,
+        "shader:duplicate-object-index-constants-layout");
+    ASSERT_NE(shader, nullptr);
+
+    const auto validation = NLS::Render::Resources::ValidateObjectDrawConstants(*shader);
+    EXPECT_EQ(validation.status, NLS::Render::Resources::ObjectDrawConstantsStatus::Incompatible);
+    EXPECT_NE(validation.diagnostic.find("more than once"), std::string::npos);
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->SetNativeBackendType(NLS::Render::RHI::NativeBackendType::DX12);
+
+    EXPECT_EQ(material.GetExplicitPipelineLayout(explicitDevice), nullptr);
+    EXPECT_EQ(explicitDevice->pipelineLayoutCreateCalls, 0u);
+    EXPECT_TRUE(material.HasExplicitBindingErrors());
+    const auto& diagnostics = material.GetLastExplicitBindingDiagnostics();
+    ASSERT_FALSE(diagnostics.empty());
+    EXPECT_NE(diagnostics.back().message.find("more than once"), std::string::npos);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }

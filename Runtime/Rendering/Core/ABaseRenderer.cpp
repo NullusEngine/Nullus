@@ -1758,14 +1758,11 @@ void ABaseRenderer::SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw)
     if (preparedDraw.commandBuffer == nullptr || preparedDraw.mesh == nullptr)
         return;
 
-    if (preparedDraw.usesObjectIndex)
-    {
-        preparedDraw.commandBuffer->PushConstants(
-            Resources::kIndexedObjectDataPushConstantStageMask,
-            0u,
-            Resources::kIndexedObjectDataPushConstantSize,
-            &preparedDraw.objectConstants);
-    }
+    preparedDraw.commandBuffer->PushConstants(
+        Resources::kIndexedObjectDataPushConstantStageMask,
+        0u,
+        Resources::kIndexedObjectDataPushConstantSize,
+        &preparedDraw.objectConstants);
 
     const auto vertexBuffer = preparedDraw.mesh->GetVertexBuffer();
     if (vertexBuffer == nullptr)

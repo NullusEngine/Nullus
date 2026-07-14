@@ -2296,9 +2296,16 @@ namespace NLS::Render::Resources
 #if defined(NLS_ENABLE_TEST_HOOKS)
 		++state.indexedObjectDataShaderValidationCount;
 #endif
+		const auto objectDrawConstantsValidation = ValidateObjectDrawConstants(*shader);
 		const auto indexedObjectDataValidation = ValidateIndexedObjectDataShader(*shader);
-		if (indexedObjectDataValidation.status == IndexedObjectDataShaderStatus::Incompatible)
+		const bool hasIncompatibleObjectDrawConstants =
+			objectDrawConstantsValidation.status == ObjectDrawConstantsStatus::Incompatible;
+		if (hasIncompatibleObjectDrawConstants ||
+			indexedObjectDataValidation.status == IndexedObjectDataShaderStatus::Incompatible)
 		{
+			const auto& diagnostic = hasIncompatibleObjectDrawConstants
+				? objectDrawConstantsValidation.diagnostic
+				: indexedObjectDataValidation.diagnostic;
 			const auto existingDiagnostic = std::find_if(
 				state.indexedObjectDataBindingDiagnosticSources.begin(),
 				state.indexedObjectDataBindingDiagnosticSources.end(),
@@ -2312,12 +2319,12 @@ namespace NLS::Render::Resources
 				state.indexedObjectDataBindingDiagnosticSources.push_back({
 					shaderInstanceId,
 					shaderGeneration,
-					indexedObjectDataValidation.diagnostic
+					diagnostic
 				});
 			}
 			else
 			{
-				existingDiagnostic->message = indexedObjectDataValidation.diagnostic;
+				existingDiagnostic->message = diagnostic;
 			}
 			RefreshIndexedObjectDataBindingDiagnostics(
 				state.explicitBindingDiagnostics,
@@ -2344,7 +2351,8 @@ namespace NLS::Render::Resources
 
 		RHI::RHIPipelineLayoutDesc pipelineLayoutDesc;
 		pipelineLayoutDesc.debugName = path.empty() ? "MaterialPipelineLayout" : path + ":MaterialPipelineLayout";
-		if (requiresIndexedObjectData)
+		if (objectDrawConstantsValidation.IsCompatible() &&
+			BackendSupportsIndexedObjectDataPushConstants(backend))
 		{
 			pipelineLayoutDesc.pushConstants.push_back({
 				kIndexedObjectDataPushConstantStageMask,

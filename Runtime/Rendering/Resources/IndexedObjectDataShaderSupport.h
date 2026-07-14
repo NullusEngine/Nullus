@@ -28,6 +28,25 @@ enum class IndexedObjectDataShaderStatus : uint8_t
     Incompatible
 };
 
+enum class ObjectDrawConstantsStatus : uint8_t
+{
+    Absent,
+    Compatible,
+    Incompatible
+};
+
+struct ObjectDrawConstantsValidation
+{
+    ObjectDrawConstantsStatus status = ObjectDrawConstantsStatus::Absent;
+    std::string diagnostic;
+    NLS::Render::RHI::ShaderStageMask stageMask = NLS::Render::RHI::ShaderStageMask::None;
+
+    [[nodiscard]] bool IsCompatible() const
+    {
+        return status == ObjectDrawConstantsStatus::Compatible;
+    }
+};
+
 struct IndexedObjectDataShaderValidation
 {
     IndexedObjectDataShaderStatus status = IndexedObjectDataShaderStatus::NotIndexed;
@@ -124,9 +143,59 @@ inline bool HasExpectedObjectDrawConstantMembers(const ShaderConstantBufferDesc&
 
 inline bool HasExpectedObjectDrawConstantStages(const NLS::Render::RHI::ShaderStageMask stageMask)
 {
-    return NLS::Render::RHI::HasShaderStage(stageMask, NLS::Render::RHI::ShaderStageMask::Vertex) &&
+    const bool hasGraphicsConsumer =
+        NLS::Render::RHI::HasShaderStage(stageMask, NLS::Render::RHI::ShaderStageMask::Vertex) ||
+        NLS::Render::RHI::HasShaderStage(stageMask, NLS::Render::RHI::ShaderStageMask::Fragment);
+    return hasGraphicsConsumer &&
         !NLS::Render::RHI::HasShaderStage(stageMask, NLS::Render::RHI::ShaderStageMask::Compute);
 }
+}
+
+inline ObjectDrawConstantsValidation ValidateObjectDrawConstants(const Shader& shader)
+{
+    const auto reflection = shader.GetReflectionSnapshot();
+    const ShaderConstantBufferDesc* objectConstants = nullptr;
+    for (const auto& constantBuffer : reflection->constantBuffers)
+    {
+        if (constantBuffer.name != "ObjectIndexConstants")
+            continue;
+        if (objectConstants != nullptr)
+        {
+            return {
+                ObjectDrawConstantsStatus::Incompatible,
+                "ObjectIndexConstants is declared more than once."
+            };
+        }
+        objectConstants = &constantBuffer;
+    }
+
+    if (objectConstants == nullptr)
+        return {};
+
+    const bool usesObjectDrawBinding =
+        objectConstants->bindingSpace == NLS::Render::RHI::BindingPointMap::kObjectBindingSpace &&
+        objectConstants->bindingIndex == 1u;
+    if (usesObjectDrawBinding && objectConstants->byteSize == sizeof(uint32_t))
+        return {};
+
+    if (!usesObjectDrawBinding || objectConstants->byteSize != kIndexedObjectDataPushConstantSize)
+    {
+        return {
+            ObjectDrawConstantsStatus::Incompatible,
+            "ObjectIndexConstants must be either the 4-byte b1/space3 legacy descriptor or the 16-byte b1/space3 object-draw ABI."
+        };
+    }
+
+    if (!Detail::HasExpectedObjectDrawConstantStages(objectConstants->stageMask) ||
+        !Detail::HasExpectedObjectDrawConstantMembers(*objectConstants))
+    {
+        return {
+            ObjectDrawConstantsStatus::Incompatible,
+            "ObjectIndexConstants must match the 16-byte b1/space3 Vertex and/or Fragment object-draw ABI without Compute visibility."
+        };
+    }
+
+    return { ObjectDrawConstantsStatus::Compatible, {}, objectConstants->stageMask };
 }
 
 inline IndexedObjectDataShaderValidation ValidateIndexedObjectDataShader(const Shader& shader)
@@ -147,38 +216,28 @@ inline IndexedObjectDataShaderValidation ValidateIndexedObjectDataShader(const S
         };
     }
 
-    const ShaderConstantBufferDesc* objectConstants = nullptr;
-    for (const auto& constantBuffer : reflection->constantBuffers)
-    {
-        if (constantBuffer.name != "ObjectIndexConstants")
-            continue;
-        if (objectConstants != nullptr)
-        {
-            return {
-                IndexedObjectDataShaderStatus::Incompatible,
-                "ObjectIndexConstants is declared more than once."
-            };
-        }
-        objectConstants = &constantBuffer;
-    }
-
-    if (objectConstants == nullptr)
+    const auto objectConstants = ValidateObjectDrawConstants(shader);
+    if (objectConstants.status == ObjectDrawConstantsStatus::Absent)
     {
         return {
             IndexedObjectDataShaderStatus::Incompatible,
             "ObjectIndexConstants is required by indexed ObjectData shaders."
         };
     }
-
-    if (objectConstants->bindingSpace != NLS::Render::RHI::BindingPointMap::kObjectBindingSpace ||
-        objectConstants->bindingIndex != 1u ||
-        objectConstants->byteSize != kIndexedObjectDataPushConstantSize ||
-        !Detail::HasExpectedObjectDrawConstantStages(objectConstants->stageMask) ||
-        !Detail::HasExpectedObjectDrawConstantMembers(*objectConstants))
+    if (objectConstants.status == ObjectDrawConstantsStatus::Incompatible)
     {
         return {
             IndexedObjectDataShaderStatus::Incompatible,
-            "ObjectIndexConstants must match the 16-byte b1/space3 Vertex[/Fragment] indexed object-data ABI."
+            objectConstants.diagnostic
+        };
+    }
+    if (!NLS::Render::RHI::HasShaderStage(
+        objectConstants.stageMask,
+        NLS::Render::RHI::ShaderStageMask::Vertex))
+    {
+        return {
+            IndexedObjectDataShaderStatus::Incompatible,
+            "ObjectIndexConstants must include Vertex stage for indexed ObjectData shaders."
         };
     }
 

@@ -242,18 +242,6 @@ void EngineFrameObjectBindingProvider::OnPrepareExplicitDraw(
         commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kFrameDescriptorSet, m_explicitFrameBindingSet);
     if (m_explicitObjectBindingSet != nullptr)
         commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet, m_explicitObjectBindingSet);
-    if (m_currentDrawUsesIndexedObjectData)
-    {
-        if (m_currentDrawObjectConstants.objectIndex !=
-            NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex)
-        {
-            commandBuffer.PushConstants(
-                NLS::Render::Resources::kIndexedObjectDataPushConstantStageMask,
-                0u,
-                NLS::Render::Resources::kIndexedObjectDataPushConstantSize,
-                &m_currentDrawObjectConstants);
-        }
-    }
 }
 
 bool EngineFrameObjectBindingProvider::OnCapturePreparedBindingSets(
@@ -280,14 +268,10 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedBindingSets(
     }
     outBindings.frameBindingSet = m_explicitFrameBindingSet;
     outBindings.objectBindingSet = m_explicitObjectBindingSet;
-    outBindings.usesObjectIndex = false;
-    outBindings.objectConstants = {};
-    if (m_currentDrawUsesIndexedObjectData)
-    {
-        outBindings.objectConstants = m_currentDrawObjectConstants;
-        outBindings.usesObjectIndex = m_currentDrawObjectConstants.objectIndex !=
+    outBindings.objectConstants = m_currentDrawObjectConstants;
+    outBindings.usesObjectIndex = m_currentDrawUsesIndexedObjectData &&
+        m_currentDrawObjectConstants.objectIndex !=
             NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
-    }
     return outBindings.frameBindingSet != nullptr || outBindings.objectBindingSet != nullptr;
 }
 

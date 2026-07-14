@@ -271,15 +271,19 @@ void CompositeRenderer::DrawEntity(
         return;
     }
 
-    if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)
+    if (m_frameObjectBindingProvider != nullptr &&
+        (preparedDraw.commandBuffer != nullptr || usesThreadedRendering))
     {
         FrameObjectBindingProvider::PreparedBindingSets bindingSets;
         if (m_frameObjectBindingProvider->CapturePreparedBindingSets(p_pso, p_drawable, bindingSets))
         {
-            preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
-            preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
             preparedDraw.objectConstants = bindingSets.objectConstants;
             preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+            if (preparedDraw.commandBuffer == nullptr)
+            {
+                preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
+                preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+            }
         }
     }
 
@@ -340,15 +344,19 @@ void CompositeRenderer::DrawEntity(
         return;
     }
 
-    if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)
+    if (m_frameObjectBindingProvider != nullptr &&
+        (preparedDraw.commandBuffer != nullptr || usesThreadedRendering))
     {
         FrameObjectBindingProvider::PreparedBindingSets bindingSets;
         if (m_frameObjectBindingProvider->CapturePreparedBindingSets(effectivePso, p_drawable, bindingSets))
         {
-            preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
-            preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
             preparedDraw.objectConstants = bindingSets.objectConstants;
             preparedDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+            if (preparedDraw.commandBuffer == nullptr)
+            {
+                preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
+                preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+            }
         }
     }
 

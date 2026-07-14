@@ -6342,6 +6342,43 @@ TEST(RendererFrameObjectBindingTests, DeferredDecalFallbackPreservesTransparentB
     NLS::Render::Resources::Shader::DestroyForTesting(fallbackShader);
 }
 
+TEST(RendererFrameObjectBindingTests, DeferredDecalBuiltInFallbackDefaultsMissingAlbedoToWhite)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+
+    auto* fallbackShader =
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetDeferredDecalShader(renderer);
+    auto* sourceShader = NLS::Render::Resources::Shader::CreateForTesting(
+        "Tests/Shaders/LegacyDecalSourceWithoutAlbedo.hlsl");
+    ASSERT_NE(fallbackShader, nullptr);
+    ASSERT_NE(sourceShader, nullptr);
+
+    NLS::Render::Resources::Material source(sourceShader);
+    auto* fallback =
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveDeferredDecalDrawableMaterialForTesting(
+            renderer,
+            source);
+    ASSERT_NE(fallback, nullptr);
+    const auto* albedo = fallback->GetParameterBlock().TryGet("u_Albedo");
+    ASSERT_NE(albedo, nullptr);
+    ASSERT_EQ(albedo->type(), typeid(NLS::Maths::Vector4));
+    const auto& actual = std::any_cast<const NLS::Maths::Vector4&>(*albedo);
+    EXPECT_FLOAT_EQ(actual.x, 1.0f);
+    EXPECT_FLOAT_EQ(actual.y, 1.0f);
+    EXPECT_FLOAT_EQ(actual.z, 1.0f);
+    EXPECT_FLOAT_EQ(actual.w, 1.0f);
+
+    NLS::Render::Resources::Shader::DestroyForTesting(sourceShader);
+}
+
 TEST(RendererFrameObjectBindingTests, DeferredDecalResolutionFailsClosedWithoutFallbackShader)
 {
     NLS::Render::Settings::DriverSettings settings;

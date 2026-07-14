@@ -2673,7 +2673,6 @@ namespace NLS::Engine::Rendering
 		if (m_deferredDecalShader == nullptr)
 			return nullptr;
 		auto material = std::make_unique<NLS::Render::Resources::Material>(m_deferredDecalShader);
-		material->SetRawParameter("u_Albedo", NLS::Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
 		material->SetBlendable(true);
 		material->SetColorWriting(true);
 		return material;
@@ -2757,6 +2756,7 @@ namespace NLS::Engine::Rendering
 	{
 		target.SetGPUInstances(sourceMaterial.GetGPUInstances());
 		target.FillUniform();
+		target.SetRawParameter("u_Albedo", NLS::Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
 		for (const auto& [name, value] : sourceMaterial.GetParameterBlock().Data())
 		{
 			if (target.GetParameterBlock().Contains(name))

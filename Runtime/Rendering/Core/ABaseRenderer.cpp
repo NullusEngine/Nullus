@@ -22,6 +22,7 @@
 #include "Rendering/RHI/Utils/PipelineCache/PipelineCache.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Settings/EngineDiagnosticsSettings.h"
 #include <Debug/Assertion.h>
@@ -1760,10 +1761,10 @@ void ABaseRenderer::SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw)
     if (preparedDraw.usesObjectIndex)
     {
         preparedDraw.commandBuffer->PushConstants(
-            RHI::ShaderStageMask::Vertex,
+            Resources::kIndexedObjectDataPushConstantStageMask,
             0u,
-            sizeof(preparedDraw.objectIndex),
-            &preparedDraw.objectIndex);
+            Resources::kIndexedObjectDataPushConstantSize,
+            &preparedDraw.objectConstants);
     }
 
     const auto vertexBuffer = preparedDraw.mesh->GetVertexBuffer();
@@ -1818,7 +1819,7 @@ bool ABaseRenderer::QueueThreadedRecordedDraw(const PreparedRecordedDraw& prepar
     drawCommand.instanceCount = preparedDraw.instanceCount;
     drawCommand.vertexStart = preparedDraw.vertexStart;
     drawCommand.vertexCount = preparedDraw.vertexCount;
-    drawCommand.objectIndex = preparedDraw.objectIndex;
+    drawCommand.objectConstants = preparedDraw.objectConstants;
     drawCommand.usesObjectIndex = preparedDraw.usesObjectIndex;
     m_threadedRecordedDrawCommands.push_back(std::move(drawCommand));
     return true;

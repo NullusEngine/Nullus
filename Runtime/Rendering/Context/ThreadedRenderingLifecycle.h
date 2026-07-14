@@ -18,6 +18,7 @@
 #include "Rendering/Context/RenderFrameBuild.h"
 #include "Rendering/Context/RenderFrameInput.h"
 #include "Rendering/Core/RenderClearValues.h"
+#include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/Data/FrameInfo.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -74,7 +75,7 @@ namespace NLS::Render::Context
         uint32_t instanceCount = 0u;
         uint32_t vertexStart = 0u;
         uint32_t vertexCount = 0u;
-        uint32_t objectIndex = 0u;
+        Data::ObjectDrawConstants objectConstants;
         bool usesObjectIndex = false;
     };
 

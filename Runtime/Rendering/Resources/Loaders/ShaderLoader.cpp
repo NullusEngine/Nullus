@@ -76,13 +76,27 @@ namespace
 		return ToLowerAscii(path.filename().string()) == ToLowerAscii(expected);
 	}
 
+	bool PathEndsWithSegmentSuffix(std::string_view path, std::string_view suffix)
+	{
+		if (!path.ends_with(suffix))
+			return false;
+
+		const size_t suffixOffset = path.size() - suffix.size();
+		return suffixOffset == 0u || path[suffixOffset - 1u] == '/';
+	}
+
 	std::string InferBuiltInHlslLightMode(const std::string& sourcePath)
 	{
 		const auto normalized = ToLowerAscii(std::filesystem::path(sourcePath).lexically_normal().generic_string());
-		if (normalized.ends_with("app/assets/engine/shaders/deferredgbuffer.hlsl") ||
-			normalized.ends_with("assets/engine/shaders/deferredgbuffer.hlsl"))
+		if (PathEndsWithSegmentSuffix(normalized, "app/assets/engine/shaders/deferredgbuffer.hlsl") ||
+			PathEndsWithSegmentSuffix(normalized, "assets/engine/shaders/deferredgbuffer.hlsl"))
 		{
 			return "GBuffer";
+		}
+		if (PathEndsWithSegmentSuffix(normalized, "app/assets/engine/shaders/deferreddecal.hlsl") ||
+			PathEndsWithSegmentSuffix(normalized, "assets/engine/shaders/deferreddecal.hlsl"))
+		{
+			return "DeferredDecal";
 		}
 
 		return {};

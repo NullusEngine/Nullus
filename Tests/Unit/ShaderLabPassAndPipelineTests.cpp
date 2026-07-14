@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
+
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ServiceLocator.h"
 #include "Guid.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/ShaderLab/ShaderLabAsset.h"
 #include "Rendering/ShaderLab/ShaderLabHotReload.h"
 #include "Rendering/ShaderLab/ShaderLabPipelineKey.h"
@@ -52,6 +56,21 @@ namespace
             const std::vector<NLS::Render::ShaderLab::ShaderLabVariantKey>&) override
         {
             return { true, {} };
+        }
+    };
+
+    class ScopedTrustedBuiltInShaderAssetsRoot final
+    {
+    public:
+        explicit ScopedTrustedBuiltInShaderAssetsRoot(const std::string& engineAssetsPath)
+        {
+            NLS::Render::Resources::Loaders::ShaderLoader::SetTrustedBuiltInShaderEngineAssetsPath(
+                engineAssetsPath);
+        }
+
+        ~ScopedTrustedBuiltInShaderAssetsRoot()
+        {
+            NLS::Render::Resources::Loaders::ShaderLoader::SetTrustedBuiltInShaderEngineAssetsPath({});
         }
     };
 
@@ -328,6 +347,101 @@ TEST(ShaderLabPassAndPipelineTests, MaterialResolvesShaderLabPassArtifactsByLigh
 
     Shader::DestroyForTesting(forward);
     Shader::DestroyForTesting(depth);
+}
+
+TEST(ShaderLabPassAndPipelineTests, DeferredDecalLightModeResolvesDedicatedBuiltInAndShaderLabPasses)
+{
+    using NLS::Render::Resources::Loaders::ShaderLoader;
+    using NLS::Render::Resources::Material;
+    using NLS::Render::Resources::Shader;
+
+    const auto builtInPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/DeferredDecal.hlsl";
+    auto* builtIn = ShaderLoader::CreateBuiltInHlsl(builtInPath.string());
+    ASSERT_NE(builtIn, nullptr);
+    Material builtInMaterial(builtIn);
+    EXPECT_EQ(builtInMaterial.ResolveShaderForLightMode("DeferredDecal"), builtIn);
+    EXPECT_EQ(builtInMaterial.ResolveShaderForLightMode("GBuffer"), nullptr);
+    EXPECT_TRUE(ShaderLoader::Destroy(builtIn));
+
+    auto* forward = Shader::CreateForTesting("Library/Artifacts/12/forwardhash");
+    auto* gbuffer = Shader::CreateForTesting("Library/Artifacts/34/gbufferhash");
+    auto* decal = Shader::CreateForTesting("Library/Artifacts/56/decalhash");
+    ASSERT_NE(forward, nullptr);
+    ASSERT_NE(gbuffer, nullptr);
+    ASSERT_NE(decal, nullptr);
+
+    forward->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/StandardPBR.shader",
+        "shader:StandardPBR/Forward#0",
+        "Forward",
+        {});
+    gbuffer->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/StandardPBR.shader",
+        "shader:StandardPBR/GBuffer#1",
+        "GBuffer",
+        {});
+    decal->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/StandardPBR.shader",
+        "shader:StandardPBR/DeferredDecal#2",
+        "DeferredDecal",
+        {});
+
+    Material shaderLabMaterial(forward);
+    shaderLabMaterial.SetShaderLabSourcePath("Assets/Shaders/StandardPBR.shader");
+    shaderLabMaterial.RegisterShaderLabPassShader(forward);
+    shaderLabMaterial.RegisterShaderLabPassShader(gbuffer);
+    shaderLabMaterial.RegisterShaderLabPassShader(decal);
+
+    EXPECT_EQ(shaderLabMaterial.ResolveShaderForLightMode("Forward"), forward);
+    EXPECT_EQ(shaderLabMaterial.ResolveShaderForLightMode("GBuffer"), gbuffer);
+    EXPECT_EQ(shaderLabMaterial.ResolveShaderForLightMode("DeferredDecal"), decal);
+    EXPECT_NE(
+        shaderLabMaterial.ResolveShaderForLightMode("DeferredDecal"),
+        shaderLabMaterial.ResolveShaderForLightMode("GBuffer"));
+
+    Shader::DestroyForTesting(forward);
+    Shader::DestroyForTesting(gbuffer);
+    Shader::DestroyForTesting(decal);
+}
+
+TEST(ShaderLabPassAndPipelineTests, BuiltInLightModeInferenceRejectsAdjacentAssetsDirectoryName)
+{
+    using NLS::Render::Resources::Loaders::ShaderLoader;
+    using NLS::Render::Resources::Material;
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_deferred_decal_adjacent_assets_" + NLS::Guid::New().ToString());
+    const auto engineAssets = root / "MyAssets" / "Engine";
+    const auto shaderPath = engineAssets / "Shaders" / "DeferredDecal.hlsl";
+    const auto projectAssets = root / "Project" / "Assets";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::filesystem::create_directories(projectAssets);
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    ASSERT_TRUE(shaderFile.is_open());
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    const ScopedTrustedBuiltInShaderAssetsRoot trustedRoot(engineAssets.string());
+    auto* shader = ShaderLoader::CreateBuiltInHlsl(shaderPath.string(), projectAssets.string());
+    ASSERT_NE(shader, nullptr);
+    EXPECT_TRUE(shader->GetShaderLabLightMode().empty())
+        << "MyAssets must not match the Assets directory segment used by built-in shaders.";
+    Material material(shader);
+    EXPECT_EQ(material.ResolveShaderForLightMode("DeferredDecal"), nullptr);
+    EXPECT_EQ(material.ResolveShaderForLightMode("Forward"), shader);
+    EXPECT_TRUE(ShaderLoader::Destroy(shader));
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(ShaderLabPassAndPipelineTests, LegacyMaterialFallsBackOnlyForForwardLightMode)

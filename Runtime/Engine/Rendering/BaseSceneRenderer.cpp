@@ -1071,7 +1071,7 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		{
 			outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
 			outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
-			outDraw.objectIndex = bindingSets.objectIndex;
+			outDraw.objectConstants = bindingSets.objectConstants;
 			outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
 		}
 	}
@@ -1106,7 +1106,7 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		{
 			outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
 			outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
-			outDraw.objectIndex = bindingSets.objectIndex;
+			outDraw.objectConstants = bindingSets.objectConstants;
 			outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
 		}
 	}

@@ -317,6 +317,9 @@ namespace NLS::Engine::Rendering
 		SceneHLODClusterHandle RegisterHLODClusterForTesting(const HLODClusterRecord& cluster);
 		[[nodiscard]] ScenePrimitiveSnapshot CreatePrimitiveSnapshotForTesting(uint64_t frameSerial = 0u) const;
 		[[nodiscard]] bool IsPrimitiveHandleLiveForTesting(ScenePrimitiveHandle handle) const;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		void FinalizeOpaqueQueueForTesting(RenderSceneVisibleQueues::SceneDrawables& opaques) const;
+#endif
 
 	private:
 		struct RepresentationRegistry;

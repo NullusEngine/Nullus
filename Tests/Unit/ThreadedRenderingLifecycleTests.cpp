@@ -33,6 +33,7 @@
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Data/FrameDescriptor.h"
+#include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/Entities/Camera.h"
 #include "Rendering/DeferredSceneRenderer.h"
 #include "Rendering/ForwardSceneRenderer.h"
@@ -11239,6 +11240,113 @@ TEST(ThreadedRenderingLifecycleTests, RhiWorkerConsumesPassOwnedRecordedDrawComm
     EXPECT_EQ(totalBindGraphicsPipelineCalls, 2u);
     EXPECT_EQ(totalDrawIndexedCalls, 2u);
     EXPECT_TRUE(sawDrawBeforeEndPass);
+}
+
+TEST(ThreadedRenderingLifecycleTests, RecordedObjectConstantsRemainImmutableAndVisibleToBothGraphicsStages)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = std::make_shared<TestFence>();
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 408u;
+    snapshot.targetsSwapchain = false;
+    snapshot.visibleOpaqueDrawCount = 1u;
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
+
+    size_t slotIndex = 0u;
+    NLS::Render::Context::FrameSnapshot publishedSnapshot;
+    ASSERT_TRUE(lifecycle->TryBeginNextRenderScene(&slotIndex, &publishedSnapshot));
+
+    NLS::Render::Data::DrawableObjectDescriptor mutableDescriptor;
+    mutableDescriptor.objectIndex = 7u;
+    mutableDescriptor.objectFlags = NLS::Render::Data::kDrawableObjectFlagReceiveShadows;
+
+    NLS::Render::Context::RecordedDrawCommandInput recordedDraw;
+    recordedDraw.pipeline = std::make_shared<TestGraphicsPipeline>("ObjectConstantsPipeline");
+    recordedDraw.materialBindingSet = std::make_shared<TestBindingSet>("MaterialBindingSet");
+    recordedDraw.mesh = std::make_shared<TestMesh>();
+    recordedDraw.instanceCount = 1u;
+    recordedDraw.objectConstants.objectIndex = mutableDescriptor.objectIndex;
+    recordedDraw.objectConstants.objectFlags = mutableDescriptor.objectFlags;
+    recordedDraw.usesObjectIndex = true;
+
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    passInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    passInput.drawCount = 1u;
+    passInput.targetsSwapchain = false;
+    passInput.renderWidth = 64u;
+    passInput.renderHeight = 64u;
+    passInput.clearColor = true;
+    passInput.clearDepth = true;
+    passInput.usesColorAttachment = true;
+    passInput.usesDepthStencilAttachment = true;
+    passInput.recordedDrawCommands.push_back(recordedDraw);
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = publishedSnapshot.frameId;
+    package.targetsSwapchain = false;
+    package.visibleDrawCount = 1u;
+    package.opaqueDrawCount = 1u;
+    package.hasVisibleDraws = true;
+    package.frameDataReady = true;
+    package.objectDataReady = true;
+    package.renderWidth = 64u;
+    package.renderHeight = 64u;
+    package.passCommandInputs.push_back(passInput);
+    ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
+
+    mutableDescriptor.objectFlags = NLS::Render::Data::kDrawableObjectFlagCastShadows;
+    recordedDraw.objectConstants.objectFlags = mutableDescriptor.objectFlags;
+    package.passCommandInputs[0].recordedDrawCommands[0].objectConstants.objectFlags = mutableDescriptor.objectFlags;
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    auto submittedCommandBuffer = GetSubmittedTestCommandBuffer(explicitDevice->GetTestQueue());
+    ASSERT_NE(submittedCommandBuffer, nullptr);
+    ASSERT_EQ(submittedCommandBuffer->lastPushConstantsBytes.size(),
+        sizeof(NLS::Render::Data::ObjectDrawConstants));
+    EXPECT_EQ(submittedCommandBuffer->lastPushConstantsSize,
+        sizeof(NLS::Render::Data::ObjectDrawConstants));
+    EXPECT_TRUE(NLS::Render::RHI::HasShaderStage(
+        submittedCommandBuffer->lastPushConstantsStageMask,
+        NLS::Render::RHI::ShaderStageMask::Vertex));
+    EXPECT_TRUE(NLS::Render::RHI::HasShaderStage(
+        submittedCommandBuffer->lastPushConstantsStageMask,
+        NLS::Render::RHI::ShaderStageMask::Fragment));
+
+    NLS::Render::Data::ObjectDrawConstants capturedConstants;
+    std::memcpy(
+        &capturedConstants,
+        submittedCommandBuffer->lastPushConstantsBytes.data(),
+        sizeof(capturedConstants));
+    EXPECT_EQ(capturedConstants.objectIndex, 7u);
+    EXPECT_EQ(capturedConstants.objectFlags, NLS::Render::Data::kDrawableObjectFlagReceiveShadows);
+    EXPECT_EQ(capturedConstants.padding0, 0u);
+    EXPECT_EQ(capturedConstants.padding1, 0u);
+
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
 }
 
 TEST(ThreadedRenderingLifecycleTests, SerialCommandPathConsumesPreparedParallelCommandWorkUnits)

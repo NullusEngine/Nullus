@@ -421,6 +421,36 @@ namespace
         return NLS::Render::Data::ResolveDrawableInstanceCount(drawable).count;
     }
 
+    NLS::Engine::Rendering::RenderSceneVisibleQueues::SceneDrawables ExpandMergedOpaqueForShadowFlagTest(
+        const NLS::Engine::Rendering::RenderSceneVisibleQueues::SceneDrawables::value_type& mergedEntry)
+    {
+        NLS::Engine::Rendering::EngineDrawableDescriptor mergedDescriptor;
+        EXPECT_TRUE(mergedEntry.second.TryGetDescriptor(mergedDescriptor));
+
+        NLS::Engine::Rendering::RenderSceneVisibleQueues::SceneDrawables drawables;
+        drawables.reserve(mergedDescriptor.instanceModelMatrices.size());
+        for (size_t index = 0u; index < mergedDescriptor.instanceModelMatrices.size(); ++index)
+        {
+            NLS::Render::Entities::Drawable drawable;
+            drawable.mesh = mergedEntry.second.mesh;
+            drawable.material = mergedEntry.second.material;
+            drawable.stateMask = mergedEntry.second.stateMask;
+            drawable.primitiveMode = mergedEntry.second.primitiveMode;
+            drawable.instanceCount = 1u;
+            drawable.vertexStart = mergedEntry.second.vertexStart;
+            drawable.vertexCount = mergedEntry.second.vertexCount;
+
+            auto descriptor = mergedDescriptor;
+            descriptor.modelMatrix = mergedDescriptor.instanceModelMatrices[index];
+            descriptor.objectIndex = NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidObjectIndex;
+            descriptor.objectCount = 1u;
+            descriptor.instanceModelMatrices.clear();
+            drawable.AddDescriptor(std::move(descriptor));
+            drawables.emplace_back(mergedEntry.first + static_cast<float>(index), std::move(drawable));
+        }
+        return drawables;
+    }
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
     class ScopedObjectDataCountLimitOverride final
     {
@@ -4280,11 +4310,69 @@ TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoO
     ASSERT_TRUE(drawable.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(descriptor));
     EXPECT_EQ(descriptor.objectIndex, 0u);
     EXPECT_EQ(descriptor.objectCount, 3u);
+    EXPECT_EQ(
+        descriptor.objectFlags,
+        NLS::Render::Data::kDrawableObjectFlagReceiveShadows |
+            NLS::Render::Data::kDrawableObjectFlagCastShadows);
     ASSERT_EQ(descriptor.instanceModelMatrices.size(), 3u);
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices[0].data[3], 4.0f);
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices[1].data[3], 12.0f);
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices[2].data[3], 24.0f);
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(RenderSceneCacheTests, ShadowCastFlagDifferenceSplitsDynamicInstances)
+{
+    QueueSortFixture fixture;
+    fixture.AddObject("CastA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
+    fixture.AddObject("CastB", *fixture.sharedMesh, fixture.opaqueMaterialA, 8.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    auto splitDrawables = ExpandMergedOpaqueForShadowFlagTest(visible.opaques.front());
+    ASSERT_EQ(splitDrawables.size(), 2u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor secondDescriptor;
+    ASSERT_TRUE(splitDrawables[1].second.TryGetDescriptor(secondDescriptor));
+    secondDescriptor.objectFlags &= ~NLS::Render::Data::kDrawableObjectFlagCastShadows;
+    splitDrawables[1].second.RemoveDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>();
+    splitDrawables[1].second.AddDescriptor(secondDescriptor);
+
+    renderScene.FinalizeOpaqueQueueForTesting(splitDrawables);
+    EXPECT_EQ(splitDrawables.size(), 2u);
+}
+
+TEST(RenderSceneCacheTests, ShadowReceiveFlagDifferenceSplitsDynamicInstances)
+{
+    QueueSortFixture fixture;
+    fixture.AddObject("ReceiveA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
+    fixture.AddObject("ReceiveB", *fixture.sharedMesh, fixture.opaqueMaterialA, 8.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    auto splitDrawables = ExpandMergedOpaqueForShadowFlagTest(visible.opaques.front());
+    ASSERT_EQ(splitDrawables.size(), 2u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor secondDescriptor;
+    ASSERT_TRUE(splitDrawables[1].second.TryGetDescriptor(secondDescriptor));
+    secondDescriptor.objectFlags &= ~NLS::Render::Data::kDrawableObjectFlagReceiveShadows;
+    splitDrawables[1].second.RemoveDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>();
+    splitDrawables[1].second.AddDescriptor(secondDescriptor);
+
+    renderScene.FinalizeOpaqueQueueForTesting(splitDrawables);
+    EXPECT_EQ(splitDrawables.size(), 2u);
+}
+#endif
 
 TEST(RenderSceneCacheTests, DynamicInstancingKeepsSiblingVisibleAfterDeletingOneSharedPrefabLikeObject)
 {

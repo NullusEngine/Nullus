@@ -452,7 +452,21 @@ public:
     void SetRawParameter(const std::string& name, std::any value);
     void MarkParametersDirty();
 #if defined(NLS_ENABLE_TEST_HOOKS)
+    struct ExplicitShaderCacheEntryCountsForTesting
+    {
+        size_t bindingLayouts = 0u;
+        size_t bindingSets = 0u;
+        size_t pipelineLayouts = 0u;
+    };
+
     uint64_t GetCachedShaderGenerationForTesting() const;
+    uint64_t GetIndexedObjectDataShaderValidationCountForTesting() const;
+    ExplicitShaderCacheEntryCountsForTesting GetExplicitShaderCacheEntryCountsForTesting(
+        uint64_t shaderInstanceId,
+        uint64_t shaderGeneration) const;
+    size_t GetExplicitBindingDiagnosticCountForTesting(
+        uint64_t shaderInstanceId,
+        uint64_t shaderGeneration) const;
 #endif
     void SetTextureResourcePath(const std::string& name, std::string path);
     void ClearTextureResourcePath(const std::string& name);
@@ -502,6 +516,10 @@ protected:
     mutable uint64_t m_bindingRevision = 1u;
 
 private:
+    void PruneStaleExplicitShaderGenerationEntries(
+        uint64_t shaderInstanceId,
+        uint64_t shaderGeneration) const;
+
     friend class NLS::Render::Context::Driver;
     friend class NLS::Render::Core::ABaseRenderer;
 };

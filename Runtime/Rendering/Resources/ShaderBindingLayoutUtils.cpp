@@ -1,4 +1,5 @@
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
+#include "Rendering/Data/DrawableObjectDescriptor.h"
 
 #include <algorithm>
 #include <map>
@@ -183,8 +184,7 @@ namespace
 		return constantBuffer.name == "ObjectIndexConstants" &&
 			constantBuffer.bindingSpace == NLS::Render::RHI::BindingPointMap::kObjectBindingSpace &&
 			constantBuffer.bindingIndex == 1u &&
-			constantBuffer.byteSize >= sizeof(uint32_t) &&
-			constantBuffer.byteSize <= 16u;
+			constantBuffer.byteSize == sizeof(NLS::Render::Data::ObjectDrawConstants);
 	}
 }
 

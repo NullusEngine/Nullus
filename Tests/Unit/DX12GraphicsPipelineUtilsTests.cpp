@@ -102,7 +102,9 @@ TEST(DX12GraphicsPipelineUtilsTests, BuildsExpandedBlendStateForIndependentRende
     desc.blendState.renderTargets[0].dstAlpha = NLS::Render::RHI::RHIBlendFactor::Zero;
     desc.blendState.renderTargets[0].alphaOp = NLS::Render::RHI::RHIBlendOp::Max;
     desc.blendState.renderTargets[0].colorWriteMask =
-        NLS::Render::RHI::RHIColorWriteMask::Red | NLS::Render::RHI::RHIColorWriteMask::Alpha;
+        NLS::Render::RHI::RHIColorWriteMask::Red |
+        NLS::Render::RHI::RHIColorWriteMask::Green |
+        NLS::Render::RHI::RHIColorWriteMask::Blue;
     desc.blendState.renderTargets[1].blendEnable = false;
     desc.blendState.renderTargets[1].colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::Green;
 
@@ -114,7 +116,11 @@ TEST(DX12GraphicsPipelineUtilsTests, BuildsExpandedBlendStateForIndependentRende
     EXPECT_EQ(blendState.RenderTarget[0].SrcBlend, D3D12_BLEND_SRC_ALPHA);
     EXPECT_EQ(blendState.RenderTarget[0].DestBlend, D3D12_BLEND_INV_SRC_ALPHA);
     EXPECT_EQ(blendState.RenderTarget[0].BlendOpAlpha, D3D12_BLEND_OP_MAX);
-    EXPECT_EQ(blendState.RenderTarget[0].RenderTargetWriteMask, D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_ALPHA);
+    constexpr UINT8 rgbWriteMask = D3D12_COLOR_WRITE_ENABLE_RED |
+        D3D12_COLOR_WRITE_ENABLE_GREEN |
+        D3D12_COLOR_WRITE_ENABLE_BLUE;
+    EXPECT_EQ(blendState.RenderTarget[0].RenderTargetWriteMask, rgbWriteMask);
+    EXPECT_EQ(blendState.RenderTarget[0].RenderTargetWriteMask & D3D12_COLOR_WRITE_ENABLE_ALPHA, 0u);
     EXPECT_FALSE(blendState.RenderTarget[1].BlendEnable);
     EXPECT_EQ(blendState.RenderTarget[1].RenderTargetWriteMask, D3D12_COLOR_WRITE_ENABLE_GREEN);
 }

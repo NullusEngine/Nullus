@@ -174,11 +174,12 @@ bool EngineFrameObjectBindingProvider::OnPrepareDraw(
     m_currentDrawUsesIndexedObjectData = false;
     m_currentDrawRequiresIndexedObjectData = DrawableRequiresIndexedObjectData(drawable);
     m_currentDrawPrepared = true;
-    m_currentDrawObjectIndex = NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
+    m_currentDrawObjectConstants = {};
 
     NLS::Render::Data::DrawableObjectDescriptor descriptor;
     if (drawable.TryGetDescriptor<NLS::Render::Data::DrawableObjectDescriptor>(descriptor))
     {
+        m_currentDrawObjectConstants.objectFlags = descriptor.objectFlags;
         m_engineBuffer->SetSubData(Maths::Matrix4::Transpose(descriptor.modelMatrix), 0);
         m_engineBuffer->SetSubData(
             descriptor.userMatrix,
@@ -191,7 +192,7 @@ bool EngineFrameObjectBindingProvider::OnPrepareDraw(
         const bool hasExplicitObjectIndex =
             descriptor.objectIndex != NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
         if ((hasExplicitObjectIndex || m_currentDrawRequiresIndexedObjectData) &&
-            TryPrepareIndexedObjectData(drawable, &m_currentDrawObjectIndex))
+            TryPrepareIndexedObjectData(drawable, &m_currentDrawObjectConstants.objectIndex))
         {
             return true;
         }
@@ -243,13 +244,14 @@ void EngineFrameObjectBindingProvider::OnPrepareExplicitDraw(
         commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet, m_explicitObjectBindingSet);
     if (m_currentDrawUsesIndexedObjectData)
     {
-        if (m_currentDrawObjectIndex != NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex)
+        if (m_currentDrawObjectConstants.objectIndex !=
+            NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex)
         {
             commandBuffer.PushConstants(
-                NLS::Render::RHI::ShaderStageMask::Vertex,
+                NLS::Render::Resources::kIndexedObjectDataPushConstantStageMask,
                 0u,
-                sizeof(m_currentDrawObjectIndex),
-                &m_currentDrawObjectIndex);
+                NLS::Render::Resources::kIndexedObjectDataPushConstantSize,
+                &m_currentDrawObjectConstants);
         }
     }
 }
@@ -279,11 +281,11 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedBindingSets(
     outBindings.frameBindingSet = m_explicitFrameBindingSet;
     outBindings.objectBindingSet = m_explicitObjectBindingSet;
     outBindings.usesObjectIndex = false;
-    outBindings.objectIndex = NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
+    outBindings.objectConstants = {};
     if (m_currentDrawUsesIndexedObjectData)
     {
-        outBindings.objectIndex = m_currentDrawObjectIndex;
-        outBindings.usesObjectIndex = m_currentDrawObjectIndex !=
+        outBindings.objectConstants = m_currentDrawObjectConstants;
+        outBindings.usesObjectIndex = m_currentDrawObjectConstants.objectIndex !=
             NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
     }
     return outBindings.frameBindingSet != nullptr || outBindings.objectBindingSet != nullptr;

@@ -52,6 +52,7 @@ NLS::Render::Context::MeshRuntimeUploadResult::MeshRuntimeUploadResult(
 NLS::Render::Context::MeshRuntimeUploadResult&
 NLS::Render::Context::MeshRuntimeUploadResult::operator=(MeshRuntimeUploadResult&&) noexcept = default;
 #include "Rendering/Resources/IMesh.h"
+#include "Rendering/Resources/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Utils/Conversions.h"
 
@@ -1252,10 +1253,10 @@ namespace
         if (drawCommand.usesObjectIndex)
         {
             commandBuffer.PushConstants(
-                ::NLS::Render::RHI::ShaderStageMask::Vertex,
+                ::NLS::Render::Resources::kIndexedObjectDataPushConstantStageMask,
                 0u,
-                sizeof(drawCommand.objectIndex),
-                &drawCommand.objectIndex);
+                ::NLS::Render::Resources::kIndexedObjectDataPushConstantSize,
+                &drawCommand.objectConstants);
         }
 
         const auto vertexBuffer = drawCommand.mesh->GetVertexBuffer();

@@ -305,6 +305,24 @@ namespace
 		}
 	}
 
+	void EnsureDeferredDecalFallbackParameters(NLS::Render::Resources::Material& target)
+	{
+		const auto& parameters = target.GetParameterBlock();
+		auto* albedo = parameters.TryGet("u_Albedo");
+		if (albedo == nullptr ||
+			(albedo->type() == typeid(NLS::Maths::Vector4) &&
+				IsZeroColor(std::any_cast<const NLS::Maths::Vector4&>(*albedo))))
+		{
+			target.SetRawParameter("u_Albedo", NLS::Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
+		}
+
+		for (const char* textureName : {"u_AlbedoMap", "u_OpacityMap"})
+		{
+			if (!parameters.Contains(textureName))
+				target.SetRawParameter(textureName, static_cast<NLS::Render::Resources::Texture2D*>(nullptr));
+		}
+	}
+
 	bool MaterialHasTextureParameter(
 		const NLS::Render::Resources::Material& material,
 		const char* textureName)
@@ -476,6 +494,32 @@ namespace
 		return key;
 	}
 
+	std::string BuildDeferredDecalMaterialCacheKey(
+		const NLS::Render::Resources::Material& sourceMaterial,
+		const NLS::Render::Data::PipelineState& pipelineState)
+	{
+		auto key = NLS::Render::Resources::BuildMaterialPassVariantKey(
+			sourceMaterial,
+			"DeferredDecal",
+			pipelineState,
+			BuildDeferredDecalMaterialOverrides(sourceMaterial)).stableKey;
+		const auto& parameters = sourceMaterial.GetParameterBlock().Data();
+		const bool hasRuntimeTextureBinding = std::any_of(
+			parameters.begin(),
+			parameters.end(),
+			[](const auto& entry)
+			{
+				return entry.second.type() == typeid(NLS::Render::Resources::Texture2D*) &&
+					std::any_cast<NLS::Render::Resources::Texture2D*>(entry.second) != nullptr;
+			});
+		if (sourceMaterial.path.empty() || hasRuntimeTextureBinding)
+		{
+			key += "|source:";
+			key += std::to_string(sourceMaterial.GetInstanceId());
+		}
+		return key;
+	}
+
 	const char* ToHZBFallbackReasonName(
 		const NLS::Engine::Rendering::SceneOcclusionFallbackReason reason)
 	{
@@ -573,6 +617,7 @@ namespace NLS::Engine::Rendering
 
 	DeferredSceneRenderer::~DeferredSceneRenderer()
 	{
+		ReleaseDeferredDecalPipelineResources();
 		m_gBufferMaterialCache.clear();
 		m_hzbOcclusionBindingSet.reset();
 		m_hzbBuildBindingSets.clear();
@@ -938,6 +983,7 @@ namespace NLS::Engine::Rendering
 		m_skipThreadedFramePublish = false;
 		m_threadedHZBPostSubmitReadback.reset();
 		ClearFrameGBufferMaterialResolveCache();
+		ClearFrameDeferredDecalMaterialResolveCache();
 
 			auto drawables = [&]()
 			{
@@ -1047,6 +1093,7 @@ namespace NLS::Engine::Rendering
 						NLS_LOG_INFO(
 							"[DeferredSceneRenderer] Skipping threaded deferred capture: pipeline resources unavailable"
 							" gBufferShader=" + std::to_string(m_gBufferShader != nullptr ? 1 : 0) +
+							" deferredDecalShader=" + std::to_string(m_deferredDecalShader != nullptr ? 1 : 0) +
 							" lightingMaterial=" + std::to_string(m_lightingMaterial != nullptr ? 1 : 0) +
 							" fullscreenQuad=" + std::to_string(m_fullscreenQuad != nullptr ? 1 : 0) +
 							" gBufferAlbedo=" + std::to_string(m_gBufferAlbedoTexture != nullptr ? 1 : 0) +
@@ -1113,17 +1160,19 @@ namespace NLS::Engine::Rendering
 							if (!drawable.material)
 								continue;
 
-							auto gbufferDrawable = drawable;
-							gbufferDrawable.material = &ResolveGBufferDrawableMaterial(*drawable.material);
+							auto decalDrawable = drawable;
+							decalDrawable.material = ResolveDeferredDecalDrawableMaterial(*drawable.material);
+							if (decalDrawable.material == nullptr)
+								continue;
 
 							const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
 
 							PreparedRecordedDraw preparedDraw;
 							const bool captured = CaptureThreadedPreparedDraw(
-								gbufferDrawable,
+								decalDrawable,
 								decalOverrides,
 								GetDeferredDecalDepthCompare(),
-								"GBuffer",
+								"DeferredDecal",
 								preparedDraw);
 							bool queued = false;
 							if (captured)
@@ -1340,7 +1389,7 @@ namespace NLS::Engine::Rendering
 				{
 					EnsureGBufferTargets(frame.renderWidth, frame.renderHeight);
 
-					if (!m_gBufferShader || !m_lightingMaterial || !m_fullscreenQuad)
+					if (!m_gBufferShader || !m_deferredDecalShader || !m_lightingMaterial || !m_fullscreenQuad)
 					{
 						NLS_LOG_WARNING("DeferredSceneRenderer is missing shader or mesh resources; skipping deferred frame.");
 						return;
@@ -1546,6 +1595,7 @@ namespace NLS::Engine::Rendering
 		const auto& projectAssetsRoot = NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot();
 
 		m_gBufferShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("DeferredGBuffer.hlsl"), projectAssetsRoot);
+		m_deferredDecalShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("DeferredDecal.hlsl"), projectAssetsRoot);
 		m_lightingShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("DeferredLighting.hlsl"), projectAssetsRoot);
 		m_hzbBuildShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("HZBBuild.hlsl"), projectAssetsRoot);
 		m_hzbOcclusionShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("HZBOcclusion.hlsl"), projectAssetsRoot);
@@ -1571,6 +1621,18 @@ namespace NLS::Engine::Rendering
 				return;
 			LoadPipelineResources();
 			m_pipelineResourceAssetsLoaded = true;
+		}
+
+		void DeferredSceneRenderer::ReleaseDeferredDecalPipelineResources()
+		{
+			ClearFrameDeferredDecalMaterialResolveCache();
+			m_deferredDecalMaterialCache.clear();
+#if defined(NLS_ENABLE_TEST_HOOKS)
+			if (m_beforeDeferredDecalShaderDestroyForTesting)
+				m_beforeDeferredDecalShaderDestroyForTesting();
+			m_beforeDeferredDecalShaderDestroyForTesting = {};
+#endif
+			NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_deferredDecalShader);
 		}
 
 	void DeferredSceneRenderer::EnsureGBufferTargets(uint16_t width, uint16_t height)
@@ -1638,6 +1700,7 @@ namespace NLS::Engine::Rendering
 	bool DeferredSceneRenderer::HasDeferredThreadedPipelineResources() const
 	{
 		return m_gBufferShader != nullptr &&
+			m_deferredDecalShader != nullptr &&
 			m_lightingMaterial != nullptr &&
 			m_fullscreenQuad != nullptr &&
 			m_gBufferAlbedoTexture != nullptr &&
@@ -2603,6 +2666,108 @@ namespace NLS::Engine::Rendering
 		EnsureDeferredGBufferFallbackParameters(target);
 	}
 
+	std::unique_ptr<NLS::Render::Resources::Material> DeferredSceneRenderer::CreateDeferredDecalMaterial() const
+	{
+		if (m_deferredDecalShader == nullptr)
+			return nullptr;
+		auto material = std::make_unique<NLS::Render::Resources::Material>(m_deferredDecalShader);
+		material->SetBlendable(true);
+		material->SetColorWriting(true);
+		return material;
+	}
+
+	NLS::Render::Resources::Material* DeferredSceneRenderer::GetOrCreateDeferredDecalMaterial(
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		NLS_PROFILE_SCOPE();
+		if (m_deferredDecalShader == nullptr)
+			return nullptr;
+		const NLS::Render::Data::PipelineState pipelineState;
+		const auto cacheKey = BuildDeferredDecalMaterialCacheKey(sourceMaterial, pipelineState);
+		auto found = m_deferredDecalMaterialCache.find(cacheKey);
+		if (found == m_deferredDecalMaterialCache.end())
+		{
+			DeferredDecalMaterialCacheEntry entry;
+			entry.material = CreateDeferredDecalMaterial();
+			if (entry.material == nullptr)
+				return nullptr;
+			found = m_deferredDecalMaterialCache.emplace(cacheKey, std::move(entry)).first;
+		}
+
+		auto& entry = found->second;
+		const auto sourceStamp = BuildGBufferMaterialSyncStamp(sourceMaterial);
+		if (entry.material != nullptr && entry.syncedStamp != sourceStamp)
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::SyncDeferredDecalMaterial");
+			SyncDeferredDecalMaterial(*entry.material, sourceMaterial);
+			entry.syncedStamp = sourceStamp;
+			++entry.syncCount;
+		}
+		return entry.material.get();
+	}
+
+	NLS::Render::Resources::Material* DeferredSceneRenderer::ResolveFrameDeferredDecalMaterial(
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		NLS_PROFILE_SCOPE();
+		if (m_deferredDecalShader == nullptr)
+			return nullptr;
+		const auto sourceStamp = BuildGBufferMaterialSyncStamp(sourceMaterial);
+		auto found = m_frameDeferredDecalMaterialResolveCache.find(sourceStamp.sourceMaterialInstanceId);
+		if (found != m_frameDeferredDecalMaterialResolveCache.end() &&
+			found->second.material != nullptr &&
+			found->second.sourceStamp == sourceStamp)
+		{
+			++m_frameDeferredDecalMaterialResolveHitCount;
+			return found->second.material;
+		}
+
+		++m_frameDeferredDecalMaterialResolveMissCount;
+		auto* material = GetOrCreateDeferredDecalMaterial(sourceMaterial);
+		if (material == nullptr)
+			return nullptr;
+		m_frameDeferredDecalMaterialResolveCache[sourceStamp.sourceMaterialInstanceId] = {
+			sourceStamp,
+			material
+		};
+		return material;
+	}
+
+	NLS::Render::Resources::Material* DeferredSceneRenderer::ResolveDeferredDecalDrawableMaterial(
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		if (sourceMaterial.ResolveShaderForLightMode("DeferredDecal") != nullptr)
+			return &sourceMaterial;
+		return ResolveFrameDeferredDecalMaterial(sourceMaterial);
+	}
+
+	void DeferredSceneRenderer::ClearFrameDeferredDecalMaterialResolveCache()
+	{
+		m_frameDeferredDecalMaterialResolveCache.clear();
+		m_frameDeferredDecalMaterialResolveHitCount = 0u;
+		m_frameDeferredDecalMaterialResolveMissCount = 0u;
+	}
+
+	void DeferredSceneRenderer::SyncDeferredDecalMaterial(
+		NLS::Render::Resources::Material& target,
+		const NLS::Render::Resources::Material& sourceMaterial) const
+	{
+		target.SetGPUInstances(sourceMaterial.GetGPUInstances());
+		target.FillUniform();
+		for (const auto& [name, value] : sourceMaterial.GetParameterBlock().Data())
+		{
+			if (target.GetParameterBlock().Contains(name))
+				SetMaterialParameter(target, name.c_str(), value);
+		}
+
+		CopyMaterialParameterIfPresent(target, "u_Albedo", sourceMaterial, "u_Diffuse");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AlbedoMap", sourceMaterial, "u_DiffuseMap");
+		CopyMaterialParameterIfPresent(target, "u_Albedo", sourceMaterial, "_BaseColor");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_AlbedoMap", sourceMaterial, "_BaseMap");
+		CopyMaterialParameterAndTexturePathIfPresent(target, "u_OpacityMap", sourceMaterial, "_OpacityMap");
+		EnsureDeferredDecalFallbackParameters(target);
+	}
+
 	void DeferredSceneRenderer::DrawGBufferOpaques(NLS::Render::Data::PipelineState pso)
 	{
 		NLS_PROFILE_SCOPE();
@@ -2629,7 +2794,7 @@ namespace NLS::Engine::Rendering
 	void DeferredSceneRenderer::DrawDecals(NLS::Render::Data::PipelineState pso)
 	{
 		NLS_PROFILE_SCOPE();
-		if (!m_gBufferShader)
+		if (!m_deferredDecalShader)
 			return;
 
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
@@ -2640,12 +2805,14 @@ namespace NLS::Engine::Rendering
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
 				continue;
 
-			auto gbufferDrawable = drawable;
-			gbufferDrawable.material = &ResolveGBufferDrawableMaterial(*drawable.material);
+			auto decalDrawable = drawable;
+			decalDrawable.material = ResolveDeferredDecalDrawableMaterial(*drawable.material);
+			if (decalDrawable.material == nullptr)
+				continue;
 
 			const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
 
-			DrawEntity(gbufferDrawable, decalOverrides, GetDeferredDecalDepthCompare(), "GBuffer");
+			DrawEntity(decalDrawable, decalOverrides, GetDeferredDecalDepthCompare(), "DeferredDecal");
 		}
 	}
 
@@ -2809,6 +2976,87 @@ namespace NLS::Engine::Rendering
 	{
 		return renderer.m_frameGBufferMaterialResolveMissCount;
 	}
+
+	NLS::Render::Resources::Material* DeferredSceneRendererTestAccess::ResolveDeferredDecalDrawableMaterialForTesting(
+		DeferredSceneRenderer& renderer,
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		return renderer.ResolveDeferredDecalDrawableMaterial(sourceMaterial);
+	}
+
+	DeferredSceneRendererTestAccess::DeferredDecalMaterialCache& DeferredSceneRendererTestAccess::GetDeferredDecalMaterialCache(
+		DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_deferredDecalMaterialCache;
+	}
+
+	const DeferredSceneRendererTestAccess::DeferredDecalMaterialCache& DeferredSceneRendererTestAccess::GetDeferredDecalMaterialCache(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_deferredDecalMaterialCache;
+	}
+
+	void DeferredSceneRendererTestAccess::SetDeferredDecalShader(
+		DeferredSceneRenderer& renderer,
+		NLS::Render::Resources::Shader* shader)
+	{
+		if (renderer.m_deferredDecalShader == shader)
+			return;
+		renderer.ClearFrameDeferredDecalMaterialResolveCache();
+		renderer.m_deferredDecalMaterialCache.clear();
+		renderer.m_deferredDecalShader = shader;
+	}
+
+	NLS::Render::Resources::Shader* DeferredSceneRendererTestAccess::GetDeferredDecalShader(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_deferredDecalShader;
+	}
+
+	void DeferredSceneRendererTestAccess::ClearFrameDeferredDecalMaterialResolveCache(
+		DeferredSceneRenderer& renderer)
+	{
+		renderer.ClearFrameDeferredDecalMaterialResolveCache();
+	}
+
+	uint64_t DeferredSceneRendererTestAccess::GetFrameDeferredDecalMaterialResolveCacheSize(
+		const DeferredSceneRenderer& renderer)
+	{
+		return static_cast<uint64_t>(renderer.m_frameDeferredDecalMaterialResolveCache.size());
+	}
+
+	uint64_t DeferredSceneRendererTestAccess::GetFrameDeferredDecalMaterialResolveHitCount(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_frameDeferredDecalMaterialResolveHitCount;
+	}
+
+	uint64_t DeferredSceneRendererTestAccess::GetFrameDeferredDecalMaterialResolveMissCount(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_frameDeferredDecalMaterialResolveMissCount;
+	}
+
+	bool DeferredSceneRendererTestAccess::HasDeferredThreadedPipelineResourcesForTesting(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.HasDeferredThreadedPipelineResources();
+	}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+	void DeferredSceneRendererTestAccess::SetDeferredDecalShaderDestroyProbe(
+		DeferredSceneRenderer& renderer,
+		std::function<void()> probe)
+	{
+		renderer.m_beforeDeferredDecalShaderDestroyForTesting = std::move(probe);
+	}
+
+	void DeferredSceneRendererTestAccess::ReleaseDeferredDecalPipelineResourcesForTesting(
+		DeferredSceneRenderer& renderer)
+	{
+		renderer.ReleaseDeferredDecalPipelineResources();
+	}
+#endif
 
 	NLS::Render::Resources::MaterialPipelineStateOverrides DeferredSceneRendererTestAccess::BuildDeferredDecalMaterialOverridesForTesting(
 		const NLS::Render::Resources::Material& sourceMaterial)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -83,6 +84,18 @@ namespace NLS::Engine::Rendering
 			GBufferMaterialSyncStamp sourceStamp;
 			NLS::Render::Resources::Material* material = nullptr;
 		};
+		using DeferredDecalMaterialSyncStamp = GBufferMaterialSyncStamp;
+		struct DeferredDecalMaterialCacheEntry
+		{
+			std::unique_ptr<NLS::Render::Resources::Material> material;
+			DeferredDecalMaterialSyncStamp syncedStamp;
+			uint64_t syncCount = 0u;
+		};
+		struct FrameDeferredDecalMaterialResolveEntry
+		{
+			DeferredDecalMaterialSyncStamp sourceStamp;
+			NLS::Render::Resources::Material* material = nullptr;
+		};
 
 	protected:
 		struct DeferredSceneDescriptor
@@ -124,6 +137,7 @@ namespace NLS::Engine::Rendering
 		private:
 			void LoadPipelineResources();
 			void EnsureDeferredPipelineResourceAssets();
+			void ReleaseDeferredDecalPipelineResources();
 			void EnsureGBufferTargets(uint16_t width, uint16_t height);
 		bool HasDeferredThreadedPipelineResources() const;
 		bool EnsureHZBTargets(uint16_t width, uint16_t height);
@@ -151,6 +165,12 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::Material& ResolveGBufferDrawableMaterial(NLS::Render::Resources::Material& sourceMaterial);
 		void ClearFrameGBufferMaterialResolveCache();
 		void SyncGBufferMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const;
+		std::unique_ptr<NLS::Render::Resources::Material> CreateDeferredDecalMaterial() const;
+		NLS::Render::Resources::Material* GetOrCreateDeferredDecalMaterial(NLS::Render::Resources::Material& sourceMaterial);
+		NLS::Render::Resources::Material* ResolveFrameDeferredDecalMaterial(NLS::Render::Resources::Material& sourceMaterial);
+		NLS::Render::Resources::Material* ResolveDeferredDecalDrawableMaterial(NLS::Render::Resources::Material& sourceMaterial);
+		void ClearFrameDeferredDecalMaterialResolveCache();
+		void SyncDeferredDecalMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const;
 		void DrawGBufferOpaques(NLS::Render::Data::PipelineState pso);
 		void DrawDecals(NLS::Render::Data::PipelineState pso);
 		void DrawLightingPass(NLS::Render::Data::PipelineState pso);
@@ -191,7 +211,10 @@ namespace NLS::Engine::Rendering
 		std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_hzbOcclusionBindingSet;
 		std::unordered_map<std::string, GBufferMaterialCacheEntry> m_gBufferMaterialCache;
 		std::unordered_map<uint64_t, FrameGBufferMaterialResolveEntry> m_frameGBufferMaterialResolveCache;
+		std::unordered_map<std::string, DeferredDecalMaterialCacheEntry> m_deferredDecalMaterialCache;
+		std::unordered_map<uint64_t, FrameDeferredDecalMaterialResolveEntry> m_frameDeferredDecalMaterialResolveCache;
 		NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
+		NLS::Render::Resources::Shader* m_deferredDecalShader = nullptr;
 		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
 		NLS::Render::Resources::Shader* m_hzbBuildShader = nullptr;
 		NLS::Render::Resources::Shader* m_hzbOcclusionShader = nullptr;
@@ -208,15 +231,21 @@ namespace NLS::Engine::Rendering
 		uint64_t m_frameGBufferMaterialSyncCount = 0u;
 			uint64_t m_frameGBufferMaterialResolveHitCount = 0u;
 			uint64_t m_frameGBufferMaterialResolveMissCount = 0u;
+			uint64_t m_frameDeferredDecalMaterialResolveHitCount = 0u;
+			uint64_t m_frameDeferredDecalMaterialResolveMissCount = 0u;
 			mutable uint32_t m_framePreparedDrawDiagnosticLogCount = 0u;
 			bool m_skipThreadedFramePublish = false;
 			bool m_pipelineResourceAssetsLoaded = false;
 			bool m_deferPipelineResourceAssetsUntilFirstFrame = false;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+			std::function<void()> m_beforeDeferredDecalShaderDestroyForTesting;
+#endif
 		};
 
 	struct NLS_ENGINE_API DeferredSceneRendererTestAccess final
 	{
 		using GBufferMaterialCache = std::unordered_map<std::string, DeferredSceneRenderer::GBufferMaterialCacheEntry>;
+		using DeferredDecalMaterialCache = std::unordered_map<std::string, DeferredSceneRenderer::DeferredDecalMaterialCacheEntry>;
 
 		static NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(
 			DeferredSceneRenderer& renderer,
@@ -237,6 +266,24 @@ namespace NLS::Engine::Rendering
 		static uint64_t GetFrameGBufferMaterialResolveCacheSize(const DeferredSceneRenderer& renderer);
 		static uint64_t GetFrameGBufferMaterialResolveHitCount(const DeferredSceneRenderer& renderer);
 		static uint64_t GetFrameGBufferMaterialResolveMissCount(const DeferredSceneRenderer& renderer);
+		static NLS::Render::Resources::Material* ResolveDeferredDecalDrawableMaterialForTesting(
+			DeferredSceneRenderer& renderer,
+			NLS::Render::Resources::Material& sourceMaterial);
+		static DeferredDecalMaterialCache& GetDeferredDecalMaterialCache(DeferredSceneRenderer& renderer);
+		static const DeferredDecalMaterialCache& GetDeferredDecalMaterialCache(const DeferredSceneRenderer& renderer);
+		static void SetDeferredDecalShader(DeferredSceneRenderer& renderer, NLS::Render::Resources::Shader* shader);
+		static NLS::Render::Resources::Shader* GetDeferredDecalShader(const DeferredSceneRenderer& renderer);
+		static void ClearFrameDeferredDecalMaterialResolveCache(DeferredSceneRenderer& renderer);
+		static uint64_t GetFrameDeferredDecalMaterialResolveCacheSize(const DeferredSceneRenderer& renderer);
+		static uint64_t GetFrameDeferredDecalMaterialResolveHitCount(const DeferredSceneRenderer& renderer);
+		static uint64_t GetFrameDeferredDecalMaterialResolveMissCount(const DeferredSceneRenderer& renderer);
+		static bool HasDeferredThreadedPipelineResourcesForTesting(const DeferredSceneRenderer& renderer);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		static void SetDeferredDecalShaderDestroyProbe(
+			DeferredSceneRenderer& renderer,
+			std::function<void()> probe);
+		static void ReleaseDeferredDecalPipelineResourcesForTesting(DeferredSceneRenderer& renderer);
+#endif
 		static NLS::Render::Resources::MaterialPipelineStateOverrides BuildDeferredDecalMaterialOverridesForTesting(
 			const NLS::Render::Resources::Material& sourceMaterial);
 		static NLS::Render::Resources::MaterialPipelineStateOverrides BuildGBufferMaterialOverridesForTesting(

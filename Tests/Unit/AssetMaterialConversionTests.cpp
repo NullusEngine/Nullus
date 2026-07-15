@@ -6369,6 +6369,29 @@ TEST(AssetMaterialConversionTests, ExplicitNormalSemanticsWinOverBumpInferenceAc
     EXPECT_NE(convertedGltf.serializedPayload.find("keyword _NORMALMAP"), std::string::npos);
 }
 
+TEST(AssetMaterialConversionTests, ParserScansAllBumpCandidatesForAnExplicitNormalMapIdentity)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.textures.push_back({"texture/height", "WallHeight", "textures/wall_height.png", "image/png"});
+    scene.textures.push_back({"texture/normal", "WallNormalMap", "textures/wall_normal_map.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord material;
+    material.sourceKey = "fbx/material/multiple-bump-candidates";
+    material.materialChannels.push_back({"normal", {}, {}, false, 0.0});
+    material.materialChannels.push_back({"bump", "texture/height", {}, false, 0.0});
+    material.materialChannels.push_back({"bump", "texture/normal", {}, false, 0.0});
+
+    const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        material,
+        MaterialSourceModel::FbxParserMaterial);
+
+    ASSERT_EQ(CountSlots(converted, "Normal"), 1u);
+    EXPECT_EQ(FindSlot(converted, "Normal")->textureKey, "texture/normal");
+    EXPECT_TRUE(HasDiagnosticCode(converted, "material-ignored-bump-height-map"));
+    EXPECT_TRUE(HasDiagnosticCode(converted, "material-inferred-normal-map-from-bump-channel"));
+}
+
 TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);

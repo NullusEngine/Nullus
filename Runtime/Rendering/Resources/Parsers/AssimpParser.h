@@ -47,6 +47,11 @@ namespace NLS::Render::Resources::Parsers
 			NLS::Render::Assets::SceneModelSourceFormat p_sourceFormat,
 			NLS::Render::Assets::ImportedScene& p_scene) override;
 
+#if defined(NLS_ENABLE_TEST_HOOKS) && NLS_ENABLE_TEST_HOOKS
+		// Validates the lightweight FBX material-graph reader without importing a scene.
+		bool CanReadFbxMaterialGraphForTesting(const std::filesystem::path& p_sourcePath) const;
+#endif
+
 	private:
 		void ProcessMaterials(
 			const struct aiScene* p_scene,

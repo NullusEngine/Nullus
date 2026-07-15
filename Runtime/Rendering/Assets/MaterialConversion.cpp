@@ -146,6 +146,21 @@ const ImportedSceneMaterialChannel* FindChannel(
     return found != material.materialChannels.end() ? &*found : nullptr;
 }
 
+const ImportedSceneMaterialChannel* FindBoundChannel(
+    const ImportedSceneNamedRecord& material,
+    const std::string& name)
+{
+    const auto loweredName = ToLower(name);
+    const auto found = std::find_if(
+        material.materialChannels.begin(),
+        material.materialChannels.end(),
+        [&loweredName](const ImportedSceneMaterialChannel& channel)
+        {
+            return !channel.textureKey.empty() && ToLower(channel.name) == loweredName;
+        });
+    return found != material.materialChannels.end() ? &*found : nullptr;
+}
+
 const ConvertedMaterialTextureSlot* FindTextureSlot(
     const ConvertedMaterialArtifact& material,
     const std::string& slot);
@@ -758,34 +773,43 @@ void ConvertParserChannels(
             AddFactor(material, "BaseColor", diffuse->values);
         }
     }
-    const auto* normal = FindChannel(source, "normal");
+    const auto* normal = FindBoundChannel(source, "normal");
     if (normal)
         AddTextureSlot(scene, material, context, "Normal", normal->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
-    if (const auto* bump = FindChannel(source, "bump");
-        bump && !bump->textureKey.empty() && normal == nullptr)
+    if (normal == nullptr)
     {
-        const auto* bumpTexture = FindTexture(scene, bump->textureKey);
-        if (!bumpTexture)
+        for (const auto& bump : source.materialChannels)
         {
-            AddTextureSlot(scene, material, context, "Normal", bump->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
-        }
-        else if (TextureSuggestsNormalMap(*bumpTexture))
-        {
-            AddTextureSlot(scene, material, context, "Normal", bump->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
-            if (FindTextureSlot(material, "Normal") != nullptr)
+            if (ToLower(bump.name) != "bump" || bump.textureKey.empty())
+                continue;
+
+            const auto* bumpTexture = FindTexture(scene, bump.textureKey);
+            if (bumpTexture && TextureSuggestsNormalMap(*bumpTexture))
+            {
+                AddTextureSlot(
+                    scene,
+                    material,
+                    context,
+                    "Normal",
+                    bump.textureKey,
+                    MaterialTextureColorSpace::Linear,
+                    source.sampler);
+                if (FindTextureSlot(material, "Normal") != nullptr)
+                {
+                    AddDiagnostic(
+                        material,
+                        "material-inferred-normal-map-from-bump-channel",
+                        "Parser bump texture was promoted because its identity explicitly identifies a tangent-space normal map.");
+                    break;
+                }
+            }
+            else
             {
                 AddDiagnostic(
                     material,
-                    "material-inferred-normal-map-from-bump-channel",
-                    "Parser bump texture was promoted because its identity explicitly identifies a tangent-space normal map.");
+                    "material-ignored-bump-height-map",
+                    "Parser bump/height texture was ignored because it is not identified as a tangent-space normal map.");
             }
-        }
-        else
-        {
-            AddDiagnostic(
-                material,
-                "material-ignored-bump-height-map",
-                "Parser bump/height texture was ignored because it is not identified as a tangent-space normal map.");
         }
     }
     if (const auto* emissive = FindChannel(source, "emissive"))

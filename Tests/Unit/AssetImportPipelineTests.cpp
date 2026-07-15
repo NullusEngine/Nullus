@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -32,6 +33,7 @@
 #include "Guid.h"
 #include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/ImportedScene.h"
+#include "Rendering/Assets/MaterialConversion.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
 #include "Rendering/Assets/TextureBuildSettings.h"
@@ -3294,6 +3296,890 @@ TEST(AssetImportPipelineTests, AssimpFbxParserSurfaces3dsMaxParametersOpacityMap
 
     runCase("FbxTransparencyMap", "3dsMax|Parameters|transparency_map");
     runCase("FbxCutoutMap", "3dsMax|Parameters|cutout_map");
+#endif
+}
+
+void AppendU64(std::vector<uint8_t>& bytes, const uint64_t value)
+{
+    for (uint32_t shift = 0u; shift < 64u; shift += 8u)
+        bytes.push_back(static_cast<uint8_t>((value >> shift) & 0xFFu));
+}
+
+std::vector<uint8_t> FbxBinaryLongProperty(const uint64_t value)
+{
+    std::vector<uint8_t> property = {static_cast<uint8_t>('L')};
+    AppendU64(property, value);
+    return property;
+}
+
+std::vector<uint8_t> FbxBinaryStringProperty(const std::string& value)
+{
+    std::vector<uint8_t> property = {static_cast<uint8_t>('S')};
+    AppendU32(property, static_cast<uint32_t>(value.size()));
+    property.insert(property.end(), value.begin(), value.end());
+    return property;
+}
+
+struct TestFbxBinaryNode
+{
+    std::string name;
+    std::vector<std::vector<uint8_t>> properties;
+    std::vector<TestFbxBinaryNode> children;
+};
+
+size_t FbxBinaryNodeSize(const TestFbxBinaryNode& node, const bool wideOffsets)
+{
+    const size_t headerSize = wideOffsets ? 25u : 13u;
+    size_t size = headerSize + node.name.size();
+    for (const auto& property : node.properties)
+        size += property.size();
+    for (const auto& child : node.children)
+        size += FbxBinaryNodeSize(child, wideOffsets);
+    if (!node.children.empty())
+        size += headerSize;
+    return size;
+}
+
+void AppendFbxBinaryNode(
+    std::vector<uint8_t>& bytes,
+    const TestFbxBinaryNode& node,
+    const size_t absoluteBaseOffset,
+    const bool wideOffsets)
+{
+    size_t propertySize = 0u;
+    for (const auto& property : node.properties)
+        propertySize += property.size();
+
+    const auto endOffset = absoluteBaseOffset + bytes.size() + FbxBinaryNodeSize(node, wideOffsets);
+    ASSERT_LE(node.name.size(), static_cast<size_t>(std::numeric_limits<uint8_t>::max()));
+    if (wideOffsets)
+    {
+        AppendU64(bytes, static_cast<uint64_t>(endOffset));
+        AppendU64(bytes, static_cast<uint64_t>(node.properties.size()));
+        AppendU64(bytes, static_cast<uint64_t>(propertySize));
+    }
+    else
+    {
+        ASSERT_LE(endOffset, static_cast<size_t>(std::numeric_limits<uint32_t>::max()));
+        ASSERT_LE(node.properties.size(), static_cast<size_t>(std::numeric_limits<uint32_t>::max()));
+        ASSERT_LE(propertySize, static_cast<size_t>(std::numeric_limits<uint32_t>::max()));
+        AppendU32(bytes, static_cast<uint32_t>(endOffset));
+        AppendU32(bytes, static_cast<uint32_t>(node.properties.size()));
+        AppendU32(bytes, static_cast<uint32_t>(propertySize));
+    }
+    bytes.push_back(static_cast<uint8_t>(node.name.size()));
+    bytes.insert(bytes.end(), node.name.begin(), node.name.end());
+    for (const auto& property : node.properties)
+        bytes.insert(bytes.end(), property.begin(), property.end());
+    for (const auto& child : node.children)
+        AppendFbxBinaryNode(bytes, child, absoluteBaseOffset, wideOffsets);
+    if (!node.children.empty())
+        bytes.insert(bytes.end(), wideOffsets ? 25u : 13u, 0u);
+}
+
+uint32_t ReadFbxBinaryUint32(const std::vector<uint8_t>& bytes, const size_t offset)
+{
+    EXPECT_LE(offset + 4u, bytes.size());
+    return static_cast<uint32_t>(bytes[offset]) |
+        (static_cast<uint32_t>(bytes[offset + 1u]) << 8u) |
+        (static_cast<uint32_t>(bytes[offset + 2u]) << 16u) |
+        (static_cast<uint32_t>(bytes[offset + 3u]) << 24u);
+}
+
+uint64_t ReadFbxBinaryUint64(const std::vector<uint8_t>& bytes, const size_t offset)
+{
+    EXPECT_LE(offset + 8u, bytes.size());
+    uint64_t value = 0u;
+    for (size_t index = 0u; index < 8u; ++index)
+        value |= static_cast<uint64_t>(bytes[offset + index]) << (index * 8u);
+    return value;
+}
+
+std::string ReadFbxBinaryStringProperty(const std::vector<uint8_t>& bytes, const size_t offset)
+{
+    EXPECT_LT(offset, bytes.size());
+    if (offset >= bytes.size() || bytes[offset] != static_cast<uint8_t>('S') || offset + 5u > bytes.size())
+        return {};
+    const auto length = static_cast<size_t>(ReadFbxBinaryUint32(bytes, offset + 1u));
+    EXPECT_LE(offset + 5u + length, bytes.size());
+    if (offset + 5u + length > bytes.size())
+        return {};
+    return std::string(
+        bytes.begin() + static_cast<std::ptrdiff_t>(offset + 5u),
+        bytes.begin() + static_cast<std::ptrdiff_t>(offset + 5u + length));
+}
+
+void WriteFbxBinaryUint32(std::vector<uint8_t>& bytes, const size_t offset, const uint32_t value)
+{
+    ASSERT_LE(offset + 4u, bytes.size());
+    for (size_t index = 0u; index < 4u; ++index)
+        bytes[offset + index] = static_cast<uint8_t>((value >> (index * 8u)) & 0xFFu);
+}
+
+void WriteFbxBinaryUint64(std::vector<uint8_t>& bytes, const size_t offset, const uint64_t value)
+{
+    ASSERT_LE(offset + 8u, bytes.size());
+    for (size_t index = 0u; index < 8u; ++index)
+        bytes[offset + index] = static_cast<uint8_t>((value >> (index * 8u)) & 0xFFu);
+}
+
+bool HasWideFbxBinaryOffsets(const std::vector<uint8_t>& bytes)
+{
+    return bytes.size() >= 27u && ReadFbxBinaryUint32(bytes, 23u) >= 7500u;
+}
+
+struct TestFbxBinaryNodeLocation
+{
+    size_t headerOffset = 0u;
+    size_t endOffset = 0u;
+    size_t propertyOffset = 0u;
+    std::string name;
+};
+
+bool CollectFbxBinaryNodes(
+    const std::vector<uint8_t>& bytes,
+    size_t offset,
+    const size_t parentEnd,
+	const bool wideOffsets,
+    std::vector<TestFbxBinaryNodeLocation>& nodes)
+{
+    const size_t headerSize = wideOffsets ? 25u : 13u;
+    while (offset + headerSize <= parentEnd)
+    {
+        const auto endOffset = static_cast<size_t>(wideOffsets
+            ? ReadFbxBinaryUint64(bytes, offset)
+            : ReadFbxBinaryUint32(bytes, offset));
+        if (endOffset == 0u)
+            return true;
+        const auto propertyLength = static_cast<size_t>(wideOffsets
+            ? ReadFbxBinaryUint64(bytes, offset + 16u)
+            : ReadFbxBinaryUint32(bytes, offset + 8u));
+        const auto nameLength = static_cast<size_t>(bytes[offset + headerSize - 1u]);
+        const auto propertyOffset = offset + headerSize + nameLength;
+        if (endOffset <= offset || endOffset > parentEnd || propertyOffset + propertyLength > endOffset)
+            return false;
+
+        nodes.push_back({
+            offset,
+            endOffset,
+            propertyOffset,
+            std::string(bytes.begin() + static_cast<std::ptrdiff_t>(offset + headerSize),
+                bytes.begin() + static_cast<std::ptrdiff_t>(propertyOffset))
+        });
+        const auto childOffset = propertyOffset + propertyLength;
+        if (childOffset < endOffset && !CollectFbxBinaryNodes(bytes, childOffset, endOffset, wideOffsets, nodes))
+            return false;
+        offset = endOffset;
+    }
+    return offset == parentEnd;
+}
+
+bool InsertFbxBinaryNodes(
+    std::vector<uint8_t>& bytes,
+    const std::string& parentName,
+    const std::vector<TestFbxBinaryNode>& insertedNodes)
+{
+    const bool wideOffsets = HasWideFbxBinaryOffsets(bytes);
+    const size_t headerSize = wideOffsets ? 25u : 13u;
+    std::vector<TestFbxBinaryNodeLocation> nodes;
+    if (!CollectFbxBinaryNodes(bytes, 27u, bytes.size(), wideOffsets, nodes))
+        return false;
+    const auto parent = std::find_if(nodes.begin(), nodes.end(), [&parentName](const auto& node)
+    {
+        return node.name == parentName;
+    });
+    if (parent == nodes.end() || parent->endOffset < headerSize)
+        return false;
+    const auto insertionOffset = parent->endOffset - headerSize;
+    if ((wideOffsets ? ReadFbxBinaryUint64(bytes, insertionOffset) : ReadFbxBinaryUint32(bytes, insertionOffset)) != 0u)
+        return false;
+
+    std::vector<uint8_t> encoded;
+    for (const auto& node : insertedNodes)
+        AppendFbxBinaryNode(encoded, node, insertionOffset, wideOffsets);
+    if (encoded.empty() || (!wideOffsets && encoded.size() > std::numeric_limits<uint32_t>::max()))
+        return false;
+    const auto delta = static_cast<uint32_t>(encoded.size());
+    for (const auto& node : nodes)
+    {
+        if (node.endOffset > insertionOffset)
+        {
+            const auto adjustedEnd = static_cast<uint64_t>(node.endOffset) + delta;
+            if (wideOffsets)
+                WriteFbxBinaryUint64(bytes, node.headerOffset, adjustedEnd);
+            else
+                WriteFbxBinaryUint32(bytes, node.headerOffset, static_cast<uint32_t>(adjustedEnd));
+        }
+    }
+    bytes.insert(
+        bytes.begin() + static_cast<std::ptrdiff_t>(insertionOffset),
+        encoded.begin(),
+        encoded.end());
+    return true;
+}
+
+std::string TestFbxDisplayName(const std::string& name)
+{
+    const auto separator = name.find("::");
+    const auto begin = separator == std::string::npos ? 0u : separator + 2u;
+    const auto end = name.find('\0', begin);
+    return name.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+}
+
+std::vector<uint8_t> MakeBinaryFbxBump2dFixture(
+    const std::filesystem::path& sourceFixture,
+    const bool duplicateTargetName = false)
+{
+    auto bytes = ReadBinaryFile(sourceFixture);
+    const bool wideOffsets = HasWideFbxBinaryOffsets(bytes);
+    std::vector<TestFbxBinaryNodeLocation> nodes;
+    EXPECT_TRUE(CollectFbxBinaryNodes(bytes, 27u, bytes.size(), wideOffsets, nodes));
+    std::vector<TestFbxBinaryNodeLocation> materials;
+    std::copy_if(nodes.begin(), nodes.end(), std::back_inserter(materials), [](const auto& node)
+    {
+        return node.name == "Material";
+    });
+    EXPECT_FALSE(materials.empty());
+    const TestFbxBinaryNodeLocation* targetMaterial = nullptr;
+    if (duplicateTargetName)
+    {
+        for (size_t first = 0u; first < materials.size() && !targetMaterial; ++first)
+        {
+            const auto firstName = ReadFbxBinaryStringProperty(bytes, materials[first].propertyOffset + 9u);
+            for (size_t second = first + 1u; second < materials.size(); ++second)
+            {
+                const auto secondName = ReadFbxBinaryStringProperty(bytes, materials[second].propertyOffset + 9u);
+                if (!firstName.empty() && firstName.size() == secondName.size())
+                {
+                    targetMaterial = &materials[second];
+                    std::copy(
+                        firstName.begin(),
+                        firstName.end(),
+                        bytes.begin() + static_cast<std::ptrdiff_t>(targetMaterial->propertyOffset + 14u));
+                    break;
+                }
+            }
+        }
+    }
+    else
+    {
+        for (const auto& candidate : materials)
+        {
+            const auto candidateName = TestFbxDisplayName(
+                ReadFbxBinaryStringProperty(bytes, candidate.propertyOffset + 9u));
+            if (candidateName.empty())
+                continue;
+            const auto occurrenceCount = static_cast<size_t>(std::count_if(
+                materials.begin(),
+                materials.end(),
+                [&bytes, &candidateName](const TestFbxBinaryNodeLocation& other)
+                {
+                    return TestFbxDisplayName(
+                        ReadFbxBinaryStringProperty(bytes, other.propertyOffset + 9u)) == candidateName;
+                }));
+            if (occurrenceCount == 1u)
+            {
+                targetMaterial = &candidate;
+                break;
+            }
+        }
+    }
+    EXPECT_NE(targetMaterial, nullptr);
+    if (!targetMaterial || bytes[targetMaterial->propertyOffset] != static_cast<uint8_t>('L'))
+        return {};
+    const auto targetMaterialId = ReadFbxBinaryUint64(bytes, targetMaterial->propertyOffset + 1u);
+
+    constexpr uint64_t bumpNodeId = 9188262659392ull;
+    constexpr uint64_t normalTextureId = 9188262659393ull;
+    const auto stringProperty = [](const char* value) { return FbxBinaryStringProperty(value); };
+    const TestFbxBinaryNode bumpNode{"Texture", {
+        FbxBinaryLongProperty(bumpNodeId), stringProperty("Texture::NormalBump2d"), stringProperty("")
+    }, {
+        {"FileName", {stringProperty("")}},
+        {"RelativeFilename", {stringProperty("")}}
+    }};
+    const TestFbxBinaryNode normalTexture{"Texture", {
+        FbxBinaryLongProperty(normalTextureId), stringProperty("Texture::Normal"), stringProperty("")
+    }, {
+        {"FileName", {stringProperty("Textures\\normal.png")}},
+        {"RelativeFilename", {stringProperty("Textures\\normal.png")}}
+    }};
+    if (!InsertFbxBinaryNodes(bytes, "Objects", {bumpNode, normalTexture}))
+        return {};
+
+    const auto connection = [&stringProperty](
+        const uint64_t source,
+        const uint64_t destination,
+        const char* property)
+    {
+        return TestFbxBinaryNode{"C", {
+            stringProperty("OP"),
+            FbxBinaryLongProperty(source),
+            FbxBinaryLongProperty(destination),
+            stringProperty(property)
+        }};
+    };
+    if (!InsertFbxBinaryNodes(bytes, "Connections", {
+        connection(bumpNodeId, targetMaterialId, "3dsMax|Parameters|bump_map"),
+        connection(normalTextureId, bumpNodeId,
+            "3dsMax|ai_bump2d Parameters/Connections|bump_map.shader")
+    }))
+        return {};
+    return bytes;
+}
+
+std::vector<uint8_t> MakeSyntheticBinaryFbxMaterialGraph(
+    const bool wideOffsets,
+    const bool negativeObjectIds = false)
+{
+    std::vector<uint8_t> bytes = {
+        'K', 'a', 'y', 'd', 'a', 'r', 'a', ' ', 'F', 'B', 'X', ' ', 'B', 'i', 'n', 'a', 'r', 'y',
+        ' ', ' ', 0u, 0x1au, 0u
+    };
+    AppendU32(bytes, wideOffsets ? 7500u : 7400u);
+
+    const uint64_t materialId = negativeObjectIds ? std::numeric_limits<uint64_t>::max() - 99u : 100u;
+    const uint64_t bumpNodeId = negativeObjectIds ? std::numeric_limits<uint64_t>::max() - 199u : 200u;
+    const uint64_t normalTextureId = negativeObjectIds ? std::numeric_limits<uint64_t>::max() - 200u : 201u;
+    const auto stringProperty = [](const char* value) { return FbxBinaryStringProperty(value); };
+    const auto connection = [&stringProperty](
+        const uint64_t source,
+        const uint64_t destination,
+        const char* property)
+    {
+        return TestFbxBinaryNode{"C", {
+            stringProperty("OP"),
+            FbxBinaryLongProperty(source),
+            FbxBinaryLongProperty(destination),
+            stringProperty(property)
+        }};
+    };
+
+    const TestFbxBinaryNode objects{"Objects", {}, {
+        {"Material", {
+            FbxBinaryLongProperty(materialId), stringProperty("Material::WideMaterial"), stringProperty("")
+        }},
+        {"Texture", {
+            FbxBinaryLongProperty(bumpNodeId), stringProperty("Texture::NormalBump2d"), stringProperty("")
+        }, {
+            {"FileName", {stringProperty("")}},
+            {"RelativeFilename", {stringProperty("")}}
+        }},
+        {"Texture", {
+            FbxBinaryLongProperty(normalTextureId), stringProperty("Texture::Normal"), stringProperty("")
+        }, {
+            {"FileName", {stringProperty("Textures\\normal.png")}},
+            {"RelativeFilename", {stringProperty("Textures\\normal.png")}}
+        }}
+    }};
+    const TestFbxBinaryNode connections{"Connections", {}, {
+        connection(bumpNodeId, materialId, "3dsMax|Parameters|bump_map"),
+        connection(normalTextureId, bumpNodeId,
+            "3dsMax|ai_bump2d Parameters/Connections|bump_map.shader")
+    }};
+
+    AppendFbxBinaryNode(bytes, objects, 0u, wideOffsets);
+    AppendFbxBinaryNode(bytes, connections, 0u, wideOffsets);
+    bytes.insert(bytes.end(), wideOffsets ? 25u : 13u, 0u);
+    return bytes;
+}
+
+bool ShortenInjectedFbxFilenamePropertyBoundary(std::vector<uint8_t>& bytes)
+{
+    const bool wideOffsets = HasWideFbxBinaryOffsets(bytes);
+    std::vector<TestFbxBinaryNodeLocation> nodes;
+    if (!CollectFbxBinaryNodes(bytes, 27u, bytes.size(), wideOffsets, nodes))
+        return false;
+    const auto filename = std::find_if(
+        nodes.begin(),
+        nodes.end(),
+        [&bytes](const TestFbxBinaryNodeLocation& node)
+        {
+            return (node.name == "FileName" || node.name == "RelativeFilename") &&
+                ReadFbxBinaryStringProperty(bytes, node.propertyOffset) == "Textures\\normal.png";
+        });
+    if (filename == nodes.end())
+        return false;
+
+    const auto propertyLengthOffset = filename->headerOffset + (wideOffsets ? 16u : 8u);
+    if (wideOffsets)
+        WriteFbxBinaryUint64(bytes, propertyLengthOffset, 5u);
+    else
+        WriteFbxBinaryUint32(bytes, propertyLengthOffset, 5u);
+    return true;
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserResolves3dsMaxBump2dNormalTextureChain)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "maxPbrMaterial_metalRough.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+
+    auto fbx = ReadTextFile(sourceFixture);
+    const auto replaceOnce = [&fbx](const std::string& oldValue, const std::string& newValue)
+    {
+        const auto position = fbx.find(oldValue);
+        if (position == std::string::npos)
+            return false;
+        fbx.replace(position, oldValue.size(), newValue);
+        return true;
+    };
+
+    ASSERT_TRUE(replaceOnce("Count: 18", "Count: 19"));
+    const auto textureDefinitions = fbx.find("ObjectType: \"Texture\"");
+    ASSERT_NE(textureDefinitions, std::string::npos);
+    const auto textureCount = fbx.find("Count: 7", textureDefinitions);
+    ASSERT_NE(textureCount, std::string::npos);
+    fbx.replace(textureCount, std::string("Count: 7").size(), "Count: 8");
+    ReplaceAllText(fbx, "3dsMax|main|norm_map", "3dsMax|Parameters|bump_map");
+
+    constexpr uint64_t bumpNodeId = 9188262659392ull;
+    const std::string emissionTextureMarker = "\tTexture: 2188262700192, \"Texture::Emission\", \"\" {";
+    const auto emissionTexturePosition = fbx.find(emissionTextureMarker);
+    ASSERT_NE(emissionTexturePosition, std::string::npos);
+    fbx.insert(
+        emissionTexturePosition,
+        "\tTexture: " + std::to_string(bumpNodeId) + R"(, "Texture::NormalBump2d", "" {
+		Type: "TextureVideoClip"
+		Version: 202
+		TextureName: "Texture::NormalBump2d"
+		Properties70:  {
+			P: "3dsMax|ai_bump2d Parameters/Connections", "Compound", "", ""
+			P: "3dsMax|ai_bump2d Parameters/Connections|bump_map.connected", "Bool", "", "A",1
+			P: "3dsMax|ai_bump2d Parameters/Connections|bump_map.shader", "Reference", "", "A"
+		}
+		Media: ""
+		FileName: ""
+		RelativeFilename: ""
+		ModelUVTranslation: 0,0
+		ModelUVScaling: 1,1
+		Texture_Alpha_Source: "None"
+		Cropping: 0,0,0,0
+	}
+)"
+    );
+
+    ASSERT_TRUE(replaceOnce(
+        "C: \"OP\",2188262659392,2188102329504, \"3dsMax|Parameters|bump_map\"",
+        "C: \"OP\"," + std::to_string(bumpNodeId) + ",2188102329504, \"3dsMax|Parameters|bump_map\"\n\t\n"
+        "\tC: \"OP\"," + std::to_string(bumpNodeId) + ",2188102329504, \"3dsMax|main|norm_map\"\n\t\n"
+        "\t;Texture::Normal, Texture::NormalBump2d\n\t"
+        "C: \"OP\",9188262659394," + std::to_string(bumpNodeId) +
+        ", \"3dsMax|ai_bump2d Parameters/Connections|bump_map.shader\"\n\t\n\t"
+        "C: \"OP\",2188262659392," + std::to_string(bumpNodeId) +
+        ", \"3dsMax|ai_bump2d Parameters/Connections|bump_map.shader\""));
+
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "Bump2dNormal.fbx";
+    WriteTextFile(sourcePath, fbx);
+    WriteBinaryFile(sourcePath.parent_path() / "Textures" / "normal.png", TinyPng());
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    std::vector<std::string> externalDependencies;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+        &externalDependencies));
+
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929297"));
+    scene.sceneKey = "Bump2dNormal";
+    ASSERT_TRUE(parser.PopulateImportedSceneData(
+        sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        scene));
+
+    ASSERT_EQ(scene.materials.size(), 1u);
+    const auto* bump = FindMaterialChannel(scene.materials.front(), "bump");
+    ASSERT_NE(bump, nullptr);
+    ASSERT_FALSE(bump->textureKey.empty());
+    EXPECT_EQ(FindMaterialChannel(scene.materials.front(), "normal"), nullptr)
+        << "A 3ds Max bump_map remains parser bump input until shared texture identity classification promotes it.";
+
+    const auto texture = std::find_if(
+        scene.textures.begin(),
+        scene.textures.end(),
+        [bump](const NLS::Render::Assets::ImportedSceneNamedRecord& record)
+        {
+            return record.sourceKey == bump->textureKey;
+        });
+    ASSERT_NE(texture, scene.textures.end());
+    EXPECT_EQ(texture->uri, "Textures\\normal.png");
+    EXPECT_TRUE(Contains(externalDependencies, "Textures\\normal.png"));
+
+    const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        scene.materials.front(),
+        NLS::Render::Assets::MaterialSourceModel::FbxParserMaterial);
+    const auto normalSlot = std::find_if(
+        converted.textureSlots.begin(),
+        converted.textureSlots.end(),
+        [](const NLS::Render::Assets::ConvertedMaterialTextureSlot& slot)
+        {
+            return slot.slot == "Normal";
+        });
+    ASSERT_NE(normalSlot, converted.textureSlots.end());
+    EXPECT_EQ(normalSlot->textureKey, bump->textureKey);
+    EXPECT_EQ(normalSlot->colorSpace, NLS::Render::Assets::MaterialTextureColorSpace::Linear);
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserResolvesBinary3dsMaxBump2dNormalTextureChain)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "spider.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "BinaryBump2dNormal.fbx";
+    const auto binaryFbx = MakeBinaryFbxBump2dFixture(sourceFixture);
+    ASSERT_FALSE(binaryFbx.empty());
+    WriteBinaryFile(sourcePath, binaryFbx);
+    WriteBinaryFile(sourcePath.parent_path() / "Textures" / "normal.png", TinyPng());
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    std::vector<std::string> externalDependencies;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+        &externalDependencies));
+
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929299"));
+    scene.sceneKey = "BinaryBump2dNormal";
+    ASSERT_TRUE(parser.PopulateImportedSceneData(
+        sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        scene));
+
+    ASSERT_GE(scene.materials.size(), 2u);
+    const auto targetMaterial = std::find_if(
+        scene.materials.begin(),
+        scene.materials.end(),
+        [](const NLS::Render::Assets::ImportedSceneNamedRecord& material)
+        {
+            const auto* channel = FindMaterialChannel(material, "bump");
+            return channel && !channel->textureKey.empty();
+    });
+    ASSERT_NE(targetMaterial, scene.materials.end());
+    EXPECT_EQ(
+        std::count_if(
+            scene.materials.begin(),
+            scene.materials.end(),
+            [&targetMaterial](const NLS::Render::Assets::ImportedSceneNamedRecord& material)
+            {
+                return material.name == targetMaterial->name;
+            }),
+        1)
+        << "FBX bump2d recovery is only safe when the imported material display name is unique.";
+
+    const auto* bump = FindMaterialChannel(*targetMaterial, "bump");
+    ASSERT_NE(bump, nullptr);
+    ASSERT_FALSE(bump->textureKey.empty());
+    const auto texture = std::find_if(
+        scene.textures.begin(),
+        scene.textures.end(),
+        [bump](const NLS::Render::Assets::ImportedSceneNamedRecord& record)
+        {
+            return record.sourceKey == bump->textureKey;
+        });
+    ASSERT_NE(texture, scene.textures.end());
+    EXPECT_EQ(texture->uri, "Textures\\normal.png");
+    EXPECT_TRUE(Contains(externalDependencies, "Textures\\normal.png"));
+
+    const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        *targetMaterial,
+        NLS::Render::Assets::MaterialSourceModel::FbxParserMaterial);
+    EXPECT_TRUE(std::any_of(
+        converted.textureSlots.begin(),
+        converted.textureSlots.end(),
+        [bump](const NLS::Render::Assets::ConvertedMaterialTextureSlot& slot)
+        {
+            return slot.slot == "Normal" && slot.textureKey == bump->textureKey;
+        }));
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserReadsBinary7500WideOffsetBump2dGraph)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "Binary7500Bump2dNormal.fbx";
+    const auto binaryFbx = MakeSyntheticBinaryFbxMaterialGraph(true);
+    ASSERT_FALSE(binaryFbx.empty());
+    ASSERT_TRUE(HasWideFbxBinaryOffsets(binaryFbx));
+    WriteBinaryFile(sourcePath, binaryFbx);
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    EXPECT_TRUE(parser.CanReadFbxMaterialGraphForTesting(sourcePath));
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserReadsSignedObjectIdsAcrossAsciiAndBinaryGraphs)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto root = MakeImportTestRoot();
+    const auto binaryPath = root / "Assets" / "Models" / "SignedIdsBinary7500.fbx";
+    const auto binaryFbx = MakeSyntheticBinaryFbxMaterialGraph(true, true);
+    ASSERT_FALSE(binaryFbx.empty());
+    WriteBinaryFile(binaryPath, binaryFbx);
+
+    const auto asciiPath = root / "Assets" / "Models" / "SignedIdsAscii.fbx";
+    WriteTextFile(asciiPath, R"(Objects:  {
+	Material: -100, "Material::SignedMaterial", "" {
+	}
+	Texture: -200, "Texture::SignedNormal", "" {
+		RelativeFilename: "Textures\normal.png"
+	}
+}
+Connections:  {
+	C: "OP",-200,-100, "3dsMax|Parameters|bump_map"
+}
+)");
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    EXPECT_TRUE(parser.CanReadFbxMaterialGraphForTesting(binaryPath));
+    EXPECT_TRUE(parser.CanReadFbxMaterialGraphForTesting(asciiPath));
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserRefusesAmbiguousDuplicateMaterialRecovery)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "spider.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "AmbiguousBinaryBump2dNormal.fbx";
+    const auto binaryFbx = MakeBinaryFbxBump2dFixture(sourceFixture, true);
+    ASSERT_FALSE(binaryFbx.empty());
+    WriteBinaryFile(sourcePath, binaryFbx);
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    std::vector<std::string> externalDependencies;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+        &externalDependencies));
+
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929302"));
+    scene.sceneKey = "AmbiguousBinaryBump2dNormal";
+    ASSERT_TRUE(parser.PopulateImportedSceneData(
+        sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        scene));
+
+    bool hasDuplicateMaterialName = false;
+    for (size_t first = 0u; first < scene.materials.size() && !hasDuplicateMaterialName; ++first)
+    {
+        for (size_t second = first + 1u; second < scene.materials.size(); ++second)
+        {
+            if (scene.materials[first].name == scene.materials[second].name)
+            {
+                hasDuplicateMaterialName = true;
+                break;
+            }
+        }
+    }
+    EXPECT_TRUE(hasDuplicateMaterialName);
+    EXPECT_FALSE(Contains(externalDependencies, "Textures\\normal.png"));
+    EXPECT_TRUE(std::none_of(
+        scene.textures.begin(),
+        scene.textures.end(),
+        [](const NLS::Render::Assets::ImportedSceneNamedRecord& texture)
+        {
+            return texture.uri == "Textures\\normal.png";
+        }));
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserRejectsStringThatCrossesBinaryPropertyBoundary)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    auto binaryFbx = MakeSyntheticBinaryFbxMaterialGraph(false);
+    ASSERT_FALSE(binaryFbx.empty());
+    ASSERT_TRUE(ShortenInjectedFbxFilenamePropertyBoundary(binaryFbx));
+
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "MalformedPropertyBoundary.fbx";
+    WriteBinaryFile(sourcePath, binaryFbx);
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    EXPECT_FALSE(parser.CanReadFbxMaterialGraphForTesting(sourcePath));
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserPreservesExplicit3dsMaxNormalTexture)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "maxPbrMaterial_metalRough.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourcePath));
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    std::vector<std::string> externalDependencies;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+        &externalDependencies));
+
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929298"));
+    scene.sceneKey = "Explicit3dsMaxNormal";
+    ASSERT_TRUE(parser.PopulateImportedSceneData(
+        sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        scene));
+
+    ASSERT_EQ(scene.materials.size(), 1u);
+    const auto* normal = FindMaterialChannel(scene.materials.front(), "normal");
+    ASSERT_NE(normal, nullptr);
+    ASSERT_FALSE(normal->textureKey.empty());
+    EXPECT_EQ(FindMaterialChannel(scene.materials.front(), "bump"), nullptr);
+
+    const auto texture = std::find_if(
+        scene.textures.begin(),
+        scene.textures.end(),
+        [normal](const NLS::Render::Assets::ImportedSceneNamedRecord& record)
+        {
+            return record.sourceKey == normal->textureKey;
+        });
+    ASSERT_NE(texture, scene.textures.end());
+    EXPECT_EQ(texture->uri, "Textures\\normal.png");
+    EXPECT_TRUE(Contains(externalDependencies, "Textures\\normal.png"));
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserPreservesStandardNormalMapTexture)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "maxPbrMaterial_metalRough.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+    auto fbx = ReadTextFile(sourceFixture);
+    ReplaceAllText(fbx, "3dsMax|main|norm_map", "NormalMap");
+
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "UnrecognizedNormalCamera.fbx";
+    WriteTextFile(sourcePath, fbx);
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    std::vector<std::string> externalDependencies;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+        &externalDependencies));
+
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929300"));
+    scene.sceneKey = "UnrecognizedNormalCamera";
+    ASSERT_TRUE(parser.PopulateImportedSceneData(
+        sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        scene));
+
+    ASSERT_EQ(scene.materials.size(), 1u);
+    const auto* normal = FindMaterialChannel(scene.materials.front(), "normal");
+    ASSERT_NE(normal, nullptr);
+    ASSERT_FALSE(normal->textureKey.empty());
+    const auto texture = std::find_if(
+        scene.textures.begin(),
+        scene.textures.end(),
+        [normal](const NLS::Render::Assets::ImportedSceneNamedRecord& record)
+        {
+            return record.sourceKey == normal->textureKey;
+        });
+    ASSERT_NE(texture, scene.textures.end());
+    EXPECT_EQ(texture->uri, "Textures\\normal.png");
+    EXPECT_TRUE(Contains(externalDependencies, "Textures\\normal.png"));
+
+    std::filesystem::remove_all(root);
 #endif
 }
 
@@ -9546,6 +10432,14 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesCrossFormatNo
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
         17u)
         << "Importer version 17 FBX materials can omit normal-named bump textures and OBJ materials can misdecode height maps as tangent-space normals.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesIncompleteFbxBump2dVersion18Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        18u)
+        << "Importer version 18 FBX materials can still omit file textures connected through a 3ds Max ai_bump2d node.";
 }
 
 #if !NLS_HAS_AUTODESK_FBX_SDK && NLS_HAS_ASSIMP_FBX_IMPORTER

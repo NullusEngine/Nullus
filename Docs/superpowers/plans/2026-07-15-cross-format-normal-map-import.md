@@ -17,9 +17,14 @@
 - 修改：`Runtime/Rendering/Assets/MaterialConversion.cpp`
   - 添加局部纹理身份分类 helper，并在 parser channel 转换中应用统一规则。
 - 修改：`Tests/Unit/AssetImportPipelineTests.cpp`
-  - 记录 v18 必须淘汰 v17 模型材质产物。
+  - 记录 v19 必须淘汰 v17 和不完整的 v18 模型材质产物。
 - 修改：`Runtime/Core/Assets/AssetMeta.cpp`
-  - 将共享 `ModelScene` importer 版本从 17 提升到 18。
+  - 将共享 `ModelScene` importer 版本从 17 提升到 19。
+- 修改：`Runtime/Rendering/Resources/Parsers/AssimpParser.cpp`
+  - 在 Nullus 适配层从 ASCII/Binary FBX Objects/Connections 元数据恢复 3ds Max
+    `ai_bump2d` 中间节点连接的文件 Texture；保留 FBX `bump_map` 与显式 normal
+    属性的原始语义，并为无法识别 raw 属性的 `NORMAL_CAMERA` 保留保守 fallback，
+    不修改 Assimp 三方代码。
 - 验证：`TestProject/Assets/Model/pkg_a_curtains/NewSponza_Curtains_FBX_ZUp.fbx`
   - 重导入后材质应包含 curtain normal binding。
 - 验证：`TestProject/Assets/Model/pkg_a_curtains/NewSponza_Curtains_glTF.gltf`
@@ -285,13 +290,13 @@ Build/bin/Debug/NullusUnitTests.exe --gtest_filter="AssetImportPipelineTests.Mod
 
 预期：FAIL，当前 `ModelScene` importer version 等于 17。
 
-- [ ] **步骤 3：将 ModelScene importer version 更新为 18**
+- [ ] **步骤 3：将 ModelScene importer version 更新为 19**
 
 在 `Runtime/Core/Assets/AssetMeta.cpp` 中修改：
 
 ```cpp
 case AssetType::ModelScene:
-    return 18u;
+    return 19u;
 ```
 
 - [ ] **步骤 4：重新构建并确认缓存测试通过**
@@ -334,7 +339,7 @@ git status --short
 
 预期：`git diff --check` 无输出；工作区不包含未提交的本任务代码。
 
-- [ ] **步骤 3：启动 Editor 触发 importer v18 重导入并生成 DX12 capture**
+- [ ] **步骤 3：启动 Editor 触发 importer v19 重导入并生成 DX12 capture**
 
 先按 `nullus-renderdoc-debug` 技能和 `Docs/Rendering/RenderDocDebugging.md` 执行：
 
@@ -344,11 +349,11 @@ py -3 Tools/RenderDoc/renderdoc_runner.py --target editor --backend dx12 --captu
 
 预期：runner 报告实际 backend 为 DX12，并在
 `TestProject/Logs/RenderDoc/Editor/dx12/` 写出新的 `.rdc`。Editor 启动时因
-ModelScene importer v18 重建 FBX、OBJ 和 glTF 模型产物。
+ModelScene importer v19 重建 FBX、OBJ 和 glTF 模型产物。
 
 - [ ] **步骤 4：核对 Sponza FBX 与 glTF 材质产物**
 
-在 ArtifactDB 中定位两个 source asset 的当前 v18 manifest，读取 curtain material
+在 ArtifactDB 中定位两个 source asset 的当前 v19 manifest，读取 curtain material
 payload。两个产物都必须包含：
 
 ```text

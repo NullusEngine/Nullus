@@ -83,7 +83,14 @@ the same source semantics.
 
 ## Cache Invalidation
 
-Increment the shared `ModelScene` importer version from 17 to 18. FBX and OBJ
+Increment the shared `ModelScene` importer version from 17 to 19. Version 18
+applied the shared material classifier but could still omit FBX file textures
+connected through a 3ds Max `ai_bump2d` node. Version 19 resolves that FBX
+connection in the Nullus Assimp parser adapter for both ASCII and Binary FBX
+before classification, without modifying third-party Assimp code. Recognized
+raw FBX normal/bump properties remain authoritative; an otherwise ambiguous
+Assimp `NORMAL_CAMERA` texture is retained as conservative `bump` input for the
+shared identity classifier. FBX and OBJ
 material artifacts created under the old policy must be regenerated. glTF also
 uses the shared model importer version, so its artifacts will be rebuilt even
 though its normal-map semantics do not change.
@@ -103,7 +110,10 @@ Add focused material-conversion tests covering:
 - glTF explicit normal behavior remains unchanged;
 - punctuation, case, camel-case, and false-positive names exercise the
   classifier boundaries;
-- importer version 18 invalidates version 17 artifacts.
+- ASCII and Binary 3ds Max `ai_bump2d` chains resolve the file texture when the
+  imported material display name is unique; ambiguous duplicate names are skipped
+  with a warning instead of relying on unstable material ordering;
+- importer version 19 invalidates version 17 and incomplete version 18 artifacts.
 
 Run the focused `AssetMaterialConversionTests` and model-importer version tests,
 then the maintained `NullusUnitTests` target if practical. Reimport the Sponza

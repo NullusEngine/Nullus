@@ -5593,9 +5593,7 @@ TEST(RendererFrameObjectBindingTests, LightGridComputeBindingSetsUseShaderExpect
     lightTransform.SetWorldPosition({ 0.0f, 0.0f, 5.0f });
     NLS::Render::Entities::Light pointLight(&lightTransform);
     pointLight.type = NLS::Render::Settings::ELightType::POINT;
-    pointLight.constant = 1.0f;
-    pointLight.linear = 0.0f;
-    pointLight.quadratic = 0.04f;
+    pointLight.range = 25.0f;
     pointLight.intensity = 8.0f;
 
     NLS::Render::Data::LightingDescriptor lightingDescriptor;

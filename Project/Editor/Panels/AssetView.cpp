@@ -64,7 +64,8 @@ void Editor::Panels::AssetView::EnsureRenderer()
     auto& ambientLightGo = m_scene.CreateGameObject("Ambient Light");
     auto ambientLight = ambientLightGo.AddComponent<Engine::Components::LightComponent>();
     ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
-    ambientLight->SetRadius(10000.0f);
+    ambientLight->SetRange(10000.0f);
+    ambientLight->SetIntensity(0.1f);
 
     m_assetActor = &m_scene.CreateGameObject("Asset");
     m_meshFilter = m_assetActor->AddComponent<Engine::Components::MeshFilter>();

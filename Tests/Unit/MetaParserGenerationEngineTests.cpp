@@ -42,6 +42,11 @@ TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(cameraText, "AddField<NLS::Engine::Components::CameraComponent, NLS::Engine::LayerMask>(\"visibleLayers\"");
     ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, float>(\"intensity\"");
     ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, NLS::Render::Settings::ELightType>(\"lightType\"");
+    ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, float>(\"range\"");
+    ExpectNotContains(lightText, "\"constant\"");
+    ExpectNotContains(lightText, "\"linear\"");
+    ExpectNotContains(lightText, "\"quadratic\"");
+    ExpectNotContains(lightText, "\"radius\"");
     ExpectContains(meshFilterText, "AllocateType(typeKey, \"NLS::Engine::Components::MeshFilter\", moduleKey)");
     ExpectContains(meshFilterText, "AddField<NLS::Engine::Components::MeshFilter, NLS::Engine::Serialize::PPtr<NLS::Render::Resources::Mesh>>(\"mesh\", static_cast<NLS::Engine::Serialize::PPtr<NLS::Render::Resources::Mesh> (NLS::Engine::Components::MeshFilter::*)() const>(&NLS::Engine::Components::MeshFilter::GetMeshReference), static_cast<void (NLS::Engine::Components::MeshFilter::*)(NLS::Engine::Serialize::PPtr<NLS::Render::Resources::Mesh>)>(&NLS::Engine::Components::MeshFilter::SetMeshReference), {})");
     ExpectNotContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Engine::Serialize::PPtr<NLS::Render::Resources::Mesh>>(\"mesh\"");

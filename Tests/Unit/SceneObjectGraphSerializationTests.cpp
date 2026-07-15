@@ -1916,6 +1916,12 @@ TEST(SceneObjectGraphSerializationTests, LoadEmptyLightedSceneDoesNotCreateValid
     ASSERT_NE(scene, nullptr);
     EXPECT_EQ(scene->FindGameObjectByName("Validation Cube"), nullptr);
 
+    auto* ambientActor = scene->FindGameObjectByName("Ambient Light");
+    ASSERT_NE(ambientActor, nullptr);
+    auto* ambientLight = ambientActor->GetComponent<NLS::Engine::Components::LightComponent>();
+    ASSERT_NE(ambientLight, nullptr);
+    EXPECT_FLOAT_EQ(ambientLight->GetIntensity(), 0.1f);
+
     materialManager.UnloadResources();
     meshManager.UnloadResources();
 }

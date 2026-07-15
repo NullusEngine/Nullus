@@ -45,9 +45,6 @@ struct NLSLightGridLight
     uint type;
     float3 color;
     float intensity;
-    float constantAttenuation;
-    float linearAttenuation;
-    float quadraticAttenuation;
     float outerCutoffDegrees;
 };
 
@@ -240,10 +237,7 @@ NLSLightGridLight NLSLoadLight(StructuredBuffer<uint> forwardLocalLightBuffer, u
     light.type = forwardLocalLightBuffer[baseIndex + 7u];
     light.color = float3(asfloat(forwardLocalLightBuffer[baseIndex + 8u]), asfloat(forwardLocalLightBuffer[baseIndex + 9u]), asfloat(forwardLocalLightBuffer[baseIndex + 10u]));
     light.intensity = asfloat(forwardLocalLightBuffer[baseIndex + 11u]);
-    light.constantAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 12u]);
-    light.linearAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 13u]);
-    light.quadraticAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 14u]);
-    light.outerCutoffDegrees = asfloat(forwardLocalLightBuffer[baseIndex + 15u]);
+    light.outerCutoffDegrees = asfloat(forwardLocalLightBuffer[baseIndex + 12u]);
     return light;
 }
 
@@ -335,10 +329,16 @@ uint NLSComputeClusterIndexFromWorldPosition(float3 worldPosition)
 
 float NLSComputePointAttenuation(NLSLightGridLight light, float distanceToLight)
 {
-    const float attenuation = light.constantAttenuation +
-        light.linearAttenuation * distanceToLight +
-        light.quadraticAttenuation * distanceToLight * distanceToLight;
-    return attenuation > 0.0f ? (1.0f / attenuation) : 1.0f;
+    if (!isfinite(light.range) || !isfinite(distanceToLight) || light.range <= 0.0f || distanceToLight >= light.range)
+        return 0.0f;
+
+    const float rawDistanceSquared = distanceToLight * distanceToLight;
+    const float distanceSquared = max(distanceToLight * distanceToLight, 1.0e-4f);
+    const float rangeSquared = light.range * light.range;
+    const float rangeRatio = rawDistanceSquared / rangeSquared;
+    float smoothFactor = saturate(1.0f - rangeRatio * rangeRatio);
+    smoothFactor *= smoothFactor;
+    return smoothFactor / distanceSquared;
 }
 
 float3 NLSSafePbrAlbedo(float3 albedo)
@@ -470,8 +470,10 @@ float3 NLSEvaluateCookTorranceDirect(
     const float geometryNdotV = dot(geometryNormalWS, viewDir);
     if (geometryNdotL <= 0.0f || geometryNdotV <= 0.0f)
         return 0.0f.xxx;
-    const float geometryFade = NLSGeometryHorizonFade(geometryNdotL) *
-        NLSGeometryHorizonFade(geometryNdotV);
+    const float shadingNdotL = dot(shadingNormalWS, lightDir);
+    const float shadingNdotV = dot(shadingNormalWS, viewDir);
+    const float geometryFade = NLSGeometryHorizonVisibility(geometryNdotL, shadingNdotL) *
+        NLSGeometryHorizonVisibility(geometryNdotV, shadingNdotV);
 
     const float3 shadingDirect = NLSEvaluateCookTorranceShadingDirect(
         shadingNormalWS,

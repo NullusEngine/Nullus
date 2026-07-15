@@ -1725,7 +1725,7 @@ public:
         auto& ambient = m_scene.CreateEditorTransientGameObject("Thumbnail Preview Ambient");
         auto* ambientLight = ambient.AddComponent<NLS::Engine::Components::LightComponent>();
         ambientLight->SetLightType(NLS::Render::Settings::ELightType::AMBIENT_SPHERE);
-        ambientLight->SetRadius(10000.0f);
+        ambientLight->SetRange(10000.0f);
         ambientLight->SetIntensity(kThumbnailPreviewAmbientIntensity);
 
         m_framebuffer.SetOptimizedColorClearValue(0.0f, 0.0f, 0.0f, 0.0f);

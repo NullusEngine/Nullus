@@ -67,44 +67,13 @@ public:
     FUNCTION()
     void SetIntensity(float p_intensity);
 
-    /**
-     * Returns the light constant
-     */
+    /** Returns the explicit light influence range. */
     FUNCTION()
-    float GetConstant() const;
+    float GetRange() const;
 
-    /**
-     * Returns the light linear
-     */
+    /** Sets the explicit light influence range; invalid values become zero. */
     FUNCTION()
-    float GetLinear() const;
-
-    /**
-     * Returns the light quadratic
-     */
-    FUNCTION()
-    float GetQuadratic() const;
-
-    /**
-     * Defines the light constant
-     * @param p_constant
-     */
-    FUNCTION()
-    void SetConstant(float p_constant);
-
-    /**
-     * Defines the light linear
-     * @param p_linear
-     */
-    FUNCTION()
-    void SetLinear(float p_linear);
-
-    /**
-     * Defines the light quadratic
-     * @param p_quadratic
-     */
-    FUNCTION()
-    void SetQuadratic(float p_quadratic);
+    void SetRange(float p_range);
 
     /**
      * Returns the light cutoff
@@ -131,19 +100,6 @@ public:
      */
     FUNCTION()
     void SetOuterCutoff(float p_outerCutoff);
-
-    /**
-     * Returns the radius of the sphere
-     */
-    FUNCTION()
-    float GetRadius() const;
-
-    /**
-     * Defines the radius of the sphere
-     * @param p_radius
-     */
-    FUNCTION()
-    void SetRadius(float p_radius);
 
     /**
      * Returns the size of the box

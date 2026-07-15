@@ -46,11 +46,8 @@ namespace NLS::Engine::Rendering
             NLS::Maths::Vector3 position{ 0.0f, 0.0f, 0.0f };
             NLS::Maths::Vector3 forward{ 0.0f, 0.0f, -1.0f };
             NLS::Maths::Vector3 color{ 1.0f, 1.0f, 1.0f };
-            float effectRange = 0.0f;
+            float range = 10.0f;
             float intensity = 1.0f;
-            float constant = 0.0f;
-            float linear = 0.0f;
-            float quadratic = 1.0f;
             float outerCutoff = 15.0f;
             NLS::Render::Settings::ELightType type = NLS::Render::Settings::ELightType::POINT;
         };

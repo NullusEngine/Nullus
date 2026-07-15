@@ -224,19 +224,19 @@ bool SubmitLightVolume(
     switch (light.type)
     {
     case Settings::ELightType::POINT:
-        return SubmitSphere(service, position, rotation, light.GetEffectRange(), lightOptions);
+        return SubmitSphere(service, position, rotation, light.GetSafeRange(), lightOptions);
 
     case Settings::ELightType::DIRECTIONAL:
         return service.SubmitLine(position, position + light.transform->GetWorldForward() * kDirectionalLightHelperLength, lightOptions);
 
     case Settings::ELightType::SPOT:
-        return SubmitCone(service, position, rotation, light.GetEffectRange(), light.GetEffectRange(), lightOptions);
+        return SubmitCone(service, position, rotation, light.GetSafeRange(), light.GetSafeRange(), lightOptions);
 
     case Settings::ELightType::AMBIENT_BOX:
-        return SubmitBox(service, position, rotation, { light.constant, light.linear, light.quadratic }, lightOptions);
+        return SubmitBox(service, position, rotation, light.size, lightOptions);
 
     case Settings::ELightType::AMBIENT_SPHERE:
-        return SubmitSphere(service, position, rotation, light.constant, lightOptions);
+        return SubmitSphere(service, position, rotation, light.GetSafeRange(), lightOptions);
     }
 
     return true;

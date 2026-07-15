@@ -44,31 +44,6 @@ namespace
         return bits;
     }
 
-    void PackLight(
-        const NLS::Render::Entities::Light& light,
-        std::vector<uint32_t>& packedWords)
-    {
-        packedWords.push_back(PackFloat(light.transform->GetWorldPosition().x));
-        packedWords.push_back(PackFloat(light.transform->GetWorldPosition().y));
-        packedWords.push_back(PackFloat(light.transform->GetWorldPosition().z));
-        packedWords.push_back(PackFloat(light.GetEffectRange()));
-
-        packedWords.push_back(PackFloat(light.transform->GetWorldForward().x));
-        packedWords.push_back(PackFloat(light.transform->GetWorldForward().y));
-        packedWords.push_back(PackFloat(light.transform->GetWorldForward().z));
-        packedWords.push_back(static_cast<uint32_t>(light.type));
-
-        packedWords.push_back(PackFloat(light.color.x));
-        packedWords.push_back(PackFloat(light.color.y));
-        packedWords.push_back(PackFloat(light.color.z));
-        packedWords.push_back(PackFloat(light.intensity));
-
-        packedWords.push_back(PackFloat(light.constant));
-        packedWords.push_back(PackFloat(light.linear));
-        packedWords.push_back(PackFloat(light.quadratic));
-        packedWords.push_back(PackFloat(light.outerCutoff));
-    }
-
     void PackCapturedLight(
         const NLS::Engine::Rendering::LightGridPrepass::CapturedLight& light,
         std::vector<uint32_t>& packedWords)
@@ -76,7 +51,7 @@ namespace
         packedWords.push_back(PackFloat(light.position.x));
         packedWords.push_back(PackFloat(light.position.y));
         packedWords.push_back(PackFloat(light.position.z));
-        packedWords.push_back(PackFloat(light.effectRange));
+        packedWords.push_back(PackFloat(light.range));
 
         packedWords.push_back(PackFloat(light.forward.x));
         packedWords.push_back(PackFloat(light.forward.y));
@@ -88,10 +63,10 @@ namespace
         packedWords.push_back(PackFloat(light.color.z));
         packedWords.push_back(PackFloat(light.intensity));
 
-        packedWords.push_back(PackFloat(light.constant));
-        packedWords.push_back(PackFloat(light.linear));
-        packedWords.push_back(PackFloat(light.quadratic));
         packedWords.push_back(PackFloat(light.outerCutoff));
+        packedWords.push_back(0u);
+        packedWords.push_back(0u);
+        packedWords.push_back(0u);
     }
 
     bool ShouldLogLightGridHotPathFailureDiagnostics(const NLS::Render::Context::Driver& driver)
@@ -158,11 +133,8 @@ namespace
             if (!(left.position == right.position) ||
                 !(left.forward == right.forward) ||
                 !(left.color == right.color) ||
-                left.effectRange != right.effectRange ||
+                left.range != right.range ||
                 left.intensity != right.intensity ||
-                left.constant != right.constant ||
-                left.linear != right.linear ||
-                left.quadratic != right.quadratic ||
                 left.outerCutoff != right.outerCutoff ||
                 left.type != right.type)
                 return false;
@@ -261,11 +233,8 @@ namespace NLS::Engine::Rendering
             capturedLight.position = light.transform->GetWorldPosition();
             capturedLight.forward = light.transform->GetWorldForward();
             capturedLight.color = light.color;
-            capturedLight.effectRange = light.GetEffectRange();
+            capturedLight.range = light.GetSafeRange();
             capturedLight.intensity = light.intensity;
-            capturedLight.constant = light.constant;
-            capturedLight.linear = light.linear;
-            capturedLight.quadratic = light.quadratic;
             capturedLight.outerCutoff = light.outerCutoff;
             capturedLight.type = light.type;
             preparedInputs.lights.push_back(capturedLight);

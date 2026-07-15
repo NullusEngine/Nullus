@@ -3087,7 +3087,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto materialRequest = BuildAssetThumbnailRequestForItem(root, material, 96u);
     ASSERT_TRUE(materialRequest.has_value());
     EXPECT_EQ(materialRequest->kind, AssetThumbnailKind::MaterialSphere);
-    EXPECT_EQ(materialRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v9");
+    EXPECT_EQ(materialRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v11");
     EXPECT_EQ(materialRequest->settingsFingerprint, "asset-browser-thumbnail:v20-gpu-black-frame-fallback");
     EXPECT_FALSE(materialRequest->dependencyStamp.empty());
     EXPECT_EQ(materialRequest->colorSpaceMode, "srgb");

@@ -53,9 +53,16 @@ float3 NLSOctDecodeNormal(float2 encoded)
     return NLSSafeNormalize(normal, float3(0.0f, 0.0f, 1.0f));
 }
 
-float NLSGeometryHorizonFade(float ndotDirection)
+float NLSGeometryHorizonVisibility(float geometryNdotDirection, float shadingNdotDirection)
 {
-    return ndotDirection <= 0.0f ? 0.0f : smoothstep(0.0f, 0.10f, ndotDirection);
+    if (geometryNdotDirection <= 0.0f)
+        return 0.0f;
+    if (shadingNdotDirection <= 0.0f)
+        return 1.0f;
+
+    const float horizonRatio = saturate(
+        geometryNdotDirection / max(shadingNdotDirection, 1.0e-4f));
+    return smoothstep(0.0f, 0.35f, horizonRatio);
 }
 
 #endif

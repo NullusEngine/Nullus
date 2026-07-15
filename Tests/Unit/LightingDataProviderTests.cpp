@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -176,9 +177,7 @@ TEST(LightingDataProviderTests, LightGridCapturedFrameInputsOwnLightValuesInstea
     lightActor.GetTransform()->SetWorldPosition({ 1.0f, 2.0f, 3.0f });
     light->SetColor({ 0.25f, 0.5f, 0.75f });
     light->SetIntensity(4.0f);
-    light->SetConstant(0.2f);
-    light->SetLinear(0.3f);
-    light->SetQuadratic(0.4f);
+    light->SetRange(42.0f);
     light->SetOuterCutoff(22.0f);
 
     NLS::Engine::Rendering::SceneLightingProvider provider;
@@ -195,9 +194,7 @@ TEST(LightingDataProviderTests, LightGridCapturedFrameInputsOwnLightValuesInstea
     lightActor.GetTransform()->SetWorldPosition({ 10.0f, 20.0f, 30.0f });
     light->SetColor({ 1.0f, 0.0f, 0.0f });
     light->SetIntensity(9.0f);
-    light->SetConstant(1.0f);
-    light->SetLinear(2.0f);
-    light->SetQuadratic(3.0f);
+    light->SetRange(9.0f);
     light->SetOuterCutoff(45.0f);
 
     EXPECT_TRUE(capturedInputs.hasSkyboxTexture);
@@ -208,13 +205,28 @@ TEST(LightingDataProviderTests, LightGridCapturedFrameInputsOwnLightValuesInstea
     EXPECT_FLOAT_EQ(capturedLight.color.y, 0.5f);
     EXPECT_FLOAT_EQ(capturedLight.color.z, 0.75f);
     EXPECT_FLOAT_EQ(capturedLight.intensity, 4.0f);
-    EXPECT_FLOAT_EQ(capturedLight.constant, 0.2f);
-    EXPECT_FLOAT_EQ(capturedLight.linear, 0.3f);
-    EXPECT_FLOAT_EQ(capturedLight.quadratic, 0.4f);
+    EXPECT_FLOAT_EQ(capturedLight.range, 42.0f);
     EXPECT_FLOAT_EQ(capturedLight.outerCutoff, 22.0f);
 }
 
-TEST(LightingDataProviderTests, PointLightComponentDefaultsProduceUsableShortRangeContribution)
+TEST(LightingDataProviderTests, LightGridCaptureNormalizesNonFiniteRangeFromPublicLightData)
+{
+    NLS::Maths::Transform transform;
+    NLS::Render::Entities::Light light(&transform);
+    light.range = std::numeric_limits<float>::infinity();
+    NLS::Render::Data::LightingDescriptor lightingDescriptor{
+        {std::cref(light)}};
+
+    const auto capturedInputs =
+        NLS::Engine::Rendering::LightGridPrepass::CaptureFrameInputs(
+            lightingDescriptor,
+            false);
+
+    ASSERT_EQ(capturedInputs.lights.size(), 1u);
+    EXPECT_FLOAT_EQ(capturedInputs.lights.front().range, 0.0f);
+}
+
+TEST(LightingDataProviderTests, PointLightComponentDefaultsToUnityStyleRange)
 {
     NLS::Engine::SceneSystem::Scene scene;
 
@@ -225,21 +237,11 @@ TEST(LightingDataProviderTests, PointLightComponentDefaultsProduceUsableShortRan
     ASSERT_NE(light->GetData(), nullptr);
     const auto* lightData = light->GetData();
     ASSERT_EQ(lightData->type, NLS::Render::Settings::ELightType::POINT);
-    const float sampleDistance = 5.0f;
-    const float attenuationDenominator =
-        lightData->constant +
-        lightData->linear * sampleDistance +
-        lightData->quadratic * sampleDistance * sampleDistance;
-    const float contribution =
-        attenuationDenominator > 0.0f
-            ? lightData->intensity / attenuationDenominator
-            : lightData->intensity;
-
-    EXPECT_GT(lightData->GetEffectRange(), 20.0f);
-    EXPECT_GT(contribution, 0.2f);
+    EXPECT_FLOAT_EQ(light->GetRange(), 10.0f);
+    EXPECT_FLOAT_EQ(lightData->range, 10.0f);
 }
 
-TEST(LightingDataProviderTests, PointLightRadiusSetterControlsPointLightEffectRange)
+TEST(LightingDataProviderTests, PointLightRangeIsIndependentFromIntensity)
 {
     NLS::Engine::SceneSystem::Scene scene;
 
@@ -248,12 +250,28 @@ TEST(LightingDataProviderTests, PointLightRadiusSetterControlsPointLightEffectRa
     ASSERT_NE(light, nullptr);
 
     light->SetLightType(NLS::Render::Settings::ELightType::POINT);
+    light->SetRange(100.0f);
     light->SetIntensity(1.0f);
-    light->SetRadius(100.0f);
+    light->SetIntensity(25.0f);
 
     ASSERT_NE(light->GetData(), nullptr);
-    EXPECT_NEAR(light->GetRadius(), 100.0f, 1.5f);
-    EXPECT_NEAR(light->GetData()->GetEffectRange(), 100.0f, 1.5f);
+    EXPECT_FLOAT_EQ(light->GetRange(), 100.0f);
+    EXPECT_FLOAT_EQ(light->GetData()->range, 100.0f);
+}
+
+TEST(LightingDataProviderTests, PointLightRangeRejectsNegativeAndNonFiniteValues)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+
+    auto& lightActor = scene.CreateGameObject("Point Light");
+    auto* light = lightActor.AddComponent<NLS::Engine::Components::LightComponent>();
+    ASSERT_NE(light, nullptr);
+
+    light->SetRange(-1.0f);
+    EXPECT_FLOAT_EQ(light->GetRange(), 0.0f);
+
+    light->SetRange(std::numeric_limits<float>::quiet_NaN());
+    EXPECT_FLOAT_EQ(light->GetRange(), 0.0f);
 }
 
 TEST(LightingDataProviderTests, LightGridBuildPreparedComputeRequestWithoutPreparedInputsProducesEmptyPreparedSource)
@@ -485,9 +503,7 @@ TEST(LightingDataProviderTests, LightGridCpuBuildAssignsVisiblePointLightToClust
 
     NLS::Render::Entities::Light pointLight(&lightTransform);
     pointLight.type = NLS::Render::Settings::ELightType::POINT;
-    pointLight.constant = 1.0f;
-    pointLight.linear = 0.0f;
-    pointLight.quadratic = 0.04f;
+    pointLight.range = 25.0f;
     pointLight.intensity = 8.0f;
 
     const std::vector<std::reference_wrapper<const NLS::Render::Entities::Light>> lights{
@@ -519,4 +535,38 @@ TEST(LightingDataProviderTests, LightGridCpuBuildAssignsVisiblePointLightToClust
     ASSERT_NE(litCluster, grid.records.end());
     ASSERT_FALSE(grid.lightIndices.empty());
     EXPECT_EQ(grid.lightIndices.front(), 0u);
+}
+
+TEST(LightingDataProviderTests, LightGridCpuBuildSkipsZeroRangePointLight)
+{
+    NLS::Engine::Rendering::ClusteredShadingSettings settings;
+    settings.lightGridPixelSize = 64u;
+    settings.maxLightsPerCluster = 1u;
+
+    NLS::Maths::Transform lightTransform;
+    NLS::Render::Entities::Light pointLight(&lightTransform);
+    pointLight.type = NLS::Render::Settings::ELightType::POINT;
+    pointLight.range = 0.0f;
+
+    const std::vector<std::reference_wrapper<const NLS::Render::Entities::Light>> lights{
+        pointLight
+    };
+
+    NLS::Render::Entities::Camera camera;
+    camera.CacheMatrices(640u, 360u);
+
+    const auto grid = NLS::Engine::Rendering::BuildClusteredLightGrid(
+        settings,
+        lights,
+        camera,
+        camera.GetViewMatrix(),
+        camera.GetProjectionMatrix(),
+        640u,
+        360u,
+        camera.GetNear(),
+        camera.GetFar());
+
+    EXPECT_TRUE(grid.lightIndices.empty());
+    for (const auto& record : grid.records)
+        EXPECT_EQ(record.count, 0u);
 }

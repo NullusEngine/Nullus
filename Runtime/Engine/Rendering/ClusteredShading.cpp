@@ -77,10 +77,10 @@ namespace NLS::Engine::Rendering
                 return { 0, settings.gridSizeX - 1, 0, settings.gridSizeY - 1, 0, settings.gridSizeZ - 1 };
             }
 
-            const auto radius = light.GetEffectRange();
+            const auto radius = light.GetSafeRange();
             if (!std::isfinite(radius) || radius <= 0.0f)
             {
-                return { 0, settings.gridSizeX - 1, 0, settings.gridSizeY - 1, 0, settings.gridSizeZ - 1 };
+                return { 1, 0, 1, 0, 1, 0 };
             }
 
             const auto viewPosition4 = TransformPoint(view, light.transform->GetWorldPosition());

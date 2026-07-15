@@ -436,7 +436,8 @@ void SceneManager::LoadEmptyLightedScene()
     if (ambientLight)
     {
         ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
-        ambientLight->SetRadius(10000.0f);
+        ambientLight->SetRange(10000.0f);
+        ambientLight->SetIntensity(0.1f);
     }
 
     auto& skyboxGo = m_currentScene->CreateGameObject("Skybox");

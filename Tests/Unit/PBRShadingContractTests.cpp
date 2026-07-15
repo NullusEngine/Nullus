@@ -300,12 +300,20 @@ Vector2 UnpackOctNormalFromUnorm(const Vector2& packed)
     return {packed.x * 2.0f - 1.0f, packed.y * 2.0f - 1.0f};
 }
 
-float GeometryFade(float ndotDirection)
+float GeometryHorizonVisibility(float geometryNdotDirection, float shadingNdotDirection)
 {
-    if (ndotDirection <= 0.0f)
+    if (geometryNdotDirection <= 0.0f)
         return 0.0f;
 
-    const float t = std::clamp(ndotDirection / 0.10f, 0.0f, 1.0f);
+    if (shadingNdotDirection <= 0.0f)
+        return 1.0f;
+
+    constexpr float kFullVisibilityRatio = 0.35f;
+    const float horizonRatio = std::clamp(
+        geometryNdotDirection / shadingNdotDirection,
+        0.0f,
+        1.0f);
+    const float t = std::clamp(horizonRatio / kFullVisibilityRatio, 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
 }
 
@@ -635,12 +643,58 @@ TEST(PBRShadingContractTests, ShadingNormalConstraintCoversHemispheresAndInvalid
     }
 }
 
-TEST(PBRShadingContractTests, GeometryHorizonRejectsWrongHemisphereAndFadesContinuously)
+TEST(PBRShadingContractTests, GeometryHorizonVisibilityAdaptsToShadingNormalDeviation)
 {
-    EXPECT_FLOAT_EQ(GeometryFade(-0.01f), 0.0f);
-    EXPECT_FLOAT_EQ(GeometryFade(0.0f), 0.0f);
-    EXPECT_NEAR(GeometryFade(0.05f), 0.5f, 1.0e-5f);
-    EXPECT_FLOAT_EQ(GeometryFade(0.10f), 1.0f);
+    EXPECT_FLOAT_EQ(GeometryHorizonVisibility(-0.01f, 0.50f), 0.0f);
+    EXPECT_FLOAT_EQ(GeometryHorizonVisibility(0.0f, 0.50f), 0.0f);
+    EXPECT_FLOAT_EQ(GeometryHorizonVisibility(0.05f, 0.05f), 1.0f)
+        << "Matching geometry and shading normals already have a smooth Lambertian terminator.";
+    EXPECT_GT(GeometryHorizonVisibility(0.05f, 0.50f), 0.0f);
+    EXPECT_LT(GeometryHorizonVisibility(0.05f, 0.50f), 1.0f)
+        << "A perturbed shading normal needs a broad transition near the geometry horizon.";
+    EXPECT_FLOAT_EQ(GeometryHorizonVisibility(0.20f, 0.50f), 1.0f);
+
+    const auto source = ReadTextFile(PBRNormalsPath());
+    const auto visibility = ExtractFunctionDefinition(source, "NLSGeometryHorizonVisibility");
+    ASSERT_FALSE(visibility.empty());
+    EXPECT_NE(
+        visibility.find("float shadingNdotDirection"),
+        std::string::npos);
+    EXPECT_NE(
+        visibility.find("geometryNdotDirection / max(shadingNdotDirection"),
+        std::string::npos);
+}
+
+TEST(PBRShadingContractTests, PointLightAttenuationUsesExplicitRangeAndSmoothFade)
+{
+    const auto source = ReadTextFile(ShaderRootPath() / "LightGridCommon.hlsli");
+    const auto attenuation = ExtractFunctionDefinition(source, "NLSComputePointAttenuation");
+    ASSERT_FALSE(attenuation.empty());
+
+    EXPECT_NE(
+        attenuation.find("if (!isfinite(light.range) || !isfinite(distanceToLight) || light.range <= 0.0f || distanceToLight >= light.range)"),
+        std::string::npos);
+    EXPECT_NE(attenuation.find("return 0.0f;"), std::string::npos);
+    EXPECT_NE(
+        attenuation.find("const float rawDistanceSquared = distanceToLight * distanceToLight;"),
+        std::string::npos);
+    EXPECT_NE(
+        attenuation.find("const float distanceSquared = max(distanceToLight * distanceToLight, 1.0e-4f);"),
+        std::string::npos);
+    EXPECT_NE(
+        attenuation.find("const float rangeSquared = light.range * light.range;"),
+        std::string::npos);
+    EXPECT_NE(
+        attenuation.find("const float rangeRatio = rawDistanceSquared / rangeSquared;"),
+        std::string::npos);
+    EXPECT_NE(
+        attenuation.find("float smoothFactor = saturate(1.0f - rangeRatio * rangeRatio);"),
+        std::string::npos);
+    EXPECT_NE(attenuation.find("smoothFactor *= smoothFactor;"), std::string::npos);
+    EXPECT_NE(attenuation.find("return smoothFactor / distanceSquared;"), std::string::npos);
+    EXPECT_EQ(attenuation.find("constantAttenuation"), std::string::npos);
+    EXPECT_EQ(attenuation.find("linearAttenuation"), std::string::npos);
+    EXPECT_EQ(attenuation.find("quadraticAttenuation"), std::string::npos);
 }
 
 TEST(PBRShadingContractTests, ForwardDirectBrdfUsesGeometryGateAndShadingNormal)
@@ -674,12 +728,18 @@ TEST(PBRShadingContractTests, ForwardDirectBrdfUsesGeometryGateAndShadingNormal)
         "const float geometryNdotV = dot(geometryNormalWS, viewDir);");
     const auto geometryGate = direct.find(
         "if (geometryNdotL <= 0.0f || geometryNdotV <= 0.0f)");
+    const auto shadingNdotL = direct.find(
+        "const float shadingNdotL = dot(shadingNormalWS, lightDir);");
+    const auto shadingNdotV = direct.find(
+        "const float shadingNdotV = dot(shadingNormalWS, viewDir);");
     const auto geometryFade = direct.find(
-        "const float geometryFade = NLSGeometryHorizonFade(geometryNdotL) *\n"
-        "        NLSGeometryHorizonFade(geometryNdotV);");
+        "const float geometryFade = NLSGeometryHorizonVisibility(geometryNdotL, shadingNdotL) *\n"
+        "        NLSGeometryHorizonVisibility(geometryNdotV, shadingNdotV);");
     ASSERT_NE(geometryNdotL, std::string::npos);
     ASSERT_NE(geometryNdotV, std::string::npos);
     ASSERT_NE(geometryGate, std::string::npos);
+    ASSERT_NE(shadingNdotL, std::string::npos);
+    ASSERT_NE(shadingNdotV, std::string::npos);
     ASSERT_NE(geometryFade, std::string::npos);
     EXPECT_LT(geometryNdotL, geometryGate);
     EXPECT_LT(geometryNdotV, geometryGate);
@@ -1136,7 +1196,7 @@ TEST(PBRShadingContractTests, SharedNormalShaderDefinesPublicMathAndFallbackCont
         "NLSPackOctNormalToUnorm",
         "NLSUnpackOctNormalFromUnorm",
         "NLSOctDecodeNormal",
-        "NLSGeometryHorizonFade"};
+        "NLSGeometryHorizonVisibility"};
     EXPECT_EQ(FindNLSFunctionDefinitions(source), expectedEntryPoints);
 
     EXPECT_NE(source.find("#include \"Common.hlsl\""), std::string::npos);
@@ -1198,7 +1258,12 @@ TEST(PBRShadingContractTests, SharedNormalShaderDefinesPublicMathAndFallbackCont
             "        normal.x >= 0.0f ? -fold : fold,\n"
             "        normal.y >= 0.0f ? -fold : fold);"),
         std::string::npos);
-    EXPECT_NE(source.find("smoothstep(0.0f, 0.10f, ndotDirection)"), std::string::npos);
+    EXPECT_NE(
+        source.find("geometryNdotDirection / max(shadingNdotDirection, 1.0e-4f)"),
+        std::string::npos);
+    EXPECT_NE(
+        source.find("smoothstep(0.0f, 0.35f, horizonRatio)"),
+        std::string::npos);
 }
 
 TEST(PBRShadingContractTests, NLSFunctionDefinitionMatcherRecognizesAllHlslReturnTypes)
@@ -1256,7 +1321,8 @@ TEST(PBRShadingContractTests, SharedNormalShaderCompilesThroughNativeDxcForDxilA
         << "    const float3 shadingNormal = NLSConstrainShadingNormalToGeometryHemisphere(float3(1.0f, 0.0f, 1.0f), geometryNormal);\n"
         << "    const float2 encoded = NLSOctEncodeNormal(shadingNormal);\n"
         << "    const float3 decoded = NLSOctDecodeNormal(encoded);\n"
-        << "    const float fade = NLSGeometryHorizonFade(dot(decoded, geometryNormal));\n"
+        << "    const float fade = NLSGeometryHorizonVisibility(\n"
+        << "        dot(decoded, geometryNormal), dot(shadingNormal, geometryNormal));\n"
         << "    return float4(decoded * fade, 1.0f);\n"
         << "}\n";
     wrapper.close();

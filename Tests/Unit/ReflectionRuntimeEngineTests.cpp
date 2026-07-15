@@ -26,7 +26,7 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersEngineReflectionTypes)
         {"NLS::Engine::Components::Component", {"CreateBy"}, {}, {}, ""},
         {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, {"localPosition", "localRotation", "localScale"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, {"fov", "size", "near", "far", "clearColor", "frustumGeometryCulling", "frustumLightCulling", "projectionMode", "visibleLayers"}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {}, {"lightType", "color", "intensity", "constant", "linear", "quadratic", "cutoff", "outerCutoff", "radius", "size"}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {}, {"lightType", "color", "intensity", "cutoff", "outerCutoff", "range", "size"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::MeshFilter", {}, {}, {"mesh"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::MeshRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"frustumBehaviour", "customBoundingSphere", "materials", "userMatrixValues"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetMesh"}, {}, {}, "NLS::Engine::Components::Component"},

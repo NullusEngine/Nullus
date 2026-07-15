@@ -7,7 +7,9 @@
 #include <iomanip>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "Rendering/Resources/MaterialSerialization.h"
 
@@ -43,6 +45,54 @@ const ImportedSceneNamedRecord* FindTexture(
             return texture.sourceKey == textureKey;
         });
     return found != scene.textures.end() ? &*found : nullptr;
+}
+
+std::vector<std::string> TextureIdentityTokens(const std::string_view identity)
+{
+    const auto stem = std::filesystem::path(std::string(identity)).stem().string();
+    std::vector<std::string> tokens;
+    std::string token;
+    for (size_t index = 0u; index < stem.size(); ++index)
+    {
+        const auto character = static_cast<unsigned char>(stem[index]);
+        const bool camelBoundary =
+            index > 0u &&
+            std::isupper(character) != 0 &&
+            std::islower(static_cast<unsigned char>(stem[index - 1u])) != 0;
+        if (std::isalnum(character) == 0 || camelBoundary)
+        {
+            if (!token.empty())
+            {
+                tokens.push_back(std::move(token));
+                token.clear();
+            }
+            if (std::isalnum(character) == 0)
+                continue;
+        }
+        token.push_back(static_cast<char>(std::tolower(character)));
+    }
+    if (!token.empty())
+        tokens.push_back(std::move(token));
+    return tokens;
+}
+
+bool IdentitySuggestsNormalMap(const std::string& identity)
+{
+    const auto tokens = TextureIdentityTokens(identity);
+    return std::any_of(
+        tokens.begin(),
+        tokens.end(),
+        [](const std::string& token)
+        {
+            return token == "normal" || token == "normalmap";
+        });
+}
+
+bool TextureSuggestsNormalMap(const ImportedSceneNamedRecord& texture)
+{
+    return IdentitySuggestsNormalMap(texture.uri) ||
+        IdentitySuggestsNormalMap(texture.name) ||
+        IdentitySuggestsNormalMap(texture.sourceKey);
 }
 
 bool IsDataUri(const std::string& uri)
@@ -708,19 +758,35 @@ void ConvertParserChannels(
             AddFactor(material, "BaseColor", diffuse->values);
         }
     }
-    if (const auto* normal = FindChannel(source, "normal"))
+    const auto* normal = FindChannel(source, "normal");
+    if (normal)
         AddTextureSlot(scene, material, context, "Normal", normal->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
     if (const auto* bump = FindChannel(source, "bump");
-        bump && sourceModel != MaterialSourceModel::FbxParserMaterial)
+        bump && !bump->textureKey.empty() && normal == nullptr)
     {
-        AddTextureSlot(scene, material, context, "Normal", bump->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
-    }
-    else if (bump && sourceModel == MaterialSourceModel::FbxParserMaterial && !bump->textureKey.empty())
-    {
-        AddDiagnostic(
-            material,
-            "material-ignored-fbx-bump-height-map",
-            "FBX bump/height texture was ignored because it is not a tangent-space normal map.");
+        const auto* bumpTexture = FindTexture(scene, bump->textureKey);
+        if (!bumpTexture)
+        {
+            AddTextureSlot(scene, material, context, "Normal", bump->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
+        }
+        else if (TextureSuggestsNormalMap(*bumpTexture))
+        {
+            AddTextureSlot(scene, material, context, "Normal", bump->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
+            if (FindTextureSlot(material, "Normal") != nullptr)
+            {
+                AddDiagnostic(
+                    material,
+                    "material-inferred-normal-map-from-bump-channel",
+                    "Parser bump texture was promoted because its identity explicitly identifies a tangent-space normal map.");
+            }
+        }
+        else
+        {
+            AddDiagnostic(
+                material,
+                "material-ignored-bump-height-map",
+                "Parser bump/height texture was ignored because it is not identified as a tangent-space normal map.");
+        }
     }
     if (const auto* emissive = FindChannel(source, "emissive"))
     {

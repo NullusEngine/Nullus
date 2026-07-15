@@ -9540,6 +9540,14 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxLegacySpec
         << "Importer version 16 FBX PBR materials can retain an untextured white legacy specular color and render too bright.";
 }
 
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesCrossFormatNormalMapVersion17Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        17u)
+        << "Importer version 17 FBX materials can omit normal-named bump textures and OBJ materials can misdecode height maps as tangent-space normals.";
+}
+
 #if !NLS_HAS_AUTODESK_FBX_SDK && NLS_HAS_ASSIMP_FBX_IMPORTER
 TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderFallsBackToAssimpWhenAutodeskSdkUnavailable)
 {

@@ -6296,90 +6296,77 @@ TEST(AssetMaterialConversionTests, FbxDecalNamedBaseColorTextureWithoutAlphaEvid
     EXPECT_FALSE(HasDiagnosticCode(converted, "material-inferred-fbx-decal-basecolor-alpha"));
 }
 
-TEST(AssetMaterialConversionTests, FbxBumpOnlyChannelDoesNotEnableNormalMapping)
+TEST(AssetMaterialConversionTests, ParserBumpChannelsOnlyPromoteExplicitNormalMapIdentities)
 {
     NLS::Render::Assets::ImportedScene scene;
     scene.sourceAssetId = NLS::Core::Assets::AssetId(
         NLS::Guid::Parse("e2010303-0303-4303-8303-030303030303"));
-    scene.textures.push_back({"fbx/texture/bump", "HeroBump", "HeroBump.png", "image/png"});
-    scene.textures.push_back({"fbx/texture/normal", "HeroNormal", "HeroNormal.png", "image/png"});
+    scene.textures.push_back({"texture/fbx-normal", "CurtainNormal", "textures/curtain_fabric_Normal.png", "image/png"});
+    scene.textures.push_back({"texture/obj-normal", "StoneNormalMap", "textures/StoneNormalMap.tga", "image/tga"});
+    scene.textures.push_back({"texture/height", "CurtainHeight", "textures/curtain_height.png", "image/png"});
+    scene.textures.push_back({"texture/false-positive", "AbnormalDetail", "textures/abnormal_detail.png", "image/png"});
 
-    NLS::Render::Assets::ImportedSceneNamedRecord bumpOnly;
-    bumpOnly.sourceKey = "fbx/material/BumpOnly";
-    bumpOnly.name = "BumpOnly";
-    bumpOnly.materialChannels.push_back({"bump", "fbx/texture/bump", {}, false, 0.0});
+    const auto convertBump = [&scene](const MaterialSourceModel sourceModel, const std::string& textureKey)
+    {
+        NLS::Render::Assets::ImportedSceneNamedRecord material;
+        material.sourceKey = "material/bump";
+        material.name = "BumpMaterial";
+        material.materialChannels.push_back({"bump", textureKey, {}, false, 0.0});
+        return NLS::Render::Assets::ConvertImportedSceneMaterial(scene, material, sourceModel);
+    };
 
-    const auto convertedBumpOnly = NLS::Render::Assets::ConvertImportedSceneMaterial(
-        scene,
-        bumpOnly,
-        MaterialSourceModel::FbxParserMaterial);
+    for (const auto sourceModel : {MaterialSourceModel::FbxParserMaterial, MaterialSourceModel::ObjMtl})
+    {
+        const auto underscoredNormal = convertBump(sourceModel, "texture/fbx-normal");
+        const auto* normalSlot = FindSlot(underscoredNormal, "Normal");
+        ASSERT_NE(normalSlot, nullptr);
+        EXPECT_EQ(normalSlot->colorSpace, MaterialTextureColorSpace::Linear);
+        EXPECT_EQ(CountSlots(underscoredNormal, "Normal"), 1u);
+        EXPECT_TRUE(HasDiagnosticCode(underscoredNormal, "material-inferred-normal-map-from-bump-channel"));
+        EXPECT_NE(underscoredNormal.serializedPayload.find("_NormalMap"), std::string::npos);
+        EXPECT_NE(underscoredNormal.serializedPayload.find("keyword _NORMALMAP"), std::string::npos);
 
-    EXPECT_EQ(FindSlot(convertedBumpOnly, "Normal"), nullptr)
-        << "FBX bump/height textures are not tangent-space normal maps unless converted during import.";
-    EXPECT_TRUE(HasDiagnosticCode(convertedBumpOnly, "material-ignored-fbx-bump-height-map"));
-    EXPECT_EQ(convertedBumpOnly.serializedPayload.find("_NormalMap"), std::string::npos);
-    EXPECT_EQ(convertedBumpOnly.serializedPayload.find("keyword _NORMALMAP"), std::string::npos);
+        const auto camelCaseNormal = convertBump(sourceModel, "texture/obj-normal");
+        EXPECT_NE(FindSlot(camelCaseNormal, "Normal"), nullptr);
 
-    NLS::Render::Assets::ImportedSceneNamedRecord normal;
-    normal.sourceKey = "fbx/material/NormalMapped";
-    normal.name = "NormalMapped";
-    normal.materialChannels.push_back({"normal", "fbx/texture/normal", {}, false, 0.0});
-
-    const auto convertedNormal = NLS::Render::Assets::ConvertImportedSceneMaterial(
-        scene,
-        normal,
-        MaterialSourceModel::FbxParserMaterial);
-
-    const auto* normalSlot = FindSlot(convertedNormal, "Normal");
-    ASSERT_NE(normalSlot, nullptr);
-    EXPECT_EQ(normalSlot->textureKey, "fbx/texture/normal");
-    EXPECT_NE(convertedNormal.serializedPayload.find("_NormalMap"), std::string::npos);
-    EXPECT_NE(convertedNormal.serializedPayload.find("HeroNormal.png"), std::string::npos);
-    EXPECT_NE(convertedNormal.serializedPayload.find("keyword _NORMALMAP"), std::string::npos);
-
-    NLS::Render::Assets::ImportedSceneNamedRecord normalAndBump;
-    normalAndBump.sourceKey = "fbx/material/NormalAndBump";
-    normalAndBump.name = "NormalAndBump";
-    normalAndBump.materialChannels.push_back({"normal", "fbx/texture/normal", {}, false, 0.0});
-    normalAndBump.materialChannels.push_back({"bump", "fbx/texture/bump", {}, false, 0.0});
-
-    const auto convertedNormalAndBump = NLS::Render::Assets::ConvertImportedSceneMaterial(
-        scene,
-        normalAndBump,
-        MaterialSourceModel::FbxParserMaterial);
-
-    ASSERT_EQ(CountSlots(convertedNormalAndBump, "Normal"), 1u);
-    const auto* authoritativeNormal = FindSlot(convertedNormalAndBump, "Normal");
-    ASSERT_NE(authoritativeNormal, nullptr);
-    EXPECT_EQ(authoritativeNormal->textureKey, "fbx/texture/normal");
-    EXPECT_NE(convertedNormalAndBump.serializedPayload.find("HeroNormal.png"), std::string::npos);
-    EXPECT_EQ(convertedNormalAndBump.serializedPayload.find("HeroBump.png"), std::string::npos);
+        for (const auto* rejectedTexture : {"texture/height", "texture/false-positive"})
+        {
+            const auto rejected = convertBump(sourceModel, rejectedTexture);
+            EXPECT_EQ(FindSlot(rejected, "Normal"), nullptr);
+            EXPECT_TRUE(HasDiagnosticCode(rejected, "material-ignored-bump-height-map"));
+            EXPECT_EQ(rejected.serializedPayload.find("keyword _NORMALMAP"), std::string::npos);
+        }
+    }
 }
 
-TEST(AssetMaterialConversionTests, ObjBumpChannelStillUsesNormalMapCompatibility)
+TEST(AssetMaterialConversionTests, ExplicitNormalSemanticsWinOverBumpInferenceAcrossFormats)
 {
     NLS::Render::Assets::ImportedScene scene;
-    scene.sourceAssetId = NLS::Core::Assets::AssetId(
-        NLS::Guid::Parse("e2010404-0404-4404-8404-040404040404"));
-    scene.textures.push_back({"obj/texture/bump", "ObjBump", "ObjBump.png", "image/png"});
+    scene.textures.push_back({"texture/explicit", "AuthoredNormal", "AuthoredNormal.png", "image/png"});
+    scene.textures.push_back({"texture/inferred", "FallbackNormal", "Fallback_Normal.png", "image/png"});
 
-    NLS::Render::Assets::ImportedSceneNamedRecord obj;
-    obj.sourceKey = "mtl/material/LegacyBump";
-    obj.name = "LegacyBump";
-    obj.materialChannels.push_back({"bump", "obj/texture/bump", {}, false, 0.0});
-
-    const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+    NLS::Render::Assets::ImportedSceneNamedRecord fbx;
+    fbx.sourceKey = "fbx/material/normal-priority";
+    fbx.materialChannels.push_back({"normal", "texture/explicit", {}, false, 0.0});
+    fbx.materialChannels.push_back({"bump", "texture/inferred", {}, false, 0.0});
+    const auto convertedFbx = NLS::Render::Assets::ConvertImportedSceneMaterial(
         scene,
-        obj,
-        MaterialSourceModel::ObjMtl);
+        fbx,
+        MaterialSourceModel::FbxParserMaterial);
+    ASSERT_EQ(CountSlots(convertedFbx, "Normal"), 1u);
+    EXPECT_EQ(FindSlot(convertedFbx, "Normal")->textureKey, "texture/explicit");
+    EXPECT_FALSE(HasDiagnosticCode(convertedFbx, "material-inferred-normal-map-from-bump-channel"));
 
-    const auto* normalSlot = FindSlot(converted, "Normal");
-    ASSERT_NE(normalSlot, nullptr);
-    EXPECT_EQ(normalSlot->textureKey, "obj/texture/bump");
-    EXPECT_EQ(CountSlots(converted, "Normal"), 1u);
-    EXPECT_NE(converted.serializedPayload.find("_NormalMap"), std::string::npos);
-    EXPECT_NE(converted.serializedPayload.find("ObjBump.png"), std::string::npos);
-    EXPECT_NE(converted.serializedPayload.find("keyword _NORMALMAP"), std::string::npos);
+    NLS::Render::Assets::ImportedSceneNamedRecord gltf;
+    gltf.sourceKey = "material/0";
+    gltf.normalTextureKey = "texture/explicit";
+    const auto convertedGltf = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        gltf,
+        MaterialSourceModel::GltfPbrMetallicRoughness);
+    ASSERT_EQ(CountSlots(convertedGltf, "Normal"), 1u);
+    EXPECT_EQ(FindSlot(convertedGltf, "Normal")->textureKey, "texture/explicit");
+    EXPECT_NE(convertedGltf.serializedPayload.find("keyword _NORMALMAP"), std::string::npos);
 }
 
 TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)

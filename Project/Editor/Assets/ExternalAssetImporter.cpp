@@ -1945,7 +1945,12 @@ std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestForSource
     const std::string& targetPlatform = "editor")
 {
     if (request.loadArtifactManifest)
-        return request.loadArtifactManifest(sourceAssetId, targetPlatform);
+    {
+        auto manifest = request.loadArtifactManifest(sourceAssetId, targetPlatform);
+        if (manifest.has_value())
+            return manifest;
+    }
+    // Targeted refresh snapshots omit manifests for untouched dependency assets.
     return LoadArtifactManifestFromProjectArtifactDB(request.projectRoot, sourceAssetId, targetPlatform);
 }
 
@@ -3077,6 +3082,85 @@ bool IsProjectTextureResolution(const ModelTextureResolutionKind kind)
     return kind == ModelTextureResolutionKind::ExplicitRemap ||
         kind == ModelTextureResolutionKind::SourcePath ||
         kind == ModelTextureResolutionKind::NameSearch;
+}
+
+const char* TextureArtifactColorSpaceName(
+    const NLS::Render::Assets::TextureArtifactColorSpace colorSpace)
+{
+    return colorSpace == NLS::Render::Assets::TextureArtifactColorSpace::Linear
+        ? "Linear"
+        : "sRGB";
+}
+
+std::optional<NLS::Render::Assets::TextureArtifactColorSpace> ReadResolvedTextureArtifactColorSpace(
+    const ExternalModelImportRequest& request,
+    const ResolvedModelTextureReference& resolved)
+{
+    if (!IsProjectTextureResolution(resolved.kind) || resolved.resourcePath.empty())
+        return std::nullopt;
+
+    NLS::Core::Assets::ImportedArtifact artifact;
+    artifact.artifactPath = resolved.resourcePath.generic_string();
+    const auto artifactPath = ResolveExistingCommittedTextureArtifactPath(
+        artifact,
+        request.projectRoot,
+        request.projectRoot / "Library" / "Artifacts");
+    if (!artifactPath.has_value())
+        return std::nullopt;
+
+    const auto header = NLS::Render::Assets::ReadTextureArtifactHeaderPreview(*artifactPath);
+    return header.has_value()
+        ? std::optional<NLS::Render::Assets::TextureArtifactColorSpace>(header->colorSpace)
+        : std::nullopt;
+}
+
+std::unordered_set<std::string> EnforceResolvedTextureColorSpaceCompatibility(
+    const ExternalModelImportRequest& request,
+    const std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace>& requiredColorSpaces,
+    std::vector<ResolvedModelTextureReference>& resolvedTextures)
+{
+    std::unordered_set<std::string> fallbackSourceKeys;
+    for (auto& resolved : resolvedTextures)
+    {
+        if (!IsProjectTextureResolution(resolved.kind) || !resolved.source.hasModelLocalPayload)
+            continue;
+
+        const auto required = requiredColorSpaces.find(resolved.materialTextureKey);
+        if (required == requiredColorSpaces.end())
+            continue;
+
+        const auto actualColorSpace = ReadResolvedTextureArtifactColorSpace(request, resolved);
+        if (actualColorSpace.has_value() && *actualColorSpace == required->second)
+            continue;
+
+        const auto incompatiblePath = resolved.resourcePath.generic_string();
+        if (actualColorSpace.has_value())
+        {
+            resolved.diagnostics.push_back({
+                "Warning",
+                "model-texture-artifact-color-space-mismatch",
+                "Project texture artifact " + incompatiblePath +
+                    " is incompatible with material texture " + resolved.materialTextureKey +
+                    ": expected " + TextureArtifactColorSpaceName(required->second) +
+                    ", found " + TextureArtifactColorSpaceName(*actualColorSpace) +
+                    ". Using the model-local texture payload instead."
+            });
+        }
+        else
+        {
+            resolved.diagnostics.push_back({
+                "Warning",
+                "model-texture-artifact-header-unreadable",
+                "Project texture artifact " + incompatiblePath +
+                    " could not be inspected for material texture " + resolved.materialTextureKey +
+                    ". Using the model-local texture payload instead."
+            });
+        }
+        if (!resolved.source.sourceKey.empty())
+            fallbackSourceKeys.insert(resolved.source.sourceKey);
+        ApplyModelTextureFallback(resolved);
+    }
+    return fallbackSourceKeys;
 }
 
 std::unordered_map<std::string, std::filesystem::path> BuildResolvedTextureArtifactPathMap(
@@ -4741,71 +4825,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
 #endif
     {
         const auto begin = std::chrono::steady_clock::now();
-        ReportProgress(request, ImportPhase::IntermediateConversion, 0.26, "Building model texture source references");
-        textureSources = BuildModelTextureSourceReferences(request, scene, texturePayloads);
-        deferredBulkModelLocalTextureSourceKeys = BuildDeferredBulkModelLocalTextureSourceKeys(request, textureSources);
-        ReportProgress(
-            request,
-            ImportPhase::IntermediateConversion,
-            0.265,
-            "Built model texture source references | textures=" + std::to_string(scene.textures.size()) +
-                " sources=" + std::to_string(textureSources.size()) +
-                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
-                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
-        if (!deferredBulkModelLocalTextureSourceKeys.empty())
-        {
-            ReportProgress(
-                request,
-                ImportPhase::IntermediateConversion,
-                0.266,
-                "Deferred bulk model-local texture artifacts | modelLocalTextures=" +
-                    std::to_string(deferredBulkModelLocalTextureSourceKeys.size()) +
-                    " threshold=" + std::to_string(kMaxSynchronousModelLocalTextureArtifactCount) +
-                    " reason=external-file-decode");
-        }
-    }
-    {
-        const auto begin = std::chrono::steady_clock::now();
-        ReportProgress(request, ImportPhase::IntermediateConversion, 0.27, "Building model texture resolve request");
-        const auto resolveRequest = BuildModelTextureResolveRequest(
-            request,
-            textureSources,
-            result.diagnostics,
-            &autoImportSideEffects,
-            textureEncoders);
-        ReportProgress(
-            request,
-            ImportPhase::IntermediateConversion,
-            0.305,
-            "Built model texture resolve request | pathCandidates=" +
-                std::to_string(resolveRequest.pathCandidates.size()) +
-                " nameCandidates=" + std::to_string(resolveRequest.nameCandidates.size()) +
-                " remaps=" + std::to_string(resolveRequest.remaps.size()) +
-                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
-                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
-        resolvedTextures.reserve(textureSources.size());
-        for (const auto& source : textureSources)
-            resolvedTextures.push_back(ResolveModelTextureReference(source, resolveRequest));
-        AppendUnsupportedTextureEncodingDiagnostics(scene, resolvedTextures);
-        AppendModelTextureResolutionDiagnostics(result.diagnostics, request, resolvedTextures);
-        externallyResolvedTextureSourceKeys = ShouldKeepModelLocalTextureArtifactsForImporterUpgrade(request)
-            ? std::unordered_set<std::string> {}
-            : BuildExternallyResolvedTextureSourceKeys(resolvedTextures);
-        resolvedTextureArtifactPaths = BuildResolvedTextureArtifactPathMap(resolvedTextures);
-        ReportProgress(
-            request,
-            ImportPhase::IntermediateConversion,
-            0.36,
-            "Resolved model texture references | sources=" + std::to_string(textureSources.size()) +
-                " resolved=" + std::to_string(resolvedTextureArtifactPaths.size()) +
-                " externalSourceKeys=" + std::to_string(externallyResolvedTextureSourceKeys.size()) +
-                " diagnostics=" + std::to_string(result.diagnostics.size()) +
-                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
-                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
-    }
-    {
-        const auto begin = std::chrono::steady_clock::now();
-        ReportProgress(request, ImportPhase::IntermediateConversion, 0.37, "Collecting material texture color spaces");
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.26, "Collecting material texture color spaces");
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::CollectMaterialTextureUsage");
         CollectMaterialTextureColorSpaces(
             scene,
@@ -4815,9 +4835,79 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         ReportProgress(
             request,
             ImportPhase::IntermediateConversion,
-            0.39,
+            0.27,
             "Collected material texture color spaces | materials=" + std::to_string(scene.materials.size()) +
                 " colorSpaces=" + std::to_string(textureColorSpaces.size()) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
+                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
+    }
+    {
+        const auto begin = std::chrono::steady_clock::now();
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.28, "Building model texture source references");
+        textureSources = BuildModelTextureSourceReferences(request, scene, texturePayloads);
+        deferredBulkModelLocalTextureSourceKeys = BuildDeferredBulkModelLocalTextureSourceKeys(request, textureSources);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.285,
+            "Built model texture source references | textures=" + std::to_string(scene.textures.size()) +
+                " sources=" + std::to_string(textureSources.size()) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
+                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
+        if (!deferredBulkModelLocalTextureSourceKeys.empty())
+        {
+            ReportProgress(
+                request,
+                ImportPhase::IntermediateConversion,
+                0.286,
+                "Deferred bulk model-local texture artifacts | modelLocalTextures=" +
+                    std::to_string(deferredBulkModelLocalTextureSourceKeys.size()) +
+                    " threshold=" + std::to_string(kMaxSynchronousModelLocalTextureArtifactCount) +
+                    " reason=external-file-decode");
+        }
+    }
+    {
+        const auto begin = std::chrono::steady_clock::now();
+        ReportProgress(request, ImportPhase::IntermediateConversion, 0.29, "Building model texture resolve request");
+        const auto resolveRequest = BuildModelTextureResolveRequest(
+            request,
+            textureSources,
+            result.diagnostics,
+            &autoImportSideEffects,
+            textureEncoders);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.325,
+            "Built model texture resolve request | pathCandidates=" +
+                std::to_string(resolveRequest.pathCandidates.size()) +
+                " nameCandidates=" + std::to_string(resolveRequest.nameCandidates.size()) +
+                " remaps=" + std::to_string(resolveRequest.remaps.size()) +
+                " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
+                " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
+        resolvedTextures.reserve(textureSources.size());
+        for (const auto& source : textureSources)
+            resolvedTextures.push_back(ResolveModelTextureReference(source, resolveRequest));
+        const auto colorSpaceFallbackSourceKeys = EnforceResolvedTextureColorSpaceCompatibility(
+            request,
+            textureColorSpaces,
+            resolvedTextures);
+        for (const auto& sourceKey : colorSpaceFallbackSourceKeys)
+            deferredBulkModelLocalTextureSourceKeys.erase(sourceKey);
+        AppendUnsupportedTextureEncodingDiagnostics(scene, resolvedTextures);
+        AppendModelTextureResolutionDiagnostics(result.diagnostics, request, resolvedTextures);
+        externallyResolvedTextureSourceKeys = ShouldKeepModelLocalTextureArtifactsForImporterUpgrade(request)
+            ? std::unordered_set<std::string> {}
+            : BuildExternallyResolvedTextureSourceKeys(resolvedTextures);
+        resolvedTextureArtifactPaths = BuildResolvedTextureArtifactPathMap(resolvedTextures);
+        ReportProgress(
+            request,
+            ImportPhase::IntermediateConversion,
+            0.39,
+            "Resolved model texture references | sources=" + std::to_string(textureSources.size()) +
+                " resolved=" + std::to_string(resolvedTextureArtifactPaths.size()) +
+                " externalSourceKeys=" + std::to_string(externallyResolvedTextureSourceKeys.size()) +
+                " diagnostics=" + std::to_string(result.diagnostics.size()) +
                 " elapsedMs=" + std::to_string(MillisecondsSince(begin)) +
                 " totalMs=" + std::to_string(MillisecondsSince(conversionBegin)));
     }

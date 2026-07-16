@@ -2585,6 +2585,8 @@ PrefabEditorOperationResult PrefabEditorWorkflow::OpenPrefabStage(const OpenPref
 
 void PrefabEditorWorkflow::MarkStageDirty(PrefabStageState& stage) const
 {
+    if (stage.stageScene)
+        stage.stageScene->MarkRenderContentChanged();
     stage.dirty = true;
 }
 

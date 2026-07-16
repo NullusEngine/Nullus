@@ -103,6 +103,7 @@ struct ResolvedModelTextureReference
     std::vector<ModelTextureAssetCandidate> mappingCandidates;
 };
 
+void ApplyModelTextureFallback(ResolvedModelTextureReference& result);
 std::string MakeModelTextureStableKey(const ModelTextureSourceReference& source);
 std::vector<ModelTextureSourceReference> AssignModelTextureStableKeys(
     std::vector<ModelTextureSourceReference> sources);

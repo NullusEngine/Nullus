@@ -51,6 +51,7 @@ namespace NLS::Render::Backend
 		bool m_valid = false;
 #if defined(_WIN32)
 		Microsoft::WRL::ComPtr<ID3D12Resource> m_resource;
+		void* m_persistentlyMappedUploadData = nullptr;
 #endif
 	};
 

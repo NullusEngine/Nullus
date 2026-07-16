@@ -234,6 +234,7 @@ namespace
 
     constexpr size_t kMaxPreparedRecordedDrawStaticBaseCacheEntries = 1024u;
     constexpr uint64_t kMaxPreparedRecordedDrawStaticBaseCacheFrameAge = 120u;
+    constexpr size_t kPreparedRecordedDrawStaticBaseCacheAgeSweepBudget = 16u;
 
     std::string BuildExplicitUniformBindingLayoutCacheKey(
         const ABaseRenderer::ExplicitUniformBufferBindingDesc& desc,
@@ -364,18 +365,24 @@ void ABaseRenderer::BeginFrameInternal(
     }
     NLS_ASSERT(p_frameDescriptor.IsValid(), "Invalid FrameDescriptor!");
 
-    m_frameDescriptor = p_frameDescriptor;
-    m_threadedRecordedDrawCommands.clear();
-    m_activeRecordedPassColorViews.clear();
-    m_activeRecordedPassDepthStencilView.reset();
-    m_pendingFrameSnapshot.reset();
-    m_pendingPreparedRenderSceneBuilder = {};
-    m_lastThreadedFramePublished = false;
-    m_frameActive = false;
-    m_globalFrameReleaseDeferred = globalFrameAlreadyAcquired;
-    ++m_preparedRecordedDrawStaticBaseCacheFrame;
-    InvalidateExplicitDeviceDependentCachesIfNeeded();
-    TrimPreparedRecordedDrawStaticBaseCache(true);
+    {
+        NLS_PROFILE_NAMED_SCOPE("ABaseRenderer::BeginFrameInternal::ResetPreparedFrameState");
+        m_frameDescriptor = p_frameDescriptor;
+        m_threadedRecordedDrawCommands.clear();
+        m_activeRecordedPassColorViews.clear();
+        m_activeRecordedPassDepthStencilView.reset();
+        m_pendingFrameSnapshot.reset();
+        m_pendingPreparedRenderSceneBuilder = {};
+        m_lastThreadedFramePublished = false;
+        m_frameActive = false;
+        m_globalFrameReleaseDeferred = globalFrameAlreadyAcquired;
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("ABaseRenderer::BeginFrameInternal::MaintainPreparedDrawCache");
+        ++m_preparedRecordedDrawStaticBaseCacheFrame;
+        InvalidateExplicitDeviceDependentCachesIfNeeded();
+        TrimPreparedRecordedDrawStaticBaseCache(true);
+    }
     const bool targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(p_frameDescriptor);
     auto* externalOutputBuffer =
         NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(p_frameDescriptor);
@@ -1257,6 +1264,7 @@ bool ABaseRenderer::PrepareRecordedDraw(
     if (!ResolvePreparedRecordedDrawStaticBase(
         "pso",
         p_drawable,
+        *material,
         *pipelineOverrides,
         Settings::EComparaisonAlgorithm::LESS,
         p_pso,
@@ -1363,6 +1371,7 @@ ABaseRenderer::PreparedRecordedDrawStaticBaseStableKey ABaseRenderer::BuildPrepa
 
 ABaseRenderer::PreparedRecordedDrawStaticBaseCacheKey ABaseRenderer::BuildPreparedRecordedDrawStaticBaseCacheKey(
     const Entities::Drawable& drawable,
+    const Resources::Material& material,
     const std::shared_ptr<RHI::RHIDevice>& device,
     const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
     const Settings::EComparaisonAlgorithm depthCompareOverride,
@@ -1373,16 +1382,13 @@ ABaseRenderer::PreparedRecordedDrawStaticBaseCacheKey ABaseRenderer::BuildPrepar
     PreparedRecordedDrawStaticBaseCacheKey key;
     key.deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
     key.backend = ResolveDeviceBackendType(device);
-    if (drawable.material != nullptr)
-    {
-        key.materialInstanceId = drawable.material->GetInstanceId();
-        key.materialParameterRevision = drawable.material->GetParameterRevision();
-        key.materialRenderStateRevision = drawable.material->GetRenderStateRevision();
-        key.materialBindingRevision = drawable.material->GetBindingRevision();
-        const auto* shader = effectiveShader != nullptr ? effectiveShader : drawable.material->GetShader();
-        key.materialShaderInstanceId = shader != nullptr ? shader->GetInstanceId() : 0u;
-        key.materialShaderGeneration = shader != nullptr ? shader->GetGeneration() : 0u;
-    }
+    key.materialInstanceId = material.GetInstanceId();
+    key.materialParameterRevision = material.GetParameterRevision();
+    key.materialRenderStateRevision = material.GetRenderStateRevision();
+    key.materialBindingRevision = material.GetBindingRevision();
+    const auto* shader = effectiveShader != nullptr ? effectiveShader : material.GetShader();
+    key.materialShaderInstanceId = shader != nullptr ? shader->GetInstanceId() : 0u;
+    key.materialShaderGeneration = shader != nullptr ? shader->GetGeneration() : 0u;
     key.meshInstanceId = drawable.mesh != nullptr ? drawable.mesh->GetInstanceId() : 0u;
     key.meshContentRevision = drawable.mesh != nullptr ? drawable.mesh->GetContentRevision() : 0u;
     key.passBindingSetAddress = reinterpret_cast<uintptr_t>(passBindingSet.get());
@@ -1489,36 +1495,35 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
 
     if (includeFrameAgeSweep)
     {
-        for (auto it = m_preparedRecordedDrawStaticBaseCache.begin();
-             it != m_preparedRecordedDrawStaticBaseCache.end();)
+        size_t processedEntryCount = 0u;
+        while (!m_preparedRecordedDrawStaticBaseLruKeys.empty() &&
+               processedEntryCount < kPreparedRecordedDrawStaticBaseCacheAgeSweepBudget)
         {
-            const auto age = m_preparedRecordedDrawStaticBaseCacheFrame >= it->second.lastUsedFrame
-                ? m_preparedRecordedDrawStaticBaseCacheFrame - it->second.lastUsedFrame
-                : 0u;
-            if (age > kMaxPreparedRecordedDrawStaticBaseCacheFrameAge)
+            const auto& oldestKey = m_preparedRecordedDrawStaticBaseLruKeys.front();
+            const auto oldest = m_preparedRecordedDrawStaticBaseCache.find(oldestKey);
+            ++processedEntryCount;
+            if (oldest == m_preparedRecordedDrawStaticBaseCache.end())
             {
-                const auto key = it->first;
-                ++it;
-                ErasePreparedRecordedDrawStaticBaseEntry(key);
+                m_preparedRecordedDrawStaticBaseLruKeys.pop_front();
+                continue;
             }
-            else
-                ++it;
+
+            const auto age = m_preparedRecordedDrawStaticBaseCacheFrame >= oldest->second.lastUsedFrame
+                ? m_preparedRecordedDrawStaticBaseCacheFrame - oldest->second.lastUsedFrame
+                : 0u;
+            if (age <= kMaxPreparedRecordedDrawStaticBaseCacheFrameAge)
+                break;
+
+            const auto expiredKey = oldestKey;
+            ErasePreparedRecordedDrawStaticBaseEntry(expiredKey);
         }
     }
 
     while (m_preparedRecordedDrawStaticBaseCache.size() > kMaxPreparedRecordedDrawStaticBaseCacheEntries &&
            !m_preparedRecordedDrawStaticBaseLruKeys.empty())
     {
-        ErasePreparedRecordedDrawStaticBaseEntry(m_preparedRecordedDrawStaticBaseLruKeys.front());
-    }
-
-    for (auto it = m_preparedRecordedDrawStaticBaseStableIndex.begin();
-         it != m_preparedRecordedDrawStaticBaseStableIndex.end();)
-    {
-        if (m_preparedRecordedDrawStaticBaseCache.find(it->second) == m_preparedRecordedDrawStaticBaseCache.end())
-            it = m_preparedRecordedDrawStaticBaseStableIndex.erase(it);
-        else
-            ++it;
+        const auto evictedKey = m_preparedRecordedDrawStaticBaseLruKeys.front();
+        ErasePreparedRecordedDrawStaticBaseEntry(evictedKey);
     }
 
     if (m_preparedRecordedDrawStaticBaseCache.empty())
@@ -1545,30 +1550,31 @@ void ABaseRenderer::InvalidateExplicitDeviceDependentCachesIfNeeded() const
 bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
     const char* preparationPath,
     const Entities::Drawable& drawable,
+    Resources::Material& material,
     const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
     const Settings::EComparaisonAlgorithm depthCompareOverride,
     const Data::PipelineState& pipelineState,
     const std::string_view lightMode,
     PreparedRecordedDrawStaticBase& outBase) const
 {
-    auto* material = drawable.material;
     auto* mesh = drawable.mesh;
-    if (material == nullptr || mesh == nullptr)
+    if (mesh == nullptr)
         return false;
 
     InvalidateExplicitDeviceDependentCachesIfNeeded();
     auto device = GetExplicitDevice();
     const auto* effectiveShader = lightMode.empty()
-        ? material->GetShader()
-        : material->ResolveShaderForLightMode(lightMode);
+        ? material.GetShader()
+        : material.ResolveShaderForLightMode(lightMode);
     if (effectiveShader == nullptr)
     {
         LogRecordedDrawPreparationState(m_driver, preparationPath, "shaderlab_lightmode_missing", drawable);
         return false;
     }
-    const auto passBindingSet = material->RequiresPassDescriptorSet(effectiveShader) ? m_activePreparedPassBindingSet : nullptr;
+    const auto passBindingSet = material.RequiresPassDescriptorSet(effectiveShader) ? m_activePreparedPassBindingSet : nullptr;
     const auto key = BuildPreparedRecordedDrawStaticBaseCacheKey(
         drawable,
+        material,
         device,
         pipelineOverrides,
         depthCompareOverride,
@@ -1585,9 +1591,10 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
         return true;
     }
 
-    auto bindingSet = material->GetRecordedBindingSet(device, effectiveShader);
+    auto bindingSet = material.GetRecordedBindingSet(device, effectiveShader);
     const auto finalKey = BuildPreparedRecordedDrawStaticBaseCacheKey(
         drawable,
+        material,
         device,
         pipelineOverrides,
         depthCompareOverride,
@@ -1612,7 +1619,7 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
     bool hasPipelineLayout = false;
     bool hasVertexShader = false;
     bool hasFragmentShader = false;
-    auto pipeline = material->BuildRecordedGraphicsPipeline(
+    auto pipeline = material.BuildRecordedGraphicsPipeline(
         device,
         pipelineCache,
         drawable.primitiveMode,
@@ -1646,7 +1653,7 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
     outBase.materialBindingSet = std::move(bindingSet);
     outBase.passBindingSet = passBindingSet;
     outBase.mesh = std::move(rhiMesh);
-    outBase.gpuInstances = material->GetGPUInstances();
+    outBase.gpuInstances = material.GetGPUInstances();
     EraseStalePreparedRecordedDrawStaticBaseEntries(finalKey);
     auto [inserted, _] = m_preparedRecordedDrawStaticBaseCache.emplace(finalKey, outBase);
     LinkPreparedRecordedDrawStaticBaseEntry(finalKey, inserted->second);
@@ -1679,20 +1686,43 @@ bool ABaseRenderer::PrepareRecordedDraw(
     std::string_view lightMode,
     PreparedRecordedDraw& outDraw) const
 {
-    auto material = p_drawable.material;
-    auto mesh = p_drawable.mesh;
+    auto* material = p_drawable.material;
+    if (material == nullptr)
+    {
+        LogRecordedDrawPreparationState(m_driver, "overrides", "material_null", p_drawable);
+        return false;
+    }
 
-    if (material == nullptr || mesh == nullptr)
+    return PrepareRecordedDraw(
+        p_drawable,
+        *material,
+        std::move(pipelineOverrides),
+        depthCompareOverride,
+        lightMode,
+        outDraw);
+}
+
+bool ABaseRenderer::PrepareRecordedDraw(
+    const Entities::Drawable& p_drawable,
+    Resources::Material& effectiveMaterial,
+    Resources::MaterialPipelineStateOverrides pipelineOverrides,
+    Settings::EComparaisonAlgorithm depthCompareOverride,
+    std::string_view lightMode,
+    PreparedRecordedDraw& outDraw) const
+{
+    auto* mesh = p_drawable.mesh;
+
+    if (mesh == nullptr)
     {
         LogRecordedDrawPreparationState(
             m_driver,
             "overrides",
-            material == nullptr ? "material_null" : "mesh_null",
+            "mesh_null",
             p_drawable);
         return false;
     }
 
-    const auto gpuInstances = material->GetGPUInstances();
+    const auto gpuInstances = effectiveMaterial.GetGPUInstances();
     if (!(mesh && gpuInstances > 0))
     {
         LogRecordedDrawPreparationState(m_driver, "overrides", "gpu_instances_zero", p_drawable);
@@ -1718,6 +1748,7 @@ bool ABaseRenderer::PrepareRecordedDraw(
     if (!ResolvePreparedRecordedDrawStaticBase(
         "overrides",
         p_drawable,
+        effectiveMaterial,
         pipelineOverrides,
         depthCompareOverride,
         effectivePipelineState,
@@ -1843,6 +1874,24 @@ size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting
 size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting()
 {
     return kMaxPreparedRecordedDrawStaticBaseCacheEntries;
+}
+
+uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting()
+{
+    return kMaxPreparedRecordedDrawStaticBaseCacheFrameAge;
+}
+
+size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheAgeSweepBudgetForTesting()
+{
+    return kPreparedRecordedDrawStaticBaseCacheAgeSweepBudget;
+}
+
+size_t ABaseRenderer::AdvancePreparedRecordedDrawStaticBaseCacheForTesting(const uint64_t frameCount) const
+{
+    const auto previousSize = m_preparedRecordedDrawStaticBaseCache.size();
+    m_preparedRecordedDrawStaticBaseCacheFrame += frameCount;
+    TrimPreparedRecordedDrawStaticBaseCache(true);
+    return previousSize - m_preparedRecordedDrawStaticBaseCache.size();
 }
 #endif
 

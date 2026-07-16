@@ -248,6 +248,8 @@ Shader "Nullus/StandardPBR"
             SamplerState sampler_NormalMap : register(s4, space2);
             SamplerState sampler_OpacityMap : register(s5, space2);
 
+            StructuredBuffer<float4x4> ObjectData : register(t0, space3);
+
             cbuffer MaterialProperties : register(b0, space2)
             {
                 float4 _BaseColor;
@@ -262,13 +264,15 @@ Shader "Nullus/StandardPBR"
                 float _Cutoff;
             };
 
-            Varyings VSMain(Attributes input)
+            Varyings VSMain(Attributes input, uint instanceId : SV_InstanceID)
             {
                 Varyings output;
-                output.positionCS = TransformObjectToHClip(input.positionOS);
+                const float4x4 model = ObjectData[u_ObjectIndex + instanceId];
+                const float4 worldPosition = mul(model, float4(input.positionOS, 1.0f));
+                output.positionCS = mul(u_ViewProjection, worldPosition);
                 output.uv = input.uv;
                 const NLSTangentFrame tangentFrame = NLSBuildStandardPbrTangentFrame(
-                    (float3x3)u_Model,
+                    (float3x3)model,
                     input.normalOS,
                     input.tangentOS,
                     input.bitangentOS);

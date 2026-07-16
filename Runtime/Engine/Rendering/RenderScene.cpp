@@ -771,6 +771,7 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_firstFreePrimitiveSlot(other.m_firstFreePrimitiveSlot),
 	  m_livePrimitiveCount(other.m_livePrimitiveCount),
 	  m_lastSceneFastAccessRevision(other.m_lastSceneFastAccessRevision),
+	  m_lastSceneSynchronizationStamp(other.m_lastSceneSynchronizationStamp),
 	  m_nextCachedCommandBuildSerial(other.m_nextCachedCommandBuildSerial),
 	  m_cachedCommandBuildCount(other.m_cachedCommandBuildCount),
 	  m_nextPrimitiveSnapshotSerial(other.m_nextPrimitiveSnapshotSerial),
@@ -801,6 +802,7 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_firstFreePrimitiveSlot = other.m_firstFreePrimitiveSlot;
 	m_livePrimitiveCount = other.m_livePrimitiveCount;
 	m_lastSceneFastAccessRevision = other.m_lastSceneFastAccessRevision;
+	m_lastSceneSynchronizationStamp = other.m_lastSceneSynchronizationStamp;
 	m_nextCachedCommandBuildSerial = other.m_nextCachedCommandBuildSerial;
 	m_cachedCommandBuildCount = other.m_cachedCommandBuildCount;
 	m_nextPrimitiveSnapshotSerial = other.m_nextPrimitiveSnapshotSerial;
@@ -829,6 +831,7 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_firstFreePrimitiveSlot.reset();
 	m_livePrimitiveCount = 0u;
 	m_lastSceneFastAccessRevision = 0u;
+	m_lastSceneSynchronizationStamp.reset();
 	m_nextCachedCommandBuildSerial = 1u;
 	m_cachedCommandBuildCount = 0u;
 	m_nextPrimitiveSnapshotSerial = 1u;
@@ -893,6 +896,13 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	const auto fastAccessRevision = scene.GetFastAccessComponentsRevision();
 	const bool fastAccessMembershipChanged =
 		fastAccessRevision != m_lastSceneFastAccessRevision;
+	const auto synchronizationStamp = BuildSceneSynchronizationStamp(scene, options);
+	const bool canReuseSceneSynchronization =
+		options.trustSceneRenderContentRevision &&
+		!scene.IsPlaying() &&
+		!fastAccessMembershipChanged &&
+		m_lastSceneSynchronizationStamp.has_value() &&
+		*m_lastSceneSynchronizationStamp == synchronizationStamp;
 
 	std::unordered_map<Components::MeshRenderer*, NLS::InstanceID> liveMeshRenderers;
 	if (fastAccessMembershipChanged)
@@ -901,6 +911,7 @@ RenderSceneSyncStats RenderScene::Synchronize(
 		liveMeshRenderers.reserve(fastAccess.modelRenderers.size());
 	}
 
+	if (!canReuseSceneSynchronization)
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::SynchronizePrimitiveLoop");
 		for (auto* meshRenderer : fastAccess.modelRenderers)
@@ -934,6 +945,12 @@ RenderSceneSyncStats RenderScene::Synchronize(
 			primitive.lastInputStamp = BuildPrimitiveInputStamp(*meshRenderer, primitive, options);
 		}
 	}
+	else
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::ReuseSceneRenderContentRevision");
+		stats.reusedPrimitiveCount = static_cast<uint64_t>(m_livePrimitiveCount);
+		stats.usedSceneRenderContentRevisionFastPath = true;
+	}
 
 	if (fastAccessMembershipChanged)
 	{
@@ -941,10 +958,12 @@ RenderSceneSyncStats RenderScene::Synchronize(
 		RemoveMissingPrimitives(liveMeshRenderers, stats);
 	}
 	m_lastSceneFastAccessRevision = fastAccessRevision;
+	m_lastSceneSynchronizationStamp = synchronizationStamp;
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshSpatialIndex");
 		RefreshSpatialIndex(options);
 	}
+	if (!canReuseSceneSynchronization)
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RebuildImportedHierarchyHLODRecords");
 		RebuildImportedHierarchyHLODRecords(scene);
@@ -954,6 +973,31 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	m_lastSyncStats.syncTimeNs = stats.syncTimeNs;
 	RefreshSyncTelemetry(stats);
 	return stats;
+}
+
+RenderScene::SceneSynchronizationStamp RenderScene::BuildSceneSynchronizationStamp(
+	const SceneSystem::Scene& scene,
+	const RenderSceneSyncOptions& options)
+{
+	SceneSynchronizationStamp stamp;
+	stamp.scene = &scene;
+	stamp.renderContentRevision = scene.GetRenderContentRevision();
+	stamp.defaultMaterial = options.defaultMaterial;
+	if (stamp.defaultMaterial != nullptr)
+	{
+		stamp.defaultMaterialParameterRevision = stamp.defaultMaterial->GetParameterRevision();
+		stamp.defaultMaterialRenderStateRevision = stamp.defaultMaterial->GetRenderStateRevision();
+	}
+	stamp.overrideMaterial = options.overrideMaterial;
+	if (stamp.overrideMaterial != nullptr)
+	{
+		stamp.overrideMaterialParameterRevision = stamp.overrideMaterial->GetParameterRevision();
+		stamp.overrideMaterialRenderStateRevision = stamp.overrideMaterial->GetRenderStateRevision();
+	}
+	stamp.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
+	stamp.allowDefaultMaterialForUnresolvedExplicitMaterials =
+		options.allowDefaultMaterialForUnresolvedExplicitMaterials;
+	return stamp;
 }
 
 RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(

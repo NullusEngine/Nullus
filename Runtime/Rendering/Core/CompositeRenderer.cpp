@@ -22,29 +22,29 @@ namespace
 
     RenderPreparationCounterSnapshot CaptureRenderPreparationCounterSnapshot(
         const CompositeRenderer& renderer,
-        const Entities::Drawable& drawable)
+        const Resources::Material* material)
     {
         RenderPreparationCounterSnapshot snapshot;
         snapshot.uniformBindingSetCreationCount = renderer.GetExplicitUniformBindingSetCreationCount();
         snapshot.uniformSnapshotBufferCreationCount = renderer.GetExplicitUniformSnapshotBufferCreationCount();
-        if (drawable.material != nullptr)
+        if (material != nullptr)
         {
-            snapshot.materialBindingSetCreationCount = drawable.material->GetExplicitBindingSetCreationCount();
-            snapshot.materialSnapshotBufferCreationCount = drawable.material->GetExplicitSnapshotBufferCreationCount();
+            snapshot.materialBindingSetCreationCount = material->GetExplicitBindingSetCreationCount();
+            snapshot.materialSnapshotBufferCreationCount = material->GetExplicitSnapshotBufferCreationCount();
         }
         return snapshot;
     }
 
     std::pair<uint64_t, uint64_t> CalculateRenderPreparationCounterDelta(
         const CompositeRenderer& renderer,
-        const Entities::Drawable& drawable,
+        const Resources::Material* material,
         const RenderPreparationCounterSnapshot& snapshot)
     {
-        const auto materialBindingSetDelta = drawable.material != nullptr
-            ? drawable.material->GetExplicitBindingSetCreationCount() - snapshot.materialBindingSetCreationCount
+        const auto materialBindingSetDelta = material != nullptr
+            ? material->GetExplicitBindingSetCreationCount() - snapshot.materialBindingSetCreationCount
             : 0u;
-        const auto materialSnapshotBufferDelta = drawable.material != nullptr
-            ? drawable.material->GetExplicitSnapshotBufferCreationCount() - snapshot.materialSnapshotBufferCreationCount
+        const auto materialSnapshotBufferDelta = material != nullptr
+            ? material->GetExplicitSnapshotBufferCreationCount() - snapshot.materialSnapshotBufferCreationCount
             : 0u;
 
         return {
@@ -245,15 +245,27 @@ void CompositeRenderer::DrawEntity(
 
     const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
+    auto* effectiveMaterial = p_drawable.material;
+    auto* effectiveShader = effectiveMaterial != nullptr
+        ? effectiveMaterial->ResolveShaderForLightMode(lightMode)
+        : nullptr;
     const bool frameObjectPrepared = m_frameObjectBindingProvider == nullptr ||
-        m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable);
+        (effectiveShader != nullptr
+            ? m_frameObjectBindingProvider->PrepareDraw(
+                p_pso,
+                p_drawable,
+                *effectiveMaterial,
+                *effectiveShader)
+            : effectiveMaterial != nullptr
+                ? m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable, *effectiveMaterial)
+                : m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable));
 
-    const auto renderPreparationCounterSnapshot = CaptureRenderPreparationCounterSnapshot(*this, p_drawable);
+    const auto renderPreparationCounterSnapshot = CaptureRenderPreparationCounterSnapshot(*this, p_drawable.material);
     const auto recordRenderPreparationCounters =
         [&]()
         {
             const auto [bindingSetCreationCount, snapshotBufferCreationCount] =
-                CalculateRenderPreparationCounterDelta(*this, p_drawable, renderPreparationCounterSnapshot);
+                CalculateRenderPreparationCounterDelta(*this, p_drawable.material, renderPreparationCounterSnapshot);
             m_rendererStats.RecordRenderBindingSetCreation(bindingSetCreationCount);
             m_rendererStats.RecordRenderSnapshotBufferCreation(snapshotBufferCreationCount);
     };
@@ -311,6 +323,24 @@ void CompositeRenderer::DrawEntity(
     Settings::EComparaisonAlgorithm depthCompareOverride,
     std::string_view lightMode)
 {
+    if (p_drawable.material == nullptr)
+        return;
+
+    DrawEntity(
+        p_drawable,
+        *p_drawable.material,
+        std::move(pipelineOverrides),
+        depthCompareOverride,
+        lightMode);
+}
+
+void CompositeRenderer::DrawEntity(
+    const Entities::Drawable& p_drawable,
+    Resources::Material& effectiveMaterial,
+    Resources::MaterialPipelineStateOverrides pipelineOverrides,
+    Settings::EComparaisonAlgorithm depthCompareOverride,
+    std::string_view lightMode)
+{
     NLS_PROFILE_SCOPE();
     if (!m_compositeFrameActive)
         return;
@@ -318,15 +348,24 @@ void CompositeRenderer::DrawEntity(
     auto effectivePso = CreatePipelineState();
     const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
+    auto* effectiveShader = lightMode.empty()
+        ? effectiveMaterial.GetShader()
+        : effectiveMaterial.ResolveShaderForLightMode(lightMode);
     const bool frameObjectPrepared = m_frameObjectBindingProvider == nullptr ||
-        m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable);
+        (effectiveShader != nullptr
+            ? m_frameObjectBindingProvider->PrepareDraw(
+                effectivePso,
+                p_drawable,
+                effectiveMaterial,
+                *effectiveShader)
+            : m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable, effectiveMaterial));
 
-    const auto renderPreparationCounterSnapshot = CaptureRenderPreparationCounterSnapshot(*this, p_drawable);
+    const auto renderPreparationCounterSnapshot = CaptureRenderPreparationCounterSnapshot(*this, &effectiveMaterial);
     const auto recordRenderPreparationCounters =
         [&]()
         {
             const auto [bindingSetCreationCount, snapshotBufferCreationCount] =
-                CalculateRenderPreparationCounterDelta(*this, p_drawable, renderPreparationCounterSnapshot);
+                CalculateRenderPreparationCounterDelta(*this, &effectiveMaterial, renderPreparationCounterSnapshot);
             m_rendererStats.RecordRenderBindingSetCreation(bindingSetCreationCount);
             m_rendererStats.RecordRenderSnapshotBufferCreation(snapshotBufferCreationCount);
     };
@@ -338,7 +377,13 @@ void CompositeRenderer::DrawEntity(
     }
 
     PreparedRecordedDraw preparedDraw;
-    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, lightMode, preparedDraw))
+    if (!PrepareRecordedDraw(
+        p_drawable,
+        effectiveMaterial,
+        pipelineOverrides,
+        depthCompareOverride,
+        lightMode,
+        preparedDraw))
     {
         recordRenderPreparationCounters();
         return;
@@ -414,8 +459,21 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
 
     const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
-    if (m_frameObjectBindingProvider != nullptr &&
-        !m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable))
+    auto* effectiveMaterial = p_drawable.material;
+    auto* effectiveShader = effectiveMaterial != nullptr
+        ? effectiveMaterial->ResolveShaderForLightMode(lightMode)
+        : nullptr;
+    const bool frameObjectPrepared = m_frameObjectBindingProvider == nullptr ||
+        (effectiveShader != nullptr
+            ? m_frameObjectBindingProvider->PrepareDraw(
+                p_pso,
+                p_drawable,
+                *effectiveMaterial,
+                *effectiveShader)
+            : effectiveMaterial != nullptr
+                ? m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable, *effectiveMaterial)
+                : m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable));
+    if (!frameObjectPrepared)
     {
         return false;
     }
@@ -491,8 +549,21 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
     auto effectivePso = CreatePipelineState();
     const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
-    if (m_frameObjectBindingProvider != nullptr &&
-        !m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable))
+    auto* effectiveMaterial = p_drawable.material;
+    auto* effectiveShader = effectiveMaterial != nullptr
+        ? effectiveMaterial->ResolveShaderForLightMode(lightMode)
+        : nullptr;
+    const bool frameObjectPrepared = m_frameObjectBindingProvider == nullptr ||
+        (effectiveShader != nullptr
+            ? m_frameObjectBindingProvider->PrepareDraw(
+                effectivePso,
+                p_drawable,
+                *effectiveMaterial,
+                *effectiveShader)
+            : effectiveMaterial != nullptr
+                ? m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable, *effectiveMaterial)
+                : m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable));
+    if (!frameObjectPrepared)
     {
         return false;
     }

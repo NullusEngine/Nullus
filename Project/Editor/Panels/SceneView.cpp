@@ -899,16 +899,7 @@ bool Editor::Panels::SceneView::CommitActivePrefabDragInstance()
                 resolutionOptions));
         }
         EDITOR_EXEC(SelectGameObject(*root));
-        if (EDITOR_CONTEXT(activePrefabStage).has_value() &&
-            EDITOR_CONTEXT(activePrefabStage)->stageScene &&
-            EDITOR_CONTEXT(activePrefabStage)->stageScene.get() == GetScene())
-        {
-            EDITOR_CONTEXT(activePrefabStage)->dirty = true;
-        }
-        else
-        {
-            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
-        }
+        EDITOR_EXEC(MarkOwningSceneDirty(*root));
         EDITOR_PANEL(Editor::Panels::Hierarchy, "Hierarchy").RebuildFromCurrentScene();
         ClearActivePrefabDragState();
         return true;
@@ -920,16 +911,7 @@ bool Editor::Panels::SceneView::CommitActivePrefabDragInstance()
     }
     root->SetEditorTransient(false);
     EDITOR_EXEC(SelectGameObject(*root));
-    if (EDITOR_CONTEXT(activePrefabStage).has_value() &&
-        EDITOR_CONTEXT(activePrefabStage)->stageScene &&
-        EDITOR_CONTEXT(activePrefabStage)->stageScene.get() == GetScene())
-    {
-        EDITOR_CONTEXT(activePrefabStage)->dirty = true;
-    }
-    else
-    {
-        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
-    }
+    EDITOR_EXEC(MarkOwningSceneDirty(*root));
     EDITOR_PANEL(Editor::Panels::Hierarchy, "Hierarchy").RebuildFromCurrentScene();
     ClearActivePrefabDragState();
     return true;
@@ -1249,6 +1231,7 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
             descriptor.skipSceneDrawables);
     descriptor.allowDefaultMaterialForUnresolvedExplicitMaterials =
         pendingSceneLoadResourceTasks > 0u;
+    descriptor.trustSceneRenderContentRevision = true;
     if (descriptor.skipSceneDrawables)
         m_hasRenderedSceneLoadResourcePlaceholder = true;
     return descriptor;
@@ -1761,7 +1744,7 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     if (!cameraControlActive && manipulated)
     {
         Core::ApplyGameObjectWorldGizmoMatrix(*selectedGameObject, modelMatrix, m_currentOperation, m_currentPivot);
-        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+        EDITOR_EXEC(MarkOwningSceneDirty(*selectedGameObject));
     }
 }
 

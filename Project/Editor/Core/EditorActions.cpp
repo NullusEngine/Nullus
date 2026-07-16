@@ -1397,6 +1397,7 @@ void MarkGameObjectCreationSceneDirty(
         m_context.activePrefabStage->stageScene &&
         m_context.activePrefabStage->stageScene.get() == &scene)
     {
+        scene.MarkRenderContentChanged();
         m_context.activePrefabStage->dirty = true;
         return;
     }
@@ -4040,6 +4041,13 @@ Editor::Core::EditorActions::~EditorActions()
     ReleaseTrackedGameObjectDestroyedListeners();
 }
 
+void Editor::Core::EditorActions::MarkOwningSceneDirty(Engine::GameObject& p_actor)
+{
+    auto* scene = ResolveSceneForLiveObject(m_context, p_actor);
+    if (scene)
+        MarkGameObjectCreationSceneDirty(m_context, *scene);
+}
+
 void Editor::Core::EditorActions::LoadEmptyScene()
 {
     if (GetCurrentEditorMode() != EEditorMode::EDIT)
@@ -4219,6 +4227,8 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                     assetPath +
                     " subAssetKey=" +
                     subAssetKey);
+                std::string artifactLoadDiagnosticCode;
+                std::string artifactLoadDiagnosticMessage;
                 auto artifact = NLS::Editor::Assets::LoadSceneRestorePrefabArtifactReady(
                     prefabArtifactLoader,
                     projectRoot,
@@ -4228,7 +4238,9 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                     absoluteSourcePath,
                     sceneOwnerScope,
                     false,
-                    false);
+                    false,
+                    &artifactLoadDiagnosticCode,
+                    &artifactLoadDiagnosticMessage);
                 NLS_LOG_INFO(
                     "[Startup] RestorePrefabInstances prefab artifact load end elapsedMs=" +
                     std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -4238,7 +4250,11 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                     " subAssetKey=" +
                     subAssetKey +
                     " loaded=" +
-                    (artifact ? "true" : "false"));
+                    (artifact ? "true" : "false") +
+                    " diagnosticCode=" +
+                    artifactLoadDiagnosticCode +
+                    " diagnosticMessage=" +
+                    artifactLoadDiagnosticMessage);
 
                 prefabArtifactCache.emplace(cacheKey, artifact);
                 return artifact;
@@ -5900,9 +5916,9 @@ bool Editor::Core::EditorActions::DestroyGameObject(Engine::GameObject& p_actor)
     if (GetSelectedGameObject() == &p_actor)
         UnselectGameObject();
 
+    MarkOwningSceneDirty(p_actor);
     p_actor.MarkAsDestroy();
     NLS_LOG_INFO("GameObject destroyed");
-    m_context.sceneManager.MarkCurrentSceneDirty();
     return true;
 }
 

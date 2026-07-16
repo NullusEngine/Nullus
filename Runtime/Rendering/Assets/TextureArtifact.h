@@ -97,6 +97,7 @@ struct TextureArtifactHeaderPreview
 {
     uint32_t width = 0u;
     uint32_t height = 0u;
+    TextureArtifactColorSpace colorSpace = TextureArtifactColorSpace::Linear;
 };
 
 NLS_RENDER_API std::vector<uint8_t> SerializeTextureArtifact(const TextureArtifactData& texture);

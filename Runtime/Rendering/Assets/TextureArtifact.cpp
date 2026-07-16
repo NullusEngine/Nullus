@@ -968,7 +968,8 @@ std::optional<TextureArtifactHeaderPreview> ReadTextureArtifactHeaderPreview(
 
     return TextureArtifactHeaderPreview {
         header.width,
-        header.height
+        header.height,
+        static_cast<TextureArtifactColorSpace>(header.colorSpace)
     };
 }
 

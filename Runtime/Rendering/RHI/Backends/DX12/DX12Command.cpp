@@ -722,30 +722,7 @@ namespace NLS::Render::Backend
 		m_boundPipeline.reset();
 		m_boundComputePipeline.reset();
 
-		if (m_allocator == nullptr || m_commandList == nullptr)
-			return;
-
-		const HRESULT allocatorHr = m_allocator->Reset();
-		if (FAILED(allocatorHr))
-		{
-			NLS_LOG_ERROR("NativeDX12CommandBuffer::Reset failed: allocator reset hr=" + std::to_string(allocatorHr) + " name=" + m_debugName);
-			return;
-		}
-
-		const HRESULT commandListHr = m_commandList->Reset(m_allocator.Get(), nullptr);
-		if (FAILED(commandListHr))
-		{
-			NLS_LOG_ERROR("NativeDX12CommandBuffer::Reset failed: command list reset hr=" + std::to_string(commandListHr) + " name=" + m_debugName);
-			return;
-		}
-
-		const HRESULT closeHr = m_commandList->Close();
 		m_recording = false;
-		m_hasClosedRecording = SUCCEEDED(closeHr);
-		if (FAILED(closeHr))
-		{
-			NLS_LOG_ERROR("NativeDX12CommandBuffer::Reset failed: command list close hr=" + std::to_string(closeHr) + " name=" + m_debugName);
-		}
 #endif
 	}
 
@@ -1171,6 +1148,8 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		if (m_commandList == nullptr || pipeline == nullptr)
 			return;
+		if (!m_bindingComputePipeline && m_boundPipeline == pipeline && IsBoundGraphicsPipelineNativeValid())
+			return;
 
 		auto* nativePipeline = dynamic_cast<IDX12GraphicsPipelineAccess*>(pipeline.get());
 		if (nativePipeline == nullptr)
@@ -1347,12 +1326,15 @@ namespace NLS::Render::Backend
 			{
 				return boundSet.first == setIndex;
 			});
+		const bool bindingSetAlreadyRetained =
+			existingBindingSetIt != m_boundBindingSets.end() && existingBindingSetIt->second == bindingSet;
 		if (existingBindingSetIt != m_boundBindingSets.end())
 			existingBindingSetIt->second = bindingSet;
 		else
 			m_boundBindingSets.emplace_back(setIndex, bindingSet);
 
-		m_recordedBindingSetKeepAlive.push_back(bindingSet);
+		if (!bindingSetAlreadyRetained)
+			m_recordedBindingSetKeepAlive.push_back(bindingSet);
 		m_descriptorTablesDirty = true;
 #else
 		(void)setIndex;

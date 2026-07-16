@@ -449,6 +449,12 @@ namespace NLS::Editor::Core
 		bool CloseActivePrefabStage(bool saveBeforeClose);
 
 		/**
+		* Mark the live scene that owns the actor as changed for persistence and rendering.
+		* @param p_actor Actor whose owning scene should be invalidated
+		*/
+		void MarkOwningSceneDirty(Engine::GameObject& p_actor);
+
+		/**
 		* Save the current scene to a new disk location (Can create a duplication of the scene file)
 		*/
 		void SaveAs();

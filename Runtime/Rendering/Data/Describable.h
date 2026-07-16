@@ -2,6 +2,7 @@
 
 #include <typeindex>
 #include <any>
+#include <unordered_map>
 
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Entities/Camera.h"
@@ -51,6 +52,13 @@ public:
      */
     template<typename T>
     bool TryGetDescriptor(T& p_outDescriptor) const;
+
+    /**
+     * Retrieve a read-only descriptor without copying it.
+     * @return Pointer to the descriptor, or nullptr when it is absent
+     */
+    template<typename T>
+    const T* TryGetDescriptor() const;
 
 private:
     std::unordered_map<std::type_index, std::any> m_descriptors;

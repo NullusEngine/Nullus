@@ -1455,8 +1455,30 @@ TEST(EditorLaunchArgsTests, SceneViewPendingPrefabCommitUsesSnapshottedPlacement
         << "Commit must verify the transient root's scene token before dereferencing the root.";
     EXPECT_LT(commitBody.find("m_activeDraggedPrefabRootSceneToken.has_value()"), commitBody.find("root->IsAlive()"))
         << "Commit must check the scene generation before dereferencing a root that may have belonged to an unloaded scene.";
-    EXPECT_NE(commitBody.find("EDITOR_CONTEXT(activePrefabStage)->dirty = true"), std::string::npos)
-        << "Committing into an active Prefab Stage should dirty the stage, not blindly dirty the main current scene.";
+    EXPECT_NE(commitBody.find("EDITOR_EXEC(MarkOwningSceneDirty(*root))"), std::string::npos)
+        << "Committing should dirty the root's owning scene, including an active Prefab Stage.";
+}
+
+TEST(EditorLaunchArgsTests, EditorObjectMutationInvalidatesOwningPrefabStageRenderRevision)
+{
+    const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    const auto markStart = actionsSource.find("void Editor::Core::EditorActions::MarkOwningSceneDirty");
+    ASSERT_NE(markStart, std::string::npos);
+    const auto markEnd = actionsSource.find("void Editor::Core::EditorActions::LoadEmptyScene", markStart);
+    ASSERT_NE(markEnd, std::string::npos);
+    const auto markBody = actionsSource.substr(markStart, markEnd - markStart);
+    EXPECT_NE(markBody.find("ResolveSceneForLiveObject"), std::string::npos);
+    EXPECT_NE(markBody.find("MarkGameObjectCreationSceneDirty"), std::string::npos);
+
+    const auto helperStart = actionsSource.find("void MarkGameObjectCreationSceneDirty");
+    ASSERT_NE(helperStart, std::string::npos);
+    const auto helperEnd = actionsSource.find("ResolveSceneForLiveObject", helperStart);
+    ASSERT_NE(helperEnd, std::string::npos);
+    const auto helperBody = actionsSource.substr(helperStart, helperEnd - helperStart);
+    EXPECT_NE(helperBody.find("scene.MarkRenderContentChanged()"), std::string::npos)
+        << "Prefab Stage mutations must invalidate the render revision used by Scene View's trusted sync fast path.";
+    EXPECT_NE(helperBody.find("activePrefabStage->dirty = true"), std::string::npos)
+        << "Prefab Stage mutations must remain persistently dirty after render invalidation.";
 }
 
 TEST(EditorLaunchArgsTests, SceneViewCancelUsesRootSceneTokenBeforeTouchingTransientRoot)
@@ -2931,7 +2953,7 @@ TEST(EditorLaunchArgsTests, EditorThreadedRenderingUsesFramesInFlightSlotsForThr
 }
 
 #if defined(_WIN32)
-TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationEnablesDredDiagnostics)
+TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationKeepsPageFaultDiagnosticsWithoutAutoBreadcrumbs)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
@@ -2946,6 +2968,7 @@ TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationEnablesDredDiagnostics)
     EXPECT_GE(resources.confirmedShaderModel, static_cast<unsigned int>(D3D_SHADER_MODEL_6_0));
     EXPECT_NE(resources.shaderModelDiagnostics.find("Shader Model"), std::string::npos);
     EXPECT_TRUE(resources.dredDiagnosticsEnabled);
+    EXPECT_FALSE(resources.dredAutoBreadcrumbsEnabled);
 }
 
 TEST(EditorLaunchArgsTests, ExplicitDebugValidationDx12DeviceCreationEnablesDredDiagnostics)
@@ -2963,9 +2986,10 @@ TEST(EditorLaunchArgsTests, ExplicitDebugValidationDx12DeviceCreationEnablesDred
     EXPECT_GE(resources.confirmedShaderModel, static_cast<unsigned int>(D3D_SHADER_MODEL_6_0));
     EXPECT_NE(resources.shaderModelDiagnostics.find("Shader Model"), std::string::npos);
     EXPECT_TRUE(resources.dredDiagnosticsEnabled);
+    EXPECT_TRUE(resources.dredAutoBreadcrumbsEnabled);
 }
 
-TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationKeepsDredDiagnosticsEnabled)
+TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationDisablesAutoBreadcrumbs)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
@@ -2980,5 +3004,6 @@ TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationKeepsDredDi
     EXPECT_GE(resources.confirmedShaderModel, static_cast<unsigned int>(D3D_SHADER_MODEL_6_0));
     EXPECT_NE(resources.shaderModelDiagnostics.find("Shader Model"), std::string::npos);
     EXPECT_TRUE(resources.dredDiagnosticsEnabled);
+    EXPECT_FALSE(resources.dredAutoBreadcrumbsEnabled);
 }
 #endif

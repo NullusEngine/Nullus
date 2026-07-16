@@ -37,6 +37,7 @@ namespace NLS::Render::Backend
 		unsigned int confirmedShaderModel = 0;
 		bool shaderModel6Supported = false;
 		bool dredDiagnosticsEnabled = false;
+		bool dredAutoBreadcrumbsEnabled = false;
 
 		bool IsValid() const;
 	};

@@ -1056,10 +1056,21 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	const Drawable& drawable,
 	PreparedRecordedDraw& outDraw)
 {
-	NLS_PROFILE_SCOPE();
 	auto* bindingProvider = GetFrameObjectBindingProvider();
-	if (bindingProvider != nullptr && !bindingProvider->PrepareDraw(pso, drawable))
-		return false;
+	if (bindingProvider != nullptr)
+	{
+		auto* material = drawable.material;
+		auto* effectiveShader = material != nullptr ? material->ResolveShaderForLightMode("Forward") : nullptr;
+		const bool prepared = effectiveShader != nullptr
+			? bindingProvider->PrepareDraw(pso, drawable, *material, *effectiveShader)
+			: material != nullptr
+				? bindingProvider->PrepareDraw(pso, drawable, *material)
+				: bindingProvider->PrepareDraw(pso, drawable);
+		if (!prepared)
+		{
+			return false;
+		}
+	}
 
 	if (!PrepareRecordedDraw(pso, drawable, outDraw))
 		return false;
@@ -1090,13 +1101,49 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	std::string_view lightMode,
 	PreparedRecordedDraw& outDraw)
 {
-	NLS_PROFILE_SCOPE();
-	auto effectivePso = CreatePipelineState();
-	auto* bindingProvider = GetFrameObjectBindingProvider();
-	if (bindingProvider != nullptr && !bindingProvider->PrepareDraw(effectivePso, drawable))
+	if (drawable.material == nullptr)
 		return false;
 
-	if (!PrepareRecordedDraw(drawable, pipelineOverrides, depthCompareOverride, lightMode, outDraw))
+	return CaptureThreadedPreparedDraw(
+		drawable,
+		*drawable.material,
+		std::move(pipelineOverrides),
+		depthCompareOverride,
+		lightMode,
+		outDraw);
+}
+
+bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
+	const Drawable& drawable,
+	Material& effectiveMaterial,
+	Render::Resources::MaterialPipelineStateOverrides pipelineOverrides,
+	Render::Settings::EComparaisonAlgorithm depthCompareOverride,
+	std::string_view lightMode,
+	PreparedRecordedDraw& outDraw)
+{
+	auto effectivePso = CreatePipelineState();
+	auto* bindingProvider = GetFrameObjectBindingProvider();
+	if (bindingProvider != nullptr)
+	{
+		auto* effectiveShader = lightMode.empty()
+			? effectiveMaterial.GetShader()
+			: effectiveMaterial.ResolveShaderForLightMode(lightMode);
+		const bool prepared = effectiveShader != nullptr
+			? bindingProvider->PrepareDraw(effectivePso, drawable, effectiveMaterial, *effectiveShader)
+			: bindingProvider->PrepareDraw(effectivePso, drawable, effectiveMaterial);
+		if (!prepared)
+		{
+			return false;
+		}
+	}
+
+	if (!PrepareRecordedDraw(
+		drawable,
+		effectiveMaterial,
+		pipelineOverrides,
+		depthCompareOverride,
+		lightMode,
+		outDraw))
 		return false;
 
 	if (outDraw.commandBuffer == nullptr && bindingProvider != nullptr)
@@ -1443,7 +1490,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			RenderScene& renderScene,
 		const bool includeSkyboxes,
 		const bool requireExplicitMaterialTextures,
-		const bool allowDefaultMaterialForUnresolvedExplicitMaterials)
+		const bool allowDefaultMaterialForUnresolvedExplicitMaterials,
+		const bool trustSceneRenderContentRevision)
 	{
 		RenderSceneSyncStats syncStats;
 		{
@@ -1453,7 +1501,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 				overrideMaterial,
 					requireExplicitMaterialTextures,
 					allowDefaultMaterialForUnresolvedExplicitMaterials,
-					&occlusionSettings
+					&occlusionSettings,
+					trustSceneRenderContentRevision
 				});
 			}
 			logStartupParseSceneStage("SynchronizeRenderScene");
@@ -1654,7 +1703,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 				m_renderScene,
 			sceneDescriptor.includeSkyboxes,
 			sceneDescriptor.requireExplicitMaterialTextures,
-			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials);
+			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials,
+			sceneDescriptor.trustSceneRenderContentRevision);
 	for (auto it = m_additiveRenderScenes.begin(); it != m_additiveRenderScenes.end();)
 	{
 		const auto* cachedScene = it->first;
@@ -1686,7 +1736,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			additiveRenderScene,
 			false,
 			true,
-			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials);
+			sceneDescriptor.allowDefaultMaterialForUnresolvedExplicitMaterials,
+			false);
 	}
 	if (occlusionPruneTelemetry.hzbHistoryPruneTouchedHandleCount > 0u ||
 		occlusionPruneTelemetry.hzbHistoryPruneRemovedHandleCount > 0u ||

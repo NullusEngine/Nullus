@@ -52,4 +52,11 @@ namespace NLS::Render::Data
 
 		return false;
 	}
+
+	template<typename T>
+	inline const T* Describable::TryGetDescriptor() const
+	{
+		auto it = m_descriptors.find(typeid(T));
+		return it != m_descriptors.end() ? &std::any_cast<const T&>(it->second) : nullptr;
+	}
 }

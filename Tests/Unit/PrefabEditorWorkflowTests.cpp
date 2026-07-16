@@ -1801,9 +1801,12 @@ TEST(PrefabEditorWorkflowTests, OpensSavesAndDiscardsEditablePrefabStage)
     EXPECT_TRUE(open.stage->editable);
     EXPECT_FALSE(open.stage->dirty);
     ASSERT_NE(open.stage->stageRoot, nullptr);
+    ASSERT_NE(open.stage->stageScene, nullptr);
     open.stage->stageRoot->SetName("SavedWorkbench");
+    const auto renderContentRevision = open.stage->stageScene->GetRenderContentRevision();
     workflow.MarkStageDirty(*open.stage);
     EXPECT_TRUE(open.stage->dirty);
+    EXPECT_GT(open.stage->stageScene->GetRenderContentRevision(), renderContentRevision);
 
     const auto save = workflow.SavePrefabStage(*open.stage, *artifact);
 

@@ -111,17 +111,22 @@ void ApplyProjectTextureResolution(
     result.resourcePath = candidate.artifactPath;
 }
 
-void ApplyModelFallback(ResolvedModelTextureReference& result)
+}
+
+void ApplyModelTextureFallback(ResolvedModelTextureReference& result)
 {
     result.kind = ModelTextureResolutionKind::ModelEmbeddedFallback;
+    result.targetAssetId = {};
+    result.targetSubAssetKey.clear();
+    result.targetEditorPath.clear();
+    result.targetArtifactHashOrVersion.clear();
+    result.resourcePath.clear();
     if (!result.source.sourceKey.empty())
         result.modelSubAssetKey = "texture:" + result.source.sourceKey;
     else if (!result.source.materialTextureKey.empty())
         result.modelSubAssetKey = "texture:" + result.source.materialTextureKey;
     else
         result.modelSubAssetKey = "texture:" + result.source.stableKey;
-}
-
 }
 
 std::string MakeModelTextureStableKey(const ModelTextureSourceReference& source)
@@ -240,7 +245,7 @@ ResolvedModelTextureReference ResolveModelTextureReference(
             "model-texture-external-resolution-disabled",
             "External texture resolution is disabled for this model."));
         if (source.hasModelLocalPayload)
-            ApplyModelFallback(result);
+            ApplyModelTextureFallback(result);
         return result;
     }
 
@@ -378,7 +383,7 @@ ResolvedModelTextureReference ResolveModelTextureReference(
     }
 
     if (source.hasModelLocalPayload)
-        ApplyModelFallback(result);
+        ApplyModelTextureFallback(result);
 
     return result;
 }

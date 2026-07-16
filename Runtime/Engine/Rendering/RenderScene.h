@@ -159,6 +159,7 @@ namespace NLS::Engine::Rendering
 			bool requireExplicitMaterialTextures = false;
 			bool allowDefaultMaterialForUnresolvedExplicitMaterials = false;
 			const LargeSceneSettings* largeSceneSettings = nullptr;
+			bool trustSceneRenderContentRevision = false;
 		};
 
 	struct RenderSceneSyncStats
@@ -176,6 +177,7 @@ namespace NLS::Engine::Rendering
 		uint64_t declaredTextureCacheHitCount = 0u;
 		uint64_t declaredTextureCacheMissCount = 0u;
 		uint64_t declaredTextureResourceScanCount = 0u;
+		bool usedSceneRenderContentRevisionFastPath = false;
 		uint64_t syncTimeNs = 0u;
 	};
 
@@ -384,6 +386,22 @@ namespace NLS::Engine::Rendering
 			bool valid = false;
 		};
 
+		struct SceneSynchronizationStamp
+		{
+			const SceneSystem::Scene* scene = nullptr;
+			uint64_t renderContentRevision = 0u;
+			NLS::Render::Resources::Material* defaultMaterial = nullptr;
+			uint64_t defaultMaterialParameterRevision = 0u;
+			uint64_t defaultMaterialRenderStateRevision = 0u;
+			NLS::Render::Resources::Material* overrideMaterial = nullptr;
+			uint64_t overrideMaterialParameterRevision = 0u;
+			uint64_t overrideMaterialRenderStateRevision = 0u;
+			bool requireExplicitMaterialTextures = false;
+			bool allowDefaultMaterialForUnresolvedExplicitMaterials = false;
+
+			[[nodiscard]] bool operator==(const SceneSynchronizationStamp& other) const = default;
+		};
+
 		struct RenderPrimitive
 		{
 			ScenePrimitiveHandle handle;
@@ -504,6 +522,9 @@ namespace NLS::Engine::Rendering
 		void AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) const;
 		void RefreshSyncTelemetry(const RenderSceneSyncStats& stats);
 		void RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene);
+		[[nodiscard]] static SceneSynchronizationStamp BuildSceneSynchronizationStamp(
+			const SceneSystem::Scene& scene,
+			const RenderSceneSyncOptions& options);
 		void ResetMovedFromState() noexcept;
 
 		uint64_t m_sceneId = 0u;
@@ -512,6 +533,7 @@ namespace NLS::Engine::Rendering
 		std::optional<size_t> m_firstFreePrimitiveSlot;
 		size_t m_livePrimitiveCount = 0u;
 		uint64_t m_lastSceneFastAccessRevision = 0u;
+		std::optional<SceneSynchronizationStamp> m_lastSceneSynchronizationStamp;
 		uint64_t m_nextCachedCommandBuildSerial = 1u;
 		uint64_t m_cachedCommandBuildCount = 0u;
 		mutable uint64_t m_nextPrimitiveSnapshotSerial = 1u;

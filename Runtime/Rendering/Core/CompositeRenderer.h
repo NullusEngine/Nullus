@@ -83,6 +83,12 @@ public:
     void RecordPickingDiagnostics(const Data::PickingDiagnostics& diagnostics);
 
 protected:
+    void DrawEntity(
+        const Entities::Drawable& p_drawable,
+        Resources::Material& effectiveMaterial,
+        Resources::MaterialPipelineStateOverrides pipelineOverrides,
+        Settings::EComparaisonAlgorithm depthCompareOverride,
+        std::string_view lightMode);
     RendererStats* GetMutableRendererStats() const override;
     void OnThreadedFramePublishFailed() override;
     void DrawRegisteredPasses();

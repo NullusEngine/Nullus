@@ -857,23 +857,27 @@ namespace NLS::Render::Backend
 
 		SetDx12ObjectName(m_resource.Get(), NLS::Render::RHI::DX12::BuildDX12BufferDebugLabel(desc));
 
-		if (hasInitialData && heapType == D3D12_HEAP_TYPE_UPLOAD)
+		if (heapType == D3D12_HEAP_TYPE_UPLOAD)
 		{
-			void* mappedData = nullptr;
 			D3D12_RANGE readRange{};
 			readRange.Begin = 0;
 			readRange.End = 0;
-			m_resource->Map(0, &readRange, &mappedData);
-			if (mappedData != nullptr)
+			const HRESULT mapResult = m_resource->Map(0, &readRange, &m_persistentlyMappedUploadData);
+			if (FAILED(mapResult) || m_persistentlyMappedUploadData == nullptr)
+			{
+				NLS_LOG_ERROR(
+					"NativeDX12Buffer: failed to persistently map upload buffer \"" +
+					desc.debugName + "\" hr=" + std::to_string(mapResult));
+				m_resource.Reset();
+				return;
+			}
+
+			if (hasInitialData)
 			{
 				std::memcpy(
-					static_cast<uint8_t*>(mappedData) + uploadDesc.destinationOffset,
+					static_cast<uint8_t*>(m_persistentlyMappedUploadData) + uploadDesc.destinationOffset,
 					uploadDesc.data,
 					uploadDesc.dataSize);
-				D3D12_RANGE writeRange{};
-				writeRange.Begin = static_cast<SIZE_T>(uploadDesc.destinationOffset);
-				writeRange.End = static_cast<SIZE_T>(uploadDesc.destinationOffset + uploadDesc.dataSize);
-				m_resource->Unmap(0, &writeRange);
 			}
 		}
 		else if (needsDefaultHeapUpload && m_graphicsQueue != nullptr)
@@ -898,6 +902,11 @@ namespace NLS::Render::Backend
 	NativeDX12Buffer::~NativeDX12Buffer()
 	{
 #if defined(_WIN32)
+		if (m_resource != nullptr && m_persistentlyMappedUploadData != nullptr)
+		{
+			m_resource->Unmap(0, nullptr);
+			m_persistentlyMappedUploadData = nullptr;
+		}
 		if (m_resource != nullptr)
 			m_resource.Reset();
 #endif
@@ -946,27 +955,18 @@ namespace NLS::Render::Backend
 			};
 		}
 
-		void* mappedData = nullptr;
-		D3D12_RANGE readRange{};
-		readRange.Begin = 0;
-		readRange.End = 0;
-		const HRESULT mapResult = m_resource->Map(0, &readRange, &mappedData);
-		if (FAILED(mapResult) || mappedData == nullptr)
+		if (m_persistentlyMappedUploadData == nullptr)
 		{
 			return {
 				NLS::Render::RHI::RHIUpdateStatusCode::BackendFailure,
-				"NativeDX12Buffer::UpdateData failed to map destination buffer"
+				"NativeDX12Buffer::UpdateData destination buffer is not persistently mapped"
 			};
 		}
 
 		std::memcpy(
-			static_cast<uint8_t*>(mappedData) + uploadDesc.destinationOffset,
+			static_cast<uint8_t*>(m_persistentlyMappedUploadData) + uploadDesc.destinationOffset,
 			uploadDesc.data,
 			uploadDesc.dataSize);
-		D3D12_RANGE writeRange{};
-		writeRange.Begin = static_cast<SIZE_T>(uploadDesc.destinationOffset);
-		writeRange.End = static_cast<SIZE_T>(uploadDesc.destinationOffset + uploadDesc.dataSize);
-		m_resource->Unmap(0, &writeRange);
 		return { NLS::Render::RHI::RHIUpdateStatusCode::Success, {} };
 #else
 		(void)uploadDesc;

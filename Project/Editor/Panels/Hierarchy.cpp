@@ -182,7 +182,7 @@ public:
 			nameEditor.EnterPressedEvent += [this](std::string p_newName)
 			{
 				m_target->SetName(p_newName);
-				EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+				EDITOR_EXEC(MarkOwningSceneDirty(*m_target));
 			};
         }
 
@@ -339,8 +339,8 @@ Editor::Panels::Hierarchy::Hierarchy
 	{
 		m_sceneRoot->ConsiderWidget(*p_element.second);
 
+		EDITOR_EXEC(MarkOwningSceneDirty(*p_element.first));
 		p_element.first->DetachFromParent();
-		EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
 	};
 	m_sceneRoot->AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
 		NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent += [](NLS::Editor::Assets::EditorAssetDragPayload p_data)
@@ -496,7 +496,7 @@ void Editor::Panels::Hierarchy::AddGameObjectByInstance(Engine::GameObject & p_a
 		}
 
 		p_element.first->SetParent(p_actor);
-		EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+		EDITOR_EXEC(MarkOwningSceneDirty(*p_element.first));
 	};
 	textSelectable.AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
 		NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent += [&p_actor](NLS::Editor::Assets::EditorAssetDragPayload p_data)

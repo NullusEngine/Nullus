@@ -93,6 +93,7 @@ namespace NLS::Engine::Rendering
 					bool suppressVisibleMaterialTextureRequests = false;
 					bool suppressHZBOcclusion = false;
 					bool suppressLightGridCompute = false;
+					bool trustSceneRenderContentRevision = false;
 				};
 
 		using SnapshotRenderScenePackageBuildMode = Render::Context::SnapshotRenderScenePackageBuildMode;
@@ -136,7 +137,7 @@ namespace NLS::Engine::Rendering
 				const Render::Data::DrawCallOptimizationStats& GetLastDrawCallOptimizationStatsForTesting() const;
 #endif
 
-		protected:
+	protected:
 		void RefreshSceneLightingDescriptor(SceneSystem::Scene& scene);
 		AllDrawables ParseScene();
 		std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
@@ -153,6 +154,13 @@ namespace NLS::Engine::Rendering
 			PreparedRecordedDraw& outDraw);
 		bool CaptureThreadedPreparedDraw(
 			const Drawable& drawable,
+			Render::Resources::MaterialPipelineStateOverrides pipelineOverrides,
+			Render::Settings::EComparaisonAlgorithm depthCompareOverride,
+			std::string_view lightMode,
+			PreparedRecordedDraw& outDraw);
+		bool CaptureThreadedPreparedDraw(
+			const Drawable& drawable,
+			Material& effectiveMaterial,
 			Render::Resources::MaterialPipelineStateOverrides pipelineOverrides,
 			Render::Settings::EComparaisonAlgorithm depthCompareOverride,
 			std::string_view lightMode,

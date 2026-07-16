@@ -20,6 +20,11 @@ namespace NLS::Render::Resources
 class Shader;
 }
 
+namespace NLS::Render::Data
+{
+struct DrawableObjectDescriptor;
+}
+
 namespace NLS::Engine::Rendering
 {
 class NLS_ENGINE_API EngineFrameObjectBindingProvider final : public NLS::Render::Core::FrameObjectBindingProvider
@@ -62,8 +67,11 @@ private:
     bool EnsureObjectDataBufferCapacity(ObjectDataFrameSlot& slot, uint32_t objectIndex);
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> RefreshExplicitIndexedObjectBindingSet(ObjectDataFrameSlot& slot);
     void OnDeferredReset();
-    bool TryPrepareIndexedObjectData(const NLS::Render::Entities::Drawable& drawable, uint32_t* preparedObjectIndex = nullptr);
-    bool DrawableRequiresIndexedObjectData(const NLS::Render::Entities::Drawable& drawable) const;
+    bool TryPrepareIndexedObjectData(
+        const NLS::Render::Entities::Drawable& drawable,
+        const NLS::Render::Data::DrawableObjectDescriptor& descriptor,
+        uint32_t* preparedObjectIndex = nullptr);
+    bool PreparedShaderRequiresIndexedObjectData() const;
     bool ShaderRequiresIndexedObjectData(const NLS::Render::Resources::Shader& shader) const;
 
     std::chrono::high_resolution_clock::time_point m_startTime;
@@ -96,6 +104,7 @@ private:
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> deferredBindingSet;
         uint64_t deviceIdentity = 0u;
         std::vector<Maths::Matrix4> objectDataShadow;
+        uint32_t nextTransientObjectIndex = 0u;
         size_t capacity = 0u;
         uint32_t idleFrameCount = 0u;
         bool bindingSetDirty = true;

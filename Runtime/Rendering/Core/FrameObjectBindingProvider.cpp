@@ -1,6 +1,7 @@
 #include "Rendering/Core/FrameObjectBindingProvider.h"
 
 #include "Rendering/Core/CompositeRenderer.h"
+#include "Rendering/Resources/Material.h"
 
 namespace NLS::Render::Core
 {
@@ -14,6 +15,8 @@ void FrameObjectBindingProvider::BeginFrame(const Data::FrameDescriptor& frameDe
     m_framePrepared = true;
     m_objectPrepared = false;
     m_preparedDrawCount = 0u;
+    m_preparedMaterial = nullptr;
+    m_preparedShader = nullptr;
     OnBeginFrame(frameDescriptor);
 }
 
@@ -23,6 +26,8 @@ void FrameObjectBindingProvider::EndFrame()
     m_framePrepared = false;
     m_objectPrepared = false;
     m_preparedDrawCount = 0u;
+    m_preparedMaterial = nullptr;
+    m_preparedShader = nullptr;
 }
 
 bool FrameObjectBindingProvider::TryReservePreparedFrameResources()
@@ -42,6 +47,35 @@ bool FrameObjectBindingProvider::HasReservedPreparedFrameResources() const
 
 bool FrameObjectBindingProvider::PrepareDraw(PipelineState& pso, const Entities::Drawable& drawable)
 {
+    if (drawable.material != nullptr)
+        return PrepareDraw(pso, drawable, *drawable.material);
+
+    m_preparedMaterial = nullptr;
+    m_preparedShader = nullptr;
+    m_objectPrepared = OnPrepareDraw(pso, drawable);
+    return m_objectPrepared;
+}
+
+bool FrameObjectBindingProvider::PrepareDraw(
+    PipelineState& pso,
+    const Entities::Drawable& drawable,
+    const Resources::Material& effectiveMaterial)
+{
+    const auto* effectiveShader = effectiveMaterial.GetShader();
+    m_preparedMaterial = &effectiveMaterial;
+    m_preparedShader = effectiveShader;
+    m_objectPrepared = OnPrepareDraw(pso, drawable);
+    return m_objectPrepared;
+}
+
+bool FrameObjectBindingProvider::PrepareDraw(
+    PipelineState& pso,
+    const Entities::Drawable& drawable,
+    const Resources::Material& effectiveMaterial,
+    const Resources::Shader& effectiveShader)
+{
+    m_preparedMaterial = &effectiveMaterial;
+    m_preparedShader = &effectiveShader;
     m_objectPrepared = OnPrepareDraw(pso, drawable);
     return m_objectPrepared;
 }
@@ -76,6 +110,16 @@ bool FrameObjectBindingProvider::IsObjectPrepared() const
 uint64_t FrameObjectBindingProvider::GetPreparedDrawCount() const
 {
     return m_preparedDrawCount;
+}
+
+const Resources::Material* FrameObjectBindingProvider::GetPreparedMaterial() const
+{
+    return m_preparedMaterial;
+}
+
+const Resources::Shader* FrameObjectBindingProvider::GetPreparedShader() const
+{
+    return m_preparedShader;
 }
 
 void FrameObjectBindingProvider::OnBeginFrame(const Data::FrameDescriptor&)

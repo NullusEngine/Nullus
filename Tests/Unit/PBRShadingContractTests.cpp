@@ -1967,6 +1967,14 @@ TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirv
         });
     ASSERT_NE(parsedGbuffer, passes.end());
     ASSERT_EQ(parsedGbuffer->state.cullMode, NLS::Render::ShaderLab::ShaderLabCullMode::Back);
+    EXPECT_NE(
+        parsedGbuffer->hlslSource.find("StructuredBuffer<float4x4> ObjectData : register(t0, space3)"),
+        std::string::npos);
+    const auto gbufferVertex = ExtractFunctionDefinition(parsedGbuffer->hlslSource, "VSMain");
+    ASSERT_FALSE(gbufferVertex.empty());
+    EXPECT_NE(gbufferVertex.find("SV_InstanceID"), std::string::npos);
+    EXPECT_NE(gbufferVertex.find("ObjectData[u_ObjectIndex + instanceId]"), std::string::npos);
+    EXPECT_EQ(gbufferVertex.find("u_Model"), std::string::npos);
 
     struct ShaderLabVariant
     {

@@ -143,7 +143,7 @@ uint32_t GetCurrentImporterVersion(const AssetType type)
     switch (type)
     {
     case AssetType::ModelScene:
-        return 19u;
+        return 20u;
     case AssetType::Shader:
         return 2u;
     case AssetType::Texture:

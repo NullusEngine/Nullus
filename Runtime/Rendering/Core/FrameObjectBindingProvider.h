@@ -15,6 +15,12 @@ namespace NLS::Render::RHI
     class RHIBindingSet;
 }
 
+namespace NLS::Render::Resources
+{
+    class Material;
+    class Shader;
+}
+
 namespace NLS::Render::Core
 {
 class CompositeRenderer;
@@ -40,6 +46,15 @@ public:
     void ReleaseReservedPreparedFrameResources();
     bool HasReservedPreparedFrameResources() const;
     bool PrepareDraw(PipelineState& pso, const Entities::Drawable& drawable);
+    bool PrepareDraw(
+        PipelineState& pso,
+        const Entities::Drawable& drawable,
+        const Resources::Material& effectiveMaterial);
+    bool PrepareDraw(
+        PipelineState& pso,
+        const Entities::Drawable& drawable,
+        const Resources::Material& effectiveMaterial,
+        const Resources::Shader& effectiveShader);
     void PrepareExplicitDraw(RHI::RHICommandBuffer& commandBuffer, PipelineState& pso, const Entities::Drawable& drawable);
     bool CapturePreparedBindingSets(PipelineState& pso, const Entities::Drawable& drawable, PreparedBindingSets& outBindings);
 
@@ -57,11 +72,16 @@ protected:
     virtual void OnPrepareExplicitDraw(RHI::RHICommandBuffer& commandBuffer, PipelineState& pso, const Entities::Drawable& drawable);
     virtual bool OnCapturePreparedBindingSets(PipelineState& pso, const Entities::Drawable& drawable, PreparedBindingSets& outBindings);
 
+    const Resources::Material* GetPreparedMaterial() const;
+    const Resources::Shader* GetPreparedShader() const;
+
     CompositeRenderer& m_renderer;
 
 private:
     bool m_framePrepared = false;
     bool m_objectPrepared = false;
     uint64_t m_preparedDrawCount = 0u;
+    const Resources::Material* m_preparedMaterial = nullptr;
+    const Resources::Shader* m_preparedShader = nullptr;
 };
 }

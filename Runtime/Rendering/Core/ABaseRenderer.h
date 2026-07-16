@@ -256,6 +256,13 @@ protected:
         Settings::EComparaisonAlgorithm depthCompareOverride,
         std::string_view lightMode,
         PreparedRecordedDraw& outDraw) const;
+    bool PrepareRecordedDraw(
+        const Entities::Drawable& p_drawable,
+        Resources::Material& effectiveMaterial,
+        Resources::MaterialPipelineStateOverrides pipelineOverrides,
+        Settings::EComparaisonAlgorithm depthCompareOverride,
+        std::string_view lightMode,
+        PreparedRecordedDraw& outDraw) const;
     virtual void BindPreparedGraphicsPipeline(const PreparedRecordedDraw& preparedDraw) const;
     virtual void BindPreparedMaterialBindingSet(const PreparedRecordedDraw& preparedDraw) const;
     virtual void SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw) const;
@@ -265,6 +272,9 @@ protected:
     size_t GetPreparedRecordedDrawStaticBaseCacheSizeForTesting() const;
     size_t GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting() const;
     static size_t GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting();
+    static uint64_t GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting();
+    static size_t GetPreparedRecordedDrawStaticBaseCacheAgeSweepBudgetForTesting();
+    size_t AdvancePreparedRecordedDrawStaticBaseCacheForTesting(uint64_t frameCount) const;
 #endif
     NLS::Render::FrameGraph::FrameGraphExecutionContext CreateFrameGraphExecutionContext() const;
     std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer() const;
@@ -360,6 +370,7 @@ private:
     bool ResolvePreparedRecordedDrawStaticBase(
         const char* preparationPath,
         const Entities::Drawable& drawable,
+        Resources::Material& material,
         const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
         Settings::EComparaisonAlgorithm depthCompareOverride,
         const Data::PipelineState& pipelineState,
@@ -381,6 +392,7 @@ private:
         const PreparedRecordedDrawStaticBaseCacheKey& key);
     static PreparedRecordedDrawStaticBaseCacheKey BuildPreparedRecordedDrawStaticBaseCacheKey(
         const Entities::Drawable& drawable,
+        const Resources::Material& material,
         const std::shared_ptr<RHI::RHIDevice>& device,
         const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
         Settings::EComparaisonAlgorithm depthCompareOverride,

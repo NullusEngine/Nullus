@@ -920,6 +920,50 @@ TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedComman
     EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
 }
 
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionSkipsStablePrimitiveScan)
+{
+    ManyPrimitiveFixture fixture(128u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    options.trustSceneRenderContentRevision = true;
+
+    const auto first = renderScene.Synchronize(fixture.scene, options);
+    ASSERT_EQ(first.rebuiltCachedCommandCount, 128u);
+    EXPECT_FALSE(first.usedSceneRenderContentRevisionFastPath);
+
+    const auto second = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_TRUE(second.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(second.syncTouchedPrimitiveCount, 0u);
+    EXPECT_EQ(second.reusedPrimitiveCount, 128u);
+
+    fixture.scene.MarkRenderContentChanged();
+    const auto invalidated = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_FALSE(invalidated.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(invalidated.reusedPrimitiveCount, 128u);
+}
+
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionFastPathIsDisabledWhilePlaying)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    options.trustSceneRenderContentRevision = true;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+
+    fixture.scene.Play();
+    auto* transform = fixture.meshRenderer->gameobject()->GetTransform();
+    ASSERT_NE(transform, nullptr);
+    transform->TranslateLocal({ 1.0f, 0.0f, 0.0f });
+
+    const auto playing = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_FALSE(playing.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(playing.syncTouchedPrimitiveCount, 1u);
+}
+
 TEST(RenderSceneCacheTests, ReuseCheckValidatesCachedCommandStampBeforeMaterialDereference)
 {
     const auto source = ReadRepoText("Runtime/Engine/Rendering/RenderScene.cpp");

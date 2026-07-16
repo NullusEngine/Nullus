@@ -6523,6 +6523,89 @@ TEST(AssetImportPipelineTests, ExternalModelImportRecordsProjectTextureFreshness
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetImportPipelineTests, ExternalModelImportFallsBackToArtifactDatabaseWhenManifestSnapshotMissesTexture)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "SnapshotMissHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "SnapshotMissAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+
+    const auto textureAssetIdText = "25252525-2525-4252-8252-252525252525";
+    const auto textureArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        texturePath,
+        textureAssetIdText,
+        "editor",
+        "snapshot-miss-albedo",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+    ASSERT_FALSE(textureArtifactPath.empty());
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/SnapshotMissAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("26262626-2626-4262-8262-262626262626"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    NLS::Editor::Assets::ModelTextureResolutionSettings settings;
+    settings.autoImportMissingTextureFiles = false;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, settings);
+
+    NLS::Editor::Assets::ExternalModelImportRequest request;
+    request.sourcePath = sourcePath;
+    request.stagingRoot = root / "Staging";
+    request.committedRoot = root / "Library" / "Artifacts" / modelMeta.id.ToString();
+    request.meta = modelMeta;
+    request.sceneKey = "SnapshotMissHero";
+    request.targetPlatform = "editor";
+    request.textureResourcePathPrefix = "Models";
+    request.projectRoot = root;
+    request.loadArtifactManifest = [](
+        const NLS::Core::Assets::AssetId,
+        const std::string&) -> std::optional<NLS::Core::Assets::ArtifactManifest>
+    {
+        return std::nullopt;
+    };
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset(request);
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+
+    const auto* mappingDependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::PathToGuidMapping,
+        "project|Assets/Textures/SnapshotMissAlbedo.png|source-path");
+    ASSERT_NE(mappingDependency, nullptr);
+    EXPECT_NE(mappingDependency->hashOrVersion.find(textureAssetIdText), std::string::npos);
+    EXPECT_NE(mappingDependency->hashOrVersion.find("texture:main"), std::string::npos);
+    EXPECT_NE(mappingDependency->hashOrVersion.find("imported"), std::string::npos);
+    EXPECT_EQ(mappingDependency->hashOrVersion.find("unimported"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImportPipelineTests, ExternalModelImportRecordsPathMappingDependencyWhenTextureArtifactIsMissing)
 {
     const auto root = MakeImportTestRoot();
@@ -7731,6 +7814,114 @@ TEST(AssetImportPipelineTests, ExternalGltfModelImportKeepsBaseColorAndNormalMat
     EXPECT_NE(payload.find("keyword _NORMALMAP"), std::string::npos);
     ExpectNoLegacyTextureArtifactReference(payload, "texture%3Aimage%2F0");
     ExpectNoLegacyTextureArtifactReference(payload, "texture%3Aimage%2F1");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalGltfModelImportFallsBackWhenProjectNormalTextureIsSrgb)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "SrgbProjectNormal.gltf";
+    const auto baseColorPath = root / "Assets" / "Textures" / "HeroBaseColor.png";
+    const auto normalPath = root / "Assets" / "Textures" / "HeroNormal.png";
+    WriteBinaryFile(baseColorPath, TinyPng());
+    WriteBinaryFile(normalPath, TinyPng());
+
+    const auto baseColorArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        baseColorPath,
+        "41414141-4141-4141-8141-414141414141",
+        "editor",
+        "HeroBaseColor",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+    const auto incompatibleNormalArtifactPath = WriteImportedTextureAssetForTest(
+        root,
+        normalPath,
+        "42424242-4242-4242-8242-424242424242",
+        "editor",
+        "HeroNormal",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/HeroBaseColor.png", "mimeType": "image/png" },
+                { "uri": "../Textures/HeroNormal.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 },
+                { "source": 1 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    },
+                    "normalTexture": { "index": 1 }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("43434343-4343-4343-8343-434343434343"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "SrgbProjectNormal",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_EQ(result.manifest.FindSubAsset("texture:image/0"), nullptr);
+    const auto* normalArtifact = result.manifest.FindSubAsset("texture:image/1");
+    ASSERT_NE(normalArtifact, nullptr);
+
+    const auto normal = NLS::Render::Assets::DeserializeTextureArtifact(
+        ReadArtifactFile(root, *normalArtifact));
+    ASSERT_TRUE(normal.has_value());
+    EXPECT_EQ(normal->colorSpace, NLS::Render::Assets::TextureArtifactColorSpace::Linear);
+
+    const auto* materialArtifact = FindFirstArtifactOfType(
+        result.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto materialPayload = ReadArtifactPayloadText(
+        root,
+        *materialArtifact,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    ExpectMaterialTextureSlot(materialPayload, "_BaseMap", root, baseColorArtifactPath);
+    ExpectMaterialTextureSlot(materialPayload, "_NormalMap", root, normalArtifact->artifactPath);
+    EXPECT_EQ(
+        materialPayload.find(ToPortableArtifactPath(root, incompatibleNormalArtifactPath)),
+        std::string::npos);
+
+    const auto* diagnostic = FindDiagnosticByCode(
+        result.diagnostics,
+        "model-texture-artifact-color-space-mismatch");
+    ASSERT_NE(diagnostic, nullptr);
+    EXPECT_NE(diagnostic->message.find("expected Linear"), std::string::npos);
+    EXPECT_NE(diagnostic->message.find("found sRGB"), std::string::npos);
 
     std::filesystem::remove_all(root);
 }
@@ -10440,6 +10631,14 @@ TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesIncompleteFbx
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
         18u)
         << "Importer version 18 FBX materials can still omit file textures connected through a 3ds Max ai_bump2d node.";
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesSrgbProjectNormalVersion19Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        19u)
+        << "Importer version 19 materials can bind sRGB project texture artifacts to linear normal and mask slots.";
 }
 
 #if !NLS_HAS_AUTODESK_FBX_SDK && NLS_HAS_ASSIMP_FBX_IMPORTER

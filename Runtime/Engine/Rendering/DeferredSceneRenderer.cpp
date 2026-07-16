@@ -1121,14 +1121,14 @@ namespace NLS::Engine::Rendering
 							const auto& drawable = entry.second;
 							if (!drawable.material)
 								continue;
-							auto gbufferDrawable = drawable;
-							gbufferDrawable.material = &ResolveGBufferDrawableMaterial(*drawable.material);
+							auto& gbufferMaterial = ResolveGBufferDrawableMaterial(*drawable.material);
 
 							const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
 
 							PreparedRecordedDraw preparedDraw;
 							const bool captured = CaptureThreadedPreparedDraw(
-								gbufferDrawable,
+								drawable,
+								gbufferMaterial,
 								gBufferOverrides,
 								gbufferPso.depthFunc,
 								"GBuffer",
@@ -1153,9 +1153,8 @@ namespace NLS::Engine::Rendering
 							if (!drawable.material)
 								continue;
 
-							auto decalDrawable = drawable;
-							decalDrawable.material = ResolveDeferredDecalDrawableMaterial(*drawable.material);
-							if (decalDrawable.material == nullptr)
+							auto* decalMaterial = ResolveDeferredDecalDrawableMaterial(*drawable.material);
+							if (decalMaterial == nullptr)
 							{
 								++unresolvedDecalDrawCount;
 								continue;
@@ -1165,7 +1164,8 @@ namespace NLS::Engine::Rendering
 
 							PreparedRecordedDraw preparedDraw;
 							const bool captured = CaptureThreadedPreparedDraw(
-								decalDrawable,
+								drawable,
+								*decalMaterial,
 								decalOverrides,
 								GetDeferredDecalDepthCompare(),
 								"DeferredDecal",
@@ -2787,12 +2787,11 @@ namespace NLS::Engine::Rendering
 			if (!drawable.material)
 				continue;
 
-			auto gbufferDrawable = drawable;
-			gbufferDrawable.material = &ResolveGBufferDrawableMaterial(*drawable.material);
+			auto& gbufferMaterial = ResolveGBufferDrawableMaterial(*drawable.material);
 
 			const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
 
-			DrawEntity(gbufferDrawable, gBufferOverrides, pso.depthFunc, "GBuffer");
+			DrawEntity(drawable, gbufferMaterial, gBufferOverrides, pso.depthFunc, "GBuffer");
 		}
 	}
 
@@ -2807,14 +2806,13 @@ namespace NLS::Engine::Rendering
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
 				continue;
 
-			auto decalDrawable = drawable;
-			decalDrawable.material = ResolveDeferredDecalDrawableMaterial(*drawable.material);
-			if (decalDrawable.material == nullptr)
+			auto* decalMaterial = ResolveDeferredDecalDrawableMaterial(*drawable.material);
+			if (decalMaterial == nullptr)
 				continue;
 
 			const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
 
-			DrawEntity(decalDrawable, decalOverrides, GetDeferredDecalDepthCompare(), "DeferredDecal");
+			DrawEntity(drawable, *decalMaterial, decalOverrides, GetDeferredDecalDepthCompare(), "DeferredDecal");
 		}
 	}
 

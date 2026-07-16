@@ -84,6 +84,7 @@ public:
 private:
     void DrawPrefabState(Engine::GameObject& p_target);
     void SyncComponentPicker();
+    void MarkTargetSceneDirty() const;
 
     Engine::GameObject* m_targetGameObject = nullptr;
     UI::Widgets::Group* m_gameObjectInfo;

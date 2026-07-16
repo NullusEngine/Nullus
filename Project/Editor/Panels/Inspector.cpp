@@ -176,7 +176,7 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
         if (m_targetGameObject)
         {
             m_targetGameObject->SetName(p_newName);
-            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+            MarkTargetSceneDirty();
         }
     };
     UI::GUIDrawer::DrawString(headerColumns, "Name", nameGatherer, nameProvider);
@@ -214,7 +214,7 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
                 if (p_choice < 0)
                     return;
                 m_targetGameObject->SetTag(Settings::TagLayerSettings::GetTagAt(p_choice));
-                EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+                MarkTargetSceneDirty();
             }
         });
 
@@ -237,7 +237,7 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
             if (m_targetGameObject)
             {
                 m_targetGameObject->SetLayer(p_choice);
-                EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+                MarkTargetSceneDirty();
             }
         });
 
@@ -249,7 +249,7 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
         if (m_targetGameObject)
         {
             m_targetGameObject->SetActive(p_active);
-            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+            MarkTargetSceneDirty();
         }
     };
     UI::GUIDrawer::DrawBoolean(headerColumns, "Active", activeGatherer, activeProvider);
@@ -275,7 +275,7 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
     m_componentPicker = &m_inspectorHeader->CreateWidget<ComponentSearchPanel>();
     m_componentPicker->ComponentAddedEvent += [this]
     {
-        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+        MarkTargetSceneDirty();
         Refresh();
     };
 
@@ -472,7 +472,8 @@ void Inspector::DrawPrefabState(Engine::GameObject& p_target)
         auto result = NLS::Editor::Assets::PrefabUtilityFacade().RevertPrefabInstance(*instance);
         if (result.status == NLS::Editor::Assets::PrefabOperationStatus::Committed)
         {
-            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+            if (instance->instanceRoot)
+                EDITOR_EXEC(MarkOwningSceneDirty(*instance->instanceRoot));
             Refresh();
         }
     };
@@ -511,16 +512,8 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
             if (!lifetimeToken || !*lifetimeToken)
                 return;
 
-            auto* scene = EDITOR_CONTEXT(sceneManager).GetCurrentScene();
-            if (!scene)
-                return;
-
             auto* owner = NLS::Object::IDToPointer<NLS::Engine::GameObject>(ownerInstanceID);
             if (!owner)
-                return;
-
-            const auto& actors = scene->GetGameObjects();
-            if (std::find(actors.begin(), actors.end(), owner) == actors.end())
                 return;
 
             auto* component = owner->GetComponent(componentType, true);
@@ -532,7 +525,7 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
 
             if (owner->RemoveComponent(component))
             {
-                EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+                EDITOR_EXEC(MarkOwningSceneDirty(*owner));
                 SyncComponentPicker();
                 Refresh();
             }
@@ -549,13 +542,13 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
 
     ReflectedPropertyDrawerOptions options;
     options.labelWidth = 104.0f;
-    options.onFieldChanged = [](const meta::Field&)
+    options.onFieldChanged = [this](const meta::Field&)
     {
-        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+        MarkTargetSceneDirty();
     };
     options.onFieldLayoutChanged = [this](const meta::Field&)
     {
-        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+        MarkTargetSceneDirty();
         auto lifetimeToken = m_lifetimeToken;
         EDITOR_EXEC(DelayAction([this, lifetimeToken]
         {
@@ -566,6 +559,12 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
     DrawReflectedObject(header, meta::Variant(p_component, meta::variant_policy::WrapObject {}), options);
 
     m_gameObjectInfo->CreateWidget<UI::Widgets::Spacing>(1);
+}
+
+void Inspector::MarkTargetSceneDirty() const
+{
+    if (m_targetGameObject)
+        EDITOR_EXEC(MarkOwningSceneDirty(*m_targetGameObject));
 }
 
 void Inspector::Refresh()

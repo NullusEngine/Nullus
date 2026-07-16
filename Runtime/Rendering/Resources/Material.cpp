@@ -1005,6 +1005,7 @@ namespace NLS::Render::Resources
 			explicitBindingSetsByShaderKey;
 		std::unordered_map<ExplicitShaderCacheKey, std::shared_ptr<RHI::RHIPipelineLayout>, ExplicitShaderCacheKeyHash>
 			explicitPipelineLayoutsByShaderKey;
+		std::unordered_map<uint64_t, std::pair<uint64_t, bool>> passDescriptorSetRequirementsByShader;
 		std::vector<MaterialBindingDiagnostic> explicitBindingDiagnostics;
 		std::vector<IndexedObjectDataBindingDiagnosticSource> indexedObjectDataBindingDiagnosticSources;
 		std::vector<MaterialBindingDiagnostic> materialConstantBufferDiagnostics;
@@ -1048,6 +1049,7 @@ namespace NLS::Render::Resources
 		state.explicitBindingLayoutsByShaderKey.clear();
 		state.explicitBindingSetsByShaderKey.clear();
 		state.explicitPipelineLayoutsByShaderKey.clear();
+		state.passDescriptorSetRequirementsByShader.clear();
 		state.explicitBindingDiagnostics.clear();
 		state.indexedObjectDataBindingDiagnosticSources.clear();
 		state.materialConstantBufferDiagnostics.clear();
@@ -2404,29 +2406,57 @@ namespace NLS::Render::Resources
 		if (shader == nullptr)
 			return false;
 
+		auto& state = GetRuntimeState();
+		const auto shaderInstanceId = shader->GetInstanceId();
+		const auto shaderGeneration = shader->GetGeneration();
+		if (const auto cached = state.passDescriptorSetRequirementsByShader.find(shaderInstanceId);
+			cached != state.passDescriptorSetRequirementsByShader.end() &&
+			cached->second.first == shaderGeneration)
+		{
+			return cached->second.second;
+		}
+
+		bool requiresPassDescriptorSet = false;
+
 		if (shader->HasParameterStructs())
 		{
 			const auto layoutDescs = BuildExplicitBindingLayoutDescs(
 				*shader,
 				path.empty() ? "Material" : path);
 			constexpr uint32_t passSetIndex = NLS::Render::RHI::BindingPointMap::kPassDescriptorSet;
-			return layoutDescs.size() > passSetIndex && !layoutDescs[passSetIndex].entries.empty();
+			requiresPassDescriptorSet =
+				layoutDescs.size() > passSetIndex && !layoutDescs[passSetIndex].entries.empty();
 		}
-
-		const auto reflection = shader->GetReflectionSnapshot();
-		for (const auto& constantBuffer : reflection->constantBuffers)
+		else
 		{
-			if (constantBuffer.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
-				return true;
+			const auto reflection = shader->GetReflectionSnapshot();
+			for (const auto& constantBuffer : reflection->constantBuffers)
+			{
+				if (constantBuffer.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
+				{
+					requiresPassDescriptorSet = true;
+					break;
+				}
+			}
+
+			if (!requiresPassDescriptorSet)
+			{
+				for (const auto& property : reflection->properties)
+				{
+					if (property.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
+					{
+						requiresPassDescriptorSet = true;
+						break;
+					}
+				}
+			}
 		}
 
-		for (const auto& property : reflection->properties)
-		{
-			if (property.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
-				return true;
-		}
-
-		return false;
+		state.passDescriptorSetRequirementsByShader[shaderInstanceId] = {
+			shaderGeneration,
+			requiresPassDescriptorSet
+		};
+		return requiresPassDescriptorSet;
 	}
 
 	void Material::SetRawParameter(const std::string& name, std::any value)

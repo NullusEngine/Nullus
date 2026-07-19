@@ -1,5 +1,6 @@
 #include "Rendering/UI/UiDrawDataSnapshot.h"
 
+#include <bit>
 #include <cstdint>
 #include <chrono>
 #include <string>
@@ -16,6 +17,44 @@ namespace NLS::Render::UI
         constexpr uint64_t kInvalidUiTextureIdImGuiMarker = 0x4e5f000000000000ull;
         constexpr uint64_t kUiTextureIdValueMask = 0xffffffffull;
         constexpr uint64_t kUiTextureIdGenerationMask = 0xffffull;
+        constexpr uint64_t kUiContentHashOffsetBasis = 14695981039346656037ull;
+        constexpr uint64_t kUiContentHashPrime = 1099511628211ull;
+
+        class UiContentSignatureBuilder
+        {
+        public:
+            void AddUint64(const uint64_t value)
+            {
+                for (uint32_t byteIndex = 0u; byteIndex < sizeof(value); ++byteIndex)
+                {
+                    m_hash ^= (value >> (byteIndex * 8u)) & 0xffu;
+                    m_hash *= kUiContentHashPrime;
+                }
+            }
+
+            void AddUint32(const uint32_t value)
+            {
+                AddUint64(value);
+            }
+
+            void AddFloat(const float value)
+            {
+                AddUint32(std::bit_cast<uint32_t>(value));
+            }
+
+            void AddBool(const bool value)
+            {
+                AddUint32(value ? 1u : 0u);
+            }
+
+            [[nodiscard]] uint64_t Finish() const
+            {
+                return m_hash != 0u ? m_hash : 1u;
+            }
+
+        private:
+            uint64_t m_hash = kUiContentHashOffsetBasis;
+        };
 
         std::optional<UiTextureId> ToUiTextureId(ImTextureID textureId)
         {
@@ -65,6 +104,69 @@ namespace NLS::Render::UI
         return UiTextureId { value, generation };
     }
 
+    uint64_t ComputeUiDrawDataContentSignature(const UiDrawDataSnapshot& snapshot)
+    {
+        UiContentSignatureBuilder signature;
+        signature.AddFloat(snapshot.displayPos[0]);
+        signature.AddFloat(snapshot.displayPos[1]);
+        signature.AddFloat(snapshot.displaySize[0]);
+        signature.AddFloat(snapshot.displaySize[1]);
+        signature.AddFloat(snapshot.framebufferScale[0]);
+        signature.AddFloat(snapshot.framebufferScale[1]);
+        signature.AddUint32(snapshot.totalVertexCount);
+        signature.AddUint32(snapshot.totalIndexCount);
+        signature.AddUint32(snapshot.drawListCount);
+        signature.AddBool(snapshot.hasVisibleDraws);
+        signature.AddBool(snapshot.containsUnsupportedUserCallback);
+        signature.AddBool(snapshot.containsUnsupportedTextureId);
+        signature.AddUint64(snapshot.drawLists.size());
+
+        for (const auto& drawList : snapshot.drawLists)
+        {
+            signature.AddUint64(drawList.vertices.size());
+            for (const auto& vertex : drawList.vertices)
+            {
+                signature.AddFloat(vertex.position[0]);
+                signature.AddFloat(vertex.position[1]);
+                signature.AddFloat(vertex.uv[0]);
+                signature.AddFloat(vertex.uv[1]);
+                signature.AddFloat(vertex.color[0]);
+                signature.AddFloat(vertex.color[1]);
+                signature.AddFloat(vertex.color[2]);
+                signature.AddFloat(vertex.color[3]);
+            }
+
+            signature.AddUint64(drawList.indices.size());
+            for (const auto index : drawList.indices)
+                signature.AddUint32(index);
+
+            signature.AddUint64(drawList.commands.size());
+            for (const auto& command : drawList.commands)
+            {
+                signature.AddUint32(command.elementCount);
+                signature.AddUint32(command.indexOffset);
+                signature.AddUint32(command.vertexOffset);
+                signature.AddFloat(command.clipRect[0]);
+                signature.AddFloat(command.clipRect[1]);
+                signature.AddFloat(command.clipRect[2]);
+                signature.AddFloat(command.clipRect[3]);
+                signature.AddUint64(command.textureId.value);
+                signature.AddUint32(command.textureId.generation);
+                signature.AddUint32(static_cast<uint32_t>(command.callbackKind));
+                signature.AddBool(command.hasUnsupportedTextureId);
+            }
+        }
+
+        return signature.Finish();
+    }
+
+    uint64_t ResolveUiDrawDataContentSignature(const UiDrawDataSnapshot& snapshot)
+    {
+        return snapshot.contentSignature != 0u
+            ? snapshot.contentSignature
+            : ComputeUiDrawDataContentSignature(snapshot);
+    }
+
     std::shared_ptr<UiDrawDataSnapshot> CaptureUiDrawDataSnapshot(
         const ImDrawData* drawData,
         const uint64_t frameId)
@@ -74,6 +176,7 @@ namespace NLS::Render::UI
         snapshot->frameId = frameId;
         if (drawData == nullptr)
         {
+            snapshot->contentSignature = ComputeUiDrawDataContentSignature(*snapshot);
             snapshot->copyDiagnostics.cpuTimeNanoseconds = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - copyStart).count());
@@ -182,6 +285,7 @@ namespace NLS::Render::UI
             snapshot->drawLists.push_back(std::move(copiedList));
         }
 
+        snapshot->contentSignature = ComputeUiDrawDataContentSignature(*snapshot);
         snapshot->copyDiagnostics.cpuTimeNanoseconds = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - copyStart).count());

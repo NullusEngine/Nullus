@@ -9,6 +9,7 @@
 #include "Components/MeshRenderer.h"
 #include "GameObject.h"
 #include "Guid.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "SceneSystem/Scene.h"
@@ -790,6 +791,49 @@ TEST(PrefabEditorWorkflowTests, RegistryTracksPrefabChildAndGeneratedReadOnlyPre
     EXPECT_EQ(childPresentation.state, NLS::Editor::Assets::PrefabHierarchyState::Child);
     EXPECT_TRUE(childPresentation.generatedReadOnly);
     EXPECT_EQ(childPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedChild);
+}
+
+TEST(PrefabEditorWorkflowTests, OpeningPrefabStageAvoidsInstantiationGraphCopy)
+{
+    using namespace NLS::Base::Profiling;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    auto& root = sourceScene.CreateGameObject("StageRoot", "Prefab");
+    sourceScene.CreateGameObject("StageChild", "Prefab").SetParent(root);
+    auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &root,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83121212-1212-4312-8312-121212121212")),
+        "Assets/Prefabs/StageRoot.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    PerformanceStageStats stats;
+    NLS::Editor::Assets::PrefabEditorOperationResult open;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        open = NLS::Editor::Assets::PrefabEditorWorkflow().OpenPrefabStage({
+            &*artifact,
+            artifact->assetId,
+            "prefab:StageRoot"
+        });
+    }
+
+    ASSERT_TRUE(open.stage.has_value());
+    ASSERT_EQ(open.stage->openedGraph.objects.size(), artifact->graph.objects.size());
+    const auto snapshot = stats.Snapshot();
+    const auto openStage = std::find_if(
+        snapshot.stages.begin(),
+        snapshot.stages.end(),
+        [](const PerformanceStageEntry& entry)
+        {
+            return entry.domain == PerformanceStageDomain::Prefab &&
+                entry.stageName == "OpenStage";
+        });
+    ASSERT_NE(openStage, snapshot.stages.end());
+    EXPECT_EQ(openStage->counters.at("objectCount"), artifact->graph.objects.size());
+    EXPECT_EQ(openStage->counters.at("instantiationGraphCopyCount"), 0u);
+    EXPECT_EQ(openStage->counters.at("openedGraphSnapshotCopyCount"), 1u);
 }
 
 TEST(PrefabEditorWorkflowTests, SavingPrefabStageRefreshesRegisteredConnectedInstancesAndKeepsLocalOverrides)

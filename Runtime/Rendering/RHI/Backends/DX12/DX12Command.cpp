@@ -694,35 +694,57 @@ namespace NLS::Render::Backend
 #endif
 	}
 
-	void NativeDX12CommandBuffer::Reset()
-	{
+		void NativeDX12CommandBuffer::Reset()
+		{
 #if defined(_WIN32)
-		if (m_recording)
-			EndPendingGpuProfileScopes();
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12CommandBuffer::Reset");
+			{
+				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::GpuProfileScopes");
+				EndPendingGpuProfileScopes();
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::RenderPassState");
+				m_hasClosedRecording = false;
+				m_childRecordingValid = true;
+				m_activeRenderPassTransitions.clear();
+				m_partialTextureStateDirty.clear();
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::DescriptorState");
+				m_currentResourceDescriptorHeap = nullptr;
+				m_currentSamplerDescriptorHeap = nullptr;
+				m_descriptorHeapsSet = false;
+				m_descriptorTablesDirty = false;
+				m_boundDescriptorTables.clear();
+				m_boundPushConstantRootParameters.clear();
+				m_initializedRootDescriptorTables.clear();
+				m_boundBindingSets.clear();
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::TextureViewKeepAlive");
+				m_recordedTextureViewKeepAlive.clear();
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::BindingSetKeepAlive");
+				m_recordedBindingSetKeepAlive.clear();
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::PipelineKeepAlive");
+				m_recordedPipelineKeepAlive.clear();
+				m_recordedComputePipelineKeepAlive.clear();
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::BufferKeepAlive");
+				m_recordedBufferKeepAlive.clear();
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DX12CommandReset::BoundPipelineState");
+				m_bindingComputePipeline = false;
+				m_boundPipeline.reset();
+				m_boundComputePipeline.reset();
+			}
 
-		m_hasClosedRecording = false;
-		m_childRecordingValid = true;
-		m_activeRenderPassTransitions.clear();
-		m_currentResourceDescriptorHeap = nullptr;
-		m_currentSamplerDescriptorHeap = nullptr;
-		m_descriptorHeapsSet = false;
-		m_descriptorTablesDirty = false;
-		m_boundDescriptorTables.clear();
-		m_boundPushConstantRootParameters.clear();
-		m_initializedRootDescriptorTables.clear();
-		m_boundBindingSets.clear();
-		m_recordedTextureViewKeepAlive.clear();
-		m_recordedBindingSetKeepAlive.clear();
-		m_recordedPipelineKeepAlive.clear();
-		m_recordedComputePipelineKeepAlive.clear();
-		m_recordedBufferKeepAlive.clear();
-		m_partialTextureStateDirty.clear();
-		EndPendingGpuProfileScopes();
-		m_bindingComputePipeline = false;
-		m_boundPipeline.reset();
-		m_boundComputePipeline.reset();
-
-		m_recording = false;
+			m_recording = false;
 #endif
 	}
 

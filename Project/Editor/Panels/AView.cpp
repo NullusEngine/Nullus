@@ -361,10 +361,12 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
         NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &m_fbo);
         logStartupRenderStage("PrepareFrameDescriptor");
 
+        bool rendererFrameActive = false;
         {
             NLS_PROFILE_NAMED_SCOPE("AView::RendererBeginFrame");
             m_renderer->SetLargeSceneSettings(Editor::Settings::EditorSettings::BuildLargeSceneSettings());
 		    m_renderer->BeginFrame(frameDescriptor);
+            rendererFrameActive = m_renderer->IsFrameActive();
         }
         logStartupRenderStage("RendererBeginFrame");
         ViewOverlayCameraMatrices submittedOverlayMatrices;
@@ -442,6 +444,18 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             }
         }
         logStartupRenderStage("ResolveAfterTelemetry");
+        const bool outputFrameRenderedSynchronously =
+            rendererFrameActive &&
+            !threadedRendering;
+        if (outputFrameRenderedSynchronously &&
+            driver != nullptr &&
+            m_image != nullptr &&
+            m_image->textureView != nullptr)
+        {
+            Render::Context::DriverUIAccess::NotifyUiTextureContentChanged(
+                *driver,
+                m_image->textureView);
+        }
         {
             NLS_PROFILE_NAMED_SCOPE("AView::UpdateSubmittedOverlayCameraMatrices");
             UpdateSubmittedOverlayCameraMatrices(

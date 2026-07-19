@@ -213,6 +213,17 @@ bool Scene::AddGameObject(GameObject* gameObject, AddGameObjectActivation activa
 	return true;
 }
 
+bool Scene::AddGameObjects(
+    const std::vector<GameObject*>& gameObjects,
+    AddGameObjectActivation activation)
+{
+    ScopedFastAccessRebuildDeferral rebuildDeferral(*this);
+    bool added = true;
+    for (auto* gameObject : gameObjects)
+        added = AddGameObject(gameObject, activation) && added;
+    return added;
+}
+
 size_t Scene::ActivateGameObjectForPlay(GameObject* gameObject)
 {
     if (!gameObject)

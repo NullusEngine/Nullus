@@ -56,3 +56,20 @@ TEST(DescribableTests, CopyingLookupPreservesExistingBehavior)
 	EXPECT_EQ(copy.value, 7);
 	EXPECT_EQ(CopyTrackedDescriptor::copyCount, 1);
 }
+
+TEST(DescribableTests, MutableLookupUpdatesStoredDescriptorWithoutCopying)
+{
+	NLS::Render::Data::Describable describable;
+	CopyTrackedDescriptor descriptor;
+	descriptor.value = 11;
+	describable.AddDescriptor(std::move(descriptor));
+	CopyTrackedDescriptor::copyCount = 0;
+
+	auto* stored = describable.TryGetDescriptor<CopyTrackedDescriptor>();
+
+	ASSERT_NE(stored, nullptr);
+	stored->value = 23;
+	EXPECT_EQ(describable.GetDescriptor<CopyTrackedDescriptor>().value, 23);
+	EXPECT_EQ(CopyTrackedDescriptor::copyCount, 0);
+	EXPECT_EQ(describable.TryGetDescriptor<int>(), nullptr);
+}

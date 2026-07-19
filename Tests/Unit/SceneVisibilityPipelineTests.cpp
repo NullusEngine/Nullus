@@ -547,9 +547,117 @@ TEST(SceneVisibilityPipelineTests, ParallelAndFullScanComparisonPreserveSparseHa
 	EXPECT_EQ(parallel.primitiveBits, serial.primitiveBits);
 	EXPECT_EQ(parallel.meshBits, serial.meshBits);
 	EXPECT_EQ(parallel.visiblePrimitiveHandles, serial.visiblePrimitiveHandles);
+	EXPECT_EQ(parallel.cullReasons, serial.cullReasons);
 	EXPECT_EQ(fullScan.primitiveBits, serial.primitiveBits);
 	EXPECT_EQ(fullScan.meshBits, serial.meshBits);
 	EXPECT_EQ(fullScan.visiblePrimitiveHandles, serial.visiblePrimitiveHandles);
+	EXPECT_EQ(fullScan.cullReasons, serial.cullReasons);
+}
+
+TEST(SceneVisibilityPipelineTests, ParallelCullReasonsMatchSerialAcrossUnevenRangesDeterministically)
+{
+	ScopedVisibilityPipelineJobSystem jobSystem(2u);
+	ASSERT_TRUE(NLS::Base::Jobs::IsJobSystemInitialized());
+
+	auto snapshot = BuildSparseHandleSnapshot(257u);
+	for (size_t denseIndex = 0u; denseIndex < snapshot.primitiveRecords.size(); ++denseIndex)
+	{
+		auto& record = snapshot.primitiveRecords[denseIndex];
+		record.mesh = reinterpret_cast<NLS::Render::Resources::Mesh*>(
+			static_cast<uintptr_t>(denseIndex + 1u));
+		record.worldMatrix = NLS::Maths::Matrix4::Translation({ 0.0f, 0.0f, -10.0f });
+		record.visibilitySettings.layer = 0u;
+		record.visibilitySettings.distanceCullingEnabled = false;
+		record.visibilitySettings.minDrawDistance = 0.0f;
+		record.visibilitySettings.maxDrawDistance = 0.0f;
+		record.ownerAlive = true;
+		record.ownerActive = true;
+		record.occupied = true;
+		record.tombstoned = false;
+		record.hasMeshBinding = true;
+		record.hasValidMaterial = true;
+
+		switch (denseIndex % 8u)
+		{
+		case 0u:
+			record.ownerActive = false;
+			break;
+		case 1u:
+			record.hasMeshBinding = false;
+			break;
+		case 2u:
+			record.mesh = nullptr;
+			break;
+		case 3u:
+			record.hasValidMaterial = false;
+			break;
+		case 4u:
+			record.visibilitySettings.layer = 1u;
+			break;
+		case 5u:
+			record.visibilitySettings.distanceCullingEnabled = true;
+			record.visibilitySettings.maxDrawDistance = 5.0f;
+			break;
+		case 6u:
+			record.worldMatrix = NLS::Maths::Matrix4::Translation({ 100.0f, 0.0f, -10.0f });
+			break;
+		default:
+			break;
+		}
+	}
+
+	auto frustum = CreateForwardFrustum();
+	SceneSpatialIndex spatialIndex;
+	SceneVisibilityPipelineOptions options;
+	options.frustum = &frustum;
+	options.cameraPosition = { 0.0f, 0.0f, 0.0f };
+	options.visibleLayerMask = 1u;
+	options.enableSpatialIndex = false;
+	options.enableParallelVisibility = true;
+	options.parallelVisibilityPrimitiveThreshold = 1u;
+	options.parallelVisibilityPrimitivesPerTask = 1u;
+	options.maxVisibilityJobs = 3u;
+
+	const auto serial = SceneVisibilityPipeline::Evaluate(
+		options,
+		snapshot,
+		spatialIndex,
+		SceneVisibilityPipelineMode::Serial);
+	const std::array<CullReason, 8u> expectedReasons {
+		CullReason::Inactive,
+		CullReason::MissingMesh,
+		CullReason::NotResident,
+		CullReason::InvalidMaterial,
+		CullReason::LayerMasked,
+		CullReason::DistanceCulled,
+		CullReason::FrustumCulled,
+		CullReason::Visible
+	};
+	ASSERT_EQ(serial.cullReasons.size(), snapshot.primitiveRecords.size());
+	for (size_t denseIndex = 0u; denseIndex < serial.cullReasons.size(); ++denseIndex)
+		EXPECT_EQ(serial.cullReasons[denseIndex], expectedReasons[denseIndex % expectedReasons.size()]);
+
+	for (size_t iteration = 0u; iteration < 4u; ++iteration)
+	{
+		const auto parallel = SceneVisibilityPipeline::Evaluate(
+			options,
+			snapshot,
+			spatialIndex,
+			SceneVisibilityPipelineMode::Parallel);
+
+		ASSERT_TRUE(parallel.usedParallelEvaluation);
+		EXPECT_EQ(parallel.cullReasons, serial.cullReasons);
+		EXPECT_EQ(parallel.primitiveBits, serial.primitiveBits);
+		EXPECT_EQ(parallel.meshBits, serial.meshBits);
+		EXPECT_EQ(parallel.visiblePrimitiveHandles, serial.visiblePrimitiveHandles);
+		EXPECT_EQ(parallel.visiblePrimitiveCount, serial.visiblePrimitiveCount);
+		EXPECT_EQ(parallel.visibleMeshCount, serial.visibleMeshCount);
+		EXPECT_EQ(parallel.fullScanCandidateCount, serial.fullScanCandidateCount);
+		EXPECT_EQ(parallel.primitiveRecordsTouched, serial.primitiveRecordsTouched);
+		EXPECT_EQ(
+			parallel.visibilityTestedPrimitiveCount,
+			serial.visibilityTestedPrimitiveCount);
+	}
 }
 
 TEST(SceneVisibilityPipelineTests, EmptySnapshotReportsZeroPrimitiveCount)

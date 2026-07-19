@@ -307,9 +307,12 @@ PerformanceStageScope::PerformanceStageScope(
     const std::string_view stageName,
     const PerformanceStageThread thread)
     : m_stats(g_activePerformanceStageStats)
-    , m_start(Clock::now())
     , m_active(m_stats != nullptr)
 {
+    if (!m_active)
+        return;
+
+    m_start = Clock::now();
     m_sample.domain = domain;
     m_sample.stageName = std::string(stageName);
     m_sample.thread = thread;

@@ -42,8 +42,9 @@ void ProfilerPanel::RefreshStatus()
 
 void ProfilerPanel::BeginProfilerFrame()
 {
-    m_timelineSink.SetRecordingEnabled(IsRecordingEnabled());
-    if (IsRecordingEnabled())
+    const bool recording = IsRecordingEnabled() || m_timelineSink.IsTraceExportOpen();
+    m_timelineSink.SetRecordingEnabled(recording);
+    if (recording)
         m_timelineSink.TickFrame();
 }
 

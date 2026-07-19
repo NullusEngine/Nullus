@@ -10,9 +10,14 @@
 #include "Debug/Logger.h"
 #include "Profiling/Profiler.h"
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <imgui_internal.h>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #define NOMINMAX
 #include <windows.h>
@@ -138,6 +143,7 @@ static HUDContext& Context()
 }
 
 constexpr uint32 kTraceExportFramesPerDraw = 2u;
+constexpr size_t kMaxQueuedTraceExportBatches = 8u;
 
 static void EditStyle(StyleOptions& style)
 {
@@ -166,6 +172,18 @@ static StringHash GetEventHash(const ProfilerEvent& event)
 	return hash;
 }
 
+struct TraceEventSnapshot
+{
+	uint32 TrackIndex = 0u;
+	ProfilerEvent Event;
+};
+
+struct TraceExportBatch
+{
+	std::vector<TraceEventSnapshot> Events;
+	bool IncludeEditorUiEvents = true;
+};
+
 struct TraceContext
 {
 	TraceContext()
@@ -173,10 +191,97 @@ struct TraceContext
 		QueryPerformanceCounter((LARGE_INTEGER*)&BaseTime);
 	}
 
+	~TraceContext()
+	{
+		StopWriter();
+		if (TraceStream.is_open())
+		{
+			TraceStream << "{}]\n}";
+			TraceStream.close();
+		}
+	}
+
+	void StartWriter()
+	{
+		StopWriterRequested = false;
+		WriterThread = std::thread([this]()
+		{
+			for (;;)
+			{
+				TraceExportBatch batch;
+				{
+					std::unique_lock lock(WriterMutex);
+					WriterWake.wait(lock, [this]()
+					{
+						return StopWriterRequested || !PendingBatches.empty();
+					});
+					if (PendingBatches.empty())
+					{
+						if (StopWriterRequested)
+							break;
+						continue;
+					}
+					batch = std::move(PendingBatches.front());
+					PendingBatches.pop_front();
+				}
+
+				std::string output;
+				output.reserve(batch.Events.size() * 128u);
+				for (const auto& snapshot : batch.Events)
+				{
+					const auto eventJson = NLS::UI::TimelineProfilerDetail::BuildTraceDurationEventJson(
+						snapshot.TrackIndex,
+						snapshot.Event.TicksBegin,
+						snapshot.Event.TicksEnd,
+						BaseTime,
+						TicksToMs,
+						snapshot.Event.GetName(),
+						batch.IncludeEditorUiEvents);
+					if (!eventJson.has_value())
+						continue;
+					output.append(*eventJson);
+					output.append(",\n");
+				}
+				if (!output.empty())
+					TraceStream.write(output.data(), static_cast<std::streamsize>(output.size()));
+			}
+		});
+	}
+
+	void StopWriter()
+	{
+		{
+			std::lock_guard lock(WriterMutex);
+			StopWriterRequested = true;
+		}
+		WriterWake.notify_one();
+		if (WriterThread.joinable())
+			WriterThread.join();
+	}
+
+	bool TryQueueBatch(TraceExportBatch batch)
+	{
+		{
+			std::lock_guard lock(WriterMutex);
+			if (PendingBatches.size() >= kMaxQueuedTraceExportBatches)
+				return false;
+			PendingBatches.push_back(std::move(batch));
+		}
+		WriterWake.notify_one();
+		return true;
+	}
+
 	std::ofstream TraceStream;
 	uint64		  BaseTime = 0;
+	float		  TicksToMs = 0.0f;
 	uint32		  LastExportedFrame = 0;
 	bool		  IncludeEditorUiEvents = true;
+	bool		  Active = false;
+	std::mutex WriterMutex;
+	std::condition_variable WriterWake;
+	std::deque<TraceExportBatch> PendingBatches;
+	std::thread WriterThread;
+	bool StopWriterRequested = false;
 };
 
 std::string FormatTracePathForLog(const std::filesystem::path& path)
@@ -193,7 +298,7 @@ std::string FormatTracePathForLog(const std::filesystem::path& path)
 
 void BeginTrace(const std::filesystem::path& path, TraceContext& context)
 {
-	if (context.TraceStream.is_open())
+	if (context.Active)
 		return;
 
 	std::error_code error;
@@ -213,6 +318,9 @@ void BeginTrace(const std::filesystem::path& path, TraceContext& context)
 		NLS_LOG_WARNING("Timeline trace export failed to open file: " + FormatTracePathForLog(path));
 		return;
 	}
+	uint64 frequency = 0u;
+	QueryPerformanceFrequency((LARGE_INTEGER*)&frequency);
+	context.TicksToMs = frequency != 0u ? 1000.0f / static_cast<float>(frequency) : 0.0f;
 	context.TraceStream << "{\n\"traceEvents\": [\n";
 	URange cpuRange = gProfiler.GetFrameRange();
 	context.LastExportedFrame = cpuRange.End > 0 ? cpuRange.End - 1 : 0;
@@ -230,18 +338,16 @@ void BeginTrace(const std::filesystem::path& path, TraceContext& context)
 			track.Index,
 			track.Name) << ",\n";
 	}
+	context.Active = true;
+	context.StartWriter();
 }
 
 void UpdateTrace(TraceContext& context)
 {
 	NLS_PROFILE_NAMED_SCOPE("ProfilerPanel::UpdateTraceExport");
 
-	if (!context.TraceStream.is_open())
+	if (!context.Active)
 		return;
-
-	uint64 frequency = 0;
-	QueryPerformanceFrequency((LARGE_INTEGER*)&frequency);
-	const float TicksToMs = 1000.0f / frequency;
 
 	URange cpuRange = gProfiler.GetFrameRange();
 	const auto exportRange = NLS::UI::TimelineProfilerDetail::ResolveBudgetedTraceFrameExportRange(
@@ -251,35 +357,29 @@ void UpdateTrace(TraceContext& context)
 	if (exportRange.Begin == exportRange.End)
 		return;
 
+	TraceExportBatch batch;
+	batch.IncludeEditorUiEvents = context.IncludeEditorUiEvents;
 	for (uint32 frameIndex = exportRange.Begin; frameIndex < exportRange.End; ++frameIndex)
 	{
 		for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 		{
 			for (const ProfilerEvent& event : track.GetFrameData(frameIndex))
-			{
-				const auto eventJson = NLS::UI::TimelineProfilerDetail::BuildTraceDurationEventJson(
-					track.Index,
-					event.TicksBegin,
-					event.TicksEnd,
-					context.BaseTime,
-					TicksToMs,
-					event.GetName(),
-					context.IncludeEditorUiEvents);
-				if (!eventJson.has_value())
-					continue;
-
-				context.TraceStream << *eventJson << ",\n";
-			}
+				batch.Events.push_back({ track.Index, event });
 		}
-		context.LastExportedFrame = frameIndex;
 	}
+
+	if (!context.TryQueueBatch(std::move(batch)))
+		return;
+	context.LastExportedFrame = exportRange.End - 1u;
 }
 
 void EndTrace(TraceContext& context)
 {
-	if (!context.TraceStream.is_open())
+	if (!context.Active)
 		return;
 
+	context.Active = false;
+	context.StopWriter();
 	context.TraceStream << "{}]\n}";
 	context.TraceStream.close();
 }
@@ -663,7 +763,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		const auto tracePath = NLS::UI::TimelineProfilerDetail::ResolveDefaultTraceFilePath(
 			NLS::Debug::FileHandler::GetLogFilePath());
 		ImGui::Checkbox("Export Editor UI", &traceContext.IncludeEditorUiEvents);
-		if (!traceContext.TraceStream.is_open())
+		if (!traceContext.Active)
 		{
 			if (ImGui::Button("Begin Trace", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
 			{

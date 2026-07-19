@@ -112,6 +112,29 @@ namespace NLS::Render::Context
 
             (void)DriverRendererAccess::ReleaseReservedFrameContextSlotIndex(driver, reservation.slotIndex.value());
         }
+
+        class ScopedBackgroundPreviewPublicationRequest final
+        {
+        public:
+            ScopedBackgroundPreviewPublicationRequest(DriverImpl& impl, const bool backgroundPreview)
+                : m_request(backgroundPreview ? &impl.backgroundPreviewPublicationRequested : nullptr)
+            {
+                if (m_request != nullptr)
+                    m_request->store(true, std::memory_order_release);
+            }
+
+            ~ScopedBackgroundPreviewPublicationRequest()
+            {
+                if (m_request != nullptr)
+                    m_request->store(false, std::memory_order_release);
+            }
+
+            ScopedBackgroundPreviewPublicationRequest(const ScopedBackgroundPreviewPublicationRequest&) = delete;
+            ScopedBackgroundPreviewPublicationRequest& operator=(const ScopedBackgroundPreviewPublicationRequest&) = delete;
+
+        private:
+            std::atomic_bool* m_request = nullptr;
+        };
     }
 
     bool RenderThreadCoordinator::IsThreadedRenderingEnabled(const Driver& driver)
@@ -270,17 +293,18 @@ namespace NLS::Render::Context
         const bool applyPendingSwapchainResize,
         size_t* publishedSlotIndex,
         uint64_t* publishedFrameId,
-        const bool backgroundPreview)
+        const bool backgroundPreview,
+        const bool waitForRetirement)
     {
         NLS_PROFILE_SCOPE();
         if (driver.m_impl->threadedLifecycle == nullptr)
             return false;
 
-        if (backgroundPreview)
-        {
-            driver.m_impl->backgroundPreviewPublicationRequested.store(true, std::memory_order_release);
-        }
-        else if (driver.m_impl->backgroundPreviewPublicationRequested.load(std::memory_order_acquire))
+        const ScopedBackgroundPreviewPublicationRequest backgroundPreviewRequest(
+            *driver.m_impl,
+            backgroundPreview);
+        if (!backgroundPreview &&
+            driver.m_impl->backgroundPreviewPublicationRequested.load(std::memory_order_acquire))
         {
             if (publishedFrameId != nullptr)
                 *publishedFrameId = 0u;
@@ -320,7 +344,8 @@ namespace NLS::Render::Context
             return renderScenePackage;
         };
 
-        const auto slotReservation = ReserveThreadedPublicationSlot(driver, !backgroundPreview);
+        const bool shouldWaitForRetirement = waitForRetirement && !backgroundPreview;
+        const auto slotReservation = ReserveThreadedPublicationSlot(driver, shouldWaitForRetirement);
         if (DriverRendererAccess::HasExplicitRHI(driver) && !slotReservation.slotIndex.has_value())
         {
             if (publishedFrameId != nullptr)
@@ -336,7 +361,7 @@ namespace NLS::Render::Context
             return false;
         }
 
-        const bool published = backgroundPreview
+        const bool published = !shouldWaitForRetirement
             ? driver.m_impl->threadedLifecycle->TryPublishPreparedFrameBuilder(
                 resolvedSnapshot,
                 std::move(resolvedRenderSceneBuilder),
@@ -352,8 +377,6 @@ namespace NLS::Render::Context
             *publishedFrameId = published ? resolvedSnapshot.frameId : 0u;
         if (published)
         {
-            if (backgroundPreview)
-                driver.m_impl->backgroundPreviewPublicationRequested.store(false, std::memory_order_release);
             Detail::NotifyThreadedWorkers(*driver.m_impl);
         }
         return published;

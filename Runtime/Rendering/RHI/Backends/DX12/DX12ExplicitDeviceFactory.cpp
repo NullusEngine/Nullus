@@ -10,6 +10,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Synchronization.h"
 
 #include <array>
+#include <cstdlib>
 #include <memory>
 #include <string>
 
@@ -31,10 +32,16 @@ namespace NLS::Render::Backend
 	using Microsoft::WRL::ComPtr;
 #endif
 
-	namespace
-	{
-		constexpr uint32_t kDx12ShaderVisibleResourceDescriptorCapacity = 65536u;
-		constexpr uint32_t kDx12ShaderVisibleSamplerDescriptorCapacity = 2048u;
+		namespace
+		{
+			constexpr uint32_t kDx12ShaderVisibleResourceDescriptorCapacity = 65536u;
+			constexpr uint32_t kDx12ShaderVisibleSamplerDescriptorCapacity = 2048u;
+
+			bool IsInitialUploadCommandReuseDisabled()
+			{
+				const char* value = std::getenv("NLS_DX12_DISABLE_INITIAL_UPLOAD_COMMAND_REUSE");
+				return value != nullptr && value[0] != '\0' && std::string_view(value) != "0";
+			}
 
 		class NativeDX12Adapter final : public NLS::Render::RHI::RHIAdapter
 		{
@@ -74,10 +81,14 @@ namespace NLS::Render::Backend
 				, m_graphicsQueue(graphicsQueue)
 				, m_computeQueue(computeQueue)
 				, m_factory(factory)
-				, m_adapter(adapter)
-				, m_capabilities(capabilities)
-				, m_rhiAdapter(std::make_shared<NativeDX12Adapter>(vendor, hardware))
-				, m_resourceHeapAllocator(std::make_shared<DX12ShaderVisibleDescriptorHeapAllocator>(
+					, m_adapter(adapter)
+					, m_capabilities(capabilities)
+					, m_rhiAdapter(std::make_shared<NativeDX12Adapter>(vendor, hardware))
+					, m_initialUploadCommandObjects(
+						IsInitialUploadCommandReuseDisabled()
+							? nullptr
+							: std::make_unique<DX12InitialUploadCommandObjects>())
+					, m_resourceHeapAllocator(std::make_shared<DX12ShaderVisibleDescriptorHeapAllocator>(
 					device,
 					graphicsQueue,
 					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -91,14 +102,17 @@ namespace NLS::Render::Backend
 					"DX12SamplerHeapAllocator"))
 				, m_samplerDescriptorTableCache(std::make_shared<DX12SamplerDescriptorTableCache>(
 					m_samplerHeapAllocator))
-			{
-			}
+				{
+					if (m_initialUploadCommandObjects == nullptr)
+						NLS_LOG_INFO("DX12 initial upload command allocator/list reuse disabled by environment");
+				}
 
 			~NativeDX12ExplicitDevice()
 			{
-				if (m_gpuProfilerInitialized)
-					NLS::Base::Profiling::Profiler::ClearGpuContext(m_device.Get());
-				m_samplerDescriptorTableCache.reset();
+					if (m_gpuProfilerInitialized)
+						NLS::Base::Profiling::Profiler::ClearGpuContext(m_device.Get());
+					m_initialUploadCommandObjects.reset();
+					m_samplerDescriptorTableCache.reset();
 				m_samplerHeapAllocator.reset();
 				m_resourceHeapAllocator.reset();
 			}
@@ -243,7 +257,11 @@ namespace NLS::Render::Backend
 			NLS::Render::RHI::RHIUpdateResult UpdateTexture(const NLS::Render::RHI::RHITextureUpdateDesc& desc) override
 			{
 #if defined(_WIN32)
-				return UpdateNativeDX12Texture(m_device.Get(), m_graphicsQueue.Get(), desc);
+				return UpdateNativeDX12Texture(
+					m_device.Get(),
+					m_graphicsQueue.Get(),
+					m_initialUploadCommandObjects.get(),
+					desc);
 #else
 				(void)desc;
 				return {
@@ -309,10 +327,11 @@ namespace NLS::Render::Backend
 			Microsoft::WRL::ComPtr<IDXGIAdapter1> m_adapter;
 			Microsoft::WRL::ComPtr<IDXGISwapChain3> m_swapchain;
 			void* m_nativeWindowHandle = nullptr;
-			NLS::Render::RHI::RHIDeviceCapabilities m_capabilities{};
-			std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_rhiAdapter;
-			std::array<std::shared_ptr<NLS::Render::RHI::RHIQueue>, 3> m_queues{};
-			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
+				NLS::Render::RHI::RHIDeviceCapabilities m_capabilities{};
+				std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_rhiAdapter;
+				std::array<std::shared_ptr<NLS::Render::RHI::RHIQueue>, 3> m_queues{};
+				std::unique_ptr<DX12InitialUploadCommandObjects> m_initialUploadCommandObjects;
+				std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
 			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
 			std::shared_ptr<DX12SamplerDescriptorTableCache> m_samplerDescriptorTableCache;
 			NLS::Render::RHI::DX12::DX12ReadbackContext m_pixelReadbackContext;
@@ -327,7 +346,12 @@ namespace NLS::Render::Backend
 		{
 			if (m_device == nullptr)
 				return nullptr;
-			auto buffer = std::make_shared<NativeDX12Buffer>(m_device.Get(), m_graphicsQueue.Get(), desc, uploadDesc);
+				auto buffer = std::make_shared<NativeDX12Buffer>(
+					m_device.Get(),
+					m_graphicsQueue.Get(),
+					m_initialUploadCommandObjects.get(),
+					desc,
+					uploadDesc);
 			return buffer->GetNativeBufferHandle().IsValid() ? buffer : nullptr;
 		}
 
@@ -336,7 +360,12 @@ namespace NLS::Render::Backend
 			const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc)
 		{
 #if defined(_WIN32)
-			return CreateNativeDX12Texture(m_device.Get(), m_graphicsQueue.Get(), desc, uploadDesc);
+				return CreateNativeDX12Texture(
+					m_device.Get(),
+					m_graphicsQueue.Get(),
+					m_initialUploadCommandObjects.get(),
+					desc,
+					uploadDesc);
 #else
 			(void)desc;
 			(void)uploadDesc;

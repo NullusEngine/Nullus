@@ -13,6 +13,10 @@ namespace NLS::Engine::Rendering
 
 		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
 		void BeginFrameForBackgroundPreview(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
+		BackgroundPreviewDrawPrewarmResult PrewarmBackgroundPreviewDraws(
+			const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+			size_t firstDrawIndex,
+			size_t maxDraws) override;
 		void DrawFrame() override;
 
 	protected:

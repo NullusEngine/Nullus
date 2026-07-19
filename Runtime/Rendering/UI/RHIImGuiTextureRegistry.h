@@ -42,6 +42,14 @@ namespace NLS::Render::UI
         UiTextureId RegisterTextureView(
             const std::shared_ptr<RHI::RHITextureView>& textureView,
             UiTextureSynchronizationScope synchronizationScope);
+        // Tests exact shared ownership identity and excludes entries pending retirement.
+        [[nodiscard]] bool ContainsLiveTextureView(
+            const std::shared_ptr<RHI::RHITextureView>& textureView) const;
+        [[nodiscard]] bool ContainsSampledTextureIdentity(
+            uint64_t textureIdentity,
+            uint64_t frameId) const;
+        [[nodiscard]] std::vector<uint64_t> CollectReferencedTextureIdentities(
+            const UiDrawDataSnapshot& snapshot) const;
         [[nodiscard]] bool EnsureBindingSet(
             RHI::RHIDevice& device,
             const std::shared_ptr<RHI::RHIBindingLayout>& bindingLayout,

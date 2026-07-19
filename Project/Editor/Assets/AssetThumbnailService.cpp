@@ -1,6 +1,7 @@
 #include "Assets/AssetThumbnailService.h"
 
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetThumbnailPreviewCamera.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/ArtifactLoadTelemetry.h"
@@ -344,10 +345,6 @@ constexpr std::array<AssetThumbnailKindPolicy, kAssetThumbnailKindCount> kAssetT
 constexpr size_t kMaxMeshPreviewLoadedVertices = 240000u;
 constexpr size_t kMaxMeshPreviewLoadedIndices = 720000u;
 constexpr size_t kMaxMeshPreviewRenderedTriangles = 12000u;
-constexpr float kUnityMeshPreviewFieldOfViewDegrees = 30.0f;
-constexpr float kUnityMeshPreviewYawDegrees = -120.0f;
-constexpr float kUnityMeshPreviewPitchDegrees = 34.0f;
-constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
 constexpr size_t kMaxObsoleteThumbnailGenerationInFlightRequests = 2u;
 constexpr size_t kMaxCurrentThumbnailGenerationInFlightRequests = 2u;
 constexpr size_t kMaxThumbnailGenerationTotalInFlightSlots =
@@ -429,8 +426,10 @@ AssetThumbnailKind ThumbnailKindForItem(const AssetBrowserItem& item)
 }
 
 constexpr const char* kLegacyThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v8";
-constexpr const char* kDoubleSidedPbrThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v9";
-constexpr const char* kPbrMaterialThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v11";
+constexpr const char* kUpperObliqueCpuThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v9";
+constexpr const char* kUpperObliqueGpuThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v13";
+constexpr const char* kUpperObliqueGpuPrefabThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v33";
+constexpr const char* kPbrMaterialThumbnailRendererVersion = "asset-browser-thumbnail-renderer:v12";
 
 std::string FallbackIconForKind(const AssetThumbnailKind kind)
 {
@@ -523,6 +522,7 @@ bool IsUnresolvedSourceModelPreviewRequest(const AssetThumbnailRequest& request)
 bool ShouldDeferBackgroundCpuThumbnailToPreviewRenderer(const AssetThumbnailKind kind)
 {
     return kind == AssetThumbnailKind::MaterialSphere ||
+        kind == AssetThumbnailKind::ModelPreview ||
         kind == AssetThumbnailKind::PrefabPreview;
 }
 
@@ -600,7 +600,8 @@ bool IsPendingThumbnailPreviewResourcesDiagnostic(const std::string& diagnostic)
         return false;
     }
     return diagnostic.size() == kResourcesPendingDiagnostic.size() ||
-        diagnostic[kResourcesPendingDiagnostic.size()] == '|';
+        diagnostic[kResourcesPendingDiagnostic.size()] == '|' ||
+        diagnostic[kResourcesPendingDiagnostic.size()] == ':';
 }
 
 bool MeshPreviewHeaderExceedsCpuLoadBudget(
@@ -1855,7 +1856,6 @@ bool IsGpuPreviewFullyTransparentFrame(
 enum class GpuPreviewClearFrameDisposition
 {
     KeepPreview,
-    GenerateCpuFallback,
     DeferEmptyFrame,
     FailEmptyFrame
 };
@@ -1876,11 +1876,9 @@ GpuPreviewClearFrameDisposition EvaluateGpuPreviewClearFrameDisposition(
     if (IsGpuPreviewFullyTransparentFrame(rgbaPixels, width, height))
         return GpuPreviewClearFrameDisposition::FailEmptyFrame;
 
-    if (request.kind == AssetThumbnailKind::PrefabPreview)
+    if (request.kind == AssetThumbnailKind::PrefabPreview ||
+        request.kind == AssetThumbnailKind::ModelPreview)
         return GpuPreviewClearFrameDisposition::DeferEmptyFrame;
-
-    if (GeneratorForKind(request.kind) != nullptr)
-        return GpuPreviewClearFrameDisposition::GenerateCpuFallback;
 
     return GpuPreviewClearFrameDisposition::FailEmptyFrame;
 }
@@ -3583,10 +3581,11 @@ std::array<float, 3u> TriangleFallbackNormal(
     return Normalize3(normal);
 }
 
-std::array<float, 3u> RotateUnityPreviewVector(std::array<float, 3u> value)
+std::array<float, 3u> RotateThumbnailPreviewVector(std::array<float, 3u> value)
 {
-    const auto yaw = kUnityMeshPreviewYawDegrees * kDegreesToRadians;
-    const auto pitch = kUnityMeshPreviewPitchDegrees * kDegreesToRadians;
+    const auto yaw = ThumbnailPreviewCamera::MeshYawDegrees * ThumbnailPreviewCamera::DegreesToRadians;
+    const auto pitch = ThumbnailPreviewCamera::MeshLookPitchDegrees *
+        ThumbnailPreviewCamera::DegreesToRadians;
 
     const auto cy = std::cos(yaw);
     const auto sy = std::sin(yaw);
@@ -3605,12 +3604,12 @@ std::array<float, 3u> RotateUnityPreviewVector(std::array<float, 3u> value)
     };
 }
 
-std::array<float, 3u> TransformUnityPreviewPoint(
+std::array<float, 3u> TransformThumbnailPreviewPoint(
     const NLS::Render::Geometry::Vertex& vertex,
     const std::array<float, 3u>& center,
     const float cameraDistance)
 {
-    auto rotated = RotateUnityPreviewVector({
+    auto rotated = RotateThumbnailPreviewVector({
         vertex.position[0] - center[0],
         vertex.position[1] - center[1],
         vertex.position[2] - center[2]
@@ -3748,12 +3747,13 @@ DownsampledThumbnail RenderMeshSetThumbnail(
     const auto halfSize = std::max(0.0001f, 0.5f * std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ));
     const auto cameraDistance = halfSize * 4.0f;
     const auto focalLength = (static_cast<float>(canvas.height) * 0.5f) /
-        std::tan((kUnityMeshPreviewFieldOfViewDegrees * 0.5f) * kDegreesToRadians);
+        std::tan((ThumbnailPreviewCamera::FieldOfViewDegrees * 0.5f) *
+            ThumbnailPreviewCamera::DegreesToRadians);
     const auto project = [&](
         const NLS::Render::Geometry::Vertex& vertex,
         const std::array<float, 3u>& fallbackNormal) -> MeshPreviewTriangle::Vertex
     {
-        const auto view = TransformUnityPreviewPoint(vertex, center, cameraDistance);
+        const auto view = TransformThumbnailPreviewPoint(vertex, center, cameraDistance);
         const auto depth = std::max(0.0001f, view[2]);
         const std::array<float, 3u> sourceNormal {
             vertex.normals[0],
@@ -3762,7 +3762,7 @@ DownsampledThumbnail RenderMeshSetThumbnail(
         };
         const bool usesFallbackNormal = IsNearlyZero3(sourceNormal);
         const auto normal = usesFallbackNormal ? fallbackNormal : sourceNormal;
-        auto previewNormal = RotateUnityPreviewVector(normal);
+        auto previewNormal = RotateThumbnailPreviewVector(normal);
         if (usesFallbackNormal && previewNormal[2] < 0.0f)
         {
             previewNormal[0] = -previewNormal[0];
@@ -4248,7 +4248,8 @@ AssetThumbnailServiceResult GenerateMeshSetThumbnail(
         meshes.push_back(*mesh);
     }
 
-    if (skippedBudgetedMesh)
+    if (skippedBudgetedMesh &&
+        !ShouldRetryLegacyImportedPrefabBudgetFailure(request))
     {
         result.status = AssetThumbnailServiceStatus::Fallback;
         result.diagnostic = "thumbnail-model-preview-budget-exceeded";
@@ -4372,7 +4373,8 @@ std::optional<AssetThumbnailServiceResult> TryGeneratePrefabSnapshotThumbnail(
         return result;
     }
 
-    if (skippedBudgetedMesh)
+    if (skippedBudgetedMesh &&
+        !ShouldRetryLegacyImportedPrefabBudgetFailure(request))
     {
         result.status = AssetThumbnailServiceStatus::Fallback;
         result.diagnostic = "thumbnail-model-preview-budget-exceeded";
@@ -5062,18 +5064,22 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     request.requestedSize = request.kind == AssetThumbnailKind::Texture
         ? (std::min)(std::max(1u, requestedSize), kMaxTextureThumbnailGenerationSize)
         : std::max(1u, requestedSize);
-    request.previewRendererVersion = request.kind == AssetThumbnailKind::MaterialSphere
+    request.previewRendererVersion = request.kind == AssetThumbnailKind::PrefabPreview
+        ? kUpperObliqueGpuPrefabThumbnailRendererVersion
+        : request.kind == AssetThumbnailKind::MaterialSphere
         ? kPbrMaterialThumbnailRendererVersion
         : SupportsGpuThumbnailPreview(request)
-            ? kDoubleSidedPbrThumbnailRendererVersion
-            : kLegacyThumbnailRendererVersion;
+            ? kUpperObliqueGpuThumbnailRendererVersion
+            : request.kind == AssetThumbnailKind::ModelPreview
+                ? kUpperObliqueCpuThumbnailRendererVersion
+                : kLegacyThumbnailRendererVersion;
     if (request.kind == AssetThumbnailKind::Texture)
     {
         request.settingsFingerprint = "asset-browser-thumbnail:v15-lowres-image-thumbnails";
     }
     else if (request.kind == AssetThumbnailKind::PrefabPreview)
     {
-        request.settingsFingerprint = "asset-browser-thumbnail:v32-prefab-full-gpu-streaming";
+        request.settingsFingerprint = "asset-browser-thumbnail:v35-prefab-qem-material-proxy";
     }
     else
     {
@@ -5427,9 +5433,9 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             return std::nullopt;
         }
         if (ShouldDeferBackgroundCpuThumbnailToPreviewRenderer(request.kind) &&
-            (!ShouldRetryLegacyImportedPrefabBudgetFailure(request) ||
-                m_resolvedPreviewRequestsByCacheKey.find(*cacheKey) != m_resolvedPreviewRequestsByCacheKey.end() ||
-                m_gpuDeferredHeavyPreviewCacheKeys.find(*cacheKey) != m_gpuDeferredHeavyPreviewCacheKeys.end()))
+            (m_resolvedPreviewRequestsByCacheKey.find(*cacheKey) != m_resolvedPreviewRequestsByCacheKey.end() ||
+                m_gpuDeferredHeavyPreviewCacheKeys.find(*cacheKey) != m_gpuDeferredHeavyPreviewCacheKeys.end() ||
+                SupportsGpuThumbnailPreview(request)))
         {
             deferredCacheKeys.push_back(*cacheKey);
             continue;
@@ -5633,6 +5639,35 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
         {
             if (!pump.supported || pump.resourcesPending || pump.diagnostic.empty())
                 return std::nullopt;
+
+            const bool complexityPending =
+                pump.diagnostic == kPrefabPreviewBudgetExceededDiagnostic ||
+                pump.diagnostic == "thumbnail-model-preview-budget-exceeded" ||
+                pump.diagnostic == "thumbnail-material-preview-budget-exceeded";
+            if (complexityPending)
+            {
+                auto nextPreviewRequest = previewRequest;
+                if (pump.diagnostic == kPrefabPreviewBudgetExceededDiagnostic &&
+                    ShouldRetryLegacyImportedPrefabBudgetFailure(request))
+                {
+                    const auto meshPaths = ResolveMeshArtifactPaths(previewRequest);
+                    if (!meshPaths.empty())
+                    {
+                        nextPreviewRequest.kind = AssetThumbnailKind::ModelPreview;
+                        nextPreviewRequest.artifactPath = meshPaths.front().generic_string();
+                    }
+                }
+                m_queuedRequestsByCacheKey[*cacheKey] = request;
+                m_resolvedPreviewRequestsByCacheKey[*cacheKey] = std::move(nextPreviewRequest);
+                EnqueueQueuedCacheKey(*cacheKey, request, false);
+                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::WaitingForResources;
+                auto result = BuildResultFromEvaluation(
+                    request,
+                    evaluation,
+                    AssetThumbnailServiceStatus::Pending);
+                result.diagnostic = "thumbnail-gpu-preview-complexity-pending";
+                return result;
+            }
 
             auto result = BuildResultFromEvaluation(
                 request,
@@ -5840,6 +5875,7 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
                 });
             }
         }
+        const auto publishedGpuTexture = preview.gpuTexture;
         if (!pollingPendingReadback)
         {
             ConsumeThumbnailByteBudget(
@@ -5862,18 +5898,12 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
                 auto result = BuildResultFromEvaluation(
                     request,
                     evaluation,
-                    AssetThumbnailServiceStatus::Failed);
-                result.diagnostic = diagnostic;
-                const auto metadataRequest = BuildResolvedThumbnailCacheRequest(request, previewRequest);
-                WriteThumbnailMetadataForEvaluation(
-                    request,
-                    evaluation,
-                    AssetThumbnailCacheStatus::Failed,
-                    result.diagnostic,
-                    &metadataRequest);
-                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Failed;
-                m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
-                m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
+                    AssetThumbnailServiceStatus::Pending);
+                result.diagnostic = "thumbnail-gpu-preview-complexity-pending";
+                m_queuedRequestsByCacheKey[*cacheKey] = request;
+                m_resolvedPreviewRequestsByCacheKey[*cacheKey] = previewRequest;
+                EnqueueQueuedCacheKey(*cacheKey, request, false);
+                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::WaitingForResources;
                 RestoreDeferredCacheKeys(deferredCacheKeys);
                 return result;
             }
@@ -5885,6 +5915,11 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
                     ? AssetThumbnailServiceStatus::Pending
                     : AssetThumbnailServiceStatus::Failed);
             result.diagnostic = diagnostic;
+            if (publishedGpuTexture.IsValid())
+            {
+                result.gpuTexture = publishedGpuTexture;
+                result.gpuTextureGeneration = m_generationSerial;
+            }
             if (!retryableGpuFailure)
             {
                 const auto metadataRequest = BuildResolvedThumbnailCacheRequest(request, previewRequest);
@@ -5963,40 +5998,6 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
                     diagnostic)
             });
         };
-        if (clearFrameDisposition == GpuPreviewClearFrameDisposition::GenerateCpuFallback)
-        {
-            RecordThumbnailGpuPreviewQueueDecisionTelemetry(
-                "completed-readback-disposition=cpu-fallback",
-                &request,
-                m_inFlightThumbnails.size());
-            recordGpuPreviewTerminalDiagnostic("thumbnail-gpu-preview-cpu-fallback");
-            RestoreDeferredCacheKeys(deferredCacheKeys);
-            const auto fallback = TryGenerateThumbnailForRequest(request, m_generationCancelToken);
-            if (fallback.status == AssetThumbnailServiceStatus::Fresh)
-            {
-                ConsumeThumbnailCacheWriteBudgetForFreshResult(
-                    m_generationBudget,
-                    m_hasExplicitGenerationBudget);
-                totalScope.AddCounter("thumbnailsGeneratedThisFrame");
-                m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Ready;
-                m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
-                m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
-                m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*cacheKey);
-            }
-            else
-            {
-                m_thumbnailStatesByCacheKey[*cacheKey] = fallback.status == AssetThumbnailServiceStatus::Pending
-                    ? ThumbnailState::Queued
-                    : ThumbnailState::Failed;
-                if (fallback.status != AssetThumbnailServiceStatus::Pending)
-                {
-                    m_resolvedPreviewRequestsByCacheKey.erase(*cacheKey);
-                    m_gpuDeferredHeavyPreviewCacheKeys.erase(*cacheKey);
-                    m_gpuPreviewEmptyFrameDeferredCacheKeys.erase(*cacheKey);
-                }
-            }
-            return fallback;
-        }
         if (clearFrameDisposition == GpuPreviewClearFrameDisposition::DeferEmptyFrame)
         {
             RecordThumbnailGpuPreviewQueueDecisionTelemetry(
@@ -6121,6 +6122,11 @@ std::optional<AssetThumbnailServiceResult> AssetThumbnailService::GenerateNextTh
             evaluation,
             AssetThumbnailServiceStatus::Pending);
         pending.diagnostic = "thumbnail-gpu-preview-cache-write-pending";
+        if (publishedGpuTexture.IsValid())
+        {
+            pending.gpuTexture = publishedGpuTexture;
+            pending.gpuTextureGeneration = m_generationSerial;
+        }
         return pending;
     }
 
@@ -6213,7 +6219,8 @@ bool AssetThumbnailService::StartNextThumbnailGeneration(IEditorThumbnailPreview
             m_thumbnailStatesByCacheKey[*cacheKey] = ThumbnailState::Queued;
             return false;
         }
-        if (ShouldDeferBackgroundCpuThumbnailToPreviewRenderer(request.kind))
+        if (ShouldDeferBackgroundCpuThumbnailToPreviewRenderer(request.kind) &&
+            SupportsGpuThumbnailPreview(request))
         {
             deferredCacheKeys.push_back(*cacheKey);
             ++deferredGpuPreviewCount;
@@ -6277,10 +6284,10 @@ bool AssetThumbnailService::StartNextThumbnailGeneration(IEditorThumbnailPreview
                         ScopedThumbnailGenerationStageThread backgroundStageThread(
                             PerformanceStageThread::Background);
                         return TryGenerateThumbnailForRequest(request, cancelToken);
-                    }),
+                }),
 	                request,
 	                false
-	            });
+            });
         }
         catch (...)
         {
@@ -6486,6 +6493,22 @@ bool AssetThumbnailService::HasQueuedGpuPreviewReadback() const
         const auto stateIterator = m_thumbnailStatesByCacheKey.find(cacheKey);
         if (stateIterator != m_thumbnailStatesByCacheKey.end() &&
             stateIterator->second == ThumbnailState::WaitingForGpu)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AssetThumbnailService::HasQueuedGpuPreviewResourceContinuation() const
+{
+    for (const auto& [cacheKey, request] : m_queuedRequestsByCacheKey)
+    {
+        if (!SupportsGpuThumbnailPreview(request))
+            continue;
+        const auto stateIterator = m_thumbnailStatesByCacheKey.find(cacheKey);
+        if (stateIterator != m_thumbnailStatesByCacheKey.end() &&
+            stateIterator->second == ThumbnailState::WaitingForResources)
         {
             return true;
         }

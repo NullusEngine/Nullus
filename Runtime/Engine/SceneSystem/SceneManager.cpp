@@ -556,16 +556,24 @@ bool SceneManager::LoadScene(
             "SceneLoad.InstantiateScene",
             Profiling::PerformanceStageThread::Main);
         scope.AddCounter("objectCount", document->objects.size());
-        sceneResult = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(
-            *document,
-            loadPolicy,
-            [&p_progressCallback](const Engine::Serialize::InstantiationProgress& progress)
+        scope.AddCounter("documentValidationCount", 1u);
+        Engine::Serialize::InstantiationProgressCallback instantiationProgressCallback;
+        if (p_progressCallback)
+        {
+            instantiationProgressCallback = [&p_progressCallback](
+                const Engine::Serialize::InstantiationProgress& progress)
             {
                 ReportSceneLoadProgress(
                     p_progressCallback,
                     0.20f + progress.normalizedProgress * 0.70f,
                     progress.message);
-            });
+            };
+        }
+        sceneResult = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(
+            *document,
+            loadPolicy,
+            instantiationProgressCallback);
+        scope.AddCounter("progressCallbackEnabledCount", instantiationProgressCallback ? 1u : 0u);
         scope.AddCounter("successCount", sceneResult.scene ? 1u : 0u);
     }
     auto& scene = sceneResult.scene;

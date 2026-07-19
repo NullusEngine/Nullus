@@ -697,6 +697,8 @@ void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameD
 {
 	NLS_PROFILE_SCOPE();
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
+	m_threadedFrameBindingSet.reset();
+	m_threadedFrameBindingSetCaptureAttempted = false;
 	InvalidateLightGridCompileContextCache();
 	m_hasLastVisiblePickablePrimitiveDrawSources = false;
 	m_lastVisiblePickablePrimitiveDrawSources.clear();
@@ -717,6 +719,8 @@ void BaseSceneRenderer::BeginFrameForBackgroundPreview(const Render::Data::Frame
 {
 	NLS_PROFILE_SCOPE();
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
+	m_threadedFrameBindingSet.reset();
+	m_threadedFrameBindingSetCaptureAttempted = false;
 	InvalidateLightGridCompileContextCache();
 	m_hasLastVisiblePickablePrimitiveDrawSources = false;
 	m_lastVisiblePickablePrimitiveDrawSources.clear();
@@ -1051,6 +1055,15 @@ void BaseSceneRenderer::ResolvePreparedScenePassBindingSetPlaceholders(
 	}
 }
 
+BaseSceneRenderer::BackgroundPreviewDrawPrewarmResult
+BaseSceneRenderer::PrewarmBackgroundPreviewDraws(
+	const Render::Data::FrameDescriptor&,
+	const size_t,
+	const size_t)
+{
+	return {0u, 0u, false, true};
+}
+
 bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	PipelineState pso,
 	const Drawable& drawable,
@@ -1077,10 +1090,20 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 
 	if (outDraw.commandBuffer == nullptr && bindingProvider != nullptr)
 	{
-		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
-		if (bindingProvider->CapturePreparedBindingSets(pso, drawable, bindingSets))
+		if (!m_threadedFrameBindingSetCaptureAttempted)
 		{
-			outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
+			m_threadedFrameBindingSetCaptureAttempted = true;
+			(void)bindingProvider->CaptureFrameBindingSet(m_threadedFrameBindingSet);
+		}
+		outDraw.frameBindingSet = m_threadedFrameBindingSet;
+		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
+		if (bindingProvider->CapturePreparedObjectBindingSet(pso, drawable, bindingSets))
+		{
+			if (m_threadedFrameBindingSet == nullptr && bindingSets.frameBindingSet != nullptr)
+			{
+				m_threadedFrameBindingSet = std::move(bindingSets.frameBindingSet);
+				outDraw.frameBindingSet = m_threadedFrameBindingSet;
+			}
 			outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
 			outDraw.objectConstants = bindingSets.objectConstants;
 			outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
@@ -1148,10 +1171,20 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 
 	if (outDraw.commandBuffer == nullptr && bindingProvider != nullptr)
 	{
-		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
-		if (bindingProvider->CapturePreparedBindingSets(effectivePso, drawable, bindingSets))
+		if (!m_threadedFrameBindingSetCaptureAttempted)
 		{
-			outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
+			m_threadedFrameBindingSetCaptureAttempted = true;
+			(void)bindingProvider->CaptureFrameBindingSet(m_threadedFrameBindingSet);
+		}
+		outDraw.frameBindingSet = m_threadedFrameBindingSet;
+		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
+		if (bindingProvider->CapturePreparedObjectBindingSet(effectivePso, drawable, bindingSets))
+		{
+			if (m_threadedFrameBindingSet == nullptr && bindingSets.frameBindingSet != nullptr)
+			{
+				m_threadedFrameBindingSet = std::move(bindingSets.frameBindingSet);
+				outDraw.frameBindingSet = m_threadedFrameBindingSet;
+			}
 			outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
 			outDraw.objectConstants = bindingSets.objectConstants;
 			outDraw.usesObjectIndex = bindingSets.usesObjectIndex;

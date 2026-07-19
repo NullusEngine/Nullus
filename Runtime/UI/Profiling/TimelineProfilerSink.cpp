@@ -177,6 +177,7 @@ TimelineProfilerSink::TimelineProfilerSink()
 
 TimelineProfilerSink::~TimelineProfilerSink()
 {
+    Profiler::UnregisterDestination(*this);
 #if NLS_ENABLE_TIMELINE_PROFILER
     EndTraceExport();
     ShutdownTimelineGpuProfilerForSink(m_gpuInitialized);

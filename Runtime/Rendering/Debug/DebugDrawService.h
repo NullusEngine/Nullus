@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <cstdint>
 #include <vector>
 
 #include "Rendering/Debug/DebugDrawTypes.h"
@@ -88,6 +89,12 @@ namespace NLS::Render::Debug
         void SetEnabled(bool enabled);
         bool IsEnabled() const;
 
+        bool SetPersistentPrimitiveGroup(uint64_t groupId, std::vector<DebugDrawPrimitive> primitives);
+        bool RemovePersistentPrimitiveGroup(uint64_t groupId);
+        uint64_t GetContentRevision() const;
+        bool HasVisiblePrimitives() const;
+        void CollectVisiblePrimitives(
+            std::vector<std::reference_wrapper<const DebugDrawPrimitive>>& outPrimitives) const;
         std::vector<std::reference_wrapper<const DebugDrawPrimitive>> CollectVisiblePrimitives() const;
         std::vector<std::reference_wrapper<const DebugDrawPrimitive>> CollectVisibleLines() const;
         DebugDrawLimitState GetLimitState() const;
@@ -99,6 +106,12 @@ namespace NLS::Render::Debug
         void Clear();
 
     private:
+        struct PrimitiveEntry
+        {
+            DebugDrawPrimitive primitive;
+            uint64_t persistentGroupId = 0u;
+        };
+
         bool CanReserve(size_t additionalPrimitiveCount);
         void UpdateLimitState();
         bool SubmitPrimitive(DebugDrawPrimitive primitive);
@@ -117,6 +130,7 @@ namespace NLS::Render::Debug
         bool m_enabled = true;
         DebugDrawLimitState m_limitState = DebugDrawLimitState::WithinLimits;
         std::vector<bool> m_categoryVisibility;
-        std::vector<DebugDrawPrimitive> m_primitives;
+        std::vector<PrimitiveEntry> m_primitives;
+        uint64_t m_contentRevision = 1u;
     };
 }

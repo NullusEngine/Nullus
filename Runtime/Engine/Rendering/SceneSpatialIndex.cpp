@@ -141,14 +141,17 @@ namespace NLS::Engine::Rendering
 			return (visibleLayerMask & (1u << primitive.layer)) != 0u;
 		}
 
-		bool QueryPasses(const IndexedPrimitive& primitive, const SceneSpatialIndexQuery& query)
+		bool QueryPasses(
+			const IndexedPrimitive& primitive,
+			const SceneSpatialIndexQuery& query,
+			const NLS::Render::Geometry::Bounds& queryBounds)
 		{
 			if (!primitive.active || !LayerPasses(primitive, query.visibleLayerMask))
 				return false;
 
 			const bool frustumUnbounded =
 				primitive.frustumBehaviour == Components::MeshRenderer::EFrustumBehaviour::DISABLED;
-			if (!frustumUnbounded && !NLS::Render::Geometry::BoundsOverlap(QueryBounds(query), primitive.worldBounds))
+			if (!frustumUnbounded && !NLS::Render::Geometry::BoundsOverlap(queryBounds, primitive.worldBounds))
 				return false;
 
 			if (query.distanceCullingEnabled)
@@ -628,7 +631,12 @@ namespace NLS::Engine::Rendering
 			return result;
 		}
 
+		const auto queryBounds = QueryBounds(query);
+		const auto minCell = ToCell(BoundsMin(queryBounds));
+		const auto maxCell = ToCell(BoundsMax(queryBounds));
 		std::unordered_set<ScenePrimitiveHandle, HandleHash> visited;
+		visited.reserve(storage.records.size());
+		result.candidatePrimitiveHandles.reserve(storage.records.size());
 		auto visitHandle = [&](const ScenePrimitiveHandle& handle, const bool dynamicRecord)
 		{
 			if (!visited.insert(handle).second)
@@ -643,7 +651,7 @@ namespace NLS::Engine::Rendering
 			if (dynamicRecord)
 				++result.dynamicRecordsTouched;
 
-			if (!QueryPasses(primitive, query))
+			if (!QueryPasses(primitive, query, queryBounds))
 				return;
 
 			result.candidatePrimitiveHandles.push_back(handle);
@@ -653,9 +661,6 @@ namespace NLS::Engine::Rendering
 
 		auto visitBuckets = [&](const CellBuckets& buckets, const bool dynamicBuckets)
 		{
-			const auto bounds = QueryBounds(query);
-			const auto minCell = ToCell(BoundsMin(bounds));
-			const auto maxCell = ToCell(BoundsMax(bounds));
 			VisitQueryCells(buckets, minCell, maxCell, dynamicBuckets, visitHandle);
 		};
 
@@ -695,10 +700,12 @@ namespace NLS::Engine::Rendering
 		result.fullScanCandidateCount = static_cast<uint64_t>(storage.records.size());
 		result.primitiveRecordsTouched = static_cast<uint64_t>(storage.records.size());
 		result.telemetry.fullScanCandidateCount = result.fullScanCandidateCount;
+		const auto queryBounds = QueryBounds(query);
+		result.candidatePrimitiveHandles.reserve(storage.records.size());
 
 		for (const auto& [handle, primitive] : storage.records)
 		{
-			if (!QueryPasses(primitive, query))
+			if (!QueryPasses(primitive, query, queryBounds))
 				continue;
 
 			result.candidatePrimitiveHandles.push_back(handle);

@@ -221,6 +221,28 @@ void CompositeRenderer::EndFrame()
     m_compositeFrameActive = false;
 }
 
+void CompositeRenderer::AbortFrameForBackgroundPreview()
+{
+    if (m_compositeFrameActive)
+    {
+        for (const auto& [_, pass] : m_passes)
+        {
+            if (pass.second->IsEnabled())
+                pass.second->OnEndFrame();
+        }
+        if (m_debugDrawService != nullptr)
+            m_debugDrawService->EndFrame();
+        if (m_frameObjectBindingProvider != nullptr)
+            m_frameObjectBindingProvider->EndFrame();
+    }
+
+    ABaseRenderer::AbortFrameForBackgroundPreview();
+    ClearDescriptors();
+    if (m_compositeFrameActive)
+        m_rendererStats.EndFrame();
+    m_compositeFrameActive = false;
+}
+
 RendererStats* CompositeRenderer::GetMutableRendererStats() const
 {
     return const_cast<RendererStats*>(&m_rendererStats);

@@ -1,5 +1,7 @@
 #include "Rendering/UI/RHIImGuiTextureRegistry.h"
 
+#include <algorithm>
+
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIResource.h"
@@ -19,6 +21,31 @@ namespace NLS::Render::UI
                 return false;
 
             return HasResourceStateFlag(textureView->GetTexture()->GetState(), RHI::ResourceState::ShaderRead);
+        }
+
+        bool IsEntrySampledForFrame(
+            const RHIImGuiTextureRegistryEntry& entry,
+            const UiTextureId id,
+            const uint64_t frameId)
+        {
+            if (!id.IsValid() ||
+                frameId == 0u ||
+                entry.id.generation != id.generation ||
+                entry.textureView == nullptr)
+            {
+                return false;
+            }
+
+            return !entry.releaseRequested || frameId <= entry.safeToReleaseFrameId;
+        }
+
+        uint64_t ResolveTextureIdentity(const RHIImGuiTextureRegistryEntry& entry)
+        {
+            if (entry.textureView == nullptr || entry.textureView->GetTexture() == nullptr)
+                return 0u;
+
+            return static_cast<uint64_t>(
+                reinterpret_cast<std::uintptr_t>(entry.textureView->GetTexture().get()));
         }
     }
 
@@ -57,6 +84,79 @@ namespace NLS::Render::UI
         m_entries.emplace(id.value, std::move(entry));
         m_liveViewToId.emplace(liveViewKey, id.value);
         return id;
+    }
+
+    bool RHIImGuiTextureRegistry::ContainsLiveTextureView(
+        const std::shared_ptr<RHI::RHITextureView>& textureView) const
+    {
+        if (textureView == nullptr)
+            return false;
+
+        std::lock_guard lock(m_mutex);
+        const auto liveEntry = m_liveViewToId.find(textureView.get());
+        if (liveEntry == m_liveViewToId.end())
+            return false;
+
+        const auto found = m_entries.find(liveEntry->second);
+        return found != m_entries.end() &&
+            !found->second.releaseRequested &&
+            found->second.textureView == textureView;
+    }
+
+    bool RHIImGuiTextureRegistry::ContainsSampledTextureIdentity(
+        const uint64_t textureIdentity,
+        const uint64_t frameId) const
+    {
+        if (textureIdentity == 0u)
+            return false;
+
+        std::lock_guard lock(m_mutex);
+        return std::any_of(
+            m_entries.begin(),
+            m_entries.end(),
+            [textureIdentity, frameId](const auto& entryPair)
+            {
+                const auto& entry = entryPair.second;
+                if (ResolveTextureIdentity(entry) != textureIdentity)
+                    return false;
+
+                if (!entry.releaseRequested)
+                    return true;
+
+                return frameId != 0u && frameId <= entry.safeToReleaseFrameId;
+            });
+    }
+
+    std::vector<uint64_t> RHIImGuiTextureRegistry::CollectReferencedTextureIdentities(
+        const UiDrawDataSnapshot& snapshot) const
+    {
+        std::vector<uint64_t> identities;
+        std::lock_guard lock(m_mutex);
+        for (const auto& drawList : snapshot.drawLists)
+        {
+            for (const auto& command : drawList.commands)
+            {
+                if (!command.textureId.IsValid())
+                    continue;
+
+                const auto found = m_entries.find(command.textureId.value);
+                if (found == m_entries.end() ||
+                    !IsEntrySampledForFrame(
+                        found->second,
+                        command.textureId,
+                        snapshot.frameId))
+                {
+                    continue;
+                }
+
+                const uint64_t identity = ResolveTextureIdentity(found->second);
+                if (identity == 0u)
+                    continue;
+                if (std::find(identities.begin(), identities.end(), identity) == identities.end())
+                    identities.push_back(identity);
+            }
+        }
+        return identities;
     }
 
     bool RHIImGuiTextureRegistry::EnsureBindingSet(
@@ -209,19 +309,8 @@ namespace NLS::Render::UI
 
         std::lock_guard lock(m_mutex);
         const auto found = m_entries.find(id.value);
-        if (found == m_entries.end() ||
-            found->second.id.generation != id.generation ||
-            found->second.textureView == nullptr)
-        {
+        if (found == m_entries.end() || !IsEntrySampledForFrame(found->second, id, frameId))
             return std::nullopt;
-        }
-
-        if (!found->second.releaseRequested)
-            return found->second;
-
-        if (frameId <= found->second.safeToReleaseFrameId)
-            return found->second;
-
-        return std::nullopt;
+        return found->second;
     }
 }

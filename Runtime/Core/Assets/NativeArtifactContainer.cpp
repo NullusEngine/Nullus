@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -131,7 +132,7 @@ void AppendUInt64(std::vector<uint8_t>& bytes, const uint64_t value)
         bytes.push_back(static_cast<uint8_t>((value >> (byteIndex * 8u)) & 0xFFu));
 }
 
-bool ReadUInt32(const std::vector<uint8_t>& bytes, size_t& offset, uint32_t& value)
+bool ReadUInt32(const std::span<const uint8_t> bytes, size_t& offset, uint32_t& value)
 {
     if (offset + sizeof(uint32_t) > bytes.size())
         return false;
@@ -144,7 +145,7 @@ bool ReadUInt32(const std::vector<uint8_t>& bytes, size_t& offset, uint32_t& val
     return true;
 }
 
-bool ReadUInt64(const std::vector<uint8_t>& bytes, size_t& offset, uint64_t& value)
+bool ReadUInt64(const std::span<const uint8_t> bytes, size_t& offset, uint64_t& value)
 {
     if (offset + sizeof(uint64_t) > bytes.size())
         return false;
@@ -171,7 +172,7 @@ void AppendHeader(std::vector<uint8_t>& bytes, const NativeArtifactHeader& heade
 }
 
 bool ReadHeader(
-    const std::vector<uint8_t>& bytes,
+    const std::span<const uint8_t> bytes,
     NativeArtifactHeader& header,
     std::string* diagnostics = nullptr)
 {
@@ -609,10 +610,51 @@ std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
     const uint32_t expectedSchemaVersion,
     std::string* diagnostics)
 {
-    ArtifactLoadTelemetryRecord telemetry;
-    telemetry.stage = ArtifactLoadTelemetryStage::NativeContainerParseHash;
-    telemetry.byteCount = bytes.size();
-    RecordArtifactLoadTelemetry(telemetry);
+    return ReadNativeArtifactContainerView(
+        std::span<const uint8_t>(bytes.data(), bytes.size()),
+        expectedType,
+        expectedSchemaVersion,
+        NativeArtifactPayloadValidation::VerifyHash,
+        diagnostics);
+}
+
+std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
+    const std::vector<uint8_t>& bytes,
+    const ArtifactType expectedType,
+    const uint32_t expectedSchemaVersion,
+    const NativeArtifactPayloadValidation payloadValidation,
+    std::string* diagnostics)
+{
+    return ReadNativeArtifactContainerView(
+        std::span<const uint8_t>(bytes.data(), bytes.size()),
+        expectedType,
+        expectedSchemaVersion,
+        payloadValidation,
+        diagnostics);
+}
+
+std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
+    const std::span<const uint8_t> bytes,
+    const ArtifactType expectedType,
+    const uint32_t expectedSchemaVersion,
+    const NativeArtifactPayloadValidation payloadValidation,
+    std::string* diagnostics)
+{
+    const auto parseBegin = std::chrono::steady_clock::now();
+    struct ScopedParseTelemetry
+    {
+        std::chrono::steady_clock::time_point begin;
+        size_t byteCount;
+
+        ~ScopedParseTelemetry()
+        {
+            RecordArtifactLoadTelemetry({
+                ArtifactLoadTelemetryStage::NativeContainerParseHash,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - begin),
+                byteCount});
+        }
+    } telemetry {parseBegin, bytes.size()};
 
     NativeArtifactHeader header;
     if (!ReadHeader(bytes, header, diagnostics) ||
@@ -624,9 +666,10 @@ std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
         return std::nullopt;
     }
 
-    const auto metadataBegin = bytes.begin() + static_cast<std::ptrdiff_t>(header.headerSize);
-    const auto metadataEnd = metadataBegin + static_cast<std::ptrdiff_t>(header.metadataSize);
-    const std::string metadataText(metadataBegin, metadataEnd);
+    const auto metadataBegin = bytes.data() + static_cast<size_t>(header.headerSize);
+    const std::string metadataText(
+        reinterpret_cast<const char*>(metadataBegin),
+        static_cast<size_t>(header.metadataSize));
     auto metadata = DeserializeMetadata(metadataText);
     if (!metadata.has_value() ||
         metadata->artifactType != expectedType ||
@@ -639,7 +682,8 @@ std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
 
     const auto payloadData = bytes.data() + static_cast<size_t>(header.payloadOffset);
     const auto payloadSize = static_cast<size_t>(header.payloadSize);
-    if (metadata->payloadHash != ComputeNativeArtifactPayloadHash(payloadData, payloadSize))
+    if (payloadValidation == NativeArtifactPayloadValidation::VerifyHash &&
+        metadata->payloadHash != ComputeNativeArtifactPayloadHash(payloadData, payloadSize))
     {
         if (diagnostics)
             *diagnostics = "Native artifact payload hash mismatch.";

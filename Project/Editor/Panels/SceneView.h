@@ -30,6 +30,10 @@ namespace NLS::Editor::Panels
                 bool hasActivePayload,
                 const Engine::GameObject* activeRoot,
                 bool activeRootVisible = true);
+            // Transform-only prefab preview movement must not use the scene-revision fast path.
+            bool ShouldTrustSceneViewRenderContentRevision(
+                bool hasActivePrefabDragPayload,
+                bool activePrefabDragCommitPending);
 
             bool ShouldDeferSceneViewRenderForPendingSceneLoadResources(size_t pendingTaskCount);
             bool ShouldSkipSceneViewSceneDrawablesForPendingSceneLoadResources(
@@ -80,6 +84,8 @@ namespace NLS::Editor::Panels
 		*/
 		virtual void Update(float p_deltaTime) override;
         void EnsureRenderer() override;
+        void ApplyValidationCameraForwardStep(float step);
+        void SetValidationCameraMotionActive(bool active);
 
         Editor::Core::EGizmoOperation GetCurrentGizmoOperation() const;
         void SetCurrentGizmoOperation(Editor::Core::EGizmoOperation p_operation);
@@ -140,6 +146,7 @@ namespace NLS::Editor::Panels
 
 			void HandleGameObjectPicking();
         void EnsureCameraFocus();
+        bool IsCameraControlActive() const;
         bool ShouldRequestPickingFrame() const;
         void TryWriteValidationReadback();
 	        void HandleViewportAssetDragDrop();
@@ -161,6 +168,7 @@ namespace NLS::Editor::Panels
 
 		Engine::GameObject* m_highlightedGameObject = nullptr;
 		uint64_t m_destroyedListener = 0;
+        bool m_validationCameraMotionActive = false;
         Editor::Core::SceneViewGizmoInteraction m_gizmoInteraction;
         Editor::Core::SceneCameraFocusState m_cameraFocus;
         Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };

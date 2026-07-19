@@ -341,6 +341,10 @@ struct AssetBrowserDisplayItem
 
 bool ShouldShowAssetBrowserSubAssetDisclosure(const AssetBrowserDisplayItem& displayItem);
 
+std::vector<AssetBrowserDisplayItem> BuildAssetBrowserImmediateDisclosureFeedback(
+    const AssetBrowserDisplayItem& sourceDisplayItem,
+    bool expanded);
+
 struct AssetBrowserPresentationBundle
 {
     std::vector<AssetBrowserItem> rootItems;
@@ -529,6 +533,7 @@ struct AssetBrowserHeavyGpuThumbnailPumpInput
     bool hasQueuedWork = false;
     bool hasInFlightWork = false;
     bool hasQueuedReadback = false;
+    bool hasQueuedResourceContinuation = false;
     bool hasPreviewRenderer = false;
     bool sceneLoadRendererResourcesPending = false;
     double nowSeconds = 0.0;
@@ -618,6 +623,12 @@ AssetBrowserPostDrawThumbnailPumpPermissions PlanAssetBrowserPostDrawThumbnailPu
 
 AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
     const AssetBrowserHeavyGpuThumbnailPumpInput& input);
+
+double PlanAssetBrowserHeavyGpuThumbnailContinuationDelay(
+    bool pending,
+    std::string_view diagnostic,
+    double resourcePendingDelaySeconds,
+    double defaultDelaySeconds);
 
 AssetBrowserLightGpuThumbnailPumpDecision PlanAssetBrowserLightGpuThumbnailPump(
     const AssetBrowserLightGpuThumbnailPumpInput& input);

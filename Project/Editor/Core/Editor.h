@@ -69,6 +69,7 @@ public:
     void RefreshProfilerRecordingState();
     bool IsProfilerRecordingEnabled();
     void DeferStartupSceneViewRenderForNextFrame();
+    void UpdateValidationSceneCameraMotion();
     void UpdateValidationTimelineTraceExport();
     void UpdateThumbnailTelemetrySummaryExport();
 
@@ -129,6 +130,8 @@ private:
     std::filesystem::path m_validationTracePath;
     bool m_validationTraceExportStarted = false;
     bool m_validationTraceExportFinished = false;
+    bool m_validationCameraMotionPendingForFrame = false;
+    uint32_t m_validationCameraForwardCompletedFrames = 0u;
     std::chrono::steady_clock::time_point m_lastThumbnailTelemetrySummaryWriteTime {};
     bool m_thumbnailTelemetrySummaryWriteAttemptLogged = false;
     bool m_logNextUpdateStages = false;
@@ -139,6 +142,7 @@ private:
     {
         JobSystemLifetime();
         ~JobSystemLifetime();
+        void Shutdown();
 
         bool ownsJobSystem = false;
     };

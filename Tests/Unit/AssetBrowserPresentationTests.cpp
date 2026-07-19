@@ -8,6 +8,7 @@
 #include "Assets/AssetDatabaseRetirementScheduler.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetThumbnailService.h"
+#include "Assets/AssetThumbnailRenderScheduler.h"
 #include "Assets/ExternalAssetImporter.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Assets/PrefabEditorWorkflow.h"
@@ -763,6 +764,43 @@ TEST(AssetBrowserPresentationTests, GridAndListUseSharedImmediateDisclosurePolic
     EXPECT_EQ(listBody.find("displayItem.childCount > 0u"), std::string::npos);
 }
 
+TEST(AssetBrowserPresentationTests, ImmediateDisclosureFeedbackPublishesParentAndNonActionablePlaceholder)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetBrowserDisplayItem source;
+    source.item.displayName = "Hero";
+    source.item.projectRelativePath = "Assets/Models/Hero.fbx";
+    source.item.sourceAssetPath = source.item.projectRelativePath;
+    source.item.kind = AssetBrowserItemKind::SourceAsset;
+    source.item.hasGeneratedSubAssets = true;
+    source.childCount = 4096u;
+    source.groupId = 27u;
+
+    const auto expanded = BuildAssetBrowserImmediateDisclosureFeedback(source, true);
+    ASSERT_EQ(expanded.size(), 2u);
+    EXPECT_TRUE(expanded[0].expanded);
+    EXPECT_EQ(expanded[0].item.displayName, "Hero");
+    EXPECT_EQ(expanded[0].childCount, 4096u);
+    EXPECT_TRUE(expanded[1].subAsset);
+    EXPECT_TRUE(expanded[1].loadingPlaceholder);
+    EXPECT_EQ(expanded[1].item.kind, AssetBrowserItemKind::GeneratedSubAsset);
+    EXPECT_EQ(expanded[1].item.sourceAssetPath, source.item.sourceAssetPath);
+    EXPECT_EQ(expanded[1].item.projectRelativePath, "Assets/Models/Hero.fbx::pending");
+    EXPECT_EQ(expanded[1].groupId, source.groupId);
+
+    const auto collapsed = BuildAssetBrowserImmediateDisclosureFeedback(expanded[0], false);
+    ASSERT_EQ(collapsed.size(), 1u);
+    EXPECT_FALSE(collapsed[0].expanded);
+    EXPECT_FALSE(collapsed[0].loadingPlaceholder);
+
+    source.item.projectRelativePath.clear();
+    source.item.sourceAssetPath.clear();
+    const auto invalidSource = BuildAssetBrowserImmediateDisclosureFeedback(source, true);
+    ASSERT_EQ(invalidSource.size(), 1u);
+    EXPECT_TRUE(invalidSource[0].expanded);
+}
+
 TEST(AssetBrowserPresentationTests, DisclosureClickPublishesSingleGroupImmediatelyBeforeAsyncReconciliation)
 {
     const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
@@ -776,18 +814,12 @@ TEST(AssetBrowserPresentationTests, DisclosureClickPublishesSingleGroupImmediate
         source,
         "void Editor::Panels::AssetBrowser::DrawCurrentFolderList(");
 
-    EXPECT_NE(immediateBody.find("BuildAssetBrowserPresentationBundle"), std::string::npos)
-        << "A click should rebuild only the selected source group from the retained authoritative snapshot.";
-    EXPECT_NE(immediateBody.find("m_projectAssetSubAssetSnapshotIndex.get()"), std::string::npos);
-    EXPECT_NE(immediateBody.find("loadingPlaceholder = true"), std::string::npos)
-        << "Pending imports need immediate expanded-state feedback without synthetic actionable children.";
+    EXPECT_EQ(immediateBody.find("BuildAssetBrowserPresentationBundle"), std::string::npos)
+        << "A disclosure click must not enumerate or copy a large model's generated sub-assets on the UI thread.";
     EXPECT_NE(
-        immediateBody.find("ShouldShowAssetBrowserSubAssetDisclosure(group.front())"),
+        immediateBody.find("BuildAssetBrowserImmediateDisclosureFeedback("),
         std::string::npos)
-        << "Pending feedback must use the same disclosure policy that made the source clickable.";
-    EXPECT_NE(immediateBody.find("placeholder.groupId = group.front().groupId"), std::string::npos)
-        << "The placeholder must inherit its source group instead of assuming the first group id.";
-    EXPECT_EQ(immediateBody.find("placeholder.groupId = 1u"), std::string::npos);
+        << "The click should publish the retained source row and placeholder without waiting for child enumeration.";
     EXPECT_NE(immediateBody.find("StartCurrentFolderItemsRefresh("), std::string::npos)
         << "The expanded key must be queued during the click so an older completion cannot publish "
            "before the next draw and overwrite the immediately expanded group.";
@@ -795,6 +827,39 @@ TEST(AssetBrowserPresentationTests, DisclosureClickPublishesSingleGroupImmediate
         << "Deferring latest-request coordination through a dirty flag leaves a one-frame stale-completion race.";
     EXPECT_NE(gridBody.find("ApplyProjectAssetDisclosureImmediately"), std::string::npos);
     EXPECT_NE(listBody.find("ApplyProjectAssetDisclosureImmediately"), std::string::npos);
+}
+
+TEST(AssetBrowserPresentationTests, PointerInputPreemptsPreDrawThumbnailWorkUntilImmediateFeedbackIsVisible)
+{
+    const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
+    const auto beforeDrawBody = ExtractFunctionBody(
+        source,
+        "void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()");
+    const auto immediateBody = ExtractFunctionBody(
+        source,
+        "bool Editor::Panels::AssetBrowser::ApplyProjectAssetDisclosureImmediately(");
+    const auto priorityBody = ExtractFunctionBody(
+        source,
+        "void Editor::Panels::AssetBrowser::PrioritizeAssetBrowserUiFeedback()");
+
+    const auto hoverGate = beforeDrawBody.find("ImGui::IsWindowHovered(");
+    const auto pointerInput = beforeDrawBody.find("ImGui::IsMouseDown(ImGuiMouseButton_Left)", hoverGate);
+    const auto prioritize = beforeDrawBody.find("PrioritizeAssetBrowserUiFeedback()", pointerInput);
+    const auto priorityCheck = beforeDrawBody.find("!uiFeedbackPriorityActive", prioritize);
+    const auto thumbnailPump = beforeDrawBody.find("PumpThumbnailGeneration(", priorityCheck);
+    ASSERT_NE(hoverGate, std::string::npos);
+    ASSERT_NE(pointerInput, std::string::npos);
+    ASSERT_NE(prioritize, std::string::npos);
+    ASSERT_NE(priorityCheck, std::string::npos);
+    ASSERT_NE(thumbnailPump, std::string::npos);
+    EXPECT_LT(hoverGate, pointerInput)
+        << "Pointer input in another editor panel must not suppress Asset Browser thumbnail progress.";
+    EXPECT_LT(priorityCheck, thumbnailPump)
+        << "The UI priority gate must run before any heavy thumbnail continuation can occupy the main thread.";
+    EXPECT_NE(immediateBody.find("PrioritizeAssetBrowserUiFeedback()"), std::string::npos)
+        << "A disclosure click must reserve the following frame even if the mouse is released before it is drawn.";
+    EXPECT_NE(priorityBody.find("ImGui::GetFrameCount() + 1"), std::string::npos)
+        << "The clicked expansion is first visible on the next immediate-mode UI frame.";
 }
 
 TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusResources)
@@ -1484,11 +1549,11 @@ TEST(AssetBrowserPresentationTests, BuildsCurrentFolderItemsWithGeneratedSubAsse
     options.expandedSourceAssets.insert("Assets/Models/Hero.gltf");
     const auto items = BuildCurrentFolderAssetItems(root, "Assets/Models", &database, options);
 
-    ASSERT_EQ(items.size(), 6u);
+    ASSERT_EQ(items.size(), 5u);
     ASSERT_NE(FindItem(items, "Hero.gltf"), nullptr);
     ASSERT_NE(FindItem(items, "Hero"), nullptr);
     ASSERT_NE(FindItem(items, "Body"), nullptr);
-    ASSERT_NE(FindItem(items, "Albedo"), nullptr);
+    EXPECT_EQ(FindItem(items, "Albedo"), nullptr);
     ASSERT_NE(FindItem(items, "HeroSurface"), nullptr);
     EXPECT_EQ(FindGeneratedSubAssetItem(items, "model:Hero"), nullptr);
     EXPECT_EQ(FindGeneratedSubAssetItem(items, "scene:HeroScene"), nullptr);
@@ -1542,19 +1607,8 @@ TEST(AssetBrowserPresentationTests, BuildsCurrentFolderItemsWithGeneratedSubAsse
     EXPECT_EQ(material->selectionResourcePath, "Assets/Models/Hero.gltf#material:Body");
     EXPECT_FALSE(material->previewableInAssetView);
 
-    const auto* texture = FindGeneratedSubAssetItem(items, "texture:Albedo");
-    ASSERT_NE(texture, nullptr);
-    EXPECT_EQ(texture->kind, AssetBrowserItemKind::GeneratedSubAsset);
-    EXPECT_EQ(texture->type, AssetBrowserItemType::Texture);
-    EXPECT_EQ(texture->projectRelativePath, "Assets/Models/Hero.gltf::texture:Albedo");
-    EXPECT_EQ(texture->sourceAssetPath, "Assets/Models/Hero.gltf");
-    EXPECT_EQ(texture->dragResourcePath, "Assets/Models/Hero.gltf");
-    EXPECT_EQ(texture->assetId, modelId);
-    EXPECT_EQ(texture->subAssetKey, "texture:Albedo");
-    EXPECT_EQ(texture->artifactType, ArtifactType::Texture);
-    EXPECT_TRUE(texture->generatedReadOnly);
-    EXPECT_EQ(texture->selectionResourcePath, "Assets/Models/Hero.gltf#texture:Albedo");
-    EXPECT_FALSE(texture->previewableInAssetView);
+    EXPECT_EQ(FindGeneratedSubAssetItem(items, "texture:Albedo"), nullptr)
+        << "Imported texture dependencies must stay hidden in both database-backed and snapshot-backed projections.";
 
     const auto* shader = FindGeneratedSubAssetItem(items, "shader:HeroSurface");
     ASSERT_NE(shader, nullptr);
@@ -2475,7 +2529,7 @@ TEST(AssetBrowserPresentationTests, GeneratedArtifactProjectionIsExhaustive)
         std::nullopt,
         AssetBrowserItemType::Mesh,
         AssetBrowserItemType::Material,
-        AssetBrowserItemType::Texture,
+        std::nullopt,
         std::nullopt,
         std::nullopt,
         std::nullopt,
@@ -3267,6 +3321,7 @@ TEST(AssetBrowserPresentationTests, PresentationBundleCountsOnlyMatchingAuthorit
     snapshot.subAssets = {
         { "mesh:Body", "Library/Artifacts/body.mesh", ArtifactType::Mesh, "Body" },
         { "material:Body", "Library/Artifacts/body.mat", ArtifactType::Material, "Body" },
+        { "texture:Albedo", "Library/Artifacts/albedo.tex", ArtifactType::Texture, "Albedo" },
         { "animation:Idle", "Library/Artifacts/idle.anim", ArtifactType::AnimationClip, "Idle" }
     };
     const auto index = BuildValidatedEditorAssetSnapshotIndex({snapshot});
@@ -3278,7 +3333,7 @@ TEST(AssetBrowserPresentationTests, PresentationBundleCountsOnlyMatchingAuthorit
     auto collapsed = BuildAssetBrowserPresentationBundle({source}, index.get(), options);
     ASSERT_EQ(collapsed.displayItems.size(), 1u);
     EXPECT_EQ(collapsed.displayItems[0].childCount, 2u)
-        << "Unsupported generated artifacts must affect neither disclosure count nor membership.";
+        << "Imported texture dependencies and unsupported artifacts must affect neither disclosure count nor membership.";
     EXPECT_FALSE(collapsed.displayItems[0].expanded);
 
     options.expandedSourceAssets.insert(source.sourceAssetPath);
@@ -3676,8 +3731,8 @@ TEST(AssetBrowserPresentationTests, GpuThumbnailPumpsRunOnlyFromBudgetedNonInter
         << "GPU readback polling must not wait behind the heavy preview cooldown; otherwise a completed readback can stay invisible indefinitely.";
 
     input.interactive = true;
-    EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump)
-        << "The browser still avoids even readback polling while interactive to keep drag/scroll responsive.";
+    EXPECT_TRUE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump)
+        << "An already-submitted readback must make forward progress under the interactive scheduler budget.";
 
     input.interactive = false;
     input.hasQueuedReadback = false;
@@ -3686,6 +3741,15 @@ TEST(AssetBrowserPresentationTests, GpuThumbnailPumpsRunOnlyFromBudgetedNonInter
     EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump);
 
     input.hasPreviewRenderer = true;
+    input.hasQueuedResourceContinuation = true;
+    input.sceneLoadRendererResourcesPending = true;
+    input.nowSeconds = 20.0;
+    input.nextAllowedSeconds = 19.0;
+    EXPECT_TRUE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump)
+        << "An already-started resource continuation must keep making bounded progress while scene-load resource work is active.";
+
+    input.hasQueuedResourceContinuation = false;
+    input.sceneLoadRendererResourcesPending = false;
     input.nowSeconds = 10.0;
     input.nextAllowedSeconds = 10.1;
     EXPECT_FALSE(PlanAssetBrowserHeavyGpuThumbnailPump(input).shouldPump);
@@ -3731,7 +3795,7 @@ TEST(AssetBrowserPresentationTests, PostDrawThumbnailPumpAllowsVisibleGpuPreview
         << "Heavy prefab/model previews must not be blocked by the lighter preview cooldown once their own cooldown has elapsed.";
 }
 
-TEST(AssetBrowserPresentationTests, DrawViewsPumpPostDrawGpuPreviewWorkAfterVisibleScopeIsQueued)
+TEST(AssetBrowserPresentationTests, DrawViewsOnlyPublishVisibleScopeAndPreDrawPumpConsumesIt)
 {
     const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
     const std::array<std::string_view, 2> functions = {
@@ -3744,34 +3808,78 @@ TEST(AssetBrowserPresentationTests, DrawViewsPumpPostDrawGpuPreviewWorkAfterVisi
         const auto body = ExtractFunctionBody(source, function);
         const auto setVisible = body.find("SetVisibleThumbnailItems(");
         const auto updateScope = body.find("UpdateThumbnailGenerationScope()");
-        const auto planPostDraw = body.find("PlanAssetBrowserPostDrawThumbnailPump({");
         const auto pump = body.find("PumpThumbnailGeneration(");
 
         EXPECT_NE(setVisible, std::string::npos) << function;
         EXPECT_NE(updateScope, std::string::npos) << function;
-        EXPECT_NE(planPostDraw, std::string::npos) << function;
-        EXPECT_NE(pump, std::string::npos) << function;
-        if (setVisible != std::string::npos &&
-            updateScope != std::string::npos &&
-            planPostDraw != std::string::npos &&
-            pump != std::string::npos)
+        EXPECT_EQ(pump, std::string::npos)
+            << "GPU thumbnail recording must not run inside the ImGui grid/list draw call stack.";
+        if (setVisible != std::string::npos && updateScope != std::string::npos)
         {
             EXPECT_LT(setVisible, updateScope) << function;
-            EXPECT_LT(updateScope, planPostDraw) << function;
-            EXPECT_LT(planPostDraw, pump) << function;
         }
-
-        EXPECT_EQ(body.find("PumpThumbnailGeneration(false, false, false)"), std::string::npos)
-            << "Visible post-draw thumbnail pumps must be allowed to start GPU preview work for material sub-assets and imported model previews.";
-        EXPECT_NE(body.find("PumpThumbnailGeneration("), std::string::npos) << function;
-        const auto heavyPermissionArgument = body.find("thumbnailPumpPermissions.allowHeavyGpuPreview", pump);
-        EXPECT_NE(heavyPermissionArgument, std::string::npos) << function;
-        EXPECT_NE(body.find("true);", heavyPermissionArgument), std::string::npos)
-            << "Visible post-draw thumbnail pumps are the only place allowed to run render-path warmup.";
-
-        EXPECT_NE(body.find("m_lightGpuThumbnailGenerationDeferredUntil"), std::string::npos) << function;
-        EXPECT_NE(body.find("m_heavyGpuThumbnailGenerationDeferredUntil"), std::string::npos) << function;
     }
+
+    const auto beforeDraw = ExtractFunctionBody(
+        source,
+        "void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()");
+    const auto plan = beforeDraw.find("PlanAssetBrowserPostDrawThumbnailPump({");
+    const auto pump = beforeDraw.find("PumpThumbnailGeneration(", plan);
+    ASSERT_NE(plan, std::string::npos);
+    ASSERT_NE(pump, std::string::npos);
+    EXPECT_LT(plan, pump);
+    EXPECT_NE(beforeDraw.find("thumbnailPumpPermissions.allowHeavyGpuPreview", pump), std::string::npos)
+        << "The next pre-draw tick consumes the previously published visible scope and may start bounded heavy work.";
+}
+
+TEST(AssetBrowserPresentationTests, GeneratedThumbnailsUseRhiTextureVerticalFlip)
+{
+    const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
+    EXPECT_NE(source.find("kAssetBrowserImageUv0(0.0f, 1.0f)"), std::string::npos);
+    EXPECT_NE(source.find("kAssetBrowserImageUv1(1.0f, 0.0f)"), std::string::npos);
+    EXPECT_NE(
+        source.find("kAssetBrowserThumbnailUv0 = kAssetBrowserImageUv0"),
+        std::string::npos);
+    EXPECT_NE(
+        source.find("kAssetBrowserThumbnailUv1 = kAssetBrowserImageUv1"),
+        std::string::npos);
+
+    const auto drawBody = ExtractFunctionBody(
+        source,
+        "void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(");
+    const auto gpuPoolPath = drawBody.find("|draw=gpu-pool");
+    const auto cachedPath = drawBody.find("|draw=thumbnail");
+    ASSERT_NE(gpuPoolPath, std::string::npos);
+    ASSERT_NE(cachedPath, std::string::npos);
+    EXPECT_NE(drawBody.rfind("kAssetBrowserThumbnailUv0", gpuPoolPath), std::string::npos);
+    EXPECT_NE(drawBody.rfind("kAssetBrowserThumbnailUv1", gpuPoolPath), std::string::npos);
+    EXPECT_NE(drawBody.rfind("kAssetBrowserThumbnailUv0", cachedPath), std::string::npos);
+    EXPECT_NE(drawBody.rfind("kAssetBrowserThumbnailUv1", cachedPath), std::string::npos);
+
+    const auto fallbackPath = drawBody.find("|draw=type-fallback");
+    ASSERT_NE(fallbackPath, std::string::npos);
+    EXPECT_NE(drawBody.rfind("kAssetBrowserImageUv0", fallbackPath), std::string::npos)
+        << "Built-in editor icons use the same RHI texture-origin correction.";
+}
+
+TEST(AssetBrowserPresentationTests, PendingThumbnailKeepsPreviousCachedImageVisible)
+{
+    const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
+    const auto body = ExtractFunctionBody(
+        source,
+        "void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(");
+    const auto cachedDisplay = body.find("canDisplayCachedThumbnail");
+    const auto staleGate = body.find(
+        "thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending",
+        cachedDisplay);
+    const auto stalePath = body.find("thumbnail.cacheEntry->imagePath", staleGate);
+    const auto staleDraw = body.find("|draw=thumbnail-stale", stalePath);
+    ASSERT_NE(cachedDisplay, std::string::npos);
+    ASSERT_NE(staleGate, std::string::npos);
+    ASSERT_NE(stalePath, std::string::npos);
+    ASSERT_NE(staleDraw, std::string::npos);
+    EXPECT_LT(cachedDisplay, staleDraw)
+        << "A pending renderer refresh must retain a valid previous PNG instead of showing only the type fallback icon.";
 }
 
 TEST(AssetBrowserPresentationTests, GpuThumbnailCooldownAdvancesOnlyAfterSuccessfulStart)
@@ -3781,17 +3889,21 @@ TEST(AssetBrowserPresentationTests, GpuThumbnailCooldownAdvancesOnlyAfterSuccess
         source,
         "void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(");
 
-    const auto lightStart = body.find("m_thumbnailService.GenerateNextThumbnail(*m_thumbnailPreviewRenderer, false)");
-    const auto lightStartedBlock = body.find("if (generated.has_value())", lightStart);
-    const auto lightCooldown = body.find("m_nextGpuThumbnailGenerationTime = now + kAssetBrowserGpuThumbnailIntervalSeconds", lightStartedBlock);
-    const auto heavyStart = body.find("m_thumbnailService.GenerateNextThumbnail(*m_thumbnailPreviewRenderer, true)");
-    const auto heavyStartedBlock = body.find("if (generated.has_value())", heavyStart);
-    const auto heavyCooldown = body.find("m_nextHeavyGpuThumbnailGenerationTime", heavyStartedBlock);
+    const auto lightGate = body.find("m_thumbnailRenderScheduler.TryBeginLightGpuPreview");
+    const auto lightStart = body.find("m_thumbnailService.GenerateNextThumbnail(", lightGate);
+    const auto lightStartedBlock = body.find("generated.has_value()", lightStart);
+    const auto lightCooldown = body.find("m_thumbnailRenderScheduler.RecordLightGpuPreviewResult", lightStartedBlock);
+    const auto heavyGate = body.find("m_thumbnailRenderScheduler.TryBeginHeavyGpuPreview", lightCooldown);
+    const auto heavyStart = body.find("m_thumbnailService.GenerateNextThumbnail(", heavyGate);
+    const auto heavyStartedBlock = body.find("generated.has_value()", heavyStart);
+    const auto heavyCooldown = body.find("m_thumbnailRenderScheduler.RecordHeavyGpuPreviewResult", heavyStartedBlock);
 
+    ASSERT_NE(lightGate, std::string::npos);
     ASSERT_NE(lightStart, std::string::npos);
     ASSERT_NE(lightStartedBlock, std::string::npos);
     ASSERT_NE(lightCooldown, std::string::npos)
         << "A failed light GPU preview start, usually because another preview is in flight, must not delay the next poll.";
+    ASSERT_NE(heavyGate, std::string::npos);
     ASSERT_NE(heavyStart, std::string::npos);
     ASSERT_NE(heavyStartedBlock, std::string::npos);
     ASSERT_NE(heavyCooldown, std::string::npos)
@@ -3799,8 +3911,452 @@ TEST(AssetBrowserPresentationTests, GpuThumbnailCooldownAdvancesOnlyAfterSuccess
 
     EXPECT_LT(lightStart, lightStartedBlock);
     EXPECT_LT(lightStartedBlock, lightCooldown);
+    EXPECT_LT(lightCooldown, heavyGate);
     EXPECT_LT(heavyStart, heavyStartedBlock);
     EXPECT_LT(heavyStartedBlock, heavyCooldown);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerTightensBudgetAfterOverrun)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    AssetBrowserHeavyGpuThumbnailPumpInput input;
+    input.hasQueuedWork = true;
+    input.hasPreviewRenderer = true;
+
+    scheduler.BeginFrame(0u, false);
+    const auto initialBudget = scheduler.GetFrameStats().budgetMicroseconds;
+    ASSERT_TRUE(scheduler.TryBeginHeavyGpuPreview(input));
+    scheduler.FinishWork(AssetThumbnailRenderWorkKind::HeavyGpuPreview, 3000u);
+
+    scheduler.BeginFrame(2u, false);
+    EXPECT_LT(scheduler.GetFrameStats().budgetMicroseconds, initialBudget);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerMeasuresCompletedResultApplication)
+{
+    const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
+    const auto body = ExtractFunctionBody(
+        source,
+        "void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(");
+    const auto consume = body.find("m_thumbnailService.ConsumeCompletedThumbnail()");
+    const auto apply = body.find("ApplyThumbnailServiceResult(*generated)", consume);
+    const auto finish = body.find("m_thumbnailRenderScheduler.FinishWork(", consume);
+    const auto completedKind = body.find(
+        "AssetThumbnailRenderWorkKind::ConsumeCompleted",
+        finish);
+
+    ASSERT_NE(consume, std::string::npos);
+    ASSERT_NE(apply, std::string::npos);
+    ASSERT_NE(finish, std::string::npos);
+    ASSERT_NE(completedKind, std::string::npos);
+    EXPECT_LT(consume, apply);
+    EXPECT_LT(apply, finish)
+        << "Applying a completed thumbnail mutates UI-facing state and must count against the frame budget.";
+    EXPECT_LT(finish, completedKind);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerRecoversBudgetAfterLightFrames)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    scheduler.BeginFrame(1u, false);
+    const auto initialBudget = scheduler.GetFrameStats().budgetMicroseconds;
+    ASSERT_TRUE(scheduler.TryBeginCompletedResult());
+    scheduler.FinishWork(AssetThumbnailRenderWorkKind::ConsumeCompleted, 25u);
+
+    scheduler.BeginFrame(2u, false);
+    const auto firstRecoveredBudget = scheduler.GetFrameStats().budgetMicroseconds;
+    ASSERT_TRUE(scheduler.TryBeginCompletedResult());
+    scheduler.FinishWork(AssetThumbnailRenderWorkKind::ConsumeCompleted, 25u);
+    scheduler.BeginFrame(3u, false);
+
+    EXPECT_GT(firstRecoveredBudget, initialBudget);
+    EXPECT_GT(scheduler.GetFrameStats().budgetMicroseconds, firstRecoveredBudget);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerRejectsOversizedStartsButKeepsGpuPolling)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    AssetBrowserHeavyGpuThumbnailPumpInput input;
+    input.hasQueuedWork = true;
+    input.hasPreviewRenderer = true;
+
+    scheduler.BeginFrame(1u, false);
+    ASSERT_TRUE(scheduler.TryBeginHeavyGpuPreview(input));
+    scheduler.FinishWork(AssetThumbnailRenderWorkKind::HeavyGpuPreview, 20000u);
+    EXPECT_GT(
+        scheduler.GetEstimatedWorkMicroseconds(AssetThumbnailRenderWorkKind::HeavyGpuPreview),
+        scheduler.GetFrameStats().budgetMicroseconds);
+
+    scheduler.BeginFrame(2u, false);
+    ASSERT_TRUE(scheduler.TryBeginCompletedResult());
+    scheduler.FinishWork(AssetThumbnailRenderWorkKind::ConsumeCompleted, 1u, false);
+    EXPECT_FALSE(scheduler.TryBeginHeavyGpuPreview(input))
+        << "A new GPU preview whose learned cost exceeds the remaining budget must yield before doing work.";
+
+    input.hasQueuedReadback = true;
+    EXPECT_TRUE(scheduler.TryBeginHeavyGpuPreview(input))
+        << "A submitted GPU preview must still poll its readback even when a previous start exceeded the budget.";
+    scheduler.FinishActiveWork(25u);
+    EXPECT_LT(
+        scheduler.GetEstimatedWorkMicroseconds(AssetThumbnailRenderWorkKind::GpuPreviewPoll),
+        scheduler.GetEstimatedWorkMicroseconds(AssetThumbnailRenderWorkKind::HeavyGpuPreview));
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerEventuallyRetriesOversizedIdleWork)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderSchedulerConfig config;
+    config.oversizedWorkRetryFrameCount = 3u;
+    AssetThumbnailRenderScheduler scheduler(config);
+    AssetBrowserHeavyGpuThumbnailPumpInput input;
+    input.hasQueuedWork = true;
+    input.hasPreviewRenderer = true;
+
+    scheduler.BeginFrame(0u, false);
+    ASSERT_TRUE(scheduler.TryBeginHeavyGpuPreview(input));
+    scheduler.FinishActiveWork(20000u);
+
+    scheduler.BeginFrame(1u, false);
+    EXPECT_FALSE(scheduler.TryBeginHeavyGpuPreview(input));
+    scheduler.BeginFrame(2u, false);
+    EXPECT_FALSE(scheduler.TryBeginHeavyGpuPreview(input));
+    scheduler.BeginFrame(3u, false);
+    EXPECT_TRUE(scheduler.TryBeginHeavyGpuPreview(input))
+        << "A learned cold-start overrun must not permanently starve a visible large prefab thumbnail.";
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerDoesNotStarveGpuResourceContinuation)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    AssetBrowserHeavyGpuThumbnailPumpInput input;
+    input.hasQueuedWork = true;
+    input.hasPreviewRenderer = true;
+
+    scheduler.BeginFrame(1u, false);
+    ASSERT_TRUE(scheduler.TryBeginHeavyGpuPreview(input));
+    scheduler.FinishActiveWork(20000u);
+
+    scheduler.BeginFrame(2u, false);
+    input.hasQueuedResourceContinuation = true;
+    EXPECT_TRUE(scheduler.TryBeginHeavyGpuPreview(input))
+        << "A bounded prefab resource continuation must not inherit the cold-start cost estimate.";
+    scheduler.FinishActiveWork(500u);
+    EXPECT_LT(
+        scheduler.GetEstimatedWorkMicroseconds(AssetThumbnailRenderWorkKind::GpuPreviewContinuation),
+        scheduler.GetEstimatedWorkMicroseconds(AssetThumbnailRenderWorkKind::HeavyGpuPreview));
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerAdvancesContinuationWhileInteractive)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    AssetBrowserHeavyGpuThumbnailPumpInput input;
+    input.interactive = true;
+    input.hasQueuedWork = true;
+    input.hasQueuedResourceContinuation = true;
+    input.hasPreviewRenderer = true;
+    input.nowSeconds = 10.0;
+
+    scheduler.BeginFrame(1u, true);
+    EXPECT_TRUE(scheduler.TryBeginHeavyGpuPreview(input))
+        << "A started prefab preview must continue in bounded slices even when another editor control is active.";
+}
+
+TEST(AssetBrowserPresentationTests, AssetBrowserInteractionDoesNotUseGlobalActiveItemState)
+{
+    const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
+    const auto interactionBody = ExtractFunctionBody(
+        source,
+        "bool Editor::Panels::AssetBrowser::IsAssetBrowserInteractive() const");
+    const auto beforeDrawBody = ExtractFunctionBody(
+        source,
+        "void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()");
+    const auto drawBody = ExtractFunctionBody(
+        source,
+        "void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()");
+
+    EXPECT_EQ(interactionBody.find("ImGui::IsAnyItemActive()"), std::string::npos)
+        << "An active widget in another editor panel must not permanently suppress large prefab thumbnails.";
+    EXPECT_EQ(interactionBody.find("ImGui::IsMouseDragging"), std::string::npos);
+    EXPECT_EQ(interactionBody.find("MouseWheel"), std::string::npos);
+    EXPECT_EQ(beforeDrawBody.find("MouseWheel"), std::string::npos)
+        << "Global wheel input must not defer thumbnails when the Asset Browser is not hovered.";
+    EXPECT_NE(drawBody.find("folderTreeHovered"), std::string::npos);
+    EXPECT_NE(drawBody.find("currentFolderHovered"), std::string::npos);
+    EXPECT_NE(drawBody.find("wheelActive"), std::string::npos);
+    EXPECT_NE(interactionBody.find("m_assetBrowserInteractiveUntil"), std::string::npos);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerDoesNotRetryOversizedWorkWhileInteractive)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderSchedulerConfig config;
+    config.oversizedWorkRetryFrameCount = 1u;
+    AssetThumbnailRenderScheduler scheduler(config);
+    AssetBrowserHeavyGpuThumbnailPumpInput input;
+    input.hasQueuedWork = true;
+    input.hasPreviewRenderer = true;
+
+    scheduler.BeginFrame(1u, false);
+    ASSERT_TRUE(scheduler.TryBeginHeavyGpuPreview(input));
+    scheduler.FinishActiveWork(20000u);
+
+    scheduler.BeginFrame(2u, true);
+    EXPECT_FALSE(scheduler.TryBeginHeavyGpuPreview(input))
+        << "User interaction must suppress oversized retry tokens even after the idle threshold is reached.";
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerNormalizesReversedBudgetRange)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderSchedulerConfig config;
+    config.idleInitialBudgetMicroseconds = 1500u;
+    config.idleMinimumBudgetMicroseconds = 3000u;
+    config.idleMaximumBudgetMicroseconds = 750u;
+    AssetThumbnailRenderScheduler scheduler(config);
+    scheduler.BeginFrame(1u, false);
+
+    EXPECT_EQ(scheduler.GetFrameStats().budgetMicroseconds, 1500u);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerDoesNotResetWithinSameFrame)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    scheduler.BeginFrame(7u, false);
+    ASSERT_TRUE(scheduler.TryBeginCompletedResult());
+    scheduler.FinishWork(AssetThumbnailRenderWorkKind::ConsumeCompleted, 400u);
+    scheduler.BeginFrame(7u, true);
+
+    const auto stats = scheduler.GetFrameStats();
+    EXPECT_EQ(stats.consumedMicroseconds, 400u);
+    EXPECT_EQ(stats.startedWorkCount, 1u);
+    EXPECT_FALSE(stats.interactive);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerCooldownRequiresProducedResult)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    scheduler.RecordLightGpuPreviewResult(false, 10.0, 0.25);
+    EXPECT_DOUBLE_EQ(scheduler.GetNextLightGpuPreviewTime(), 0.0);
+    scheduler.RecordLightGpuPreviewResult(true, 10.0, 0.25);
+    EXPECT_DOUBLE_EQ(scheduler.GetNextLightGpuPreviewTime(), 10.25);
+
+    scheduler.RecordHeavyGpuPreviewResult(false, true, "thumbnail-gpu-preview-resources-pending", 20.0, 0.05, 0.25);
+    EXPECT_DOUBLE_EQ(scheduler.GetNextHeavyGpuPreviewTime(), 0.0);
+    scheduler.RecordHeavyGpuPreviewResult(
+        true,
+        true,
+        "thumbnail-gpu-preview-resources-pending:prefab-scene-assembly=64/512",
+        20.0,
+        0.05,
+        0.25);
+    EXPECT_DOUBLE_EQ(scheduler.GetNextHeavyGpuPreviewTime(), 20.0);
+    scheduler.RecordHeavyGpuPreviewResult(
+        true,
+        true,
+        "thumbnail-gpu-preview-readback-pending",
+        21.0,
+        0.05,
+        0.25);
+    EXPECT_DOUBLE_EQ(scheduler.GetNextHeavyGpuPreviewTime(), 21.0);
+    scheduler.RecordHeavyGpuPreviewResult(
+        true,
+        true,
+        "thumbnail-gpu-preview-resources-pending|mesh=1",
+        22.0,
+        0.05,
+        0.25);
+    EXPECT_DOUBLE_EQ(scheduler.GetNextHeavyGpuPreviewTime(), 22.05);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerBacksOffOverBudgetSceneAssembly)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    AssetBrowserHeavyGpuThumbnailPumpInput input;
+    input.hasQueuedWork = true;
+    input.hasPreviewRenderer = true;
+    scheduler.BeginFrame(1u, false);
+    ASSERT_TRUE(scheduler.TryBeginHeavyGpuPreview(input));
+    scheduler.FinishWork(AssetThumbnailRenderWorkKind::HeavyGpuPreview, 3000u);
+    scheduler.RecordHeavyGpuPreviewResult(
+        true,
+        true,
+        "thumbnail-gpu-preview-resources-pending:prefab-scene-assembly=64/512",
+        10.0,
+        0.05,
+        0.25);
+
+    EXPECT_DOUBLE_EQ(scheduler.GetNextHeavyGpuPreviewTime(), 10.05)
+        << "An assembly batch that exceeded the UI budget must yield before its next slice.";
+}
+
+TEST(AssetBrowserPresentationTests, CompletedPrefabSceneSurvivesTransientRenderBusy)
+{
+    const auto source = ReadSourceText(
+        RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
+    const auto body = ExtractFunctionBody(
+        source,
+        "bool RenderPrefabPreview(");
+    const auto render = body.find("RenderCurrentPreviewScene(request, result,");
+    const auto preserveBusy = body.find("thumbnail-gpu-preview-render-busy", render);
+    const auto clear = body.find("ClearPreviewObjects(false)", preserveBusy);
+
+    ASSERT_NE(render, std::string::npos);
+    ASSERT_NE(preserveBusy, std::string::npos);
+    ASSERT_NE(clear, std::string::npos);
+    EXPECT_EQ(body.rfind("m_prefabPreviewSceneAssembly = {}", render), std::string::npos)
+        << "Completed scene assembly must not reset before a render submission succeeds.";
+    EXPECT_LT(render, preserveBusy);
+    EXPECT_LT(preserveBusy, clear);
+}
+
+TEST(AssetBrowserPresentationTests, PrefabCameraFramesCompleteSourceBoundsAcrossProxyStages)
+{
+    const auto source = ReadSourceText(
+        RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
+    const auto body = ExtractFunctionBody(
+        source,
+        "bool RenderPrefabPreview(");
+
+    EXPECT_NE(
+        body.find("cameraBounds.min = resourcePlan.fullWorldBoundsMin"),
+        std::string::npos)
+        << "Both provisional and final proxy stages must use the complete source-prefab bounds.";
+    EXPECT_NE(body.find("ConfigurePrefabCamera(cameraBounds"), std::string::npos);
+}
+
+TEST(AssetBrowserPresentationTests, ProvisionalPrefabProxyNeverStartsFinalThumbnailReadback)
+{
+    const auto source = ReadSourceText(
+        RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
+    const auto body = ExtractFunctionBody(
+        source,
+        "void RenderCurrentPreviewScene(");
+
+    EXPECT_NE(
+        body.find("usesThreadedRendering && !publishProvisionalTextureOnly"),
+        std::string::npos);
+    const auto provisionalReturn = body.find("if (publishProvisionalTextureOnly)");
+    const auto finalReadback = body.find("BeginPreviewReadback(");
+    ASSERT_NE(provisionalReturn, std::string::npos);
+    ASSERT_NE(finalReadback, std::string::npos);
+    EXPECT_LT(provisionalReturn, finalReadback)
+        << "A bounded first frame may be displayed on the GPU but must never enter the final PNG cache.";
+}
+
+TEST(AssetBrowserPresentationTests, LargePrefabProxyPromotesColdMaterialsThroughAsyncPreviewLoading)
+{
+    const auto source = ReadSourceText(
+        RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
+    const auto resetBody = ExtractFunctionBody(
+        source,
+        "void ResetPrefabPreviewResourcePumpStateForManagers(");
+    const auto pumpBody = ExtractFunctionBody(
+        source,
+        "EditorThumbnailPreviewResourcePumpResult PumpPreparedPrefabResources(");
+
+    EXPECT_EQ(
+        resetBody.find("cachedMaterialsOnly"),
+        std::string::npos)
+        << "Large prefab previews must not silently replace cold imported materials with the white default material.";
+    EXPECT_NE(
+        pumpBody.find("ResolvePreviewMaterial(materialManager, path)"),
+        std::string::npos)
+        << "Cold imported materials must be promoted through the existing async preview loader.";
+    EXPECT_NE(
+        pumpBody.find("materialsAwaitingTextures"),
+        std::string::npos)
+        << "Material completion must be followed by texture binding readiness before rendering.";
+}
+
+TEST(AssetBrowserPresentationTests, PrefabThumbnailRenderDocCaptureQueuesBeforeGlobalFrame)
+{
+    const auto source = ReadSourceText(
+        RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
+    const auto renderBody = ExtractFunctionBody(
+        source,
+        "void RenderCurrentPreviewScene(");
+
+    const auto captureQueue = renderBody.find("QueueRenderDocCaptureForNextExternalOutput");
+    const auto globalFrameBegin = renderBody.find("TryBeginGlobalFrameForBackgroundPreview");
+    ASSERT_NE(captureQueue, std::string::npos);
+    ASSERT_NE(globalFrameBegin, std::string::npos);
+    EXPECT_LT(captureQueue, globalFrameBegin)
+        << "The capture must be queued before the preview global frame begins so RenderDoc records "
+           "the current 96x96 thumbnail draw instead of the following editor UI frame.";
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerStopsAfterFrameBudgetOverrun)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler scheduler;
+    AssetBrowserHeavyGpuThumbnailPumpInput heavyInput;
+    heavyInput.hasQueuedWork = true;
+    heavyInput.hasPreviewRenderer = true;
+    scheduler.BeginFrame(1u, false);
+    ASSERT_TRUE(scheduler.TryBeginHeavyGpuPreview(heavyInput));
+    scheduler.FinishWork(AssetThumbnailRenderWorkKind::HeavyGpuPreview, 3000u);
+
+    AssetBrowserThumbnailPumpInput backgroundInput;
+    backgroundInput.hasQueuedWork = true;
+    EXPECT_FALSE(scheduler.TryBeginBackgroundGeneration(backgroundInput));
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailRenderSchedulerUsesSmallerInteractiveBudget)
+{
+    using namespace NLS::Editor::Assets;
+
+    AssetThumbnailRenderScheduler idleScheduler;
+    idleScheduler.BeginFrame(1u, false);
+    AssetThumbnailRenderScheduler interactiveScheduler;
+    interactiveScheduler.BeginFrame(1u, true);
+
+    EXPECT_LT(
+        interactiveScheduler.GetFrameStats().budgetMicroseconds,
+        idleScheduler.GetFrameStats().budgetMicroseconds);
+}
+
+TEST(AssetBrowserPresentationTests, ThumbnailPreviewRenderTargetsUseBoundedLeaseAwareLruPool)
+{
+    const auto source = ReadSourceText(
+        RepoPath("Project/Editor/Assets/EditorThumbnailPreviewRenderer.cpp"));
+    const auto acquireBody = ExtractFunctionBody(
+        source,
+        "AcquiredPreviewFramebuffer AcquirePreviewFramebuffer(");
+
+    EXPECT_NE(source.find("kMaxPreviewFramebufferPoolSize = 256u"), std::string::npos);
+    EXPECT_NE(acquireBody.find("entry.width == width && entry.height == height"), std::string::npos);
+    EXPECT_NE(acquireBody.find("entry.activeLease.expired()"), std::string::npos)
+        << "A render target published to UI must not be overwritten while its pool lease is resident.";
+    EXPECT_NE(acquireBody.find("std::min_element"), std::string::npos);
+    EXPECT_NE(acquireBody.find("!leastRecentlyUsed->activeLease.expired()"), std::string::npos)
+        << "A full pool must defer work instead of evicting a render target still displayed by UI.";
+    EXPECT_NE(acquireBody.find("m_previewFramebufferPool.erase"), std::string::npos);
+    const auto allocationCheck = acquireBody.find("GetExplicitTextureHandle() == nullptr");
+    const auto cacheInsert = acquireBody.find("m_previewFramebufferPool.push_back");
+    ASSERT_NE(allocationCheck, std::string::npos);
+    ASSERT_NE(cacheInsert, std::string::npos);
+    EXPECT_LT(allocationCheck, cacheInsert)
+        << "A failed render-target allocation must remain retryable instead of poisoning the size cache.";
 }
 
 TEST(AssetBrowserPresentationTests, PendingGpuPreviewWaitsForThreadedRetirementWithoutSynchronousDrain)
@@ -3947,17 +4503,19 @@ TEST(AssetBrowserPresentationTests, PendingThumbnailResultDoesNotSkipFreshCacheP
         << "A stale Pending UI result with a matching cache key must not skip before the fresh cache check.";
 }
 
-TEST(AssetBrowserPresentationTests, PreDrawThumbnailPumpDoesNotStartHeavyGpuPreviewWork)
+TEST(AssetBrowserPresentationTests, PreDrawThumbnailPumpUsesPreviousVisibleScopeForHeavyWork)
 {
     const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
     const auto body = ExtractFunctionBody(
         source,
         "void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()");
 
-    EXPECT_NE(body.find("PumpThumbnailGeneration(true, false, false)"), std::string::npos)
-        << "The pre-draw pump runs before the current visible grid/list scope is rebuilt, so it must not start heavy prefab/model previews or render-path warmup from the previous visible range.";
-    EXPECT_EQ(body.find("PumpThumbnailGeneration(true, true"), std::string::npos)
-        << "Heavy GPU previews are reserved for the post-draw pump after visible thumbnail requests are queued.";
+    const auto plan = body.find("PlanAssetBrowserPostDrawThumbnailPump({");
+    const auto pump = body.find("PumpThumbnailGeneration(", plan);
+    ASSERT_NE(plan, std::string::npos);
+    ASSERT_NE(pump, std::string::npos);
+    EXPECT_NE(body.find("thumbnailPumpPermissions.allowHeavyGpuPreview", pump), std::string::npos)
+        << "Heavy prefab/model recording runs from the next pre-draw tick using the previous frame's visible scope.";
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailPumpRendersGpuPreviewOnMainThread)
@@ -3967,10 +4525,19 @@ TEST(AssetBrowserPresentationTests, ThumbnailPumpRendersGpuPreviewOnMainThread)
         source,
         "void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(");
 
-    EXPECT_NE(body.find("GenerateNextThumbnail(*m_thumbnailPreviewRenderer, false)"), std::string::npos)
+    const auto lightGpuGate = body.find("m_thumbnailRenderScheduler.TryBeginLightGpuPreview");
+    const auto lightGpuStart = body.find("m_thumbnailService.GenerateNextThumbnail(", lightGpuGate);
+    const auto heavyGpuGate = body.find("m_thumbnailRenderScheduler.TryBeginHeavyGpuPreview", lightGpuStart);
+    const auto heavyGpuStart = body.find("m_thumbnailService.GenerateNextThumbnail(", heavyGpuGate);
+
+    ASSERT_NE(lightGpuGate, std::string::npos);
+    ASSERT_NE(lightGpuStart, std::string::npos)
         << "Light GPU previews must render through the main-thread thumbnail pump because the preview renderer uses the graphics driver.";
-    EXPECT_NE(body.find("GenerateNextThumbnail(*m_thumbnailPreviewRenderer, true)"), std::string::npos)
+    ASSERT_NE(heavyGpuGate, std::string::npos);
+    ASSERT_NE(heavyGpuStart, std::string::npos)
         << "Heavy GPU previews must render through the main-thread thumbnail pump because the preview renderer uses the graphics driver.";
+    EXPECT_LT(lightGpuGate, lightGpuStart);
+    EXPECT_LT(heavyGpuGate, heavyGpuStart);
     EXPECT_EQ(body.find("StartNextThumbnailGeneration(m_thumbnailPreviewRenderer"), std::string::npos)
         << "The asset browser must not schedule GPU preview rendering on a background worker.";
 }
@@ -3985,8 +4552,10 @@ TEST(AssetBrowserPresentationTests, ThumbnailPumpConsumesCompletedThumbnailBatch
     EXPECT_NE(source.find("kMaxAssetBrowserCompletedThumbnailConsumesPerPump"), std::string::npos)
         << "Completed thumbnails should be drained in a small UI pump budget; consuming only one result per pump makes cached/generated previews appear slowly.";
     EXPECT_NE(body.find("completedThumbnailsConsumedThisPump"), std::string::npos);
-    EXPECT_NE(body.find("while (completedThumbnailsConsumedThisPump < kMaxAssetBrowserCompletedThumbnailConsumesPerPump)"), std::string::npos)
+    EXPECT_NE(body.find("completedThumbnailsConsumedThisPump < kMaxAssetBrowserCompletedThumbnailConsumesPerPump"), std::string::npos)
         << "The thumbnail pump should apply a bounded batch of already-completed background results before starting more work.";
+    EXPECT_NE(body.find("m_thumbnailRenderScheduler.TryBeginCompletedResult()"), std::string::npos)
+        << "Applying completed thumbnails must share the unified per-frame thumbnail time budget.";
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailPumpStartsTextureDecodeAfterCompletedThumbnailResults)
@@ -4891,18 +5460,26 @@ TEST(AssetBrowserPresentationTests, ThumbnailMaterialPreviewWarmsRenderPathBefor
         assetBrowser,
         "void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()");
     EXPECT_EQ(beforeDrawBody.find("PumpThumbnailPreviewRenderWarmup()"), std::string::npos)
-        << "Render-path warmup can submit background preview work, so it belongs in the post-draw thumbnail pump, not before UI drawing.";
-    EXPECT_NE(beforeDrawBody.find("PumpThumbnailGeneration(true, false, false)"), std::string::npos)
-        << "The pre-draw thumbnail pump must explicitly disable render-path warmup because warmup can submit preview render work.";
+        << "Render-path warmup remains encapsulated by the budgeted thumbnail pump.";
+    EXPECT_NE(beforeDrawBody.find("PlanAssetBrowserPostDrawThumbnailPump({"), std::string::npos);
+    EXPECT_NE(beforeDrawBody.find("thumbnailPumpPermissions.allowHeavyGpuPreview"), std::string::npos)
+        << "The pre-draw tick may advance bounded heavy preview work from the previous visible scope.";
 
     const auto pumpBody = ExtractFunctionBody(
         assetBrowser,
         "void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(");
     const auto renderWarmup = pumpBody.find("PumpThumbnailPreviewRenderWarmup()");
-    const auto lightGpuStart = pumpBody.find("GenerateNextThumbnail(*m_thumbnailPreviewRenderer, false)");
-    const auto heavyGpuStart = pumpBody.find("GenerateNextThumbnail(*m_thumbnailPreviewRenderer, true)");
+    const auto emptyQueueReturn = pumpBody.find(
+        "m_thumbnailService.GetQueuedRequestCount() == 0u");
+    const auto lightGpuGate = pumpBody.find("m_thumbnailRenderScheduler.TryBeginLightGpuPreview", renderWarmup);
+    const auto lightGpuStart = pumpBody.find("m_thumbnailService.GenerateNextThumbnail(", lightGpuGate);
+    const auto heavyGpuGate = pumpBody.find("m_thumbnailRenderScheduler.TryBeginHeavyGpuPreview", lightGpuStart);
+    const auto heavyGpuStart = pumpBody.find("m_thumbnailService.GenerateNextThumbnail(", heavyGpuGate);
     EXPECT_NE(renderWarmup, std::string::npos);
+    ASSERT_NE(emptyQueueReturn, std::string::npos);
+    ASSERT_NE(lightGpuGate, std::string::npos);
     EXPECT_NE(lightGpuStart, std::string::npos);
+    ASSERT_NE(heavyGpuGate, std::string::npos);
     EXPECT_NE(heavyGpuStart, std::string::npos);
     EXPECT_NE(pumpBody.find("allowPreviewRenderWarmup"), std::string::npos)
         << "Warmup permission must be explicit so pre-draw thumbnail pumping cannot trigger it indirectly.";
@@ -4912,6 +5489,8 @@ TEST(AssetBrowserPresentationTests, ThumbnailMaterialPreviewWarmsRenderPathBefor
         << "Material preview first-use render cost should be moved ahead of visible GPU thumbnail generation.";
     EXPECT_LT(renderWarmup, heavyGpuStart)
         << "Material preview warmup should not share a frame with heavier prefab/model GPU preview starts.";
+    EXPECT_LT(renderWarmup, emptyQueueReturn)
+        << "Idle warmup must run before the empty-queue return so the first visible thumbnail does not pay cold render-path setup.";
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailForwardBackgroundPreviewUsesThreadedGpuScenePath)
@@ -4966,12 +5545,16 @@ TEST(AssetBrowserPresentationTests, ThumbnailGenerationStopsStartingWorkWhenEdit
         "void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(");
     const auto pumpClosingCheck = pumpBody.find("IsEditorWindowClosing()");
     const auto previewWarmup = pumpBody.find("PumpThumbnailPreviewRenderWarmup()");
-    const auto lightGpuStart = pumpBody.find("GenerateNextThumbnail(*m_thumbnailPreviewRenderer, false)");
-    const auto heavyGpuStart = pumpBody.find("GenerateNextThumbnail(*m_thumbnailPreviewRenderer, true)");
+    const auto lightGpuGate = pumpBody.find("m_thumbnailRenderScheduler.TryBeginLightGpuPreview", previewWarmup);
+    const auto lightGpuStart = pumpBody.find("m_thumbnailService.GenerateNextThumbnail(", lightGpuGate);
+    const auto heavyGpuGate = pumpBody.find("m_thumbnailRenderScheduler.TryBeginHeavyGpuPreview", lightGpuStart);
+    const auto heavyGpuStart = pumpBody.find("m_thumbnailService.GenerateNextThumbnail(", heavyGpuGate);
     const auto backgroundStart = pumpBody.find("StartNextThumbnailGeneration()");
     ASSERT_NE(pumpClosingCheck, std::string::npos);
     ASSERT_NE(previewWarmup, std::string::npos);
+    ASSERT_NE(lightGpuGate, std::string::npos);
     ASSERT_NE(lightGpuStart, std::string::npos);
+    ASSERT_NE(heavyGpuGate, std::string::npos);
     ASSERT_NE(heavyGpuStart, std::string::npos);
     ASSERT_NE(backgroundStart, std::string::npos);
     EXPECT_LT(pumpClosingCheck, previewWarmup);
@@ -5023,9 +5606,11 @@ TEST(AssetBrowserPresentationTests, SceneReadbackValidationDefersGpuThumbnailPre
         "void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(");
     const auto pumpValidationCheck = pumpBody.find("IsEditorSceneReadbackValidationActive()");
     const auto previewWarmup = pumpBody.find("PumpThumbnailPreviewRenderWarmup()");
-    const auto lightGpuStart = pumpBody.find("GenerateNextThumbnail(*m_thumbnailPreviewRenderer, false)");
+    const auto lightGpuGate = pumpBody.find("m_thumbnailRenderScheduler.TryBeginLightGpuPreview", previewWarmup);
+    const auto lightGpuStart = pumpBody.find("m_thumbnailService.GenerateNextThumbnail(", lightGpuGate);
     ASSERT_NE(pumpValidationCheck, std::string::npos);
     ASSERT_NE(previewWarmup, std::string::npos);
+    ASSERT_NE(lightGpuGate, std::string::npos);
     ASSERT_NE(lightGpuStart, std::string::npos);
     EXPECT_LT(pumpValidationCheck, previewWarmup);
     EXPECT_LT(pumpValidationCheck, lightGpuStart);
@@ -7264,6 +7849,52 @@ TEST(AssetBrowserPresentationTests, NormalizesOnlyCanonicalProjectAssetPaths)
     EXPECT_TRUE(NormalizeEditorProjectAssetPath("C:\\Project\\Assets\\Model.fbx").empty());
     EXPECT_TRUE(NormalizeEditorProjectAssetPath("\\\\server\\share\\Assets\\Model.fbx").empty());
     EXPECT_TRUE(NormalizeEditorProjectAssetPath(std::filesystem::absolute("Assets/Model.fbx")).empty());
+}
+
+TEST(AssetBrowserPresentationTests, HeavyGpuThumbnailContinuationKeepsAssemblyFastWithoutBusyPollingResources)
+{
+    using namespace NLS::Editor::Assets;
+
+    constexpr double resourcePendingDelay = 0.05;
+    constexpr double defaultDelay = 0.25;
+    EXPECT_DOUBLE_EQ(
+        PlanAssetBrowserHeavyGpuThumbnailContinuationDelay(
+            true,
+            "thumbnail-gpu-preview-resources-pending:prefab-scene-assembly=64/512",
+            resourcePendingDelay,
+            defaultDelay),
+        0.0);
+    EXPECT_DOUBLE_EQ(
+        PlanAssetBrowserHeavyGpuThumbnailContinuationDelay(
+            true,
+            "thumbnail-gpu-preview-readback-pending",
+            resourcePendingDelay,
+            defaultDelay),
+        0.0);
+    EXPECT_DOUBLE_EQ(
+        PlanAssetBrowserHeavyGpuThumbnailContinuationDelay(
+            true,
+            "thumbnail-gpu-preview-resources-pending|mesh=1",
+            resourcePendingDelay,
+            defaultDelay),
+        resourcePendingDelay);
+    EXPECT_DOUBLE_EQ(
+        PlanAssetBrowserHeavyGpuThumbnailContinuationDelay(
+            false,
+            "thumbnail-gpu-preview-resources-pending:prefab-scene-assembly=64/512",
+            resourcePendingDelay,
+            defaultDelay),
+        defaultDelay);
+}
+
+TEST(AssetBrowserPresentationTests, PrefabSceneAssemblyDiagnosticIsClassifiedAsResourcePending)
+{
+    const auto service = ReadSourceText(RepoPath("Project/Editor/Assets/AssetThumbnailService.cpp"));
+    const auto classifier = ExtractFunctionBody(
+        service,
+        "bool IsPendingThumbnailPreviewResourcesDiagnostic(");
+    EXPECT_NE(classifier.find("== ':'"), std::string::npos)
+        << "Prefab scene assembly uses a colon-qualified resources-pending diagnostic and must retain resource-pending queue state.";
 }
 
 TEST(AssetBrowserPresentationTests, AssetBrowserItemEqualityIncludesEverySemanticField)

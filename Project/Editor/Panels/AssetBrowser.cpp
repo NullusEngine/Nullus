@@ -69,10 +69,12 @@
 #include "Panels/Hierarchy.h"
 #include "Panels/SceneView.h"
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetThumbnailPool.h"
 #include "Assets/AssetDatabaseRetirementScheduler.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/ArtifactDatabaseManifestUtils.h"
 #include "Assets/EditorThumbnailPreviewRenderer.h"
+#include "Assets/ThumbnailRendererRegistry.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/EditorAssetPath.h"
@@ -526,6 +528,8 @@ constexpr double kAssetBrowserHoveredPrefabHotCachePreloadRepeatDelaySeconds =
 constexpr auto kAssetBrowserThumbnailUiDrawTelemetryMinimum = std::chrono::microseconds(1000);
 constexpr ImVec2 kAssetBrowserImageUv0(0.0f, 1.0f);
 constexpr ImVec2 kAssetBrowserImageUv1(1.0f, 0.0f);
+constexpr ImVec2 kAssetBrowserThumbnailUv0 = kAssetBrowserImageUv0;
+constexpr ImVec2 kAssetBrowserThumbnailUv1 = kAssetBrowserImageUv1;
 
 struct AssetBrowserArtifactTelemetryScope
 {
@@ -2322,6 +2326,23 @@ Editor::Panels::AssetBrowser::AssetBrowser
 	}
 
 	m_assetList = &CreateWidget<Group>();
+	m_assetThumbnailPool = std::make_shared<NLS::Editor::Assets::AssetThumbnailPool>();
+	m_assetThumbnailPool->SetTextureCallbacks(
+		[](const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView) -> void*
+		{
+			return NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>()
+				? NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(textureView)
+				: nullptr;
+		},
+		[](const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView, const bool immediate)
+		{
+			if (!NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+				return;
+			if (immediate)
+				NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(textureView);
+			else
+				NLS_SERVICE(NLS::UI::UIManager).RetireTextureViewHandle(textureView);
+		});
 
 	if (EDITOR_CONTEXT(window) != nullptr)
 	{
@@ -2378,6 +2399,8 @@ Editor::Panels::AssetBrowser::~AssetBrowser()
 
 	NLS::Editor::Assets::SetObjectReferencePickerEntriesProvider({});
 	NLS::Editor::Assets::SetObjectReferencePickerEntries({});
+	if (m_assetThumbnailPool != nullptr)
+		m_assetThumbnailPool->Clear(true);
 	ReleaseAssetBrowserTextureHandleCache(true);
 	DestroyCachedThumbnailTextures(true);
 }
@@ -2396,6 +2419,7 @@ void Editor::Panels::AssetBrowser::Clear()
 	DestroyCachedThumbnailTextures(false);
 	m_thumbnailResultsByItemKey.clear();
 	m_thumbnailItemKeyByCacheKey.clear();
+	m_assetThumbnailsByCacheKey.clear();
 	m_lastThumbnailRequestSize = 0u;
 	m_lastThumbnailGenerationScopeKey.clear();
 	m_lastThumbnailGenerationScopeInteractive = false;
@@ -2415,7 +2439,6 @@ void Editor::Panels::AssetBrowser::Refresh()
 void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::OnBeforeDrawWidgets");
-	const auto& io = ImGui::GetIO();
 	const double now = ImGui::GetTime();
 	const bool deleteActionInputsReleased =
 		!ImGui::IsKeyDown(ImGuiKey_Delete) &&
@@ -2432,12 +2455,16 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 	{
 		m_projectBrowserInlineRename.pending = false;
 	}
-	if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)
-	{
-		m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
-		m_lightGpuThumbnailGenerationDeferredUntil =
-			now + kAssetBrowserScrollIdleDelaySeconds;
-	}
+	const bool pointerInputPending =
+		ImGui::IsWindowHovered(
+			ImGuiHoveredFlags_RootAndChildWindows |
+			ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+		(ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+			ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
+			ImGui::IsMouseDown(ImGuiMouseButton_Middle));
+	if (pointerInputPending)
+		PrioritizeAssetBrowserUiFeedback();
+	const bool uiFeedbackPriorityActive = IsAssetBrowserUiFeedbackPriorityActive();
 	const bool interactive = IsAssetBrowserInteractive();
 	const bool editorWindowClosing = IsEditorWindowClosing();
 	const bool sceneReadbackValidationActive = IsEditorSceneReadbackValidationActive();
@@ -2551,8 +2578,22 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 		}
 	}
 	PumpObjectReferencePickerEntriesRefresh();
-	if (!editorWindowClosing && !sceneReadbackValidationActive)
-		PumpThumbnailGeneration(true, false, false);
+	if (!uiFeedbackPriorityActive &&
+		!editorWindowClosing &&
+		!sceneReadbackValidationActive)
+	{
+		const auto thumbnailPumpPermissions =
+			NLS::Editor::Assets::PlanAssetBrowserPostDrawThumbnailPump({
+				interactive,
+				now,
+				m_lightGpuThumbnailGenerationDeferredUntil,
+				m_heavyGpuThumbnailGenerationDeferredUntil
+			});
+		PumpThumbnailGeneration(
+			thumbnailPumpPermissions.allowGpuPreviewStart,
+			thumbnailPumpPermissions.allowHeavyGpuPreview,
+			true);
+	}
 
 	if (!m_watchersStartupQueued)
 		StartWatchersAsync();
@@ -2905,6 +2946,7 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 			m_visiblePrefabHotCachePreloadPending = false;
 			m_thumbnailResultsByItemKey.clear();
 			m_thumbnailItemKeyByCacheKey.clear();
+			m_assetThumbnailsByCacheKey.clear();
 			m_thumbnailService.ClearQueuedRequests();
 			NLS::Editor::Assets::BeginAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
 			try
@@ -3018,7 +3060,8 @@ void Editor::Panels::AssetBrowser::SelectProjectFolder(const std::string& projec
 	m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
 	m_lightGpuThumbnailGenerationDeferredUntil = now + kAssetBrowserScrollIdleDelaySeconds;
 	m_heavyGpuThumbnailGenerationDeferredUntil = now + kAssetBrowserHeavyGpuThumbnailIdleDelaySeconds;
-	m_nextHeavyGpuThumbnailGenerationTime = m_heavyGpuThumbnailGenerationDeferredUntil;
+	m_thumbnailRenderScheduler.DeferHeavyGpuPreviewUntil(
+		m_heavyGpuThumbnailGenerationDeferredUntil);
 	AddProjectBrowserAncestorFolders(m_expandedProjectFolders, m_selectedProjectFolder);
 	RebuildProjectAssetPresentation(NLS::Editor::Assets::BuildAssetBrowserRefreshPlan(
 		NLS::Editor::Assets::AssetBrowserRefreshReason::FolderSelection));
@@ -3031,14 +3074,24 @@ void Editor::Panels::AssetBrowser::SelectProjectFolderForValidation(const std::s
 
 bool Editor::Panels::AssetBrowser::IsAssetBrowserInteractive() const
 {
-	const auto& io = ImGui::GetIO();
-	return ImGui::IsAnyItemActive() ||
-		ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
-		ImGui::IsMouseDragging(ImGuiMouseButton_Right) ||
-		ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
-		io.MouseWheel != 0.0f ||
-		io.MouseWheelH != 0.0f ||
+	return IsAssetBrowserUiFeedbackPriorityActive() ||
 		ImGui::GetTime() < m_assetBrowserInteractiveUntil;
+}
+
+void Editor::Panels::AssetBrowser::PrioritizeAssetBrowserUiFeedback()
+{
+	const int priorityThroughFrame = ImGui::GetFrameCount() + 1;
+	if (!m_assetBrowserUiFeedbackPriorityThroughFrame.has_value() ||
+		*m_assetBrowserUiFeedbackPriorityThroughFrame < priorityThroughFrame)
+	{
+		m_assetBrowserUiFeedbackPriorityThroughFrame = priorityThroughFrame;
+	}
+}
+
+bool Editor::Panels::AssetBrowser::IsAssetBrowserUiFeedbackPriorityActive() const
+{
+	return m_assetBrowserUiFeedbackPriorityThroughFrame.has_value() &&
+		ImGui::GetFrameCount() <= *m_assetBrowserUiFeedbackPriorityThroughFrame;
 }
 
 void Editor::Panels::AssetBrowser::MarkProjectAssetDisplayItemsDirty()
@@ -3063,6 +3116,7 @@ bool Editor::Panels::AssetBrowser::ApplyProjectAssetDisclosureImmediately(
 		: sourceItem.sourceAssetPath;
 	if (sourcePath.empty())
 		return false;
+	PrioritizeAssetBrowserUiFeedback();
 
 	const auto sourceIdentity = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(sourceItem);
 	const auto source = std::find_if(
@@ -3089,40 +3143,10 @@ bool Editor::Panels::AssetBrowser::ApplyProjectAssetDisclosureImmediately(
 	options.expandedSourceAssets = m_expandedProjectAssetItems;
 	options.searchQuery = m_projectSearchQuery;
 	options.typeFilter = m_projectTypeFilter;
-	auto group = NLS::Editor::Assets::BuildAssetBrowserPresentationBundle(
-		{sourceItem},
-		m_projectAssetSubAssetSnapshotIndex.get(),
-		options).displayItems;
-	if (group.empty())
-		return false;
-
-	bool hasAuthoritativeSnapshot = false;
-	if (m_projectAssetSubAssetSnapshotIndex && sourceItem.assetId.IsValid())
-	{
-		const auto canonicalSourcePath = NLS::Editor::Assets::NormalizeEditorProjectAssetPath(
-			NLS::Editor::Assets::NormalizeAssetBrowserProjectRelativePath(sourcePath));
-		const auto snapshot = m_projectAssetSubAssetSnapshotIndex->assetIndexByCanonicalSourcePath.find(
-			canonicalSourcePath);
-		hasAuthoritativeSnapshot =
-			snapshot != m_projectAssetSubAssetSnapshotIndex->assetIndexByCanonicalSourcePath.end() &&
-			snapshot->second < m_projectAssetSubAssetSnapshotIndex->assets.size() &&
-			m_projectAssetSubAssetSnapshotIndex->assets[snapshot->second].assetId == sourceItem.assetId;
-	}
-
 	const bool expanded = m_expandedProjectAssetItems.contains(sourcePath);
-	if (expanded &&
-		!hasAuthoritativeSnapshot &&
-		NLS::Editor::Assets::ShouldShowAssetBrowserSubAssetDisclosure(group.front()))
-	{
-		NLS::Editor::Assets::AssetBrowserDisplayItem placeholder;
-		placeholder.item.projectRelativePath = sourcePath + "::pending";
-		placeholder.item.sourceAssetPath = sourcePath;
-		placeholder.item.kind = NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset;
-		placeholder.groupId = group.front().groupId;
-		placeholder.subAsset = true;
-		placeholder.loadingPlaceholder = true;
-		group.push_back(std::move(placeholder));
-	}
+	auto group = NLS::Editor::Assets::BuildAssetBrowserImmediateDisclosureFeedback(
+		*source,
+		expanded);
 
 	const auto sourceIndex = static_cast<size_t>(std::distance(m_projectDisplayItems.begin(), source));
 	size_t groupEnd = sourceIndex + 1u;
@@ -3258,6 +3282,8 @@ void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
 void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()
 {
 	++m_thumbnailTextureFrameSerial;
+	if (m_assetThumbnailPool != nullptr)
+		m_assetThumbnailPool->Prune(m_thumbnailTextureFrameSerial);
 	const auto thumbnailTextureFramePlan = NLS::Editor::Assets::BeginAssetBrowserThumbnailTextureFrame(
 		std::move(m_thumbnailTexturesUsedThisFrame),
 		std::move(m_thumbnailTexturesPendingRelease));
@@ -3269,17 +3295,26 @@ void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()
 	const float availableHeight = ImGui::GetContentRegionAvail().y;
 	if (availableHeight <= 0.0f)
 		return;
+	const auto& io = ImGui::GetIO();
+	const bool wheelActive = io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f;
+	const auto markInteractive = [this]()
+	{
+		const double now = ImGui::GetTime();
+		m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
+		m_lightGpuThumbnailGenerationDeferredUntil =
+			now + kAssetBrowserScrollIdleDelaySeconds;
+	};
 
 	const float treeWidth = (std::max)(180.0f, (std::min)(320.0f, ImGui::GetContentRegionAvail().x * 0.30f));
 	ImGui::BeginChild("##AssetBrowserFolderTree", ImVec2(treeWidth, availableHeight), true);
 	const bool folderTreeHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 	if (folderTreeHovered &&
-		(ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
+		(wheelActive ||
+			ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
 			ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
 			ImGui::IsMouseDragging(ImGuiMouseButton_Right)))
 	{
-		const double now = ImGui::GetTime();
-		m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
+		markInteractive();
 	}
 	if (m_projectFolderTree.projectRelativePath.empty())
 		RebuildProjectAssetPresentation(NLS::Editor::Assets::BuildAssetBrowserRefreshPlan(
@@ -3290,6 +3325,16 @@ void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()
 	ImGui::SameLine();
 
 	ImGui::BeginChild("##AssetBrowserContent", ImVec2(0.0f, availableHeight), true);
+	const bool contentWindowHovered =
+		ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+	const bool contentWindowFocused =
+		ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+	if ((contentWindowHovered || contentWindowFocused) && io.WantTextInput)
+	{
+		// Text entry is local Asset Browser interaction even when the mouse is
+		// outside the filter control; keep heavy preview starts deferred.
+		markInteractive();
+	}
 	DrawProjectBreadcrumb();
 	DrawProjectFilterBar();
 	ImGui::Separator();
@@ -3306,14 +3351,12 @@ void Editor::Panels::AssetBrowser::DrawProjectAssetBrowser()
 	HandleProjectAssetBrowserShortcuts();
 	const bool currentFolderActive =
 		currentFolderHovered &&
-		(ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
+		(wheelActive ||
+			ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
 			ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
 			ImGui::IsMouseDragging(ImGuiMouseButton_Right));
 	if (currentFolderActive)
-	{
-		const double now = ImGui::GetTime();
-		m_assetBrowserInteractiveUntil = now + kAssetBrowserScrollIdleDelaySeconds;
-	}
+		markInteractive();
 	DrawCurrentFolderGrid();
 	if (ImGui::BeginPopupContextWindow(
 			"##AssetBrowserCurrentFolderContext",
@@ -4719,17 +4762,6 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 		drawTelemetryPath,
 		drawTelemetryItemCount,
 		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
-		const auto thumbnailPumpPermissions =
-			NLS::Editor::Assets::PlanAssetBrowserPostDrawThumbnailPump({
-					IsAssetBrowserInteractive(),
-					ImGui::GetTime(),
-					m_lightGpuThumbnailGenerationDeferredUntil,
-					m_heavyGpuThumbnailGenerationDeferredUntil
-				});
-		PumpThumbnailGeneration(
-			thumbnailPumpPermissions.allowGpuPreviewStart,
-			thumbnailPumpPermissions.allowHeavyGpuPreview,
-			true);
 }
 
 void Editor::Panels::AssetBrowser::HandleProjectAssetBrowserDroppedFiles(const std::vector<std::string>& paths)
@@ -5075,17 +5107,6 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 
 	SetVisibleThumbnailItems(std::move(visibleThumbnailItems));
 	UpdateThumbnailGenerationScope();
-	const auto thumbnailPumpPermissions =
-		NLS::Editor::Assets::PlanAssetBrowserPostDrawThumbnailPump({
-				IsAssetBrowserInteractive(),
-				ImGui::GetTime(),
-				m_lightGpuThumbnailGenerationDeferredUntil,
-				m_heavyGpuThumbnailGenerationDeferredUntil
-			});
-	PumpThumbnailGeneration(
-		thumbnailPumpPermissions.allowGpuPreviewStart,
-		thumbnailPumpPermissions.allowHeavyGpuPreview,
-		true);
 }
 
 Editor::Panels::AssetBrowser::ThumbnailTextureHandle Editor::Panels::AssetBrowser::ResolveCachedThumbnailTextureHandle(
@@ -5121,6 +5142,21 @@ Editor::Panels::AssetBrowser::ThumbnailTextureHandle Editor::Panels::AssetBrowse
 void Editor::Panels::AssetBrowser::ApplyThumbnailServiceResult(
 	const NLS::Editor::Assets::AssetThumbnailServiceResult& generated)
 {
+	if (generated.cacheEntry.has_value() && generated.gpuTexture.IsValid() &&
+		m_assetThumbnailPool != nullptr)
+	{
+		if (m_assetThumbnailPool->Publish(
+			generated.cacheEntry->cacheKey,
+			generated.gpuTextureGeneration,
+			generated.gpuTexture))
+		{
+			m_assetThumbnailsByCacheKey.insert_or_assign(
+				generated.cacheEntry->cacheKey,
+				m_assetThumbnailPool->MakeThumbnail(
+					generated.cacheEntry->cacheKey,
+					generated.gpuTextureGeneration));
+		}
+	}
 	if (generated.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
 		!generated.imagePath.empty())
 	{
@@ -5167,7 +5203,21 @@ bool Editor::Panels::AssetBrowser::EnsureThumbnailPreviewRenderer()
 	};
 	m_thumbnailPreviewRenderer =
 		std::make_shared<NLS::Editor::Assets::EditorThumbnailPreviewRenderer>(*driver);
-	return m_thumbnailPreviewRenderer != nullptr;
+	if (m_thumbnailPreviewRenderer == nullptr)
+		return false;
+
+	m_thumbnailRendererRegistry =
+		std::make_shared<NLS::Editor::Assets::ThumbnailRendererRegistry>();
+	m_thumbnailRendererRegistry->Register(
+		NLS::Editor::Assets::AssetThumbnailKind::MaterialSphere,
+		m_thumbnailPreviewRenderer);
+	m_thumbnailRendererRegistry->Register(
+		NLS::Editor::Assets::AssetThumbnailKind::ModelPreview,
+		m_thumbnailPreviewRenderer);
+	m_thumbnailRendererRegistry->Register(
+		NLS::Editor::Assets::AssetThumbnailKind::PrefabPreview,
+		m_thumbnailPreviewRenderer);
+	return true;
 }
 
 bool Editor::Panels::AssetBrowser::IsEditorWindowClosing() const
@@ -5298,6 +5348,10 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 		const bool allowPreviewRenderWarmup)
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration");
+	const bool thumbnailInteractive = IsAssetBrowserInteractive();
+	m_thumbnailRenderScheduler.BeginFrame(
+		static_cast<uint64_t>(ImGui::GetFrameCount()),
+		thumbnailInteractive);
 	const std::string pumpTelemetryPath = m_selectedProjectFolder + "|post-draw-pump";
 	const size_t pumpTelemetryItemCount = m_thumbnailService.GetQueuedRequestCount();
 	AssetBrowserArtifactTelemetryScope pumpTelemetry {
@@ -5318,30 +5372,36 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 		};
 		size_t completedThumbnailsConsumedThisPump = 0u;
 		bool completedThumbnailQueuedTextureLoad = false;
-		while (completedThumbnailsConsumedThisPump < kMaxAssetBrowserCompletedThumbnailConsumesPerPump)
+		while (completedThumbnailsConsumedThisPump < kMaxAssetBrowserCompletedThumbnailConsumesPerPump &&
+			m_thumbnailRenderScheduler.TryBeginCompletedResult())
 		{
+			const auto consumeBegin = std::chrono::steady_clock::now();
 			const auto generated = m_thumbnailService.ConsumeCompletedThumbnail();
+			if (generated.has_value())
+			{
+				completedThumbnailQueuedTextureLoad =
+					completedThumbnailQueuedTextureLoad ||
+					(generated->status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
+						!generated->imagePath.empty());
+				ApplyThumbnailServiceResult(*generated);
+				++completedThumbnailsConsumedThisPump;
+			}
+			m_thumbnailRenderScheduler.FinishWork(
+				NLS::Editor::Assets::AssetThumbnailRenderWorkKind::ConsumeCompleted,
+				static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - consumeBegin).count()),
+				generated.has_value());
 			if (!generated.has_value())
 				break;
-
-			completedThumbnailQueuedTextureLoad =
-				completedThumbnailQueuedTextureLoad ||
-				(generated->status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
-					!generated->imagePath.empty());
-			ApplyThumbnailServiceResult(*generated);
-			++completedThumbnailsConsumedThisPump;
 		}
 		if (completedThumbnailQueuedTextureLoad)
 		{
 			StartQueuedCachedThumbnailTextureDecodes(
-				IsAssetBrowserInteractive()
+				thumbnailInteractive
 					? kMaxAssetBrowserInteractiveCachedThumbnailTexturePumpsPerFrame
 					: kMaxAssetBrowserThumbnailTextureLoadsPerFrame);
 		}
 	}
-	if (m_thumbnailService.GetQueuedRequestCount() == 0u &&
-		!m_thumbnailService.HasInFlightRequest())
-		return;
 	if (IsEditorWindowClosing())
 		return;
 	if (IsEditorSceneReadbackValidationActive())
@@ -5354,113 +5414,137 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 
 	if (allowPreviewRenderWarmup &&
 		allowGpuPreviewStart &&
-		!IsAssetBrowserInteractive() &&
+		!thumbnailInteractive &&
 		m_standardPbrShaderPassPrewarmCompleted &&
 		!IsStandardPbrShaderPassPrewarmPending() &&
-		m_thumbnailService.GetQueuedRequestCount() > 0u)
+		!m_thumbnailPreviewRenderWarmupCompleted &&
+		m_thumbnailRenderScheduler.TryBeginPreviewWarmup(true))
 	{
+		const auto warmupBegin = std::chrono::steady_clock::now();
 		const bool warmedPreviewRenderPath = !m_thumbnailPreviewRenderWarmupCompleted;
 		PumpThumbnailPreviewRenderWarmup();
+		m_thumbnailRenderScheduler.FinishWork(
+			NLS::Editor::Assets::AssetThumbnailRenderWorkKind::PreviewWarmup,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - warmupBegin).count()),
+			warmedPreviewRenderPath && m_thumbnailPreviewRenderWarmupCompleted);
 		if (warmedPreviewRenderPath && m_thumbnailPreviewRenderWarmupCompleted)
 			return;
 	}
 
+	if (m_thumbnailService.GetQueuedRequestCount() == 0u &&
+		!m_thumbnailService.HasInFlightRequest())
+	{
+		return;
+	}
+
 	NLS::Editor::Assets::AssetBrowserLightGpuThumbnailPumpInput lightGpuPumpInput;
 	lightGpuPumpInput.allowGpuPreviewStart = allowGpuPreviewStart;
-	lightGpuPumpInput.interactive = IsAssetBrowserInteractive();
+	lightGpuPumpInput.interactive = thumbnailInteractive;
 	lightGpuPumpInput.hasQueuedWork = m_thumbnailService.GetQueuedRequestCount() > 0u;
 	lightGpuPumpInput.hasInFlightWork = m_thumbnailService.HasInFlightRequest();
 	lightGpuPumpInput.hasPreviewRenderer = hasPreviewRenderer;
 	lightGpuPumpInput.standardPbrShaderPassPrewarmPending = IsStandardPbrShaderPassPrewarmPending();
 	lightGpuPumpInput.nowSeconds = now;
 	lightGpuPumpInput.deferredUntilSeconds = m_lightGpuThumbnailGenerationDeferredUntil;
-	lightGpuPumpInput.nextAllowedSeconds = m_nextGpuThumbnailGenerationTime;
-	const auto lightGpuPumpDecision =
-		NLS::Editor::Assets::PlanAssetBrowserLightGpuThumbnailPump(lightGpuPumpInput);
-	if (lightGpuPumpDecision.shouldPump)
+	if (m_thumbnailRenderScheduler.TryBeginLightGpuPreview(lightGpuPumpInput))
+	{
+		const auto workBegin = std::chrono::steady_clock::now();
+		std::optional<NLS::Editor::Assets::AssetThumbnailServiceResult> generated;
+		if (EnsureThumbnailPreviewRenderer())
 		{
-			if (EnsureThumbnailPreviewRenderer())
-			{
-				NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartLightGpuPreview");
-				AssetBrowserArtifactTelemetryScope startLightGpuTelemetry {
-					NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartLightGpu,
-					std::chrono::steady_clock::now(),
-					&pumpTelemetryPath,
-					&pumpTelemetryItemCount,
-					kAssetBrowserThumbnailUiDrawTelemetryMinimum
-				};
-					const auto generated =
-						m_thumbnailService.GenerateNextThumbnail(*m_thumbnailPreviewRenderer, false);
-					if (generated.has_value())
-					{
-						ApplyThumbnailServiceResult(*generated);
-						m_nextGpuThumbnailGenerationTime = now + kAssetBrowserGpuThumbnailIntervalSeconds;
-						return;
-					}
-			}
+			NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartLightGpuPreview");
+			AssetBrowserArtifactTelemetryScope startLightGpuTelemetry {
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartLightGpu,
+				std::chrono::steady_clock::now(),
+				&pumpTelemetryPath,
+				&pumpTelemetryItemCount,
+				kAssetBrowserThumbnailUiDrawTelemetryMinimum
+			};
+			generated = m_thumbnailService.GenerateNextThumbnail(
+				*m_thumbnailRendererRegistry,
+				false);
+			if (generated.has_value())
+				ApplyThumbnailServiceResult(*generated);
 		}
+		m_thumbnailRenderScheduler.FinishWork(
+			NLS::Editor::Assets::AssetThumbnailRenderWorkKind::LightGpuPreview,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - workBegin).count()),
+			generated.has_value());
+		m_thumbnailRenderScheduler.RecordLightGpuPreviewResult(
+			generated.has_value(),
+			now,
+			kAssetBrowserGpuThumbnailIntervalSeconds);
+		if (generated.has_value())
+			return;
+	}
 
 	NLS::Editor::Assets::AssetBrowserHeavyGpuThumbnailPumpInput heavyGpuPumpInput;
 	heavyGpuPumpInput.allowHeavyGpuPreview = allowHeavyGpuPreview;
-	heavyGpuPumpInput.interactive = IsAssetBrowserInteractive();
+	heavyGpuPumpInput.interactive = thumbnailInteractive;
 	heavyGpuPumpInput.hasQueuedWork = m_thumbnailService.GetQueuedRequestCount() > 0u;
 	heavyGpuPumpInput.hasInFlightWork = m_thumbnailService.HasInFlightRequest();
 	heavyGpuPumpInput.hasQueuedReadback = m_thumbnailService.HasQueuedGpuPreviewReadback();
+	heavyGpuPumpInput.hasQueuedResourceContinuation =
+		m_thumbnailService.HasQueuedGpuPreviewResourceContinuation();
 	heavyGpuPumpInput.hasPreviewRenderer = hasPreviewRenderer;
 	heavyGpuPumpInput.sceneLoadRendererResourcesPending =
 		NLS::Editor::Core::HasActiveSceneLoadRendererResourceResolution();
 	heavyGpuPumpInput.nowSeconds = now;
 	heavyGpuPumpInput.deferredUntilSeconds = m_heavyGpuThumbnailGenerationDeferredUntil;
-	heavyGpuPumpInput.nextAllowedSeconds = m_nextHeavyGpuThumbnailGenerationTime;
-	const auto heavyGpuPumpDecision =
-		NLS::Editor::Assets::PlanAssetBrowserHeavyGpuThumbnailPump(heavyGpuPumpInput);
-	if (heavyGpuPumpDecision.shouldPump)
+	if (m_thumbnailRenderScheduler.TryBeginHeavyGpuPreview(heavyGpuPumpInput))
+	{
+		const auto workBegin = std::chrono::steady_clock::now();
+		std::optional<NLS::Editor::Assets::AssetThumbnailServiceResult> generated;
+		if (EnsureThumbnailPreviewRenderer())
 		{
-			if (EnsureThumbnailPreviewRenderer())
-			{
-				NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartHeavyGpuPreview");
-				AssetBrowserArtifactTelemetryScope startHeavyGpuTelemetry {
-					NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartHeavyGpu,
-					std::chrono::steady_clock::now(),
-					&pumpTelemetryPath,
-					&pumpTelemetryItemCount,
-					kAssetBrowserThumbnailUiDrawTelemetryMinimum
-				};
-					const auto generated =
-						m_thumbnailService.GenerateNextThumbnail(*m_thumbnailPreviewRenderer, true);
-					if (generated.has_value())
-					{
-						ApplyThumbnailServiceResult(*generated);
-						const bool resourcesPending =
-							generated->status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
-							generated->diagnostic.rfind("thumbnail-gpu-preview-resources-pending", 0u) == 0u;
-						const bool readbackPending =
-							generated->status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
-							generated->diagnostic.rfind("thumbnail-gpu-preview-readback-pending", 0u) == 0u;
-						m_nextHeavyGpuThumbnailGenerationTime = now + (
-							readbackPending
-								? 0.0
-								: resourcesPending
-								? kAssetBrowserHeavyGpuThumbnailResourcePendingIntervalSeconds
-								: kAssetBrowserHeavyGpuThumbnailIntervalSeconds);
-						return;
-					}
-				}
+			NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartHeavyGpuPreview");
+			AssetBrowserArtifactTelemetryScope startHeavyGpuTelemetry {
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartHeavyGpu,
+				std::chrono::steady_clock::now(),
+				&pumpTelemetryPath,
+				&pumpTelemetryItemCount,
+				kAssetBrowserThumbnailUiDrawTelemetryMinimum
+			};
+			generated = m_thumbnailService.GenerateNextThumbnail(
+				*m_thumbnailRendererRegistry,
+				true);
+			if (generated.has_value())
+				ApplyThumbnailServiceResult(*generated);
 		}
+		m_thumbnailRenderScheduler.FinishActiveWork(
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - workBegin).count()),
+			generated.has_value());
+		m_thumbnailRenderScheduler.RecordHeavyGpuPreviewResult(
+			generated.has_value(),
+			generated.has_value() &&
+				generated->status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending,
+			generated.has_value()
+				? std::string_view(generated->diagnostic)
+				: std::string_view {},
+			now,
+			kAssetBrowserHeavyGpuThumbnailResourcePendingIntervalSeconds,
+			kAssetBrowserHeavyGpuThumbnailIntervalSeconds);
+		if (generated.has_value())
+			return;
+	}
 
 	size_t thumbnailStartsThisFrame = 0u;
 	while (true)
 	{
-		const auto pumpDecision = NLS::Editor::Assets::PlanAssetBrowserThumbnailPump({
-			IsAssetBrowserInteractive(),
+		const NLS::Editor::Assets::AssetBrowserThumbnailPumpInput pumpInput {
+			thumbnailInteractive,
 			m_thumbnailService.GetQueuedRequestCount() > 0u,
 			m_thumbnailService.HasInFlightRequest(),
 			thumbnailStartsThisFrame,
 			kMaxAssetBrowserInteractiveThumbnailStartsPerFrame
-		});
-		if (!pumpDecision.shouldStartBackgroundWork)
+		};
+		if (!m_thumbnailRenderScheduler.TryBeginBackgroundGeneration(pumpInput))
 			break;
 
+		const auto workBegin = std::chrono::steady_clock::now();
 		NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartBackground");
 		AssetBrowserArtifactTelemetryScope startBackgroundTelemetry {
 			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpStartBackground,
@@ -5469,7 +5553,13 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 			&pumpTelemetryItemCount,
 			kAssetBrowserThumbnailUiDrawTelemetryMinimum
 		};
-		if (!m_thumbnailService.StartNextThumbnailGeneration())
+		const bool started = m_thumbnailService.StartNextThumbnailGeneration();
+		m_thumbnailRenderScheduler.FinishWork(
+			NLS::Editor::Assets::AssetThumbnailRenderWorkKind::BackgroundGenerationStart,
+			static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - workBegin).count()),
+			started);
+		if (!started)
 			break;
 		++thumbnailStartsThisFrame;
 	}
@@ -7431,10 +7521,61 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 		thumbnailIterator != m_thumbnailResultsByItemKey.end())
 	{
 		const auto& thumbnail = thumbnailIterator->second;
-		if (thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh)
+		if (thumbnail.cacheEntry.has_value() && m_assetThumbnailPool != nullptr)
 		{
+			auto [pooledThumbnail, inserted] = m_assetThumbnailsByCacheKey.try_emplace(
+				thumbnail.cacheEntry->cacheKey);
+			if (inserted)
+			{
+				pooledThumbnail->second = m_assetThumbnailPool->MakeThumbnail(
+					thumbnail.cacheEntry->cacheKey,
+					thumbnail.gpuTextureGeneration);
+			}
+			const auto pooledTexture = pooledThumbnail->second.Resolve(
+				m_thumbnailTextureFrameSerial);
+			if (pooledTexture.IsReady())
+			{
+				const auto thumbnailRect = NLS::Editor::Assets::ComputeAssetBrowserThumbnailRect(
+					MakeAssetBrowserRect(iconMin, iconMax),
+					pooledTexture.width,
+					pooledTexture.height);
+				drawList->PushClipRect(iconMin, iconMax, true);
+				const bool flipGpuThumbnailVertically =
+					NLS::Core::ServiceLocator::Contains<UI::UIManager>() &&
+					NLS_SERVICE(UI::UIManager).ShouldFlipPresentedRenderTargetVertically();
+				const ImVec2 gpuThumbnailUv0 = flipGpuThumbnailVertically
+					? kAssetBrowserThumbnailUv0
+					: ImVec2(0.0f, 0.0f);
+				const ImVec2 gpuThumbnailUv1 = flipGpuThumbnailVertically
+					? kAssetBrowserThumbnailUv1
+					: ImVec2(1.0f, 1.0f);
+				drawList->AddImage(
+					pooledTexture.textureId,
+					ToImVec2(thumbnailRect.min),
+					ToImVec2(thumbnailRect.max),
+					gpuThumbnailUv0,
+					gpuThumbnailUv1);
+				drawList->PopClipRect();
+				recordDrawPath("|draw=gpu-pool", AssetBrowserThumbnailDrawOutcome::Thumbnail);
+				return;
+			}
+		}
+		// Keep a previous PNG visible while a renderer-version or freshness change
+		// regenerates the GPU preview. This avoids replacing a usable thumbnail with
+		// a type icon during the asynchronous refresh window.
+		const bool canDisplayCachedThumbnail =
+			thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh ||
+			(thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
+				thumbnail.cacheEntry.has_value() &&
+				!thumbnail.cacheEntry->imagePath.empty());
+		if (canDisplayCachedThumbnail)
+		{
+			const auto& cachedImagePath =
+				thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh
+					? thumbnail.imagePath
+					: thumbnail.cacheEntry->imagePath;
 			if (const auto textureInfo = ResolveCachedThumbnailTextureHandle(
-					thumbnail.imagePath,
+					cachedImagePath,
 					true);
 				textureInfo.textureHandle != nullptr)
 			{
@@ -7447,10 +7588,14 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 						textureInfo.textureHandle,
 						ToImVec2(thumbnailRect.min),
 						ToImVec2(thumbnailRect.max),
-						kAssetBrowserImageUv0,
-						kAssetBrowserImageUv1);
+						kAssetBrowserThumbnailUv0,
+						kAssetBrowserThumbnailUv1);
 					drawList->PopClipRect();
-					recordDrawPath("|draw=thumbnail", AssetBrowserThumbnailDrawOutcome::Thumbnail);
+					recordDrawPath(
+					thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh
+						? "|draw=thumbnail"
+						: "|draw=thumbnail-stale",
+					AssetBrowserThumbnailDrawOutcome::Thumbnail);
 					return;
 				}
 			}

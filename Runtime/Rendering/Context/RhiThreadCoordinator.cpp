@@ -1389,39 +1389,10 @@ namespace NLS::Render::Context
                 workUnit.commandInput.dependencySourceWorkUnitIndex.has_value();
         }
 
-        bool InFlightSlotTargetsSwapchain(const InFlightFrameSlot& slot)
-        {
-            if (slot.stage == ThreadedFrameStage::Available ||
-                slot.stage == ThreadedFrameStage::Retired)
-            {
-                return false;
-            }
-
-            if (slot.renderFrameInput.has_value())
-                return slot.renderFrameInput->targetsSwapchain;
-            if (slot.renderFrameBuild.has_value())
-                return slot.renderFrameBuild->targetsSwapchain;
-            if (slot.renderScenePackage.has_value())
-                return slot.renderScenePackage->targetsSwapchain;
-            if (slot.snapshot.has_value())
-                return slot.snapshot->targetsSwapchain;
-
-            return false;
-        }
-
         bool HasInFlightThreadedSwapchainFrame(const DriverImpl& impl)
         {
-            if (impl.threadedLifecycle == nullptr)
-                return false;
-
-            const auto slots = impl.threadedLifecycle->CopySlots();
-            return std::any_of(
-                slots.begin(),
-                slots.end(),
-                [](const InFlightFrameSlot& slot)
-                {
-                    return InFlightSlotTargetsSwapchain(slot);
-                });
+            return impl.threadedLifecycle != nullptr &&
+                impl.threadedLifecycle->HasInFlightSwapchainFrame();
         }
 
         const char* ToThreadedPassDebugName(const RenderPassCommandKind kind)
@@ -4485,29 +4456,38 @@ namespace NLS::Render::Context
         {
             NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ResetCommandResources");
             if (frameContext.commandPool != nullptr)
+            {
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ResetMainCommandPool");
                 frameContext.commandPool->Reset();
+            }
             if (frameContext.commandBuffer != nullptr)
+            {
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ResetMainCommandBuffer");
                 frameContext.commandBuffer->Reset();
-            for (const auto& parallelCommandPool : frameContext.parallelCommandPools)
-            {
-                if (parallelCommandPool != nullptr)
-                    parallelCommandPool->Reset();
             }
-            for (const auto& parallelCommandBuffer : frameContext.parallelCommandBuffers)
+            // Keep command-pool reset semantics for RHI implementations that use
+            // pool-owned allocation state. The command buffers themselves are
+            // reset on demand when their work unit is prepared below.
             {
-                if (parallelCommandBuffer != nullptr)
-                    parallelCommandBuffer->Reset();
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ResetParallelCommandPools");
+                for (const auto& parallelCommandPool : frameContext.parallelCommandPools)
+                {
+                    if (parallelCommandPool != nullptr)
+                        parallelCommandPool->Reset();
+                }
             }
-            for (const auto& childCommandPool : frameContext.childCommandPools)
             {
-                if (childCommandPool != nullptr)
-                    childCommandPool->Reset();
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ResetChildCommandPools");
+                for (const auto& childCommandPool : frameContext.childCommandPools)
+                {
+                    if (childCommandPool != nullptr)
+                        childCommandPool->Reset();
+                }
             }
-            for (const auto& childCommandBuffer : frameContext.childCommandBuffers)
-            {
-                if (childCommandBuffer != nullptr)
-                    childCommandBuffer->Reset();
-            }
+            // Parallel and in-render-pass child command buffers are reset when their
+            // work unit is prepared for this frame. Resetting every retained buffer
+            // here repeats that work and can turn camera motion into a long CPU spike
+            // when a previous frame created many command buffers.
         }
 
         if (preResetTrackerStats != nullptr)
@@ -6211,9 +6191,36 @@ namespace NLS::Render::Context
                     submissionFrame,
                     attribution);
             }
+            if (submissionFrame.submittedSuccessfully &&
+                renderScenePackage.targetsSwapchain &&
+                renderScenePackage.uiDrawDataSnapshot != nullptr)
+            {
+                DriverUIAccess::RecordUiOverlayPresentationSucceeded(
+                    driver,
+                    renderScenePackage.uiDrawDataSnapshot,
+                    renderScenePackage.uiOverlayPresentationInvalidationGeneration);
+            }
             {
                 NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::RetireFrame");
                 driver.m_impl->threadedLifecycle->RetireFrame(slotIndex);
+            }
+            if (submissionFrame.submittedSuccessfully)
+            {
+                if (!renderScenePackage.targetsSwapchain &&
+                    renderScenePackage.externalSceneOutputTextureCount > 0u)
+                {
+                    auto externalOutputIdentities =
+                        renderScenePackage.externalSceneOutputIdentities;
+                    if (externalOutputIdentities.empty() &&
+                        renderScenePackage.externalSceneOutputIdentity != 0u)
+                    {
+                        externalOutputIdentities.push_back(
+                            renderScenePackage.externalSceneOutputIdentity);
+                    }
+                    DriverUIAccess::NotifyUiTextureContentChanged(
+                        driver,
+                        externalOutputIdentities);
+                }
             }
             {
                 NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::NotifyThreadedWorkers");
@@ -6541,40 +6548,28 @@ namespace NLS::Render::Context
     {
         NLS_PROFILE_SCOPE();
         auto& impl = *driver.m_impl;
-        bool drainedMigratedOverlayWork = false;
 
         if (impl.explicitDevice != nullptr && impl.explicitSwapchain != nullptr)
         {
             const auto overlayFeature =
                 Render::RHI::GetUIOverlayFrameGraphFeature(impl.explicitDevice.get());
-            if (overlayFeature.supported)
+            if (overlayFeature.supported && impl.threadedLifecycle != nullptr)
             {
-                const bool hadInFlightOverlayWork =
-                    impl.threadedLifecycle != nullptr &&
-                    impl.threadedLifecycle->GetInFlightDepth() > 0u;
-                bool drainedPendingOverlayWork = true;
-                {
-                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::DrainPendingSceneOrUiOverlayFrame");
-                    drainedPendingOverlayWork = DriverRendererAccess::TryDrainThreadedRendering(driver, false);
-                    drainedMigratedOverlayWork = hadInFlightOverlayWork;
-                }
-
                 const auto& swapchainDesc = impl.explicitSwapchain->GetDesc();
-                bool publishedUiOnlyFrame = false;
-                if (drainedPendingOverlayWork)
+                if (!HasInFlightThreadedSwapchainFrame(impl))
                 {
-                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::PublishPendingUiOnlyFrame");
-                    publishedUiOnlyFrame = DriverUIAccess::PublishUiOnlyFrame(
+                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::TryPublishUiOnlyFrameNonBlocking");
+                    (void)DriverUIAccess::PublishUiOnlyFrame(
                         driver,
                         swapchainDesc.width,
-                        swapchainDesc.height);
+                        swapchainDesc.height,
+                        nullptr,
+                        nullptr,
+                        false);
                 }
-                if (publishedUiOnlyFrame)
-                {
-                    NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::DrainPendingUiOnlyFrame");
-                    (void)DriverRendererAccess::TryDrainThreadedRendering(driver, false);
-                    drainedMigratedOverlayWork = true;
-                }
+
+                driver.ApplyPendingSwapchainResize();
+                return;
             }
         }
 
@@ -6591,8 +6586,7 @@ namespace NLS::Render::Context
 
         {
             NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::ApplyPendingSwapchainResize");
-            if (!drainedMigratedOverlayWork)
-                driver.ApplyPendingSwapchainResize();
+            driver.ApplyPendingSwapchainResize();
         }
     }
 }

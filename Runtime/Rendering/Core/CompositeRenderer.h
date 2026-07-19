@@ -33,6 +33,7 @@ public:
     void BeginFrameForBackgroundPreview(const Data::FrameDescriptor& p_frameDescriptor) override;
     virtual void DrawFrame();
     virtual void EndFrame() override;
+    void AbortFrameForBackgroundPreview() override;
 
     virtual void DrawEntity(
         PipelineState p_pso,

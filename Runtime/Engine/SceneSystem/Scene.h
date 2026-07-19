@@ -97,6 +97,9 @@ namespace NLS::Engine::SceneSystem
 			bool AddGameObject(
                 GameObject* gameObject,
                 AddGameObjectActivation activation = AddGameObjectActivation::Immediate);
+            bool AddGameObjects(
+                const std::vector<GameObject*>& gameObjects,
+                AddGameObjectActivation activation = AddGameObjectActivation::Immediate);
             size_t ActivateGameObjectForPlay(GameObject* gameObject);
 
 		/**

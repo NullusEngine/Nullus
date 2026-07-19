@@ -369,6 +369,7 @@ namespace NLS::Render::Context
         uint64_t externalOutputIdentity = 0u;
         std::vector<uint64_t> externalOutputIdentities;
         uint32_t externalOutputTextureCount = 0u;
+        std::shared_ptr<RHI::RHITextureView> externalOutputColorView;
         LargeSceneCullReasonDebugSnapshot largeSceneCullReasonSnapshot;
         std::vector<uint64_t> streamingDependencyPins;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
@@ -441,6 +442,8 @@ namespace NLS::Render::Context
         std::vector<RecordedComputeDispatchInput> computeDispatchInputs;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
         std::shared_ptr<const UI::UiDrawDataSnapshot> uiDrawDataSnapshot;
+        std::vector<uint64_t> uiReferencedTextureIdentities;
+        uint64_t uiOverlayPresentationInvalidationGeneration = 0u;
         std::vector<std::shared_ptr<RHI::RHITexture>> extractedTextures;
         std::shared_ptr<RHI::RHITexture> preferredReadbackTexture;
         uint64_t preferredReadbackTextureGeneration = 0u;
@@ -450,6 +453,7 @@ namespace NLS::Render::Context
         uint64_t externalSceneOutputIdentity = 0u;
         std::vector<uint64_t> externalSceneOutputIdentities;
         uint32_t externalSceneOutputTextureCount = 0u;
+        std::shared_ptr<RHI::RHITextureView> externalSceneOutputColorView;
     };
 
     using PreparedRenderSceneBuilder = std::function<RenderScenePackage()>;
@@ -553,6 +557,7 @@ namespace NLS::Render::Context
     struct NLS_RENDER_API InFlightFrameSlot
     {
         size_t slotIndex = 0u;
+        uint64_t publicationSequence = 0u;
         ThreadedFrameStage stage = ThreadedFrameStage::Available;
         ThreadedFramePublishOrigin publishOrigin = ThreadedFramePublishOrigin::Unknown;
         RenderSceneAttribution renderSceneAttribution = RenderSceneAttribution::Unknown;
@@ -671,6 +676,10 @@ namespace NLS::Render::Context
 
         size_t GetSlotCount() const;
         size_t GetInFlightDepth() const;
+        // Queries slot metadata in place so hot-path callers do not copy frame packages.
+        bool HasInFlightSwapchainFrame() const;
+        bool HasInFlightExternalOutputForAnyIdentity(
+            const std::vector<uint64_t>& externalOutputIdentities) const;
         bool IsBackPressured() const;
         uint64_t GetBlockedPublishCount() const;
         uint64_t GetPublishedFrameCount() const;
@@ -729,6 +738,7 @@ namespace NLS::Render::Context
         uint64_t m_latestPublishedFrameId = 0u;
         uint64_t m_latestRetiredFrameId = 0u;
         uint64_t m_latestFailedRetiredFrameId = 0u;
+        uint64_t m_nextPublicationSequence = 1u;
         std::unordered_map<uint64_t, uint64_t> m_latestExternalOutputRhiFrameIds;
     };
 

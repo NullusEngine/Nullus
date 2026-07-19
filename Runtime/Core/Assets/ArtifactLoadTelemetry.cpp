@@ -163,6 +163,22 @@ const char* ArtifactLoadTelemetryStageName(const ArtifactLoadTelemetryStage stag
         return "RuntimeResourceCreation";
     case ArtifactLoadTelemetryStage::GpuUpload:
         return "GpuUpload";
+    case ArtifactLoadTelemetryStage::GpuResourceCreate:
+        return "GpuResourceCreate";
+    case ArtifactLoadTelemetryStage::GpuUploadPlanBuild:
+        return "GpuUploadPlanBuild";
+    case ArtifactLoadTelemetryStage::GpuUploadPrepare:
+        return "GpuUploadPrepare";
+    case ArtifactLoadTelemetryStage::GpuUploadCpuCopy:
+        return "GpuUploadCpuCopy";
+    case ArtifactLoadTelemetryStage::GpuUploadCommandSetup:
+        return "GpuUploadCommandSetup";
+    case ArtifactLoadTelemetryStage::GpuUploadSubmit:
+        return "GpuUploadSubmit";
+    case ArtifactLoadTelemetryStage::GpuUploadFenceWait:
+        return "GpuUploadFenceWait";
+    case ArtifactLoadTelemetryStage::NativeArtifactFileMap:
+        return "NativeArtifactFileMap";
     case ArtifactLoadTelemetryStage::CacheHit:
         return "CacheHit";
     case ArtifactLoadTelemetryStage::CacheMiss:

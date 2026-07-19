@@ -21,7 +21,10 @@
 #include <UI/Widgets/Layout/TreeNode.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetThumbnailPool.h"
+#include "Assets/AssetThumbnailRenderScheduler.h"
 #include "Assets/AssetThumbnailService.h"
+#include "Assets/ThumbnailRendererRegistry.h"
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/EditorStartupAssetPreimport.h"
 struct ImVec2;
@@ -190,6 +193,8 @@ public:
     void DrawProjectAssetBrowser();
     bool DrawProjectFolderTree(const NLS::Editor::Assets::AssetBrowserFolderNode& node);
     bool IsAssetBrowserInteractive() const;
+    void PrioritizeAssetBrowserUiFeedback();
+    bool IsAssetBrowserUiFeedbackPriorityActive() const;
     void MarkProjectAssetDisplayItemsDirty();
     bool ApplyProjectAssetDisclosureImmediately(
         const NLS::Editor::Assets::AssetBrowserItem& sourceItem);
@@ -348,12 +353,15 @@ private:
     std::shared_ptr<const NLS::Editor::Assets::EditorAssetSnapshotIndex> m_projectAssetSubAssetSnapshotIndex;
     std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem> m_projectDisplayItems;
     std::vector<NLS::Editor::Assets::AssetBrowserBreadcrumbSegment> m_currentBreadcrumb;
-    NLS::Editor::Assets::AssetThumbnailService m_thumbnailService;
-    std::shared_ptr<NLS::Editor::Assets::EditorThumbnailPreviewRenderer> m_thumbnailPreviewRenderer;
-    double m_nextGpuThumbnailGenerationTime = 0.0;
+	    NLS::Editor::Assets::AssetThumbnailService m_thumbnailService;
+	    NLS::Editor::Assets::AssetThumbnailRenderScheduler m_thumbnailRenderScheduler;
+	    std::shared_ptr<NLS::Editor::Assets::AssetThumbnailPool> m_assetThumbnailPool;
+	    std::unordered_map<std::string, NLS::Editor::Assets::AssetThumbnail> m_assetThumbnailsByCacheKey;
+	    std::shared_ptr<NLS::Editor::Assets::EditorThumbnailPreviewRenderer> m_thumbnailPreviewRenderer;
+	    std::shared_ptr<NLS::Editor::Assets::ThumbnailRendererRegistry> m_thumbnailRendererRegistry;
     double m_heavyGpuThumbnailGenerationDeferredUntil = 0.0;
-    double m_nextHeavyGpuThumbnailGenerationTime = 0.0;
     double m_assetBrowserInteractiveUntil = 0.0;
+    std::optional<int> m_assetBrowserUiFeedbackPriorityThroughFrame;
     std::vector<NLS::Editor::Assets::AssetBrowserItem> m_visibleThumbnailItems;
     bool m_visibleThumbnailItemsKnown = false;
     bool m_visiblePrefabHotCachePreloadPending = false;

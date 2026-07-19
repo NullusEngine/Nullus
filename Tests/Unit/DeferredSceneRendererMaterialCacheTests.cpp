@@ -1482,6 +1482,15 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesFrameLocalGBufferMaterialRes
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 1u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 1u);
 
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResetFrameGBufferMaterialResolveStats(renderer);
+    auto& nextFrameResolve = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveFrameGBufferMaterial(
+        renderer,
+        source);
+    EXPECT_EQ(&nextFrameResolve, &firstResolve);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveCacheSize(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 0u);
+
     NLS::Render::RHI::SamplerDesc samplerOverride;
     samplerOverride.minFilter = NLS::Render::RHI::TextureFilter::Nearest;
     samplerOverride.magFilter = NLS::Render::RHI::TextureFilter::Nearest;
@@ -1492,7 +1501,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesFrameLocalGBufferMaterialRes
 
     EXPECT_EQ(&bindingChangedResolve, &firstResolve);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(renderer), 1u);
-    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 2u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 1u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 2u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 2u);
 
@@ -1504,7 +1513,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesFrameLocalGBufferMaterialRes
 
     EXPECT_EQ(&shaderChangedResolve, &firstResolve);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(renderer), 1u);
-    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 3u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 2u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 3u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 3u);
 #endif
@@ -1517,11 +1526,11 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesFrameLocalGBufferMaterialRes
     EXPECT_EQ(&changedResolve, &firstResolve);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(renderer), 1u);
 #if defined(NLS_ENABLE_TEST_HOOKS)
-    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 4u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 3u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 4u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 4u);
 #else
-    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 3u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 2u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 3u);
     EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 3u);
 #endif
@@ -1530,6 +1539,44 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesFrameLocalGBufferMaterialRes
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(DeferredSceneRendererMaterialCacheTests, GBufferMaterialResolveCacheStaysBoundedAcrossSourceChurn)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    auto* sourceShader = CreateTestShader("App/Assets/Engine/Shaders/Lambert.hlsl");
+    ASSERT_NE(sourceShader, nullptr);
+    auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(gbufferShader, nullptr);
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, gbufferShader);
+
+    const auto maxEntries =
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetMaterialResolveCacheMaxEntriesForTesting();
+    for (size_t index = 0u; index <= maxEntries; ++index)
+    {
+        NLS::Render::Resources::Material source(sourceShader);
+        (void)NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveFrameGBufferMaterial(
+            renderer,
+            source);
+    }
+
+    EXPECT_EQ(
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveCacheSize(renderer),
+        1u);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(sourceShader));
+}
+#endif
 
 TEST(DeferredSceneRendererMaterialCacheTests, GBufferDrawableUsesSourceMaterialWhenShaderLabGBufferPassExists)
 {

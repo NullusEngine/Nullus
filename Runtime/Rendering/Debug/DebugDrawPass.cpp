@@ -6,6 +6,7 @@
 #include "Core/ServiceLocator.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Core/CompositeRenderer.h"
+#include "Rendering/Debug/DebugDrawService.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
@@ -79,6 +80,33 @@ namespace
 
         return { center, radius };
     }
+
+    bool HaveSameLineVertexPositions(
+        const std::vector<Geometry::Vertex>& left,
+        const std::vector<Geometry::Vertex>& right)
+    {
+        if (left.size() != right.size())
+            return false;
+
+        for (size_t index = 0u; index < left.size(); ++index)
+        {
+            for (size_t component = 0u; component < 3u; ++component)
+            {
+                if (left[index].position[component] != right[index].position[component])
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    void ConfigurePrimitiveMaterial(Resources::Material& material, Resources::Shader& shader)
+    {
+        material.SetShader(&shader);
+        material.SetBlendable(false);
+        material.SetDepthTest(true);
+        material.SetBackfaceCulling(false);
+        material.SetFrontfaceCulling(false);
+    }
 }
 
 DebugDrawPass::DebugDrawPass(Core::CompositeRenderer& renderer)
@@ -103,11 +131,7 @@ DebugDrawPass::DebugDrawPass(Core::CompositeRenderer& renderer)
     if (m_primitiveShader != nullptr)
     {
         m_primitiveMaterial = std::make_unique<Resources::Material>();
-        m_primitiveMaterial->SetShader(m_primitiveShader);
-        m_primitiveMaterial->SetBlendable(false);
-        m_primitiveMaterial->SetDepthTest(true);
-        m_primitiveMaterial->SetBackfaceCulling(false);
-        m_primitiveMaterial->SetFrontfaceCulling(false);
+        ConfigurePrimitiveMaterial(*m_primitiveMaterial, *m_primitiveShader);
     }
 }
 
@@ -126,41 +150,51 @@ void DebugDrawPass::Draw(PipelineState pso)
     if (!m_renderer.HasDebugDrawService())
         return;
 
-    m_lineBatchVertices.clear();
-    m_drawCommands.clear();
-
-    LineBatch lineBatch;
-    auto flushLineBatch = [&]()
+    auto* debugDrawService = m_renderer.GetDebugDrawService();
+    const auto contentRevision = debugDrawService->GetContentRevision();
+    const bool canReuseCollectedCommands =
+        m_collectedPrimitiveService == debugDrawService &&
+        m_collectedContentRevision == contentRevision;
+    if (!canReuseCollectedCommands)
     {
-        if (!lineBatch.segments.empty())
-            RenderLineBatch(lineBatch, pso);
-        lineBatch.segments.clear();
-    };
+        ++m_commandBuildCount;
+        m_lineBatchVertices.clear();
+        m_drawCommands.clear();
 
-    const auto visiblePrimitives = m_renderer.GetDebugDrawService()->CollectVisiblePrimitives();
-    for (const auto& primitiveRef : visiblePrimitives)
-    {
-        const auto& primitive = primitiveRef.get();
-        if (primitive.type != DebugDrawPrimitiveType::Line)
+        LineBatch lineBatch;
+        auto flushLineBatch = [&]()
         {
-            flushLineBatch();
-            RenderPrimitive(primitive, pso);
-            continue;
+            if (!lineBatch.segments.empty())
+                RenderLineBatch(lineBatch, pso);
+            lineBatch.segments.clear();
+        };
+
+        debugDrawService->CollectVisiblePrimitives(m_visiblePrimitives);
+        for (const auto& primitiveRef : m_visiblePrimitives)
+        {
+            const auto& primitive = primitiveRef.get();
+            if (primitive.type != DebugDrawPrimitiveType::Line)
+            {
+                flushLineBatch();
+                RenderPrimitive(primitive, pso);
+                continue;
+            }
+
+            const auto& style = primitive.options.style;
+            if (!lineBatch.segments.empty() && !MatchesLineBatchStyle(lineBatch.style, style))
+                flushLineBatch();
+
+            if (lineBatch.segments.empty())
+                lineBatch.style = style;
+
+            lineBatch.segments.push_back({ primitive.points[0], primitive.points[1] });
         }
 
-        const auto& style = primitive.options.style;
-        if (!lineBatch.segments.empty() && !MatchesLineBatchStyle(lineBatch.style, style))
-            flushLineBatch();
-
-        if (lineBatch.segments.empty())
-        {
-            lineBatch.style = style;
-        }
-
-        lineBatch.segments.push_back({ primitive.points[0], primitive.points[1] });
+        flushLineBatch();
+        m_collectedPrimitiveService = debugDrawService;
+        m_collectedContentRevision = contentRevision;
     }
 
-    flushLineBatch();
     RenderCollectedCommands(pso);
 }
 
@@ -199,10 +233,38 @@ void DebugDrawPass::RenderCollectedCommands(PipelineState pso)
     if (!m_primitiveMaterial || m_drawCommands.empty())
         return;
 
+    auto* debugDrawService = m_renderer.GetDebugDrawService();
     Resources::Mesh* lineMesh = nullptr;
     if (!m_lineBatchVertices.empty())
-        lineMesh = UploadLineVertices(ComputeLineBatchBoundingSphere(m_lineBatchVertices));
+    {
+        const auto contentRevision = debugDrawService->GetContentRevision();
+        const bool canReuseUploadedMesh =
+            m_uploadedLineService == debugDrawService &&
+            (m_uploadedLineContentRevision == contentRevision ||
+                HaveSameLineVertexPositions(m_uploadedLineVertices, m_lineBatchVertices)) &&
+            m_uploadedLineMesh != nullptr;
+        if (canReuseUploadedMesh)
+        {
+            lineMesh = m_uploadedLineMesh;
+        }
+        else
+        {
+            lineMesh = UploadLineVertices(ComputeLineBatchBoundingSphere(m_lineBatchVertices));
+            m_uploadedLineService = debugDrawService;
+            m_uploadedLineMesh = lineMesh;
+            m_uploadedLineVertices = m_lineBatchVertices;
+        }
+        m_uploadedLineContentRevision = contentRevision;
+    }
+    else
+    {
+        m_uploadedLineService = debugDrawService;
+        m_uploadedLineMesh = nullptr;
+        m_uploadedLineVertices.clear();
+        m_uploadedLineContentRevision = debugDrawService->GetContentRevision();
+    }
 
+    size_t lineCommandIndex = 0u;
     for (const auto& command : m_drawCommands)
     {
         if (command.type == DrawCommandType::Primitive)
@@ -212,7 +274,11 @@ void DebugDrawPass::RenderCollectedCommands(PipelineState pso)
         }
 
         if (lineMesh != nullptr)
-            RenderLineCommand(command.line, *lineMesh, pso);
+        {
+            if (auto* material = ResolveLineMaterial(lineCommandIndex, command.line.style); material != nullptr)
+                RenderLineCommand(command.line, *lineMesh, *material, pso);
+        }
+        ++lineCommandIndex;
     }
 }
 
@@ -234,28 +300,55 @@ void DebugDrawPass::RenderPrimitiveNow(const DebugDrawPrimitive& primitive, Pipe
     }
 }
 
-void DebugDrawPass::RenderLineCommand(const LineDrawCommand& command, Resources::Mesh& mesh, PipelineState pso)
+Resources::Material* DebugDrawPass::ResolveLineMaterial(
+    const size_t lineCommandIndex,
+    const DebugDrawStyle& style)
 {
-    if (!m_primitiveMaterial)
-        return;
+    if (m_primitiveShader == nullptr)
+        return nullptr;
 
-    m_primitiveMaterial->Set("u_Point0", Maths::Vector3::Zero);
-    m_primitiveMaterial->Set("u_Point1", Maths::Vector3::Zero);
-    m_primitiveMaterial->Set("u_Point2", Maths::Vector3::Zero);
-    m_primitiveMaterial->Set("u_UseVertexPosition", 1);
+    if (m_cachedLineMaterials.size() <= lineCommandIndex)
+        m_cachedLineMaterials.resize(lineCommandIndex + 1u);
+
+    auto& cached = m_cachedLineMaterials[lineCommandIndex];
+    if (cached.material == nullptr)
+    {
+        cached.material = std::make_unique<Resources::Material>();
+        ConfigurePrimitiveMaterial(*cached.material, *m_primitiveShader);
+        cached.material->Set("u_Point0", Maths::Vector3::Zero);
+        cached.material->Set("u_Point1", Maths::Vector3::Zero);
+        cached.material->Set("u_Point2", Maths::Vector3::Zero);
+        cached.material->Set("u_UseVertexPosition", 1);
+    }
+
+    if (!cached.hasStyle || !MatchesLineBatchStyle(cached.style, style))
+    {
+        cached.material->Set("u_Color", style.color);
+        cached.style = style;
+        cached.hasStyle = true;
+    }
+
+    return cached.material.get();
+}
+
+void DebugDrawPass::RenderLineCommand(
+    const LineDrawCommand& command,
+    Resources::Mesh& mesh,
+    Resources::Material& material,
+    PipelineState pso)
+{
 
     auto effectivePso = pso;
     effectivePso.depthWriting = false;
     effectivePso.rasterizationMode = Settings::ERasterizationMode::LINE;
-    m_primitiveMaterial->Set("u_Color", command.style.color);
 
     effectivePso.depthTest = command.style.depthMode == DebugDrawDepthMode::DepthTest;
     effectivePso.lineWidthPow2 = Utils::Conversions::FloatToPow2(command.style.lineWidth);
 
     Entities::Drawable drawable;
-    drawable.material = m_primitiveMaterial.get();
+    drawable.material = &material;
     drawable.mesh = &mesh;
-    drawable.stateMask = m_primitiveMaterial->GenerateStateMask();
+    drawable.stateMask = material.GenerateStateMask();
     drawable.primitiveMode = Settings::EPrimitiveMode::LINES;
     drawable.vertexStart = command.vertexStart;
     drawable.vertexCount = command.vertexCount;
@@ -265,6 +358,7 @@ void DebugDrawPass::RenderLineCommand(const LineDrawCommand& command, Resources:
 
 Resources::Mesh* DebugDrawPass::UploadLineVertices(const Geometry::BoundingSphere& boundingSphere)
 {
+    ++m_lineMeshUploadCount;
     const auto slotCount = std::max(
         kMinLineMeshSlotCount,
         Render::Context::DriverRendererAccess::GetFrameContextSlotCount(m_renderer.GetDriver()) + 1u);
@@ -316,6 +410,34 @@ uint32_t DebugDrawPassTestAccess::GetLineMeshSlotCapacity(const DebugDrawPass& p
         return 0u;
 
     return pass.m_lineMeshSlots[slotIndex].capacity;
+}
+
+uint64_t DebugDrawPassTestAccess::GetCommandBuildCount(const DebugDrawPass& pass)
+{
+    return pass.m_commandBuildCount;
+}
+
+uint64_t DebugDrawPassTestAccess::GetLineMeshUploadCount(const DebugDrawPass& pass)
+{
+    return pass.m_lineMeshUploadCount;
+}
+
+size_t DebugDrawPassTestAccess::GetCachedLineMaterialCount(const DebugDrawPass& pass)
+{
+    return pass.m_cachedLineMaterials.size();
+}
+
+uint64_t DebugDrawPassTestAccess::GetCachedLineMaterialParameterRevision(
+    const DebugDrawPass& pass,
+    const size_t index)
+{
+    if (index >= pass.m_cachedLineMaterials.size() ||
+        pass.m_cachedLineMaterials[index].material == nullptr)
+    {
+        return 0u;
+    }
+
+    return pass.m_cachedLineMaterials[index].material->GetParameterRevision();
 }
 #endif
 

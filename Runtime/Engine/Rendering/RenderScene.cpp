@@ -168,9 +168,11 @@ namespace
 
 	bool CanMergeOpaqueDrawables(
 		const NLS::Render::Entities::Drawable& lhs,
-		const NLS::Render::Entities::Drawable& rhs)
+		const NLS::Render::Entities::Drawable& rhs,
+		const OpaqueDrawSortKey& lhsKey,
+		const OpaqueDrawSortKey& rhsKey)
 	{
-		if (!(BuildOpaqueDrawSortKey(lhs) == BuildOpaqueDrawSortKey(rhs)))
+		if (!(lhsKey == rhsKey))
 			return false;
 		if (lhs.material == nullptr || lhs.mesh == nullptr)
 			return false;
@@ -179,20 +181,22 @@ namespace
 		const auto* shader = lhs.material->GetShader();
 		if (shader == nullptr || !ShaderSupportsIndexedObjectData(*shader))
 			return false;
-		if (ResolveVisibleInstanceCount(lhs) == 0u || ResolveVisibleInstanceCount(rhs) != 1u)
+		const auto lhsInstanceCount = ResolveVisibleInstanceCount(lhs);
+		const auto rhsInstanceCount = ResolveVisibleInstanceCount(rhs);
+		if (lhsInstanceCount == 0u || rhsInstanceCount != 1u)
 			return false;
 		if (lhs.material->GetGPUInstances() != 1)
 			return false;
 
-		NLS::Engine::Rendering::EngineDrawableDescriptor lhsDescriptor;
-		NLS::Engine::Rendering::EngineDrawableDescriptor rhsDescriptor;
-		const auto lhsInstanceCount = ResolveVisibleInstanceCount(lhs);
-		const auto rhsInstanceCount = ResolveVisibleInstanceCount(rhs);
-		return lhs.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(lhsDescriptor) &&
-			rhs.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(rhsDescriptor) &&
-			DescriptorCanParticipateInDynamicInstancing(lhsDescriptor, lhsInstanceCount) &&
-			DescriptorCanParticipateInDynamicInstancing(rhsDescriptor, rhsInstanceCount) &&
-			DescriptorPerObjectStateMatchesForDynamicInstancing(lhsDescriptor, rhsDescriptor);
+		const auto* lhsDescriptor =
+			lhs.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>();
+		const auto* rhsDescriptor =
+			rhs.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>();
+		return lhsDescriptor != nullptr &&
+			rhsDescriptor != nullptr &&
+			DescriptorCanParticipateInDynamicInstancing(*lhsDescriptor, lhsInstanceCount) &&
+			DescriptorCanParticipateInDynamicInstancing(*rhsDescriptor, rhsInstanceCount) &&
+			DescriptorPerObjectStateMatchesForDynamicInstancing(*lhsDescriptor, *rhsDescriptor);
 	}
 
 	void ExpandDescriptorForObjectDataRange(
@@ -754,6 +758,14 @@ struct RenderScene::RepresentationRegistry
 	}
 };
 
+struct RenderScene::SpatialCandidateSnapshotCache
+{
+	std::vector<ScenePrimitiveHandle> candidatePrimitiveHandles;
+	ScenePrimitiveSnapshot primitiveSnapshot;
+	std::vector<LODGroupRecord> lodGroups;
+	std::vector<HLODClusterRecord> hlodClusters;
+};
+
 RenderScene::RenderScene()
 	: m_sceneId(AllocateRenderSceneId()),
 	  m_spatialIndex(std::make_unique<SceneSpatialIndex>()),
@@ -786,6 +798,8 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_lastRepresentationStreamingInterest(std::move(other.m_lastRepresentationStreamingInterest)),
 	  m_spatialIndex(std::move(other.m_spatialIndex)),
 	  m_representationRegistry(std::move(other.m_representationRegistry)),
+	  m_spatialCandidateSnapshotCache(std::move(other.m_spatialCandidateSnapshotCache)),
+	  m_spatialCandidateSnapshotCacheHitCount(other.m_spatialCandidateSnapshotCacheHitCount),
 	  m_importedHierarchyHLODClusterHandles(std::move(other.m_importedHierarchyHLODClusterHandles))
 {
 	other.ResetMovedFromState();
@@ -817,6 +831,8 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_lastRepresentationStreamingInterest = std::move(other.m_lastRepresentationStreamingInterest);
 	m_spatialIndex = std::move(other.m_spatialIndex);
 	m_representationRegistry = std::move(other.m_representationRegistry);
+	m_spatialCandidateSnapshotCache = std::move(other.m_spatialCandidateSnapshotCache);
+	m_spatialCandidateSnapshotCacheHitCount = other.m_spatialCandidateSnapshotCacheHitCount;
 	m_importedHierarchyHLODClusterHandles = std::move(other.m_importedHierarchyHLODClusterHandles);
 
 	other.ResetMovedFromState();
@@ -846,6 +862,8 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_lastRepresentationStreamingInterest.clear();
 	m_spatialIndex = std::make_unique<SceneSpatialIndex>();
 	m_representationRegistry = std::make_unique<RepresentationRegistry>();
+	m_spatialCandidateSnapshotCache.reset();
+	m_spatialCandidateSnapshotCacheHitCount = 0u;
 	m_importedHierarchyHLODClusterHandles.clear();
 }
 
@@ -968,6 +986,8 @@ RenderSceneSyncStats RenderScene::Synchronize(
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RebuildImportedHierarchyHLODRecords");
 		RebuildImportedHierarchyHLODRecords(scene);
 	}
+	if (!m_lastDirtySyncHandles.empty() || !m_lastRemovedHandles.empty())
+		m_spatialCandidateSnapshotCache.reset();
 	m_lastSyncStats = stats;
 	stats.syncTimeNs = ElapsedNanoseconds(syncStart);
 	m_lastSyncStats.syncTimeNs = stats.syncTimeNs;
@@ -1014,7 +1034,11 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 	const auto& meshBaseIndices = GetMeshBaseIndices(&commandOffsetTouchedPrimitiveCount);
 	const auto commandOffsetTimeNs = ElapsedNanoseconds(commandOffsetStart);
 	const auto visibilityStart = std::chrono::steady_clock::now();
-	const auto visibility = EvaluateVisibility(options, mode, meshBaseIndices, false);
+	const auto visibility = [&]()
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::GatherVisibleCommands::EvaluateVisibility");
+		return EvaluateVisibility(options, mode, meshBaseIndices, false);
+	}();
 	const auto visibilityTimeNs = ElapsedNanoseconds(visibilityStart);
 	m_lastLargeSceneTelemetry.culledByReason = visibility.culledByReason;
 	m_lastLargeSceneTelemetry.spatialCandidateCount = visibility.spatialCandidateCount;
@@ -1108,21 +1132,33 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 		}
 	};
 
-	if (visibility.usesSparseVisiblePrimitiveIndices)
 	{
-		for (const auto primitiveIndex : visibility.visiblePrimitiveIndices)
-			finalizePrimitive(primitiveIndex);
-	}
-	else
-	{
-		for (size_t primitiveIndex = 0u; primitiveIndex < m_primitives.size(); ++primitiveIndex)
-			finalizePrimitive(primitiveIndex);
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::GatherVisibleCommands::BuildVisibleDrawables");
+		if (visibility.usesSparseVisiblePrimitiveIndices)
+		{
+			for (const auto primitiveIndex : visibility.visiblePrimitiveIndices)
+				finalizePrimitive(primitiveIndex);
+		}
+		else
+		{
+			for (size_t primitiveIndex = 0u; primitiveIndex < m_primitives.size(); ++primitiveIndex)
+				finalizePrimitive(primitiveIndex);
+		}
 	}
 
-	FinalizeOpaqueQueue(output.opaques);
-	SortVisibleQueue(output.decals, std::greater<float>{});
-	SortVisibleQueue(output.transparents, std::greater<float>{});
-	AssignVisibleObjectIndices(output);
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::GatherVisibleCommands::FinalizeOpaqueQueue");
+		FinalizeOpaqueQueue(output.opaques);
+	}
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::GatherVisibleCommands::SortTransparentQueues");
+		SortVisibleQueue(output.decals, std::greater<float>{});
+		SortVisibleQueue(output.transparents, std::greater<float>{});
+	}
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::GatherVisibleCommands::AssignVisibleObjectIndices");
+		AssignVisibleObjectIndices(output);
+	}
 	m_lastVisiblePrimitiveHandles = visibility.visiblePrimitiveHandles;
 	m_lastRepresentationStreamingInterest = visibility.representationStreamingInterest;
 	m_lastDrawCallOptimizationStats.submittedSceneDrawCount =
@@ -1165,6 +1201,13 @@ uint64_t RenderScene::GetCachedCommandBuildCountForTesting() const
 {
 	return m_cachedCommandBuildCount;
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+uint64_t RenderScene::GetSpatialCandidateSnapshotCacheHitCountForTesting() const
+{
+	return m_spatialCandidateSnapshotCacheHitCount;
+}
+#endif
 
 const DrawCallOptimizationStats& RenderScene::GetLastDrawCallOptimizationStats() const
 {
@@ -1283,6 +1326,7 @@ bool RenderScene::IsPrimitiveHandleLiveForTesting(const ScenePrimitiveHandle han
 
 void RenderScene::ClearRepresentationRecords()
 {
+	m_spatialCandidateSnapshotCache.reset();
 	m_representationRegistry = std::make_unique<RepresentationRegistry>();
 	m_importedHierarchyHLODClusterHandles.clear();
 	for (auto& primitive : m_primitives)
@@ -1294,6 +1338,7 @@ void RenderScene::ClearRepresentationRecords()
 
 void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene)
 {
+	m_spatialCandidateSnapshotCache.reset();
 	if (m_representationRegistry == nullptr)
 		m_representationRegistry = std::make_unique<RepresentationRegistry>();
 
@@ -1416,6 +1461,7 @@ void RenderScene::RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& 
 
 SceneLODGroupHandle RenderScene::RegisterLODGroup(const LODGroupRecord& group)
 {
+	m_spatialCandidateSnapshotCache.reset();
 	if (m_representationRegistry == nullptr)
 		m_representationRegistry = std::make_unique<RepresentationRegistry>();
 
@@ -1445,6 +1491,7 @@ SceneLODGroupHandle RenderScene::RegisterLODGroup(const LODGroupRecord& group)
 
 SceneHLODClusterHandle RenderScene::RegisterHLODCluster(const HLODClusterRecord& cluster)
 {
+	m_spatialCandidateSnapshotCache.reset();
 	if (m_representationRegistry == nullptr)
 		m_representationRegistry = std::make_unique<RepresentationRegistry>();
 
@@ -1517,8 +1564,7 @@ ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshot(const uint64_t frame
 		record.worldMatrix = primitive.worldMatrix;
 		record.ownerAlive = primitive.ownerAlive;
 		record.ownerActive = primitive.ownerActive;
-		if (primitive.meshRenderer != nullptr)
-			record.userMatrix = primitive.meshRenderer->GetUserMatrix();
+		record.userMatrix = primitive.userMatrix;
 		record.frustumBehaviour = primitive.frustumBehaviour;
 		record.visibilitySettings = primitive.visibilitySettings;
 		record.lodGroup = primitive.lodGroup;
@@ -1607,8 +1653,7 @@ ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshotForHandles(
 		record.worldMatrix = primitive.worldMatrix;
 		record.ownerAlive = primitive.ownerAlive;
 		record.ownerActive = primitive.ownerActive;
-		if (primitive.meshRenderer != nullptr)
-			record.userMatrix = primitive.meshRenderer->GetUserMatrix();
+		record.userMatrix = primitive.userMatrix;
 		record.frustumBehaviour = primitive.frustumBehaviour;
 		record.visibilitySettings = primitive.visibilitySettings;
 		record.lodGroup = primitive.lodGroup;
@@ -1813,6 +1858,7 @@ void RenderScene::SynchronizePrimitive(
 	const auto previousBounds = primitive.modelBoundingSphere;
 	const auto previousModelBounds = primitive.modelBounds;
 	const auto previousWorldMatrix = primitive.worldMatrix;
+	const auto previousUserMatrix = primitive.userMatrix;
 	const auto previousFrustumBehaviour = primitive.frustumBehaviour;
 	const auto previousVisibilitySettings = primitive.visibilitySettings;
 	const bool previousOwnerAlive = primitive.ownerAlive;
@@ -1821,9 +1867,16 @@ void RenderScene::SynchronizePrimitive(
 	primitive.ownerAlive = primitive.owner != nullptr && primitive.owner->IsAlive();
 	primitive.ownerActive = primitive.owner != nullptr && primitive.owner->IsActive();
 	if (auto* transform = primitive.owner != nullptr ? primitive.owner->GetTransform() : nullptr)
+	{
 		primitive.worldMatrix = transform->GetWorldMatrix();
+		primitive.worldPosition = transform->GetWorldPosition();
+	}
 	else
+	{
 		primitive.worldMatrix = Maths::Matrix4::Identity;
+		primitive.worldPosition = {};
+	}
+	primitive.userMatrix = meshRenderer->GetUserMatrix();
 	auto* meshFilter = primitive.owner != nullptr
 		? primitive.owner->GetComponent<Components::MeshFilter>()
 		: nullptr;
@@ -1912,6 +1965,7 @@ void RenderScene::SynchronizePrimitive(
 		!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
 		!AreSameBounds(previousModelBounds, primitive.modelBounds) ||
 		!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix) ||
+		!AreSameMatrix(previousUserMatrix, primitive.userMatrix) ||
 		commandInputChanged)
 	{
 		MarkPrimitiveDirtyForSnapshot(primitive);
@@ -2110,7 +2164,7 @@ bool RenderScene::IsPrimitiveVisible(
 {
 	if (!primitive.occupied || primitive.tombstoned)
 		return false;
-	if (primitive.owner == nullptr || !primitive.owner->IsAlive() || !primitive.owner->IsActive())
+	if (primitive.owner == nullptr || !primitive.ownerAlive || !primitive.ownerActive)
 		return false;
 	if (primitive.transientRenderingSuppressed)
 		return false;
@@ -2122,10 +2176,6 @@ bool RenderScene::IsPrimitiveVisible(
 		return true;
 	if (primitive.frustumBehaviour == Components::MeshRenderer::EFrustumBehaviour::DISABLED)
 		return true;
-
-	auto* transform = primitive.owner->GetTransform();
-	if (transform == nullptr)
-		return false;
 
 	return options.frustum->BoundsInFrustum(
 		primitive.modelBounds,
@@ -2145,8 +2195,7 @@ bool RenderScene::IsMeshVisible(
 		return true;
 	}
 
-	auto* transform = primitive.owner != nullptr ? primitive.owner->GetTransform() : nullptr;
-	return transform != nullptr && options.frustum->IsMeshInFrustum(mesh, transform->GetTransform());
+	return options.frustum->BoundsInFrustum(mesh.GetBounds(), primitive.worldMatrix);
 }
 
 const std::vector<size_t>& RenderScene::GetMeshBaseIndices(uint64_t* touchedPrimitiveCount) const
@@ -2620,43 +2669,63 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 	query.radius = queryRadius;
 	query.visibleLayerMask = options.visibleLayerMask;
 
-	const auto candidates = m_spatialIndex->Query(query);
-	auto initialCandidateSnapshot = CreatePrimitiveSnapshotForHandles(
-		candidates.candidatePrimitiveHandles,
-		{});
-	std::vector<LODGroupRecord> candidateLODGroups;
-	std::vector<HLODClusterRecord> candidateHLODClusters;
+	const auto candidates = [&]()
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::EvaluateVisibilitySpatial::QuerySpatialIndex");
+		return m_spatialIndex->Query(query);
+	}();
+	const bool canReuseCandidateSnapshot =
+		m_spatialCandidateSnapshotCache != nullptr &&
+		m_spatialCandidateSnapshotCache->candidatePrimitiveHandles == candidates.candidatePrimitiveHandles;
+	if (!canReuseCandidateSnapshot)
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::EvaluateVisibilitySpatial::BuildCandidateSnapshot");
+		auto cache = std::make_unique<SpatialCandidateSnapshotCache>();
+		cache->candidatePrimitiveHandles = candidates.candidatePrimitiveHandles;
+		cache->primitiveSnapshot = CreatePrimitiveSnapshotForHandles(
+			candidates.candidatePrimitiveHandles,
+			{});
+		if (m_representationRegistry != nullptr)
+		{
+			SceneRepresentationState registryRepresentation;
+			registryRepresentation.lodGroups = &m_representationRegistry->lodGroups;
+			registryRepresentation.hlodClusters = &m_representationRegistry->hlodClusters;
+			registryRepresentation.lodGroupsByPrimitive = &m_representationRegistry->lodGroupsByPrimitive;
+			registryRepresentation.hlodClustersByPrimitive = &m_representationRegistry->hlodClustersByPrimitive;
+			const auto expansion = SceneVisibilityPipeline::ExpandRepresentationCandidates(
+				candidates.candidatePrimitiveHandles,
+				cache->primitiveSnapshot,
+				registryRepresentation);
+			cache->primitiveSnapshot = CreatePrimitiveSnapshotForHandles(
+				expansion.primitiveHandles,
+				{});
+
+			cache->lodGroups.reserve(expansion.lodGroupIndices.size());
+			for (const auto groupIndex : expansion.lodGroupIndices)
+			{
+				if (groupIndex < m_representationRegistry->lodGroups.size())
+					cache->lodGroups.push_back(m_representationRegistry->lodGroups[groupIndex]);
+			}
+			cache->hlodClusters.reserve(expansion.hlodClusterIndices.size());
+			for (const auto clusterIndex : expansion.hlodClusterIndices)
+			{
+				if (clusterIndex < m_representationRegistry->hlodClusters.size())
+					cache->hlodClusters.push_back(m_representationRegistry->hlodClusters[clusterIndex]);
+			}
+		}
+		m_spatialCandidateSnapshotCache = std::move(cache);
+	}
+	else
+	{
+		++m_spatialCandidateSnapshotCacheHitCount;
+	}
+
+	const auto& initialCandidateSnapshot = m_spatialCandidateSnapshotCache->primitiveSnapshot;
 	SceneRepresentationState representation;
 	if (m_representationRegistry != nullptr)
 	{
-		SceneRepresentationState registryRepresentation;
-		registryRepresentation.lodGroups = &m_representationRegistry->lodGroups;
-		registryRepresentation.hlodClusters = &m_representationRegistry->hlodClusters;
-		registryRepresentation.lodGroupsByPrimitive = &m_representationRegistry->lodGroupsByPrimitive;
-		registryRepresentation.hlodClustersByPrimitive = &m_representationRegistry->hlodClustersByPrimitive;
-		const auto expansion = SceneVisibilityPipeline::ExpandRepresentationCandidates(
-			candidates.candidatePrimitiveHandles,
-			initialCandidateSnapshot,
-			registryRepresentation);
-		initialCandidateSnapshot = CreatePrimitiveSnapshotForHandles(
-			expansion.primitiveHandles,
-			{});
-
-		candidateLODGroups.reserve(expansion.lodGroupIndices.size());
-		for (const auto groupIndex : expansion.lodGroupIndices)
-		{
-			if (groupIndex < m_representationRegistry->lodGroups.size())
-				candidateLODGroups.push_back(m_representationRegistry->lodGroups[groupIndex]);
-		}
-		candidateHLODClusters.reserve(expansion.hlodClusterIndices.size());
-		for (const auto clusterIndex : expansion.hlodClusterIndices)
-		{
-			if (clusterIndex < m_representationRegistry->hlodClusters.size())
-				candidateHLODClusters.push_back(m_representationRegistry->hlodClusters[clusterIndex]);
-		}
-
-		representation.lodGroups = &candidateLODGroups;
-		representation.hlodClusters = &candidateHLODClusters;
+		representation.lodGroups = &m_spatialCandidateSnapshotCache->lodGroups;
+		representation.hlodClusters = &m_spatialCandidateSnapshotCache->hlodClusters;
 		representation.lodSelectionHistory =
 			&m_representationRegistry->LODHistoryForView(options.lodHistoryViewKey);
 	}
@@ -2668,7 +2737,7 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 		MarkHLODProxyResidency(
 			residency,
 			initialCandidateSnapshot,
-			candidateHLODClusters);
+			m_spatialCandidateSnapshotCache->hlodClusters);
 	}
 	representation.residency = &residency;
 	representation.occlusion = options.occlusion;
@@ -2678,16 +2747,20 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 	pipelineOptions.editorInspectionView = options.editorInspectionView;
 	pipelineOptions.selectedPrimitiveHandles = options.selectedPrimitiveHandles;
 	pipelineOptions.forceInspectableHLODClusters = ResolveInspectableHLODClusters(options);
-	const auto pipelineResult = SceneVisibilityPipeline::Evaluate(
-		pipelineOptions,
-		initialCandidateSnapshot,
-		*m_spatialIndex,
-		representation,
-		mode == RenderSceneVisibilityMode::Parallel
-			? SceneVisibilityPipelineMode::Parallel
-			: (mode == RenderSceneVisibilityMode::Auto
-				? SceneVisibilityPipelineMode::Auto
-				: SceneVisibilityPipelineMode::Serial));
+	const auto pipelineResult = [&]()
+	{
+		NLS_PROFILE_NAMED_SCOPE("RenderScene::EvaluateVisibilitySpatial::EvaluatePipeline");
+		return SceneVisibilityPipeline::Evaluate(
+			pipelineOptions,
+			initialCandidateSnapshot,
+			*m_spatialIndex,
+			representation,
+			mode == RenderSceneVisibilityMode::Parallel
+				? SceneVisibilityPipelineMode::Parallel
+				: (mode == RenderSceneVisibilityMode::Auto
+					? SceneVisibilityPipelineMode::Auto
+					: SceneVisibilityPipelineMode::Serial));
+	}();
 	if (options.enableCullReasonDebugSnapshot)
 	{
 		m_lastCullReasonDebugSnapshot = std::make_shared<SceneCullReasonDebugSnapshot>(
@@ -2903,26 +2976,23 @@ void RenderScene::AppendVisibleDrawable(
 	const RenderCachedDrawCommand& command,
 	const RenderSceneVisibilityOptions& options) const
 {
-	if (primitive.owner == nullptr || primitive.owner->GetTransform() == nullptr)
+	if (primitive.owner == nullptr)
 		return;
-
-	const auto& transform = primitive.owner->GetTransform()->GetTransform();
-	const auto userMatrix = primitive.meshRenderer != nullptr
-		? primitive.meshRenderer->GetUserMatrix()
-		: Maths::Matrix4::Identity;
 
 	NLS::Render::Entities::Drawable drawable;
 	drawable.mesh = command.mesh;
 	drawable.material = command.material;
 	drawable.stateMask = command.stateMask;
 	drawable.primitiveMode = command.primitiveMode;
-	drawable.AddDescriptor<EngineDrawableDescriptor>({
-		transform.GetWorldMatrix(),
-		userMatrix
-	});
+	EngineDrawableDescriptor descriptor{
+		primitive.worldMatrix,
+		primitive.userMatrix
+	};
+	descriptor.stableSortKey = primitive.handle.index;
+	drawable.AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
 
 	const float distanceToActor = Maths::Vector3::Distance(
-		transform.GetWorldPosition(),
+		primitive.worldPosition,
 		options.cameraPosition);
 
 	if (command.material != nullptr && command.material->IsDecal())
@@ -2935,63 +3005,104 @@ void RenderScene::AppendVisibleDrawable(
 
 void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& opaques) const
 {
+	struct KeyedOpaqueDrawable
+	{
+		float distance = 0.0f;
+		NLS::Render::Entities::Drawable drawable;
+		OpaqueDrawSortKey sortKey;
+	};
+
+	std::vector<KeyedOpaqueDrawable> keyedDrawables;
+	keyedDrawables.reserve(opaques.size());
+	for (auto& entry : opaques)
+	{
+		const auto sortKey = BuildOpaqueDrawSortKey(entry.second);
+		keyedDrawables.push_back({
+			entry.first,
+			std::move(entry.second),
+			sortKey
+		});
+	}
+	opaques.clear();
+
 	std::stable_sort(
-		opaques.begin(),
-		opaques.end(),
+		keyedDrawables.begin(),
+		keyedDrawables.end(),
 		[](const auto& lhs, const auto& rhs)
 		{
-			const auto lhsKey = BuildOpaqueDrawSortKey(lhs.second);
-			const auto rhsKey = BuildOpaqueDrawSortKey(rhs.second);
-			if (!(lhsKey == rhsKey))
-				return lhsKey < rhsKey;
-			return lhs.first < rhs.first;
+			if (!(lhs.sortKey == rhs.sortKey))
+				return lhs.sortKey < rhs.sortKey;
+
+			const auto* lhsDescriptor =
+				lhs.drawable.TryGetDescriptor<EngineDrawableDescriptor>();
+			const auto* rhsDescriptor =
+				rhs.drawable.TryGetDescriptor<EngineDrawableDescriptor>();
+			const bool lhsHasStableSortKey =
+				lhsDescriptor != nullptr &&
+				lhsDescriptor->stableSortKey != EngineDrawableDescriptor::kInvalidStableSortKey;
+			const bool rhsHasStableSortKey =
+				rhsDescriptor != nullptr &&
+				rhsDescriptor->stableSortKey != EngineDrawableDescriptor::kInvalidStableSortKey;
+			if (lhsHasStableSortKey != rhsHasStableSortKey)
+				return lhsHasStableSortKey;
+			if (lhsHasStableSortKey &&
+				lhsDescriptor->stableSortKey != rhsDescriptor->stableSortKey)
+			{
+				return lhsDescriptor->stableSortKey < rhsDescriptor->stableSortKey;
+			}
+			return lhs.distance < rhs.distance;
 		});
 
-	RenderSceneVisibleQueues::SceneDrawables merged;
-	merged.reserve(opaques.size());
+	opaques.reserve(keyedDrawables.size());
 
 	size_t index = 0u;
-	while (index < opaques.size())
+	while (index < keyedDrawables.size())
 	{
 		auto runEnd = index + 1u;
-		while (runEnd < opaques.size() && CanMergeOpaqueDrawables(opaques[index].second, opaques[runEnd].second))
+		while (runEnd < keyedDrawables.size() &&
+			CanMergeOpaqueDrawables(
+				keyedDrawables[index].drawable,
+				keyedDrawables[runEnd].drawable,
+				keyedDrawables[index].sortKey,
+				keyedDrawables[runEnd].sortKey))
+		{
 			++runEnd;
+		}
 
 		if (runEnd - index > 1u)
 		{
-			EngineDrawableDescriptor descriptor;
-			if (opaques[index].second.TryGetDescriptor<EngineDrawableDescriptor>(descriptor))
+			auto* descriptor =
+				keyedDrawables[index].drawable.TryGetDescriptor<EngineDrawableDescriptor>();
+			if (descriptor != nullptr)
 			{
-				descriptor.instanceModelMatrices.clear();
-				descriptor.instanceModelMatrices.reserve(runEnd - index);
-				float nearestDistance = opaques[index].first;
+				descriptor->instanceModelMatrices.clear();
+				descriptor->instanceModelMatrices.reserve(runEnd - index);
+				float nearestDistance = keyedDrawables[index].distance;
 
 				for (size_t runIndex = index; runIndex < runEnd; ++runIndex)
 				{
-					EngineDrawableDescriptor sourceDescriptor;
-					if (!opaques[runIndex].second.TryGetDescriptor<EngineDrawableDescriptor>(sourceDescriptor))
+					const auto* sourceDescriptor =
+						keyedDrawables[runIndex].drawable.TryGetDescriptor<EngineDrawableDescriptor>();
+					if (sourceDescriptor == nullptr)
 						continue;
-					descriptor.instanceModelMatrices.push_back(sourceDescriptor.modelMatrix);
-					nearestDistance = std::min(nearestDistance, opaques[runIndex].first);
+					descriptor->instanceModelMatrices.push_back(sourceDescriptor->modelMatrix);
+					nearestDistance = std::min(nearestDistance, keyedDrawables[runIndex].distance);
 				}
 
-				descriptor.objectCount = static_cast<uint32_t>(descriptor.instanceModelMatrices.size());
-				opaques[index].second.RemoveDescriptor<EngineDrawableDescriptor>();
-				opaques[index].second.AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
-				opaques[index].second.instanceCount =
+				descriptor->objectCount = static_cast<uint32_t>(descriptor->instanceModelMatrices.size());
+				keyedDrawables[index].drawable.instanceCount =
 					static_cast<uint32_t>(std::max<size_t>(1u, runEnd - index));
-				opaques[index].first = nearestDistance;
-				merged.push_back(std::move(opaques[index]));
+				opaques.emplace_back(nearestDistance, std::move(keyedDrawables[index].drawable));
 				index = runEnd;
 				continue;
 			}
 		}
 
-		merged.push_back(std::move(opaques[index]));
+		opaques.emplace_back(
+			keyedDrawables[index].distance,
+			std::move(keyedDrawables[index].drawable));
 		++index;
 	}
-
-	opaques = std::move(merged);
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -3004,6 +3115,69 @@ void RenderScene::FinalizeOpaqueQueueForTesting(RenderSceneVisibleQueues::SceneD
 void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) const
 {
 	uint32_t nextObjectIndex = 0u;
+	const std::array<RenderSceneVisibleQueues::SceneDrawables*, 4u> queues = {
+		&output.opaques,
+		&output.decals,
+		&output.skyboxes,
+		&output.transparents
+	};
+	const auto tryAssignInPlace = [&]()
+	{
+		const auto maxObjectsPerSubmittedDraw = ResolveMaxObjectsPerSubmittedDraw();
+		uint32_t requiredObjectCount = 0u;
+		for (const auto* queue : queues)
+		{
+			for (const auto& entry : *queue)
+			{
+				if (entry.second.TryGetDescriptor<EngineDrawableDescriptor>() == nullptr ||
+					!DrawableRequiresIndexedObjectDataRange(entry.second))
+				{
+					continue;
+				}
+
+				const auto objectCount = std::max(1u, ResolveVisibleInstanceCount(entry.second));
+				if (objectCount > maxObjectsPerSubmittedDraw)
+					return false;
+
+				uint32_t lastObjectIndex = 0u;
+				if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
+					requiredObjectCount,
+					objectCount,
+					lastObjectIndex))
+				{
+					return false;
+				}
+				requiredObjectCount = lastObjectIndex + 1u;
+			}
+		}
+
+		for (auto* queue : queues)
+		{
+			for (auto& entry : *queue)
+			{
+				auto* descriptor = entry.second.TryGetDescriptor<EngineDrawableDescriptor>();
+				if (descriptor == nullptr || !DrawableRequiresIndexedObjectDataRange(entry.second))
+					continue;
+
+				const auto instanceCount = ResolveVisibleInstanceCount(entry.second);
+				const auto objectCount = std::max(1u, instanceCount);
+				const bool preservesMaterialInstanceCount =
+					entry.second.instanceCount == 0u && objectCount == instanceCount;
+				descriptor->objectIndex = nextObjectIndex;
+				descriptor->objectCount = objectCount;
+				if (descriptor->instanceModelMatrices.empty())
+					ExpandDescriptorForObjectDataRange(*descriptor, objectCount);
+				if (!preservesMaterialInstanceCount || objectCount != instanceCount)
+					entry.second.instanceCount = objectCount;
+				nextObjectIndex += objectCount;
+			}
+		}
+		return true;
+	};
+	if (tryAssignInPlace())
+		return;
+
+	nextObjectIndex = 0u;
 	const auto assignQueue =
 		[this, &nextObjectIndex](RenderSceneVisibleQueues::SceneDrawables& queue)
 		{

@@ -89,12 +89,31 @@ void FrameObjectBindingProvider::PrepareExplicitDraw(
     ++m_preparedDrawCount;
 }
 
+bool FrameObjectBindingProvider::CaptureFrameBindingSet(
+    std::shared_ptr<RHI::RHIBindingSet>& outBindingSet)
+{
+    outBindingSet.reset();
+    if (!m_framePrepared)
+        return false;
+
+    return OnCaptureFrameBindingSet(outBindingSet) && outBindingSet != nullptr;
+}
+
 bool FrameObjectBindingProvider::CapturePreparedBindingSets(
     PipelineState& pso,
     const Entities::Drawable& drawable,
     PreparedBindingSets& outBindings)
 {
     return OnCapturePreparedBindingSets(pso, drawable, outBindings);
+}
+
+bool FrameObjectBindingProvider::CapturePreparedObjectBindingSet(
+    PipelineState& pso,
+    const Entities::Drawable& drawable,
+    PreparedBindingSets& outBindings)
+{
+    outBindings.frameBindingSet.reset();
+    return OnCapturePreparedObjectBindingSet(pso, drawable, outBindings);
 }
 
 bool FrameObjectBindingProvider::IsFramePrepared() const
@@ -151,6 +170,19 @@ bool FrameObjectBindingProvider::OnPrepareDraw(PipelineState&, const Entities::D
 
 void FrameObjectBindingProvider::OnPrepareExplicitDraw(RHI::RHICommandBuffer&, PipelineState&, const Entities::Drawable&)
 {
+}
+
+bool FrameObjectBindingProvider::OnCaptureFrameBindingSet(std::shared_ptr<RHI::RHIBindingSet>&)
+{
+    return false;
+}
+
+bool FrameObjectBindingProvider::OnCapturePreparedObjectBindingSet(
+    PipelineState& pso,
+    const Entities::Drawable& drawable,
+    PreparedBindingSets& outBindings)
+{
+    return OnCapturePreparedBindingSets(pso, drawable, outBindings);
 }
 
 bool FrameObjectBindingProvider::OnCapturePreparedBindingSets(

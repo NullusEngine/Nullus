@@ -85,12 +85,7 @@ bool IsInspectorReferenceableSubAsset(const NLS::Core::Assets::ArtifactType p_ty
 
 bool IsGridVisibleGeneratedSubAsset(const NLS::Core::Assets::ArtifactType p_type)
 {
-    using NLS::Core::Assets::ArtifactType;
-    return p_type == ArtifactType::Prefab ||
-           p_type == ArtifactType::Mesh ||
-           p_type == ArtifactType::Material ||
-           p_type == ArtifactType::Texture ||
-           p_type == ArtifactType::Shader;
+    return AssetBrowserGeneratedArtifactItemType(p_type).has_value();
 }
 
 bool AssetTypeCanHaveGeneratedSubAssets(const AssetBrowserItemType type)
@@ -1351,6 +1346,34 @@ bool ShouldShowAssetBrowserSubAssetDisclosure(const AssetBrowserDisplayItem& dis
         (displayItem.childCount > 0u || displayItem.item.hasGeneratedSubAssets);
 }
 
+std::vector<AssetBrowserDisplayItem> BuildAssetBrowserImmediateDisclosureFeedback(
+    const AssetBrowserDisplayItem& sourceDisplayItem,
+    const bool expanded)
+{
+    std::vector<AssetBrowserDisplayItem> group;
+    group.reserve(expanded ? 2u : 1u);
+    group.push_back(sourceDisplayItem);
+    group.front().expanded = expanded;
+    if (!expanded || !ShouldShowAssetBrowserSubAssetDisclosure(group.front()))
+        return group;
+
+    const auto& sourceItem = sourceDisplayItem.item;
+    const auto sourcePath = sourceItem.sourceAssetPath.empty()
+        ? sourceItem.projectRelativePath
+        : sourceItem.sourceAssetPath;
+    if (sourcePath.empty())
+        return group;
+    AssetBrowserDisplayItem placeholder;
+    placeholder.item.projectRelativePath = sourcePath + "::pending";
+    placeholder.item.sourceAssetPath = sourcePath;
+    placeholder.item.kind = AssetBrowserItemKind::GeneratedSubAsset;
+    placeholder.groupId = sourceDisplayItem.groupId;
+    placeholder.subAsset = true;
+    placeholder.loadingPlaceholder = true;
+    group.push_back(std::move(placeholder));
+    return group;
+}
+
 std::vector<AssetBrowserDisplayItem> BuildFilteredAssetBrowserDisplayItems(
     const std::vector<AssetBrowserItem>& items,
     const std::unordered_set<std::string>& expandedSourceAssets,
@@ -1790,7 +1813,10 @@ std::optional<AssetBrowserItemType> AssetBrowserGeneratedArtifactItemType(
     case ArtifactType::Prefab: return AssetBrowserItemType::Prefab;
     case ArtifactType::Mesh: return AssetBrowserItemType::Mesh;
     case ArtifactType::Material: return AssetBrowserItemType::Material;
-    case ArtifactType::Texture: return AssetBrowserItemType::Texture;
+    case ArtifactType::Texture:
+        // Imported textures are implementation dependencies of generated materials,
+        // not browsable children of the source model/prefab.
+        return std::nullopt;
     case ArtifactType::Shader: return AssetBrowserItemType::Shader;
     case ArtifactType::Unknown:
     case ArtifactType::Model:
@@ -1929,9 +1955,17 @@ AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
     if (input.hasQueuedReadback)
     {
         decision.shouldPump =
-            !input.interactive &&
             input.hasQueuedWork &&
             input.hasPreviewRenderer;
+        return decision;
+    }
+
+    if (input.hasQueuedResourceContinuation)
+    {
+        decision.shouldPump =
+            input.hasQueuedWork &&
+            input.hasPreviewRenderer &&
+            input.nowSeconds >= input.nextAllowedSeconds;
         return decision;
     }
 
@@ -1948,6 +1982,27 @@ AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
         input.nowSeconds >= input.deferredUntilSeconds &&
         input.nowSeconds >= input.nextAllowedSeconds;
     return decision;
+}
+
+double PlanAssetBrowserHeavyGpuThumbnailContinuationDelay(
+    const bool pending,
+    const std::string_view diagnostic,
+    const double resourcePendingDelaySeconds,
+    const double defaultDelaySeconds)
+{
+    if (!pending)
+        return defaultDelaySeconds;
+
+    if (diagnostic.rfind("thumbnail-gpu-preview-readback-pending", 0u) == 0u ||
+        diagnostic.rfind(
+            "thumbnail-gpu-preview-resources-pending:prefab-scene-assembly=",
+            0u) == 0u)
+    {
+        return 0.0;
+    }
+    if (diagnostic.rfind("thumbnail-gpu-preview-resources-pending", 0u) == 0u)
+        return resourcePendingDelaySeconds;
+    return defaultDelaySeconds;
 }
 
 AssetBrowserLightGpuThumbnailPumpDecision PlanAssetBrowserLightGpuThumbnailPump(

@@ -46,6 +46,14 @@
 namespace
 {
 	using LightingDescriptor = NLS::Render::Data::LightingDescriptor;
+	constexpr size_t kMaterialResolveCacheMaxEntries = 1024u;
+
+	template <typename Cache>
+	void TrimMaterialResolveCacheForInsert(Cache& cache, const bool insertsNewSource)
+	{
+		if (insertsNewSource && cache.size() >= kMaterialResolveCacheMaxEntries)
+			cache.clear();
+	}
 
 	struct DeferredPreparedFrameDescriptorSnapshot
 	{
@@ -962,6 +970,8 @@ namespace NLS::Engine::Rendering
 					return;
 
 		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+		const bool logPreparedDrawResults =
+			NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath;
 		uint64_t queuedGBufferDrawCount = 0u;
 		uint64_t queuedDecalDrawCount = 0u;
 		uint64_t unresolvedDecalDrawCount = 0u;
@@ -975,8 +985,8 @@ namespace NLS::Engine::Rendering
 		m_framePreparedDrawDiagnosticLogCount = 0u;
 		m_skipThreadedFramePublish = false;
 		m_threadedHZBPostSubmitReadback.reset();
-		ClearFrameGBufferMaterialResolveCache();
-		ClearFrameDeferredDecalMaterialResolveCache();
+		ResetFrameGBufferMaterialResolveStats();
+		ResetFrameDeferredDecalMaterialResolveStats();
 
 			auto drawables = [&]()
 			{
@@ -1054,7 +1064,7 @@ namespace NLS::Engine::Rendering
 			{
 				m_skipThreadedFramePublish = true;
 				DiscardHZBObservationIfNoReadbackWasPublished();
-				if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
+				if (logPreparedDrawResults)
 				{
 					NLS_LOG_INFO(
 						"[DeferredSceneRenderer] Skipping threaded deferred capture: prepared frame resources unavailable sceneOpaqueDrawables=" +
@@ -1081,7 +1091,7 @@ namespace NLS::Engine::Rendering
 				{
 					m_skipThreadedFramePublish = true;
 					DiscardHZBObservationIfNoReadbackWasPublished();
-					if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
+					if (logPreparedDrawResults)
 					{
 						NLS_LOG_INFO(
 							"[DeferredSceneRenderer] Skipping threaded deferred capture: pipeline resources unavailable"
@@ -1136,11 +1146,14 @@ namespace NLS::Engine::Rendering
 							bool queued = false;
 							if (captured)
 							{
-								queued = QueueThreadedRecordedDraw(preparedDraw);
+								queued = logPreparedDrawResults
+									? QueueThreadedRecordedDraw(preparedDraw)
+									: QueueThreadedRecordedDraw(std::move(preparedDraw));
 								if (queued)
 									++queuedGBufferDrawCount;
 							}
-							LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
+							if (logPreparedDrawResults)
+								LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
 						}
 					}
 					logStartupBeginFrameStage("CaptureGBufferOpaques");
@@ -1173,11 +1186,14 @@ namespace NLS::Engine::Rendering
 							bool queued = false;
 							if (captured)
 							{
-								queued = QueueThreadedRecordedDraw(preparedDraw);
+								queued = logPreparedDrawResults
+									? QueueThreadedRecordedDraw(preparedDraw)
+									: QueueThreadedRecordedDraw(std::move(preparedDraw));
 								if (queued)
 									++queuedDecalDrawCount;
 							}
-							LogPreparedDrawResult("Decal", captured, queued, preparedDraw);
+							if (logPreparedDrawResults)
+								LogPreparedDrawResult("Decal", captured, queued, preparedDraw);
 						}
 					}
 					logStartupBeginFrameStage("CaptureDecals");
@@ -1211,10 +1227,13 @@ namespace NLS::Engine::Rendering
 							gbufferPso.depthFunc,
 							"Forward",
 							preparedDraw);
-						const bool queued = captured && QueueThreadedRecordedDraw(preparedDraw);
+						const bool queued = captured && (logPreparedDrawResults
+							? QueueThreadedRecordedDraw(preparedDraw)
+							: QueueThreadedRecordedDraw(std::move(preparedDraw)));
 						if (queued)
 							++queuedLightingDrawCount;
-						LogPreparedDrawResult("Lighting", captured, queued, preparedDraw);
+						if (logPreparedDrawResults)
+							LogPreparedDrawResult("Lighting", captured, queued, preparedDraw);
 					}
 					logStartupBeginFrameStage("CaptureLighting");
 
@@ -1239,11 +1258,14 @@ namespace NLS::Engine::Rendering
 							bool queued = false;
 							if (captured)
 							{
-								queued = QueueThreadedRecordedDraw(preparedDraw);
+								queued = logPreparedDrawResults
+									? QueueThreadedRecordedDraw(preparedDraw)
+									: QueueThreadedRecordedDraw(std::move(preparedDraw));
 								if (queued)
 									++queuedTransparentDrawCount;
 							}
-							LogPreparedDrawResult("Transparent", captured, queued, preparedDraw);
+							if (logPreparedDrawResults)
+								LogPreparedDrawResult("Transparent", captured, queued, preparedDraw);
 						}
 						SetActivePreparedPassBindingSet(nullptr);
 						}
@@ -2597,8 +2619,9 @@ namespace NLS::Engine::Rendering
 	{
 		NLS_PROFILE_SCOPE();
 		const auto sourceStamp = BuildGBufferMaterialSyncStamp(sourceMaterial);
-		auto found = m_frameGBufferMaterialResolveCache.find(sourceStamp.sourceMaterialInstanceId);
-		if (found != m_frameGBufferMaterialResolveCache.end() &&
+		auto found = m_gBufferMaterialResolveCache.find(sourceStamp.sourceMaterialInstanceId);
+		const bool insertsNewSource = found == m_gBufferMaterialResolveCache.end();
+		if (found != m_gBufferMaterialResolveCache.end() &&
 			found->second.material != nullptr &&
 			found->second.sourceStamp == sourceStamp)
 		{
@@ -2610,7 +2633,8 @@ namespace NLS::Engine::Rendering
 		++m_frameGBufferMaterialResolveMissCount;
 		m_rendererStats.RecordGBufferMaterialResolve(false);
 		auto& material = GetOrCreateGBufferMaterial(sourceMaterial);
-		m_frameGBufferMaterialResolveCache[sourceStamp.sourceMaterialInstanceId] = {
+		TrimMaterialResolveCacheForInsert(m_gBufferMaterialResolveCache, insertsNewSource);
+		m_gBufferMaterialResolveCache[sourceStamp.sourceMaterialInstanceId] = {
 			sourceStamp,
 			&material
 		};
@@ -2627,7 +2651,12 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::ClearFrameGBufferMaterialResolveCache()
 	{
-		m_frameGBufferMaterialResolveCache.clear();
+		m_gBufferMaterialResolveCache.clear();
+		ResetFrameGBufferMaterialResolveStats();
+	}
+
+	void DeferredSceneRenderer::ResetFrameGBufferMaterialResolveStats()
+	{
 		m_frameGBufferMaterialResolveHitCount = 0u;
 		m_frameGBufferMaterialResolveMissCount = 0u;
 	}
@@ -2715,8 +2744,9 @@ namespace NLS::Engine::Rendering
 		if (m_deferredDecalShader == nullptr)
 			return nullptr;
 		const auto sourceStamp = BuildGBufferMaterialSyncStamp(sourceMaterial);
-		auto found = m_frameDeferredDecalMaterialResolveCache.find(sourceStamp.sourceMaterialInstanceId);
-		if (found != m_frameDeferredDecalMaterialResolveCache.end() &&
+		auto found = m_deferredDecalMaterialResolveCache.find(sourceStamp.sourceMaterialInstanceId);
+		const bool insertsNewSource = found == m_deferredDecalMaterialResolveCache.end();
+		if (found != m_deferredDecalMaterialResolveCache.end() &&
 			found->second.material != nullptr &&
 			found->second.sourceStamp == sourceStamp)
 		{
@@ -2728,7 +2758,8 @@ namespace NLS::Engine::Rendering
 		auto* material = GetOrCreateDeferredDecalMaterial(sourceMaterial);
 		if (material == nullptr)
 			return nullptr;
-		m_frameDeferredDecalMaterialResolveCache[sourceStamp.sourceMaterialInstanceId] = {
+		TrimMaterialResolveCacheForInsert(m_deferredDecalMaterialResolveCache, insertsNewSource);
+		m_deferredDecalMaterialResolveCache[sourceStamp.sourceMaterialInstanceId] = {
 			sourceStamp,
 			material
 		};
@@ -2745,7 +2776,12 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::ClearFrameDeferredDecalMaterialResolveCache()
 	{
-		m_frameDeferredDecalMaterialResolveCache.clear();
+		m_deferredDecalMaterialResolveCache.clear();
+		ResetFrameDeferredDecalMaterialResolveStats();
+	}
+
+	void DeferredSceneRenderer::ResetFrameDeferredDecalMaterialResolveStats()
+	{
 		m_frameDeferredDecalMaterialResolveHitCount = 0u;
 		m_frameDeferredDecalMaterialResolveMissCount = 0u;
 	}
@@ -2959,10 +2995,16 @@ namespace NLS::Engine::Rendering
 		renderer.ClearFrameGBufferMaterialResolveCache();
 	}
 
+	void DeferredSceneRendererTestAccess::ResetFrameGBufferMaterialResolveStats(
+		DeferredSceneRenderer& renderer)
+	{
+		renderer.ResetFrameGBufferMaterialResolveStats();
+	}
+
 	uint64_t DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveCacheSize(
 		const DeferredSceneRenderer& renderer)
 	{
-		return static_cast<uint64_t>(renderer.m_frameGBufferMaterialResolveCache.size());
+		return static_cast<uint64_t>(renderer.m_gBufferMaterialResolveCache.size());
 	}
 
 	uint64_t DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(
@@ -3019,10 +3061,16 @@ namespace NLS::Engine::Rendering
 		renderer.ClearFrameDeferredDecalMaterialResolveCache();
 	}
 
+	void DeferredSceneRendererTestAccess::ResetFrameDeferredDecalMaterialResolveStats(
+		DeferredSceneRenderer& renderer)
+	{
+		renderer.ResetFrameDeferredDecalMaterialResolveStats();
+	}
+
 	uint64_t DeferredSceneRendererTestAccess::GetFrameDeferredDecalMaterialResolveCacheSize(
 		const DeferredSceneRenderer& renderer)
 	{
-		return static_cast<uint64_t>(renderer.m_frameDeferredDecalMaterialResolveCache.size());
+		return static_cast<uint64_t>(renderer.m_deferredDecalMaterialResolveCache.size());
 	}
 
 	uint64_t DeferredSceneRendererTestAccess::GetFrameDeferredDecalMaterialResolveHitCount(
@@ -3044,6 +3092,11 @@ namespace NLS::Engine::Rendering
 	}
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
+	size_t DeferredSceneRendererTestAccess::GetMaterialResolveCacheMaxEntriesForTesting()
+	{
+		return kMaterialResolveCacheMaxEntries;
+	}
+
 	void DeferredSceneRendererTestAccess::SetDeferredDecalShaderDestroyProbe(
 		DeferredSceneRenderer& renderer,
 		std::function<void()> probe)

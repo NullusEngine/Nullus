@@ -185,6 +185,51 @@ TEST(DX12ReadbackUtilsTests, ZeroNanosecondTimeoutMeansInfiniteWait)
         INFINITE);
 }
 
+TEST(DX12ReadbackUtilsTests, ReusesDeviceOwnedInitialUploadCommandObjectsAcrossSequentialTextures)
+{
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+    {
+        GTEST_SKIP() << "DX12 device unavailable on this test machine";
+    }
+
+    const std::array<uint8_t, 4> sourcePixel{ 16u, 32u, 48u, 255u };
+    NLS::Render::RHI::RHITextureDesc textureDesc{};
+    textureDesc.extent = { 1u, 1u, 1u };
+    textureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    textureDesc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+    textureDesc.debugName = "InitialUploadCommandReuseTexture";
+
+    NLS::Render::RHI::RHITextureUploadDesc uploadDesc{};
+    uploadDesc.data = sourcePixel.data();
+    uploadDesc.dataSize = sourcePixel.size();
+    uploadDesc.extent = textureDesc.extent;
+    uploadDesc.debugName = "InitialUploadCommandReuseTextureUpload";
+
+    NLS::Render::Backend::DX12InitialUploadCommandObjects commandObjects;
+    auto firstTexture = NLS::Render::Backend::CreateNativeDX12Texture(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        &commandObjects,
+        textureDesc,
+        uploadDesc);
+    ASSERT_NE(firstTexture, nullptr);
+    ASSERT_NE(commandObjects.allocator, nullptr);
+    ASSERT_NE(commandObjects.commandList, nullptr);
+    ID3D12CommandAllocator* const firstAllocator = commandObjects.allocator.Get();
+    ID3D12GraphicsCommandList* const firstCommandList = commandObjects.commandList.Get();
+
+    auto secondTexture = NLS::Render::Backend::CreateNativeDX12Texture(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        &commandObjects,
+        textureDesc,
+        uploadDesc);
+    ASSERT_NE(secondTexture, nullptr);
+    EXPECT_EQ(commandObjects.allocator.Get(), firstAllocator);
+    EXPECT_EQ(commandObjects.commandList.Get(), firstCommandList);
+}
+
 TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncReadbackFinalizesAndAllowsNextReadback)
 {
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
@@ -209,6 +254,7 @@ TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncReadbackFinalizesAndAllowsNext
     auto texture = NLS::Render::Backend::CreateNativeDX12Texture(
         resources.device.Get(),
         resources.graphicsQueue.Get(),
+        nullptr,
         textureDesc,
         uploadDesc);
     ASSERT_NE(texture, nullptr);
@@ -279,6 +325,7 @@ TEST(DX12ReadbackUtilsTests, DroppingAsyncReadbackCompletionKeepsResourcesUntilF
     auto texture = NLS::Render::Backend::CreateNativeDX12Texture(
         resources.device.Get(),
         resources.graphicsQueue.Get(),
+        nullptr,
         textureDesc,
         uploadDesc);
     ASSERT_NE(texture, nullptr);
@@ -310,6 +357,7 @@ TEST(DX12ReadbackUtilsTests, DroppingAsyncReadbackCompletionKeepsResourcesUntilF
     auto secondTexture = NLS::Render::Backend::CreateNativeDX12Texture(
         resources.device.Get(),
         resources.graphicsQueue.Get(),
+        nullptr,
         textureDesc,
         uploadDesc);
     ASSERT_NE(secondTexture, nullptr);

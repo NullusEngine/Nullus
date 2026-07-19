@@ -10,6 +10,7 @@
 #include <unordered_set>
 
 #include <Math/Vector4.h>
+#include <Profiling/Profiler.h>
 
 #include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Jobs/JobSystem.h"
@@ -60,10 +61,10 @@ namespace
 
 	struct RangeResult
 	{
-		std::vector<uint64_t> primitiveBits;
 		std::vector<uint64_t> meshBits;
 		std::vector<ScenePrimitiveHandle> visiblePrimitiveHandles;
 		std::vector<ScenePrimitiveCommandOffsetRange> eligibleCommandRanges;
+		std::vector<CullReason> cullReasons;
 		uint64_t visiblePrimitiveCount = 0u;
 		uint64_t visibleMeshCount = 0u;
 		uint64_t fullScanCandidateCount = 0u;
@@ -366,6 +367,7 @@ namespace
 		SceneVisibilityPipelineResult& result,
 		const ScenePrimitiveSnapshot& primitives)
 	{
+		NLS_PROFILE_NAMED_SCOPE("SceneVisibilityPipeline::RebuildSparseOutputs");
 		result.visiblePrimitiveHandles.clear();
 		result.eligibleCommandRanges.clear();
 		for (const auto& record : primitives.primitiveRecords)
@@ -389,6 +391,7 @@ namespace
 		const SceneRepresentationState& representation,
 		const SnapshotLookup& lookup)
 	{
+		NLS_PROFILE_NAMED_SCOPE("SceneVisibilityPipeline::ApplyLODSelection");
 		if (!options.enableLOD || representation.lodGroups == nullptr)
 			return;
 
@@ -439,6 +442,7 @@ namespace
 		const SceneRepresentationState& representation,
 		const SnapshotLookup& lookup)
 	{
+		NLS_PROFILE_NAMED_SCOPE("SceneVisibilityPipeline::ApplyHLODSelection");
 		if (!options.enableHLOD ||
 			representation.hlodClusters == nullptr ||
 			representation.residency == nullptr)
@@ -497,6 +501,7 @@ namespace
 		const SceneRepresentationState& representation,
 		const SnapshotLookup& lookup)
 	{
+		NLS_PROFILE_NAMED_SCOPE("SceneVisibilityPipeline::ApplyOcclusionSelection");
 		if (!options.enableOcclusion ||
 			representation.occlusion == nullptr ||
 			representation.occlusion->history == nullptr ||
@@ -575,7 +580,7 @@ namespace
 		RangeResult range;
 		range.begin = begin;
 		const auto clampedEnd = std::min(end, primitives.primitiveRecords.size());
-		range.primitiveBits.resize(BitWordCount(clampedEnd - begin));
+		range.cullReasons.assign(clampedEnd - begin, CullReason::SpatialMiss);
 		const auto meshBegin = begin < primitives.primitiveRecords.size()
 			? primitives.primitiveRecords[begin].commandOffsetBegin
 			: 0u;
@@ -590,10 +595,11 @@ namespace
 			++range.fullScanCandidateCount;
 			++range.primitiveRecordsTouched;
 			++range.visibilityTestedPrimitiveCount;
-			if (RevalidateCandidate(record, options) != CullReason::Visible)
+			const auto reason = RevalidateCandidate(record, options);
+			range.cullReasons[denseIndex - begin] = reason;
+			if (reason != CullReason::Visible)
 				continue;
 
-			SetBit(range.primitiveBits, denseIndex - begin);
 			for (uint64_t commandOffset = record.commandOffsetBegin; commandOffset < record.commandOffsetEnd; ++commandOffset)
 			{
 				SetBit(range.meshBits, static_cast<size_t>(commandOffset - meshBegin));
@@ -613,6 +619,7 @@ namespace
 		const ScenePrimitiveSnapshot& primitives,
 		const SnapshotLookup& lookup)
 	{
+		NLS_PROFILE_NAMED_SCOPE("SceneVisibilityPipeline::EvaluateFullScanSerial");
 		SceneVisibilityPipelineResult result;
 		result.primitiveCount = ResolvePrimitiveCount(lookup);
 		result.meshCount = lookup.meshCount;
@@ -642,6 +649,7 @@ namespace
 		const ScenePrimitiveSnapshot& primitives,
 		const SnapshotLookup& lookup)
 	{
+		NLS_PROFILE_NAMED_SCOPE("SceneVisibilityPipeline::EvaluateFullScanParallel");
 		if (primitives.primitiveRecords.empty() || !NLS::Base::Jobs::IsJobSystemInitialized())
 			return EvaluateFullScanSerial(options, primitives, lookup);
 
@@ -658,7 +666,8 @@ namespace
 		if (taskCount <= 1u)
 			return EvaluateFullScanSerial(options, primitives, lookup);
 
-		const auto rangeSize = (primitives.primitiveRecords.size() + taskCount - 1u) / taskCount;
+		const auto rangeBaseSize = primitives.primitiveRecords.size() / taskCount;
+		const auto largerRangeCount = primitives.primitiveRecords.size() % taskCount;
 		std::vector<RangeResult> rangeResults(taskCount);
 		std::vector<std::atomic_bool> rangeCompleted(taskCount);
 		for (auto& completed : rangeCompleted)
@@ -671,15 +680,18 @@ namespace
 			const SnapshotLookup* lookup = nullptr;
 			std::vector<RangeResult>* rangeResults = nullptr;
 			std::vector<std::atomic_bool>* rangeCompleted = nullptr;
-			size_t rangeSize = 0u;
+			size_t rangeBaseSize = 0u;
+			size_t largerRangeCount = 0u;
 
 			void Execute(uint32_t taskIndex)
 			{
-				const auto begin = static_cast<size_t>(taskIndex) * rangeSize;
+				const auto rangeIndex = static_cast<size_t>(taskIndex);
+				const auto begin =
+					rangeIndex * rangeBaseSize + std::min(rangeIndex, largerRangeCount);
 				if (begin >= primitives->primitiveRecords.size())
 					return;
 
-				const auto end = std::min(begin + rangeSize, primitives->primitiveRecords.size());
+				const auto end = begin + rangeBaseSize + (rangeIndex < largerRangeCount ? 1u : 0u);
 				(*rangeResults)[static_cast<size_t>(taskIndex)] =
 					EvaluateFullScanRange(*options, *primitives, *lookup, begin, end);
 				(*rangeCompleted)[static_cast<size_t>(taskIndex)].store(true, std::memory_order_release);
@@ -692,7 +704,8 @@ namespace
 		job.lookup = &lookup;
 		job.rangeResults = &rangeResults;
 		job.rangeCompleted = &rangeCompleted;
-		job.rangeSize = rangeSize;
+		job.rangeBaseSize = rangeBaseSize;
+		job.largerRangeCount = largerRangeCount;
 
 		NLS::Base::Jobs::JobParallelForScheduleOptions scheduleOptions;
 		scheduleOptions.batchSize = 1u;
@@ -721,6 +734,20 @@ namespace
 
 		for (const auto& range : rangeResults)
 		{
+			if (range.begin < result.cullReasons.size())
+			{
+				const auto cullReasonBegin = range.begin;
+				const auto cullReasonEnd = std::min(
+					cullReasonBegin + range.cullReasons.size(),
+					result.cullReasons.size());
+				if (cullReasonEnd > cullReasonBegin)
+				{
+					std::copy(
+						range.cullReasons.begin(),
+						range.cullReasons.begin() + static_cast<std::ptrdiff_t>(cullReasonEnd - cullReasonBegin),
+						result.cullReasons.begin() + static_cast<std::ptrdiff_t>(cullReasonBegin));
+				}
+			}
 			const auto meshBegin = range.begin < primitives.primitiveRecords.size()
 				? primitives.primitiveRecords[range.begin].commandOffsetBegin
 				: 0u;
@@ -740,14 +767,6 @@ namespace
 				result.eligibleCommandRanges.end(),
 				range.eligibleCommandRanges.begin(),
 				range.eligibleCommandRanges.end());
-		}
-
-		for (size_t denseIndex = 0u; denseIndex < primitives.primitiveRecords.size(); ++denseIndex)
-		{
-			const auto& record = primitives.primitiveRecords[denseIndex];
-			result.cullReasons[denseIndex] = IsBitSet(result.primitiveBits, record.handle.index)
-				? CullReason::Visible
-				: RevalidateCandidate(record, options);
 		}
 
 		return result;

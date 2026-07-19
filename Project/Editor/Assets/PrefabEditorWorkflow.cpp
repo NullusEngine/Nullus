@@ -3,6 +3,7 @@
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Engine/Assets/PrefabAsset.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Reflection/Type.h"
 #include "Reflection/TypeCreator.h"
 #include "Serialize/ObjectGraphInstantiator.h"
@@ -2550,9 +2551,21 @@ PrefabEditorOperationResult PrefabEditorWorkflow::OpenPrefabStage(const OpenPref
         return result;
     }
 
+    std::optional<NLS::Base::Profiling::PerformanceStageScope> openStageScope;
+    if (NLS::Base::Profiling::PerformanceStageScope::GetActiveStats() != nullptr)
+    {
+        openStageScope.emplace(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "OpenStage",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        openStageScope->AddCounter("objectCount", request.prefab->graph.objects.size());
+        openStageScope->AddCounter("instantiationGraphCopyCount", 0u);
+    }
+
     auto stageScene = std::make_unique<NLS::Engine::SceneSystem::Scene>();
-    auto stageArtifact = *request.prefab;
-    const auto instantiated = NLS::Engine::Assets::InstantiatePrefabArtifact(stageArtifact, *stageScene);
+    const auto instantiated = NLS::Engine::Assets::InstantiatePrefabArtifact(
+        std::as_const(*request.prefab),
+        *stageScene);
     if (instantiated.diagnostics.HasErrors() || !instantiated.root)
     {
         result.status = PrefabEditorOperationStatus::Failed;
@@ -2575,6 +2588,8 @@ PrefabEditorOperationResult PrefabEditorWorkflow::OpenPrefabStage(const OpenPref
     stage.generatedReadOnly = request.generatedReadOnly || request.prefab->generatedModelPrefab;
     stage.editable = !stage.generatedReadOnly;
     stage.openedGraph = request.prefab->graph;
+    if (openStageScope)
+        openStageScope->AddCounter("openedGraphSnapshotCopyCount", 1u);
     stage.stageRoot = instantiated.root;
     stage.stageScene = std::move(stageScene);
 

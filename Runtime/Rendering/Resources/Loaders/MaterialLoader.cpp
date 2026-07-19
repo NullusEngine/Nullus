@@ -20,6 +20,7 @@
 #include <Debug/Logger.h>
 
 #include "Assets/ArtifactLoadTelemetry.h"
+#include "Profiling/PerformanceStageStats.h"
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/AssetMeta.h"
@@ -1034,7 +1035,13 @@ namespace
 
             auto* texture = static_cast<Texture2D*>(nullptr);
             if (!value.empty() && options.loadMissingTextures)
+            {
+                NLS::Base::Profiling::PerformanceStageScope scope(
+                    NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+                    "PrewarmMaterialTextureDependency",
+                    NLS::Base::Profiling::PerformanceStageThread::Main);
                 texture = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).GetArtifactResource(value, true);
+            }
             if (!value.empty() && options.loadMissingTextures && !texture)
                 NLS_LOG_WARNING("Material texture failed to load and will use the default white texture: " + value);
             SetSerializedUniformValue<Texture2D*>(material, uniform.name, texture);
@@ -1292,13 +1299,24 @@ Material* MaterialLoader::Create(const std::string& p_path)
 
 Material* MaterialLoader::Create(const std::string& p_path, const LoadOptions& options)
 {
-    const auto xml = ReadMaterialPayloadText(p_path, options);
+    std::string xml;
+    {
+        NLS::Base::Profiling::PerformanceStageScope scope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "PrewarmMaterialArtifactRead",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        xml = ReadMaterialPayloadText(p_path, options);
+    }
     if (xml.empty())
     {
         NLS_LOG_ERROR("Failed to load material: " + p_path);
         return nullptr;
     }
 
+    NLS::Base::Profiling::PerformanceStageScope scope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "PrewarmMaterialDeserializeAndResolve",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
     return CreateFromSerializedPayload(p_path, xml, options);
 }
 

@@ -1134,8 +1134,43 @@ TEST(RenderSceneCacheTests, SpatialVisibilityFinalizationAvoidsGlobalBitsetsOnRu
     EXPECT_GT(telemetry.spatialCandidateCount, 0u);
     EXPECT_EQ(telemetry.visibilityBitsetWordCount, 0u);
     EXPECT_GT(telemetry.finalizationTouchedPrimitiveCount, 0u);
-    EXPECT_LT(telemetry.finalizationTouchedPrimitiveCount, telemetry.registeredPrimitiveCount);
+	EXPECT_LT(telemetry.finalizationTouchedPrimitiveCount, telemetry.registeredPrimitiveCount);
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(RenderSceneCacheTests, SpatialVisibilityReusesCandidateSnapshotAndInvalidatesAfterSceneChange)
+{
+	RenderableFixture fixture;
+	NLS::Engine::Rendering::RenderScene renderScene;
+	fixture.meshRenderer->gameobject()->GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -6.0f });
+
+	NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+	syncOptions.defaultMaterial = &fixture.material;
+	ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+
+	auto frustum = CreateForwardFrustum();
+	NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+	visibilityOptions.frustum = &frustum;
+	visibilityOptions.cameraPosition = {};
+	ASSERT_EQ(renderScene.GatherVisibleCommands(visibilityOptions).opaques.size(), 1u);
+	EXPECT_EQ(renderScene.GetSpatialCandidateSnapshotCacheHitCountForTesting(), 0u);
+	ASSERT_EQ(renderScene.GatherVisibleCommands(visibilityOptions).opaques.size(), 1u);
+	EXPECT_EQ(renderScene.GetSpatialCandidateSnapshotCacheHitCountForTesting(), 1u);
+
+	fixture.meshRenderer->SetUserMatrixElement(0u, 3u, 7.0f);
+	ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).syncTouchedPrimitiveCount, 1u);
+	const auto changedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+	ASSERT_EQ(changedVisible.opaques.size(), 1u);
+	EXPECT_EQ(renderScene.GetSpatialCandidateSnapshotCacheHitCountForTesting(), 1u);
+	const auto* changedDescriptor =
+		changedVisible.opaques.front().second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>();
+	ASSERT_NE(changedDescriptor, nullptr);
+	EXPECT_FLOAT_EQ(changedDescriptor->userMatrix.data[3], 7.0f);
+
+	ASSERT_EQ(renderScene.GatherVisibleCommands(visibilityOptions).opaques.size(), 1u);
+	EXPECT_EQ(renderScene.GetSpatialCandidateSnapshotCacheHitCountForTesting(), 2u);
+}
+#endif
 
 TEST(RenderSceneCacheTests, MaterialStateChangeInvalidatesOnlyAffectedCachedCommand)
 {
@@ -4364,7 +4399,83 @@ TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoO
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices[2].data[3], 24.0f);
 }
 
+TEST(RenderSceneCacheTests, OpaqueInstanceOrderRemainsStableWhenCameraMoves)
+{
+    QueueSortFixture fixture;
+    fixture.AddObject("StableFirst", *fixture.sharedMesh, fixture.opaqueMaterialA, 3.0f);
+    fixture.AddObject("StableSecond", *fixture.sharedMesh, fixture.opaqueMaterialA, 1.0f);
+    fixture.AddObject("StableThird", *fixture.sharedMesh, fixture.opaqueMaterialA, 2.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = { 0.0f, 0.0f, 0.0f };
+    const auto firstVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    visibilityOptions.cameraPosition = { 10.0f, 0.0f, 0.0f };
+    const auto secondVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+
+    ASSERT_EQ(firstVisible.opaques.size(), 1u);
+    ASSERT_EQ(secondVisible.opaques.size(), 1u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor firstDescriptor;
+    NLS::Engine::Rendering::EngineDrawableDescriptor secondDescriptor;
+    ASSERT_TRUE(firstVisible.opaques.front().second.TryGetDescriptor(firstDescriptor));
+    ASSERT_TRUE(secondVisible.opaques.front().second.TryGetDescriptor(secondDescriptor));
+    ASSERT_EQ(firstDescriptor.instanceModelMatrices.size(), 3u);
+    ASSERT_EQ(secondDescriptor.instanceModelMatrices.size(), 3u);
+    for (size_t index = 0u; index < firstDescriptor.instanceModelMatrices.size(); ++index)
+        EXPECT_FLOAT_EQ(
+            firstDescriptor.instanceModelMatrices[index].data[3],
+            secondDescriptor.instanceModelMatrices[index].data[3]);
+}
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(RenderSceneCacheTests, OpaqueSortKeepsStableAndDistanceFallbackKeysInStrictOrder)
+{
+    QueueSortFixture fixture;
+    fixture.AddObject("StableHigh", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
+    fixture.AddObject("StableLow", *fixture.sharedMesh, fixture.opaqueMaterialA, 12.0f);
+    fixture.AddObject("DistanceFallback", *fixture.sharedMesh, fixture.opaqueMaterialA, 24.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 3u);
+
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    auto splitDrawables = ExpandMergedOpaqueForShadowFlagTest(visible.opaques.front());
+    ASSERT_EQ(splitDrawables.size(), 3u);
+
+    const std::array<uint64_t, 3u> stableSortKeys = {
+        20u,
+        10u,
+        NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidStableSortKey
+    };
+    const std::array<float, 3u> distances = { 100.0f, 0.0f, 50.0f };
+    for (size_t index = 0u; index < splitDrawables.size(); ++index)
+    {
+        auto* descriptor = splitDrawables[index].second.TryGetDescriptor<
+            NLS::Engine::Rendering::EngineDrawableDescriptor>();
+        ASSERT_NE(descriptor, nullptr);
+        descriptor->stableSortKey = stableSortKeys[index];
+        splitDrawables[index].first = distances[index];
+    }
+
+    renderScene.FinalizeOpaqueQueueForTesting(splitDrawables);
+
+    ASSERT_EQ(splitDrawables.size(), 1u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor mergedDescriptor;
+    ASSERT_TRUE(splitDrawables.front().second.TryGetDescriptor(mergedDescriptor));
+    ASSERT_EQ(mergedDescriptor.instanceModelMatrices.size(), 3u);
+    EXPECT_FLOAT_EQ(mergedDescriptor.instanceModelMatrices[0].data[3], 12.0f);
+    EXPECT_FLOAT_EQ(mergedDescriptor.instanceModelMatrices[1].data[3], 4.0f);
+    EXPECT_FLOAT_EQ(mergedDescriptor.instanceModelMatrices[2].data[3], 24.0f);
+}
+
 TEST(RenderSceneCacheTests, ShadowCastFlagDifferenceSplitsDynamicInstances)
 {
     QueueSortFixture fixture;

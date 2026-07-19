@@ -599,3 +599,71 @@ TEST(DebugDrawPassTests, LineMeshSlotReusesCapacityWhenLaterFramesNeedFewerVerti
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect DebugDrawPass line mesh slots.";
 #endif
 }
+
+TEST(DebugDrawPassTests, PersistentLineGroupReusesUploadedMeshUntilContentChanges)
+{
+    if (const auto& skipReason = RealDxcProcessExecutionSkipReason(); skipReason.has_value())
+        GTEST_SKIP() << *skipReason;
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Render::Debug;
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    PassRecordingRenderer renderer(*driver);
+    renderer.SetDebugDrawService(std::make_unique<DebugDrawService>(16u));
+
+    auto* service = renderer.GetDebugDrawService();
+    ASSERT_NE(service, nullptr);
+
+    const auto makePersistentLine = [](const float y)
+    {
+        DebugDrawPrimitive primitive;
+        primitive.type = DebugDrawPrimitiveType::Line;
+        primitive.points[0] = { 0.0f, y, 0.0f };
+        primitive.points[1] = { 1.0f, y, 0.0f };
+        primitive.options.lifetime = DebugDrawLifetime::Persistent();
+        return primitive;
+    };
+
+    constexpr uint64_t groupId = 17u;
+    ASSERT_TRUE(service->SetPersistentPrimitiveGroup(groupId, { makePersistentLine(0.0f) }));
+    const auto stableRevision = service->GetContentRevision();
+
+    ExecutableDebugDrawPass pass(renderer);
+    pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
+    ASSERT_EQ(renderer.recordedDraws.size(), 1u);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetCommandBuildCount(pass), 1u);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetLineMeshUploadCount(pass), 1u);
+    ASSERT_EQ(DebugDrawPassTestAccess::GetCachedLineMaterialCount(pass), 1u);
+    const auto stableMaterialRevision =
+        DebugDrawPassTestAccess::GetCachedLineMaterialParameterRevision(pass, 0u);
+    ASSERT_NE(stableMaterialRevision, 0u);
+
+    renderer.recordedDraws.clear();
+    service->EndFrame();
+    EXPECT_EQ(service->GetContentRevision(), stableRevision);
+    pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
+    ASSERT_EQ(renderer.recordedDraws.size(), 1u);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetCommandBuildCount(pass), 1u);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetLineMeshUploadCount(pass), 1u);
+    EXPECT_EQ(
+        DebugDrawPassTestAccess::GetCachedLineMaterialParameterRevision(pass, 0u),
+        stableMaterialRevision);
+
+    renderer.recordedDraws.clear();
+    ASSERT_TRUE(service->SetPersistentPrimitiveGroup(groupId, { makePersistentLine(2.0f) }));
+    EXPECT_GT(service->GetContentRevision(), stableRevision);
+    pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
+    ASSERT_EQ(renderer.recordedDraws.size(), 1u);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetCommandBuildCount(pass), 2u);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetLineMeshUploadCount(pass), 2u);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect DebugDrawPass uploads.";
+#endif
+}

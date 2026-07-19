@@ -9,6 +9,7 @@
 #include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
 #include <Rendering/Geometry/BoundingSphereUtils.h>
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
+#include <Rendering/Resources/Shader.h>
 #include <Profiling/Profiler.h>
 
 #include <algorithm>
@@ -533,6 +534,21 @@ protected:
 	}
 
 private:
+    struct ThreadedCommandCacheKey
+    {
+        const Engine::SceneSystem::Scene* scene = nullptr;
+        const NLS::Render::Resources::Mesh* mesh = nullptr;
+        const NLS::Render::Resources::Shader* shader = nullptr;
+        uint64_t shaderGeneration = 0u;
+        uint64_t renderContentRevision = 0u;
+        uint64_t fastAccessRevision = 0u;
+        uint64_t deviceIdentity = 0u;
+        uint64_t pipelineBits = 0u;
+        float billboardScale = 0.0f;
+
+        bool operator==(const ThreadedCommandCacheKey&) const = default;
+    };
+
     std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
         Engine::SceneSystem::Scene& scene,
         Render::Data::PipelineState pso)
@@ -559,28 +575,73 @@ private:
         passInput.usesColorAttachment = true;
         passInput.usesDepthStencilAttachment = true;
 
-        for (auto light : scene.GetFastAccessComponents().lights)
+        const auto explicitDevice =
+            NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+        const auto* lightShader = m_lightMaterial.GetShader();
+        const ThreadedCommandCacheKey cacheKey {
+            &scene,
+            lightMesh,
+            lightShader,
+            lightShader != nullptr ? lightShader->GetGeneration() : 0u,
+            scene.GetRenderContentRevision(),
+            scene.GetFastAccessComponentsRevision(),
+            explicitDevice != nullptr ? explicitDevice->GetCacheIdentity() : 0u,
+            pso.bits.to_ullong(),
+            Editor::Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale
+        };
+        bool canReuseCachedCommands =
+            m_threadedCommandCacheKey.has_value() &&
+            *m_threadedCommandCacheKey == cacheKey;
+        if (canReuseCachedCommands)
         {
-            auto* actor = light != nullptr ? light->gameobject() : nullptr;
-            if (actor == nullptr || !actor->IsActive())
-                continue;
+            std::shared_ptr<NLS::Render::RHI::RHIBindingSet> currentFrameBindingSet;
+            auto* bindingProvider = m_renderer.GetFrameObjectBindingProvider();
+            canReuseCachedCommands =
+                bindingProvider != nullptr &&
+                bindingProvider->CaptureFrameBindingSet(currentFrameBindingSet);
+            if (canReuseCachedCommands)
+            {
+                passInput.recordedDrawCommands = m_cachedThreadedDrawCommands;
+                for (auto& drawCommand : passInput.recordedDrawCommands)
+                    drawCommand.frameBindingSet = currentFrameBindingSet;
+            }
+            else
+            {
+                m_threadedCommandCacheKey.reset();
+                m_cachedThreadedDrawCommands.clear();
+            }
+        }
 
-            auto lightTypeTextureName = GetLightTypeTextureName(light->GetData()->type);
-            auto lightTexture =
-                lightTypeTextureName ?
-                EDITOR_CONTEXT(editorResources)->GetTexture(lightTypeTextureName.value()) :
-                nullptr;
-            const auto& lightColor = light->GetColor();
-            m_lightMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", lightTexture);
-            m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
+        if (!canReuseCachedCommands)
+        {
+            for (auto light : scene.GetFastAccessComponents().lights)
+            {
+                auto* actor = light != nullptr ? light->gameobject() : nullptr;
+                if (actor == nullptr || !actor->IsActive())
+                    continue;
 
-            auto modelMatrix = Maths::Matrix4::Translation(actor->GetTransform()->GetWorldPosition());
-            m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
-                pso,
-                *lightMesh,
-                m_lightMaterial,
-                modelMatrix,
-                passInput.recordedDrawCommands);
+                auto lightTypeTextureName = GetLightTypeTextureName(light->GetData()->type);
+                auto lightTexture =
+                    lightTypeTextureName ?
+                    EDITOR_CONTEXT(editorResources)->GetTexture(lightTypeTextureName.value()) :
+                    nullptr;
+                const auto& lightColor = light->GetColor();
+                m_lightMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", lightTexture);
+                m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
+
+                auto modelMatrix = Maths::Matrix4::Translation(actor->GetTransform()->GetWorldPosition());
+                m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
+                    pso,
+                    *lightMesh,
+                    m_lightMaterial,
+                    modelMatrix,
+                    passInput.recordedDrawCommands);
+            }
+
+            m_cachedThreadedDrawCommands = passInput.recordedDrawCommands;
+            for (auto& drawCommand : m_cachedThreadedDrawCommands)
+                drawCommand.frameBindingSet.reset();
+            m_threadedCommandCacheKey = cacheKey;
         }
 
         passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
@@ -610,6 +671,8 @@ private:
     Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     NLS::Render::Resources::Material m_lightMaterial;
     std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
+    std::optional<ThreadedCommandCacheKey> m_threadedCommandCacheKey;
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput> m_cachedThreadedDrawCommands;
 };
 
 class DebugGameObjectRenderPass : public Render::Core::ARenderPass
@@ -1319,7 +1382,7 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     }
 
     if (const auto* debugDrawService = GetDebugDrawService(); debugDrawService != nullptr)
-        helperState.hasVisibleDebugDrawPrimitives = !debugDrawService->CollectVisiblePrimitives().empty();
+        helperState.hasVisibleDebugDrawPrimitives = debugDrawService->HasVisiblePrimitives();
 
     snapshot->visibleHelperDrawCount = CountThreadedEditorHelperPasses(helperState);
     return snapshot;

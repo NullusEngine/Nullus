@@ -125,7 +125,15 @@ enum class ArtifactLoadTelemetryStage : uint8_t
     ThumbnailCacheEvaluateMetadataLoad,
     ThumbnailCacheEvaluateFreshness,
     ThumbnailCacheEvaluateImageStat,
-    ThumbnailCacheEvaluateImageValidate
+    ThumbnailCacheEvaluateImageValidate,
+    GpuResourceCreate,
+    GpuUploadPlanBuild,
+    GpuUploadPrepare,
+    GpuUploadCpuCopy,
+    GpuUploadCommandSetup,
+    GpuUploadSubmit,
+    GpuUploadFenceWait,
+    NativeArtifactFileMap
 };
 
 enum class ArtifactLoadBudgetKind : uint8_t

@@ -332,12 +332,19 @@ TEST(RHIUiOverlaySourceGuardTests, RhiThreadPrepareUiRenderDoesNotStartStandalon
         << "PrepareUIRender must not consume the pending UI snapshot before a scene package can attach it.";
     EXPECT_NE(presentBody.find("PublishUiOnlyFrame"), std::string::npos)
         << "PresentSwapchain owns the UI-only fallback after scene publication had a chance to consume the snapshot.";
-    const auto drainSceneWork = presentBody.find("DrainPendingSceneOrUiOverlayFrame");
-    const auto publishUiOnly = presentBody.find("PublishPendingUiOnlyFrame");
-    ASSERT_NE(drainSceneWork, std::string::npos);
+    EXPECT_EQ(presentBody.find("NotifyThreadedWorkers"), std::string::npos)
+        << "Frame publication already wakes the workers; PresentSwapchain must not issue a redundant hot-path wake.";
+    EXPECT_EQ(presentBody.find("TryDrainThreadedRendering"), std::string::npos)
+        << "UE-style threaded Present must not synchronously drain render or RHI work on the caller thread.";
+    const auto publishUiOnly = presentBody.find("DriverUIAccess::PublishUiOnlyFrame(");
     ASSERT_NE(publishUiOnly, std::string::npos);
-    EXPECT_LT(drainSceneWork, publishUiOnly)
-        << "PresentSwapchain must drain already-published scene builders before using the UI-only fallback.";
+    const auto publishUiOnlyEnd = presentBody.find(");", publishUiOnly);
+    ASSERT_NE(publishUiOnlyEnd, std::string::npos);
+    const auto publishUiOnlyCall = presentBody.substr(
+        publishUiOnly,
+        publishUiOnlyEnd - publishUiOnly);
+    EXPECT_NE(publishUiOnlyCall.find("false"), std::string::npos)
+        << "The UI-only fallback must use the nonblocking frame-slot publication path.";
 }
 
 TEST(RHIUiOverlaySourceGuardTests, UIManagerResolveTextureViewUsesPackedUiTextureIdentityOnMigratedPath)

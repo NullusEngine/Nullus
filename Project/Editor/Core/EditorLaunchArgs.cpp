@@ -21,6 +21,7 @@ namespace NLS::Editor::Launch
         std::printf("  --editor-validation-open-profiler  Open Profiler during startup validation\n");
         std::printf("  --editor-validation-trace-frames <N>  Export TimelineProfiler trace for N validation frames\n");
         std::printf("  --editor-validation-select-gameobject <name>  Select a GameObject during startup validation\n");
+        std::printf("  --editor-validation-camera-forward-frames <N>  Move Scene View camera forward for N fixed-step frames\n");
 	        std::printf("  --editor-validation-create-asset <path>  Create an asset instance during startup validation\n");
 	        std::printf("  --editor-validation-asset-browser-folder <path>  Select an Asset Browser folder during startup validation\n");
 	        std::printf("  --editor-validation-disable-hzb-occlusion  Disable HZB occlusion for A/B validation\n");
@@ -141,6 +142,24 @@ namespace NLS::Editor::Launch
                 parsed.diagnosticsSettings.editorValidationSelectGameObject = argv[++i];
                 parsed.hasDiagnosticsOverride = true;
             }
+	        else if (arg == "--editor-validation-camera-forward-frames" && i + 1 < argc)
+	        {
+	            try
+	            {
+	                parsed.diagnosticsSettings.editorValidationCameraForwardFrames =
+	                    static_cast<uint32_t>(std::stoul(argv[++i]));
+	                parsed.hasDiagnosticsOverride = true;
+	            }
+	            catch (...)
+	            {
+	                std::fprintf(
+	                    stderr,
+	                    "[main] Invalid value for --editor-validation-camera-forward-frames: %s\n",
+	                    argv[i]);
+	                parsed.hasError = true;
+	                return parsed;
+	            }
+	        }
 	            else if (arg == "--editor-validation-create-asset" && i + 1 < argc)
 	            {
 	                parsed.diagnosticsSettings.editorValidationCreateAsset = argv[++i];

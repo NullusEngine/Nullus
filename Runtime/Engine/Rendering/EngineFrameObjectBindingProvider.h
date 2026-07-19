@@ -20,6 +20,11 @@ namespace NLS::Render::Resources
 class Shader;
 }
 
+namespace NLS::Render::RHI
+{
+class RHIDevice;
+}
+
 namespace NLS::Render::Data
 {
 struct DrawableObjectDescriptor;
@@ -36,6 +41,7 @@ public:
         NLS::Render::Context::RenderScenePackage& package) const;
 #if defined(NLS_ENABLE_TEST_HOOKS)
     uint64_t GetIndexedObjectDataShaderSupportQueryCountForTesting() const;
+    uint64_t GetLegacyObjectBufferWriteCountForTesting() const;
 #endif
 
 protected:
@@ -49,6 +55,12 @@ protected:
         NLS::Render::RHI::RHICommandBuffer& commandBuffer,
         PipelineState& pso,
         const NLS::Render::Entities::Drawable& drawable) override;
+    bool OnCaptureFrameBindingSet(
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& outBindingSet) override;
+    bool OnCapturePreparedObjectBindingSet(
+        PipelineState& pso,
+        const NLS::Render::Entities::Drawable& drawable,
+        PreparedBindingSets& outBindings) override;
     bool OnCapturePreparedBindingSets(
         PipelineState& pso,
         const NLS::Render::Entities::Drawable& drawable,
@@ -81,6 +93,7 @@ private:
     std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_hlslObjectBufferAlt;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_explicitFrameBindingSet;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_explicitObjectBindingSet;
+    std::shared_ptr<NLS::Render::RHI::RHIDevice> m_explicitDevice;
     std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_objectDataBindingLayout;
     uint64_t m_objectDataBindingLayoutDeviceIdentity = 0u;
     uint64_t m_cachedObjectDataDeviceIdentity = 0u;
@@ -104,6 +117,8 @@ private:
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> deferredBindingSet;
         uint64_t deviceIdentity = 0u;
         std::vector<Maths::Matrix4> objectDataShadow;
+        std::vector<Maths::Matrix4> objectDataSourceShadow;
+        std::vector<uint8_t> objectDataSourceValid;
         uint32_t nextTransientObjectIndex = 0u;
         size_t capacity = 0u;
         uint32_t idleFrameCount = 0u;
@@ -114,8 +129,12 @@ private:
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_deferredFrameBindingSet;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_deferredObjectBindingSet;
     std::vector<ObjectDataFrameSlot> m_objectDataSlots;
+    std::vector<Maths::Matrix4> m_objectDataTransposeScratch;
     mutable std::unordered_map<uint64_t, std::pair<uint64_t, bool>>
         m_indexedObjectDataShaderSupportCache;
     mutable uint64_t m_indexedObjectDataShaderSupportQueryCount = 0u;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    uint64_t m_legacyObjectBufferWriteCount = 0u;
+#endif
 };
 }

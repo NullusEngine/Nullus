@@ -338,22 +338,50 @@ BuildObjectRecordIndex(const NLS::Engine::Serialize::ObjectGraphDocument& graph)
     return recordsById;
 }
 
+struct ResolvedAssetIdIndex
+{
+    std::unordered_map<std::string, NLS::Core::Assets::AssetId> byReference;
+};
+
+ResolvedAssetIdIndex BuildResolvedAssetIdIndex(
+    const NLS::Engine::Assets::PrefabArtifact& prefab)
+{
+    ResolvedAssetIdIndex index;
+    index.byReference.reserve(prefab.resolvedAssets.size() * 3u);
+    for (const auto& resolved : prefab.resolvedAssets)
+    {
+        if (!resolved.subAssetKey.empty())
+            index.byReference.try_emplace(resolved.subAssetKey, resolved.assetId);
+        if (resolved.artifactPath.empty())
+            continue;
+
+        index.byReference.try_emplace(resolved.artifactPath, resolved.assetId);
+        index.byReference.try_emplace(
+            std::filesystem::path(resolved.artifactPath).lexically_normal().generic_string(),
+            resolved.assetId);
+    }
+    return index;
+}
+
 NLS::Core::Assets::AssetId FindResolvedAssetIdForPath(
-    const NLS::Engine::Assets::PrefabArtifact& prefab,
+    const ResolvedAssetIdIndex& index,
     const std::string& artifactPath)
 {
     if (artifactPath.empty())
         return {};
 
-    const auto normalizedArtifactPath = std::filesystem::path(artifactPath).lexically_normal().generic_string();
-    for (const auto& resolved : prefab.resolvedAssets)
+    if (const auto found = index.byReference.find(artifactPath);
+        found != index.byReference.end())
     {
-        if (resolved.subAssetKey == artifactPath ||
-            resolved.artifactPath == artifactPath ||
-            std::filesystem::path(resolved.artifactPath).lexically_normal().generic_string() == normalizedArtifactPath)
-        {
-            return resolved.assetId;
-        }
+        return found->second;
+    }
+
+    const auto normalizedArtifactPath =
+        std::filesystem::path(artifactPath).lexically_normal().generic_string();
+    if (const auto found = index.byReference.find(normalizedArtifactPath);
+        found != index.byReference.end())
+    {
+        return found->second;
     }
     return {};
 }
@@ -395,6 +423,7 @@ PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
     const auto templates = BuildImportedPrefabRendererDependencyTemplates(prefab);
     snapshot.expectedDrawItemCount = CountPreviewRendererGameObjects(prefab.graph);
     const auto recordsById = BuildObjectRecordIndex(prefab.graph);
+    const auto resolvedAssetIds = BuildResolvedAssetIdIndex(prefab);
     snapshot.drawItems.reserve(templates.size());
     std::unordered_map<NLS::Engine::Serialize::ObjectId, ParsedPreviewTransform> transformCache;
     std::unordered_map<NLS::Engine::Serialize::ObjectId, bool> visitingTransforms;
@@ -406,11 +435,11 @@ PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(
 
         PreviewDrawItem drawItem;
         drawItem.sourceObject = item.sourceObject;
-        drawItem.meshAssetId = FindResolvedAssetIdForPath(prefab, item.meshPath);
+        drawItem.meshAssetId = FindResolvedAssetIdForPath(resolvedAssetIds, item.meshPath);
         drawItem.meshPath = item.meshPath;
         drawItem.materialAssetIds.reserve(item.materialPaths.size());
         for (const auto& materialPath : item.materialPaths)
-            drawItem.materialAssetIds.push_back(FindResolvedAssetIdForPath(prefab, materialPath));
+            drawItem.materialAssetIds.push_back(FindResolvedAssetIdForPath(resolvedAssetIds, materialPath));
         drawItem.materialPaths = item.materialPaths;
         if (const auto foundRecord = recordsById.find(item.sourceObject);
             foundRecord != recordsById.end() && foundRecord->second != nullptr)

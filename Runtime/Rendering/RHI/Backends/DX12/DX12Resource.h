@@ -1,11 +1,16 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 
 #include "RenderDef.h"
 #include "Rendering/RHI/Core/RHIResource.h"
+
+#if defined(_WIN32)
+#include <wrl/client.h>
+#endif
 
 struct ID3D12CommandQueue;
 struct ID3D12Device;
@@ -24,12 +29,24 @@ namespace NLS::Render::RHI
 
 namespace NLS::Render::Backend
 {
+#if defined(_WIN32)
+	struct DX12InitialUploadCommandObjects final
+	{
+		std::mutex mutex;
+		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+	};
+#else
+	struct DX12InitialUploadCommandObjects;
+#endif
+
 	class NativeDX12Buffer final : public NLS::Render::RHI::RHIBuffer
 	{
 	public:
 		NativeDX12Buffer(
 			ID3D12Device* device,
 			ID3D12CommandQueue* graphicsQueue,
+			DX12InitialUploadCommandObjects* initialUploadCommandObjects,
 			const NLS::Render::RHI::RHIBufferDesc& desc,
 			const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc);
 		~NativeDX12Buffer() override;
@@ -142,11 +159,13 @@ namespace NLS::Render::Backend
 	NLS_RENDER_API std::shared_ptr<NLS::Render::RHI::RHITexture> CreateNativeDX12Texture(
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
+		DX12InitialUploadCommandObjects* initialUploadCommandObjects,
 		const NLS::Render::RHI::RHITextureDesc& desc,
 		const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc);
 	NLS_RENDER_API NLS::Render::RHI::RHIUpdateResult UpdateNativeDX12Texture(
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
+		DX12InitialUploadCommandObjects* initialUploadCommandObjects,
 		const NLS::Render::RHI::RHITextureUpdateDesc& desc);
 	NLS_RENDER_API std::shared_ptr<NLS::Render::RHI::UploadBackend> CreateDX12UploadBackend(
 		ID3D12Device* device);

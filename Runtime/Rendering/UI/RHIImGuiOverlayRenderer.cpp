@@ -2,6 +2,7 @@
 
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ServiceLocator.h"
+#include "Profiling/Profiler.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -14,6 +15,8 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace NLS::Render::UI
@@ -116,7 +119,12 @@ namespace NLS::Render::UI
         const UiDrawDataSnapshot& snapshot,
         const size_t frameResourceSlot)
     {
-        std::lock_guard lock(m_mutex);
+        NLS_PROFILE_NAMED_SCOPE("UIOverlay::PrepareFrameResources");
+        std::unique_lock<std::mutex> lock;
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::PrepareLockWait");
+            lock = std::unique_lock<std::mutex>(m_mutex);
+        }
         RHIImGuiOverlayRecordingResult result;
         if (!IsSnapshotRecordable(snapshot))
         {
@@ -126,21 +134,84 @@ namespace NLS::Render::UI
         }
 
         const auto telemetryBefore = m_dynamicBufferTelemetry;
-        const auto copyStart = std::chrono::steady_clock::now();
         const size_t vertexBytes = static_cast<size_t>(snapshot.totalVertexCount) * sizeof(UiDrawVertex);
         const size_t indexBytes = static_cast<size_t>(snapshot.totalIndexCount) * sizeof(uint32_t);
+        const uint64_t contentSignature = ResolveUiDrawDataContentSignature(snapshot);
         const bool fontAtlasWasUploaded = m_fontAtlas.IsUploaded();
-        if (!EnsureGraphicsPipeline(device, result.message) ||
-            !m_fontAtlas.EnsureUploaded(device, commandBuffer, m_fontAtlasBindingLayout, result.message) ||
-            !EnsureRegisteredTextureBindingSets(device, snapshot, result.message) ||
-            !EnsureDynamicBuffers(frameResourceSlot, device, vertexBytes, indexBytes, result.message) ||
-            !UploadDynamicBuffers(frameResourceSlot, snapshot, result.message))
         {
-            result.success = false;
-            return result;
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::EnsureGraphicsPipeline");
+            if (!EnsureGraphicsPipeline(device, result.message))
+            {
+                result.success = false;
+                return result;
+            }
+        }
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::EnsureFontAtlas");
+            if (!m_fontAtlas.EnsureUploaded(
+                    device,
+                    commandBuffer,
+                    m_fontAtlasBindingLayout,
+                    result.message))
+            {
+                result.success = false;
+                return result;
+            }
+        }
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::EnsureTextureBindingSets");
+            if (!EnsureRegisteredTextureBindingSets(device, snapshot, result.message))
+            {
+                result.success = false;
+                return result;
+            }
+        }
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::EnsureDynamicBuffers");
+            if (!EnsureDynamicBuffers(
+                    frameResourceSlot,
+                    device,
+                    vertexBytes,
+                    indexBytes,
+                    result.message))
+            {
+                result.success = false;
+                return result;
+            }
+        }
+        auto& buffers = m_dynamicBuffersByFrameSlot[frameResourceSlot];
+        const bool canReuseUploadedContent =
+            buffers.hasPreparedSnapshot &&
+            buffers.preparedContentSignature == contentSignature &&
+            buffers.preparedVertexCount == snapshot.totalVertexCount &&
+            buffers.preparedIndexCount == snapshot.totalIndexCount;
+        if (canReuseUploadedContent)
+        {
+            ++m_dynamicBufferTelemetry.contentCacheHitCount;
+        }
+        else
+        {
+            ++m_dynamicBufferTelemetry.contentCacheMissCount;
+        }
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::UploadDynamicBuffers");
+            const auto copyStart = std::chrono::steady_clock::now();
+            if (!canReuseUploadedContent &&
+                !UploadDynamicBuffers(frameResourceSlot, snapshot, result.message))
+            {
+                result.success = false;
+                return result;
+            }
+            if (!canReuseUploadedContent)
+            {
+                m_dynamicBufferTelemetry.uploadedVertexBytes += vertexBytes;
+                m_dynamicBufferTelemetry.uploadedIndexBytes += indexBytes;
+                m_dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - copyStart).count());
+            }
         }
 
-        auto& buffers = m_dynamicBuffersByFrameSlot[frameResourceSlot];
         buffers.preparedFrameId = snapshot.frameId;
         buffers.preparedVertexCount = snapshot.totalVertexCount;
         buffers.preparedIndexCount = snapshot.totalIndexCount;
@@ -149,19 +220,43 @@ namespace NLS::Render::UI
         buffers.fontAtlasUploadTransitionRequired = !fontAtlasWasUploaded && m_fontAtlas.IsUploaded();
         buffers.preparedFontAtlasTextureView = m_fontAtlas.TextureView();
         buffers.preparedFontAtlasBindingSet = m_fontAtlas.BindingSet();
-        m_dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds += static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - copyStart).count());
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::PrepareDrawCommands");
+            if (!PrepareDrawCommands(
+                    snapshot,
+                    frameResourceSlot,
+                    contentSignature,
+                    result.message))
+            {
+                result.success = false;
+                return result;
+            }
+        }
+        buffers.preparedContentSignature = contentSignature;
         result.dynamicBufferTelemetry.allocationCount =
             m_dynamicBufferTelemetry.allocationCount - telemetryBefore.allocationCount;
         result.dynamicBufferTelemetry.reallocationCount =
             m_dynamicBufferTelemetry.reallocationCount - telemetryBefore.reallocationCount;
+        result.dynamicBufferTelemetry.contentCacheHitCount =
+            m_dynamicBufferTelemetry.contentCacheHitCount - telemetryBefore.contentCacheHitCount;
+        result.dynamicBufferTelemetry.contentCacheMissCount =
+            m_dynamicBufferTelemetry.contentCacheMissCount - telemetryBefore.contentCacheMissCount;
+        result.dynamicBufferTelemetry.uploadedVertexBytes =
+            m_dynamicBufferTelemetry.uploadedVertexBytes - telemetryBefore.uploadedVertexBytes;
+        result.dynamicBufferTelemetry.uploadedIndexBytes =
+            m_dynamicBufferTelemetry.uploadedIndexBytes - telemetryBefore.uploadedIndexBytes;
         result.dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds =
             m_dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds - telemetryBefore.totalCpuCopyTimeNanoseconds;
 
-        RecordDynamicBufferUploadVisibilityBarrier(frameResourceSlot, commandBuffer);
+        if (!canReuseUploadedContent)
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::UploadVisibilityBarrier");
+            RecordDynamicBufferUploadVisibilityBarrier(frameResourceSlot, commandBuffer);
+        }
         result.success = true;
-        result.message = "prepared UI overlay dynamic buffers";
+        result.message = canReuseUploadedContent
+            ? "reused prepared UI overlay content"
+            : "prepared UI overlay dynamic buffers";
         return result;
     }
 
@@ -170,7 +265,12 @@ namespace NLS::Render::UI
         const UiDrawDataSnapshot& snapshot,
         const size_t frameResourceSlot)
     {
-        std::lock_guard lock(m_mutex);
+        NLS_PROFILE_NAMED_SCOPE("UIOverlay::RecordPrepared");
+        std::unique_lock<std::mutex> lock;
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::RecordLockWait");
+            lock = std::unique_lock<std::mutex>(m_mutex);
+        }
         return RecordInternal(commandBuffer, snapshot, frameResourceSlot, true);
     }
 
@@ -188,6 +288,7 @@ namespace NLS::Render::UI
         if (!buffers.hasPreparedSnapshot ||
             buffers.preparedSnapshotAddress != &snapshot ||
             buffers.preparedFrameId != snapshot.frameId ||
+            buffers.preparedContentSignature != ResolveUiDrawDataContentSignature(snapshot) ||
             buffers.preparedVertexCount != snapshot.totalVertexCount ||
             buffers.preparedIndexCount != snapshot.totalIndexCount)
         {
@@ -202,34 +303,7 @@ namespace NLS::Render::UI
             resources.fontAtlasUploadTransitionRequired = buffers.fontAtlasUploadTransitionRequired;
         }
 
-        if (m_textureRegistry != nullptr)
-        {
-            for (const auto& drawList : snapshot.drawLists)
-            {
-                for (const auto& command : drawList.commands)
-                {
-                    if (command.elementCount == 0u ||
-                        command.callbackKind == UiDrawCallbackKind::Unsupported ||
-                        command.hasUnsupportedTextureId ||
-                        command.textureId.IsFontAtlas())
-                    {
-                        continue;
-                    }
-
-                    const auto entry = m_textureRegistry->ResolveForFrame(command.textureId, snapshot.frameId);
-                    if (!entry.has_value() || entry->textureView == nullptr)
-                        continue;
-
-                    if (std::find(
-                        resources.registeredTextureViews.begin(),
-                        resources.registeredTextureViews.end(),
-                        entry->textureView) == resources.registeredTextureViews.end())
-                    {
-                        resources.registeredTextureViews.push_back(entry->textureView);
-                    }
-                }
-            }
-        }
+        resources.registeredTextureViews = buffers.preparedRegisteredTextureViews;
 
         return resources;
     }
@@ -274,12 +348,15 @@ namespace NLS::Render::UI
             buffers.vertexBufferCapacityBytes = 0u;
             buffers.indexBufferCapacityBytes = 0u;
             buffers.preparedFrameId = 0u;
+            buffers.preparedContentSignature = 0u;
             buffers.preparedVertexCount = 0u;
             buffers.preparedIndexCount = 0u;
             buffers.preparedSnapshotAddress = nullptr;
             buffers.hasPreparedSnapshot = false;
             buffers.preparedFontAtlasTextureView.reset();
             buffers.preparedFontAtlasBindingSet.reset();
+            buffers.preparedRegisteredTextureViews.clear();
+            buffers.preparedDrawCommands.clear();
         }
         buffers.deviceCacheIdentity = deviceCacheIdentity;
 
@@ -342,6 +419,7 @@ namespace NLS::Render::UI
         if (m_textureRegistry == nullptr)
             return true;
 
+        std::unordered_set<uint64_t> ensuredTextureIds;
         for (const auto& drawList : snapshot.drawLists)
         {
             for (const auto& command : drawList.commands)
@@ -354,6 +432,10 @@ namespace NLS::Render::UI
                     continue;
                 }
 
+                const uint64_t packedTextureId = PackUiTextureIdForImGui(command.textureId);
+                if (!ensuredTextureIds.insert(packedTextureId).second)
+                    continue;
+
                 if (!m_textureRegistry->EnsureBindingSet(
                     device,
                     m_fontAtlasBindingLayout,
@@ -363,6 +445,152 @@ namespace NLS::Render::UI
                 {
                     return false;
                 }
+            }
+        }
+
+        return true;
+    }
+
+    bool RHIImGuiOverlayRenderer::PrepareDrawCommands(
+        const UiDrawDataSnapshot& snapshot,
+        const size_t frameResourceSlot,
+        const uint64_t contentSignature,
+        std::string& errorMessage)
+    {
+        const auto buffersIt = m_dynamicBuffersByFrameSlot.find(frameResourceSlot);
+        if (buffersIt == m_dynamicBuffersByFrameSlot.end())
+        {
+            errorMessage = "UI overlay draw commands require prepared dynamic buffers";
+            return false;
+        }
+
+        auto& buffers = buffersIt->second;
+        const bool rebuildDrawMetadata =
+            buffers.preparedContentSignature != contentSignature ||
+            buffers.preparedDrawCommands.empty();
+        if (rebuildDrawMetadata)
+        {
+            buffers.preparedDrawCommands.clear();
+            buffers.preparedDrawCommands.reserve(snapshot.copyDiagnostics.copiedCommandCount);
+            uint64_t globalVertexOffset = 0u;
+            uint64_t globalIndexOffset = 0u;
+            for (const auto& drawList : snapshot.drawLists)
+            {
+                for (const auto& command : drawList.commands)
+                {
+                    if (command.elementCount == 0u ||
+                        command.callbackKind == UiDrawCallbackKind::Unsupported ||
+                        command.hasUnsupportedTextureId)
+                    {
+                        continue;
+                    }
+
+                    const uint64_t indexEnd =
+                        static_cast<uint64_t>(command.indexOffset) +
+                        static_cast<uint64_t>(command.elementCount);
+                    if (indexEnd > drawList.indices.size() ||
+                        command.vertexOffset > drawList.vertices.size())
+                    {
+                        errorMessage =
+                            "UI draw command references vertices or indices outside the copied snapshot";
+                        return false;
+                    }
+                    if (globalIndexOffset + static_cast<uint64_t>(command.indexOffset) >
+                        static_cast<uint64_t>((std::numeric_limits<uint32_t>::max)()))
+                    {
+                        errorMessage = "UI draw command global index offset exceeds RHI DrawIndexed range";
+                        return false;
+                    }
+                    if (globalVertexOffset + static_cast<uint64_t>(command.vertexOffset) >
+                        static_cast<uint64_t>((std::numeric_limits<int32_t>::max)()))
+                    {
+                        errorMessage = "UI draw command global vertex offset exceeds RHI DrawIndexed range";
+                        return false;
+                    }
+
+                    const auto scissor = BuildScissor(snapshot, command);
+                    if (!scissor.has_value())
+                        continue;
+
+                    DynamicBufferSet::PreparedDrawCommand preparedCommand;
+                    preparedCommand.elementCount = command.elementCount;
+                    preparedCommand.firstIndex =
+                        static_cast<uint32_t>(globalIndexOffset + command.indexOffset);
+                    preparedCommand.vertexOffset =
+                        static_cast<int32_t>(globalVertexOffset + command.vertexOffset);
+                    preparedCommand.scissorX = scissor->x;
+                    preparedCommand.scissorY = scissor->y;
+                    preparedCommand.scissorWidth = scissor->width;
+                    preparedCommand.scissorHeight = scissor->height;
+                    preparedCommand.textureId = command.textureId;
+
+                    if (!buffers.preparedDrawCommands.empty())
+                    {
+                        auto& previous = buffers.preparedDrawCommands.back();
+                        const bool contiguous =
+                            static_cast<uint64_t>(previous.firstIndex) +
+                                static_cast<uint64_t>(previous.elementCount) ==
+                            static_cast<uint64_t>(preparedCommand.firstIndex);
+                        const bool sameState =
+                            previous.vertexOffset == preparedCommand.vertexOffset &&
+                            previous.scissorX == preparedCommand.scissorX &&
+                            previous.scissorY == preparedCommand.scissorY &&
+                            previous.scissorWidth == preparedCommand.scissorWidth &&
+                            previous.scissorHeight == preparedCommand.scissorHeight &&
+                            previous.textureId.value == preparedCommand.textureId.value &&
+                            previous.textureId.generation == preparedCommand.textureId.generation;
+                        if (contiguous &&
+                            sameState &&
+                            preparedCommand.elementCount <=
+                                (std::numeric_limits<uint32_t>::max)() - previous.elementCount)
+                        {
+                            previous.elementCount += preparedCommand.elementCount;
+                            continue;
+                        }
+                    }
+
+                    buffers.preparedDrawCommands.push_back(std::move(preparedCommand));
+                }
+
+                globalVertexOffset += static_cast<uint64_t>(drawList.vertices.size());
+                globalIndexOffset += static_cast<uint64_t>(drawList.indices.size());
+            }
+        }
+
+        buffers.preparedRegisteredTextureViews.clear();
+        std::unordered_map<uint64_t, RHIImGuiTextureRegistryEntry> resolvedTextureEntries;
+        for (auto& preparedCommand : buffers.preparedDrawCommands)
+        {
+            if (preparedCommand.textureId.IsFontAtlas())
+            {
+                preparedCommand.bindingSet = buffers.preparedFontAtlasBindingSet;
+                continue;
+            }
+
+            preparedCommand.bindingSet.reset();
+            if (m_textureRegistry == nullptr)
+                continue;
+
+            const uint64_t packedTextureId = PackUiTextureIdForImGui(preparedCommand.textureId);
+            auto resolvedIt = resolvedTextureEntries.find(packedTextureId);
+            if (resolvedIt == resolvedTextureEntries.end())
+            {
+                const auto resolved =
+                    m_textureRegistry->ResolveForFrame(preparedCommand.textureId, snapshot.frameId);
+                if (!resolved.has_value())
+                    continue;
+                resolvedIt = resolvedTextureEntries.emplace(packedTextureId, *resolved).first;
+            }
+
+            preparedCommand.bindingSet = resolvedIt->second.bindingSet;
+            if (resolvedIt->second.textureView != nullptr &&
+                std::find(
+                    buffers.preparedRegisteredTextureViews.begin(),
+                    buffers.preparedRegisteredTextureViews.end(),
+                    resolvedIt->second.textureView) ==
+                    buffers.preparedRegisteredTextureViews.end())
+            {
+                buffers.preparedRegisteredTextureViews.push_back(resolvedIt->second.textureView);
             }
         }
 
@@ -587,6 +815,7 @@ namespace NLS::Render::UI
         if (!buffers.hasPreparedSnapshot ||
             buffers.preparedSnapshotAddress != &snapshot ||
             buffers.preparedFrameId != snapshot.frameId ||
+            buffers.preparedContentSignature != ResolveUiDrawDataContentSignature(snapshot) ||
             buffers.preparedVertexCount != snapshot.totalVertexCount ||
             buffers.preparedIndexCount != snapshot.totalIndexCount)
         {
@@ -641,6 +870,7 @@ namespace NLS::Render::UI
         const size_t frameResourceSlot,
         const bool bindPreparedDynamicBuffers)
     {
+        NLS_PROFILE_NAMED_SCOPE("UIOverlay::RecordInternal");
         RHIImGuiOverlayRecordingResult result;
         if (!IsSnapshotRecordable(snapshot))
         {
@@ -649,41 +879,98 @@ namespace NLS::Render::UI
             return result;
         }
 
-        if (bindPreparedDynamicBuffers)
         {
-            if (!BindPreparedDynamicBuffers(frameResourceSlot, snapshot, commandBuffer, result.message))
+            NLS_PROFILE_NAMED_SCOPE("UIOverlay::RecordStateSetup");
+            if (bindPreparedDynamicBuffers)
             {
-                result.success = false;
-                return result;
+                if (!BindPreparedDynamicBuffers(frameResourceSlot, snapshot, commandBuffer, result.message))
+                {
+                    result.success = false;
+                    return result;
+                }
+                if (m_graphicsPipeline == nullptr)
+                {
+                    result.success = false;
+                    result.message = "UI overlay graphics pipeline is not prepared";
+                    return result;
+                }
+                commandBuffer.BindGraphicsPipeline(m_graphicsPipeline);
             }
-            if (m_graphicsPipeline == nullptr)
-            {
-                result.success = false;
-                result.message = "UI overlay graphics pipeline is not prepared";
-                return result;
-            }
-            commandBuffer.BindGraphicsPipeline(m_graphicsPipeline);
-        }
 
-        commandBuffer.SetViewport({
-            0.0f,
-            0.0f,
-            snapshot.displaySize[0] * snapshot.framebufferScale[0],
-            snapshot.displaySize[1] * snapshot.framebufferScale[1],
-            0.0f,
-            1.0f
-        });
-        const auto projectionConstants = BuildProjectionConstants(snapshot);
-        commandBuffer.PushConstants(
-            RHI::ShaderStageMask::Vertex,
-            0u,
-            static_cast<uint32_t>(sizeof(projectionConstants)),
-            &projectionConstants);
+            commandBuffer.SetViewport({
+                0.0f,
+                0.0f,
+                snapshot.displaySize[0] * snapshot.framebufferScale[0],
+                snapshot.displaySize[1] * snapshot.framebufferScale[1],
+                0.0f,
+                1.0f
+            });
+            const auto projectionConstants = BuildProjectionConstants(snapshot);
+            commandBuffer.PushConstants(
+                RHI::ShaderStageMask::Vertex,
+                0u,
+                static_cast<uint32_t>(sizeof(projectionConstants)),
+                &projectionConstants);
+        }
 
         uint64_t recordedDrawCount = 0u;
         uint64_t globalVertexOffset = 0u;
         uint64_t globalIndexOffset = 0u;
         std::shared_ptr<RHI::RHIBindingSet> currentBindingSet;
+        NLS_PROFILE_NAMED_SCOPE("UIOverlay::RecordDrawLoop");
+        if (bindPreparedDynamicBuffers)
+        {
+            const auto buffersIt = m_dynamicBuffersByFrameSlot.find(frameResourceSlot);
+            if (buffersIt == m_dynamicBuffersByFrameSlot.end())
+            {
+                result.success = false;
+                result.message = "UI overlay prepared draw commands are unavailable";
+                return result;
+            }
+
+            for (const auto& command : buffersIt->second.preparedDrawCommands)
+            {
+                if (command.bindingSet == nullptr)
+                    continue;
+
+                if (command.bindingSet != currentBindingSet)
+                {
+                    commandBuffer.BindBindingSet(0u, command.bindingSet);
+                    currentBindingSet = command.bindingSet;
+                }
+
+                RHI::RHIRect2D scissor;
+                scissor.x = command.scissorX;
+                scissor.y = command.scissorY;
+                scissor.width = command.scissorWidth;
+                scissor.height = command.scissorHeight;
+                commandBuffer.SetScissor(scissor);
+                const auto drawResult = commandBuffer.DrawIndexedChecked(
+                    command.elementCount,
+                    1u,
+                    command.firstIndex,
+                    command.vertexOffset,
+                    0u);
+                if (!drawResult.Succeeded())
+                {
+                    result.success = false;
+                    result.recordedDraws = recordedDrawCount > 0u;
+                    result.message = drawResult.message.empty()
+                        ? "UI overlay DrawIndexed failed"
+                        : drawResult.message;
+                    return result;
+                }
+                ++recordedDrawCount;
+            }
+
+            result.success = true;
+            result.recordedDraws = recordedDrawCount > 0u;
+            std::ostringstream message;
+            message << "recorded " << recordedDrawCount << " UI draw command(s)";
+            result.message = message.str();
+            return result;
+        }
+
         for (const auto& drawList : snapshot.drawLists)
         {
             for (const auto& command : drawList.commands)

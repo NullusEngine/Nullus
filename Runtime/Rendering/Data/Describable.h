@@ -60,6 +60,13 @@ public:
     template<typename T>
     const T* TryGetDescriptor() const;
 
+    /**
+     * Retrieve a mutable descriptor without copying it.
+     * @return Pointer to the descriptor, or nullptr when it is absent
+     */
+    template<typename T>
+    T* TryGetDescriptor();
+
 private:
     std::unordered_map<std::type_index, std::any> m_descriptors;
 };

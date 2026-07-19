@@ -3,6 +3,7 @@
 #include "Rendering/Debug/DebugDrawGeometry.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace NLS::Render::Debug
 {
@@ -132,7 +133,12 @@ bool DebugDrawService::SubmitCapsule(
 
 void DebugDrawService::SetCategoryEnabled(const DebugDrawCategory category, const bool enabled)
 {
+    const bool current = m_categoryVisibility[CategoryIndex(category)];
+    if (current == enabled)
+        return;
+
     m_categoryVisibility[CategoryIndex(category)] = enabled;
+    ++m_contentRevision;
 }
 
 bool DebugDrawService::IsCategoryEnabled(const DebugDrawCategory category) const
@@ -142,7 +148,11 @@ bool DebugDrawService::IsCategoryEnabled(const DebugDrawCategory category) const
 
 void DebugDrawService::SetEnabled(const bool enabled)
 {
+    if (m_enabled == enabled)
+        return;
+
     m_enabled = enabled;
+    ++m_contentRevision;
 }
 
 bool DebugDrawService::IsEnabled() const
@@ -150,19 +160,101 @@ bool DebugDrawService::IsEnabled() const
     return m_enabled;
 }
 
+bool DebugDrawService::SetPersistentPrimitiveGroup(
+    const uint64_t groupId,
+    std::vector<DebugDrawPrimitive> primitives)
+{
+    if (groupId == 0u)
+        return false;
+
+    const auto existingCount = static_cast<size_t>(std::count_if(
+        m_primitives.begin(),
+        m_primitives.end(),
+        [groupId](const PrimitiveEntry& entry) { return entry.persistentGroupId == groupId; }));
+    if (m_primitives.size() - existingCount + primitives.size() > m_maxVisiblePrimitives)
+    {
+        m_limitState = DebugDrawLimitState::OverflowRejected;
+        return false;
+    }
+
+    m_primitives.erase(
+        std::remove_if(
+            m_primitives.begin(),
+            m_primitives.end(),
+            [groupId](const PrimitiveEntry& entry) { return entry.persistentGroupId == groupId; }),
+        m_primitives.end());
+
+    m_primitives.reserve(m_primitives.size() + primitives.size());
+    for (auto& primitive : primitives)
+    {
+        primitive.options.lifetime = DebugDrawLifetime::Persistent();
+        m_primitives.push_back({ std::move(primitive), groupId });
+    }
+
+    ++m_contentRevision;
+    UpdateLimitState();
+    return true;
+}
+
+bool DebugDrawService::RemovePersistentPrimitiveGroup(const uint64_t groupId)
+{
+    if (groupId == 0u)
+        return false;
+
+    const auto oldSize = m_primitives.size();
+    m_primitives.erase(
+        std::remove_if(
+            m_primitives.begin(),
+            m_primitives.end(),
+            [groupId](const PrimitiveEntry& entry) { return entry.persistentGroupId == groupId; }),
+        m_primitives.end());
+    if (m_primitives.size() == oldSize)
+        return false;
+
+    ++m_contentRevision;
+    UpdateLimitState();
+    return true;
+}
+
+uint64_t DebugDrawService::GetContentRevision() const
+{
+    return m_contentRevision;
+}
+
+bool DebugDrawService::HasVisiblePrimitives() const
+{
+    if (!m_enabled)
+        return false;
+
+    return std::any_of(
+        m_primitives.begin(),
+        m_primitives.end(),
+        [this](const PrimitiveEntry& entry)
+        {
+            return IsCategoryEnabled(entry.primitive.options.category);
+        });
+}
+
+void DebugDrawService::CollectVisiblePrimitives(
+    std::vector<std::reference_wrapper<const DebugDrawPrimitive>>& outPrimitives) const
+{
+    outPrimitives.clear();
+    outPrimitives.reserve(m_primitives.size());
+
+    if (!m_enabled)
+        return;
+
+    for (const auto& entry : m_primitives)
+    {
+        if (IsCategoryEnabled(entry.primitive.options.category))
+            outPrimitives.push_back(std::cref(entry.primitive));
+    }
+}
+
 std::vector<std::reference_wrapper<const DebugDrawPrimitive>> DebugDrawService::CollectVisiblePrimitives() const
 {
     std::vector<std::reference_wrapper<const DebugDrawPrimitive>> visiblePrimitives;
-    visiblePrimitives.reserve(m_primitives.size());
-
-    if (!m_enabled)
-        return visiblePrimitives;
-
-    for (const auto& primitive : m_primitives)
-    {
-        if (IsCategoryEnabled(primitive.options.category))
-            visiblePrimitives.push_back(std::cref(primitive));
-    }
+    CollectVisiblePrimitives(visiblePrimitives);
 
     return visiblePrimitives;
 }
@@ -202,12 +294,14 @@ size_t DebugDrawService::GetMaxVisibleLines() const
 
 void DebugDrawService::EndFrame()
 {
+    const auto oldSize = m_primitives.size();
     m_primitives.erase(
         std::remove_if(
             m_primitives.begin(),
             m_primitives.end(),
-            [](DebugDrawPrimitive& primitive)
+            [](PrimitiveEntry& entry)
             {
+                auto& primitive = entry.primitive;
                 auto& lifetime = primitive.options.lifetime;
                 switch (lifetime.mode)
                 {
@@ -228,12 +322,18 @@ void DebugDrawService::EndFrame()
             }),
         m_primitives.end());
 
+    if (m_primitives.size() != oldSize)
+        ++m_contentRevision;
     UpdateLimitState();
 }
 
 void DebugDrawService::Clear()
 {
+    if (m_primitives.empty())
+        return;
+
     m_primitives.clear();
+    ++m_contentRevision;
     UpdateLimitState();
 }
 
@@ -265,7 +365,8 @@ bool DebugDrawService::SubmitPrimitive(DebugDrawPrimitive primitive)
     if (!CanReserve(1u))
         return false;
 
-    m_primitives.push_back(primitive);
+    m_primitives.push_back({ std::move(primitive), 0u });
+    ++m_contentRevision;
     return true;
 }
 

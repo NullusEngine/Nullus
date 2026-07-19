@@ -25,8 +25,11 @@ namespace NLS::Core::ResourceManagement
         void CancelAsyncArtifact(const std::string& path);
         bool IsAsyncArtifactLoadPending(const std::string& path) const;
         bool IsAsyncArtifactLoadFailed(const std::string& path) const;
+        bool IsAsyncArtifactLoadPendingExactPath(const std::string& path) const;
+        bool IsAsyncArtifactLoadFailedExactPath(const std::string& path) const;
         void PumpAsyncLoads(size_t maxCompletions = 1u);
         void PumpAsyncLoadsForPaths(const std::unordered_set<std::string>& paths, size_t maxCompletions = 1u);
+        void PumpAsyncLoadsForExactPaths(const std::unordered_set<std::string>& paths, size_t maxCompletions = 1u);
 #if defined(NLS_ENABLE_TEST_HOOKS)
         static void ClearAsyncArtifactRequestStateForTesting();
         static bool WaitForAsyncArtifactWorkersForTesting(uint32_t timeoutMilliseconds = 5000u);

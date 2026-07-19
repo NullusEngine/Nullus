@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -11,6 +12,7 @@
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Guid.h"
 #include "Assets/ArtifactManifest.h"
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Context/Driver.h"
@@ -61,6 +63,41 @@ namespace
         vertex.position[1] = y;
         vertex.position[2] = z;
         return vertex;
+    }
+
+    NLS::Render::Assets::MeshArtifactData GridMeshArtifact(
+        const uint32_t sideVertexCount,
+        const float xOffset = 0.0f)
+    {
+        NLS::Render::Assets::MeshArtifactData mesh;
+        mesh.materialIndex = 7u;
+        mesh.vertices.reserve(static_cast<size_t>(sideVertexCount) * sideVertexCount);
+        for (uint32_t z = 0u; z < sideVertexCount; ++z)
+        {
+            for (uint32_t x = 0u; x < sideVertexCount; ++x)
+            {
+                const auto denominator = static_cast<float>(sideVertexCount - 1u);
+                mesh.vertices.push_back(VertexAt(
+                    xOffset - 1.0f + 2.0f * static_cast<float>(x) / denominator,
+                    0.0f,
+                    -1.0f + 2.0f * static_cast<float>(z) / denominator));
+            }
+        }
+        for (uint32_t z = 0u; z + 1u < sideVertexCount; ++z)
+        {
+            for (uint32_t x = 0u; x + 1u < sideVertexCount; ++x)
+            {
+                const auto topLeft = z * sideVertexCount + x;
+                const auto topRight = topLeft + 1u;
+                const auto bottomLeft = topLeft + sideVertexCount;
+                const auto bottomRight = bottomLeft + 1u;
+                mesh.indices.insert(mesh.indices.end(), {
+                    topLeft, bottomLeft, topRight,
+                    topRight, bottomLeft, bottomRight
+                });
+            }
+        }
+        return mesh;
     }
 
     void AppendUInt32(std::vector<uint8_t>& bytes, uint32_t value)
@@ -185,6 +222,160 @@ TEST(MeshBoundingSphereTests, LoadMeshArtifactHonorsCancellationBeforeReading)
 
     std::atomic_bool cancelled{true};
     EXPECT_FALSE(NLS::Render::Assets::LoadMeshArtifact(artifactPath, &cancelled).has_value());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(MeshArtifactTests, PreviewSimplificationPreservesOutlineWithinVertexAndIndexBudgets)
+{
+    const auto source = GridMeshArtifact(17u);
+
+    const auto simplified = NLS::Render::Assets::SimplifyMeshArtifactForPreview(
+        source,
+        96u,
+        384u);
+
+    ASSERT_TRUE(simplified.has_value());
+    EXPECT_LE(simplified->vertices.size(), 96u);
+    EXPECT_LE(simplified->indices.size(), 384u);
+    EXPECT_EQ(simplified->indices.size() % 3u, 0u);
+    EXPECT_EQ(simplified->materialIndex, source.materialIndex);
+    EXPECT_TRUE(std::all_of(
+        simplified->indices.begin(),
+        simplified->indices.end(),
+        [&simplified](const uint32_t index)
+        {
+            return index < simplified->vertices.size();
+        }));
+
+    float minimumX = std::numeric_limits<float>::max();
+    float maximumX = std::numeric_limits<float>::lowest();
+    float minimumZ = std::numeric_limits<float>::max();
+    float maximumZ = std::numeric_limits<float>::lowest();
+    for (const auto& vertex : simplified->vertices)
+    {
+        minimumX = (std::min)(minimumX, vertex.position[0]);
+        maximumX = (std::max)(maximumX, vertex.position[0]);
+        minimumZ = (std::min)(minimumZ, vertex.position[2]);
+        maximumZ = (std::max)(maximumZ, vertex.position[2]);
+    }
+    EXPECT_FLOAT_EQ(minimumX, -1.0f);
+    EXPECT_FLOAT_EQ(maximumX, 1.0f);
+    EXPECT_FLOAT_EQ(minimumZ, -1.0f);
+    EXPECT_FLOAT_EQ(maximumZ, 1.0f);
+}
+
+TEST(MeshArtifactTests, PreviewSimplificationRejectsInvalidIndicesBeforeCallingThirdPartyCode)
+{
+    auto source = GridMeshArtifact(3u);
+    source.indices.back() = static_cast<uint32_t>(source.vertices.size());
+
+    EXPECT_FALSE(NLS::Render::Assets::SimplifyMeshArtifactForPreview(
+        source,
+        16u,
+        24u).has_value());
+}
+
+TEST(MeshArtifactTests, PreviewSimplificationContinuesWhenIndicesFitButVerticesExceedBudget)
+{
+    NLS::Render::Assets::MeshArtifactData source;
+    for (uint32_t triangle = 0u; triangle < 8u; ++triangle)
+    {
+        const auto x = static_cast<float>(triangle) * 3.0f;
+        const auto firstVertex = static_cast<uint32_t>(source.vertices.size());
+        source.vertices.push_back(VertexAt(x, 0.0f, 0.0f));
+        source.vertices.push_back(VertexAt(x + 1.0f, 0.0f, 0.0f));
+        source.vertices.push_back(VertexAt(x, 1.0f, 0.0f));
+        source.indices.insert(source.indices.end(), {
+            firstVertex,
+            firstVertex + 1u,
+            firstVertex + 2u
+        });
+    }
+
+    const auto simplified = NLS::Render::Assets::SimplifyMeshArtifactForPreview(
+        source,
+        8u,
+        24u);
+
+    ASSERT_TRUE(simplified.has_value());
+    EXPECT_LE(simplified->vertices.size(), 8u);
+    EXPECT_LE(simplified->indices.size(), 24u);
+    EXPECT_GE(simplified->indices.size(), 3u);
+}
+
+TEST(MeshArtifactTests, PreviewSimplificationSupportsTriangleSoupWithMatchedBudgets)
+{
+    NLS::Render::Assets::MeshArtifactData source;
+    for (uint32_t triangle = 0u; triangle < 68u; ++triangle)
+    {
+        const auto x = static_cast<float>(triangle % 17u) * 2.0f;
+        const auto z = static_cast<float>(triangle / 17u) * 2.0f;
+        const auto firstVertex = static_cast<uint32_t>(source.vertices.size());
+        source.vertices.push_back(VertexAt(x, 0.0f, z));
+        source.vertices.push_back(VertexAt(x + 1.0f, 0.0f, z));
+        source.vertices.push_back(VertexAt(x, 1.0f, z));
+        source.indices.insert(source.indices.end(), {
+            firstVertex,
+            firstVertex + 1u,
+            firstVertex + 2u
+        });
+    }
+
+    const auto simplified = NLS::Render::Assets::SimplifyMeshArtifactForPreview(
+        source,
+        72u,
+        72u);
+
+    ASSERT_TRUE(simplified.has_value());
+    EXPECT_LE(simplified->vertices.size(), 72u);
+    EXPECT_LE(simplified->indices.size(), 72u);
+    EXPECT_GE(simplified->indices.size(), 3u);
+}
+
+TEST(MeshArtifactTests, ContentAddressedLoadReadsPayloadDirectlyIntoFinalVectors)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_mesh_direct_payload_" + NLS::Guid::New().ToString());
+    const auto artifactPath = root / "Library" / "Artifacts" / "ab" /
+        "ab0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd";
+    std::filesystem::create_directories(artifactPath.parent_path());
+
+    const std::vector<NLS::Render::Geometry::Vertex> vertices {
+        VertexAt(-3.0f, 1.0f, 2.0f),
+        VertexAt(4.0f, 5.0f, 6.0f),
+        VertexAt(7.0f, 8.0f, 9.0f)
+    };
+    const std::vector<uint32_t> indices {2u, 0u, 1u};
+    WriteMeshArtifact(artifactPath, vertices, indices, 17u);
+
+    const auto portablePath =
+        NLS::Core::Assets::TryMakePortableContentArtifactPath(artifactPath.generic_string());
+    ASSERT_FALSE(portablePath.empty());
+    NLS::Core::Assets::RegisterRuntimeAuthorizedArtifactPath(portablePath);
+    NLS::Core::Assets::SetArtifactLoadTelemetryEnabled(true);
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+
+    const auto artifact = NLS::Render::Assets::LoadMeshArtifact(artifactPath);
+
+    ASSERT_TRUE(artifact.has_value());
+    ASSERT_EQ(artifact->vertices.size(), vertices.size());
+    EXPECT_EQ(artifact->indices, indices);
+    EXPECT_EQ(artifact->materialIndex, 17u);
+    EXPECT_FLOAT_EQ(artifact->vertices[0].position[0], -3.0f);
+    EXPECT_FLOAT_EQ(artifact->vertices[1].position[1], 5.0f);
+    EXPECT_FLOAT_EQ(artifact->vertices[2].position[2], 9.0f);
+    EXPECT_TRUE(artifact->hasBoundingSphere);
+
+    const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_TRUE(std::none_of(
+        telemetry.begin(),
+        telemetry.end(),
+        [](const NLS::Core::Assets::ArtifactLoadTelemetryRecord& record)
+        {
+            return record.stage ==
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeContainerParseHash;
+        }));
 
     std::filesystem::remove_all(root);
 }
@@ -431,6 +622,50 @@ TEST(MeshArtifactTests, PreviewSampleReadsReferencedVerticesOutsideInitialVertex
     EXPECT_FLOAT_EQ(sampled->vertices[2].position[0], 12.0f);
     EXPECT_EQ(sampled->materialIndex, 7u);
     EXPECT_TRUE(sampled->hasBoundingSphere);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(MeshArtifactTests, PreviewSampleStratifiesTrianglesAcrossEntireIndexBuffer)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_mesh_preview_stratified_" + NLS::Guid::New().ToString());
+    const auto artifactPath = root / "Library" / "Artifacts" / "City" / "districts.nmesh";
+    std::filesystem::create_directories(artifactPath.parent_path());
+
+    std::vector<NLS::Render::Geometry::Vertex> vertices;
+    std::vector<uint32_t> indices;
+    constexpr uint32_t kTriangleCount = 12u;
+    vertices.reserve(kTriangleCount * 3u);
+    indices.reserve(kTriangleCount * 3u);
+    for (uint32_t triangle = 0u; triangle < kTriangleCount; ++triangle)
+    {
+        const float baseX = static_cast<float>(triangle) * 100.0f;
+        const uint32_t vertexOffset = static_cast<uint32_t>(vertices.size());
+        vertices.push_back(VertexAt(baseX, 0.0f, 0.0f));
+        vertices.push_back(VertexAt(baseX + 1.0f, 0.0f, 0.0f));
+        vertices.push_back(VertexAt(baseX, 1.0f, 0.0f));
+        indices.insert(indices.end(), {vertexOffset, vertexOffset + 1u, vertexOffset + 2u});
+    }
+    WriteMeshArtifact(artifactPath, vertices, indices, 0u);
+
+    const auto sampled = NLS::Render::Assets::LoadMeshArtifactPreviewSample(
+        artifactPath,
+        6u,
+        6u);
+
+    ASSERT_TRUE(sampled.has_value());
+    ASSERT_EQ(sampled->indices.size(), 6u);
+    float minimumX = std::numeric_limits<float>::max();
+    float maximumX = std::numeric_limits<float>::lowest();
+    for (const auto& vertex : sampled->vertices)
+    {
+        minimumX = (std::min)(minimumX, vertex.position[0]);
+        maximumX = (std::max)(maximumX, vertex.position[0]);
+    }
+    EXPECT_LT(minimumX, 500.0f);
+    EXPECT_GT(maximumX, 600.0f)
+        << "A thumbnail proxy must cover late spatial partitions instead of reading only the index-buffer prefix.";
 
     std::filesystem::remove_all(root);
 }

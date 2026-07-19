@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <fg/Blackboard.hpp>
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
@@ -80,6 +81,100 @@ namespace NLS::Engine::Rendering
 		BeginSceneFrame(p_frameDescriptor, true);
 	}
 
+	BaseSceneRenderer::BackgroundPreviewDrawPrewarmResult
+	ForwardSceneRenderer::PrewarmBackgroundPreviewDraws(
+		const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+		const size_t firstDrawIndex,
+		const size_t maxDraws)
+	{
+		BackgroundPreviewDrawPrewarmResult result;
+		result.supported = true;
+		BaseSceneRenderer::BeginFrameForBackgroundPreview(frameDescriptor);
+		if (!IsFrameActive())
+			return result;
+
+		auto drawables = ParseScene();
+		result.totalDrawCount =
+			drawables.opaques.size() +
+			drawables.decals.size() +
+			drawables.skyboxes.size() +
+			drawables.transparents.size();
+		const auto boundedFirstDrawIndex = (std::min)(firstDrawIndex, result.totalDrawCount);
+		const auto boundedMaxDraws = (std::max)(size_t {1u}, maxDraws);
+		const auto prewarmDeadline =
+			std::chrono::steady_clock::now() + std::chrono::microseconds(1000);
+		size_t drawIndex = 0u;
+		size_t processedDrawCount = 0u;
+		auto shouldProcessDraw = [&]()
+		{
+			const bool selected =
+				drawIndex >= boundedFirstDrawIndex &&
+				processedDrawCount < boundedMaxDraws &&
+				(processedDrawCount == 0u || std::chrono::steady_clock::now() < prewarmDeadline);
+			++drawIndex;
+			if (selected)
+				++processedDrawCount;
+			return selected;
+		};
+
+		SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
+		const auto opaquePso = CreateSceneDefaultPipelineState(*this);
+		const auto skyboxPso = CreateSceneSkyboxPipelineState(*this);
+		for (const auto& entry : drawables.opaques)
+		{
+			if (!shouldProcessDraw())
+				continue;
+			PreparedRecordedDraw preparedDraw;
+			(void)CaptureThreadedPreparedDraw(opaquePso, entry.second, preparedDraw);
+		}
+
+		auto decalOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides {};
+		decalOverrides.depthWrite = false;
+		for (const auto& entry : drawables.decals)
+		{
+			if (!shouldProcessDraw())
+				continue;
+			PreparedRecordedDraw preparedDraw;
+			(void)CaptureThreadedPreparedDraw(
+				entry.second,
+				decalOverrides,
+				GetForwardDecalDepthCompare(),
+				"Forward",
+				preparedDraw);
+		}
+
+		for (const auto& entry : drawables.skyboxes)
+		{
+			if (!shouldProcessDraw())
+				continue;
+			PreparedRecordedDraw preparedDraw;
+			(void)CaptureThreadedPreparedDraw(skyboxPso, entry.second, preparedDraw);
+		}
+
+		auto transparentOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides {};
+		transparentOverrides.depthWrite = false;
+		for (const auto& entry : drawables.transparents)
+		{
+			if (!shouldProcessDraw())
+				continue;
+			PreparedRecordedDraw preparedDraw;
+			(void)CaptureThreadedPreparedDraw(
+				entry.second,
+				transparentOverrides,
+				opaquePso.depthFunc,
+				"Forward",
+				preparedDraw);
+		}
+		SetActivePreparedPassBindingSet(nullptr);
+
+		result.nextDrawIndex = (std::min)(
+			boundedFirstDrawIndex + processedDrawCount,
+			result.totalDrawCount);
+		result.complete = result.nextDrawIndex >= result.totalDrawCount;
+		AbortFrameForBackgroundPreview();
+		return result;
+	}
+
 	void ForwardSceneRenderer::BeginSceneFrame(
 		const NLS::Render::Data::FrameDescriptor& p_frameDescriptor,
 		bool backgroundPreview)
@@ -108,7 +203,7 @@ namespace NLS::Engine::Rendering
 				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
 				if (CaptureThreadedPreparedDraw(opaquePso, drawable, preparedDraw))
-					QueueThreadedRecordedDraw(preparedDraw);
+					QueueThreadedRecordedDraw(std::move(preparedDraw));
 			}
 
 			auto decalOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
@@ -118,7 +213,7 @@ namespace NLS::Engine::Rendering
 				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
 				if (CaptureThreadedPreparedDraw(drawable, decalOverrides, GetForwardDecalDepthCompare(), "Forward", preparedDraw))
-					QueueThreadedRecordedDraw(preparedDraw);
+					QueueThreadedRecordedDraw(std::move(preparedDraw));
 			}
 
 			for (const auto& entry : drawables.skyboxes)
@@ -126,7 +221,7 @@ namespace NLS::Engine::Rendering
 				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
 				if (CaptureThreadedPreparedDraw(skyboxPso, drawable, preparedDraw))
-					QueueThreadedRecordedDraw(preparedDraw);
+					QueueThreadedRecordedDraw(std::move(preparedDraw));
 			}
 
 			auto transparentOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
@@ -136,7 +231,7 @@ namespace NLS::Engine::Rendering
 				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
 				if (CaptureThreadedPreparedDraw(drawable, transparentOverrides, opaquePso.depthFunc, "Forward", preparedDraw))
-					QueueThreadedRecordedDraw(preparedDraw);
+					QueueThreadedRecordedDraw(std::move(preparedDraw));
 			}
 
 			SetActivePreparedPassBindingSet(nullptr);

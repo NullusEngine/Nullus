@@ -93,6 +93,7 @@ public:
     static bool TryBeginGlobalFrameForBackgroundPreview();
     static void EndGlobalFrameForBackgroundPreview();
     virtual void BeginFrameForBackgroundPreview(const Data::FrameDescriptor& p_frameDescriptor);
+    virtual void AbortFrameForBackgroundPreview();
 
     const Data::FrameDescriptor& GetFrameDescriptor() const;
     Context::Driver& GetDriver();
@@ -266,7 +267,7 @@ protected:
     virtual void BindPreparedGraphicsPipeline(const PreparedRecordedDraw& preparedDraw) const;
     virtual void BindPreparedMaterialBindingSet(const PreparedRecordedDraw& preparedDraw) const;
     virtual void SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw) const;
-    bool QueueThreadedRecordedDraw(const PreparedRecordedDraw& preparedDraw);
+    bool QueueThreadedRecordedDraw(PreparedRecordedDraw preparedDraw);
     void ClearPreparedRecordedDrawStaticBaseCache() const;
 #if defined(NLS_ENABLE_TEST_HOOKS)
     size_t GetPreparedRecordedDrawStaticBaseCacheSizeForTesting() const;
@@ -367,15 +368,14 @@ private:
         bool lruLinked = false;
     };
 
-    bool ResolvePreparedRecordedDrawStaticBase(
+    const PreparedRecordedDrawStaticBase* ResolvePreparedRecordedDrawStaticBase(
         const char* preparationPath,
         const Entities::Drawable& drawable,
         Resources::Material& material,
         const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
         Settings::EComparaisonAlgorithm depthCompareOverride,
         const Data::PipelineState& pipelineState,
-        std::string_view lightMode,
-        PreparedRecordedDrawStaticBase& outBase) const;
+        std::string_view lightMode) const;
     void EraseStalePreparedRecordedDrawStaticBaseEntries(
         const PreparedRecordedDrawStaticBaseCacheKey& currentKey) const;
     void ErasePreparedRecordedDrawStaticBaseEntry(
@@ -418,6 +418,7 @@ private:
     mutable uint64_t m_preparedRecordedDrawStaticBaseCacheFrame = 0u;
     mutable uint64_t m_cachedExplicitDeviceIdentity = 0u;
     mutable RHI::NativeBackendType m_cachedExplicitDeviceBackend = RHI::NativeBackendType::None;
+    mutable std::shared_ptr<RHI::RHIDevice> m_preparedRecordedDrawDevice;
     mutable std::unordered_map<std::string, std::weak_ptr<NLS::Render::RHI::RHIBindingLayout>> m_explicitUniformBindingLayouts;
     mutable uint64_t m_explicitUniformBindingSetCreationCount = 0u;
     mutable uint64_t m_explicitUniformSnapshotBufferCreationCount = 0u;

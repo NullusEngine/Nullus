@@ -85,7 +85,8 @@ namespace
     std::shared_ptr<NLS::Render::UI::UiDrawDataSnapshot> MakeVisibleUiSnapshot(
         const uint64_t frameId,
         const float width,
-        const float height)
+        const float height,
+        const NLS::Render::UI::UiTextureId textureId = {})
     {
         auto snapshot = std::make_shared<NLS::Render::UI::UiDrawDataSnapshot>();
         snapshot->frameId = frameId;
@@ -105,7 +106,7 @@ namespace
             0u,
             0u,
             { 0.0f, 0.0f, width, height },
-            {},
+            textureId,
             NLS::Render::UI::UiDrawCallbackKind::None,
             false
         });
@@ -1385,17 +1386,22 @@ namespace
     class TestTexture final : public NLS::Render::RHI::RHITexture
     {
     public:
-        explicit TestTexture(NLS::Render::RHI::RHITextureDesc desc)
+        explicit TestTexture(
+            NLS::Render::RHI::RHITextureDesc desc,
+            const NLS::Render::RHI::ResourceState state =
+                NLS::Render::RHI::ResourceState::Unknown)
             : m_desc(std::move(desc))
+            , m_state(state)
         {
         }
 
         std::string_view GetDebugName() const override { return m_desc.debugName; }
         const NLS::Render::RHI::RHITextureDesc& GetDesc() const override { return m_desc; }
-        NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
+        NLS::Render::RHI::ResourceState GetState() const override { return m_state; }
 
     private:
         NLS::Render::RHI::RHITextureDesc m_desc {};
+        NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::Unknown;
     };
 
     class TestTextureView final : public NLS::Render::RHI::RHITextureView
@@ -1541,17 +1547,20 @@ namespace
         }
         bool Resize(uint32_t width, uint32_t height) override
         {
+            ++resizeCalls;
             resizeWidth = width;
             resizeHeight = height;
-            return true;
+            return resizeResult;
         }
 
         NLS::Render::RHI::SwapchainDesc desc{};
         std::shared_ptr<NLS::Render::RHI::RHITextureView> backbufferView;
         size_t acquireCalls = 0u;
         uint32_t lastBackbufferIndex = 0u;
+        size_t resizeCalls = 0u;
         uint32_t resizeWidth = 0u;
         uint32_t resizeHeight = 0u;
+        bool resizeResult = true;
     };
 
     class TestQueue final : public NLS::Render::RHI::RHIQueue
@@ -2173,6 +2182,26 @@ namespace
 
         return nullptr;
     }
+
+    void ConfigureUiOverlayFrameContext(
+        NLS::Render::Context::Driver& driver,
+        const size_t slotIndex)
+    {
+        auto& frameContext =
+            NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, slotIndex);
+        auto commandBuffer = std::make_shared<TestCommandBuffer>();
+        auto commandPool = std::make_shared<TestCommandPool>();
+        commandPool->commandBuffer = commandBuffer;
+        frameContext.commandBuffer = commandBuffer;
+        frameContext.commandPool = commandPool;
+        frameContext.frameFence = std::make_shared<TestFence>();
+        frameContext.imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+        frameContext.renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+        frameContext.descriptorAllocator = std::make_shared<TestDescriptorAllocator>();
+        frameContext.uploadContext = std::make_shared<TestUploadContext>();
+        frameContext.resourceStateTracker =
+            NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    }
 }
 
 TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackPollDoesNotWaitForPendingFence)
@@ -2246,6 +2275,15 @@ TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackPollPublishesReady
     state.rgbaPixels = std::make_shared<std::vector<uint8_t>>(
         std::initializer_list<uint8_t>{1u, 2u, 3u, 4u});
     state.completion = completion;
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.extent = {1u, 1u, 1u};
+    textureDesc.debugName = "ThumbnailPreviewReadback";
+    auto texture = std::make_shared<TestTexture>(textureDesc);
+    NLS::Render::RHI::RHITextureViewDesc viewDesc;
+    viewDesc.debugName = "ThumbnailPreviewReadbackView";
+    auto textureView = std::make_shared<TestTextureView>(texture, viewDesc);
+    auto renderTargetLease = std::make_shared<int>(1);
+    state.gpuTexture = {texture, textureView, renderTargetLease, 1u, 1u};
 
     const auto polled = NLS::Editor::Assets::PollEditorThumbnailPreviewReadback(
         state,
@@ -2255,6 +2293,10 @@ TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackPollPublishesReady
     EXPECT_EQ(polled.preview.width, 1u);
     EXPECT_EQ(polled.preview.height, 1u);
     EXPECT_EQ(polled.preview.rgbaPixels, (std::vector<uint8_t>{1u, 2u, 3u, 4u}));
+    EXPECT_EQ(polled.preview.gpuTexture.texture, texture);
+    EXPECT_EQ(polled.preview.gpuTexture.textureView, textureView);
+    EXPECT_EQ(polled.preview.gpuTexture.renderTargetLease, renderTargetLease);
+    EXPECT_TRUE(polled.preview.gpuTexture.IsValid());
     EXPECT_EQ(completion->waitCalls, 0u);
     EXPECT_FALSE(state.active);
 }
@@ -2983,6 +3025,308 @@ TEST(ThreadedRenderingLifecycleTests, TryBeginRhiSubmissionRejectsTargetedStaleE
     const auto oldSlot = lifecycle.CopySlot(oldSlotIndex);
     ASSERT_TRUE(oldSlot.has_value());
     EXPECT_EQ(oldSlot->stage, NLS::Render::Context::ThreadedFrameStage::Retired);
+}
+
+TEST(ThreadedRenderingLifecycleTests, RhiSubmissionPrioritizesReferencedProducerOverLowerSlotUiConsumer)
+{
+    constexpr uint64_t kOutputIdentity = 7001u;
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(2u);
+
+    NLS::Render::Context::FrameSnapshot consumerSnapshot;
+    consumerSnapshot.frameId = 700u;
+    consumerSnapshot.targetsSwapchain = true;
+    NLS::Render::Context::RenderScenePackage consumerPackage;
+    consumerPackage.frameId = consumerSnapshot.frameId;
+    consumerPackage.targetsSwapchain = true;
+    consumerPackage.uiReferencedTextureIdentities = { kOutputIdentity };
+
+    NLS::Render::Context::FrameSnapshot producerSnapshot;
+    producerSnapshot.frameId = 701u;
+    producerSnapshot.targetsSwapchain = false;
+    producerSnapshot.hasExternalOutput = true;
+    producerSnapshot.externalOutputIdentity = kOutputIdentity;
+    producerSnapshot.externalOutputIdentities = { kOutputIdentity };
+    producerSnapshot.externalOutputTextureCount = 1u;
+    NLS::Render::Context::RenderScenePackage producerPackage;
+    producerPackage.frameId = producerSnapshot.frameId;
+    producerPackage.targetsSwapchain = false;
+    producerPackage.externalSceneOutputIdentity = kOutputIdentity;
+    producerPackage.externalSceneOutputIdentities = { kOutputIdentity };
+    producerPackage.externalSceneOutputTextureCount = 1u;
+
+    size_t consumerSlotIndex = std::numeric_limits<size_t>::max();
+    size_t producerSlotIndex = std::numeric_limits<size_t>::max();
+    const auto reservedConsumerSlotIndex = lifecycle.ReserveReusableSlotIndex();
+    ASSERT_TRUE(reservedConsumerSlotIndex.has_value());
+    EXPECT_EQ(reservedConsumerSlotIndex.value(), 0u);
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(
+        producerSnapshot,
+        &producerSlotIndex));
+    ASSERT_TRUE(lifecycle.ReleaseReservedReusableSlotIndex(reservedConsumerSlotIndex.value()));
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(
+        consumerSnapshot,
+        consumerPackage,
+        &consumerSlotIndex));
+    ASSERT_LT(consumerSlotIndex, producerSlotIndex);
+    const auto consumerSlot = lifecycle.CopySlot(consumerSlotIndex);
+    const auto producerSlot = lifecycle.CopySlot(producerSlotIndex);
+    ASSERT_TRUE(consumerSlot.has_value());
+    ASSERT_TRUE(producerSlot.has_value());
+    EXPECT_LT(producerSlot->publicationSequence, consumerSlot->publicationSequence);
+
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(consumerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(consumerSlotIndex, consumerPackage));
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(producerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(producerSlotIndex, producerPackage));
+
+    size_t claimedSlotIndex = std::numeric_limits<size_t>::max();
+    NLS::Render::Context::RenderScenePackage claimedPackage;
+    ASSERT_TRUE(lifecycle.TryBeginNextRhiSubmission(&claimedSlotIndex, &claimedPackage));
+    EXPECT_EQ(claimedSlotIndex, producerSlotIndex);
+    EXPECT_EQ(claimedPackage.frameId, producerPackage.frameId);
+
+    NLS::Render::Context::RhiSubmissionFrame producerSubmission;
+    producerSubmission.frameId = producerPackage.frameId;
+    producerSubmission.submittedSuccessfully = true;
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(producerSlotIndex, producerSubmission));
+    ASSERT_TRUE(lifecycle.RetireFrame(producerSlotIndex));
+
+    ASSERT_TRUE(lifecycle.TryBeginNextRhiSubmission(&claimedSlotIndex, &claimedPackage));
+    EXPECT_EQ(claimedSlotIndex, consumerSlotIndex);
+    EXPECT_EQ(claimedPackage.frameId, consumerPackage.frameId);
+}
+
+TEST(ThreadedRenderingLifecycleTests, RhiSubmissionClaimsWaitingUiConsumerBeforeLaterProducerReuse)
+{
+    constexpr uint64_t kOutputIdentity = 7051u;
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(2u);
+
+    NLS::Render::Context::FrameSnapshot firstProducerSnapshot;
+    firstProducerSnapshot.frameId = 705u;
+    firstProducerSnapshot.targetsSwapchain = false;
+    firstProducerSnapshot.hasExternalOutput = true;
+    firstProducerSnapshot.externalOutputIdentity = kOutputIdentity;
+    firstProducerSnapshot.externalOutputIdentities = { kOutputIdentity };
+    firstProducerSnapshot.externalOutputTextureCount = 1u;
+    NLS::Render::Context::RenderScenePackage firstProducerPackage;
+    firstProducerPackage.frameId = firstProducerSnapshot.frameId;
+    firstProducerPackage.targetsSwapchain = false;
+    firstProducerPackage.externalSceneOutputIdentity = kOutputIdentity;
+    firstProducerPackage.externalSceneOutputIdentities = { kOutputIdentity };
+    firstProducerPackage.externalSceneOutputTextureCount = 1u;
+
+    NLS::Render::Context::FrameSnapshot consumerSnapshot;
+    consumerSnapshot.frameId = 706u;
+    consumerSnapshot.targetsSwapchain = true;
+    NLS::Render::Context::RenderScenePackage consumerPackage;
+    consumerPackage.frameId = consumerSnapshot.frameId;
+    consumerPackage.targetsSwapchain = true;
+    consumerPackage.uiReferencedTextureIdentities = { kOutputIdentity };
+
+    size_t firstProducerSlotIndex = std::numeric_limits<size_t>::max();
+    size_t consumerSlotIndex = std::numeric_limits<size_t>::max();
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(
+        firstProducerSnapshot,
+        firstProducerPackage,
+        &firstProducerSlotIndex));
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(
+        consumerSnapshot,
+        consumerPackage,
+        &consumerSlotIndex));
+    ASSERT_LT(firstProducerSlotIndex, consumerSlotIndex);
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(firstProducerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(firstProducerSlotIndex, firstProducerPackage));
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(consumerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(consumerSlotIndex, consumerPackage));
+
+    size_t claimedSlotIndex = std::numeric_limits<size_t>::max();
+    NLS::Render::Context::RenderScenePackage claimedPackage;
+    ASSERT_TRUE(lifecycle.TryBeginNextRhiSubmission(&claimedSlotIndex, &claimedPackage));
+    EXPECT_EQ(claimedSlotIndex, firstProducerSlotIndex);
+
+    NLS::Render::Context::RhiSubmissionFrame producerSubmission;
+    producerSubmission.frameId = firstProducerPackage.frameId;
+    producerSubmission.submittedSuccessfully = true;
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(firstProducerSlotIndex, producerSubmission));
+    ASSERT_TRUE(lifecycle.RetireFrame(firstProducerSlotIndex));
+
+    NLS::Render::Context::FrameSnapshot laterProducerSnapshot = firstProducerSnapshot;
+    laterProducerSnapshot.frameId = 707u;
+    NLS::Render::Context::RenderScenePackage laterProducerPackage = firstProducerPackage;
+    laterProducerPackage.frameId = laterProducerSnapshot.frameId;
+    size_t laterProducerSlotIndex = std::numeric_limits<size_t>::max();
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(
+        laterProducerSnapshot,
+        laterProducerPackage,
+        &laterProducerSlotIndex));
+    EXPECT_EQ(laterProducerSlotIndex, firstProducerSlotIndex);
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(laterProducerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(laterProducerSlotIndex, laterProducerPackage));
+
+    ASSERT_TRUE(lifecycle.TryBeginNextRhiSubmission(&claimedSlotIndex, &claimedPackage));
+    EXPECT_EQ(claimedSlotIndex, consumerSlotIndex)
+        << "A later producer reusing a lower slot must not starve an already-waiting UI consumer.";
+    EXPECT_EQ(claimedPackage.frameId, consumerPackage.frameId);
+}
+
+TEST(ThreadedRenderingLifecycleTests, RhiSubmissionDoesNotBlockUiConsumerForUnrelatedProducer)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(2u);
+
+    NLS::Render::Context::FrameSnapshot consumerSnapshot;
+    consumerSnapshot.frameId = 710u;
+    consumerSnapshot.targetsSwapchain = true;
+    NLS::Render::Context::RenderScenePackage consumerPackage;
+    consumerPackage.frameId = consumerSnapshot.frameId;
+    consumerPackage.targetsSwapchain = true;
+    consumerPackage.uiReferencedTextureIdentities = { 7101u };
+
+    NLS::Render::Context::FrameSnapshot producerSnapshot;
+    producerSnapshot.frameId = 711u;
+    producerSnapshot.targetsSwapchain = false;
+    producerSnapshot.hasExternalOutput = true;
+    producerSnapshot.externalOutputIdentity = 7111u;
+    producerSnapshot.externalOutputIdentities = { 7111u };
+    producerSnapshot.externalOutputTextureCount = 1u;
+    NLS::Render::Context::RenderScenePackage producerPackage;
+    producerPackage.frameId = producerSnapshot.frameId;
+    producerPackage.targetsSwapchain = false;
+    producerPackage.externalSceneOutputIdentity = producerSnapshot.externalOutputIdentity;
+    producerPackage.externalSceneOutputIdentities = producerSnapshot.externalOutputIdentities;
+    producerPackage.externalSceneOutputTextureCount = 1u;
+
+    size_t consumerSlotIndex = std::numeric_limits<size_t>::max();
+    size_t producerSlotIndex = std::numeric_limits<size_t>::max();
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(
+        consumerSnapshot,
+        consumerPackage,
+        &consumerSlotIndex));
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(
+        producerSnapshot,
+        producerPackage,
+        &producerSlotIndex));
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(consumerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(consumerSlotIndex, consumerPackage));
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(producerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(producerSlotIndex, producerPackage));
+
+    size_t claimedSlotIndex = std::numeric_limits<size_t>::max();
+    NLS::Render::Context::RenderScenePackage claimedPackage;
+    ASSERT_TRUE(lifecycle.TryBeginNextRhiSubmission(&claimedSlotIndex, &claimedPackage));
+    EXPECT_EQ(claimedSlotIndex, consumerSlotIndex);
+    EXPECT_EQ(claimedPackage.frameId, consumerPackage.frameId);
+}
+
+TEST(ThreadedRenderingLifecycleTests, UiConsumerWaitsWhileReferencedProducerIsNotRenderReady)
+{
+    constexpr uint64_t kOutputIdentity = 7201u;
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(2u);
+
+    NLS::Render::Context::FrameSnapshot consumerSnapshot;
+    consumerSnapshot.frameId = 720u;
+    consumerSnapshot.targetsSwapchain = true;
+    NLS::Render::Context::RenderScenePackage consumerPackage;
+    consumerPackage.frameId = consumerSnapshot.frameId;
+    consumerPackage.targetsSwapchain = true;
+    consumerPackage.uiReferencedTextureIdentities = { kOutputIdentity };
+
+    NLS::Render::Context::FrameSnapshot producerSnapshot;
+    producerSnapshot.frameId = 721u;
+    producerSnapshot.targetsSwapchain = false;
+    producerSnapshot.hasExternalOutput = true;
+    producerSnapshot.externalOutputIdentity = kOutputIdentity;
+    producerSnapshot.externalOutputIdentities = { kOutputIdentity };
+    producerSnapshot.externalOutputTextureCount = 1u;
+    NLS::Render::Context::RenderScenePackage producerPackage;
+    producerPackage.frameId = producerSnapshot.frameId;
+    producerPackage.targetsSwapchain = false;
+    producerPackage.externalSceneOutputIdentity = kOutputIdentity;
+    producerPackage.externalSceneOutputIdentities = { kOutputIdentity };
+    producerPackage.externalSceneOutputTextureCount = 1u;
+
+    size_t consumerSlotIndex = std::numeric_limits<size_t>::max();
+    size_t producerSlotIndex = std::numeric_limits<size_t>::max();
+    const auto reservedConsumerSlotIndex = lifecycle.ReserveReusableSlotIndex();
+    ASSERT_TRUE(reservedConsumerSlotIndex.has_value());
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(
+        producerSnapshot,
+        &producerSlotIndex));
+    ASSERT_TRUE(lifecycle.ReleaseReservedReusableSlotIndex(reservedConsumerSlotIndex.value()));
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(
+        consumerSnapshot,
+        consumerPackage,
+        &consumerSlotIndex));
+    ASSERT_LT(consumerSlotIndex, producerSlotIndex);
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(consumerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(consumerSlotIndex, consumerPackage));
+
+    size_t claimedSlotIndex = std::numeric_limits<size_t>::max();
+    NLS::Render::Context::RenderScenePackage claimedPackage;
+    EXPECT_FALSE(lifecycle.TryBeginNextRhiSubmission(&claimedSlotIndex, &claimedPackage));
+    EXPECT_FALSE(lifecycle.TryBeginRhiSubmission(consumerSlotIndex));
+
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(producerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(producerSlotIndex, producerPackage));
+    ASSERT_TRUE(lifecycle.TryBeginRhiSubmission(producerSlotIndex));
+
+    NLS::Render::Context::RhiSubmissionFrame producerSubmission;
+    producerSubmission.frameId = producerPackage.frameId;
+    producerSubmission.submittedSuccessfully = true;
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(producerSlotIndex, producerSubmission));
+    ASSERT_TRUE(lifecycle.RetireFrame(producerSlotIndex));
+    EXPECT_TRUE(lifecycle.TryBeginRhiSubmission(consumerSlotIndex));
+}
+
+TEST(ThreadedRenderingLifecycleTests, LegacyRhiExecutionPrioritizesReferencedProducer)
+{
+    constexpr uint64_t kOutputIdentity = 7301u;
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(2u);
+
+    NLS::Render::Context::FrameSnapshot consumerSnapshot;
+    consumerSnapshot.frameId = 730u;
+    consumerSnapshot.targetsSwapchain = true;
+    NLS::Render::Context::RenderScenePackage consumerPackage;
+    consumerPackage.frameId = consumerSnapshot.frameId;
+    consumerPackage.targetsSwapchain = true;
+    consumerPackage.uiReferencedTextureIdentities = { kOutputIdentity };
+
+    NLS::Render::Context::FrameSnapshot producerSnapshot;
+    producerSnapshot.frameId = 731u;
+    producerSnapshot.targetsSwapchain = false;
+    producerSnapshot.hasExternalOutput = true;
+    producerSnapshot.externalOutputIdentity = kOutputIdentity;
+    producerSnapshot.externalOutputIdentities = { kOutputIdentity };
+    producerSnapshot.externalOutputTextureCount = 1u;
+    NLS::Render::Context::RenderScenePackage producerPackage;
+    producerPackage.frameId = producerSnapshot.frameId;
+    producerPackage.targetsSwapchain = false;
+    producerPackage.externalSceneOutputIdentity = kOutputIdentity;
+    producerPackage.externalSceneOutputIdentities = { kOutputIdentity };
+    producerPackage.externalSceneOutputTextureCount = 1u;
+
+    size_t consumerSlotIndex = std::numeric_limits<size_t>::max();
+    size_t producerSlotIndex = std::numeric_limits<size_t>::max();
+    const auto reservedConsumerSlotIndex = lifecycle.ReserveReusableSlotIndex();
+    ASSERT_TRUE(reservedConsumerSlotIndex.has_value());
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(
+        producerSnapshot,
+        &producerSlotIndex));
+    ASSERT_TRUE(lifecycle.ReleaseReservedReusableSlotIndex(reservedConsumerSlotIndex.value()));
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrame(
+        consumerSnapshot,
+        consumerPackage,
+        &consumerSlotIndex));
+    ASSERT_LT(consumerSlotIndex, producerSlotIndex);
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(consumerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(consumerSlotIndex, consumerPackage));
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(producerSlotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(producerSlotIndex, producerPackage));
+
+    size_t claimedSlotIndex = std::numeric_limits<size_t>::max();
+    NLS::Render::Context::RenderFrameBuild claimedBuild;
+    ASSERT_TRUE(lifecycle.TryBeginNextRhiFrameExecution(&claimedSlotIndex, &claimedBuild));
+    EXPECT_EQ(claimedSlotIndex, producerSlotIndex);
+    EXPECT_EQ(claimedBuild.frameId, producerPackage.frameId);
 }
 
 TEST(ThreadedRenderingLifecycleTests, PreparedFramePublishesIntoRenderSceneOwnedStage)
@@ -3810,6 +4154,26 @@ TEST(ThreadedRenderingLifecycleTests, PreparedBuilderPublishReportsActualFrameId
     EXPECT_EQ(publishedSlotState->snapshot->frameId, publishedFrameId);
 }
 
+TEST(ThreadedRenderingLifecycleTests, ThreadedWorkerWakeObservedBeforeWaitReturnsWithoutTimeout)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+
+    const uint64_t observedGeneration =
+        impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
+    NLS::Render::Context::Detail::NotifyThreadedWorkers(*impl);
+
+    EXPECT_TRUE(NLS::Render::Context::Detail::WaitForThreadedWorkerWake(
+        *impl,
+        observedGeneration));
+}
+
 TEST(ThreadedRenderingLifecycleTests, OffscreenPreparedBuilderLeavesPendingUiSnapshotForUiOnlyFrame)
 {
     ImGuiContextGuard imguiContext;
@@ -3898,6 +4262,154 @@ TEST(ThreadedRenderingLifecycleTests, OffscreenPreparedBuilderLeavesPendingUiSna
         NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver),
         nullptr)
         << "Successful UI-only publication should clear the consumed pending snapshot.";
+}
+
+TEST(ThreadedRenderingLifecycleTests, UiOnlyFrameSuppressesUnchangedContentUntilTextureOrSwapchainInvalidation)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 3u;
+    settings.framesInFlight = 3u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+
+    NLS::Render::RHI::RHITextureDesc changedTextureDesc;
+    changedTextureDesc.extent = {128u, 72u, 1u};
+    changedTextureDesc.debugName = "ChangedUiTexture";
+    auto changedTexture = std::make_shared<TestTexture>(
+        changedTextureDesc,
+        NLS::Render::RHI::ResourceState::ShaderRead);
+    NLS::Render::RHI::RHITextureViewDesc changedTextureViewDesc;
+    changedTextureViewDesc.debugName = "ChangedUiTextureView";
+    auto changedTextureView = std::make_shared<TestTextureView>(
+        changedTexture,
+        changedTextureViewDesc);
+    const auto changedTextureId =
+        NLS::Render::Context::DriverUIAccess::RegisterUiTextureView(
+            driver,
+            changedTextureView,
+            NLS::Render::UI::UiTextureSynchronizationScope::PreviousFrameOrStatic);
+    ASSERT_NE(changedTextureId.value, 0u);
+
+    auto firstSnapshot = MakeVisibleUiSnapshot(920u, 128.0f, 72.0f, changedTextureId);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, firstSnapshot);
+    uint64_t firstPresentationInvalidationGeneration = 0u;
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        firstPresentationInvalidationGeneration =
+            impl->uiOverlayPresentationInvalidationGeneration;
+    }
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u));
+    NLS::Render::Context::DriverUIAccess::RecordUiOverlayPresentationSucceeded(
+        driver,
+        firstSnapshot,
+        firstPresentationInvalidationGeneration);
+
+    auto unchangedSnapshot = MakeVisibleUiSnapshot(921u, 128.0f, 72.0f, changedTextureId);
+    const uint64_t wakeGenerationBeforeUnchangedPublish =
+        impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, unchangedSnapshot);
+    EXPECT_EQ(
+        impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire),
+        wakeGenerationBeforeUnchangedPublish)
+        << "Publishing a new snapshot object with identical UI content must not wake workers.";
+    EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u));
+    EXPECT_EQ(impl->skippedUnchangedUiOnlyFrameCount, 1u);
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(impl->pendingUiOverlaySnapshot, unchangedSnapshot)
+            << "Suppression must retain the latest snapshot for a subsequent scene frame.";
+    }
+
+    NLS::Render::RHI::RHITextureDesc unregisteredTextureDesc;
+    unregisteredTextureDesc.extent = {128u, 72u, 1u};
+    unregisteredTextureDesc.debugName = "UnregisteredUiTexture";
+    auto unregisteredTexture = std::make_shared<TestTexture>(
+        unregisteredTextureDesc,
+        NLS::Render::RHI::ResourceState::ShaderRead);
+    auto unregisteredTextureView = std::make_shared<TestTextureView>(
+        unregisteredTexture,
+        NLS::Render::RHI::RHITextureViewDesc{});
+    uint64_t invalidationGenerationBeforeUnregisteredNotification = 0u;
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        invalidationGenerationBeforeUnregisteredNotification =
+            impl->uiOverlayPresentationInvalidationGeneration;
+    }
+    NLS::Render::Context::DriverUIAccess::NotifyUiTextureContentChanged(
+        driver,
+        unregisteredTextureView);
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(
+            impl->uiOverlayPresentationInvalidationGeneration,
+            invalidationGenerationBeforeUnregisteredNotification);
+    }
+    EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u))
+        << "An unregistered texture must not invalidate unchanged UI presentation.";
+
+    uint64_t consumedSnapshotGeneration = 0u;
+    uint64_t observedPresentationInvalidationGeneration = 0u;
+    auto consumedSnapshot =
+        NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(
+            driver,
+            &consumedSnapshotGeneration,
+            &observedPresentationInvalidationGeneration);
+    ASSERT_EQ(consumedSnapshot, unchangedSnapshot);
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(
+            impl->uiOverlayPresentationInvalidationGeneration,
+            observedPresentationInvalidationGeneration);
+    }
+    NLS::Render::Context::DriverUIAccess::NotifyUiTextureContentChanged(
+        driver,
+        changedTextureView);
+    uint64_t changedContentGeneration = 0u;
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        changedContentGeneration = impl->uiOverlayPresentationInvalidationGeneration;
+        EXPECT_NE(
+            impl->uiOverlayPresentationInvalidationGeneration,
+            observedPresentationInvalidationGeneration)
+            << "A content change after snapshot consumption must remain newer than the observed generation.";
+    }
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::RestoreConsumedUiDrawDataSnapshotIfUnchanged(
+        driver,
+        consumedSnapshot,
+        consumedSnapshotGeneration));
+    EXPECT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u))
+        << "New pixels in a sampled UI texture must refresh unchanged ImGui draw commands.";
+    NLS::Render::Context::DriverUIAccess::RecordUiOverlayPresentationSucceeded(
+        driver,
+        consumedSnapshot,
+        changedContentGeneration);
+
+    auto stillUnchangedSnapshot = MakeVisibleUiSnapshot(922u, 128.0f, 72.0f, changedTextureId);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, stillUnchangedSnapshot);
+    EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u))
+        << "Texture invalidation must force exactly one refresh; truly static UI remains suppressed.";
+
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, unchangedSnapshot);
+    NLS::Render::Context::DriverUIAccess::NotifyUiOverlaySwapchainWillResize(driver);
+    EXPECT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u))
+        << "Resize invalidation must force one UI-only refresh even when draw content is unchanged.";
 }
 
 TEST(ThreadedRenderingLifecycleTests, ConsumedUiSnapshotRestoreDoesNotOverwriteNewerPendingSnapshot)
@@ -15384,6 +15896,159 @@ TEST(ThreadedRenderingLifecycleTests, UiOnlyFramePublishesOverlayOnlySwapchainPa
     EXPECT_EQ(retiredSlot->submissionFrame->uiOverlaySnapshotFrameId, uiSnapshot->frameId);
 }
 
+TEST(ThreadedRenderingLifecycleTests, FailedUiOnlySubmitDoesNotSuppressIdenticalRetry)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    swapchain->desc.width = 128u;
+    swapchain->desc.height = 72u;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    ConfigureUiOverlayFrameContext(driver, 0u);
+
+    auto firstSnapshot = MakeVisibleUiSnapshot(932u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, firstSnapshot);
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u));
+
+    auto testQueue = explicitDevice->GetTestQueue();
+    testQueue->submitFailureStage = TestQueue::SubmitFailureStage::BeforeQueueWork;
+    testQueue->nextSubmitResult = {
+        NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
+        "recoverable UI-only submit failure"
+    };
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(impl->lastPublishedSwapchainUiContentSignature, 0u);
+        EXPECT_EQ(impl->lastPublishedSwapchainUiInvalidationGeneration, 0u)
+            << "A failed submit must not commit UI presentation state.";
+    }
+    EXPECT_EQ(testQueue->presentCalls, 0u);
+
+    testQueue->submitFailureStage = TestQueue::SubmitFailureStage::Legacy;
+    testQueue->nextSubmitResult = {};
+    auto retrySnapshot = MakeVisibleUiSnapshot(933u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, retrySnapshot);
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u))
+        << "Identical UI content must remain retryable until a Present succeeds.";
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    EXPECT_EQ(testQueue->submitCalls, 1u);
+    EXPECT_EQ(testQueue->presentCalls, 1u);
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(
+            impl->lastPublishedSwapchainUiContentSignature,
+            NLS::Render::UI::ResolveUiDrawDataContentSignature(*retrySnapshot));
+        EXPECT_NE(impl->lastPublishedSwapchainUiInvalidationGeneration, 0u);
+    }
+}
+
+TEST(ThreadedRenderingLifecycleTests, FailedUiOnlyPresentDoesNotSuppressIdenticalRetry)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    swapchain->desc.width = 128u;
+    swapchain->desc.height = 72u;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    ConfigureUiOverlayFrameContext(driver, 0u);
+
+    auto firstSnapshot = MakeVisibleUiSnapshot(934u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, firstSnapshot);
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u));
+
+    auto testQueue = explicitDevice->GetTestQueue();
+    testQueue->presentFailureStage = TestQueue::PresentFailureStage::AfterFenceSignal;
+    testQueue->nextPresentResult = {
+        NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
+        "recoverable UI-only present failure"
+    };
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    EXPECT_EQ(testQueue->submitCalls, 1u);
+    EXPECT_EQ(testQueue->presentCalls, 1u);
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(impl->lastPublishedSwapchainUiContentSignature, 0u);
+        EXPECT_EQ(impl->lastPublishedSwapchainUiInvalidationGeneration, 0u)
+            << "A failed Present must not commit UI presentation state.";
+    }
+
+    testQueue->presentFailureStage = TestQueue::PresentFailureStage::Legacy;
+    testQueue->nextPresentResult = {};
+    auto retrySnapshot = MakeVisibleUiSnapshot(935u, 128.0f, 72.0f);
+    EXPECT_EQ(
+        NLS::Render::UI::ResolveUiDrawDataContentSignature(*retrySnapshot),
+        NLS::Render::UI::ResolveUiDrawDataContentSignature(*firstSnapshot));
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, retrySnapshot);
+    EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u))
+        << "A frame context whose Present fence is still pending must not be reused.";
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(impl->pendingUiOverlaySnapshot, retrySnapshot)
+            << "Fence backpressure must retain identical UI content for a later retry.";
+    }
+
+    ASSERT_EQ(impl->frameContexts.size(), 1u);
+    auto retryFence = std::dynamic_pointer_cast<TestFence>(impl->frameContexts[0].frameFence);
+    ASSERT_NE(retryFence, nullptr);
+    EXPECT_FALSE(retryFence->IsSignaled());
+    ASSERT_TRUE(retryFence->Wait())
+        << "The test must simulate completion of the fence queued by the failed Present.";
+
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(driver, 128u, 72u))
+        << "Identical UI content must remain retryable until a Present succeeds.";
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    EXPECT_EQ(testQueue->submitCalls, 2u);
+    EXPECT_EQ(testQueue->presentCalls, 2u);
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(
+            impl->lastPublishedSwapchainUiContentSignature,
+            NLS::Render::UI::ResolveUiDrawDataContentSignature(*retrySnapshot));
+        EXPECT_NE(impl->lastPublishedSwapchainUiInvalidationGeneration, 0u);
+    }
+}
+
 TEST(ThreadedRenderingLifecycleTests, ResizeDuringUiOnlyFrameWaitsForNormalFrameRetirement)
 {
     ImGuiContextGuard imguiContext;
@@ -15446,7 +16111,49 @@ TEST(ThreadedRenderingLifecycleTests, ResizeDuringUiOnlyFrameWaitsForNormalFrame
     EXPECT_EQ(swapchain->resizeHeight, 900u);
 }
 
-TEST(ThreadedRenderingLifecycleTests, PresentSwapchainConsumesPendingUiSnapshotWhenNoSceneFrameWasPublished)
+TEST(ThreadedRenderingLifecycleTests, ThreadedOverlayPresentRetriesPendingResizeWithoutRenderWork)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    swapchain->resizeResult = false;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    driver.ResizePlatformSwapchain(1600u, 900u);
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    EXPECT_EQ(swapchain->resizeCalls, 2u);
+    EXPECT_EQ(swapchain->GetDesc().width, 0u);
+    EXPECT_EQ(swapchain->GetDesc().height, 0u);
+
+    swapchain->resizeResult = true;
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    EXPECT_EQ(swapchain->resizeCalls, 3u);
+    EXPECT_EQ(swapchain->resizeWidth, 1600u);
+    EXPECT_EQ(swapchain->resizeHeight, 900u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, PresentSwapchainPublishesPendingUiSnapshotWithoutSynchronousSubmission)
 {
     ImGuiContextGuard imguiContext;
     ScopedOverlayShaderManager shaderManagerScope;
@@ -15493,18 +16200,21 @@ TEST(ThreadedRenderingLifecycleTests, PresentSwapchainConsumesPendingUiSnapshotW
     NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
 
     EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
-    size_t diagnosticSlot = 99u;
-    uint64_t diagnosticFrameId = 0u;
-    EXPECT_TRUE(NLS::Render::Context::DriverUIAccess::PublishUiOnlyFrame(
-        driver,
-        128u,
-        72u,
-        &diagnosticSlot,
-        &diagnosticFrameId));
-
     NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
 
     auto testQueue = explicitDevice->GetTestQueue();
+    EXPECT_EQ(testQueue->submitCalls, 0u)
+        << "PresentSwapchain must not synchronously execute threaded RHI work on the caller thread.";
+    EXPECT_EQ(testQueue->presentCalls, 0u);
+    EXPECT_EQ(swapchain->acquireCalls, 0u);
+    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    EXPECT_EQ(lifecycle->GetInFlightDepth(), 1u);
+    EXPECT_EQ(NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver), nullptr)
+        << "A successfully published UI-only frame must own the pending snapshot.";
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
     EXPECT_EQ(testQueue->submitCalls, 1u);
     EXPECT_EQ(testQueue->presentCalls, 1u);
     EXPECT_EQ(swapchain->acquireCalls, 1u);
@@ -15512,7 +16222,7 @@ TEST(ThreadedRenderingLifecycleTests, PresentSwapchainConsumesPendingUiSnapshotW
     EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
 }
 
-TEST(ThreadedRenderingLifecycleTests, PresentSwapchainDrainsPreparedSceneBeforeUiOnlyFallback)
+TEST(ThreadedRenderingLifecycleTests, PresentSwapchainLeavesPreparedSceneSubmissionToRhiExecution)
 {
     ImGuiContextGuard imguiContext;
     ScopedOverlayShaderManager shaderManagerScope;
@@ -15555,7 +16265,27 @@ TEST(ThreadedRenderingLifecycleTests, PresentSwapchainDrainsPreparedSceneBeforeU
     frameContext.uploadContext = uploadContext;
     frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
 
-    auto uiSnapshot = MakeVisibleUiSnapshot(904u, 128.0f, 72.0f);
+    NLS::Render::RHI::RHITextureDesc sampledTextureDesc;
+    sampledTextureDesc.extent = {128u, 72u, 1u};
+    sampledTextureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    sampledTextureDesc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+    sampledTextureDesc.debugName = "PreparedSceneUiTexture";
+    auto sampledTexture = std::make_shared<TestTexture>(
+        sampledTextureDesc,
+        NLS::Render::RHI::ResourceState::ShaderRead);
+    auto sampledTextureView = std::make_shared<TestTextureView>(
+        sampledTexture,
+        NLS::Render::RHI::RHITextureViewDesc{});
+    const auto sampledTextureId =
+        NLS::Render::Context::DriverUIAccess::RegisterUiTextureView(
+            driver,
+            sampledTextureView,
+            NLS::Render::UI::UiTextureSynchronizationScope::PreviousFrameOrStatic);
+    ASSERT_TRUE(sampledTextureId.IsValid());
+    const uint64_t sampledTextureIdentity = static_cast<uint64_t>(
+        reinterpret_cast<std::uintptr_t>(sampledTexture.get()));
+
+    auto uiSnapshot = MakeVisibleUiSnapshot(904u, 128.0f, 72.0f, sampledTextureId);
     NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
 
     NLS::Render::Context::FrameSnapshot sceneSnapshot;
@@ -15586,9 +16316,16 @@ TEST(ThreadedRenderingLifecycleTests, PresentSwapchainDrainsPreparedSceneBeforeU
     NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
 
     auto testQueue = explicitDevice->GetTestQueue();
+    EXPECT_EQ(testQueue->submitCalls, 0u)
+        << "PresentSwapchain must leave an already-published scene frame on the threaded pipeline.";
+    EXPECT_EQ(testQueue->presentCalls, 0u);
+    EXPECT_EQ(swapchain->acquireCalls, 0u);
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
     EXPECT_EQ(testQueue->submitCalls, 1u)
-        << "PresentSwapchain should let the already-published scene builder consume the UI snapshot instead of "
-           "publishing a second UI-only frame first.";
+        << "The already-published scene builder must consume the UI snapshot instead of publishing a second "
+           "UI-only frame first.";
     EXPECT_EQ(testQueue->presentCalls, 1u);
     EXPECT_EQ(swapchain->acquireCalls, 1u);
     EXPECT_EQ(NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver), nullptr);
@@ -15601,6 +16338,327 @@ TEST(ThreadedRenderingLifecycleTests, PresentSwapchainDrainsPreparedSceneBeforeU
     EXPECT_TRUE(retiredSceneSlot->renderScenePackage->targetsSwapchain);
     EXPECT_TRUE(retiredSceneSlot->renderScenePackage->hasUIOverlayPass);
     EXPECT_EQ(retiredSceneSlot->renderScenePackage->uiDrawDataSnapshot, uiSnapshot);
+    EXPECT_EQ(
+        retiredSceneSlot->renderScenePackage->uiReferencedTextureIdentities,
+        std::vector<uint64_t>({sampledTextureIdentity}));
+}
+
+TEST(ThreadedRenderingLifecycleTests, PresentSwapchainPrepublishesUiOnlyFrameAheadOfUnrelatedOffscreenWork)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 2u;
+    settings.framesInFlight = 2u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    swapchain->desc.width = 128u;
+    swapchain->desc.height = 72u;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    for (size_t slotIndex = 0u; slotIndex < 2u; ++slotIndex)
+    {
+        auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, slotIndex);
+        auto commandBuffer = std::make_shared<TestCommandBuffer>();
+        auto commandPool = std::make_shared<TestCommandPool>();
+        commandPool->commandBuffer = commandBuffer;
+        frameContext.commandBuffer = commandBuffer;
+        frameContext.commandPool = commandPool;
+        frameContext.frameFence = std::make_shared<TestFence>();
+        frameContext.imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+        frameContext.renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+        frameContext.descriptorAllocator = std::make_shared<TestDescriptorAllocator>();
+        frameContext.uploadContext = std::make_shared<TestUploadContext>();
+        frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    }
+
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    bool uiSnapshotWasPendingWhenOffscreenBuilderRan = false;
+    NLS::Render::Context::FrameSnapshot sceneSnapshot;
+    sceneSnapshot.frameId = 905u;
+    sceneSnapshot.targetsSwapchain = false;
+    sceneSnapshot.renderWidth = 128u;
+    sceneSnapshot.renderHeight = 72u;
+    sceneSnapshot.visibleOpaqueDrawCount = 1u;
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+        driver,
+        sceneSnapshot,
+        [&]()
+        {
+            {
+                std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+                uiSnapshotWasPendingWhenOffscreenBuilderRan = impl->pendingUiOverlaySnapshot != nullptr;
+            }
+            NLS::Render::Context::RenderScenePackage package;
+            package.frameId = 905u;
+            package.targetsSwapchain = false;
+            package.renderWidth = 128u;
+            package.renderHeight = 72u;
+            package.hasVisibleDraws = true;
+            package.frameDataReady = true;
+            return package;
+        }));
+
+    auto uiSnapshot = MakeVisibleUiSnapshot(905u, 128.0f, 72.0f);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    EXPECT_FALSE(uiSnapshotWasPendingWhenOffscreenBuilderRan)
+        << "PresentSwapchain must not synchronously execute the offscreen builder.";
+    auto testQueue = explicitDevice->GetTestQueue();
+    EXPECT_EQ(testQueue->submitCalls, 0u);
+    EXPECT_EQ(testQueue->presentCalls, 0u);
+    EXPECT_EQ(swapchain->acquireCalls, 0u);
+    EXPECT_EQ(NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver), nullptr)
+        << "The prepublished UI-only frame must own the pending snapshot.";
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    EXPECT_FALSE(uiSnapshotWasPendingWhenOffscreenBuilderRan)
+        << "UI-only work should reserve the free slot before the offscreen scene drain.";
+    EXPECT_EQ(testQueue->submitCalls, 1u);
+    EXPECT_EQ(testQueue->presentCalls, 1u);
+    EXPECT_EQ(swapchain->acquireCalls, 1u);
+    EXPECT_EQ(NLS::Render::Context::DriverUIAccess::ConsumePendingUiDrawDataSnapshot(driver), nullptr);
+}
+
+TEST(ThreadedRenderingLifecycleTests, PresentSwapchainQueuesUiConsumerBehindReferencedOffscreenProducer)
+{
+    ImGuiContextGuard imguiContext;
+    ScopedOverlayShaderManager shaderManagerScope;
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 2u;
+    settings.framesInFlight = 2u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::UIOverlayFrameGraph,
+        true,
+        "test overlay support");
+    auto swapchain = std::make_shared<TestSwapchain>();
+    swapchain->desc.width = 128u;
+    swapchain->desc.height = 72u;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+    ConfigureUiOverlayFrameContext(driver, 0u);
+    ConfigureUiOverlayFrameContext(driver, 1u);
+
+    NLS::Render::RHI::RHITextureDesc outputTextureDesc;
+    outputTextureDesc.extent = {128u, 72u, 1u};
+    outputTextureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    outputTextureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    outputTextureDesc.debugName = "ReferencedOffscreenUiTexture";
+    auto outputTexture = std::make_shared<TestTexture>(
+        outputTextureDesc,
+        NLS::Render::RHI::ResourceState::ShaderRead);
+    NLS::Render::RHI::RHITextureViewDesc outputViewDesc;
+    outputViewDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    outputViewDesc.debugName = "ReferencedOffscreenUiTextureView";
+    auto outputView = std::make_shared<TestTextureView>(outputTexture, outputViewDesc);
+    const auto outputTextureId =
+        NLS::Render::Context::DriverUIAccess::RegisterUiTextureView(
+            driver,
+            outputView,
+            NLS::Render::UI::UiTextureSynchronizationScope::PreviousFrameOrStatic);
+    ASSERT_TRUE(outputTextureId.IsValid());
+
+    const uint64_t outputIdentity = static_cast<uint64_t>(
+        reinterpret_cast<std::uintptr_t>(outputTexture.get()));
+    NLS::Render::Context::FrameSnapshot offscreenSnapshot;
+    offscreenSnapshot.frameId = 930u;
+    offscreenSnapshot.targetsSwapchain = false;
+    offscreenSnapshot.hasExternalOutput = true;
+    offscreenSnapshot.renderWidth = 128u;
+    offscreenSnapshot.renderHeight = 72u;
+    offscreenSnapshot.externalOutputIdentity = outputIdentity;
+    offscreenSnapshot.externalOutputIdentities = {outputIdentity};
+    offscreenSnapshot.externalOutputTextureCount = 1u;
+    offscreenSnapshot.externalOutputColorView = outputView;
+
+    NLS::Render::Context::RenderScenePackage offscreenPackage;
+    offscreenPackage.frameId = offscreenSnapshot.frameId;
+    offscreenPackage.targetsSwapchain = false;
+    offscreenPackage.frameDataReady = true;
+    offscreenPackage.objectDataReady = true;
+    offscreenPackage.renderWidth = 128u;
+    offscreenPackage.renderHeight = 72u;
+    offscreenPackage.containsCommandInputs = true;
+    offscreenPackage.passPlanCount = 1u;
+    offscreenPackage.externalSceneOutputIdentity = outputIdentity;
+    offscreenPackage.externalSceneOutputIdentities = {outputIdentity};
+    offscreenPackage.externalSceneOutputTextureCount = 1u;
+    offscreenPackage.externalSceneOutputColorView = outputView;
+    offscreenPackage.extractedTextures.push_back(outputTexture);
+    NLS::Render::Context::RenderPassCommandInput outputPass;
+    outputPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    outputPass.queueType = NLS::Render::RHI::QueueType::Graphics;
+    outputPass.debugName = "ReferencedOffscreenProducer";
+    outputPass.targetsSwapchain = false;
+    outputPass.renderWidth = 128u;
+    outputPass.renderHeight = 72u;
+    outputPass.clearColor = true;
+    outputPass.usesColorAttachment = true;
+    outputPass.colorAttachmentViews = {outputView};
+    offscreenPackage.passCommandInputs.push_back(std::move(outputPass));
+
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessPreparedFrame(
+        driver,
+        offscreenSnapshot,
+        offscreenPackage));
+
+    auto uiSnapshot = MakeVisibleUiSnapshot(931u, 128.0f, 72.0f, outputTextureId);
+    NLS::Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(driver, uiSnapshot);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    uint64_t invalidationGenerationBeforeProducerSubmit = 0u;
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        invalidationGenerationBeforeProducerSubmit =
+            impl->uiOverlayPresentationInvalidationGeneration;
+    }
+
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    EXPECT_TRUE(lifecycle->HasInFlightSwapchainFrame())
+        << "The UI consumer should publish immediately and let the lifecycle enforce RHI ordering.";
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_EQ(impl->pendingUiOverlaySnapshot, nullptr)
+            << "A published UI-only consumer must own the pending snapshot.";
+    }
+    const auto queuedSlots = lifecycle->CopySlots();
+    const auto producerSlot = std::find_if(
+        queuedSlots.begin(),
+        queuedSlots.end(),
+        [](const NLS::Render::Context::InFlightFrameSlot& slot)
+        {
+            return slot.snapshot.has_value() && slot.snapshot->frameId == 930u;
+        });
+    const auto consumerSlot = std::find_if(
+        queuedSlots.begin(),
+        queuedSlots.end(),
+        [](const NLS::Render::Context::InFlightFrameSlot& slot)
+        {
+            return slot.snapshot.has_value() && slot.snapshot->frameId == 931u;
+        });
+    ASSERT_NE(producerSlot, queuedSlots.end());
+    ASSERT_NE(consumerSlot, queuedSlots.end());
+    EXPECT_LT(producerSlot->publicationSequence, consumerSlot->publicationSequence);
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    auto testQueue = explicitDevice->GetTestQueue();
+    EXPECT_EQ(testQueue->submitCalls, 2u);
+    EXPECT_EQ(testQueue->presentCalls, 1u);
+    EXPECT_EQ(swapchain->acquireCalls, 1u);
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_GT(
+            impl->uiOverlayPresentationInvalidationGeneration,
+            invalidationGenerationBeforeProducerSubmit)
+            << "Only successful offscreen submission may publish a new sampled-texture generation.";
+    }
+    const auto retiredConsumerSlot = lifecycle->CopySlot(consumerSlot->slotIndex);
+    ASSERT_TRUE(retiredConsumerSlot.has_value());
+    ASSERT_TRUE(retiredConsumerSlot->renderScenePackage.has_value());
+    EXPECT_EQ(
+        retiredConsumerSlot->renderScenePackage->uiReferencedTextureIdentities,
+        std::vector<uint64_t>({outputIdentity}));
+}
+
+TEST(ThreadedRenderingLifecycleTests, ReportsWhetherInFlightWorkTargetsTheSwapchain)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(2u);
+    NLS::Render::Context::FrameSnapshot offscreenSnapshot;
+    offscreenSnapshot.frameId = 906u;
+    offscreenSnapshot.targetsSwapchain = false;
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(offscreenSnapshot));
+    EXPECT_FALSE(lifecycle.HasInFlightSwapchainFrame());
+
+    NLS::Render::Context::FrameSnapshot swapchainSnapshot;
+    swapchainSnapshot.frameId = 907u;
+    swapchainSnapshot.targetsSwapchain = true;
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(swapchainSnapshot));
+    EXPECT_TRUE(lifecycle.HasInFlightSwapchainFrame());
+}
+
+TEST(ThreadedRenderingLifecycleTests, FailedBackgroundPreviewPublishDoesNotBlockLaterSceneFrames)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    NLS::Render::Context::FrameSnapshot occupiedSnapshot;
+    occupiedSnapshot.frameId = 908u;
+    occupiedSnapshot.targetsSwapchain = false;
+    ASSERT_TRUE(NLS::Render::Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+        driver,
+        occupiedSnapshot,
+        []()
+        {
+            return NLS::Render::Context::RenderScenePackage{};
+        }));
+
+    NLS::Render::Context::FrameSnapshot previewSnapshot;
+    previewSnapshot.frameId = 909u;
+    previewSnapshot.targetsSwapchain = false;
+    EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+        driver,
+        previewSnapshot,
+        []()
+        {
+            return NLS::Render::Context::RenderScenePackage{};
+        },
+        nullptr,
+        nullptr,
+        true));
+
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    EXPECT_FALSE(impl->backgroundPreviewPublicationRequested.load(std::memory_order_acquire))
+        << "A failed background preview attempt must release its publication priority.";
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    NLS::Render::Context::FrameSnapshot nextSceneSnapshot;
+    nextSceneSnapshot.frameId = 910u;
+    nextSceneSnapshot.targetsSwapchain = true;
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+        driver,
+        nextSceneSnapshot,
+        []()
+        {
+            return NLS::Render::Context::RenderScenePackage{};
+        }))
+        << "A failed background preview attempt must not reject subsequent normal scene publication.";
 }
 
 #if 0

@@ -56,6 +56,14 @@ public:
         const Resources::Material& effectiveMaterial,
         const Resources::Shader& effectiveShader);
     void PrepareExplicitDraw(RHI::RHICommandBuffer& commandBuffer, PipelineState& pso, const Entities::Drawable& drawable);
+    // Captures only the current frame constants binding; no drawable/object state is prepared.
+    bool CaptureFrameBindingSet(std::shared_ptr<RHI::RHIBindingSet>& outBindingSet);
+    // Captures the current drawable/object state without refreshing frame-constant bindings.
+    // Legacy providers may also return a frame binding through PreparedBindingSets.
+    bool CapturePreparedObjectBindingSet(
+        PipelineState& pso,
+        const Entities::Drawable& drawable,
+        PreparedBindingSets& outBindings);
     bool CapturePreparedBindingSets(PipelineState& pso, const Entities::Drawable& drawable, PreparedBindingSets& outBindings);
 
     bool IsFramePrepared() const;
@@ -70,6 +78,11 @@ protected:
     virtual bool OnHasReservedPreparedFrameResources() const;
     virtual bool OnPrepareDraw(PipelineState& pso, const Entities::Drawable& drawable);
     virtual void OnPrepareExplicitDraw(RHI::RHICommandBuffer& commandBuffer, PipelineState& pso, const Entities::Drawable& drawable);
+    virtual bool OnCaptureFrameBindingSet(std::shared_ptr<RHI::RHIBindingSet>& outBindingSet);
+    virtual bool OnCapturePreparedObjectBindingSet(
+        PipelineState& pso,
+        const Entities::Drawable& drawable,
+        PreparedBindingSets& outBindings);
     virtual bool OnCapturePreparedBindingSets(PipelineState& pso, const Entities::Drawable& drawable, PreparedBindingSets& outBindings);
 
     const Resources::Material* GetPreparedMaterial() const;

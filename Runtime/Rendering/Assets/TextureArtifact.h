@@ -91,6 +91,7 @@ struct TextureArtifactData
     std::vector<TextureArtifactMip> mips;
     std::vector<TextureArtifactSubresource> subresources;
     std::shared_ptr<std::vector<uint8_t>> backingBytes;
+    std::shared_ptr<void> backingStorage;
 };
 
 struct TextureArtifactHeaderPreview
@@ -109,6 +110,8 @@ NLS_RENDER_API std::optional<TextureArtifactData> LoadTextureArtifact(const std:
 NLS_RENDER_API std::optional<TextureArtifactData> LoadTextureArtifact(
     const std::filesystem::path& path,
     const std::atomic_bool* cancellationFlag);
+NLS_RENDER_API std::optional<TextureArtifactData> LoadTextureArtifactBufferedForTesting(
+    const std::filesystem::path& path);
 NLS_RENDER_API bool IsNativeTextureArtifact(const std::vector<uint8_t>& bytes);
 NLS_RENDER_API std::optional<TextureArtifactData> DecodeTextureArtifactFromEncodedImage(
     const uint8_t* encodedData,

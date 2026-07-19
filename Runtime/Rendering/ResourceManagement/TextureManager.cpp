@@ -9,6 +9,7 @@
 #include "Rendering/Assets/TextureArtifact.h"
 #include <Jobs/BackgroundJobQueue.h>
 #include <Jobs/JobSystem.h>
+#include <Profiling/PerformanceStageStats.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 
 #include <Filesystem/IniFile.h>
@@ -760,14 +761,35 @@ void TextureManager::ReloadResource(Texture2D* resource, const std::string& path
 
 Texture2D* TextureManager::GetArtifactResource(const std::string& path, const bool tryToLoadIfNotFound)
 {
+	NLS::Base::Profiling::PerformanceStageScope resolveScope(
+		NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+		"PrewarmTextureArtifactResolve",
+		NLS::Base::Profiling::PerformanceStageThread::Main);
+	resolveScope.AddCounter("requestCount");
+
 	if (auto* cached = GetResource(path, false))
+	{
+		resolveScope.AddCounter("requestedPathCacheHitCount");
 		return cached;
+	}
 
 	const auto realPath = GetRealPath(path);
 	if (auto* cached = FindCachedArtifactResourceByResolvedPath(realPath))
+	{
+		resolveScope.AddCounter("resolvedPathCacheHitCount");
 		return cached;
+	}
 
-	return tryToLoadIfNotFound ? GetResource(path, true) : nullptr;
+	if (!tryToLoadIfNotFound)
+	{
+		resolveScope.AddCounter("loadDisabledMissCount");
+		return nullptr;
+	}
+
+	resolveScope.AddCounter("createAttemptCount");
+	auto* resource = GetResource(path, true);
+	resolveScope.AddCounter(resource != nullptr ? "createSuccessCount" : "createFailureCount");
+	return resource;
 }
 
 Texture2D* TextureManager::RequestAsyncArtifact(const std::string& path, const bool cancelableInterest)

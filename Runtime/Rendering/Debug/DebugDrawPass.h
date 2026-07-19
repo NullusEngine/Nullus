@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -16,6 +17,8 @@ namespace NLS::Render::Resources
 
 namespace NLS::Render::Debug
 {
+	class DebugDrawService;
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
     struct DebugDrawPassTestAccess;
 #endif
@@ -74,6 +77,13 @@ namespace NLS::Render::Debug
             uint32_t capacity = 0u;
         };
 
+        struct CachedLineMaterial
+        {
+            DebugDrawStyle style;
+            std::unique_ptr<Resources::Material> material;
+            bool hasStyle = false;
+        };
+
         static constexpr size_t kMinLineMeshSlotCount = 3u;
 
         void RenderPoint(const DebugDrawPrimitive& primitive, PipelineState pso);
@@ -87,7 +97,12 @@ namespace NLS::Render::Debug
         void RenderCollectedCommands(PipelineState pso);
         Resources::Mesh* UploadLineVertices(const Geometry::BoundingSphere& boundingSphere);
         void RenderPrimitiveNow(const DebugDrawPrimitive& primitive, PipelineState pso);
-        void RenderLineCommand(const LineDrawCommand& command, Resources::Mesh& mesh, PipelineState pso);
+        Resources::Material* ResolveLineMaterial(size_t lineCommandIndex, const DebugDrawStyle& style);
+        void RenderLineCommand(
+            const LineDrawCommand& command,
+            Resources::Mesh& mesh,
+            Resources::Material& material,
+            PipelineState pso);
 
     private:
         Resources::Shader* m_primitiveShader = nullptr;
@@ -96,10 +111,20 @@ namespace NLS::Render::Debug
         Resources::Mesh* m_triangleMesh = nullptr;
         bool m_ownsPrimitiveShader = false;
         std::unique_ptr<Resources::Material> m_primitiveMaterial;
+        std::vector<CachedLineMaterial> m_cachedLineMaterials;
         std::vector<LineMeshSlot> m_lineMeshSlots;
         size_t m_nextLineMeshSlot = 0u;
         std::vector<Geometry::Vertex> m_lineBatchVertices;
         std::vector<DrawCommand> m_drawCommands;
+        std::vector<std::reference_wrapper<const DebugDrawPrimitive>> m_visiblePrimitives;
+        const DebugDrawService* m_collectedPrimitiveService = nullptr;
+        uint64_t m_collectedContentRevision = 0u;
+        uint64_t m_commandBuildCount = 0u;
+        const DebugDrawService* m_uploadedLineService = nullptr;
+        Resources::Mesh* m_uploadedLineMesh = nullptr;
+        std::vector<Geometry::Vertex> m_uploadedLineVertices;
+        uint64_t m_uploadedLineContentRevision = 0u;
+        uint64_t m_lineMeshUploadCount = 0u;
     };
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -107,6 +132,10 @@ namespace NLS::Render::Debug
     {
         static const Resources::Mesh* GetLineMeshSlotMesh(const DebugDrawPass& pass, size_t slotIndex);
         static uint32_t GetLineMeshSlotCapacity(const DebugDrawPass& pass, size_t slotIndex);
+        static uint64_t GetCommandBuildCount(const DebugDrawPass& pass);
+        static uint64_t GetLineMeshUploadCount(const DebugDrawPass& pass);
+        static size_t GetCachedLineMaterialCount(const DebugDrawPass& pass);
+        static uint64_t GetCachedLineMaterialParameterRevision(const DebugDrawPass& pass, size_t index);
     };
 #endif
 }

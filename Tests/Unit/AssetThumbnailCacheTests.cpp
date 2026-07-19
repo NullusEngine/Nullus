@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Assets/AssetThumbnailCache.h"
+#include "Assets/AssetThumbnailPreviewCamera.h"
 #include "Assets/AssetThumbnailService.h"
 #include "Assets/AssetId.h"
 #include "Assets/ArtifactDatabase.h"
@@ -3087,7 +3088,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto materialRequest = BuildAssetThumbnailRequestForItem(root, material, 96u);
     ASSERT_TRUE(materialRequest.has_value());
     EXPECT_EQ(materialRequest->kind, AssetThumbnailKind::MaterialSphere);
-    EXPECT_EQ(materialRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v11");
+    EXPECT_EQ(materialRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v12");
     EXPECT_EQ(materialRequest->settingsFingerprint, "asset-browser-thumbnail:v20-gpu-black-frame-fallback");
     EXPECT_FALSE(materialRequest->dependencyStamp.empty());
     EXPECT_EQ(materialRequest->colorSpaceMode, "srgb");
@@ -3122,8 +3123,8 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto modelRequest = BuildAssetThumbnailRequestForItem(root, modelSource, 96u);
     ASSERT_TRUE(modelRequest.has_value());
     EXPECT_EQ(modelRequest->kind, AssetThumbnailKind::PrefabPreview);
-    EXPECT_EQ(modelRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v9");
-    EXPECT_EQ(modelRequest->settingsFingerprint, "asset-browser-thumbnail:v32-prefab-full-gpu-streaming");
+    EXPECT_EQ(modelRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v33");
+    EXPECT_EQ(modelRequest->settingsFingerprint, "asset-browser-thumbnail:v35-prefab-qem-material-proxy");
     EXPECT_FALSE(modelRequest->dependencyStamp.empty());
     EXPECT_EQ(modelRequest->colorSpaceMode, "srgb");
     EXPECT_EQ(modelRequest->hdrMode, "ldr");
@@ -3141,7 +3142,7 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto meshRequest = BuildAssetThumbnailRequestForItem(root, mesh, 96u);
     ASSERT_TRUE(meshRequest.has_value());
     EXPECT_EQ(meshRequest->kind, AssetThumbnailKind::ModelPreview);
-    EXPECT_EQ(meshRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v8");
+    EXPECT_EQ(meshRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v9");
     EXPECT_EQ(meshRequest->settingsFingerprint, "asset-browser-thumbnail:v20-gpu-black-frame-fallback");
     EXPECT_FALSE(meshRequest->dependencyStamp.empty());
     EXPECT_EQ(meshRequest->colorSpaceMode, "srgb");
@@ -3159,8 +3160,8 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto prefabRequest = BuildAssetThumbnailRequestForItem(root, prefab, 96u);
     ASSERT_TRUE(prefabRequest.has_value());
     EXPECT_EQ(prefabRequest->kind, AssetThumbnailKind::PrefabPreview);
-    EXPECT_EQ(prefabRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v9");
-    EXPECT_EQ(prefabRequest->settingsFingerprint, "asset-browser-thumbnail:v32-prefab-full-gpu-streaming");
+    EXPECT_EQ(prefabRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v33");
+    EXPECT_EQ(prefabRequest->settingsFingerprint, "asset-browser-thumbnail:v35-prefab-qem-material-proxy");
     EXPECT_FALSE(prefabRequest->dependencyStamp.empty());
     EXPECT_EQ(prefabRequest->colorSpaceMode, "srgb");
     EXPECT_EQ(prefabRequest->hdrMode, "ldr");
@@ -3306,6 +3307,8 @@ TEST(AssetThumbnailCacheTests, ServiceCanDeferModelManifestLookupDuringThumbnail
 
 TEST(AssetThumbnailCacheTests, ServiceResolvesDeferredModelManifestRequestWhenGeneratingThumbnail)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
 
@@ -3357,9 +3360,18 @@ TEST(AssetThumbnailCacheTests, ServiceResolvesDeferredModelManifestRequestWhenGe
 
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(*deferredRequest).status, AssetThumbnailServiceStatus::Pending);
-    const auto generated = service.GenerateNextThumbnail();
+    CapturingThumbnailPreviewRenderer renderer;
+    const auto generated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending) << generated->diagnostic;
+    auto completed = service.ConsumeCompletedThumbnail();
+    for (int attempt = 0; attempt < 100 && !completed.has_value(); ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        completed = service.ConsumeCompletedThumbnail();
+    }
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh) << completed->diagnostic;
     EXPECT_EQ(service.GetThumbnailState(*deferredRequest), ThumbnailState::Ready);
     EXPECT_EQ(service.GetThumbnailState(*deferredRequest), ThumbnailState::Ready);
 
@@ -3368,6 +3380,8 @@ TEST(AssetThumbnailCacheTests, ServiceResolvesDeferredModelManifestRequestWhenGe
 
 TEST(AssetThumbnailCacheTests, DeferredSourceModelPrefabPreviewUsesManifestPrimaryArtifactNotSourceFile)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
 
@@ -3421,9 +3435,18 @@ TEST(AssetThumbnailCacheTests, DeferredSourceModelPrefabPreviewUsesManifestPrima
 
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(*deferredRequest).status, AssetThumbnailServiceStatus::Pending);
-    const auto generated = service.GenerateNextThumbnail();
+    CapturingThumbnailPreviewRenderer renderer;
+    const auto generated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending) << generated->diagnostic;
+    auto completed = service.ConsumeCompletedThumbnail();
+    for (int attempt = 0; attempt < 100 && !completed.has_value(); ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        completed = service.ConsumeCompletedThumbnail();
+    }
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh) << completed->diagnostic;
     EXPECT_EQ(service.GetThumbnailState(*deferredRequest), ThumbnailState::Ready);
 
     std::filesystem::remove_all(root);
@@ -3910,7 +3933,7 @@ TEST(AssetThumbnailCacheTests, HeavyGpuPumpBoundsUnsupportedPrefabScanPerCall)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, PrefabSubAssetThumbnailIgnoresUnreferencedManifestMeshes)
+TEST(AssetThumbnailCacheTests, PrefabSubAssetThumbnailWaitsForGpuRendererWithoutCpuFallback)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -3983,13 +4006,10 @@ TEST(AssetThumbnailCacheTests, PrefabSubAssetThumbnailIgnoresUnreferencedManifes
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh)
-        << generated->diagnostic;
-    EXPECT_TRUE(generated->diagnostic.empty());
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-    EXPECT_TRUE(std::filesystem::exists(generated->cacheEntry->imagePath));
-    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
@@ -4227,6 +4247,7 @@ TEST(AssetThumbnailCacheTests, RendererPumpUsesResolvedArtifactPathWithoutManife
     request.sourceAssetPath = "Assets/Models/Hero.fbx";
     request.artifactPath = "Library/Artifacts/" + assetId.ToString() + "/meshes/Body.nmesh";
     request.kind = AssetThumbnailKind::ModelPreview;
+    request.generatedSubAsset = true;
     request.requestedSize = 48u;
 
     AssetThumbnailService service;
@@ -4240,7 +4261,7 @@ TEST(AssetThumbnailCacheTests, RendererPumpUsesResolvedArtifactPathWithoutManife
         EXPECT_FALSE(generated.has_value());
     }
 
-    EXPECT_EQ(renderer.supportsCount, 1u);
+    EXPECT_EQ(renderer.supportsCount, 0u);
     EXPECT_EQ(renderer.renderCount, 0u);
     EXPECT_EQ(FindThumbnailPerformanceStage(stats.Snapshot(), "ThumbnailManifestLookup"), nullptr)
         << "Resolved CPU mesh thumbnail requests must be skipped by the GPU pump without "
@@ -4882,7 +4903,7 @@ TEST(AssetThumbnailCacheTests, GpuPumpDoesNotWritePendingMaterialPixelsIntoPrefa
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, GpuPumpRejectsOpaqueBlackPreviewFrames)
+TEST(AssetThumbnailCacheTests, GpuPumpRejectsOpaqueBlackPreviewFramesWithoutCpuFallback)
 {
     const ScopedAssetThumbnailCacheJobSystem jobSystem;
 
@@ -4910,22 +4931,17 @@ TEST(AssetThumbnailCacheTests, GpuPumpRejectsOpaqueBlackPreviewFrames)
 
     const auto generated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh)
-        << "Opaque black GPU preview frames should fall back to the CPU material thumbnail instead of caching the black frame.";
-    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Ready);
-    EXPECT_EQ(EvaluateAssetThumbnailCache(material).status, AssetThumbnailCacheStatus::Fresh);
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-empty-frame");
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Failed);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(material).status, AssetThumbnailCacheStatus::Failed);
     ASSERT_TRUE(generated->cacheEntry.has_value());
-    EXPECT_GT(std::filesystem::file_size(generated->cacheEntry->imagePath), 0u);
-    const NLS::Image decoded(generated->cacheEntry->imagePath.string(), false);
-    ASSERT_NE(decoded.GetData(), nullptr);
-    EXPECT_GT(CountOpaquePixels(decoded), 0u);
-    EXPECT_GT(AverageOpaqueLuminance(decoded), 8.0)
-        << "The regression test must fail if the opaque black GPU readback is written as the fresh thumbnail.";
+    EXPECT_FALSE(std::filesystem::exists(generated->cacheEntry->imagePath));
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, GpuModelPreviewKeepsCpuFallbackForOpaqueBlackFrames)
+TEST(AssetThumbnailCacheTests, GpuModelPreviewDefersOpaqueBlackFrameWithoutCpuRasterFallback)
 {
     const ScopedAssetThumbnailCacheJobSystem jobSystem;
 
@@ -4953,16 +4969,14 @@ TEST(AssetThumbnailCacheTests, GpuModelPreviewKeepsCpuFallbackForOpaqueBlackFram
 
     const auto generated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh)
-        << "Model previews may still use the CPU mesh thumbnail when a GPU readback is an opaque black frame.";
-    EXPECT_EQ(service.GetThumbnailState(model), ThumbnailState::Ready);
-    EXPECT_EQ(EvaluateAssetThumbnailCache(model).status, AssetThumbnailCacheStatus::Fresh);
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending)
+        << "An invalid GPU frame must remain retryable instead of switching to CPU rasterization.";
+    EXPECT_EQ(service.GetThumbnailState(model), ThumbnailState::Queued);
+    EXPECT_NE(EvaluateAssetThumbnailCache(model).status, AssetThumbnailCacheStatus::Fresh);
     ASSERT_TRUE(generated->cacheEntry.has_value());
-
-    const NLS::Image decoded(generated->cacheEntry->imagePath.string(), false);
-    ASSERT_NE(decoded.GetData(), nullptr);
-    EXPECT_GT(AverageOpaqueLuminance(decoded), 8.0)
-        << "The CPU fallback must replace, not cache, the rejected black GPU frame.";
+    EXPECT_FALSE(std::filesystem::exists(generated->cacheEntry->imagePath));
+    EXPECT_FALSE(service.StartNextThumbnailGeneration())
+        << "GPU-capable model previews must not enter the CPU raster worker path.";
 
     std::filesystem::remove_all(root);
 }
@@ -5568,6 +5582,8 @@ TEST(AssetThumbnailCacheTests, BackgroundPumpDefersCpuDeferredPrefabPreviewWhenR
 
 TEST(AssetThumbnailCacheTests, DeferredGeneratedThumbnailInvalidatesWhenResolvedArtifactChanges)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
 
@@ -5617,9 +5633,18 @@ TEST(AssetThumbnailCacheTests, DeferredGeneratedThumbnailInvalidatesWhenResolved
 
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
-    const auto generated = service.GenerateNextThumbnail();
+    CapturingThumbnailPreviewRenderer renderer;
+    const auto generated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(generated.has_value());
-    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
+    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Pending) << generated->diagnostic;
+    auto completed = service.ConsumeCompletedThumbnail();
+    for (int attempt = 0; attempt < 100 && !completed.has_value(); ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        completed = service.ConsumeCompletedThumbnail();
+    }
+    ASSERT_TRUE(completed.has_value());
+    ASSERT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh) << completed->diagnostic;
     ASSERT_EQ(service.GetThumbnailState(*request), ThumbnailState::Ready);
 
     const auto oldPrefabPath = root / RedirectedArtifactPathOrFallback(
@@ -5725,10 +5750,11 @@ TEST(AssetThumbnailCacheTests, DeferredFailedThumbnailInvalidatesWhenResolvedArt
 
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
-    const auto generated = service.GenerateNextThumbnail();
+    CountingThumbnailPreviewRenderer renderer;
+    const auto generated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(generated.has_value());
-    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
-    ASSERT_EQ(generated->diagnostic, "thumbnail-prefab-preview-budget-exceeded");
+    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Failed);
+    ASSERT_EQ(generated->diagnostic, "test-renderer-called");
     auto evaluated = EvaluateAssetThumbnailCache(*request);
     ASSERT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
 
@@ -5785,7 +5811,7 @@ TEST(AssetThumbnailCacheTests, DeferredFailedThumbnailInvalidatesWhenResolvedArt
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailPreservesSnapshotDrawItemTransforms)
+TEST(AssetThumbnailCacheTests, PrefabTransformsRemainPendingWithoutGpuRenderer)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -5863,19 +5889,14 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailPreservesSnapshotDrawItemTransf
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-
-    const NLS::Image decoded(generated->cacheEntry->imagePath.string(), false);
-    ASSERT_NE(decoded.GetData(), nullptr);
-    EXPECT_GE(CountOpaqueColumnClusters(decoded), 2u)
-        << "The CPU prefab thumbnail path must render repeated snapshot draw items at their prefab transforms.";
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailDoesNotCachePartialSnapshotWhenOneMeshIsMissing)
+TEST(AssetThumbnailCacheTests, PartialPrefabSnapshotRemainsPendingWithoutGpuRenderer)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -5952,10 +5973,9 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailDoesNotCachePartialSnapshotWhen
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    EXPECT_NE(generated->status, AssetThumbnailServiceStatus::Fresh)
-        << "A prefab thumbnail that drops one draw item must not be cached as if the full prefab rendered.";
-    EXPECT_NE(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
@@ -5987,19 +6007,60 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewRejectsPartialRenderableSnapshot)
         << "GPU thumbnails must not render and cache a misleading partial prefab preview.";
 }
 
-TEST(AssetThumbnailCacheTests, GpuPrefabPreviewDefersMixedMeshReadinessUntilComplete)
+TEST(AssetThumbnailCacheTests, GpuPrefabPreviewDefersMixedResourceReadinessUntilComplete)
 {
     using namespace NLS::Editor::Assets;
 
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect prefab preview readiness.";
 #else
-    EXPECT_TRUE(ShouldDeferPrefabPreviewForMeshReadinessForTesting(1u, false))
+    EXPECT_TRUE(ShouldDeferPrefabPreviewForResourceReadinessForTesting(1u, 0u, 0u, false))
         << "Any pending mesh must prevent the thumbnail from caching incomplete prefab geometry.";
-    EXPECT_TRUE(ShouldDeferPrefabPreviewForMeshReadinessForTesting(0u, true))
+    EXPECT_TRUE(ShouldDeferPrefabPreviewForResourceReadinessForTesting(0u, 1u, 0u, false))
+        << "Any pending material must prevent the thumbnail from caching a white prefab preview.";
+    EXPECT_TRUE(ShouldDeferPrefabPreviewForResourceReadinessForTesting(0u, 0u, 1u, false))
+        << "Any pending material texture must prevent the thumbnail from caching a white prefab preview.";
+    EXPECT_TRUE(ShouldDeferPrefabPreviewForResourceReadinessForTesting(0u, 0u, 0u, true))
         << "Truncated resource discovery cannot prove that the complete prefab is ready.";
-    EXPECT_TRUE(ShouldDeferPrefabPreviewForMeshReadinessForTesting(1u, false));
-    EXPECT_FALSE(ShouldDeferPrefabPreviewForMeshReadinessForTesting(0u, false));
+    EXPECT_FALSE(ShouldDeferPrefabPreviewForResourceReadinessForTesting(0u, 0u, 0u, false));
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, GpuPrefabPreviewContinuesRenderingAfterDrawPrewarmCompletes)
+{
+    using namespace NLS::Editor::Assets;
+
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect GPU thumbnail draw prewarming.";
+#else
+    EXPECT_TRUE(ShouldDeferPrefabPreviewAfterDrawPrewarmForTesting(true, false))
+        << "An incomplete supported prewarm must yield so the remaining draws stay within the frame budget.";
+    EXPECT_FALSE(ShouldDeferPrefabPreviewAfterDrawPrewarmForTesting(true, true))
+        << "A completed prewarm must fall through to the real render instead of retrying forever.";
+    EXPECT_FALSE(ShouldDeferPrefabPreviewAfterDrawPrewarmForTesting(false, false))
+        << "An unsupported prewarm path must fall through to the renderer's normal preparation path.";
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, GpuPrefabPreviewPreservesSceneAcrossDrawPrewarmPending)
+{
+    using namespace NLS::Editor::Assets;
+
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect GPU thumbnail scene cleanup.";
+#else
+    EXPECT_TRUE(ShouldPreservePrefabPreviewSceneAfterRenderAttemptForTesting(
+        "thumbnail-gpu-preview-resources-pending:prefab-draw-prewarm=2/43"))
+        << "A transient draw-prewarm yield must preserve the scene assembly and cursor.";
+    EXPECT_TRUE(ShouldPreservePrefabPreviewSceneAfterRenderAttemptForTesting(
+        "thumbnail-gpu-preview-readback-pending"))
+        << "An in-flight readback must retain its preview scene inputs.";
+    EXPECT_FALSE(ShouldPreservePrefabPreviewSceneAfterRenderAttemptForTesting(
+        "thumbnail-gpu-preview-resources-pending:prefab-scene-assembly=18/43"))
+        << "Scene assembly pending returns before the post-render cleanup decision.";
+    EXPECT_FALSE(ShouldPreservePrefabPreviewSceneAfterRenderAttemptForTesting(
+        "thumbnail-gpu-preview-prefab-mesh-load-failed"))
+        << "Terminal preview failures must release transient scene objects.";
 #endif
 }
 
@@ -6015,6 +6076,64 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewDrawItemCapacityCoversLargeImport
     EXPECT_GE(GetThumbnailPreviewPrefabDrawItemCapacityForTesting(), kSponzaMainGltfPrimitiveCount)
         << "Large imported model thumbnails such as Sponza must stay on the complete GPU prefab "
            "preview path instead of falling back to a partial CPU mesh-set thumbnail.";
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, LargeGpuPrefabPreviewKeepsCompleteSourcePlanForPersistentProxy)
+{
+    using namespace NLS::Editor::Assets;
+
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect the GPU thumbnail proxy plan.";
+#else
+    PreviewRenderableSnapshot snapshot;
+    snapshot.expectedDrawItemCount = 405u;
+    snapshot.drawItems.reserve(snapshot.expectedDrawItemCount);
+    for (size_t z = 0u; z < 9u; ++z)
+    {
+        for (size_t y = 0u; y < 5u; ++y)
+        {
+            for (size_t x = 0u; x < 9u; ++x)
+            {
+                PreviewDrawItem item;
+                item.meshPath = ":Models/Cube";
+                item.localPosition = {
+                    static_cast<float>(x) - 4.0f,
+                    static_cast<float>(y) - 2.0f,
+                    static_cast<float>(z) - 4.0f
+                };
+                snapshot.drawItems.push_back(std::move(item));
+            }
+        }
+    }
+    ASSERT_EQ(snapshot.drawItems.size(), snapshot.expectedDrawItemCount);
+
+    AssetThumbnailRequest request;
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 96u;
+    const auto plan = BuildThumbnailPreviewPrefabResourcePlanForTesting(request, snapshot);
+
+    EXPECT_EQ(plan.drawItemCount, snapshot.drawItems.size())
+        << "The persistent proxy builder must see every source draw item before producing its one-draw artifact.";
+    ASSERT_EQ(plan.selectedDrawItemIndices.size(), plan.drawItemCount);
+
+    bool coversNegativeX = false;
+    bool coversPositiveX = false;
+    bool coversNegativeZ = false;
+    bool coversPositiveZ = false;
+    for (const auto index : plan.selectedDrawItemIndices)
+    {
+        ASSERT_LT(index, snapshot.drawItems.size());
+        const auto& position = snapshot.drawItems[index].localPosition;
+        coversNegativeX = coversNegativeX || position.x <= -3.0f;
+        coversPositiveX = coversPositiveX || position.x >= 3.0f;
+        coversNegativeZ = coversNegativeZ || position.z <= -3.0f;
+        coversPositiveZ = coversPositiveZ || position.z >= 3.0f;
+    }
+    EXPECT_TRUE(coversNegativeX);
+    EXPECT_TRUE(coversPositiveX);
+    EXPECT_TRUE(coversNegativeZ);
+    EXPECT_TRUE(coversPositiveZ);
 #endif
 }
 
@@ -6100,7 +6219,7 @@ TEST(AssetThumbnailCacheTests, ThumbnailPreviewPendingRenderInputsPollRetirement
         << "Thumbnail retries run from the editor UI pump and must never synchronously drain rendering.";
 }
 
-TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailResolvesSnapshotMeshFromReferencedAssetManifest)
+TEST(AssetThumbnailCacheTests, ExternalMeshPrefabRemainsPendingWithoutGpuRenderer)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -6177,20 +6296,14 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailResolvesSnapshotMeshFromReferen
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-
-    const NLS::Image decoded(generated->cacheEntry->imagePath.string(), false);
-    ASSERT_NE(decoded.GetData(), nullptr);
-    EXPECT_EQ(CountOpaqueColumnClusters(decoded), 1u)
-        << "The CPU prefab snapshot path should render the external mesh dependency instead "
-           "of falling back to the multi-block prefab structure placeholder.";
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailRendersSceneCubeBuiltinPrimitiveMesh)
+TEST(AssetThumbnailCacheTests, BuiltinPrimitivePrefabRemainsPendingWithoutGpuRenderer)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -6257,18 +6370,9 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailRendersSceneCubeBuiltinPrimitiv
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-
-    const NLS::Image decoded(generated->cacheEntry->imagePath.string(), false);
-    ASSERT_NE(decoded.GetData(), nullptr);
-    EXPECT_EQ(CountOpaqueColumnClusters(decoded), 1u)
-        << "A scene-created Cube prefab should render the builtin primitive mesh thumbnail "
-           "instead of the prefab structure placeholder.";
-    EXPECT_GT(AverageOpaqueLuminance(decoded), 75.0)
-        << "The cube preview should have usable preview lighting even when the mesh artifact "
-           "does not carry vertex normals.";
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
@@ -6342,28 +6446,41 @@ TEST(AssetThumbnailCacheTests, PrefabPreviewRequiresGpuRendererForBrightObliqueU
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, GpuPreviewCameraAndLightingUseUpperObliqueUnityStyleSetup)
+TEST(AssetThumbnailCacheTests, GpuPreviewCamerasAndLightingUseUpperObliqueSetup)
 {
     using namespace NLS::Editor::Assets;
 
 #if !defined(NLS_ENABLE_TEST_HOOKS)
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect GPU thumbnail preview setup.";
 #else
-    const auto camera = BuildPrefabPreviewCameraDebugInfoForTesting(
+    const auto prefabCamera = BuildPrefabPreviewCameraDebugInfoForTesting(
+        {-1.0f, -1.0f, -1.0f},
+        {1.0f, 1.0f, 1.0f},
+        96u,
+        96u);
+    const auto meshCamera = BuildMeshPreviewCameraDebugInfoForTesting(
         {-1.0f, -1.0f, -1.0f},
         {1.0f, 1.0f, 1.0f},
         96u,
         96u);
     const NLS::Maths::Vector3 center{0.0f, 0.0f, 0.0f};
-    const auto toCamera = camera.cameraPosition - center;
-
-    EXPECT_GT(camera.cameraPosition.y, 0.0f)
-        << "Prefab GPU previews should place the camera above the asset, not below it.";
-    EXPECT_LT(camera.lookDirection.y, 0.0f)
-        << "The preview camera should look downward toward the asset from an upper oblique angle.";
-    EXPECT_GT(std::abs(toCamera.x), 0.1f);
-    EXPECT_GT(std::abs(toCamera.z), 0.1f);
-    EXPECT_GT(camera.distance, 0.0f);
+    const auto expectUpperObliqueCamera = [&center](
+        const EditorThumbnailPreviewCameraDebugInfo& camera,
+        const char* previewKind)
+    {
+        const auto toCamera = camera.cameraPosition - center;
+        EXPECT_GT(camera.cameraPosition.y, center.y)
+            << previewKind << " GPU previews should place the camera above the asset, not below it.";
+        EXPECT_LT(camera.lookDirection.y, 0.0f)
+            << previewKind << " preview camera should look downward from an upper oblique angle.";
+        EXPECT_GT(std::abs(toCamera.x), 0.1f) << previewKind;
+        EXPECT_GT(std::abs(toCamera.z), 0.1f) << previewKind;
+        EXPECT_GT(camera.distance, 0.0f) << previewKind;
+    };
+    expectUpperObliqueCamera(prefabCamera, "Prefab");
+    expectUpperObliqueCamera(meshCamera, "Mesh");
+    EXPECT_LT(ThumbnailPreviewCamera::MeshLookPitchDegrees, 0.0f)
+        << "CPU-generated Mesh sub-assets and GPU Mesh previews share the same upper-oblique pitch.";
 
     const auto keyLight = GetThumbnailPreviewKeyLightDirectionForTesting();
     EXPECT_LT(keyLight.y, -0.25f)
@@ -6473,7 +6590,7 @@ TEST(AssetThumbnailCacheTests, GpuPreviewMeshLoadPathUsesResolvedContentArtifact
 #endif
 }
 
-TEST(AssetThumbnailCacheTests, OversizedImportedModelPrefabFallsBackToManifestMeshPreview)
+TEST(AssetThumbnailCacheTests, OversizedImportedModelPrefabWaitsForGpuRendererWithoutCpuRasterFallback)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -6537,14 +6654,10 @@ TEST(AssetThumbnailCacheTests, OversizedImportedModelPrefabFallsBackToManifestMe
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-
-    const NLS::Image decoded(generated->cacheEntry->imagePath.string(), false);
-    ASSERT_NE(decoded.GetData(), nullptr);
-    EXPECT_GT(CountOpaquePixels(decoded), 0u);
-    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+    EXPECT_FALSE(service.StartNextThumbnailGeneration());
+    EXPECT_NE(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
 
     std::filesystem::remove_all(root);
 }
@@ -6640,7 +6753,7 @@ NLS_LONG_RUNNING_TEST(AssetThumbnailStressPerformanceTests, MeshSetFallbackDoesN
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailFallsBackToVisiblePointsWhenTrianglesRasterizeNothing)
+TEST(AssetThumbnailCacheTests, DegeneratePrefabRemainsPendingWithoutGpuRenderer)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -6703,20 +6816,14 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailFallsBackToVisiblePointsWhenTri
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-
-    const NLS::Image decoded(generated->cacheEntry->imagePath.string(), false);
-    ASSERT_NE(decoded.GetData(), nullptr);
-    EXPECT_GT(CountOpaquePixels(decoded), 0u)
-        << "A renderable prefab must not cache a fully transparent thumbnail as Fresh when all "
-           "sampled triangles are degenerate or otherwise rasterize no pixels.";
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailRasterizesThinTrianglesInsteadOfPointFallback)
+TEST(AssetThumbnailCacheTests, ThinTrianglePrefabRemainsPendingWithoutGpuRenderer)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -6779,23 +6886,14 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailRasterizesThinTrianglesInsteadO
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-
-    const NLS::Image decoded(generated->cacheEntry->imagePath.string(), false);
-    ASSERT_NE(decoded.GetData(), nullptr);
-    const auto opaquePixels = CountOpaquePixels(decoded);
-    EXPECT_GT(opaquePixels, 96u)
-        << "Center-only triangle coverage leaves this valid thin mesh as a sparse point-like preview.";
-    EXPECT_LT(CountOpaquePixelsMatchingColor(decoded, 150u, 210u, 255u), opaquePixels)
-        << "Valid thin mesh triangles must be rasterized as shaded surfaces instead of falling back "
-           "to the vertex point cloud thumbnail.";
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailSamplesOversizedMeshWithoutStableFailure)
+TEST(AssetThumbnailCacheTests, OversizedPrefabRemainsPendingWithoutGpuRenderer)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -6887,16 +6985,9 @@ TEST(AssetThumbnailCacheTests, PrefabCpuThumbnailSamplesOversizedMeshWithoutStab
     ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
     NLS::Core::Assets::ClearArtifactLoadTelemetry();
     const auto generated = service.GenerateNextThumbnail();
-    ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    EXPECT_TRUE(generated->diagnostic.empty());
-    ASSERT_TRUE(generated->cacheEntry.has_value());
-    EXPECT_TRUE(std::filesystem::exists(generated->cacheEntry->imagePath));
-
-    const auto evaluated = EvaluateAssetThumbnailCache(request);
-    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Fresh)
-        << "Large renderable prefabs should get a bounded sampled preview instead of a "
-           "structure placeholder or stable failed cache entry.";
+    EXPECT_FALSE(generated.has_value());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_EQ(
         CountArtifactTelemetryStageForPathSuffix(
@@ -7316,7 +7407,7 @@ TEST(AssetThumbnailCacheTests, ServiceRetriesLegacyPrefabPreviewBudgetFailureCac
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, ServicePersistsRegularPrefabPreviewBudgetFailureWithoutRequeueLoop)
+TEST(AssetThumbnailCacheTests, ServiceKeepsValidComplexPrefabPreviewPendingWithoutFailureMetadata)
 {
     using namespace NLS::Editor::Assets;
 
@@ -7343,24 +7434,23 @@ TEST(AssetThumbnailCacheTests, ServicePersistsRegularPrefabPreviewBudgetFailureW
 
     const auto generated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Failed);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-prefab-preview-budget-exceeded");
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-complexity-pending");
     EXPECT_EQ(renderer.renderCount, 1u);
-    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
-    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Failed);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
 
     const auto evaluated = EvaluateAssetThumbnailCache(request);
-    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
-    EXPECT_EQ(evaluated.diagnostic, "thumbnail-prefab-preview-budget-exceeded");
+    EXPECT_NE(evaluated.status, AssetThumbnailCacheStatus::Failed);
 
     const auto repeated = service.GetThumbnail(request);
-    EXPECT_EQ(repeated.status, AssetThumbnailServiceStatus::Failed);
-    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+    EXPECT_EQ(repeated.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, ImportedModelPrefabPreviewBudgetExceededDoesNotCpuFallback)
+TEST(AssetThumbnailCacheTests, ImportedModelPrefabPreviewBudgetExceededKeepsGpuProxyPending)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -7393,10 +7483,15 @@ TEST(AssetThumbnailCacheTests, ImportedModelPrefabPreviewBudgetExceededDoesNotCp
 
     const auto generated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Failed);
-    EXPECT_EQ(generated->diagnostic, "thumbnail-prefab-preview-budget-exceeded");
-    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Failed);
-    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Failed);
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-complexity-pending");
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_NE(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Failed);
+
+    EXPECT_FALSE(service.StartNextThumbnailGeneration())
+        << "Complex imported models must not be rasterized by a background CPU fallback.";
+    EXPECT_EQ(renderer.renderCount, 1u);
 
     std::filesystem::remove_all(root);
 }
@@ -8243,6 +8338,7 @@ TEST(AssetThumbnailCacheTests, ServiceSamplesOversizedMeshPreviewWithoutFullPayl
     request.sourceAssetPath = "Assets/Models/City.fbx";
     request.artifactPath = "Library/Artifacts/21/21bb5a71075a04ac35b0f324a6ebaeb38d80fe1f76a45048c1f03633c4314423";
     request.kind = AssetThumbnailKind::ModelPreview;
+    request.generatedSubAsset = true;
     request.requestedSize = 96u;
     request.freshnessInputs = {{"artifact", "oversized-mesh:v1"}};
 
@@ -8298,6 +8394,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsMalformedMeshArtifactBeforeFullPayl
     request.sourceAssetPath = "Assets/Models/City.fbx";
     request.artifactPath = "Library/Artifacts/21/21bb5a71075a04ac35b0f324a6ebaeb38d80fe1f76a45048c1f03633c4314423";
     request.kind = AssetThumbnailKind::ModelPreview;
+    request.generatedSubAsset = true;
     request.freshnessInputs = {{"artifact", "broken-mesh:v1"}};
 
     AssetThumbnailService service;

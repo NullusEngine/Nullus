@@ -2205,10 +2205,89 @@ TEST(SceneObjectGraphSerializationTests, SceneManagerLoadRecordsSceneLoadPerform
     const auto* instantiateStage = findStage("SceneLoad.InstantiateScene");
     ASSERT_NE(instantiateStage, nullptr);
     EXPECT_EQ(instantiateStage->counters.at("objectCount"), 3u);
+    EXPECT_EQ(instantiateStage->counters.at("progressCallbackEnabledCount"), 0u);
+    EXPECT_EQ(instantiateStage->counters.at("documentValidationCount"), 1u);
     EXPECT_NE(findStage("SceneLoad.SceneLoadEvent"), nullptr);
 
     std::filesystem::remove(scenePath);
     std::filesystem::remove_all(scenePath.parent_path() / ".nullus_scene_cache");
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneManagerLoadOnlyBridgesInstantiationProgressWhenRequested)
+{
+    using namespace NLS::Base::Profiling;
+    using namespace NLS::Engine::SceneSystem;
+    using namespace NLS::Engine::Serialize;
+
+    const auto scenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_manager_load_progress_bridge_" + NLS::Guid::New().ToString() + ".scene");
+
+    {
+        std::ofstream output(scenePath);
+        output << ObjectGraphWriter::Write(MakeSimpleSceneDocument());
+    }
+
+    size_t progressReportCount = 0u;
+    float finalProgress = 0.0f;
+    PerformanceStageStats stats;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        SceneManager manager;
+        ASSERT_TRUE(manager.LoadScene(
+            scenePath.string(),
+            true,
+            [&progressReportCount, &finalProgress](const SceneLoadProgress& progress)
+            {
+                ++progressReportCount;
+                finalProgress = progress.normalizedProgress;
+            }));
+    }
+
+    const auto snapshot = stats.Snapshot();
+    const auto instantiateStage = std::find_if(
+        snapshot.stages.begin(),
+        snapshot.stages.end(),
+        [](const PerformanceStageEntry& entry)
+        {
+            return entry.stageName == "SceneLoad.InstantiateScene";
+        });
+    ASSERT_NE(instantiateStage, snapshot.stages.end());
+    EXPECT_EQ(instantiateStage->counters.at("progressCallbackEnabledCount"), 1u);
+    EXPECT_GT(progressReportCount, 0u);
+    EXPECT_FLOAT_EQ(finalProgress, 1.0f);
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(scenePath.parent_path() / ".nullus_scene_cache");
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneBatchRegistrationRebuildsFastAccessOnce)
+{
+    using namespace NLS::Base::Profiling;
+    using namespace NLS::Engine::SceneSystem;
+
+    PerformanceStageStats stats;
+    {
+        PerformanceStageStatsCapture capture(stats);
+        Scene scene;
+        auto* first = new NLS::Engine::GameObject("First");
+        auto* second = new NLS::Engine::GameObject("Second");
+        ASSERT_TRUE(scene.AddGameObjects({first, second}));
+        ASSERT_EQ(scene.GetGameObjects().size(), 2u);
+    }
+
+    const auto snapshot = stats.Snapshot();
+    const auto rebuildStage = std::find_if(
+        snapshot.stages.begin(),
+        snapshot.stages.end(),
+        [](const PerformanceStageEntry& entry)
+        {
+            return entry.domain == PerformanceStageDomain::Prefab &&
+                entry.stageName == "SceneRebuildFastAccess";
+        });
+    ASSERT_NE(rebuildStage, snapshot.stages.end());
+    EXPECT_EQ(rebuildStage->counters.at("rebuildCount"), 1u);
+    EXPECT_EQ(rebuildStage->counters.at("trackedObjectCount"), 2u);
 }
 
 TEST(SceneObjectGraphSerializationTests, SceneManagerLoadUsesObjectGraphBinaryCacheOnWarmLoad)

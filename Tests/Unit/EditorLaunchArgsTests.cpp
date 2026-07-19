@@ -227,6 +227,65 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationTimelineTraceFrames)
     EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
 }
 
+TEST(EditorLaunchArgsTests, ParsesEditorValidationCameraForwardFrames)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-validation-camera-forward-frames",
+        "180",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.hasDiagnosticsOverride);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationCameraForwardFrames, 180u);
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
+TEST(EditorLaunchArgsTests, ValidationCameraForwardMotionUsesDeterministicFixedStepAfterViewUpdate)
+{
+    const auto editorSource = ReadTextFile("Project/Editor/Core/Editor.cpp");
+    const auto sceneViewSource = ReadTextFile("Project/Editor/Panels/SceneView.cpp");
+    const auto motionCall = editorSource.find("UpdateValidationSceneCameraMotion();");
+    const auto viewUpdateCall = editorSource.find("UpdateViews(p_deltaTime);");
+
+    ASSERT_NE(motionCall, std::string::npos);
+    ASSERT_NE(viewUpdateCall, std::string::npos);
+    EXPECT_LT(viewUpdateCall, motionCall);
+    EXPECT_NE(editorSource.find("constexpr float kEditorValidationCameraForwardStep = 0.1f;"), std::string::npos);
+    EXPECT_NE(editorSource.find("sceneView.ApplyValidationCameraForwardStep(kEditorValidationCameraForwardStep)"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("m_camera.transform->GetWorldForward() * step"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("m_cameraMovedForPresentation = true;"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("m_validationCameraMotionActive || m_cameraController.IsCameraControlActive()"), std::string::npos);
+    EXPECT_NE(editorSource.find("m_validationCameraMotionPendingForFrame = true;"), std::string::npos);
+    EXPECT_NE(editorSource.find("!m_validationCameraMotionPendingForFrame"), std::string::npos);
+    EXPECT_NE(editorSource.find("m_validationCameraMotionPendingForFrame = false;"), std::string::npos);
+    EXPECT_NE(editorSource.find("!m_validationTraceExportStarted || m_validationTraceExportFinished"), std::string::npos);
+}
+
+TEST(EditorLaunchArgsTests, ValidationTraceKeepsProfilerSinkActiveAfterHidingTimelinePanel)
+{
+    const auto profilerSource = ReadTextFile("Project/Editor/Panels/ProfilerPanel.cpp");
+    const auto editorSource = ReadTextFile("Project/Editor/Core/Editor.cpp");
+
+    EXPECT_NE(profilerSource.find("m_timelineSink.IsTraceExportOpen()"), std::string::npos);
+    EXPECT_NE(editorSource.find("profilerPanel.Close();"), std::string::npos);
+    EXPECT_NE(editorSource.find("TimelineProfiler panel hidden during export"), std::string::npos);
+    const auto traceStartedGuard = editorSource.find("if (!m_validationTraceExportStarted)");
+    const auto panelRecordingGuard = editorSource.find("if (!profilerPanel.IsRecordingEnabled())", traceStartedGuard);
+    const auto traceUpdate = editorSource.find("timelineSink.UpdateTraceExport", panelRecordingGuard);
+
+    ASSERT_NE(traceStartedGuard, std::string::npos);
+    ASSERT_NE(panelRecordingGuard, std::string::npos);
+    ASSERT_NE(traceUpdate, std::string::npos);
+    EXPECT_LT(traceStartedGuard, panelRecordingGuard);
+    EXPECT_LT(panelRecordingGuard, traceUpdate);
+    EXPECT_NE(editorSource.find("requestedFrames - exportedFrameCount"), std::string::npos);
+}
+
 TEST(EditorLaunchArgsTests, ParsesThumbnailTelemetrySummaryOutput)
 {
     std::vector<std::string> storage;

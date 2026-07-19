@@ -4,6 +4,7 @@
 
 #include <Debug/Logger.h>
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
 
 namespace NLS::Render::Backend
 {
@@ -66,7 +67,7 @@ namespace NLS::Render::Backend
 			return { true, enableAutoBreadcrumbs };
 		}
 
-		UINT BuildDx12FactoryFlags(bool debugMode)
+		UINT BuildDx12FactoryFlags(const bool debugMode, const bool gpuBasedValidation)
 		{
 			UINT factoryFlags = 0;
 #if defined(_DEBUG)
@@ -77,9 +78,12 @@ namespace NLS::Render::Backend
 				if (SUCCEEDED(debug5Hr) && debugController5 != nullptr)
 				{
 					debugController5->EnableDebugLayer();
-					debugController5->SetEnableGPUBasedValidation(TRUE);
+					if (gpuBasedValidation)
+						debugController5->SetEnableGPUBasedValidation(TRUE);
 					debugController5->SetEnableAutoName(TRUE);
-					NLS_LOG_INFO("CreateDX12RhiDevice: enabled DX12 debug layer with GPU-based validation and auto names via ID3D12Debug5");
+					NLS_LOG_INFO(
+						"CreateDX12RhiDevice: enabled DX12 debug layer and auto names via ID3D12Debug5; "
+						"GPU-based validation=" + std::string(gpuBasedValidation ? "enabled" : "disabled"));
 					factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
 				}
 				else
@@ -89,9 +93,14 @@ namespace NLS::Render::Backend
 					if (SUCCEEDED(debug3Hr) && debugController3 != nullptr)
 					{
 						debugController3->EnableDebugLayer();
-						debugController3->SetEnableGPUBasedValidation(TRUE);
-						debugController3->SetEnableSynchronizedCommandQueueValidation(TRUE);
-						NLS_LOG_INFO("CreateDX12RhiDevice: enabled DX12 debug layer with GPU-based validation via ID3D12Debug3");
+						if (gpuBasedValidation)
+						{
+							debugController3->SetEnableGPUBasedValidation(TRUE);
+							debugController3->SetEnableSynchronizedCommandQueueValidation(TRUE);
+						}
+						NLS_LOG_INFO(
+							"CreateDX12RhiDevice: enabled DX12 debug layer via ID3D12Debug3; "
+							"GPU-based validation=" + std::string(gpuBasedValidation ? "enabled" : "disabled"));
 						factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
 					}
 					else
@@ -384,11 +393,13 @@ namespace NLS::Render::Backend
 	{
 		DX12DeviceResources resources;
 #if defined(_WIN32)
-		const auto dredConfiguration = ConfigureDx12Dred(debugMode);
+		const bool gpuBasedValidation =
+			NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_DX12_GPU_VALIDATION");
+		const auto dredConfiguration = ConfigureDx12Dred(debugMode && gpuBasedValidation);
 		resources.dredDiagnosticsEnabled = dredConfiguration.diagnosticsEnabled;
 		resources.dredAutoBreadcrumbsEnabled = dredConfiguration.autoBreadcrumbsEnabled;
 
-		const UINT factoryFlags = BuildDx12FactoryFlags(debugMode);
+		const UINT factoryFlags = BuildDx12FactoryFlags(debugMode, gpuBasedValidation);
 		if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&resources.factory))))
 		{
 			resources.creationDiagnostics = "failed to create DXGI factory";

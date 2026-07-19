@@ -16,6 +16,8 @@
 #include "Rendering/EditorHelperLifecycle.h"
 #include "Rendering/DebugModelRenderer.h"
 
+namespace NLS::Render::Debug { class DebugDrawService; }
+
 namespace NLS::Editor::Rendering
 {
 	/**
@@ -55,10 +57,30 @@ namespace NLS::Editor::Rendering
         virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
 
 	private:
-        std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
-            NLS::Render::Data::PipelineState p_pso);
+		struct ThreadedCommandCacheKey
+		{
+			const NLS::Render::Resources::Mesh* mesh = nullptr;
+			const NLS::Render::Resources::Shader* shader = nullptr;
+			uint64_t deviceIdentity = 0u;
+			uint64_t pipelineBits = 0u;
+			Maths::Vector3 gridColor{};
+			Maths::Vector3 viewPosition{};
+
+			bool operator==(const ThreadedCommandCacheKey&) const = default;
+		};
+
+		void UpdateGridAxes(
+			NLS::Render::Debug::DebugDrawService& debugDrawService,
+			const GridDescriptor& gridDescriptor,
+			float gridSize);
+		std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
+			NLS::Render::Data::PipelineState p_pso);
         DebugModelRenderer m_debugModelRenderer;
-        NLS::Render::Resources::Material m_gridMaterial;
-        std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
+		NLS::Render::Resources::Material m_gridMaterial;
+		std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
+		std::optional<ThreadedCommandCacheKey> m_threadedCommandCacheKey;
+		std::vector<NLS::Render::Context::RecordedDrawCommandInput> m_cachedThreadedDrawCommands;
+		Maths::Vector3 m_cachedGridAxesPosition{};
+		bool m_hasCachedGridAxes = false;
 	};
 }

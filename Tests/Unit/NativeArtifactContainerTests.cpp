@@ -106,6 +106,29 @@ TEST(NativeArtifactContainerTests, RejectsPayloadTampering)
     EXPECT_FALSE(ReadNativeArtifactContainer(bytes, ArtifactType::Texture, 2u).has_value());
 }
 
+TEST(NativeArtifactContainerTests, ContentAddressedStorageMaySkipRedundantPayloadHash)
+{
+    NativeArtifactMetadata metadata;
+    metadata.artifactType = ArtifactType::Texture;
+    metadata.schemaName = "texture";
+    metadata.schemaVersion = 2u;
+
+    auto bytes = WriteNativeArtifactContainer(metadata, MakePayload());
+    ASSERT_FALSE(bytes.empty());
+    bytes.back() ^= 0x7Fu;
+
+    EXPECT_FALSE(ReadNativeArtifactContainerView(
+        bytes,
+        ArtifactType::Texture,
+        2u,
+        NativeArtifactPayloadValidation::VerifyHash).has_value());
+    EXPECT_TRUE(ReadNativeArtifactContainerView(
+        bytes,
+        ArtifactType::Texture,
+        2u,
+        NativeArtifactPayloadValidation::TrustContentAddressedStorage).has_value());
+}
+
 TEST(NativeArtifactContainerTests, RejectsWrongKindOrSchema)
 {
     NativeArtifactMetadata metadata;

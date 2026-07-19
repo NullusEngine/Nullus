@@ -433,6 +433,19 @@ void ABaseRenderer::BeginFrameForBackgroundPreview(const Data::FrameDescriptor& 
     BeginFrameInternal(p_frameDescriptor, true);
 }
 
+void ABaseRenderer::AbortFrameForBackgroundPreview()
+{
+    m_threadedRecordedDrawCommands.clear();
+    m_activeRecordedPassColorViews.clear();
+    m_activeRecordedPassDepthStencilView.reset();
+    m_pendingFrameSnapshot.reset();
+    m_pendingPreparedRenderSceneBuilder = {};
+    m_nextFramePostSubmitTextureReadbacks.clear();
+    m_isDrawing = false;
+    m_frameActive = false;
+    m_globalFrameReleaseDeferred = false;
+}
+
 void ABaseRenderer::EndFrame()
 {
     NLS_PROFILE_SCOPE();
@@ -607,6 +620,11 @@ std::optional<NLS::Render::Context::FrameSnapshot> ABaseRenderer::BuildFrameSnap
     snapshot.externalOutputIdentity = externalOutputSummary.identity;
     snapshot.externalOutputIdentities = externalOutputSummary.identities;
     snapshot.externalOutputTextureCount = externalOutputSummary.textureCount;
+    if (externalOutputSummary.hasExternalOutput)
+    {
+        snapshot.externalOutputColorView =
+            NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(frameDescriptor).outputColorView;
+    }
     const auto& camera = *frameDescriptor.camera;
     snapshot.clearColor = ResolveFrameClearColor(frameDescriptor);
     snapshot.clearColorBuffer = camera.GetClearColorBuffer();
@@ -1047,8 +1065,9 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
     const NLS::Render::Buffers::UniformBuffer& buffer,
     const ExplicitUniformBufferBindingDesc& desc) const
 {
-    InvalidateExplicitDeviceDependentCachesIfNeeded();
-    const auto device = GetExplicitDevice();
+    if (!m_frameActive)
+        InvalidateExplicitDeviceDependentCachesIfNeeded();
+    const auto& device = m_preparedRecordedDrawDevice;
     const auto cacheKey = BuildExplicitUniformBindingLayoutCacheKey(desc, device);
 
     std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> layout;
@@ -1260,21 +1279,18 @@ bool ABaseRenderer::PrepareRecordedDraw(
     }
 
     auto commandBuffer = GetActiveExplicitCommandBuffer();
-    PreparedRecordedDrawStaticBase staticBase;
-    if (!ResolvePreparedRecordedDrawStaticBase(
+    const auto* staticBase = ResolvePreparedRecordedDrawStaticBase(
         "pso",
         p_drawable,
         *material,
         *pipelineOverrides,
         Settings::EComparaisonAlgorithm::LESS,
         p_pso,
-        lightMode,
-        staticBase))
-    {
+        lightMode);
+    if (staticBase == nullptr)
         return false;
-    }
 
-    PopulatePreparedRecordedDrawFromStaticBase(outDraw, std::move(commandBuffer), p_drawable, staticBase);
+    PopulatePreparedRecordedDrawFromStaticBase(outDraw, std::move(commandBuffer), p_drawable, *staticBase);
     return true;
 }
 
@@ -1538,6 +1554,7 @@ void ABaseRenderer::InvalidateExplicitDeviceDependentCachesIfNeeded() const
     const auto device = GetExplicitDevice();
     const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
     const auto backend = ResolveDeviceBackendType(device);
+    m_preparedRecordedDrawDevice = device;
     if (deviceIdentity == m_cachedExplicitDeviceIdentity && backend == m_cachedExplicitDeviceBackend)
         return;
 
@@ -1547,29 +1564,27 @@ void ABaseRenderer::InvalidateExplicitDeviceDependentCachesIfNeeded() const
     m_explicitUniformBindingLayouts.clear();
 }
 
-bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
+const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
     const char* preparationPath,
     const Entities::Drawable& drawable,
     Resources::Material& material,
     const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
     const Settings::EComparaisonAlgorithm depthCompareOverride,
     const Data::PipelineState& pipelineState,
-    const std::string_view lightMode,
-    PreparedRecordedDrawStaticBase& outBase) const
+    const std::string_view lightMode) const
 {
     auto* mesh = drawable.mesh;
     if (mesh == nullptr)
-        return false;
+        return nullptr;
 
-    InvalidateExplicitDeviceDependentCachesIfNeeded();
-    auto device = GetExplicitDevice();
+    const auto& device = m_preparedRecordedDrawDevice;
     const auto* effectiveShader = lightMode.empty()
         ? material.GetShader()
         : material.ResolveShaderForLightMode(lightMode);
     if (effectiveShader == nullptr)
     {
         LogRecordedDrawPreparationState(m_driver, preparationPath, "shaderlab_lightmode_missing", drawable);
-        return false;
+        return nullptr;
     }
     const auto passBindingSet = material.RequiresPassDescriptorSet(effectiveShader) ? m_activePreparedPassBindingSet : nullptr;
     const auto key = BuildPreparedRecordedDrawStaticBaseCacheKey(
@@ -1584,11 +1599,10 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
     if (const auto found = m_preparedRecordedDrawStaticBaseCache.find(key);
         found != m_preparedRecordedDrawStaticBaseCache.end())
     {
-        outBase = found->second;
         TouchPreparedRecordedDrawStaticBaseEntry(found->second);
         if (auto* stats = GetMutableRendererStats(); stats != nullptr)
             stats->RecordPreparedRecordedDrawStaticBaseCache(true);
-        return true;
+        return &found->second;
     }
 
     auto bindingSet = material.GetRecordedBindingSet(device, effectiveShader);
@@ -1606,11 +1620,10 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
         if (const auto found = m_preparedRecordedDrawStaticBaseCache.find(finalKey);
             found != m_preparedRecordedDrawStaticBaseCache.end())
         {
-            outBase = found->second;
             TouchPreparedRecordedDrawStaticBaseEntry(found->second);
             if (auto* stats = GetMutableRendererStats(); stats != nullptr)
                 stats->RecordPreparedRecordedDrawStaticBaseCache(true);
-            return true;
+            return &found->second;
         }
     }
 
@@ -1646,23 +1659,26 @@ bool ABaseRenderer::ResolvePreparedRecordedDrawStaticBase(
             hasPipelineLayout,
             hasVertexShader,
             hasFragmentShader);
-        return false;
+        return nullptr;
     }
 
-    outBase.pipeline = std::move(pipeline);
-    outBase.materialBindingSet = std::move(bindingSet);
-    outBase.passBindingSet = passBindingSet;
-    outBase.mesh = std::move(rhiMesh);
-    outBase.gpuInstances = material.GetGPUInstances();
+    PreparedRecordedDrawStaticBase staticBase;
+    staticBase.pipeline = std::move(pipeline);
+    staticBase.materialBindingSet = std::move(bindingSet);
+    staticBase.passBindingSet = passBindingSet;
+    staticBase.mesh = std::move(rhiMesh);
+    staticBase.gpuInstances = material.GetGPUInstances();
     EraseStalePreparedRecordedDrawStaticBaseEntries(finalKey);
-    auto [inserted, _] = m_preparedRecordedDrawStaticBaseCache.emplace(finalKey, outBase);
-    LinkPreparedRecordedDrawStaticBaseEntry(finalKey, inserted->second);
-    outBase = inserted->second;
+    auto [entry, inserted] = m_preparedRecordedDrawStaticBaseCache.emplace(finalKey, std::move(staticBase));
+    if (inserted)
+        LinkPreparedRecordedDrawStaticBaseEntry(finalKey, entry->second);
+    else
+        TouchPreparedRecordedDrawStaticBaseEntry(entry->second);
     IndexPreparedRecordedDrawStaticBaseEntry(finalKey);
     TrimPreparedRecordedDrawStaticBaseCache(false);
     if (auto* stats = GetMutableRendererStats(); stats != nullptr)
         stats->RecordPreparedRecordedDrawStaticBaseCache(false);
-    return true;
+    return &entry->second;
 }
 
 bool ABaseRenderer::PrepareRecordedDraw(
@@ -1744,21 +1760,18 @@ bool ABaseRenderer::PrepareRecordedDraw(
             NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor) != nullptr ||
             NLS::Render::FrameGraph::FrameTargetsSwapchain(m_frameDescriptor);
     }
-    PreparedRecordedDrawStaticBase staticBase;
-    if (!ResolvePreparedRecordedDrawStaticBase(
+    const auto* staticBase = ResolvePreparedRecordedDrawStaticBase(
         "overrides",
         p_drawable,
         effectiveMaterial,
         pipelineOverrides,
         depthCompareOverride,
         effectivePipelineState,
-        lightMode,
-        staticBase))
-    {
+        lightMode);
+    if (staticBase == nullptr)
         return false;
-    }
 
-    PopulatePreparedRecordedDrawFromStaticBase(outDraw, std::move(commandBuffer), p_drawable, staticBase);
+    PopulatePreparedRecordedDrawFromStaticBase(outDraw, std::move(commandBuffer), p_drawable, *staticBase);
     return true;
 }
 
@@ -1827,7 +1840,7 @@ void ABaseRenderer::SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw)
         preparedDraw.commandBuffer->Draw(vertexCount, preparedDraw.instanceCount, vertexStart, 0);
 }
 
-bool ABaseRenderer::QueueThreadedRecordedDraw(const PreparedRecordedDraw& preparedDraw)
+bool ABaseRenderer::QueueThreadedRecordedDraw(PreparedRecordedDraw preparedDraw)
 {
     if (preparedDraw.pipeline == nullptr ||
         preparedDraw.materialBindingSet == nullptr ||
@@ -1838,12 +1851,12 @@ bool ABaseRenderer::QueueThreadedRecordedDraw(const PreparedRecordedDraw& prepar
     }
 
     Context::RecordedDrawCommandInput drawCommand;
-    drawCommand.pipeline = preparedDraw.pipeline;
-    drawCommand.frameBindingSet = preparedDraw.frameBindingSet;
-    drawCommand.objectBindingSet = preparedDraw.objectBindingSet;
-    drawCommand.passBindingSet = preparedDraw.passBindingSet;
-    drawCommand.materialBindingSet = preparedDraw.materialBindingSet;
-    drawCommand.mesh = preparedDraw.mesh;
+    drawCommand.pipeline = std::move(preparedDraw.pipeline);
+    drawCommand.frameBindingSet = std::move(preparedDraw.frameBindingSet);
+    drawCommand.objectBindingSet = std::move(preparedDraw.objectBindingSet);
+    drawCommand.passBindingSet = std::move(preparedDraw.passBindingSet);
+    drawCommand.materialBindingSet = std::move(preparedDraw.materialBindingSet);
+    drawCommand.mesh = std::move(preparedDraw.mesh);
     drawCommand.instanceCount = preparedDraw.instanceCount;
     drawCommand.vertexStart = preparedDraw.vertexStart;
     drawCommand.vertexCount = preparedDraw.vertexCount;

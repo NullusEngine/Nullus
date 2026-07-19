@@ -3,6 +3,7 @@
 #include <Debug/Logger.h>
 #include <Jobs/BackgroundJobQueue.h>
 #include <Jobs/JobSystem.h>
+#include <Profiling/PerformanceStageStats.h>
 
 #include <algorithm>
 #include <atomic>
@@ -928,10 +929,21 @@ MeshManager::Mesh* MeshManager::CreateResource(const std::string& path)
     if (!IsMeshArtifactPath(realPath))
         return nullptr;
 
-    auto meshArtifact = NLS::Render::Assets::LoadMeshArtifact(realPath);
+    std::optional<NLS::Render::Assets::MeshArtifactData> meshArtifact;
+    {
+        NLS::Base::Profiling::PerformanceStageScope scope(
+            NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+            "PrewarmMeshArtifactLoad",
+            NLS::Base::Profiling::PerformanceStageThread::Main);
+        meshArtifact = NLS::Render::Assets::LoadMeshArtifact(realPath);
+    }
     if (!meshArtifact.has_value())
         return nullptr;
 
+    NLS::Base::Profiling::PerformanceStageScope scope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "PrewarmMeshRuntimeCreate",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
     return new Mesh(
         meshArtifact->vertices,
         meshArtifact->indices,
@@ -1141,6 +1153,28 @@ bool MeshManager::IsAsyncArtifactLoadFailed(const std::string& path) const
         failed->second.writeTime == writeTime;
 }
 
+bool MeshManager::IsAsyncArtifactLoadPendingExactPath(const std::string& path) const
+{
+    std::lock_guard lock(g_asyncMeshMutex);
+    return g_asyncMeshRequests.find({ this, path }) != g_asyncMeshRequests.end();
+}
+
+bool MeshManager::IsAsyncArtifactLoadFailedExactPath(const std::string& path) const
+{
+    std::string realPath;
+    std::optional<std::filesystem::file_time_type> expectedWriteTime;
+    {
+        std::lock_guard lock(g_asyncMeshMutex);
+        const auto failed = g_failedAsyncMeshArtifacts.find({ this, path });
+        if (failed == g_failedAsyncMeshArtifacts.end())
+            return false;
+        realPath = failed->second.realPath;
+        expectedWriteTime = failed->second.writeTime;
+    }
+
+    return expectedWriteTime == TryGetLastWriteTime(realPath);
+}
+
 void MeshManager::PumpAsyncLoads(const size_t maxCompletions)
 {
     PumpAsyncMeshArtifactLoads(*this, maxCompletions, nullptr);
@@ -1153,6 +1187,18 @@ void MeshManager::PumpAsyncLoadsForPaths(
     if (paths.empty())
         return;
     const auto trackedPaths = BuildTrackedMeshArtifactPaths(paths);
+    PumpAsyncMeshArtifactLoads(*this, maxCompletions, &trackedPaths);
+}
+
+void MeshManager::PumpAsyncLoadsForExactPaths(
+    const std::unordered_set<std::string>& paths,
+    const size_t maxCompletions)
+{
+    if (paths.empty())
+        return;
+
+    TrackedMeshArtifactPaths trackedPaths;
+    trackedPaths.sourcePaths = paths;
     PumpAsyncMeshArtifactLoads(*this, maxCompletions, &trackedPaths);
 }
 

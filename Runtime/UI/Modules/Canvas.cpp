@@ -6,6 +6,7 @@
 #include "Profiling/Profiler.h"
 
 #include <chrono>
+#include <string_view>
 
 namespace NLS::UI
 {
@@ -21,7 +22,7 @@ void Canvas::Draw()
     }();
     auto startupStageBegin = std::chrono::steady_clock::now();
     auto logStartupDrawStage =
-        [&startupStageBegin, logStartupDrawStages](const std::string& stage)
+        [&startupStageBegin, logStartupDrawStages](const std::string_view stage)
         {
             if (!logStartupDrawStages)
                 return;
@@ -29,7 +30,7 @@ void Canvas::Draw()
             const auto now = std::chrono::steady_clock::now();
             NLS_LOG_INFO(
                 "[Startup] Canvas::Draw stage " +
-                stage +
+                std::string(stage) +
                 " elapsedMs=" +
                 std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - startupStageBegin).count()));
             startupStageBegin = now;
@@ -95,9 +96,13 @@ void Canvas::Draw()
             for (auto& panel : m_panels)
             {
                 NLS_PROFILE_NAMED_SCOPE("Canvas::DrawPanel");
-                const auto panelName = panel.get().GetPanelID();
                 panel.get().Draw();
-                logStartupDrawStage("DrawPanel:" + panelName);
+                if (logStartupDrawStages)
+                {
+                    std::string stage = "DrawPanel:";
+                    stage += panel.get().GetPanelID();
+                    logStartupDrawStage(stage);
+                }
             }
         }
         logStartupDrawStage("DrawPanels");

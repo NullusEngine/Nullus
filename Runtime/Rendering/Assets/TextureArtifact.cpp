@@ -1,4 +1,5 @@
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Rendering/Assets/ArtifactFileReader.h"
 #include "Rendering/Assets/TextureMipGenerator.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/ArtifactLoadTelemetry.h"
@@ -13,11 +14,9 @@
 #undef stbi__tga_read_rgb16
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <iterator>
 #include <limits>
 
@@ -742,29 +741,34 @@ std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& 
 }
 
 std::optional<TextureArtifactData> DeserializeTextureArtifactInternal(
-    std::shared_ptr<std::vector<uint8_t>> bytes,
-    const bool usePixelViews)
+    const std::span<const uint8_t> bytes,
+    std::shared_ptr<void> backingStorage,
+    std::shared_ptr<std::vector<uint8_t>> backingBytes,
+    const bool usePixelViews,
+    const NLS::Core::Assets::NativeArtifactPayloadValidation payloadValidation)
 {
-    if (bytes == nullptr)
+    if (bytes.empty())
         return std::nullopt;
 
     const ScopedTextureArtifactTelemetry deserializeTelemetry {
         NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize,
         std::chrono::steady_clock::now(),
-        bytes->size(),
+        bytes.size(),
         {}
     };
 
     auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
-        *bytes,
+        bytes,
         NLS::Core::Assets::ArtifactType::Texture,
-        kTextureArtifactContainerSchemaVersion);
+        kTextureArtifactContainerSchemaVersion,
+        payloadValidation);
     if (!container.has_value())
     {
         container = NLS::Core::Assets::ReadNativeArtifactContainerView(
-            *bytes,
+            bytes,
             NLS::Core::Assets::ArtifactType::Texture,
-            kLegacyTextureArtifactContainerSchemaVersion);
+            kLegacyTextureArtifactContainerSchemaVersion,
+            payloadValidation);
     }
     if (!container.has_value())
         return std::nullopt;
@@ -908,8 +912,37 @@ std::optional<TextureArtifactData> DeserializeTextureArtifactInternal(
     }
 
     if (usePixelViews)
-        texture.backingBytes = std::move(bytes);
+    {
+        texture.backingBytes = std::move(backingBytes);
+        texture.backingStorage = std::move(backingStorage);
+    }
     return texture;
+}
+
+std::optional<TextureArtifactData> LoadTextureArtifactBufferedInternal(
+    const std::filesystem::path& path,
+    const std::atomic_bool* cancellationFlag,
+    const NLS::Core::Assets::NativeArtifactPayloadValidation payloadValidation)
+{
+    auto bytes = std::make_shared<std::vector<uint8_t>>();
+    const auto fileReadBegin = std::chrono::steady_clock::now();
+    if (!Detail::ReadArtifactFileBytes(path, *bytes, cancellationFlag))
+        return std::nullopt;
+    const auto fileReadEnd = std::chrono::steady_clock::now();
+
+    const auto byteCount = bytes->size();
+    RecordTextureArtifactTelemetry(
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
+        fileReadBegin,
+        fileReadEnd,
+        byteCount,
+        path);
+    return DeserializeTextureArtifactInternal(
+        std::span<const uint8_t>(bytes->data(), bytes->size()),
+        bytes,
+        bytes,
+        true,
+        payloadValidation);
 }
 
 }
@@ -934,9 +967,13 @@ std::vector<uint8_t> SerializeTextureArtifact(const TextureArtifactData& texture
 
 std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<uint8_t>& bytes)
 {
+    auto ownedBytes = std::make_shared<std::vector<uint8_t>>(bytes);
     return DeserializeTextureArtifactInternal(
-        std::make_shared<std::vector<uint8_t>>(bytes),
-        false);
+        std::span<const uint8_t>(ownedBytes->data(), ownedBytes->size()),
+        ownedBytes,
+        ownedBytes,
+        false,
+        NLS::Core::Assets::NativeArtifactPayloadValidation::VerifyHash);
 }
 
 std::optional<TextureArtifactHeaderPreview> ReadTextureArtifactHeaderPreview(
@@ -989,10 +1026,9 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
     {
         return std::nullopt;
     }
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input)
-        return std::nullopt;
-
+    const auto payloadValidation = portableArtifactPath.empty()
+        ? NLS::Core::Assets::NativeArtifactPayloadValidation::VerifyHash
+        : NLS::Core::Assets::NativeArtifactPayloadValidation::TrustContentAddressedStorage;
     auto isCancelled = [cancellationFlag]
     {
         return cancellationFlag != nullptr && cancellationFlag->load(std::memory_order_acquire);
@@ -1000,74 +1036,45 @@ std::optional<TextureArtifactData> LoadTextureArtifact(
     if (isCancelled())
         return std::nullopt;
 
-    const auto endPosition = input.tellg();
-    if (endPosition != std::streampos(-1))
+    if (!portableArtifactPath.empty())
     {
-        const auto fileSize = static_cast<std::streamoff>(endPosition);
-        if (fileSize >= 0)
+        const auto mapBegin = std::chrono::steady_clock::now();
+        auto mapping = Detail::MapArtifactFileReadOnly(path, cancellationFlag);
+        const auto mapEnd = std::chrono::steady_clock::now();
+        if (mapping.has_value())
         {
-            const auto fileSizeValue = static_cast<uintmax_t>(fileSize);
-            if (fileSizeValue <= static_cast<uintmax_t>((std::numeric_limits<size_t>::max)()) &&
-                fileSizeValue <= static_cast<uintmax_t>((std::numeric_limits<std::streamsize>::max)()))
-            {
-                auto bytes = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(fileSizeValue));
-                input.seekg(0, std::ios::beg);
-                if (!input)
-                    return std::nullopt;
-                const auto fileReadBegin = std::chrono::steady_clock::now();
-                if (!bytes->empty())
-                    input.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(bytes->size()));
-                const auto fileReadEnd = std::chrono::steady_clock::now();
-                if (isCancelled())
-                    return std::nullopt;
-                if (input.gcount() == static_cast<std::streamsize>(bytes->size()))
-                {
-                    RecordTextureArtifactTelemetry(
-                        NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
-                        fileReadBegin,
-                        fileReadEnd,
-                        bytes->size(),
-                        path);
-                    return DeserializeTextureArtifactInternal(std::move(bytes), true);
-                }
-                return std::nullopt;
-            }
+            RecordTextureArtifactTelemetry(
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileMap,
+                mapBegin,
+                mapEnd,
+                mapping->size,
+                path);
+            return DeserializeTextureArtifactInternal(
+                std::span<const uint8_t>(mapping->data, mapping->size),
+                std::move(mapping->owner),
+                nullptr,
+                true,
+                payloadValidation);
         }
     }
 
-    input.clear();
-    input.seekg(0, std::ios::beg);
-    if (!input)
-        return std::nullopt;
+    return LoadTextureArtifactBufferedInternal(path, cancellationFlag, payloadValidation);
+}
 
-    auto bytes = std::make_shared<std::vector<uint8_t>>();
-    std::array<char, 64u * 1024u> buffer {};
-    const auto fileReadBegin = std::chrono::steady_clock::now();
-    while (input)
+std::optional<TextureArtifactData> LoadTextureArtifactBufferedForTesting(
+    const std::filesystem::path& path)
+{
+    const auto portableArtifactPath =
+        NLS::Core::Assets::TryMakePortableContentArtifactPath(path.generic_string());
+    if (!portableArtifactPath.empty() &&
+        !NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath))
     {
-        if (isCancelled())
-            return std::nullopt;
-
-        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        const auto readCount = input.gcount();
-        if (readCount <= 0)
-            break;
-
-        const auto* begin = reinterpret_cast<const uint8_t*>(buffer.data());
-        bytes->insert(bytes->end(), begin, begin + static_cast<size_t>(readCount));
-    }
-    const auto fileReadEnd = std::chrono::steady_clock::now();
-    if (isCancelled())
         return std::nullopt;
-
-    const auto byteCount = bytes->size();
-    RecordTextureArtifactTelemetry(
-        NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
-        fileReadBegin,
-        fileReadEnd,
-        byteCount,
-        path);
-    return DeserializeTextureArtifactInternal(std::move(bytes), true);
+    }
+    const auto payloadValidation = portableArtifactPath.empty()
+        ? NLS::Core::Assets::NativeArtifactPayloadValidation::VerifyHash
+        : NLS::Core::Assets::NativeArtifactPayloadValidation::TrustContentAddressedStorage;
+    return LoadTextureArtifactBufferedInternal(path, nullptr, payloadValidation);
 }
 
 std::optional<TextureArtifactData> DecodeTextureArtifactFromEncodedImage(

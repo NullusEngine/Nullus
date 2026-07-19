@@ -43,6 +43,7 @@ namespace NLS::Render::Settings
         std::string editorValidationExclusiveView;
         std::string editorValidationSelectGameObject;
         std::string editorValidationSceneCamera;
+        uint32_t editorValidationCameraForwardFrames = 0u;
 	        std::string editorValidationCreateAsset;
 	        std::string editorValidationAssetBrowserFolder;
 	        std::string editorValidationSceneReadbackOutput;

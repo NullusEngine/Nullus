@@ -4262,7 +4262,7 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
     }
     for (const auto& stage : prefabRestoreStageStats.TopBottlenecks(
         NLS::Base::Profiling::PerformanceStageDomain::Prefab,
-        12u))
+        20u))
     {
         NLS_LOG_INFO(
             "[Startup] RestorePrefabInstances prefab stage " +
@@ -4271,6 +4271,16 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(stage.totalDuration).count()) +
             " calls=" +
             std::to_string(stage.callCount));
+        for (const auto& [counterName, counterValue] : stage.counters)
+        {
+            NLS_LOG_INFO(
+                "[Startup] RestorePrefabInstances prefab stage counter stage=" +
+                stage.stageName +
+                " name=" +
+                counterName +
+                " value=" +
+                std::to_string(counterValue));
+        }
     }
     NLS_LOG_INFO(
         "[Startup] RestorePrefabInstances metadata restore elapsedMs=" +

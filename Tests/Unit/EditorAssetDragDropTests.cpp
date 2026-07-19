@@ -2549,6 +2549,16 @@ TEST(EditorAssetDragDropTests, SceneViewPrefabDragProxyDescriptorTracksPlacement
         << "Stale placements must not draw after the drag payload has been cleared.";
 }
 
+TEST(EditorAssetDragDropTests, SceneViewDisablesTrustedRenderRevisionFastPathDuringPrefabDrag)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldTrustSceneViewRenderContentRevision(false, false));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldTrustSceneViewRenderContentRevision(true, false))
+        << "Transform-only preview movement must be synchronized while the prefab follows the cursor.";
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldTrustSceneViewRenderContentRevision(false, true))
+        << "A cold prefab drop must keep synchronizing until its final preview transform is committed.";
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldTrustSceneViewRenderContentRevision(true, true));
+}
+
 TEST(EditorAssetDragDropTests, DebugSceneRendererSubmitsPrefabDragProxyPrimitives)
 {
     NLS::Render::Debug::DebugDrawService debugDrawService;

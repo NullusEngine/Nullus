@@ -154,6 +154,8 @@ private:
             settings.editorValidationOcclusionStackCount = m_diagnosticsOverride->editorValidationOcclusionStackCount;
         if (!m_diagnosticsOverride->editorValidationSelectGameObject.empty())
             settings.editorValidationSelectGameObject = m_diagnosticsOverride->editorValidationSelectGameObject;
+        if (m_diagnosticsOverride->editorValidationCameraForwardFrames != 0u)
+            settings.editorValidationCameraForwardFrames = m_diagnosticsOverride->editorValidationCameraForwardFrames;
         if (!m_diagnosticsOverride->editorValidationCreateAsset.empty())
             settings.editorValidationCreateAsset = m_diagnosticsOverride->editorValidationCreateAsset;
         if (!m_diagnosticsOverride->editorValidationAssetBrowserFolder.empty())

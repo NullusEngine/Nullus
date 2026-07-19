@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/UI/RHIImGuiTextureRegistry.h"
@@ -49,6 +52,20 @@ namespace
         NLS::Render::RHI::RHITextureViewDesc m_desc {};
         std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
     };
+
+    NLS::Render::UI::UiDrawDataSnapshot MakeTextureSnapshot(
+        const uint64_t frameId,
+        const NLS::Render::UI::UiTextureId textureId)
+    {
+        NLS::Render::UI::UiDrawDataSnapshot snapshot;
+        snapshot.frameId = frameId;
+        NLS::Render::UI::UiDrawListSnapshot drawList;
+        NLS::Render::UI::UiDrawCommandSnapshot command;
+        command.textureId = textureId;
+        drawList.commands.push_back(command);
+        snapshot.drawLists.push_back(std::move(drawList));
+        return snapshot;
+    }
 }
 
 TEST(RHIUiTextureRegistryTests, TextureRegistryContractHeaderExists)
@@ -173,6 +190,29 @@ TEST(RHIUiTextureRegistryTests, ReleasedTextureViewStillResolvesForPublishedFram
     EXPECT_FALSE(registry.ResolveForFrame(id, 8u).has_value());
     registry.ReleaseRetiredTextureViewsUpTo(7u);
     EXPECT_FALSE(registry.ResolveForFrame(id, 7u).has_value());
+}
+
+TEST(RHIUiTextureRegistryTests, ReferencedIdentityMatchesFrameResolvableRetiredTexture)
+{
+    NLS::Render::UI::RHIImGuiTextureRegistry registry;
+    auto texture = std::make_shared<TestTexture>();
+    auto textureView = std::make_shared<TestTextureView>(texture);
+    const auto id = registry.RegisterTextureView(textureView, kPreviousFrameOrStatic);
+    ASSERT_TRUE(id.IsValid());
+
+    const uint64_t textureIdentity = static_cast<uint64_t>(
+        reinterpret_cast<std::uintptr_t>(texture.get()));
+    registry.ReleaseTextureView(textureView, 7u);
+
+    const auto inFlightIdentities = registry.CollectReferencedTextureIdentities(
+        MakeTextureSnapshot(7u, id));
+    ASSERT_EQ(inFlightIdentities.size(), 1u);
+    EXPECT_EQ(inFlightIdentities.front(), textureIdentity);
+    EXPECT_TRUE(registry.ContainsSampledTextureIdentity(textureIdentity, 7u));
+
+    EXPECT_TRUE(registry.CollectReferencedTextureIdentities(
+        MakeTextureSnapshot(8u, id)).empty());
+    EXPECT_FALSE(registry.ContainsSampledTextureIdentity(textureIdentity, 8u));
 }
 
 TEST(RHIUiTextureRegistryTests, ReleaseRetainsTextureViewEntryUntilRetiredFrame)

@@ -108,6 +108,18 @@ namespace NLS::Engine::Rendering
 		void BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor) override;
 		void BeginFrameForBackgroundPreview(const Render::Data::FrameDescriptor& p_frameDescriptor) override;
 
+		struct BackgroundPreviewDrawPrewarmResult
+		{
+			size_t nextDrawIndex = 0u;
+			size_t totalDrawCount = 0u;
+			bool supported = false;
+			bool complete = false;
+		};
+		virtual BackgroundPreviewDrawPrewarmResult PrewarmBackgroundPreviewDraws(
+			const Render::Data::FrameDescriptor& frameDescriptor,
+			size_t firstDrawIndex,
+			size_t maxDraws);
+
 		virtual void DrawModelWithSingleMaterial(
 			PipelineState p_pso,
 			Mesh& p_mesh,
@@ -225,6 +237,8 @@ namespace NLS::Engine::Rendering
 		std::unordered_map<SceneSystem::Scene*, RenderScene> m_additiveRenderScenes;
 		std::vector<ScenePickablePrimitiveDrawSource> m_lastVisiblePickablePrimitiveDrawSources;
 		bool m_hasLastVisiblePickablePrimitiveDrawSources = false;
+		std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_threadedFrameBindingSet;
+		bool m_threadedFrameBindingSetCaptureAttempted = false;
 			mutable std::mutex m_lightGridCompileContextCacheMutex;
 			mutable LightGridCompileContextCache m_lightGridCompileContextCache;
 			mutable NLS::Render::Context::LargeSceneCullReasonDebugSnapshot m_lastCullReasonDebugSnapshot;

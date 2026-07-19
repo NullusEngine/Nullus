@@ -35,6 +35,7 @@
 #include "Tests/Unit/Support/DeterministicTextureRhiDevice.h"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -669,6 +670,64 @@ public:
     size_t renderCount = 0u;
 };
 
+template <typename T>
+std::shared_ptr<T> MakeOpaqueThumbnailGpuResource()
+{
+    auto* storage = new uint8_t(0u);
+    return std::shared_ptr<T>(
+        reinterpret_cast<T*>(storage),
+        [](T* pointer)
+        {
+            delete reinterpret_cast<uint8_t*>(pointer);
+        });
+}
+
+class DirectGpuPendingPreviewRenderer final : public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
+{
+public:
+    bool Supports(const NLS::Editor::Assets::AssetThumbnailRequest&) const override
+    {
+        return true;
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewResult Render(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        NLS::Editor::Assets::EditorThumbnailPreviewResult result;
+        result.width = 2u;
+        result.height = 2u;
+        result.diagnostic = "thumbnail-gpu-preview-readback-pending";
+        result.gpuTexture = {
+            MakeOpaqueThumbnailGpuResource<NLS::Render::RHI::RHITexture>(),
+            MakeOpaqueThumbnailGpuResource<NLS::Render::RHI::RHITextureView>(),
+            std::make_shared<uint8_t>(0u),
+            2u,
+            2u
+        };
+        return result;
+    }
+};
+
+class PrefabBudgetExceededPreviewRenderer final : public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
+{
+public:
+    bool Supports(const NLS::Editor::Assets::AssetThumbnailRequest& request) const override
+    {
+        return request.kind == NLS::Editor::Assets::AssetThumbnailKind::PrefabPreview;
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewResult Render(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        ++renderCount;
+        NLS::Editor::Assets::EditorThumbnailPreviewResult result;
+        result.diagnostic = "thumbnail-prefab-preview-budget-exceeded";
+        return result;
+    }
+
+    size_t renderCount = 0u;
+};
+
 class CountingMaterialManager final : public NLS::Core::ResourceManagement::MaterialManager
 {
 public:
@@ -913,6 +972,27 @@ NLS::Engine::Assets::PrefabArtifact MakePrefabArtifactWithPreviewRendererDepende
     });
     return artifact;
 }
+}
+
+TEST(AssetThumbnailBehaviorTests, MeshHeaderPreviewExposesSerializedBounds)
+{
+    const auto root = MakeThumbnailPerformanceRoot();
+    const auto artifactPath = root / "bounded-mesh.nmesh";
+    auto mesh = TriangleMeshArtifact();
+    mesh.materialIndex = 7u;
+    WriteBinaryFile(
+        artifactPath,
+        NLS::Render::Assets::SerializeMeshArtifact(mesh));
+
+    const auto header = NLS::Render::Assets::ReadMeshArtifactHeaderPreview(artifactPath);
+    ASSERT_TRUE(header.has_value());
+    EXPECT_EQ(header->vertexCount, 3u);
+    EXPECT_EQ(header->indexCount, 3u);
+    EXPECT_EQ(header->materialIndex, 7u);
+    EXPECT_TRUE(header->hasBoundingSphere);
+    EXPECT_FLOAT_EQ(header->boundingSphere.radius, 1.25f);
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(AssetThumbnailBehaviorTests, TextureThumbnailQueueAndGenerationEmitDiagnosticStages)
@@ -1285,6 +1365,78 @@ TEST(AssetThumbnailBehaviorTests, GpuPreviewCacheWriteRunsAsBackgroundWorkAfterR
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetThumbnailBehaviorTests, PendingReadbackPublishesGpuTextureBeforePngCacheWrite)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    auto request = MakeGpuPreviewRequest(root);
+    request.kind = AssetThumbnailKind::ModelPreview;
+    request.previewRendererVersion = "direct-gpu-publication:v1";
+    request.settingsFingerprint = "direct-gpu-publication";
+
+    DirectGpuPendingPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto generated = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(generated.has_value());
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(generated->diagnostic, "thumbnail-gpu-preview-readback-pending");
+    EXPECT_TRUE(generated->gpuTexture.IsValid());
+    EXPECT_FALSE(std::filesystem::exists(generated->imagePath))
+        << "Direct GPU publication must not wait for the persistence PNG.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailBehaviorTests, ImportedModelGpuBudgetFailureStaysGpuPendingWithoutCpuRasterFallback)
+{
+    const ScopedThumbnailPerformanceJobSystem jobSystem;
+
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    const auto artifactPath = ThumbnailPerformanceLibraryArtifactPath(
+        "d101000000000000000000000000000000000000000000000000000000000001");
+    WriteBinaryFile(
+        root / "Assets" / "Models" / "Hero.fbx",
+        std::vector<uint8_t>{'f', 'b', 'x'});
+    WriteNativeArtifactTextFile(
+        root / artifactPath,
+        ArtifactType::Prefab,
+        "prefab",
+        1u,
+        "imported-model-prefab");
+
+    auto request = MakeGpuPreviewRequest(root);
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.subAssetKey = "prefab:Hero";
+    request.artifactPath = artifactPath;
+    request.previewRendererVersion = "prefab-budget-gpu-pending:v1";
+    request.settingsFingerprint = "prefab-budget-gpu-pending";
+
+    PrefabBudgetExceededPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto gpuResult = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(gpuResult.has_value());
+    EXPECT_EQ(gpuResult->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(gpuResult->diagnostic, "thumbnail-gpu-preview-complexity-pending");
+    EXPECT_EQ(renderer.renderCount, 1u);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+
+    EXPECT_FALSE(service.StartNextThumbnailGeneration())
+        << "GPU-capable model and prefab previews must not enter the CPU raster worker path.";
+    EXPECT_FALSE(std::filesystem::exists(gpuResult->imagePath));
+    EXPECT_NE(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Failed);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetThumbnailBehaviorTests, GpuPreviewRejectsFullyTransparentReadbackEvenWhenRgbVaries)
 {
     using namespace NLS::Editor::Assets;
@@ -1610,9 +1762,16 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewDetectsTerminalAsyncMeshFailur
     meshManagerStorage.emplace();
     const auto* failingMeshManagerAddress = &*meshManagerStorage;
     auto corruptMeshArtifact = NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact());
-    ASSERT_FALSE(corruptMeshArtifact.empty());
-    // Preserve the container and mesh header so the failure occurs in the async full-payload load.
-    corruptMeshArtifact.back() ^= 0xffu;
+    ASSERT_GE(corruptMeshArtifact.size(), 64u);
+    uint64_t payloadOffset = 0u;
+    std::memcpy(&payloadOffset, corruptMeshArtifact.data() + 40u, sizeof(payloadOffset));
+    ASSERT_LE(payloadOffset + 20u, corruptMeshArtifact.size());
+    const uint32_t inconsistentIndexCount = 6u;
+    std::memcpy(
+        corruptMeshArtifact.data() + payloadOffset + 16u,
+        &inconsistentIndexCount,
+        sizeof(inconsistentIndexCount));
+    // Header preview remains readable, while the full loader rejects the payload-size mismatch.
     WriteBinaryFile(root / meshArtifactPath, corruptMeshArtifact);
     ASSERT_TRUE(NLS::Render::Assets::ReadMeshArtifactHeaderPreview(root / meshArtifactPath).has_value());
     NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
@@ -1864,7 +2023,7 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewPrunesCompletedObsoletePrepara
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewPumpDefersMixedMeshesUntilEveryMeshIsReady)
+TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewPumpDefersUntilMeshesAndMaterialsAreReady)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -2122,8 +2281,9 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewPumpDefersMixedMeshesUntilEver
     meshManager.RegisterResource((root / meshBArtifactPath).generic_string(), makeReadyMesh());
     const auto completePump = renderer.PumpResources(request);
     EXPECT_TRUE(completePump.supported);
-    EXPECT_FALSE(completePump.resourcesPending) << completePump.diagnostic;
-    EXPECT_TRUE(completePump.diagnostic.empty());
+    EXPECT_TRUE(completePump.resourcesPending);
+    EXPECT_NE(completePump.diagnostic.find("material=2"), std::string::npos)
+        << "Ready meshes must not bypass cold material dependencies and produce a white prefab preview.";
 
     std::filesystem::remove_all(root);
 }
@@ -2276,9 +2436,12 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewRendersReadyPrefabToVisiblePix
 
     EditorThumbnailPreviewRenderer renderer(driver);
     EditorThumbnailPreviewResult rendered;
+    bool publishedGpuTextureBeforeReadback = false;
     for (size_t attempt = 0u; attempt < 2048u && rendered.rgbaPixels.empty(); ++attempt)
     {
         rendered = renderer.Render(request);
+        publishedGpuTextureBeforeReadback =
+            publishedGpuTextureBeforeReadback || rendered.gpuTexture.IsValid();
         if (rendered.rgbaPixels.empty())
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -2287,8 +2450,32 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewRendersReadyPrefabToVisiblePix
 #endif
 
     ASSERT_FALSE(rendered.rgbaPixels.empty()) << rendered.diagnostic;
+    EXPECT_TRUE(publishedGpuTextureBeforeReadback)
+        << "The DX12 preview texture should be publishable before readback/PNG persistence completes.";
     ASSERT_EQ(rendered.width, 64u);
     ASSERT_EQ(rendered.height, 64u);
+    const auto reuseStatsAfterFirstRender = renderer.GetReuseStats();
+    EXPECT_GE(reuseStatsAfterFirstRender.previewSceneUseCount, 1u);
+    EXPECT_EQ(reuseStatsAfterFirstRender.renderTargetAllocationCount, 1u);
+    EXPECT_EQ(reuseStatsAfterFirstRender.renderTargetPoolSize, 1u);
+
+    rendered.gpuTexture = {};
+    EditorThumbnailPreviewResult repeatedRender;
+    for (size_t attempt = 0u; attempt < 2048u && repeatedRender.rgbaPixels.empty(); ++attempt)
+    {
+        repeatedRender = renderer.Render(request);
+        if (repeatedRender.rgbaPixels.empty())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_FALSE(repeatedRender.rgbaPixels.empty()) << repeatedRender.diagnostic;
+    const auto reuseStatsAfterRepeatedRender = renderer.GetReuseStats();
+    EXPECT_GE(reuseStatsAfterRepeatedRender.previewSceneUseCount, 2u);
+    EXPECT_EQ(reuseStatsAfterRepeatedRender.renderTargetAllocationCount, 1u);
+    EXPECT_GT(
+        reuseStatsAfterRepeatedRender.renderTargetReuseCount,
+        reuseStatsAfterFirstRender.renderTargetReuseCount);
+    EXPECT_EQ(reuseStatsAfterRepeatedRender.renderTargetPoolSize, 1u);
+
     if (const char* proofPath = std::getenv("NLS_THUMBNAIL_PROOF_PATH");
         proofPath != nullptr && proofPath[0] != '\0')
     {
@@ -2377,6 +2564,9 @@ TEST(AssetThumbnailBehaviorTests, StablePreviewMaterialPreservesShaderLabSourceP
         EXPECT_EQ(preview->ResolveShaderForLightMode("Forward"), forwardShader);
         EXPECT_TRUE(preview->IsKeywordEnabled("_NORMALMAP"));
         EXPECT_TRUE(preview->IsKeywordEnabled("_ALPHATEST_ON"));
+        EXPECT_FALSE(preview->HasBackfaceCulling());
+        EXPECT_FALSE(preview->HasFrontfaceCulling())
+            << "Thumbnail-only material copies must reveal interior-authored geometry from an exterior upper-oblique camera.";
         const auto* copiedBaseColor = preview->GetParameterBlock().TryGet("_BaseColor");
         ASSERT_NE(copiedBaseColor, nullptr);
         const auto* copiedBaseColorValue = std::any_cast<NLS::Maths::Vector4>(copiedBaseColor);
@@ -2420,13 +2610,56 @@ TEST(AssetThumbnailBehaviorTests, StablePreviewMaterialRejectsMismatchedShaderLa
 TEST(AssetThumbnailBehaviorTests, GpuPreviewResourcePumpBudgetsKeepMaterialLoadsSingleStep)
 {
     EXPECT_GE(NLS::Editor::Assets::GetThumbnailPreviewMeshPumpBudgetForTesting(), 4u);
+    EXPECT_EQ(
+        NLS::Editor::Assets::GetThumbnailPreviewPrefabMeshRequestStartBudgetForTesting(),
+        1u)
+        << "Large prefab mesh requests must be admitted one at a time so synchronous request setup cannot monopolize the UI thread.";
+    EXPECT_EQ(
+        NLS::Editor::Assets::GetThumbnailPreviewPrefabMeshPumpBudgetForTesting(),
+        1u)
+        << "Large prefab mesh completions must be consumed one at a time so runtime upload publication stays inside the adaptive UI budget.";
     EXPECT_EQ(NLS::Editor::Assets::GetThumbnailPreviewMaterialPumpBudgetForTesting(), 1u)
         << "Material artifact promotion can touch shader dependency registration, so thumbnail preview keeps it to one completion per frame to avoid UI spikes.";
     EXPECT_GE(NLS::Editor::Assets::GetThumbnailPreviewTexturePumpBudgetForTesting(), 4u);
+    EXPECT_EQ(
+        NLS::Editor::Assets::GetThumbnailPreviewPrefabTexturePumpBudgetForTesting(),
+        1u)
+        << "Large prefab texture completions can decode and publish multi-megabyte images, so only one may run in an interactive frame.";
     EXPECT_GE(
         NLS::Editor::Assets::GetThumbnailPreviewPrefabResourceInspectionBudgetForTesting(),
         32u)
         << "Large visible prefabs must discover missing mesh requests in wide cheap batches; a four-item batch combined with resource-pending cooldown takes minutes before rendering can begin.";
+    EXPECT_GT(
+        NLS::Editor::Assets::GetThumbnailPreviewPrefabResourcePumpTimeBudgetMicrosForTesting(),
+        0u)
+        << "Count limits alone cannot protect the UI when one artifact promotion is unexpectedly expensive.";
+    EXPECT_GT(
+        NLS::Editor::Assets::GetThumbnailPreviewPrefabSceneAssemblyBudgetForTesting(),
+        0u);
+    EXPECT_LT(
+        NLS::Editor::Assets::GetThumbnailPreviewPrefabSceneAssemblyBudgetForTesting(),
+        NLS::Editor::Assets::GetThumbnailPreviewPrefabDrawItemCapacityForTesting())
+        << "Prefab preview scene objects must be assembled across frames so a complex thumbnail cannot monopolize the UI thread.";
+}
+
+TEST(AssetThumbnailBehaviorTests, LargePrefabWaitsForPersistentProxyBeforePumpingSourceMeshes)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_TRUE(ShouldWaitForPersistentPrefabPreviewProxyForTesting(true, false))
+        << "The bounded source plan still references full source meshes and must not be treated as a cheap UE-style thumbnail proxy.";
+    EXPECT_FALSE(ShouldWaitForPersistentPrefabPreviewProxyForTesting(true, true));
+    EXPECT_FALSE(ShouldWaitForPersistentPrefabPreviewProxyForTesting(false, false));
+}
+
+TEST(AssetThumbnailBehaviorTests, FinalPrefabProxyCameraUsesRenderedProxyBounds)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_TRUE(ShouldUseFullSourceBoundsForPrefabCameraForTesting(true))
+        << "A provisional subset should retain full-source framing so it represents the complete asset footprint.";
+    EXPECT_FALSE(ShouldUseFullSourceBoundsForPrefabCameraForTesting(false))
+        << "A final simplified proxy must be framed from its actual geometry; imported source spheres can be far more conservative and shrink the thumbnail to a speck.";
 }
 
 TEST(AssetThumbnailBehaviorTests, MeshManagerPumpAsyncLoadsForPathsLeavesUnrelatedThumbnailRequestsPending)
@@ -3196,6 +3429,7 @@ TEST(AssetThumbnailBehaviorTests, PrefabPreviewResourcePlanDeduplicatesRepeatedD
             "Library/Artifacts/bb/shared-stone.nmat",
             "Library/Artifacts/cc/shared-trim.nmat"
         };
+        item.localPosition = {static_cast<float>(index), 0.0f, 0.0f};
         snapshot.drawItems.push_back(std::move(item));
     }
     snapshot.expectedDrawItemCount = snapshot.drawItems.size();
@@ -3205,11 +3439,312 @@ TEST(AssetThumbnailBehaviorTests, PrefabPreviewResourcePlanDeduplicatesRepeatedD
 
     const auto plan = BuildThumbnailPreviewPrefabResourcePlanForTesting(request, snapshot);
 
-    EXPECT_EQ(plan.drawItemCount, kSponzaLikeDrawItems);
+    EXPECT_EQ(plan.drawItemCount, kSponzaLikeDrawItems)
+        << "UE-style thumbnail scheduling must preserve the complete prefab instead of dropping draw items.";
     EXPECT_EQ(plan.uniqueMeshLoadPathCount, 1u)
         << "Large imported prefab thumbnails must not re-resolve the same mesh once per draw item.";
     EXPECT_EQ(plan.uniqueMaterialLoadPathCount, 2u)
         << "Repeated material slots should be resolved once and then reused across prefab draw items.";
+    EXPECT_EQ(plan.dependencyDrawItemInspectionCount, kSponzaLikeDrawItems);
+    ASSERT_TRUE(plan.hasFullWorldBounds);
+    EXPECT_GT(plan.fullWorldBoundsMax.x, 400.0f)
+        << "Proxy selection must retain transform-only full-scene bounds for spatial sampling.";
+}
+
+TEST(AssetThumbnailBehaviorTests, ExactPathMeshPumpSkipsRepeatedArtifactPathResolution)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect mesh path resolution.";
+#else
+    using namespace NLS::Core::ResourceManagement;
+
+    EnsureThumbnailPerformanceTestDriver();
+    const ScopedThumbnailPerformanceJobSystem jobSystem;
+    ASSERT_TRUE(jobSystem.IsInitialized());
+    const auto root = MakeThumbnailPerformanceRoot();
+    const ScopedThumbnailResourceManagerAssetPaths paths(root / "Assets", root / "EngineAssets");
+    const auto meshPath = root / "Assets" / "exact-path-pump.nmesh";
+    WriteBinaryFile(meshPath, NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
+
+    MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    MeshManager meshManager;
+    EXPECT_EQ(meshManager.RequestAsyncArtifact(meshPath.string()), nullptr);
+    ASSERT_TRUE(MeshManager::WaitForAsyncArtifactWorkersForTesting());
+    MeshManager::ResetArtifactResourcePathResolutionCountForTesting();
+
+    EXPECT_TRUE(meshManager.IsAsyncArtifactLoadPendingExactPath(meshPath.string()));
+    EXPECT_FALSE(meshManager.IsAsyncArtifactLoadFailedExactPath(meshPath.string()));
+    EXPECT_FALSE(meshManager.IsAsyncArtifactLoadPendingExactPath((root / "not-started.nmesh").string()));
+    EXPECT_FALSE(meshManager.IsAsyncArtifactLoadFailedExactPath((root / "not-started.nmesh").string()));
+    meshManager.PumpAsyncLoadsForExactPaths({meshPath.string()}, 1u);
+
+    EXPECT_EQ(MeshManager::GetArtifactResourcePathResolutionCountForTesting(), 0u)
+        << "Thumbnail resource plans already hold exact request keys and must not resolve artifact paths each frame.";
+
+    MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    meshManager.UnloadResources();
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailBehaviorTests, PrefabPreviewResourcePlanProxiesMoreThanLegacyDrawLimit)
+{
+    using namespace NLS::Editor::Assets;
+
+    PreviewRenderableSnapshot snapshot;
+    constexpr size_t kLargePrefabDrawItems = 2048u;
+    snapshot.drawItems.reserve(kLargePrefabDrawItems);
+    for (size_t index = 0u; index < kLargePrefabDrawItems; ++index)
+    {
+        PreviewDrawItem item;
+        item.meshPath = "Library/Artifacts/mesh-" + std::to_string(index) + "/chunk.nmesh";
+        item.localPosition = {
+            static_cast<float>(index % 64u),
+            static_cast<float>((index / 64u) % 8u),
+            static_cast<float>(index / 512u)
+        };
+        snapshot.drawItems.push_back(std::move(item));
+    }
+    snapshot.expectedDrawItemCount = snapshot.drawItems.size();
+
+    AssetThumbnailRequest request;
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    const auto plan = BuildThumbnailPreviewPrefabResourcePlanForTesting(request, snapshot);
+
+    EXPECT_EQ(plan.drawItemCount, kLargePrefabDrawItems)
+        << "Large prefabs must remain complete and rely on time-sliced preparation.";
+    EXPECT_EQ(plan.dependencyDrawItemInspectionCount, kLargePrefabDrawItems);
+    EXPECT_TRUE(plan.hasFullWorldBounds);
+}
+
+TEST(AssetThumbnailBehaviorTests, PrefabPreviewProxySamplesAcrossCollapsedNodeTransforms)
+{
+    using namespace NLS::Editor::Assets;
+
+    PreviewRenderableSnapshot snapshot;
+    constexpr size_t kDrawItemCount = 320u;
+    snapshot.drawItems.reserve(kDrawItemCount);
+    for (size_t index = 0u; index < kDrawItemCount; ++index)
+    {
+        PreviewDrawItem item;
+        item.meshPath = "Library/Artifacts/mesh-" + std::to_string(index) + "/chunk.nmesh";
+        snapshot.drawItems.push_back(std::move(item));
+    }
+    snapshot.expectedDrawItemCount = snapshot.drawItems.size();
+
+    AssetThumbnailRequest request;
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    const auto plan = BuildThumbnailPreviewPrefabResourcePlanForTesting(request, snapshot);
+
+    ASSERT_EQ(plan.selectedDrawItemIndices.size(), kDrawItemCount);
+    EXPECT_EQ(plan.dependencyDrawItemInspectionCount, kDrawItemCount);
+    EXPECT_EQ(plan.selectedDrawItemIndices.front(), 0u);
+    EXPECT_GT(plan.selectedDrawItemIndices.back(), kDrawItemCount * 9u / 10u)
+        << "Collapsed transform bounds must not make a large imported model use only its first meshes.";
+}
+
+TEST(AssetThumbnailBehaviorTests, PrefabPreviewProxyUsesRealMeshBoundsForCollapsedNodeTransforms)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    constexpr size_t kDrawItemCount = 96u;
+    constexpr size_t kDominantDrawItemIndex = 48u;
+
+    PreviewRenderableSnapshot snapshot;
+    snapshot.drawItems.reserve(kDrawItemCount);
+    for (size_t index = 0u; index < kDrawItemCount; ++index)
+    {
+        const auto meshPath = root / "Assets" / ("collapsed-mesh-" + std::to_string(index) + ".nmesh");
+        auto mesh = TriangleMeshArtifact();
+        mesh.boundingSphere.position = index == kDominantDrawItemIndex
+            ? NLS::Maths::Vector3(50.0f, 0.0f, 0.0f)
+            : NLS::Maths::Vector3(0.0f, 0.0f, 0.0f);
+        mesh.boundingSphere.radius = index == kDominantDrawItemIndex ? 25.0f : 1.0f;
+        WriteBinaryFile(meshPath, NLS::Render::Assets::SerializeMeshArtifact(mesh));
+
+        PreviewDrawItem item;
+        item.meshPath = meshPath.generic_string();
+        snapshot.drawItems.push_back(std::move(item));
+    }
+    snapshot.expectedDrawItemCount = snapshot.drawItems.size();
+
+    AssetThumbnailRequest request;
+    request.projectRoot = root;
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    const auto plan = BuildThumbnailPreviewPrefabResourcePlanForTesting(request, snapshot);
+
+    EXPECT_EQ(plan.drawItemCount, kDrawItemCount);
+    EXPECT_NE(
+        std::find(
+            plan.selectedDrawItemIndices.begin(),
+            plan.selectedDrawItemIndices.end(),
+            kDominantDrawItemIndex),
+        plan.selectedDrawItemIndices.end())
+        << "The final proxy must retain a dominant mesh discovered from artifact-header bounds.";
+    EXPECT_EQ(plan.dependencyDrawItemInspectionCount, kDrawItemCount);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailBehaviorTests, PersistentPrefabPreviewProxyCoversEverySourceInstanceAndReusesCache)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to build the persistent thumbnail proxy.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    struct ScopedRuntimeArtifactAuthorization
+    {
+        bool previousEnabled = NLS::Core::Assets::IsRuntimeArtifactAuthorizationEnabled();
+
+        ScopedRuntimeArtifactAuthorization()
+        {
+            NLS::Core::Assets::ClearRuntimeArtifactAuthorization();
+            NLS::Core::Assets::SetRuntimeArtifactAuthorizationEnabled(true);
+        }
+
+        ~ScopedRuntimeArtifactAuthorization()
+        {
+            NLS::Core::Assets::ClearRuntimeArtifactAuthorization();
+            NLS::Core::Assets::SetRuntimeArtifactAuthorizationEnabled(previousEnabled);
+        }
+    } authorization;
+    const auto meshPath = root / "Library" / "Artifacts" /
+        NLS::Core::Assets::BuildArtifactStorageRelativePath(
+            "aa0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd");
+    WriteBinaryFile(meshPath, NLS::Render::Assets::SerializeMeshArtifact(TriangleMeshArtifact()));
+
+    PreviewRenderableSnapshot snapshot;
+    constexpr size_t kInstanceCount = 65u;
+    snapshot.drawItems.reserve(kInstanceCount);
+    for (size_t index = 0u; index < kInstanceCount; ++index)
+    {
+        PreviewDrawItem item;
+        item.meshPath = meshPath.generic_string();
+        item.localPosition = {static_cast<float>(index) * 2.0f, 0.0f, 0.0f};
+        snapshot.drawItems.push_back(std::move(item));
+    }
+    snapshot.expectedDrawItemCount = snapshot.drawItems.size();
+
+    AssetThumbnailRequest request;
+    request.projectRoot = root;
+    request.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5"));
+    request.sourceAssetPath = "Assets/Large.prefab";
+    request.subAssetKey = "prefab:Large";
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.previewRendererVersion = "persistent-proxy-test:v1";
+    request.dependencyStamp = "source-revision:1";
+
+    const auto expectedPath = BuildThumbnailPreviewPrefabProxyArtifactPathForTesting(request);
+    const auto first = BuildThumbnailPreviewPrefabProxyForTesting(request, snapshot);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_TRUE(NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(
+        NLS::Core::Assets::TryMakePortableContentArtifactPath(meshPath.generic_string())))
+        << "The editor proxy builder must authorize only its validated content-addressed source artifact.";
+    EXPECT_EQ(*first, expectedPath);
+    const auto proxy = NLS::Render::Assets::LoadMeshArtifact(*first);
+    ASSERT_TRUE(proxy.has_value());
+    ASSERT_GE(proxy->indices.size(), kInstanceCount * 3u)
+        << "The proxy must include geometry from every source instance rather than selecting a child subset.";
+
+    float minimumX = std::numeric_limits<float>::max();
+    float maximumX = std::numeric_limits<float>::lowest();
+    for (const auto& vertex : proxy->vertices)
+    {
+        minimumX = (std::min)(minimumX, vertex.position[0]);
+        maximumX = (std::max)(maximumX, vertex.position[0]);
+    }
+    EXPECT_LT(minimumX, 1.0f);
+    EXPECT_GT(maximumX, 126.0f);
+
+    const auto second = BuildThumbnailPreviewPrefabProxyForTesting(request, snapshot);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(*second, *first)
+        << "An unchanged prefab must reuse its persistent proxy artifact.";
+
+    auto changedRequest = request;
+    changedRequest.dependencyStamp = "source-revision:2";
+    EXPECT_NE(
+        BuildThumbnailPreviewPrefabProxyArtifactPathForTesting(changedRequest),
+        *first)
+        << "Source dependency changes must invalidate the persistent proxy identity.";
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailBehaviorTests, PersistentPrefabPreviewProxyPreservesMaterialGroups)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to build the persistent thumbnail proxy.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    const auto stoneMeshPath = root / "Library" / "Artifacts" / "aa" / "stone.nmesh";
+    const auto metalMeshPath = root / "Library" / "Artifacts" / "bb" / "metal.nmesh";
+    auto stoneMesh = TriangleMeshArtifact();
+    stoneMesh.materialIndex = 0u;
+    auto metalMesh = TriangleMeshArtifact();
+    metalMesh.materialIndex = 1u;
+    WriteBinaryFile(stoneMeshPath, NLS::Render::Assets::SerializeMeshArtifact(stoneMesh));
+    WriteBinaryFile(metalMeshPath, NLS::Render::Assets::SerializeMeshArtifact(metalMesh));
+
+    const std::string stoneMaterial = "Assets/Materials/Stone.nmat";
+    const std::string metalMaterial = "Assets/Materials/Metal.nmat";
+    PreviewRenderableSnapshot snapshot;
+    constexpr size_t kInstanceCount = 66u;
+    snapshot.drawItems.reserve(kInstanceCount);
+    for (size_t index = 0u; index < kInstanceCount; ++index)
+    {
+        PreviewDrawItem item;
+        item.meshPath = index % 2u == 0u
+            ? stoneMeshPath.generic_string()
+            : metalMeshPath.generic_string();
+        item.materialPaths = {stoneMaterial, metalMaterial};
+        item.localPosition = {static_cast<float>(index), 0.0f, 0.0f};
+        snapshot.drawItems.push_back(std::move(item));
+    }
+    snapshot.expectedDrawItemCount = snapshot.drawItems.size();
+
+    AssetThumbnailRequest request;
+    request.projectRoot = root;
+    request.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("b2b2b2b2-c3c3-4d4d-8e5e-f6f6f6f6f6f6"));
+    request.sourceAssetPath = "Assets/MaterialGroups.prefab";
+    request.subAssetKey = "prefab:MaterialGroups";
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.previewRendererVersion = "persistent-proxy-material-test:v1";
+    request.dependencyStamp = "source-revision:1";
+
+    const auto proxy = BuildThumbnailPreviewPrefabProxyDetailsForTesting(request, snapshot);
+    ASSERT_TRUE(proxy.has_value());
+    ASSERT_EQ(proxy->meshPaths.size(), 2u);
+    ASSERT_EQ(proxy->materialPaths.size(), proxy->meshPaths.size());
+    EXPECT_NE(
+        std::find(proxy->materialPaths.begin(), proxy->materialPaths.end(), stoneMaterial),
+        proxy->materialPaths.end());
+    EXPECT_NE(
+        std::find(proxy->materialPaths.begin(), proxy->materialPaths.end(), metalMaterial),
+        proxy->materialPaths.end());
+
+    size_t proxyIndexCount = 0u;
+    for (const auto& path : proxy->meshPaths)
+    {
+        const auto meshArtifact = NLS::Render::Assets::LoadMeshArtifact(path);
+        ASSERT_TRUE(meshArtifact.has_value());
+        EXPECT_EQ(meshArtifact->materialIndex, 0u)
+            << "Each material-group proxy exposes its source material as slot zero.";
+        proxyIndexCount += meshArtifact->indices.size();
+    }
+    EXPECT_GE(proxyIndexCount, kInstanceCount * 3u)
+        << "Material grouping must not drop source instances from the proxy.";
+
+    std::filesystem::remove_all(root);
+#endif
 }
 
 TEST(AssetThumbnailBehaviorTests, PrefabPreviewResourcePlanKeepsHighDensityMeshForAsyncGpuLoading)

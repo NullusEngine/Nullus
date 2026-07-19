@@ -1133,16 +1133,26 @@ void PrewarmPrefabMeshArtifacts(
     if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MeshManager>())
         return;
 
+    NLS::Base::Profiling::PerformanceStageScope scope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "PrewarmMeshArtifacts",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
     auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
+    uint64_t attemptedCount = 0u;
+    uint64_t loadedCount = 0u;
     for (const auto& resolved : artifact.resolvedAssets)
     {
         if (resolved.expectedType == "Mesh" && !resolved.artifactPath.empty())
         {
-            meshManager.PrewarmArtifact(resolved.artifactPath);
+            ++attemptedCount;
+            if (meshManager.PrewarmArtifact(resolved.artifactPath) != nullptr)
+                ++loadedCount;
             if (uploadScope != nullptr)
                 uploadScope->AddCounter("synchronousResourceLoadCount");
         }
     }
+    scope.AddCounter("attemptedCount", attemptedCount);
+    scope.AddCounter("loadedCount", loadedCount);
 }
 
 void PrewarmPrefabMaterialArtifacts(
@@ -1152,16 +1162,26 @@ void PrewarmPrefabMaterialArtifacts(
     if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
         return;
 
+    NLS::Base::Profiling::PerformanceStageScope scope(
+        NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+        "PrewarmMaterialArtifacts",
+        NLS::Base::Profiling::PerformanceStageThread::Main);
     auto& materialManager = NLS_SERVICE(Core::ResourceManagement::MaterialManager);
+    uint64_t attemptedCount = 0u;
+    uint64_t loadedCount = 0u;
     for (const auto& resolved : artifact.resolvedAssets)
     {
         if (resolved.expectedType == "Material" && !resolved.artifactPath.empty())
         {
-            materialManager.PrewarmArtifactWithDependencies(resolved.artifactPath);
+            ++attemptedCount;
+            if (materialManager.PrewarmArtifactWithDependencies(resolved.artifactPath) != nullptr)
+                ++loadedCount;
             if (uploadScope != nullptr)
                 uploadScope->AddCounter("synchronousResourceLoadCount");
         }
     }
+    scope.AddCounter("attemptedCount", attemptedCount);
+    scope.AddCounter("loadedCount", loadedCount);
 }
 
 bool VisitNestedPrefabDependencies(

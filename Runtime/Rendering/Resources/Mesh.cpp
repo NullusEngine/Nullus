@@ -3,6 +3,7 @@
 #include "Rendering/RHI/Core/RHIMeshAdapter.h"
 
 #include <atomic>
+#include <Profiling/PerformanceStageStats.h>
 
 namespace NLS::Render::Resources
 {
@@ -181,18 +182,34 @@ void Mesh::CreateBuffers(
 	const MeshBufferUploadMode uploadMode)
 {
 	const auto memoryUsage = ToBufferMemoryUsage(uploadMode);
-	m_vertexBuffer = std::make_unique<Buffers::VertexBuffer<Geometry::Vertex>>(
-		BuildMeshVertexUploadView(vertices).data,
-		vertices.size(),
-		memoryUsage);
+	{
+		NLS::Base::Profiling::PerformanceStageScope vertexBufferScope(
+			NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+			"PrewarmMeshVertexBufferCreate",
+			NLS::Base::Profiling::PerformanceStageThread::Main);
+		m_vertexBuffer = std::make_unique<Buffers::VertexBuffer<Geometry::Vertex>>(
+			BuildMeshVertexUploadView(vertices).data,
+			vertices.size(),
+			memoryUsage);
+	}
 	if (!indices.empty())
+	{
+		NLS::Base::Profiling::PerformanceStageScope indexBufferScope(
+			NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+			"PrewarmMeshIndexBufferCreate",
+			NLS::Base::Profiling::PerformanceStageThread::Main);
 		m_indexBuffer = std::make_unique<Buffers::IndexBuffer>(
 			const_cast<uint32_t*>(indices.data()),
 			indices.size(),
 			memoryUsage);
+	}
 
 	uint64_t vertexSize = sizeof(Geometry::Vertex);
 
+	NLS::Base::Profiling::PerformanceStageScope vertexArrayScope(
+		NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+		"PrewarmMeshVertexArrayBind",
+		NLS::Base::Profiling::PerformanceStageThread::Main);
 	m_vertexArray.BindAttribute(0, *m_vertexBuffer, Settings::EDataType::FLOAT, 3, vertexSize, 0);
 	m_vertexArray.BindAttribute(1, *m_vertexBuffer, Settings::EDataType::FLOAT, 2, vertexSize, sizeof(float) * 3);
 	m_vertexArray.BindAttribute(2, *m_vertexBuffer, Settings::EDataType::FLOAT, 3, vertexSize, sizeof(float) * 5);

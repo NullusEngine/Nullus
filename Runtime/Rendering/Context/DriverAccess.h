@@ -289,10 +289,13 @@ namespace NLS::Render::Context
             uint32_t renderWidth,
             uint32_t renderHeight,
             size_t* publishedSlotIndex = nullptr,
-            uint64_t* publishedFrameId = nullptr);
+            uint64_t* publishedFrameId = nullptr,
+            // False leaves pending UI data untouched when no slot is immediately reusable.
+            bool waitForRetirement = true);
         static std::shared_ptr<const UI::UiDrawDataSnapshot> ConsumePendingUiDrawDataSnapshot(
             Driver& driver,
-            uint64_t* consumedGeneration = nullptr);
+            uint64_t* consumedGeneration = nullptr,
+            uint64_t* observedPresentationInvalidationGeneration = nullptr);
         static bool RestoreConsumedUiDrawDataSnapshotIfUnchanged(
             Driver& driver,
             std::shared_ptr<const UI::UiDrawDataSnapshot> snapshot,
@@ -304,6 +307,17 @@ namespace NLS::Render::Context
         static void ReleaseUiTextureView(
             Driver& driver,
             const std::shared_ptr<RHI::RHITextureView>& textureView);
+        // Invalid or unregistered views are ignored because they cannot affect UI presentation.
+        static void NotifyUiTextureContentChanged(
+            Driver& driver,
+            const std::shared_ptr<RHI::RHITextureView>& textureView);
+        static void NotifyUiTextureContentChanged(
+            Driver& driver,
+            const std::vector<uint64_t>& textureIdentities);
+        static void RecordUiOverlayPresentationSucceeded(
+            Driver& driver,
+            const std::shared_ptr<const UI::UiDrawDataSnapshot>& snapshot,
+            uint64_t observedPresentationInvalidationGeneration);
         static uint64_t RequestUiRgba8TextureUpload(
             Driver& driver,
             Rgba8TextureUploadRequest request);

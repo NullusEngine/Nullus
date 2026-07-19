@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,14 @@ struct NativeArtifactPayloadText
     std::string payload;
 };
 
+enum class NativeArtifactPayloadValidation : uint8_t
+{
+    VerifyHash,
+    // Only use after IsContentStorageArtifactPath and runtime authorization succeed.
+    // ArtifactWriter hashes the complete stored blob and verifies an existing blob before reuse.
+    TrustContentAddressedStorage
+};
+
 NLS_CORE_API size_t NativeArtifactContainerHeaderSize();
 NLS_CORE_API std::string ComputeNativeArtifactPayloadHash(const std::vector<uint8_t>& payload);
 NLS_CORE_API std::string ComputeNativeArtifactPayloadHash(const uint8_t* payload, size_t payloadSize);
@@ -69,6 +78,18 @@ NLS_CORE_API std::optional<NativeArtifactContainerView> ReadNativeArtifactContai
     const std::vector<uint8_t>& bytes,
     ArtifactType expectedType,
     uint32_t expectedSchemaVersion,
+    std::string* diagnostics = nullptr);
+NLS_CORE_API std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
+    const std::vector<uint8_t>& bytes,
+    ArtifactType expectedType,
+    uint32_t expectedSchemaVersion,
+    NativeArtifactPayloadValidation payloadValidation,
+    std::string* diagnostics = nullptr);
+NLS_CORE_API std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
+    std::span<const uint8_t> bytes,
+    ArtifactType expectedType,
+    uint32_t expectedSchemaVersion,
+    NativeArtifactPayloadValidation payloadValidation,
     std::string* diagnostics = nullptr);
 NLS_CORE_API bool IsNativeArtifactContainer(const std::vector<uint8_t>& bytes);
 NLS_CORE_API std::optional<NativeArtifactPayloadPrefix> ReadNativeArtifactPayloadPrefix(

@@ -49,6 +49,8 @@ if(WIN32)
   target_link_libraries(NLS_Render PUBLIC d3d12 dxgi dxguid d3d11)
 endif()
 
+target_link_libraries(NLS_Render PRIVATE meshoptimizer)
+
 if(APPLE)
   target_compile_definitions(NLS_Render PUBLIC NLS_HAS_METAL=1)
   target_link_libraries(NLS_Render PUBLIC "-framework Metal" "-framework QuartzCore" "-framework Foundation")

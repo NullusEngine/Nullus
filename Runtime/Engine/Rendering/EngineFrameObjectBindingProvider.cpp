@@ -74,6 +74,11 @@ uint64_t EngineFrameObjectBindingProvider::GetIndexedObjectDataShaderSupportQuer
 {
     return m_indexedObjectDataShaderSupportQueryCount;
 }
+
+uint64_t EngineFrameObjectBindingProvider::GetLegacyObjectBufferWriteCountForTesting() const
+{
+    return m_legacyObjectBufferWriteCount;
+}
 #endif
 
 void EngineFrameObjectBindingProvider::PrepareRenderScenePackage(
@@ -87,6 +92,9 @@ void EngineFrameObjectBindingProvider::PrepareRenderScenePackage(
 void EngineFrameObjectBindingProvider::OnBeginFrame(const NLS::Render::Data::FrameDescriptor& frameDescriptor)
 {
     m_indexedObjectDataShaderSupportQueryCount = 0u;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    m_legacyObjectBufferWriteCount = 0u;
+#endif
     ReleaseStalePreparedObjectDataSlotReservation();
     InvalidateObjectDataDeviceCachesIfNeeded();
     RetireIdleObjectDataSlots();
@@ -172,6 +180,9 @@ bool EngineFrameObjectBindingProvider::OnPrepareDraw(
     PipelineState&,
     const NLS::Render::Entities::Drawable& drawable)
 {
+    if (!IsFramePrepared())
+        InvalidateObjectDataDeviceCachesIfNeeded();
+
     m_currentDrawUsesIndexedObjectData = false;
     m_currentDrawRequiresIndexedObjectData = PreparedShaderRequiresIndexedObjectData();
     m_currentDrawPrepared = true;
@@ -181,15 +192,6 @@ bool EngineFrameObjectBindingProvider::OnPrepareDraw(
     if (descriptor != nullptr)
     {
         m_currentDrawObjectConstants.objectFlags = descriptor->objectFlags;
-        m_engineBuffer->SetSubData(Maths::Matrix4::Transpose(descriptor->modelMatrix), 0);
-        m_engineBuffer->SetSubData(
-            descriptor->userMatrix,
-            sizeof(Maths::Matrix4) +
-            sizeof(Maths::Matrix4) +
-            sizeof(Maths::Matrix4) +
-            sizeof(Maths::Vector3) +
-            sizeof(float));
-
         const bool hasExplicitObjectIndex =
             descriptor->objectIndex != NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
         if ((hasExplicitObjectIndex || m_currentDrawRequiresIndexedObjectData) &&
@@ -204,6 +206,18 @@ bool EngineFrameObjectBindingProvider::OnPrepareDraw(
             m_explicitObjectBindingSet.reset();
             return false;
         }
+
+        m_engineBuffer->SetSubData(Maths::Matrix4::Transpose(descriptor->modelMatrix), 0);
+        m_engineBuffer->SetSubData(
+            descriptor->userMatrix,
+            sizeof(Maths::Matrix4) +
+            sizeof(Maths::Matrix4) +
+            sizeof(Maths::Matrix4) +
+            sizeof(Maths::Vector3) +
+            sizeof(float));
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        m_legacyObjectBufferWriteCount += 2u;
+#endif
 
         auto& writeBuffer = m_useAltObjectBuffer ? *m_hlslObjectBufferAlt : *m_hlslObjectBuffer;
         writeBuffer.SetSubData(Maths::Matrix4::Transpose(descriptor->modelMatrix), 0);
@@ -241,7 +255,28 @@ void EngineFrameObjectBindingProvider::OnPrepareExplicitDraw(
         commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet, m_explicitObjectBindingSet);
 }
 
+bool EngineFrameObjectBindingProvider::OnCaptureFrameBindingSet(
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& outBindingSet)
+{
+    RefreshExplicitFrameBindingSet();
+    outBindingSet = m_explicitFrameBindingSet;
+    return outBindingSet != nullptr;
+}
+
 bool EngineFrameObjectBindingProvider::OnCapturePreparedBindingSets(
+    PipelineState& pso,
+    const NLS::Render::Entities::Drawable& drawable,
+    PreparedBindingSets& outBindings)
+{
+    if (!OnCapturePreparedObjectBindingSet(pso, drawable, outBindings))
+        return false;
+
+    RefreshExplicitFrameBindingSet();
+    outBindings.frameBindingSet = m_explicitFrameBindingSet;
+    return outBindings.frameBindingSet != nullptr || outBindings.objectBindingSet != nullptr;
+}
+
+bool EngineFrameObjectBindingProvider::OnCapturePreparedObjectBindingSet(
     PipelineState&,
     const NLS::Render::Entities::Drawable& drawable,
     PreparedBindingSets& outBindings)
@@ -249,32 +284,27 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedBindingSets(
     if (!m_currentDrawPrepared)
         return false;
 
-    RefreshExplicitFrameBindingSet();
     if (m_currentDrawUsesIndexedObjectData)
     {
         auto* slot = ResolveActiveObjectDataSlot();
         m_explicitObjectBindingSet = slot != nullptr ? RefreshExplicitIndexedObjectBindingSet(*slot) : nullptr;
     }
-    else if (!m_currentDrawPrepared)
-    {
-        m_explicitObjectBindingSet.reset();
-    }
     else
     {
         RefreshExplicitObjectBindingSet();
     }
-    outBindings.frameBindingSet = m_explicitFrameBindingSet;
     outBindings.objectBindingSet = m_explicitObjectBindingSet;
     outBindings.objectConstants = m_currentDrawObjectConstants;
     outBindings.usesObjectIndex = m_currentDrawUsesIndexedObjectData &&
         m_currentDrawObjectConstants.objectIndex !=
             NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
-    return outBindings.frameBindingSet != nullptr || outBindings.objectBindingSet != nullptr;
+    return true;
 }
 
 void EngineFrameObjectBindingProvider::RefreshExplicitFrameBindingSet()
 {
-    InvalidateObjectDataDeviceCachesIfNeeded();
+    if (!IsFramePrepared())
+        InvalidateObjectDataDeviceCachesIfNeeded();
     if (!m_explicitFrameBindingSetDirty)
         return;
 
@@ -297,7 +327,8 @@ void EngineFrameObjectBindingProvider::RefreshExplicitFrameBindingSet()
 
 void EngineFrameObjectBindingProvider::RefreshExplicitObjectBindingSet()
 {
-    InvalidateObjectDataDeviceCachesIfNeeded();
+    if (!IsFramePrepared())
+        InvalidateObjectDataDeviceCachesIfNeeded();
     if (!m_explicitObjectBindingSetDirty)
         return;
 
@@ -384,6 +415,8 @@ void EngineFrameObjectBindingProvider::ResetObjectDataSlot(ObjectDataFrameSlot& 
     slot.deferredBindingSet.reset();
     slot.deviceIdentity = 0u;
     slot.objectDataShadow = {};
+    slot.objectDataSourceShadow = {};
+    slot.objectDataSourceValid = {};
     slot.nextTransientObjectIndex = 0u;
     slot.capacity = 0u;
     slot.idleFrameCount = 0u;
@@ -413,6 +446,7 @@ void EngineFrameObjectBindingProvider::RetireIdleObjectDataSlots()
 void EngineFrameObjectBindingProvider::InvalidateObjectDataDeviceCachesIfNeeded()
 {
     const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+    m_explicitDevice = device;
     const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
     if (deviceIdentity == m_cachedObjectDataDeviceIdentity)
         return;
@@ -434,7 +468,7 @@ bool EngineFrameObjectBindingProvider::EnsureObjectDataBufferCapacity(
     ObjectDataFrameSlot& slot,
     const uint32_t objectIndex)
 {
-    auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+    const auto& device = m_explicitDevice;
     if (device == nullptr)
         return false;
 
@@ -492,7 +526,7 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> EngineFrameObjectBindingProvide
     if (slot.buffer == nullptr)
         return nullptr;
 
-    auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+    const auto& device = m_explicitDevice;
     if (device == nullptr)
         return nullptr;
     const auto deviceIdentity = device->GetCacheIdentity();
@@ -603,26 +637,20 @@ bool EngineFrameObjectBindingProvider::TryPrepareIndexedObjectData(
         objectDataSlot->nextTransientObjectIndex,
         lastObjectIndex + 1u);
 
-    std::array<Maths::Matrix4, 1u> singleShaderMatrix;
-    std::vector<Maths::Matrix4> shaderMatrices;
-    const Maths::Matrix4* shaderMatrixData = nullptr;
+    const Maths::Matrix4* sourceMatrixData = nullptr;
     if (descriptor.instanceModelMatrices.empty())
     {
         if (objectCount != 1u)
             return false;
 
-        singleShaderMatrix[0] = Maths::Matrix4::Transpose(descriptor.modelMatrix);
-        shaderMatrixData = singleShaderMatrix.data();
+        sourceMatrixData = &descriptor.modelMatrix;
     }
     else
     {
         if (descriptor.instanceModelMatrices.size() < objectCount)
             return false;
 
-        shaderMatrices.reserve(objectCount);
-        for (uint32_t matrixIndex = 0u; matrixIndex < objectCount; ++matrixIndex)
-            shaderMatrices.push_back(Maths::Matrix4::Transpose(descriptor.instanceModelMatrices[matrixIndex]));
-        shaderMatrixData = shaderMatrices.data();
+        sourceMatrixData = descriptor.instanceModelMatrices.data();
     }
 
     if (!EnsureObjectDataBufferCapacity(*objectDataSlot, lastObjectIndex) ||
@@ -630,26 +658,36 @@ bool EngineFrameObjectBindingProvider::TryPrepareIndexedObjectData(
         return false;
 
     const auto requiredShadowSize = static_cast<size_t>(objectIndex) + objectCount;
-    bool objectDataChanged = objectDataSlot->objectDataShadow.size() < requiredShadowSize;
+    bool objectDataChanged =
+        objectDataSlot->objectDataShadow.size() < requiredShadowSize ||
+        objectDataSlot->objectDataSourceShadow.size() < requiredShadowSize ||
+        objectDataSlot->objectDataSourceValid.size() < requiredShadowSize;
     if (!objectDataChanged)
     {
-        for (uint32_t matrixIndex = 0u; matrixIndex < objectCount; ++matrixIndex)
-        {
-            if (std::memcmp(
-                    &objectDataSlot->objectDataShadow[static_cast<size_t>(objectIndex) + matrixIndex],
-                    &shaderMatrixData[matrixIndex],
-                    sizeof(Maths::Matrix4)) != 0)
-            {
-                objectDataChanged = true;
-                break;
-            }
-        }
+        const auto validBegin = objectDataSlot->objectDataSourceValid.begin() + objectIndex;
+        const auto validEnd = validBegin + objectCount;
+        objectDataChanged =
+            std::find(validBegin, validEnd, uint8_t {0u}) != validEnd ||
+            std::memcmp(
+                objectDataSlot->objectDataSourceShadow.data() + objectIndex,
+                sourceMatrixData,
+                static_cast<size_t>(objectCount) * sizeof(Maths::Matrix4)) != 0;
     }
 
     if (objectDataChanged)
     {
+        m_objectDataTransposeScratch.resize(objectCount);
+        std::transform(
+            sourceMatrixData,
+            sourceMatrixData + objectCount,
+            m_objectDataTransposeScratch.begin(),
+            [](const Maths::Matrix4& matrix)
+            {
+                return Maths::Matrix4::Transpose(matrix);
+            });
+
         NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
-        uploadDesc.data = shaderMatrixData;
+        uploadDesc.data = m_objectDataTransposeScratch.data();
         uploadDesc.dataSize = static_cast<size_t>(objectCount) * sizeof(Maths::Matrix4);
         uploadDesc.destinationOffset = static_cast<uint64_t>(objectIndex) * sizeof(Maths::Matrix4);
         uploadDesc.debugName = "EngineObjectDataUpdate";
@@ -659,10 +697,22 @@ bool EngineFrameObjectBindingProvider::TryPrepareIndexedObjectData(
 
         if (objectDataSlot->objectDataShadow.size() < requiredShadowSize)
             objectDataSlot->objectDataShadow.resize(requiredShadowSize, Maths::Matrix4::Identity);
+        if (objectDataSlot->objectDataSourceShadow.size() < requiredShadowSize)
+            objectDataSlot->objectDataSourceShadow.resize(requiredShadowSize, Maths::Matrix4::Identity);
+        if (objectDataSlot->objectDataSourceValid.size() < requiredShadowSize)
+            objectDataSlot->objectDataSourceValid.resize(requiredShadowSize, uint8_t {0u});
         std::copy(
-            shaderMatrixData,
-            shaderMatrixData + objectCount,
+            m_objectDataTransposeScratch.begin(),
+            m_objectDataTransposeScratch.end(),
             objectDataSlot->objectDataShadow.begin() + objectIndex);
+        std::copy(
+            sourceMatrixData,
+            sourceMatrixData + objectCount,
+            objectDataSlot->objectDataSourceShadow.begin() + objectIndex);
+        std::fill(
+            objectDataSlot->objectDataSourceValid.begin() + objectIndex,
+            objectDataSlot->objectDataSourceValid.begin() + objectIndex + objectCount,
+            uint8_t {1u});
     }
 
     if (RefreshExplicitIndexedObjectBindingSet(*objectDataSlot) == nullptr)

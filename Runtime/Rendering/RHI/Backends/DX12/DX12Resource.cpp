@@ -1,12 +1,14 @@
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include "Assets/ArtifactLoadTelemetry.h"
 #include <Debug/Logger.h>
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 #include "Rendering/RHI/Backends/DX12/DX12DebugNameUtils.h"
@@ -28,7 +30,27 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 	namespace
 	{
-		constexpr uint64_t kDX12InitialUploadFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
+			constexpr uint64_t kDX12InitialUploadFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
+
+			void RecordInitialUploadTelemetry(
+				const NLS::Core::Assets::ArtifactLoadTelemetryStage stage,
+				const std::chrono::steady_clock::time_point begin,
+				const size_t byteCount)
+			{
+				if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+					return;
+
+				auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - begin);
+				if (elapsed.count() == 0)
+					elapsed = std::chrono::microseconds(1);
+				NLS::Core::Assets::RecordArtifactLoadTelemetry({
+					stage,
+					elapsed,
+					byteCount,
+					{}
+				});
+			}
 
 		enum class DX12DepthStencilViewAccess : uint8_t
 		{
@@ -215,12 +237,16 @@ namespace NLS::Render::Backend
 			return ResourceState::Unknown;
 		}
 
-	class DX12InitialUploadContext final
+		class DX12InitialUploadContext final
 		{
 		public:
-			DX12InitialUploadContext(ID3D12Device* device, ID3D12CommandQueue* graphicsQueue)
+			DX12InitialUploadContext(
+				ID3D12Device* device,
+				ID3D12CommandQueue* graphicsQueue,
+				DX12InitialUploadCommandObjects* commandObjects)
 				: m_device(device)
 				, m_graphicsQueue(graphicsQueue)
+				, m_commandObjects(commandObjects)
 			{
 			}
 
@@ -237,9 +263,76 @@ namespace NLS::Render::Backend
 				NLS::Render::RHI::ResourceState& outFinalState) const;
 
 		private:
+			bool AcquireCommandObjects(
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator>& commandAllocator,
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList,
+				std::unique_lock<std::mutex>& commandObjectsLock) const;
+			void DiscardReusableCommandObjects() const;
+
 			ID3D12Device* m_device = nullptr;
 			ID3D12CommandQueue* m_graphicsQueue = nullptr;
-	};
+			DX12InitialUploadCommandObjects* m_commandObjects = nullptr;
+		};
+
+		bool DX12InitialUploadContext::AcquireCommandObjects(
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator>& commandAllocator,
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList,
+				std::unique_lock<std::mutex>& commandObjectsLock) const
+			{
+				if (m_device == nullptr)
+					return false;
+
+				if (m_commandObjects != nullptr)
+				{
+					commandObjectsLock = std::unique_lock<std::mutex>(m_commandObjects->mutex);
+					if (m_commandObjects->allocator != nullptr && m_commandObjects->commandList != nullptr)
+					{
+						const HRESULT allocatorReset = m_commandObjects->allocator->Reset();
+						const HRESULT listReset = SUCCEEDED(allocatorReset)
+							? m_commandObjects->commandList->Reset(m_commandObjects->allocator.Get(), nullptr)
+							: allocatorReset;
+						if (SUCCEEDED(allocatorReset) && SUCCEEDED(listReset))
+						{
+							commandAllocator = m_commandObjects->allocator;
+							commandList = m_commandObjects->commandList;
+							return true;
+						}
+						m_commandObjects->commandList.Reset();
+						m_commandObjects->allocator.Reset();
+					}
+				}
+
+				HRESULT hr = m_device->CreateCommandAllocator(
+					D3D12_COMMAND_LIST_TYPE_DIRECT,
+					IID_PPV_ARGS(commandAllocator.GetAddressOf()));
+				if (FAILED(hr))
+					return false;
+				hr = m_device->CreateCommandList(
+					0,
+					D3D12_COMMAND_LIST_TYPE_DIRECT,
+					commandAllocator.Get(),
+					nullptr,
+					IID_PPV_ARGS(commandList.GetAddressOf()));
+				if (FAILED(hr))
+					return false;
+
+				SetDx12ObjectName(commandAllocator.Get(), "DX12InitialUploadAllocator");
+				SetDx12ObjectName(commandList.Get(), "DX12InitialUploadCommandList");
+				if (m_commandObjects != nullptr)
+				{
+					m_commandObjects->allocator = commandAllocator;
+					m_commandObjects->commandList = commandList;
+				}
+				return true;
+			}
+
+		void DX12InitialUploadContext::DiscardReusableCommandObjects() const
+			{
+				if (m_commandObjects == nullptr)
+					return;
+				m_commandObjects->commandList.Reset();
+				m_commandObjects->allocator.Reset();
+			}
 
 	bool HasBufferUsageFlag(
 		const NLS::Render::RHI::BufferUsageFlags usage,
@@ -292,7 +385,12 @@ namespace NLS::Render::Backend
 				uploadDesc.dataSize = size;
 				uploadDesc.destinationOffset = 0u;
 				uploadDesc.debugName = desc.debugName;
-				return std::make_shared<NativeDX12Buffer>(m_device, nullptr, desc, uploadDesc);
+					return std::make_shared<NativeDX12Buffer>(
+						m_device,
+						nullptr,
+						nullptr,
+						desc,
+						uploadDesc);
 			}
 
 		private:
@@ -330,6 +428,7 @@ namespace NLS::Render::Backend
 				return false;
 			}
 
+			const auto prepareBegin = std::chrono::steady_clock::now();
 			std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(subresourceCount);
 			std::vector<UINT> rowCounts(subresourceCount);
 			std::vector<UINT64> rowSizes(subresourceCount);
@@ -385,7 +484,12 @@ namespace NLS::Render::Backend
 			}
 
 			SetDx12ObjectName(uploadBuffer.Get(), debugName + "UploadBuffer");
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadPrepare,
+				prepareBegin,
+				static_cast<size_t>(uploadBufferSize));
 
+			const auto cpuCopyBegin = std::chrono::steady_clock::now();
 			auto* uploadBase = static_cast<uint8_t*>(nullptr);
 			D3D12_RANGE readRange{};
 			hr = uploadBuffer->Map(0, &readRange, reinterpret_cast<void**>(&uploadBase));
@@ -451,26 +555,20 @@ namespace NLS::Render::Backend
 			}
 
 			uploadBuffer->Unmap(0, nullptr);
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadCpuCopy,
+				cpuCopyBegin,
+				static_cast<size_t>(uploadBufferSize));
 
-			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
-			hr = m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
-			if (FAILED(hr))
-			{
-				NLS_LOG_ERROR("UploadInitialTextureData: failed to create command allocator for texture \"" + debugName + "\" hr=" + std::to_string(hr));
-				return false;
-			}
-
-			SetDx12ObjectName(commandAllocator.Get(), debugName + "UploadAllocator");
-
-			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
-			hr = m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
-			if (FAILED(hr))
-			{
-				NLS_LOG_ERROR("UploadInitialTextureData: failed to create command list for texture \"" + debugName + "\" hr=" + std::to_string(hr));
-				return false;
-			}
-
-			SetDx12ObjectName(commandList.Get(), debugName + "UploadCommandList");
+				const auto commandSetupBegin = std::chrono::steady_clock::now();
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+				std::unique_lock<std::mutex> commandObjectsLock;
+				if (!AcquireCommandObjects(commandAllocator, commandList, commandObjectsLock))
+				{
+					NLS_LOG_ERROR("UploadInitialTextureData: failed to acquire command objects for texture \"" + debugName + "\"");
+					return false;
+				}
 
 			for (UINT subresourceIndex = 0; subresourceIndex < subresourceCount; ++subresourceIndex)
 			{
@@ -505,23 +603,28 @@ namespace NLS::Render::Backend
 			}
 
 			hr = commandList->Close();
-			if (FAILED(hr))
-			{
-				NLS_LOG_ERROR("UploadInitialTextureData: failed to close command list for texture \"" + debugName + "\" hr=" + std::to_string(hr));
+				if (FAILED(hr))
+				{
+					DiscardReusableCommandObjects();
+					NLS_LOG_ERROR("UploadInitialTextureData: failed to close command list for texture \"" + debugName + "\" hr=" + std::to_string(hr));
 				return false;
 			}
 
 			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
 			hr = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-			if (FAILED(hr))
-			{
+					if (FAILED(hr))
+					{
 				NLS_LOG_ERROR("UploadInitialTextureData: failed to create fence for texture \"" + debugName + "\" hr=" + std::to_string(hr));
 				return false;
 			}
-
 			SetDx12ObjectName(fence.Get(), debugName + "UploadFence");
+			const UINT64 fenceValue = 1u;
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadCommandSetup,
+				commandSetupBegin,
+				static_cast<size_t>(uploadBufferSize));
 
-			const UINT64 fenceValue = 1;
+			const auto submitBegin = std::chrono::steady_clock::now();
 			{
 				NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_graphicsQueue);
 				ID3D12CommandList* commandLists[] = { commandList.Get() };
@@ -537,8 +640,9 @@ namespace NLS::Render::Backend
 						commandAllocator,
 						commandList,
 						fence,
-						hr,
-						debugName);
+								hr,
+								debugName);
+						DiscardReusableCommandObjects();
 					const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
 					NLS_LOG_ERROR(
 						"UploadInitialTextureData: failed to signal fence for texture \"" +
@@ -550,8 +654,13 @@ namespace NLS::Render::Backend
 					return false;
 				}
 			}
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadSubmit,
+				submitBegin,
+				static_cast<size_t>(uploadBufferSize));
 
-			if (!WaitForDX12FenceValue(
+			const auto fenceWaitBegin = std::chrono::steady_clock::now();
+				if (!WaitForDX12FenceValue(
 				fence.Get(),
 				fenceValue,
 				"UploadInitialTextureData \"" + debugName + "\""))
@@ -563,14 +672,19 @@ namespace NLS::Render::Backend
 					commandAllocator,
 					commandList,
 					fence,
-					S_OK,
-					debugName);
+						S_OK,
+						debugName);
+					DiscardReusableCommandObjects();
 				NLS_LOG_ERROR(
 					"UploadInitialTextureData: failed to wait for upload fence for texture \"" +
 					debugName +
 					"\" after ExecuteCommandLists; quarantined submitted upload resources");
 				return false;
 			}
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadFenceWait,
+				fenceWaitBegin,
+				static_cast<size_t>(uploadBufferSize));
 			return true;
 		}
 
@@ -589,6 +703,7 @@ namespace NLS::Render::Backend
 				return false;
 			}
 
+			const auto prepareBegin = std::chrono::steady_clock::now();
 			D3D12_HEAP_PROPERTIES uploadHeapProps{};
 			uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 			uploadHeapProps.CreationNodeMask = 1;
@@ -620,7 +735,12 @@ namespace NLS::Render::Backend
 			}
 
 			SetDx12ObjectName(uploadBuffer.Get(), debugName + "UploadBuffer");
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadPrepare,
+				prepareBegin,
+				uploadRequest.dataSize);
 
+			const auto cpuCopyBegin = std::chrono::steady_clock::now();
 			void* mappedData = nullptr;
 			D3D12_RANGE readRange{};
 			readRange.Begin = 0;
@@ -636,33 +756,20 @@ namespace NLS::Render::Backend
 			writeRange.Begin = 0;
 			writeRange.End = uploadRequest.dataSize;
 			uploadBuffer->Unmap(0, &writeRange);
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadCpuCopy,
+				cpuCopyBegin,
+				uploadRequest.dataSize);
 
-			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
-			const HRESULT allocatorResult = m_device->CreateCommandAllocator(
-				D3D12_COMMAND_LIST_TYPE_DIRECT,
-				IID_PPV_ARGS(commandAllocator.GetAddressOf()));
-			if (FAILED(allocatorResult))
-			{
-				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload command allocator for \"" + debugName + "\" hr=" + std::to_string(allocatorResult));
-				return false;
-			}
-
-			SetDx12ObjectName(commandAllocator.Get(), debugName + "UploadAllocator");
-
-			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
-			const HRESULT commandListResult = m_device->CreateCommandList(
-				0,
-				D3D12_COMMAND_LIST_TYPE_DIRECT,
-				commandAllocator.Get(),
-				nullptr,
-				IID_PPV_ARGS(commandList.GetAddressOf()));
-			if (FAILED(commandListResult))
-			{
-				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload command list for \"" + debugName + "\" hr=" + std::to_string(commandListResult));
-				return false;
-			}
-
-			SetDx12ObjectName(commandList.Get(), debugName + "UploadCommandList");
+				const auto commandSetupBegin = std::chrono::steady_clock::now();
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+				std::unique_lock<std::mutex> commandObjectsLock;
+				if (!AcquireCommandObjects(commandAllocator, commandList, commandObjectsLock))
+				{
+					NLS_LOG_ERROR("UploadInitialBufferData: failed to acquire upload command objects for \"" + debugName + "\"");
+					return false;
+				}
 
 			D3D12_RESOURCE_BARRIER toCopyDestBarrier{};
 			toCopyDestBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -688,9 +795,10 @@ namespace NLS::Render::Backend
 			commandList->ResourceBarrier(1, &toCommonBarrier);
 
 			const HRESULT closeResult = commandList->Close();
-			if (FAILED(closeResult))
-			{
-				NLS_LOG_ERROR("UploadInitialBufferData: failed to close upload command list for \"" + debugName + "\" hr=" + std::to_string(closeResult));
+				if (FAILED(closeResult))
+				{
+					DiscardReusableCommandObjects();
+					NLS_LOG_ERROR("UploadInitialBufferData: failed to close upload command list for \"" + debugName + "\" hr=" + std::to_string(closeResult));
 				return false;
 			}
 
@@ -701,10 +809,14 @@ namespace NLS::Render::Backend
 				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload fence for \"" + debugName + "\" hr=" + std::to_string(fenceResult));
 				return false;
 			}
-
 			SetDx12ObjectName(fence.Get(), debugName + "UploadFence");
-
 			const UINT64 fenceValue = 1u;
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadCommandSetup,
+				commandSetupBegin,
+				uploadRequest.dataSize);
+
+			const auto submitBegin = std::chrono::steady_clock::now();
 			{
 				NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_graphicsQueue);
 				ID3D12CommandList* commandLists[] = { commandList.Get() };
@@ -720,8 +832,9 @@ namespace NLS::Render::Backend
 						commandAllocator,
 						commandList,
 						fence,
-						signalResult,
-						debugName);
+								signalResult,
+								debugName);
+						DiscardReusableCommandObjects();
 					const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
 					NLS_LOG_ERROR(
 						"UploadInitialBufferData: failed to signal upload fence for \"" +
@@ -733,7 +846,12 @@ namespace NLS::Render::Backend
 					return false;
 				}
 			}
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadSubmit,
+				submitBegin,
+				uploadRequest.dataSize);
 
+			const auto fenceWaitBegin = std::chrono::steady_clock::now();
 			if (!WaitForDX12FenceValue(
 				fence.Get(),
 				fenceValue,
@@ -746,14 +864,19 @@ namespace NLS::Render::Backend
 					commandAllocator,
 					commandList,
 					fence,
-					S_OK,
-					debugName);
+						S_OK,
+						debugName);
+					DiscardReusableCommandObjects();
 				NLS_LOG_ERROR(
 					"UploadInitialBufferData: failed to wait for upload fence for \"" +
 					debugName +
 					"\" after ExecuteCommandLists; quarantined submitted upload resources");
 				return false;
 			}
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadFenceWait,
+				fenceWaitBegin,
+				uploadRequest.dataSize);
 			return true;
 		}
 	}
@@ -762,6 +885,7 @@ namespace NLS::Render::Backend
 	NativeDX12Buffer::NativeDX12Buffer(
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
+		DX12InitialUploadCommandObjects* initialUploadCommandObjects,
 		const NLS::Render::RHI::RHIBufferDesc& desc,
 		const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc)
 		: m_device(device)
@@ -880,11 +1004,15 @@ namespace NLS::Render::Backend
 					uploadDesc.dataSize);
 			}
 		}
+
 		else if (needsDefaultHeapUpload && m_graphicsQueue != nullptr)
 		{
 			const auto uploadRequest = NLS::Render::RHI::DX12::BuildDX12InitialBufferUploadRequest(desc, uploadDesc);
 			const std::string bufferName = desc.debugName.empty() ? "BufferResource" : desc.debugName;
-			DX12InitialUploadContext uploadContext(device, m_graphicsQueue);
+			DX12InitialUploadContext uploadContext(
+				device,
+				m_graphicsQueue,
+				initialUploadCommandObjects);
 			if (!uploadContext.UploadBuffer(m_resource.Get(), uploadRequest, bufferName))
 				return;
 		}
@@ -1309,6 +1437,7 @@ namespace NLS::Render::Backend
 	std::shared_ptr<NLS::Render::RHI::RHITexture> CreateNativeDX12Texture(
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
+		DX12InitialUploadCommandObjects* initialUploadCommandObjects,
 		const NLS::Render::RHI::RHITextureDesc& desc,
 		const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc)
 	{
@@ -1316,9 +1445,10 @@ namespace NLS::Render::Backend
 		if (device == nullptr)
 			return nullptr;
 
-		auto texture = std::make_shared<NativeDX12Texture>(device, desc, uploadDesc);
-		if (texture == nullptr)
-			return nullptr;
+			const auto resourceCreateBegin = std::chrono::steady_clock::now();
+			auto texture = std::make_shared<NativeDX12Texture>(device, desc, uploadDesc);
+			if (texture == nullptr)
+				return nullptr;
 		if (!texture->GetNativeImageHandle().IsValid())
 		{
 			NLS_LOG_ERROR("CreateNativeDX12Texture: texture resource creation failed for \"" + desc.debugName + "\"");
@@ -1337,16 +1467,28 @@ namespace NLS::Render::Backend
 				NLS_LOG_ERROR("CreateNativeDX12Texture: texture resource creation failed for \"" + desc.debugName + "\"");
 				return nullptr;
 			}
+			RecordInitialUploadTelemetry(
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuResourceCreate,
+				resourceCreateBegin,
+				uploadDesc.dataSize);
 
 			NLS::Render::RHI::ResourceState finalState = NLS::Render::RHI::ResourceState::Unknown;
 			const std::string textureName = desc.debugName.empty() ? "TextureResource" : desc.debugName;
-			const auto uploadRequest = NLS::Render::RHI::DX12::BuildDX12InitialTextureUploadRequest(desc, uploadDesc);
+				const auto uploadPlanBegin = std::chrono::steady_clock::now();
+				const auto uploadRequest = NLS::Render::RHI::DX12::BuildDX12InitialTextureUploadRequest(desc, uploadDesc);
+				RecordInitialUploadTelemetry(
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::GpuUploadPlanBuild,
+					uploadPlanBegin,
+					uploadRequest.dataSize);
 			if (uploadRequest.dataSize < uploadRequest.texturePlan.totalBytes)
 			{
 				NLS_LOG_ERROR("CreateNativeDX12Texture: initial upload data is smaller than required for \"" + textureName + "\"");
 				return nullptr;
 			}
-			DX12InitialUploadContext uploadContext(device, graphicsQueue);
+			DX12InitialUploadContext uploadContext(
+				device,
+				graphicsQueue,
+				initialUploadCommandObjects);
 			if (!uploadContext.UploadTexture(resource, desc, uploadRequest, textureName, finalState))
 			{
 				NLS_LOG_ERROR("CreateNativeDX12Texture: initial upload failed for \"" + textureName + "\"");
@@ -1360,6 +1502,7 @@ namespace NLS::Render::Backend
 #else
 		(void)device;
 		(void)graphicsQueue;
+		(void)initialUploadCommandObjects;
 		(void)desc;
 		(void)uploadDesc;
 		return nullptr;
@@ -1369,6 +1512,7 @@ namespace NLS::Render::Backend
 	NLS::Render::RHI::RHIUpdateResult UpdateNativeDX12Texture(
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
+		DX12InitialUploadCommandObjects* initialUploadCommandObjects,
 		const NLS::Render::RHI::RHITextureUpdateDesc& desc)
 	{
 #if defined(_WIN32)
@@ -1438,7 +1582,10 @@ namespace NLS::Render::Backend
 		const std::string textureName = desc.debugName.empty()
 			? std::string(desc.texture->GetDebugName())
 			: desc.debugName;
-		DX12InitialUploadContext uploadContext(device, graphicsQueue);
+		DX12InitialUploadContext uploadContext(
+			device,
+			graphicsQueue,
+			initialUploadCommandObjects);
 		if (!uploadContext.UploadTexture(resource, textureDesc, uploadRequest, textureName, finalState))
 		{
 			return {
@@ -1452,6 +1599,7 @@ namespace NLS::Render::Backend
 #else
 		(void)device;
 		(void)graphicsQueue;
+		(void)initialUploadCommandObjects;
 		(void)desc;
 		return {
 			NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
@@ -1471,4 +1619,5 @@ namespace NLS::Render::Backend
 		return nullptr;
 #endif
 	}
+
 }

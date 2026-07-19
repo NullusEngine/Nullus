@@ -31,7 +31,9 @@ namespace NLS::Render::Context
             bool applyPendingSwapchainResize = true,
             size_t* publishedSlotIndex = nullptr,
             uint64_t* publishedFrameId = nullptr,
-            bool backgroundPreview = false);
+            bool backgroundPreview = false,
+            // False performs a single non-blocking slot reservation attempt.
+            bool waitForRetirement = true);
         static bool DrainPendingRenderFrameBuildsSynchronously(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
         static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);

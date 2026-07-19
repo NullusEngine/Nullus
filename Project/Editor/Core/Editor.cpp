@@ -70,6 +70,7 @@ namespace
 NLS::Base::Profiling::TracyProfiler g_tracyProfiler;
 std::size_t g_publishedReflectionDiagnosticCount = 0;
 constexpr uint32_t kEditorMainThreadContinuationDrainBudget = 64u;
+constexpr float kEditorValidationCameraForwardStep = 0.1f;
 constexpr auto kThumbnailTelemetrySummaryWriteInterval = std::chrono::seconds(2);
 
 enum class ValidationFocusTarget
@@ -739,8 +740,16 @@ Editor::Core::Editor::JobSystemLifetime::JobSystemLifetime()
 
 Editor::Core::Editor::JobSystemLifetime::~JobSystemLifetime()
 {
-    if (ownsJobSystem)
-        NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::DrainAcceptedWork);
+    Shutdown();
+}
+
+void Editor::Core::Editor::JobSystemLifetime::Shutdown()
+{
+    if (!ownsJobSystem)
+        return;
+
+    ownsJobSystem = false;
+    NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::DrainAcceptedWork);
 }
 
 Editor::Core::Editor::Editor(Context& p_context)
@@ -813,10 +822,11 @@ Editor::Core::Editor::Editor(Context& p_context)
 Editor::Core::Editor::~Editor()
 {
     m_shortcutService.SaveProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
-    NLS::Base::Profiling::Profiler::UnregisterDestination(
-        m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").GetTimelineSink());
     m_editorActions.PromptSaveCurrentSceneIfDirty();
     WriteThumbnailTelemetrySummaryIfRequested(m_context);
+    m_jobSystemLifetime.Shutdown();
+    NLS::Base::Profiling::Profiler::UnregisterDestination(
+        m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").GetTimelineSink());
     m_panelsManager.DestroyPanels();
     m_context.sceneManager.CurrentSceneSourcePathChangedEvent -= m_sceneSourcePathChangedListener;
     m_context.sceneManager.UnloadCurrentScene();
@@ -915,6 +925,7 @@ void Editor::Core::Editor::PreUpdate()
 
 void Editor::Core::Editor::BeginProfilerFrame()
 {
+    m_validationCameraMotionPendingForFrame = true;
     RefreshProfilerRecordingState();
     m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").BeginProfilerFrame();
     UpdateValidationTimelineTraceExport();
@@ -928,17 +939,18 @@ void Editor::Core::Editor::UpdateValidationTimelineTraceExport()
         return;
 
     auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
-    if (!profilerPanel.IsRecordingEnabled())
-        return;
+    auto& timelineSink = profilerPanel.GetTimelineSink();
 
     if (!m_validationTraceExportStarted)
     {
+        if (!profilerPanel.IsRecordingEnabled())
+            return;
+
         const std::filesystem::path logFilePath(NLS::Debug::FileHandler::GetLogFilePath());
         const auto logDirectory = logFilePath.parent_path();
         m_validationTracePath = !logDirectory.empty()
             ? logDirectory / "trace.json"
             : std::filesystem::path(m_context.projectPath) / "Logs" / "trace.json";
-        auto& timelineSink = profilerPanel.GetTimelineSink();
         if (!timelineSink.BeginTraceExport(m_validationTracePath))
         {
             NLS_LOG_WARNING("Editor validation TimelineProfiler trace failed to open: " + m_validationTracePath.string());
@@ -952,12 +964,18 @@ void Editor::Core::Editor::UpdateValidationTimelineTraceExport()
             m_validationTracePath.string() +
             " frames=" +
             std::to_string(requestedFrames));
+
+        // Keep recording active through the sink, but remove the profiler panel's
+        // timeline rendering from the measured editor frame.
+        profilerPanel.Close();
+        NLS_LOG_INFO("Editor validation TimelineProfiler panel hidden during export.");
     }
 
-    auto& timelineSink = profilerPanel.GetTimelineSink();
-    const auto exportedFrames = timelineSink.UpdateTraceExport(std::min(8u, requestedFrames));
-    if (exportedFrames != 0u)
-        m_validationTraceExportStarted = true;
+    const uint32_t exportedFrameCount = timelineSink.GetTraceExportedFrameCount();
+    const uint32_t remainingFrames = requestedFrames > exportedFrameCount
+        ? requestedFrames - exportedFrameCount
+        : 0u;
+    timelineSink.UpdateTraceExport(std::min(8u, remainingFrames));
 
     if (timelineSink.GetTraceExportedFrameCount() >= requestedFrames)
     {
@@ -1054,6 +1072,8 @@ void Editor::Core::Editor::Update(float p_deltaTime)
         UpdateViews(p_deltaTime);
     }
     logUpdateStage("UpdateViews");
+    UpdateValidationSceneCameraMotion();
+    logUpdateStage("UpdateValidationSceneCameraMotion");
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UpdateEditorPanels");
         UpdateEditorPanels(p_deltaTime);
@@ -1086,10 +1106,13 @@ void Editor::Core::Editor::LogNextUpdateStages()
 void Editor::Core::Editor::RefreshProfilerRecordingState()
 {
     auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
-    profilerPanel.GetTimelineSink().SetRecordingEnabled(profilerPanel.IsRecordingEnabled());
+    const bool recording =
+        profilerPanel.IsRecordingEnabled() ||
+        profilerPanel.GetTimelineSink().IsTraceExportOpen();
+    profilerPanel.GetTimelineSink().SetRecordingEnabled(recording);
 
     const bool tracyConnected = NLS::Base::Profiling::TracyProfiler::IsConnected();
-    NLS::Base::Profiling::Profiler::SetEnabled(tracyConnected || profilerPanel.IsRecordingEnabled());
+    NLS::Base::Profiling::Profiler::SetEnabled(tracyConnected || recording);
 }
 
 bool Editor::Core::Editor::IsProfilerRecordingEnabled()
@@ -1101,6 +1124,51 @@ void Editor::Core::Editor::DeferStartupSceneViewRenderForNextFrame()
 {
     auto& sceneView = m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View");
     sceneView.RequestSkipNextRenderFrame();
+}
+
+void Editor::Core::Editor::UpdateValidationSceneCameraMotion()
+{
+    const auto& diagnostics = m_context.GetDiagnosticsSettings();
+    const uint32_t requestedFrames = diagnostics.editorValidationCameraForwardFrames;
+    if (!m_validationCameraMotionPendingForFrame || requestedFrames == 0u)
+    {
+        return;
+    }
+
+    if (diagnostics.editorValidationTimelineTraceFrames != 0u &&
+        (!m_validationTraceExportStarted || m_validationTraceExportFinished))
+    {
+        return;
+    }
+
+    auto& sceneView = m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View");
+    if (m_validationCameraForwardCompletedFrames >= requestedFrames)
+    {
+        sceneView.SetValidationCameraMotionActive(false);
+        m_validationCameraMotionPendingForFrame = false;
+        return;
+    }
+
+    NLS_PROFILE_NAMED_SCOPE("EditorValidation::MoveSceneCameraForward");
+    if (m_validationCameraForwardCompletedFrames == 0u)
+    {
+        NLS_LOG_INFO(
+            "Editor validation Scene View camera forward motion started: frames=" +
+            std::to_string(requestedFrames) +
+            " fixedStep=" +
+            std::to_string(kEditorValidationCameraForwardStep));
+    }
+
+    sceneView.ApplyValidationCameraForwardStep(kEditorValidationCameraForwardStep);
+
+    m_validationCameraMotionPendingForFrame = false;
+    ++m_validationCameraForwardCompletedFrames;
+    if (m_validationCameraForwardCompletedFrames == requestedFrames)
+    {
+        NLS_LOG_INFO(
+            "Editor validation Scene View camera forward motion finished: completedFrames=" +
+            std::to_string(m_validationCameraForwardCompletedFrames));
+    }
 }
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
@@ -1656,25 +1724,30 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
         NLS_LOG_INFO("Editor validation queued asset instance creation: " + assetPath);
     }
 
-    if (!diagnostics.editorValidationSelectGameObject.empty())
-    {
-        if (auto* currentScene = m_context.sceneManager.GetCurrentScene();
-            currentScene != nullptr)
-        {
-            if (auto* actor = currentScene->FindGameObjectByName(diagnostics.editorValidationSelectGameObject);
-                actor != nullptr)
-            {
-                m_editorActions.SelectGameObject(*actor);
-                NLS_LOG_INFO("Editor validation pre-selected GameObject: " + diagnostics.editorValidationSelectGameObject);
-            }
-            else
-            {
-                NLS_LOG_WARNING(
-                    "Editor validation could not find GameObject during startup: " +
-                    diagnostics.editorValidationSelectGameObject);
-            }
-        }
-    }
+	    if (!diagnostics.editorValidationSelectGameObject.empty())
+	    {
+	        const auto gameObjectName = diagnostics.editorValidationSelectGameObject;
+	        m_editorActions.DelayAction(
+	            [this, gameObjectName]
+	            {
+	                auto* currentScene = m_context.sceneManager.GetCurrentScene();
+	                auto* actor = currentScene != nullptr
+	                    ? currentScene->FindGameObjectByName(gameObjectName)
+	                    : nullptr;
+	                if (actor != nullptr)
+	                {
+	                    m_editorActions.SelectGameObject(*actor);
+	                    NLS_LOG_INFO("Editor validation pre-selected GameObject: " + gameObjectName);
+	                }
+	                else
+	                {
+	                    NLS_LOG_WARNING(
+	                        "Editor validation could not find GameObject after startup: " + gameObjectName);
+	                }
+	            },
+	            1);
+	        NLS_LOG_INFO("Editor validation queued GameObject selection: " + gameObjectName);
+	    }
 
     if (!diagnostics.editorValidationSceneCamera.empty())
     {

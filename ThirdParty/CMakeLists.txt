@@ -9,6 +9,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/DirectXTex/CMakeLists.txt")
     add_subdirectory(DirectXTex)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/meshoptimizer/CMakeLists.txt" AND NOT TARGET meshoptimizer)
+    add_subdirectory(meshoptimizer)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/LMDB/CMakeLists.txt" AND NOT TARGET lmdb)
     add_subdirectory(LMDB)
 endif()

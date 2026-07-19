@@ -288,6 +288,9 @@ namespace NLS::Engine::Rendering
 		[[nodiscard]] size_t GetPrimitiveCount() const;
 		[[nodiscard]] uint64_t GetSceneId() const;
 		[[nodiscard]] uint64_t GetCachedCommandBuildCountForTesting() const;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		[[nodiscard]] uint64_t GetSpatialCandidateSnapshotCacheHitCountForTesting() const;
+#endif
 		[[nodiscard]] const DrawCallOptimizationStats& GetLastDrawCallOptimizationStats() const;
 		[[nodiscard]] const DrawCallOptimizationStats& GetLastDrawCallOptimizationStatsForTesting() const;
 		[[nodiscard]] const NLS::Render::Data::LargeSceneTelemetry& GetLastLargeSceneTelemetry() const;
@@ -325,6 +328,7 @@ namespace NLS::Engine::Rendering
 
 	private:
 		struct RepresentationRegistry;
+		struct SpatialCandidateSnapshotCache;
 		struct RenderSceneVisibilityRangeSnapshot
 		{
 			std::vector<uint64_t> primitiveBits;
@@ -415,6 +419,8 @@ namespace NLS::Engine::Rendering
 			NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
 			NLS::Render::Geometry::Bounds modelBounds;
 			Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
+			Maths::Matrix4 userMatrix = Maths::Matrix4::Identity;
+			Maths::Vector3 worldPosition{};
 			Components::MeshRenderer::EFrustumBehaviour frustumBehaviour =
 				Components::MeshRenderer::EFrustumBehaviour::DISABLED;
 			bool transientRenderingSuppressed = false;
@@ -549,6 +555,8 @@ namespace NLS::Engine::Rendering
 		mutable std::vector<ScenePrimitiveHandle> m_lastRepresentationStreamingInterest;
 		std::unique_ptr<SceneSpatialIndex> m_spatialIndex;
 		std::unique_ptr<RepresentationRegistry> m_representationRegistry;
+		mutable std::unique_ptr<SpatialCandidateSnapshotCache> m_spatialCandidateSnapshotCache;
+		mutable uint64_t m_spatialCandidateSnapshotCacheHitCount = 0u;
 		std::vector<SceneHLODClusterHandle> m_importedHierarchyHLODClusterHandles;
 	};
 }

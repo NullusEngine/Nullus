@@ -231,7 +231,7 @@ namespace NLS::Engine::Serialize
             if (result.diagnostics.HasErrors())
                 return result;
 
-            result.scene = InstantiateSceneStrict(document, progressCallback, policy);
+            result.scene = InstantiateValidatedScene(document, progressCallback, policy);
             if (!result.scene)
             {
                 result.diagnostics.Add({
@@ -263,6 +263,15 @@ namespace NLS::Engine::Serialize
             if (document.Validate().HasErrors())
                 return nullptr;
 
+            return InstantiateValidatedScene(document, progressCallback, policy);
+        }
+
+    private:
+        static std::unique_ptr<SceneSystem::Scene> InstantiateValidatedScene(
+            const ObjectGraphDocument& document,
+            const InstantiationProgressCallback& progressCallback,
+            const LoadPolicy& policy)
+        {
             const auto* sceneRecord = FindRecord(document, document.root);
             if (!sceneRecord || !RecordTypeMatches<NLS::Engine::SceneSystem::Scene>(*sceneRecord))
                 return nullptr;
@@ -278,6 +287,9 @@ namespace NLS::Engine::Serialize
 
             const auto& gameObjectReferences = gameObjects->value.GetArray();
             const auto gameObjectCount = std::max<size_t>(gameObjectReferences.size(), 1u);
+            std::vector<GameObject*> sceneGameObjects;
+            sceneGameObjects.reserve(gameObjectReferences.size());
+            context.gameObjects.reserve(gameObjectReferences.size());
             size_t createdGameObjectCount = 0;
             for (const auto& reference : gameObjectReferences)
             {
@@ -296,12 +308,15 @@ namespace NLS::Engine::Serialize
                     continue;
 
                 context.gameObjects.emplace(record->id, gameObject);
-                scene->AddGameObject(gameObject);
+                sceneGameObjects.push_back(gameObject);
                 ++createdGameObjectCount;
-                ReportProgress(
-                    progressCallback,
-                    0.25f + 0.20f * (static_cast<float>(createdGameObjectCount) / static_cast<float>(gameObjectCount)),
-                    "Creating GameObject: " + gameObject->GetName());
+                if (progressCallback)
+                {
+                    ReportProgress(
+                        progressCallback,
+                        0.25f + 0.20f * (static_cast<float>(createdGameObjectCount) / static_cast<float>(gameObjectCount)),
+                        "Creating GameObject: " + gameObject->GetName());
+                }
             }
 
             const auto objectCount = std::max<size_t>(document.objects.size(), 1u);
@@ -319,10 +334,13 @@ namespace NLS::Engine::Serialize
                 if (!gameObject)
                     continue;
 
-                ReportProgress(
-                    progressCallback,
-                    0.45f + 0.30f * (static_cast<float>(appliedObjectCount) / static_cast<float>(objectCount)),
-                    "Restoring components: " + gameObject->GetName());
+                if (progressCallback)
+                {
+                    ReportProgress(
+                        progressCallback,
+                        0.45f + 0.30f * (static_cast<float>(appliedObjectCount) / static_cast<float>(objectCount)),
+                        "Restoring components: " + gameObject->GetName());
+                }
                 ApplyGameObjectState(*gameObject, object);
                 InstantiateComponents(document, object, *gameObject, context, policy);
             }
@@ -336,19 +354,26 @@ namespace NLS::Engine::Serialize
 
                 if (RecordTypeMatches<GameObject>(object))
                 {
-                    ReportProgress(
-                        progressCallback,
-                        0.75f + 0.15f * (static_cast<float>(resolvedObjectCount) / static_cast<float>(objectCount)),
-                        "Restoring hierarchy");
+                    if (progressCallback)
+                    {
+                        ReportProgress(
+                            progressCallback,
+                            0.75f + 0.15f * (static_cast<float>(resolvedObjectCount) / static_cast<float>(objectCount)),
+                            "Restoring hierarchy");
+                    }
                     ResolveParent(context, object);
                 }
             }
 
-            ReportProgress(progressCallback, 0.92f, "Rebuilding scene runtime caches");
+            scene->AddGameObjects(sceneGameObjects);
+
+            if (progressCallback)
+                ReportProgress(progressCallback, 0.92f, "Rebuilding scene runtime caches");
             scene->RebuildRuntimeCachesAfterLoad();
             return scene;
         }
 
+    public:
         static PrefabInstantiationResult InstantiatePrefab(const PrefabDocument& prefab, SceneSystem::Scene& scene)
         {
             return InstantiatePrefab(prefab, scene, {});
@@ -722,14 +747,7 @@ namespace NLS::Engine::Serialize
                     Profiling::PerformanceStageDomain::Prefab,
                     "RegisterRenderers",
                     Profiling::PerformanceStageThread::Main);
-                size_t rendererCount = 0u;
-                for (const auto& [objectId, gameObject] : context.gameObjects)
-                {
-                    (void)objectId;
-                    if (gameObject != nullptr && gameObject->GetComponent<Components::MeshRenderer>() != nullptr)
-                        ++rendererCount;
-                }
-                registerScope.AddCounter("rendererCount", rendererCount);
+                registerScope.AddCounter("rendererCount", context.meshRendererCount);
                 registerScope.AddCounter("objectCount", context.gameObjects.size());
                 registerScope.AddCounter("componentCount", context.componentBindings.size());
                 scene.AddGameObject(
@@ -826,6 +844,7 @@ namespace NLS::Engine::Serialize
             std::unordered_map<ObjectId, std::pair<size_t, size_t>> componentBindingSpansByGameObject;
             std::vector<std::pair<Components::Component*, const ObjectRecord*>> componentBindings;
             std::vector<size_t> assetReferenceBindingIndices;
+            size_t meshRendererCount = 0u;
             std::unordered_map<std::string, Core::ResourceManagement::MeshManager::Mesh*> meshResourcesByNormalizedPath;
             std::unordered_map<std::string, Core::ResourceManagement::MaterialManager::Material*> materialResourcesByNormalizedPath;
             std::unordered_map<std::string, Core::ResourceManagement::MeshManager::Mesh*> meshResourcesByResolvedReferencePath;
@@ -1619,6 +1638,8 @@ namespace NLS::Engine::Serialize
                     continue;
 
                 context.components.emplace(componentRecord->id, component);
+                if (component->GetType() == NLS_TYPEOF(Components::MeshRenderer))
+                    ++context.meshRendererCount;
                 if (HasExternalAssetReferenceBindingProperty(*componentRecord))
                     context.assetReferenceBindingIndices.push_back(context.componentBindings.size());
                 context.componentBindings.emplace_back(component, componentRecord);
@@ -1648,6 +1669,8 @@ namespace NLS::Engine::Serialize
                     continue;
 
                 context.components.emplace(componentPlan.sourceObject, component);
+                if (component->GetType() == NLS_TYPEOF(Components::MeshRenderer))
+                    ++context.meshRendererCount;
                 if (componentPlan.hasExternalAssetReferenceBindingProperty)
                     context.assetReferenceBindingIndices.push_back(context.componentBindings.size());
                 context.componentBindings.emplace_back(component, componentRecord);

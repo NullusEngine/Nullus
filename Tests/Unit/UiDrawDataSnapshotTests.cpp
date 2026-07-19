@@ -125,6 +125,34 @@ TEST(UiDrawDataSnapshotTests, CapturedSnapshotRecordsCopyDiagnostics)
     EXPECT_GT(snapshot->copyDiagnostics.copiedCommandCount, 0u);
 }
 
+TEST(UiDrawDataSnapshotTests, ContentSignatureIgnoresFrameIdAndChangesWithDrawContent)
+{
+    ImGuiContextGuard guard;
+
+    ImGui::NewFrame();
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+    drawList->AddRectFilled(ImVec2(1.0f, 1.0f), ImVec2(4.0f, 4.0f), IM_COL32_WHITE);
+    ImGui::Render();
+
+    const auto snapshot = NLS::Render::UI::CaptureUiDrawDataSnapshot(ImGui::GetDrawData(), 21u);
+    ASSERT_NE(snapshot, nullptr);
+    ASSERT_NE(snapshot->contentSignature, 0u);
+
+    auto nextFrameSnapshot = *snapshot;
+    nextFrameSnapshot.frameId = 22u;
+    EXPECT_EQ(
+        NLS::Render::UI::ComputeUiDrawDataContentSignature(*snapshot),
+        NLS::Render::UI::ComputeUiDrawDataContentSignature(nextFrameSnapshot));
+
+    ASSERT_FALSE(nextFrameSnapshot.drawLists.empty());
+    ASSERT_FALSE(nextFrameSnapshot.drawLists.front().vertices.empty());
+    nextFrameSnapshot.drawLists.front().vertices.front().position[0] += 1.0f;
+    nextFrameSnapshot.contentSignature = 0u;
+    EXPECT_NE(
+        NLS::Render::UI::ResolveUiDrawDataContentSignature(*snapshot),
+        NLS::Render::UI::ResolveUiDrawDataContentSignature(nextFrameSnapshot));
+}
+
 TEST(UiDrawDataSnapshotTests, CapturedVerticesExpandPackedImGuiColorToFloatChannels)
 {
     ImGuiContextGuard guard;

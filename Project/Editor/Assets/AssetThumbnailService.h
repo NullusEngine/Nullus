@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Assets/AssetThumbnail.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetThumbnailCache.h"
 #include "Assets/ArtifactManifest.h"
@@ -69,6 +70,8 @@ struct AssetThumbnailServiceResult
     std::filesystem::path imagePath;
     std::string fallbackIcon;
     std::string diagnostic;
+    AssetThumbnailGpuTexture gpuTexture;
+    uint64_t gpuTextureGeneration = 0u;
 };
 
 struct ThumbnailGenerationBudget
@@ -120,6 +123,7 @@ public:
     void ClearQueuedRequests();
     void SupersedeQueuedRequestsForGeneration(const std::string& generationFingerprint);
     bool HasQueuedGpuPreviewReadback() const;
+    bool HasQueuedGpuPreviewResourceContinuation() const;
 
 private:
     struct InFlightThumbnailRequest

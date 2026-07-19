@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,6 +34,7 @@ constexpr ProfilerCapabilityFlags ProfilerCapability_GPUScopes = 1u << 1u;
 constexpr ProfilerCapabilityFlags ProfilerCapability_EditorTimeline = 1u << 2u;
 
 class IProfilerDestination;
+class ProfilerDestinationRegistration;
 
 struct NLS_BASE_API ProfilerDestinationState
 {
@@ -54,9 +56,13 @@ struct NLS_BASE_API ProfilerScopeEvent
     std::string name;
     std::string sourceFunction;
     std::string threadName;
-    std::vector<IProfilerDestination*> destinations;
     uint32_t depth = 0u;
     bool active = false;
+
+private:
+    std::vector<std::shared_ptr<ProfilerDestinationRegistration>> destinationRegistrations;
+
+    friend class Profiler;
 };
 
 struct NLS_BASE_API ProfilerGpuScopeEvent
@@ -65,9 +71,13 @@ struct NLS_BASE_API ProfilerGpuScopeEvent
     std::string name;
     std::string sourceFunction;
     std::string threadName;
-    std::vector<IProfilerDestination*> destinations;
     uint32_t depth = 0u;
     bool active = false;
+
+private:
+    std::vector<std::shared_ptr<ProfilerDestinationRegistration>> destinationRegistrations;
+
+    friend class Profiler;
 };
 
 struct NLS_BASE_API ProfilerGpuContextEvent
@@ -103,6 +113,10 @@ public:
     static bool IsEnabled();
 
     static void RegisterDestination(IProfilerDestination& destination);
+    // Calls outside destination callbacks wait for all active callbacks, and concurrent
+    // callers share the same retirement barrier. Calls from a destination callback only
+    // revoke registration; the owner must call again outside callbacks before destruction.
+    // Registration and destruction of the same object must be externally serialized.
     static void UnregisterDestination(IProfilerDestination& destination);
     static void ReplayGpuContextIfAvailable(IProfilerDestination& destination);
     static void ClearGpuContext(void* nativeDevice);

@@ -5,10 +5,10 @@
 #include "Rendering/Resources/TextureCube.h"
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/ArtifactManifest.h"
-#include "Assets/NativeArtifactContainer.h"
 
 #include <Debug/Logger.h>
 #include <Image.h>
+#include <Profiling/PerformanceStageStats.h>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -20,14 +20,7 @@ namespace
 {
 bool ShouldTryLoadTextureArtifact(const std::string& path)
 {
-	if (NLS::Core::Assets::TryMakePortableContentArtifactPath(path).empty())
-		return false;
-
-	return NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
-		path,
-		NLS::Core::Assets::ArtifactType::Texture,
-		4u,
-		0u).has_value();
+	return !NLS::Core::Assets::TryMakePortableContentArtifactPath(path).empty();
 }
 
 std::chrono::microseconds NonZeroElapsedMicros(
@@ -53,11 +46,31 @@ namespace NLS::Render::Resources::Loaders
 {
 Texture2D* TextureLoader::Create(const std::string& p_filepath, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
-	if (!ShouldTryLoadTextureArtifact(p_filepath))
+	bool shouldTryLoadArtifact = false;
+	{
+		NLS::Base::Profiling::PerformanceStageScope probeScope(
+			NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+			"PrewarmTextureArtifactProbe",
+			NLS::Base::Profiling::PerformanceStageThread::Main);
+		shouldTryLoadArtifact = ShouldTryLoadTextureArtifact(p_filepath);
+	}
+	if (!shouldTryLoadArtifact)
 		return nullptr;
 
-	if (auto artifact = NLS::Render::Assets::LoadTextureArtifact(p_filepath))
+	std::optional<NLS::Render::Assets::TextureArtifactData> artifact;
 	{
+		NLS::Base::Profiling::PerformanceStageScope artifactLoadScope(
+			NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+			"PrewarmTextureArtifactLoad",
+			NLS::Base::Profiling::PerformanceStageThread::Main);
+		artifact = NLS::Render::Assets::LoadTextureArtifact(p_filepath);
+	}
+	if (artifact)
+	{
+		NLS::Base::Profiling::PerformanceStageScope gpuCreateScope(
+			NLS::Base::Profiling::PerformanceStageDomain::Prefab,
+			"PrewarmTextureGpuCreate",
+			NLS::Base::Profiling::PerformanceStageThread::Main);
 		Texture2D* texture = new Texture2D(Texture2D::SkipInitialTextureTag {});
 		texture->firstFilter = p_firstFilter;
 		texture->secondFilter = p_secondFilter;

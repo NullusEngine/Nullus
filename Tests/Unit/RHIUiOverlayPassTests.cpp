@@ -1,12 +1,16 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <algorithm>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "Guid.h"
 #include "Core/ResourceManagement/ShaderManager.h"
@@ -1301,6 +1305,57 @@ TEST(RHIUiOverlayPassTests, DriverUIAccessDoesNotResetUiTextureRetireFrameOnEmpt
 #endif
 }
 
+TEST(RHIUiOverlayPassTests, TextureContentNotificationMatchesRegisteredBackingTextureAcrossViews)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.framesInFlight = 1u;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto* impl = NLS::Render::Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+
+    auto texture = std::make_shared<TestUiTexture>();
+    auto registeredView = std::make_shared<TestUiTextureView>(texture);
+    auto producerView = std::make_shared<TestUiTextureView>(texture);
+    const auto id = NLS::Render::Context::DriverUIAccess::RegisterUiTextureView(
+        driver,
+        registeredView,
+        kUiTexturePreviousFrameOrStatic);
+    ASSERT_TRUE(id.IsValid());
+
+    uint64_t generationBeforeViewNotification = 0u;
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        generationBeforeViewNotification = impl->uiOverlayPresentationInvalidationGeneration;
+    }
+    NLS::Render::Context::DriverUIAccess::NotifyUiTextureContentChanged(driver, producerView);
+
+    uint64_t generationAfterViewNotification = 0u;
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        generationAfterViewNotification = impl->uiOverlayPresentationInvalidationGeneration;
+    }
+    EXPECT_GT(generationAfterViewNotification, generationBeforeViewNotification)
+        << "A producer RTV and registered UI SRV for the same texture must share invalidation.";
+
+    const uint64_t backingIdentity = static_cast<uint64_t>(
+        reinterpret_cast<std::uintptr_t>(texture.get()));
+    NLS::Render::Context::DriverUIAccess::NotifyUiTextureContentChanged(
+        driver,
+        std::vector<uint64_t> { backingIdentity });
+    {
+        std::lock_guard lock(impl->pendingUiOverlaySnapshotMutex);
+        EXPECT_GT(impl->uiOverlayPresentationInvalidationGeneration, generationAfterViewNotification)
+            << "Threaded completion must invalidate by backing identity even without a color view.";
+    }
+#else
+    GTEST_SKIP() << "Requires NLS_ENABLE_TEST_HOOKS.";
+#endif
+}
+
 TEST(RHIUiOverlayPassTests, DeferredFrameScopedCleanupReleasesRetiredUiTextureViews)
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -2269,13 +2324,22 @@ TEST(RHIUiOverlayPassTests, OverlayRendererReportsDynamicBufferAllocationAndReal
     ASSERT_TRUE(firstPrepareResult.success) << firstPrepareResult.message;
     EXPECT_GT(firstPrepareResult.dynamicBufferTelemetry.allocationCount, 0u);
     EXPECT_EQ(firstPrepareResult.dynamicBufferTelemetry.reallocationCount, 0u);
+    EXPECT_EQ(firstPrepareResult.dynamicBufferTelemetry.contentCacheHitCount, 0u);
+    EXPECT_EQ(firstPrepareResult.dynamicBufferTelemetry.contentCacheMissCount, 1u);
+    EXPECT_GT(firstPrepareResult.dynamicBufferTelemetry.uploadedVertexBytes, 0u);
+    EXPECT_GT(firstPrepareResult.dynamicBufferTelemetry.uploadedIndexBytes, 0u);
     EXPECT_GT(firstPrepareResult.dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds, 0u);
 
     const auto secondPrepareResult = renderer.PrepareFrameResources(device, secondCommandBuffer, snapshot, 0u);
     ASSERT_TRUE(secondPrepareResult.success) << secondPrepareResult.message;
     EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.allocationCount, 0u);
     EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.reallocationCount, 0u);
-    EXPECT_GT(secondPrepareResult.dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds, 0u);
+    EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.contentCacheHitCount, 1u);
+    EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.contentCacheMissCount, 0u);
+    EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.uploadedVertexBytes, 0u);
+    EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.uploadedIndexBytes, 0u);
+    EXPECT_EQ(secondPrepareResult.dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds, 0u);
+    EXPECT_EQ(secondCommandBuffer.barrierCalls, 0u);
 
     auto largerSnapshot = snapshot;
     largerSnapshot.totalVertexCount = 12u;
@@ -2289,6 +2353,8 @@ TEST(RHIUiOverlayPassTests, OverlayRendererReportsDynamicBufferAllocationAndReal
     ASSERT_TRUE(thirdPrepareResult.success) << thirdPrepareResult.message;
     EXPECT_EQ(thirdPrepareResult.dynamicBufferTelemetry.allocationCount, 0u);
     EXPECT_GT(thirdPrepareResult.dynamicBufferTelemetry.reallocationCount, 0u);
+    EXPECT_EQ(thirdPrepareResult.dynamicBufferTelemetry.contentCacheHitCount, 0u);
+    EXPECT_EQ(thirdPrepareResult.dynamicBufferTelemetry.contentCacheMissCount, 1u);
     EXPECT_GT(thirdPrepareResult.dynamicBufferTelemetry.totalCpuCopyTimeNanoseconds, 0u);
 }
 
@@ -2322,8 +2388,12 @@ TEST(RHIUiOverlayPassTests, OverlayRendererKeepsDynamicBuffersIsolatedPerFrameRe
     ASSERT_NE(indexBuffer, nullptr);
     EXPECT_GE(device.createdBuffers.size(), 4u)
         << "Each in-flight frame resource slot must own separate UI upload buffers.";
-    EXPECT_EQ(vertexBuffer->updateCalls, 2u);
-    EXPECT_EQ(indexBuffer->updateCalls, 2u);
+    EXPECT_EQ(vertexBuffer->updateCalls, 1u);
+    EXPECT_EQ(indexBuffer->updateCalls, 1u);
+    EXPECT_EQ(slot0ReusePrepareResult.dynamicBufferTelemetry.contentCacheHitCount, 1u);
+    EXPECT_EQ(slot0ReusePrepareResult.dynamicBufferTelemetry.uploadedVertexBytes, 0u);
+    EXPECT_EQ(slot0ReusePrepareResult.dynamicBufferTelemetry.uploadedIndexBytes, 0u);
+    EXPECT_EQ(slot0ReuseCommandBuffer.barrierCalls, 0u);
     EXPECT_EQ(slot0CommandBuffer.bindVertexBufferCalls, 1u);
     EXPECT_EQ(slot1CommandBuffer.bindVertexBufferCalls, 1u);
     EXPECT_EQ(slot0ReuseCommandBuffer.bindVertexBufferCalls, 1u);

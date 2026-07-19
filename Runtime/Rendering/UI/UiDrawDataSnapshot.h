@@ -69,6 +69,7 @@ namespace NLS::Render::UI
     struct NLS_RENDER_API UiDrawDataSnapshot
     {
         uint64_t frameId = 0u;
+        uint64_t contentSignature = 0u;
         float displayPos[2] {};
         float displaySize[2] {};
         float framebufferScale[2] { 1.0f, 1.0f };
@@ -84,6 +85,8 @@ namespace NLS::Render::UI
 
     NLS_RENDER_API uint64_t PackUiTextureIdForImGui(UiTextureId id);
     NLS_RENDER_API std::optional<UiTextureId> UnpackUiTextureIdFromImGui(uint64_t encodedTextureId);
+    NLS_RENDER_API uint64_t ComputeUiDrawDataContentSignature(const UiDrawDataSnapshot& snapshot);
+    NLS_RENDER_API uint64_t ResolveUiDrawDataContentSignature(const UiDrawDataSnapshot& snapshot);
 
     NLS_RENDER_API std::shared_ptr<UiDrawDataSnapshot> CaptureUiDrawDataSnapshot(
         const ImDrawData* drawData,

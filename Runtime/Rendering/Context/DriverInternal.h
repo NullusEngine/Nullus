@@ -120,7 +120,12 @@ namespace NLS::Render::Context
         std::shared_ptr<const Render::UI::UiDrawDataSnapshot> pendingUiOverlaySnapshot;
         uint64_t pendingUiOverlaySnapshotFrameId = 0u;
         uint64_t latestUiOverlaySnapshotFrameId = 0u;
+        uint64_t latestUiOverlayContentSignature = 0u;
         uint64_t pendingUiOverlaySnapshotGeneration = 0u;
+        uint64_t uiOverlayPresentationInvalidationGeneration = 1u;
+        uint64_t lastPublishedSwapchainUiContentSignature = 0u;
+        uint64_t lastPublishedSwapchainUiInvalidationGeneration = 0u;
+        uint64_t skippedUnchangedUiOnlyFrameCount = 0u;
         Render::UI::RHIImGuiTextureRegistry uiTextureRegistry;
         Render::UI::RHIImGuiOverlayRenderer uiOverlayRenderer { &uiTextureRegistry };
         mutable std::mutex pendingUiRgba8TextureUploadMutex;
@@ -229,7 +234,7 @@ namespace NLS::Render::Context
             const RenderScenePackage& renderScenePackage);
         NLS_RENDER_API bool SupportsOrderedParallelCommandSubmission(const DriverImpl& impl);
         NLS_RENDER_API void NotifyThreadedWorkers(DriverImpl& impl);
-        NLS_RENDER_API void WaitForThreadedWorkerWake(DriverImpl& impl, uint64_t observedGeneration);
+        NLS_RENDER_API bool WaitForThreadedWorkerWake(DriverImpl& impl, uint64_t observedGeneration);
         NLS_RENDER_API Render::RHI::RHIFrameContext* BeginThreadedRhiFrame(
             DriverImpl& impl,
             const RenderScenePackage& renderScenePackage,

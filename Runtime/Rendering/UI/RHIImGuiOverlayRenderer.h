@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "RenderDef.h"
 #include "Rendering/UI/RHIImGuiFontAtlas.h"
@@ -28,6 +29,10 @@ namespace NLS::Render::UI
     {
         uint32_t allocationCount = 0u;
         uint32_t reallocationCount = 0u;
+        uint64_t contentCacheHitCount = 0u;
+        uint64_t contentCacheMissCount = 0u;
+        uint64_t uploadedVertexBytes = 0u;
+        uint64_t uploadedIndexBytes = 0u;
         uint64_t totalCpuCopyTimeNanoseconds = 0u;
     };
 
@@ -97,6 +102,11 @@ namespace NLS::Render::UI
             RHI::RHIDevice& device,
             const UiDrawDataSnapshot& snapshot,
             std::string& errorMessage);
+        bool PrepareDrawCommands(
+            const UiDrawDataSnapshot& snapshot,
+            size_t frameResourceSlot,
+            uint64_t contentSignature,
+            std::string& errorMessage);
         bool UploadDynamicBuffers(
             size_t frameResourceSlot,
             const UiDrawDataSnapshot& snapshot,
@@ -115,11 +125,25 @@ namespace NLS::Render::UI
         std::shared_ptr<RHI::RHIGraphicsPipeline> m_graphicsPipeline;
         struct DynamicBufferSet
         {
+            struct PreparedDrawCommand
+            {
+                uint32_t elementCount = 0u;
+                uint32_t firstIndex = 0u;
+                int32_t vertexOffset = 0;
+                int32_t scissorX = 0;
+                int32_t scissorY = 0;
+                uint32_t scissorWidth = 0u;
+                uint32_t scissorHeight = 0u;
+                UiTextureId textureId {};
+                std::shared_ptr<RHI::RHIBindingSet> bindingSet;
+            };
+
             std::shared_ptr<RHI::RHIBuffer> vertexBuffer;
             std::shared_ptr<RHI::RHIBuffer> indexBuffer;
             size_t vertexBufferCapacityBytes = 0u;
             size_t indexBufferCapacityBytes = 0u;
             uint64_t preparedFrameId = 0u;
+            uint64_t preparedContentSignature = 0u;
             uint64_t deviceCacheIdentity = 0u;
             uint32_t preparedVertexCount = 0u;
             uint32_t preparedIndexCount = 0u;
@@ -128,6 +152,8 @@ namespace NLS::Render::UI
             bool fontAtlasUploadTransitionRequired = false;
             std::shared_ptr<RHI::RHITextureView> preparedFontAtlasTextureView;
             std::shared_ptr<RHI::RHIBindingSet> preparedFontAtlasBindingSet;
+            std::vector<std::shared_ptr<RHI::RHITextureView>> preparedRegisteredTextureViews;
+            std::vector<PreparedDrawCommand> preparedDrawCommands;
         };
         mutable std::mutex m_mutex;
         std::unordered_map<size_t, DynamicBufferSet> m_dynamicBuffersByFrameSlot;

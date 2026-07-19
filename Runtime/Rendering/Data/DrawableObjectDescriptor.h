@@ -22,6 +22,9 @@ namespace NLS::Render::Data
         std::vector<Maths::Matrix4> instanceModelMatrices;
         uint32_t objectFlags = kDrawableObjectFlagReceiveShadows |
             kDrawableObjectFlagCastShadows;
+        // Stable scene identity used to keep static opaque instance ordering independent of camera distance.
+        static constexpr uint64_t kInvalidStableSortKey = (std::numeric_limits<uint64_t>::max)();
+        uint64_t stableSortKey = kInvalidStableSortKey;
     };
 
     struct ObjectDrawConstants

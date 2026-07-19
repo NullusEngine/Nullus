@@ -372,6 +372,13 @@ Editor::Panels::BuildSceneViewPrefabDragProxyDescriptor(
     return descriptor;
 }
 
+bool Editor::Panels::ShouldTrustSceneViewRenderContentRevision(
+    const bool hasActivePrefabDragPayload,
+    const bool activePrefabDragCommitPending)
+{
+    return !hasActivePrefabDragPayload && !activePrefabDragCommitPending;
+}
+
 bool Editor::Panels::ShouldDeferSceneViewRenderForPendingSceneLoadResources(const size_t pendingTaskCount)
 {
     (void)pendingTaskCount;
@@ -1112,7 +1119,7 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
             << " active=" << sceneViewActive
             << " blockCamera=" << blockCameraInput
             << " shortcutsBlocked=" << shortcutsWindowOpen
-            << " cameraControl=" << m_cameraController.IsCameraControlActive()
+            << " cameraControl=" << IsCameraControlActive()
             << " moved=" << m_cameraMovedForPresentation
             << " mouse=(" << mousePosition.x << "," << mousePosition.y << ")"
             << " pos=(" << m_camera.GetPosition().x << "," << m_camera.GetPosition().y << "," << m_camera.GetPosition().z << ")"
@@ -1231,7 +1238,9 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
             descriptor.skipSceneDrawables);
     descriptor.allowDefaultMaterialForUnresolvedExplicitMaterials =
         pendingSceneLoadResourceTasks > 0u;
-    descriptor.trustSceneRenderContentRevision = true;
+    descriptor.trustSceneRenderContentRevision = ShouldTrustSceneViewRenderContentRevision(
+        m_activeDraggedPrefabPayload.has_value(),
+        m_activeDraggedPrefabCommitPending);
     if (descriptor.skipSceneDrawables)
         m_hasRenderedSceneLoadResourcePlaceholder = true;
     return descriptor;
@@ -1358,7 +1367,7 @@ void Editor::Panels::SceneView::CommitStaticFrameCacheKey(const uint64_t staticF
 
 bool Editor::Panels::SceneView::ShouldForceStaticFrameRender() const
 {
-    if (m_cameraMovedForPresentation || m_cameraController.IsCameraControlActive())
+    if (m_cameraMovedForPresentation || IsCameraControlActive())
         return true;
     if (m_activeDraggedPrefabPayload.has_value())
         return true;
@@ -1654,7 +1663,7 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     const auto overlayMatrices = GetViewportOverlayCameraMatrices();
     auto viewMatrix = Core::ToImGuizmoMatrix(overlayMatrices.view);
     auto projectionMatrix = Core::ToImGuizmoMatrix(overlayMatrices.projection);
-    const bool cameraControlActive = m_cameraController.IsCameraControlActive();
+    const bool cameraControlActive = IsCameraControlActive();
     EnsureCameraFocus();
 
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
@@ -1748,6 +1757,29 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     }
 }
 
+void Editor::Panels::SceneView::ApplyValidationCameraForwardStep(const float step)
+{
+    if (m_camera.transform == nullptr)
+        return;
+
+    m_validationCameraMotionActive = true;
+    m_camera.SetPosition(
+        m_camera.GetPosition() +
+        m_camera.transform->GetWorldForward() * step);
+    m_camera.CacheViewMatrix();
+    m_cameraMovedForPresentation = true;
+}
+
+void Editor::Panels::SceneView::SetValidationCameraMotionActive(const bool active)
+{
+    m_validationCameraMotionActive = active;
+}
+
+bool Editor::Panels::SceneView::IsCameraControlActive() const
+{
+    return m_validationCameraMotionActive || m_cameraController.IsCameraControlActive();
+}
+
 void Editor::Panels::SceneView::EnsureCameraFocus()
 {
     m_cameraFocus = Core::EnsureSceneCameraFocus(
@@ -1833,7 +1865,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
         !m_hasPickingSample ||
         elapsedMs >= kHoverPickingIntervalMs;
     const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
-    const bool cameraControlActive = m_cameraController.IsCameraControlActive();
+    const bool cameraControlActive = IsCameraControlActive();
     if (!ShouldRequestHitProxyPickingFrameWhileClickReadbackPending(
         leftClicked,
         m_pendingClickPickRenderPos.has_value(),
@@ -1981,7 +2013,7 @@ void Editor::Panels::SceneView::HandleGameObjectPicking()
             !m_hasPickingSample ||
             elapsedMs >= kHoverPickingIntervalMs;
         const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
-        const bool cameraControlActive = m_cameraController.IsCameraControlActive();
+        const bool cameraControlActive = IsCameraControlActive();
         if (ShouldCancelScenePickingWhileCameraControlIsActive(
             cameraControlActive,
             m_pendingClickPickRenderPos.has_value()))

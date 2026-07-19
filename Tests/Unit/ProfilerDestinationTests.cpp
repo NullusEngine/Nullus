@@ -1,12 +1,19 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Profiling/Profiler.h"
@@ -143,6 +150,116 @@ public:
     int endCalls = 0;
 };
 
+class SelfUnregisteringProfilerDestination final : public NLS::Base::Profiling::IProfilerDestination
+{
+public:
+    void BeginScope(const NLS::Base::Profiling::ProfilerScopeEvent&) override
+    {
+        ++beginCalls;
+        NLS::Base::Profiling::Profiler::UnregisterDestination(*this);
+        ++unregisterReturnCount;
+    }
+
+    void EndScope(const NLS::Base::Profiling::ProfilerScopeEvent&) override
+    {
+        ++endCalls;
+    }
+
+    NLS::Base::Profiling::ProfilerDestinationState GetState() const override
+    {
+        return {
+            NLS::Base::Profiling::ProfilerDestinationId::Test,
+            true,
+            NLS::Base::Profiling::ProfilerAvailability::Available,
+            NLS::Base::Profiling::ProfilerCapability_CPUScopes,
+            ""
+        };
+    }
+
+    int beginCalls = 0;
+    int endCalls = 0;
+    int unregisterReturnCount = 0;
+};
+
+class BlockingEndProfilerDestination final : public NLS::Base::Profiling::IProfilerDestination
+{
+public:
+    void BeginScope(const NLS::Base::Profiling::ProfilerScopeEvent&) override
+    {
+        if (!m_unregisterOnBegin.load(std::memory_order_acquire))
+            return;
+
+        m_selfUnregisterEntered.store(true, std::memory_order_release);
+        NLS::Base::Profiling::Profiler::UnregisterDestination(*this);
+        m_selfUnregisterReturned.store(true, std::memory_order_release);
+    }
+
+    void EndScope(const NLS::Base::Profiling::ProfilerScopeEvent&) override
+    {
+        std::unique_lock lock(m_mutex);
+        m_endEntered = true;
+        m_condition.notify_all();
+        m_condition.wait(lock, [&]() { return m_allowEndToReturn; });
+        m_endExited.store(true, std::memory_order_release);
+    }
+
+    NLS::Base::Profiling::ProfilerDestinationState GetState() const override
+    {
+        return {
+            NLS::Base::Profiling::ProfilerDestinationId::Test,
+            true,
+            NLS::Base::Profiling::ProfilerAvailability::Available,
+            NLS::Base::Profiling::ProfilerCapability_CPUScopes,
+            ""
+        };
+    }
+
+    void WaitForEndToEnter()
+    {
+        std::unique_lock lock(m_mutex);
+        m_condition.wait(lock, [&]() { return m_endEntered; });
+    }
+
+    void AllowEndToReturn()
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_allowEndToReturn = true;
+        }
+        m_condition.notify_all();
+    }
+
+    bool HasEndExited() const
+    {
+        return m_endExited.load(std::memory_order_acquire);
+    }
+
+    void UnregisterOnNextBegin()
+    {
+        m_unregisterOnBegin.store(true, std::memory_order_release);
+    }
+
+    bool HasSelfUnregisterEntered() const
+    {
+        return m_selfUnregisterEntered.load(std::memory_order_acquire);
+    }
+
+    bool HasSelfUnregisterReturned() const
+    {
+        return m_selfUnregisterReturned.load(std::memory_order_acquire);
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    bool m_endEntered = false;
+    bool m_allowEndToReturn = false;
+    std::atomic_bool m_endExited = false;
+    std::atomic_bool m_unregisterOnBegin = false;
+    std::atomic_bool m_selfUnregisterEntered = false;
+    std::atomic_bool m_selfUnregisterReturned = false;
+};
+
 class ProfilerDestinationTest : public testing::Test
 {
 protected:
@@ -263,6 +380,185 @@ TEST_F(ProfilerDestinationTest, ScopeEndOnlyRoutesToDestinationsThatAcceptedBegi
     EXPECT_TRUE(lateDestination.events.empty());
 }
 
+TEST_F(ProfilerDestinationTest, UnregisterSkipsEndForAlreadyBegunCpuScope)
+{
+    using namespace NLS::Base::Profiling;
+
+    RecordingProfilerDestination destination;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+    BaseProfiler::SetEnabled(true);
+
+    const auto scope = BaseProfiler::BeginScope("Retired CPU Scope", __FUNCTION__);
+    ASSERT_EQ(destination.events.size(), 1u);
+    EXPECT_EQ(destination.events[0].phase, "begin");
+
+    BaseProfiler::UnregisterDestination(destination);
+    BaseProfiler::EndScope(scope);
+
+    ASSERT_EQ(destination.events.size(), 1u);
+    EXPECT_EQ(destination.events[0].phase, "begin");
+}
+
+TEST_F(ProfilerDestinationTest, DestinationCanUnregisterItselfWithoutDeadlocking)
+{
+    using namespace NLS::Base::Profiling;
+
+    SelfUnregisteringProfilerDestination destination;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+    BaseProfiler::SetEnabled(true);
+
+    const auto scope = BaseProfiler::BeginScope("Self Retiring Scope", __FUNCTION__);
+
+    EXPECT_EQ(destination.beginCalls, 1);
+    EXPECT_EQ(destination.unregisterReturnCount, 1);
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
+
+    BaseProfiler::EndScope(scope);
+    EXPECT_EQ(destination.endCalls, 0);
+}
+
+TEST_F(ProfilerDestinationTest, UnregisterWaitsForActiveEndCallback)
+{
+    using namespace NLS::Base::Profiling;
+
+    BlockingEndProfilerDestination destination;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+    BaseProfiler::SetEnabled(true);
+
+    const auto scope = BaseProfiler::BeginScope("Blocking End Scope", __FUNCTION__);
+    auto endFuture = std::async(std::launch::async, [scope]() {
+        BaseProfiler::EndScope(scope);
+    });
+    destination.WaitForEndToEnter();
+
+    auto unregisterFuture = std::async(std::launch::async, [&destination]() {
+        BaseProfiler::UnregisterDestination(destination);
+    });
+
+    const auto removalDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (BaseProfiler::GetDestinationCountForTesting() != 0u &&
+        std::chrono::steady_clock::now() < removalDeadline)
+    {
+        std::this_thread::yield();
+    }
+
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
+    EXPECT_EQ(
+        unregisterFuture.wait_for(std::chrono::milliseconds(0)),
+        std::future_status::timeout);
+
+    destination.AllowEndToReturn();
+
+    EXPECT_EQ(endFuture.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    EXPECT_EQ(unregisterFuture.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    endFuture.get();
+    unregisterFuture.get();
+    EXPECT_TRUE(destination.HasEndExited());
+}
+
+TEST_F(ProfilerDestinationTest, ConcurrentUnregisterCallersWaitForSameActiveCallback)
+{
+    using namespace NLS::Base::Profiling;
+
+    BlockingEndProfilerDestination destination;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+    BaseProfiler::SetEnabled(true);
+
+    const auto scope = BaseProfiler::BeginScope("Shared Retirement Barrier", __FUNCTION__);
+    auto endFuture = std::async(std::launch::async, [scope]() {
+        BaseProfiler::EndScope(scope);
+    });
+    destination.WaitForEndToEnter();
+
+    auto firstUnregisterFuture = std::async(std::launch::async, [&destination]() {
+        BaseProfiler::UnregisterDestination(destination);
+    });
+
+    const auto removalDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (BaseProfiler::GetDestinationCountForTesting() != 0u &&
+        std::chrono::steady_clock::now() < removalDeadline)
+    {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
+
+    auto secondUnregisterFuture = std::async(std::launch::async, [&destination]() {
+        BaseProfiler::UnregisterDestination(destination);
+    });
+
+    EXPECT_EQ(
+        firstUnregisterFuture.wait_for(std::chrono::milliseconds(20)),
+        std::future_status::timeout);
+    EXPECT_EQ(
+        secondUnregisterFuture.wait_for(std::chrono::milliseconds(20)),
+        std::future_status::timeout)
+        << "Every concurrent unregister caller must observe the in-progress retirement barrier.";
+
+    destination.AllowEndToReturn();
+
+    EXPECT_EQ(endFuture.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    EXPECT_EQ(firstUnregisterFuture.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    EXPECT_EQ(secondUnregisterFuture.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    endFuture.get();
+    firstUnregisterFuture.get();
+    secondUnregisterFuture.get();
+    EXPECT_TRUE(destination.HasEndExited());
+}
+
+TEST_F(ProfilerDestinationTest, CallbackUnregisterRevokesWithoutWaitingAndExternalCallProvidesBarrier)
+{
+    using namespace NLS::Base::Profiling;
+
+    BlockingEndProfilerDestination destination;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+    BaseProfiler::SetEnabled(true);
+
+    const auto blockingScope = BaseProfiler::BeginScope("Concurrent Blocking End", __FUNCTION__);
+    auto endFuture = std::async(std::launch::async, [blockingScope]() {
+        BaseProfiler::EndScope(blockingScope);
+    });
+    destination.WaitForEndToEnter();
+
+    destination.UnregisterOnNextBegin();
+    auto selfUnregisterFuture = std::async(std::launch::async, []() {
+        return BaseProfiler::BeginScope("Concurrent Self Unregister", __FUNCTION__);
+    });
+
+    const auto removalDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (BaseProfiler::GetDestinationCountForTesting() != 0u &&
+        std::chrono::steady_clock::now() < removalDeadline)
+    {
+        std::this_thread::yield();
+    }
+
+    EXPECT_TRUE(destination.HasSelfUnregisterEntered());
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
+    EXPECT_EQ(
+        selfUnregisterFuture.wait_for(std::chrono::seconds(2)),
+        std::future_status::ready);
+    const auto selfUnregisterScope = selfUnregisterFuture.get();
+    EXPECT_TRUE(destination.HasSelfUnregisterReturned());
+
+    auto externalBarrierFuture = std::async(std::launch::async, [&destination]() {
+        BaseProfiler::UnregisterDestination(destination);
+    });
+    EXPECT_EQ(
+        externalBarrierFuture.wait_for(std::chrono::milliseconds(20)),
+        std::future_status::timeout)
+        << "Only an unregister call made outside destination callbacks is a destruction barrier.";
+
+    destination.AllowEndToReturn();
+
+    EXPECT_EQ(endFuture.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    EXPECT_EQ(externalBarrierFuture.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    endFuture.get();
+    externalBarrierFuture.get();
+
+    EXPECT_TRUE(destination.HasEndExited());
+    EXPECT_TRUE(destination.HasSelfUnregisterReturned());
+    BaseProfiler::EndScope(selfUnregisterScope);
+}
+
 TEST_F(ProfilerDestinationTest, RegisterThreadLabelsSubsequentScopeEvents)
 {
     using namespace NLS::Base::Profiling;
@@ -304,6 +600,26 @@ TEST_F(ProfilerDestinationTest, GpuScopeRoutesOnlyToGpuCapableDestinations)
     EXPECT_EQ(gpuCapable.events[1].phase, "gpu-end");
     EXPECT_EQ(BaseProfiler::GetSessionStats().acceptedEventCount, 1u);
     EXPECT_EQ(BaseProfiler::GetSessionStats().droppedEventCount, 1u);
+}
+
+TEST_F(ProfilerDestinationTest, UnregisterSkipsEndForAlreadyBegunGpuScope)
+{
+    using namespace NLS::Base::Profiling;
+
+    RecordingProfilerDestination destination;
+    destination.m_state.capabilities = ProfilerCapability_GPUScopes;
+    ScopedProfilerDestinationRegistration destinationRegistration(destination);
+    BaseProfiler::SetEnabled(true);
+
+    const auto scope = BaseProfiler::BeginGpuScope(nullptr, "Retired GPU Scope", __FUNCTION__);
+    ASSERT_EQ(destination.events.size(), 1u);
+    EXPECT_EQ(destination.events[0].phase, "gpu-begin");
+
+    BaseProfiler::UnregisterDestination(destination);
+    BaseProfiler::EndGpuScope(scope);
+
+    ASSERT_EQ(destination.events.size(), 1u);
+    EXPECT_EQ(destination.events[0].phase, "gpu-begin");
 }
 
 TEST_F(ProfilerDestinationTest, LateRegisteredTimelineDestinationReceivesLastGpuContext)
@@ -510,6 +826,19 @@ TEST_F(ProfilerDestinationTest, TimelineSinkReportsDisabledWhenBuildOptionIsOff)
     EXPECT_NE(state.lastError.find("TimelineProfiler"), std::string::npos);
     EXPECT_NE(state.lastError.find("NLS_ENABLE_TIMELINE_PROFILER"), std::string::npos);
 #endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineSinkDestructorRevokesProfilerRegistration)
+{
+    using namespace NLS::Base::Profiling;
+
+    {
+        auto sink = std::make_unique<TimelineProfilerSink>();
+        BaseProfiler::RegisterDestination(*sink);
+        EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 1u);
+    }
+
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
 }
 
 TEST_F(ProfilerDestinationTest, TimelineSinkRecordsScopesWhenEnabled)

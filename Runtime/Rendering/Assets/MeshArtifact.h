@@ -30,8 +30,23 @@ struct MeshArtifactHeaderPreview
     bool hasBoundingSphere = false;
 };
 
+struct MeshArtifactLODResource
+{
+    MeshArtifactData mesh;
+    float screenSize = 1.0f;
+};
+
+struct MeshArtifactBundle
+{
+    uint32_t schemaVersion = 1u;
+    std::vector<MeshArtifactLODResource> lodResources;
+};
+
 NLS_RENDER_API std::vector<uint8_t> SerializeMeshArtifact(const MeshArtifactData& mesh);
 NLS_RENDER_API std::optional<MeshArtifactData> DeserializeMeshArtifact(const std::vector<uint8_t>& bytes);
+NLS_RENDER_API std::vector<uint8_t> SerializeMeshArtifactBundle(const MeshArtifactBundle& bundle);
+NLS_RENDER_API std::optional<MeshArtifactBundle> DeserializeMeshArtifactBundle(
+    const std::vector<uint8_t>& bytes);
 #if defined(NLS_ENABLE_TEST_HOOKS)
 // Reproduces the trusted buffered artifact path for same-process performance comparisons.
 NLS_RENDER_API std::optional<MeshArtifactData> DeserializeMeshArtifactTrustedForTesting(

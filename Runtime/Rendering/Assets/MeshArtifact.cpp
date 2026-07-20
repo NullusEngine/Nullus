@@ -1105,4 +1105,75 @@ std::optional<MeshArtifactData> LoadMeshArtifact(
         return std::nullopt;
     return artifact;
 }
+
+std::vector<uint8_t> SerializeMeshArtifactBundle(const MeshArtifactBundle& bundle)
+{
+    constexpr uint32_t bundleMagic = 0x444F4C4Eu; // "NLOD"
+    constexpr uint32_t bundleVersion = 1u;
+    if (bundle.lodResources.empty() ||
+        bundle.lodResources.size() > std::numeric_limits<uint32_t>::max())
+    {
+        return {};
+    }
+
+    std::vector<uint8_t> bytes;
+    AppendUInt32(bytes, bundleMagic);
+    AppendUInt32(bytes, bundleVersion);
+    AppendUInt32(bytes, static_cast<uint32_t>(bundle.lodResources.size()));
+    for (const auto& lod : bundle.lodResources)
+    {
+        const auto meshBytes = SerializeMeshArtifact(lod.mesh);
+        if (meshBytes.empty() || meshBytes.size() > std::numeric_limits<uint32_t>::max())
+            return {};
+        AppendFloat32(bytes, lod.screenSize);
+        AppendUInt32(bytes, static_cast<uint32_t>(meshBytes.size()));
+        bytes.insert(bytes.end(), meshBytes.begin(), meshBytes.end());
+    }
+    return bytes;
+}
+
+std::optional<MeshArtifactBundle> DeserializeMeshArtifactBundle(
+    const std::vector<uint8_t>& bytes)
+{
+    constexpr uint32_t bundleMagic = 0x444F4C4Eu;
+    constexpr uint32_t bundleVersion = 1u;
+    const ByteView view {bytes.data(), bytes.size()};
+    size_t offset = 0u;
+    uint32_t magic = 0u;
+    uint32_t version = 0u;
+    uint32_t lodCount = 0u;
+    if (!ReadUInt32(view, offset, magic) ||
+        !ReadUInt32(view, offset, version) ||
+        !ReadUInt32(view, offset, lodCount) ||
+        magic != bundleMagic || version != bundleVersion || lodCount == 0u)
+    {
+        return std::nullopt;
+    }
+
+    MeshArtifactBundle bundle;
+    bundle.schemaVersion = version;
+    bundle.lodResources.reserve(lodCount);
+    for (uint32_t lodIndex = 0u; lodIndex < lodCount; ++lodIndex)
+    {
+        float screenSize = 0.0f;
+        uint32_t meshByteCount = 0u;
+        if (!ReadFloat(view, offset, screenSize) ||
+            !ReadUInt32(view, offset, meshByteCount) ||
+            meshByteCount > view.size - offset)
+        {
+            return std::nullopt;
+        }
+        std::vector<uint8_t> meshBytes(
+            view.data + offset,
+            view.data + offset + meshByteCount);
+        offset += meshByteCount;
+        auto mesh = DeserializeMeshArtifact(meshBytes);
+        if (!mesh.has_value())
+            return std::nullopt;
+        bundle.lodResources.push_back({std::move(*mesh), screenSize});
+    }
+    if (offset != view.size)
+        return std::nullopt;
+    return bundle;
+}
 }

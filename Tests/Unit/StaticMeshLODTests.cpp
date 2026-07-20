@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Rendering/Assets/StaticMeshLODSettings.h"
+#include "Rendering/Assets/MeshArtifact.h"
 
 namespace
 {
@@ -10,6 +11,10 @@ using NLS::Render::Assets::StaticMeshLODSettingsRegistry;
 using NLS::Render::Assets::StaticMeshSourceAsset;
 using NLS::Render::Assets::StaticMeshSourceModel;
 using NLS::Render::Assets::ValidateStaticMeshSourceAsset;
+using NLS::Render::Assets::DeserializeMeshArtifactBundle;
+using NLS::Render::Assets::MeshArtifactBundle;
+using NLS::Render::Assets::MeshArtifactLODResource;
+using NLS::Render::Assets::SerializeMeshArtifactBundle;
 
 TEST(StaticMeshLODTests, BuiltinPresetsMatchUE426Defaults)
 {
@@ -92,5 +97,25 @@ TEST(StaticMeshLODTests, ValidSourceAssetPreservesLevelProvenance)
     EXPECT_TRUE(validation.diagnostics.empty());
     EXPECT_EQ(asset.sourceModels[1].sourceKind, StaticMeshLODSourceKind::Authored);
     EXPECT_EQ(asset.sourceModels[2].sourceKind, StaticMeshLODSourceKind::Generated);
+}
+
+TEST(StaticMeshLODTests, MultiLODArtifactRoundTripsAllLevels)
+{
+    MeshArtifactBundle bundle;
+    bundle.lodResources = {
+        MeshArtifactLODResource {{}, 1.0f},
+        MeshArtifactLODResource {{}, 0.5f}};
+    bundle.lodResources[0].mesh.materialIndex = 2u;
+    bundle.lodResources[1].mesh.materialIndex = 7u;
+
+    const auto bytes = SerializeMeshArtifactBundle(bundle);
+    const auto decoded = DeserializeMeshArtifactBundle(bytes);
+
+    ASSERT_TRUE(decoded.has_value());
+    ASSERT_EQ(decoded->lodResources.size(), 2u);
+    EXPECT_FLOAT_EQ(decoded->lodResources[0].screenSize, 1.0f);
+    EXPECT_FLOAT_EQ(decoded->lodResources[1].screenSize, 0.5f);
+    EXPECT_EQ(decoded->lodResources[0].mesh.materialIndex, 2u);
+    EXPECT_EQ(decoded->lodResources[1].mesh.materialIndex, 7u);
 }
 }

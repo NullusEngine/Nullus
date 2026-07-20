@@ -2,6 +2,9 @@
 
 #include "Rendering/Assets/StaticMeshLODSettings.h"
 #include "Rendering/Assets/MeshArtifact.h"
+#include "Rendering/Assets/MeshReduction.h"
+
+#include <cstring>
 
 namespace
 {
@@ -15,6 +18,7 @@ using NLS::Render::Assets::DeserializeMeshArtifactBundle;
 using NLS::Render::Assets::MeshArtifactBundle;
 using NLS::Render::Assets::MeshArtifactLODResource;
 using NLS::Render::Assets::SerializeMeshArtifactBundle;
+using NLS::Render::Assets::ReduceMeshArtifact;
 
 TEST(StaticMeshLODTests, BuiltinPresetsMatchUE426Defaults)
 {
@@ -117,5 +121,85 @@ TEST(StaticMeshLODTests, MultiLODArtifactRoundTripsAllLevels)
     EXPECT_FLOAT_EQ(decoded->lodResources[1].screenSize, 0.5f);
     EXPECT_EQ(decoded->lodResources[0].mesh.materialIndex, 2u);
     EXPECT_EQ(decoded->lodResources[1].mesh.materialIndex, 7u);
+}
+
+TEST(StaticMeshLODTests, MeshReductionPreservesMaterialAndValidIndices)
+{
+    const std::vector<NLS::Render::Geometry::Vertex> vertices {
+        {{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+        {{1.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+        {{1.0f, 1.0f, 0.0f}, {}, {}, {}, {}},
+        {{0.0f, 1.0f, 0.0f}, {}, {}, {}, {}}
+    };
+    const NLS::Render::Assets::MeshArtifactData source {
+        vertices,
+        {0u, 1u, 2u, 0u, 2u, 3u},
+        9u};
+
+    const auto reduced = ReduceMeshArtifact(source, 1u);
+
+    ASSERT_TRUE(reduced.has_value());
+    EXPECT_LE(reduced->indices.size(), 3u);
+    EXPECT_EQ(reduced->materialIndex, 9u);
+    for (const auto index : reduced->indices)
+        EXPECT_LT(index, reduced->vertices.size());
+}
+
+TEST(StaticMeshLODTests, MeshReductionRejectsEmptyAndInvalidInput)
+{
+    EXPECT_FALSE(ReduceMeshArtifact({}, 1u).has_value());
+
+    NLS::Render::Assets::MeshArtifactData invalid;
+    invalid.vertices.resize(3u);
+    invalid.indices = {0u, 1u, 3u};
+    EXPECT_FALSE(ReduceMeshArtifact(invalid, 1u).has_value());
+}
+
+TEST(StaticMeshLODTests, MeshReductionKeepsFullTopologyWhenTargetIsAtLeastSource)
+{
+    const std::vector<NLS::Render::Geometry::Vertex> vertices {
+        {{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+        {{1.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+        {{1.0f, 1.0f, 0.0f}, {}, {}, {}, {}}
+    };
+    const NLS::Render::Assets::MeshArtifactData source {
+        vertices,
+        {0u, 1u, 2u},
+        4u};
+
+    const auto reduced = ReduceMeshArtifact(source, 10u);
+
+    ASSERT_TRUE(reduced.has_value());
+    EXPECT_EQ(reduced->indices, source.indices);
+    EXPECT_EQ(reduced->vertices.size(), source.vertices.size());
+    EXPECT_EQ(reduced->materialIndex, source.materialIndex);
+}
+
+TEST(StaticMeshLODTests, MeshReductionIsDeterministic)
+{
+    const std::vector<NLS::Render::Geometry::Vertex> vertices {
+        {{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+        {{1.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+        {{1.0f, 1.0f, 0.0f}, {}, {}, {}, {}},
+        {{0.0f, 1.0f, 0.0f}, {}, {}, {}, {}}
+    };
+    const NLS::Render::Assets::MeshArtifactData source {
+        vertices,
+        {0u, 1u, 2u, 0u, 2u, 3u},
+        2u};
+
+    const auto first = ReduceMeshArtifact(source, 1u);
+    const auto second = ReduceMeshArtifact(source, 1u);
+
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(first->indices, second->indices);
+    ASSERT_EQ(first->vertices.size(), second->vertices.size());
+    EXPECT_EQ(
+        std::memcmp(
+            first->vertices.data(),
+            second->vertices.data(),
+            first->vertices.size() * sizeof(NLS::Render::Geometry::Vertex)),
+        0);
 }
 }

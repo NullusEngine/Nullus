@@ -3,6 +3,7 @@
 #include "Rendering/Assets/StaticMeshLODSettings.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/MeshReduction.h"
+#include "Rendering/Assets/StaticMeshBuilder.h"
 
 #include <cstring>
 
@@ -19,6 +20,7 @@ using NLS::Render::Assets::MeshArtifactBundle;
 using NLS::Render::Assets::MeshArtifactLODResource;
 using NLS::Render::Assets::SerializeMeshArtifactBundle;
 using NLS::Render::Assets::ReduceMeshArtifact;
+using NLS::Render::Assets::BuildStaticMeshLODArtifact;
 
 TEST(StaticMeshLODTests, BuiltinPresetsMatchUE426Defaults)
 {
@@ -201,5 +203,89 @@ TEST(StaticMeshLODTests, MeshReductionIsDeterministic)
             second->vertices.data(),
             first->vertices.size() * sizeof(NLS::Render::Geometry::Vertex)),
         0);
+}
+
+TEST(StaticMeshLODTests, StaticMeshBuilderAlwaysEmitsLOD0WithoutLODData)
+{
+    const NLS::Render::Assets::MeshArtifactData lod0 {
+        {{{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+         {{1.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+         {{0.0f, 1.0f, 0.0f}, {}, {}, {}, {}}},
+        {0u, 1u, 2u},
+        3u};
+
+    const auto result = BuildStaticMeshLODArtifact({}, lod0);
+
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.bundle.lodResources.size(), 1u);
+    EXPECT_EQ(result.bundle.lodResources[0].mesh.indices, lod0.indices);
+    EXPECT_EQ(result.bundle.lodResources[0].mesh.materialIndex, 3u);
+}
+
+TEST(StaticMeshLODTests, StaticMeshBuilderGeneratesPresetLODsDeterministically)
+{
+    NLS::Render::Assets::MeshArtifactData lod0;
+    lod0.materialIndex = 5u;
+    for (uint32_t triangle = 0u; triangle < 8u; ++triangle)
+    {
+        const float x = static_cast<float>(triangle);
+        const uint32_t base = static_cast<uint32_t>(lod0.vertices.size());
+        lod0.vertices.push_back({{x, 0.0f, 0.0f}, {}, {}, {}, {}});
+        lod0.vertices.push_back({{x + 0.5f, 0.0f, 0.0f}, {}, {}, {}, {}});
+        lod0.vertices.push_back({{x, 0.5f, 0.0f}, {}, {}, {}, {}});
+        lod0.indices.insert(lod0.indices.end(), {base, base + 1u, base + 2u});
+    }
+
+    StaticMeshSourceAsset source;
+    source.lodGroup = "SmallProp";
+    const auto first = BuildStaticMeshLODArtifact(source, lod0);
+    const auto second = BuildStaticMeshLODArtifact(source, lod0);
+
+    ASSERT_TRUE(first.success);
+    ASSERT_TRUE(second.success);
+    ASSERT_EQ(first.bundle.lodResources.size(), 4u);
+    ASSERT_EQ(second.bundle.lodResources.size(), 4u);
+    for (size_t index = 0u; index < first.bundle.lodResources.size(); ++index)
+    {
+        EXPECT_EQ(
+            first.bundle.lodResources[index].mesh.indices,
+            second.bundle.lodResources[index].mesh.indices);
+        EXPECT_EQ(
+            first.bundle.lodResources[index].mesh.materialIndex,
+            lod0.materialIndex);
+    }
+    EXPECT_EQ(first.bundle.lodResources[1].mesh.indices.size(), 12u);
+    EXPECT_EQ(first.bundle.lodResources[2].mesh.indices.size(), 6u);
+    EXPECT_EQ(first.bundle.lodResources[3].mesh.indices.size(), 3u);
+}
+
+TEST(StaticMeshLODTests, StaticMeshBuilderPreservesAuthoredLOD)
+{
+    const NLS::Render::Assets::MeshArtifactData lod0 {
+        {{{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+         {{1.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+         {{0.0f, 1.0f, 0.0f}, {}, {}, {}, {}}},
+        {0u, 1u, 2u},
+        1u};
+    const NLS::Render::Assets::MeshArtifactData authored {
+        {{{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+         {{2.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+         {{0.0f, 2.0f, 0.0f}, {}, {}, {}, {}}},
+        {0u, 1u, 2u},
+        8u};
+
+    StaticMeshSourceAsset source;
+    source.lodGroup = "SmallProp";
+    source.sourceModels = {
+        StaticMeshSourceModel {StaticMeshLODSourceKind::Imported, 1.0f},
+        StaticMeshSourceModel {StaticMeshLODSourceKind::Authored, 0.4f, authored}};
+
+    const auto result = BuildStaticMeshLODArtifact(source, lod0);
+
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.bundle.lodResources.size(), 4u);
+    EXPECT_EQ(result.bundle.lodResources[1].mesh.materialIndex, 8u);
+    EXPECT_EQ(result.bundle.lodResources[1].mesh.vertices[1].position[0], 2.0f);
+    EXPECT_EQ(result.bundle.lodResources[1].screenSize, 0.4f);
 }
 }

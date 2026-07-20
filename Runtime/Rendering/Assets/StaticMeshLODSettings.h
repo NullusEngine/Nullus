@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RenderDef.h"
+#include "Rendering/Assets/MeshArtifact.h"
 
 #include <cstdint>
 #include <string>
@@ -20,6 +21,7 @@ struct StaticMeshSourceModel
 {
     StaticMeshLODSourceKind sourceKind = StaticMeshLODSourceKind::Imported;
     float screenSize = 1.0f;
+    MeshArtifactData mesh;
 };
 
 struct StaticMeshSourceAsset

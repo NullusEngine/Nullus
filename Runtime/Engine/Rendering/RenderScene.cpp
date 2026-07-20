@@ -3034,9 +3034,9 @@ void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& 
 				return lhs.sortKey < rhs.sortKey;
 
 			const auto* lhsDescriptor =
-				lhs.drawable.TryGetDescriptor<EngineDrawableDescriptor>();
+				lhs.drawable.template TryGetDescriptor<EngineDrawableDescriptor>();
 			const auto* rhsDescriptor =
-				rhs.drawable.TryGetDescriptor<EngineDrawableDescriptor>();
+				rhs.drawable.template TryGetDescriptor<EngineDrawableDescriptor>();
 			const bool lhsHasStableSortKey =
 				lhsDescriptor != nullptr &&
 				lhsDescriptor->stableSortKey != EngineDrawableDescriptor::kInvalidStableSortKey;

@@ -395,7 +395,7 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		const bool gpuBasedValidation =
 			NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_DX12_GPU_VALIDATION");
-		const auto dredConfiguration = ConfigureDx12Dred(debugMode && gpuBasedValidation);
+		const auto dredConfiguration = ConfigureDx12Dred(debugMode);
 		resources.dredDiagnosticsEnabled = dredConfiguration.diagnosticsEnabled;
 		resources.dredAutoBreadcrumbsEnabled = dredConfiguration.autoBreadcrumbsEnabled;
 

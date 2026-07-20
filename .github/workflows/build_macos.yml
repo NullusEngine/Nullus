@@ -34,11 +34,11 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Build
-        timeout-minutes: 90
+        timeout-minutes: 240
         shell: bash
         run: |
           set -o pipefail
-          NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_macos.sh debug 2>&1 | tee "build_macos_debug.log"
+          NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=2 ./build_macos.sh debug 2>&1 | tee "build_macos_debug.log"
 
       - name: Dump build log on failure
         if: failure()

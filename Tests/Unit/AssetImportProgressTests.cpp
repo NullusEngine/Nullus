@@ -167,6 +167,24 @@ TEST(AssetImportProgressTests, SequentialBatchProgressAggregatesAcrossJobsWithou
     EXPECT_DOUBLE_EQ(secondEvents.back().normalizedProgress, 1.0);
 }
 
+TEST(AssetImportProgressTests, OutOfOrderLocalProgressDoesNotRegressBatchProgress)
+{
+    ImportProgressTracker tracker;
+    const auto job = tracker.BeginJob(
+        Id("d2040404-0404-4404-8404-040404040404"),
+        "Assets/Models/ProgressRegression.gltf",
+        "editor",
+        2u);
+
+    tracker.ReportProgress(job, ImportPhase::SourceParse, 0.29, "Parsing source");
+    tracker.ReportProgress(job, ImportPhase::IntermediateConversion, 0.275, "Converting source");
+
+    const auto events = tracker.GetEvents(job);
+    ASSERT_GE(events.size(), 3u);
+    EXPECT_DOUBLE_EQ(events[1].normalizedProgress, 0.145);
+    EXPECT_DOUBLE_EQ(events[2].normalizedProgress, events[1].normalizedProgress);
+}
+
 TEST(AssetImportProgressTests, ManualImportSchedulerAllowsEditorCommandsWhileJobsAdvance)
 {
     ImportProgressTracker tracker;

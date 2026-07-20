@@ -90,7 +90,9 @@ void ImportProgressTracker::ReportProgress(
 
         auto event = state->current;
         event.phase = phase;
-        state->localProgress = ClampProgress(normalizedProgress);
+        state->localProgress = std::max(
+            state->localProgress,
+            ClampProgress(normalizedProgress));
         event.normalizedProgress = CalculateTargetBatchProgressLocked(event.targetPlatform);
         event.message = std::move(message);
         event.cancellationRequested = state->cancellation.IsCancellationRequested();

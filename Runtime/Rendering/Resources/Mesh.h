@@ -104,6 +104,12 @@ namespace NLS::Render::Resources
 		const Render::Geometry::Bounds& GetBounds() const;
 		uint64_t GetInstanceId() const;
 		uint64_t GetContentRevision() const;
+		uint32_t GetLODCount() const;
+		Mesh* GetLODMesh(uint32_t lodIndex);
+		const Mesh* GetLODMesh(uint32_t lodIndex) const;
+		float GetLODScreenSize(uint32_t lodIndex) const;
+		void SetLODResources(std::vector<std::unique_ptr<Mesh>> lodResources, std::vector<float> screenSizes, uint32_t minLOD = 0u);
+		uint32_t GetMinLOD() const;
 		void Reload(
 			const std::vector<Geometry::Vertex>& p_vertices,
 			const std::vector<uint32_t>& p_indices,
@@ -140,5 +146,8 @@ namespace NLS::Render::Resources
 		Geometry::Bounds m_bounds;
 		uint64_t m_instanceId = 0u;
 		uint64_t m_contentRevision = 1u;
+		std::vector<std::unique_ptr<Mesh>> m_lodResources;
+		std::vector<float> m_lodScreenSizes {1.0f};
+		uint32_t m_minLOD = 0u;
 	};
 }

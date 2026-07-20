@@ -39,6 +39,7 @@ struct MeshArtifactLODResource
 struct MeshArtifactBundle
 {
     uint32_t schemaVersion = 1u;
+    uint32_t minLOD = 0u;
     std::vector<MeshArtifactLODResource> lodResources;
 };
 

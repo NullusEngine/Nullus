@@ -31,6 +31,7 @@ namespace NLS::Engine::Rendering
 		uint32_t minLOD = 0u;
 		uint32_t maxLOD = (std::numeric_limits<uint32_t>::max)();
 		std::optional<uint32_t> forcedLOD;
+		bool selectsMeshLOD = false;
 	};
 
 	struct SceneLODViewInput

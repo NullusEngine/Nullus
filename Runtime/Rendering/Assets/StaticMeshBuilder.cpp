@@ -135,6 +135,8 @@ StaticMeshLODBuildResult BuildStaticMeshLODArtifact(
         return result;
     }
 
+    result.bundle.minLOD = sourceAsset.minLOD;
+
     result.success = true;
     return result;
 }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RenderDef.h"
+#include "Rendering/Assets/StaticMeshBuildDef.h"
 #include "Rendering/Assets/MeshArtifact.h"
 
 #include <cstdint>
@@ -46,7 +46,7 @@ struct StaticMeshLODGroupPreset
     float pixelError = 0.0f;
 };
 
-class NLS_RENDER_API StaticMeshLODSettingsRegistry
+class NLS_STATIC_MESH_BUILD_API StaticMeshLODSettingsRegistry
 {
 public:
     StaticMeshLODSettingsRegistry();
@@ -58,8 +58,8 @@ private:
     std::vector<StaticMeshLODGroupPreset> m_presets;
 };
 
-NLS_RENDER_API std::vector<float> BuildStaticMeshLODTargetRatios(
+NLS_STATIC_MESH_BUILD_API std::vector<float> BuildStaticMeshLODTargetRatios(
     const StaticMeshLODGroupPreset& preset);
-NLS_RENDER_API StaticMeshLODValidationResult ValidateStaticMeshSourceAsset(
+NLS_STATIC_MESH_BUILD_API StaticMeshLODValidationResult ValidateStaticMeshSourceAsset(
     const StaticMeshSourceAsset& asset);
 }

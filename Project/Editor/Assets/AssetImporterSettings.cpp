@@ -415,6 +415,13 @@ ModelImporterSettings ModelImporterSettingsFromSerialized(
         settings,
         kModelFbxIgnoreTexturedNeutralDiffuseTintSetting,
         result.ignoreFbxTexturedNeutralDiffuseTint);
+    result.lodGroup = StringFromImporterSettings(settings, "LOD_GROUP", result.lodGroup);
+    result.importMeshLODs = BoolFromImporterSettings(settings, "IMPORT_MESH_LODS", result.importMeshLODs);
+    result.minLOD = UIntFromImporterSettings(settings, "MIN_LOD", result.minLOD);
+    result.autoComputeLODScreenSize = BoolFromImporterSettings(
+        settings,
+        "AUTO_COMPUTE_LOD_SCREEN_SIZE",
+        result.autoComputeLODScreenSize);
     return result;
 }
 
@@ -435,6 +442,10 @@ NLS::Render::Assets::SceneImportSettings ToSceneImportSettings(const ModelImport
     result.importCameras = settings.importCameras;
     result.importLights = settings.importLights;
     result.ignoreFbxTexturedNeutralDiffuseTint = settings.ignoreFbxTexturedNeutralDiffuseTint;
+    result.lodGroup = settings.lodGroup;
+    result.importMeshLODs = settings.importMeshLODs;
+    result.minLOD = settings.minLOD;
+    result.autoComputeLODScreenSize = settings.autoComputeLODScreenSize;
     return result;
 }
 

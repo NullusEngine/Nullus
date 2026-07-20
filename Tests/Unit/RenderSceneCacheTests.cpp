@@ -652,6 +652,30 @@ namespace
         output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     }
 
+    void WriteTwoLevelMeshArtifact(const std::filesystem::path& artifactPath)
+    {
+        NLS::Render::Assets::MeshArtifactBundle bundle;
+        bundle.lodResources.resize(2u);
+        bundle.lodResources[0].screenSize = 1.0f;
+        bundle.lodResources[0].mesh.vertices = {
+            VertexAt(-1.0f, -1.0f, 0.0f), VertexAt(1.0f, -1.0f, 0.0f),
+            VertexAt(1.0f, 1.0f, 0.0f), VertexAt(-1.0f, 1.0f, 0.0f)};
+        bundle.lodResources[0].mesh.indices = {0u, 1u, 2u, 0u, 2u, 3u};
+        bundle.lodResources[0].mesh.boundingSphere = {{0.0f, 0.0f, 0.0f}, 1.0f};
+        bundle.lodResources[0].mesh.hasBoundingSphere = true;
+        bundle.lodResources[1].screenSize = 0.15f;
+        bundle.lodResources[1].mesh.vertices = {
+            VertexAt(-1.0f, -1.0f, 0.0f), VertexAt(1.0f, -1.0f, 0.0f),
+            VertexAt(0.0f, 1.0f, 0.0f)};
+        bundle.lodResources[1].mesh.indices = {0u, 1u, 2u};
+        bundle.lodResources[1].mesh.boundingSphere = {{0.0f, 0.0f, 0.0f}, 1.0f};
+        bundle.lodResources[1].mesh.hasBoundingSphere = true;
+        std::filesystem::create_directories(artifactPath.parent_path());
+        const auto bytes = NLS::Render::Assets::SerializeMeshArtifactBundle(bundle);
+        std::ofstream output(artifactPath, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+
     std::filesystem::path BuiltinMeshArtifactPath(
         const std::filesystem::path& engineAssetsRoot,
         const std::string& virtualSourcePath)
@@ -4888,6 +4912,140 @@ TEST(RenderSceneCacheTests, RetainedSingleDrawPreservesMaterialGpuInstances)
         for (const auto& instanceMatrix : descriptor.instanceModelMatrices)
             EXPECT_FLOAT_EQ(instanceMatrix.data[3], expectedTranslations[drawIndex]);
     }
+}
+
+TEST(RenderSceneCacheTests, MeshManagerLoadsBundleAndLegacyArtifactsAsRuntimeLODResources)
+{
+    EnsureRenderSceneTestDriver();
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_runtime_mesh_lod_" + NLS::Guid::New().ToString()));
+    const auto bundlePath = root.Path() / "bundle.nmesh";
+    const auto legacyPath = root.Path() / "legacy.nmesh";
+    WriteTwoLevelMeshArtifact(bundlePath);
+    WriteCubeMeshArtifact(legacyPath);
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    auto* bundleMesh = meshManager.GetResource(bundlePath.string(), true);
+    auto* legacyMesh = meshManager.GetResource(legacyPath.string(), true);
+
+    ASSERT_NE(bundleMesh, nullptr);
+    ASSERT_EQ(bundleMesh->GetLODCount(), 2u);
+    EXPECT_EQ(bundleMesh->GetLODMesh(0u), bundleMesh);
+    ASSERT_NE(bundleMesh->GetLODMesh(1u), nullptr);
+    EXPECT_EQ(bundleMesh->GetLODMesh(1u)->GetIndexCount(), 3u);
+    EXPECT_FLOAT_EQ(bundleMesh->GetLODScreenSize(1u), 0.15f);
+    ASSERT_NE(legacyMesh, nullptr);
+    EXPECT_EQ(legacyMesh->GetLODCount(), 1u);
+    EXPECT_EQ(legacyMesh->GetLODMesh(99u), legacyMesh);
+}
+
+TEST(RenderSceneCacheTests, MeshManagerReloadReplacesRuntimeLODResources)
+{
+    EnsureRenderSceneTestDriver();
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_reload_runtime_mesh_lod_" + NLS::Guid::New().ToString()));
+    const auto path = root.Path() / "reload.nmesh";
+    WriteTwoLevelMeshArtifact(path);
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    auto* mesh = meshManager.GetResource(path.string(), true);
+    ASSERT_NE(mesh, nullptr);
+    ASSERT_EQ(mesh->GetLODCount(), 2u);
+
+    WriteCubeMeshArtifact(path);
+    meshManager.ReloadResource(mesh, path.string());
+
+    EXPECT_EQ(mesh->GetLODCount(), 1u);
+}
+
+TEST(RenderSceneCacheTests, MeshManagerAsyncArtifactPreservesRuntimeLODResources)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect async request state.";
+#else
+    EnsureRenderSceneTestDriver();
+    ScopedRenderSceneCacheJobSystem jobSystem(1u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_async_runtime_mesh_lod_" + NLS::Guid::New().ToString()));
+    const auto bundlePath = root.Path() / "bundle.nmesh";
+    WriteTwoLevelMeshArtifact(bundlePath);
+
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    EXPECT_EQ(meshManager.RequestAsyncArtifact(bundlePath.string()), nullptr);
+    for (size_t attempt = 0u; attempt < 256u && !meshManager.IsResourceRegistered(bundlePath.string()); ++attempt)
+    {
+        meshManager.PumpAsyncLoads(8u);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    auto* mesh = meshManager.GetResource(bundlePath.string(), false);
+    ASSERT_NE(mesh, nullptr);
+    EXPECT_EQ(mesh->GetLODCount(), 2u);
+    ASSERT_NE(mesh->GetLODMesh(1u), nullptr);
+    EXPECT_EQ(mesh->GetLODMesh(1u)->GetIndexCount(), 3u);
+    NLS::Core::ResourceManagement::MeshManager::ClearAsyncArtifactRequestStateForTesting();
+#endif
+}
+
+TEST(RenderSceneCacheTests, GatherVisibleCommandsSubmitsSceneSelectedRuntimeMeshLOD)
+{
+    EnsureRenderSceneTestDriver();
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_scene_runtime_mesh_lod_" + NLS::Guid::New().ToString()));
+    const auto bundlePath = root.Path() / "bundle.nmesh";
+    WriteTwoLevelMeshArtifact(bundlePath);
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    auto* mesh = meshManager.GetResource(bundlePath.string(), true);
+    ASSERT_NE(mesh, nullptr);
+    ASSERT_EQ(mesh->GetLODCount(), 2u);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
+        "App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("RuntimeLODActor");
+    actor.GetTransform()->SetWorldPosition({0.0f, 0.0f, -10.0f});
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    meshFilter->SetMesh(mesh);
+    meshRenderer->FillWithMaterial(material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &material;
+    renderScene.Synchronize(scene, syncOptions);
+
+    NLS::Engine::Rendering::LargeSceneSettings settings;
+    settings.enableLOD = true;
+    settings.enableSpatialIndex = false;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions view;
+    view.largeSceneSettings = &settings;
+    view.cameraPosition = {0.0f, 0.0f, 0.0f};
+    view.verticalFovRadians = 1.57079632679f;
+    const auto farQueues = renderScene.GatherVisibleCommands(view);
+    ASSERT_EQ(farQueues.opaques.size(), 1u);
+    EXPECT_EQ(farQueues.opaques[0].second.mesh, mesh->GetLODMesh(1u));
+
+    view.verticalFovRadians = 0.34906585039f;
+    const auto narrowFovQueues = renderScene.GatherVisibleCommands(view);
+    ASSERT_EQ(narrowFovQueues.opaques.size(), 1u);
+    EXPECT_EQ(narrowFovQueues.opaques[0].second.mesh, mesh->GetLODMesh(0u));
+
+    view.cameraPosition = {0.0f, 0.0f, -9.0f};
+    view.verticalFovRadians = 1.57079632679f;
+    const auto nearQueues = renderScene.GatherVisibleCommands(view);
+    ASSERT_EQ(nearQueues.opaques.size(), 1u);
+    EXPECT_EQ(nearQueues.opaques[0].second.mesh, mesh->GetLODMesh(0u));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
 #undef NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE

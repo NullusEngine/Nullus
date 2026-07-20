@@ -150,6 +150,10 @@ struct SceneImportSettings
     bool importCameras = false;
     bool importLights = false;
     bool ignoreFbxTexturedNeutralDiffuseTint = true;
+    std::string lodGroup = "None";
+    bool importMeshLODs = false;
+    uint32_t minLOD = 0u;
+    bool autoComputeLODScreenSize = true;
 };
 
 struct ImportedScene

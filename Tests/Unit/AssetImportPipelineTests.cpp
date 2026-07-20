@@ -4714,6 +4714,198 @@ TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMes
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetImportPipelineTests, StaticMeshImportBuildsFormalLODsFromExplicitLODGroup)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "SmallProp.obj";
+    WriteTextFile(
+        sourcePath,
+        "v 0 0 0\n"
+        "v 1 0 0\n"
+        "v 0 1 0\n"
+        "f 1 2 3\n");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("9a9a9a9a-9a9a-49a9-89a9-9a9a9a9a9a9a"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = CurrentModelSceneImporterVersion();
+    meta.settings["LOD_GROUP"] = "SmallProp";
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "SmallProp",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* meshArtifact = result.manifest.FindSubAsset("mesh:parser/mesh/0");
+    ASSERT_NE(meshArtifact, nullptr);
+    const auto bundle = NLS::Render::Assets::DeserializeMeshArtifactBundle(
+        ReadArtifactFile(root, *meshArtifact));
+    ASSERT_TRUE(bundle.has_value());
+    ASSERT_EQ(bundle->lodResources.size(), 4u);
+    EXPECT_FLOAT_EQ(bundle->lodResources[0].screenSize, 1.0f);
+    EXPECT_FLOAT_EQ(bundle->lodResources[1].screenSize, 0.5f);
+    EXPECT_FLOAT_EQ(bundle->lodResources[2].screenSize, 0.25f);
+    EXPECT_FLOAT_EQ(bundle->lodResources[3].screenSize, 0.125f);
+    const auto* lodSettingsDependency = FindDependency(
+        result.manifest,
+        NLS::Core::Assets::AssetDependencyKind::RuntimeComponentCapability,
+        "static-mesh-lod-settings");
+    ASSERT_NE(lodSettingsDependency, nullptr);
+    EXPECT_NE(lodSettingsDependency->hashOrVersion.find("lodGroup=SmallProp"), std::string::npos);
+
+    const auto firstContentHash = meshArtifact->contentHash;
+    WriteTextFile(
+        sourcePath,
+        "v 0 0 0\n"
+        "v 1 0 0\n"
+        "v 1 1 0\n"
+        "v 0 1 0\n"
+        "f 1 2 3\n"
+        "f 1 3 4\n");
+    const auto reimportResult = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "ReimportStaging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "SmallProp",
+        "editor",
+        &result.manifest,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(reimportResult.imported) << JoinDiagnosticSummaries(reimportResult.diagnostics);
+    const auto* reimportedMesh = reimportResult.manifest.FindSubAsset("mesh:parser/mesh/0");
+    ASSERT_NE(reimportedMesh, nullptr);
+    EXPECT_NE(reimportedMesh->contentHash, firstContentHash);
+    const auto reimportedBundle = NLS::Render::Assets::DeserializeMeshArtifactBundle(
+        ReadArtifactFile(root, *reimportedMesh));
+    ASSERT_TRUE(reimportedBundle.has_value());
+    EXPECT_EQ(reimportedBundle->lodResources.size(), 4u);
+    EXPECT_EQ(meta.settings.at("LOD_GROUP"), "SmallProp");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, StaticMeshImportRecognizesAuthoredLODSuffixesOnlyWhenEnabled)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "AuthoredLODs.gltf";
+    std::vector<uint8_t> meshBytes;
+    AppendTriangleMeshBytes(meshBytes, 0.0f, 0u, 1u, 2u);
+    AppendTriangleMeshBytes(meshBytes, 10.0f, 0u, 1u, 2u);
+    WriteBinaryFile(root / "Assets" / "Models" / "mesh.bin", meshBytes);
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "buffers": [{ "uri": "mesh.bin", "byteLength": 84 }],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 },
+                { "buffer": 0, "byteOffset": 42, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 78, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" },
+                { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0, 1] }],
+            "nodes": [
+                { "name": "Rock_LOD0", "mesh": 0 },
+                { "name": "Rock_LOD1", "mesh": 1 }
+            ],
+            "meshes": [
+                { "name": "Rock_LOD0", "primitives": [{ "attributes": { "POSITION": 0 }, "indices": 1 }] },
+                { "name": "Rock_LOD1", "primitives": [{ "attributes": { "POSITION": 2 }, "indices": 3 }] }
+            ]
+        })");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("9b9b9b9b-9b9b-49b9-89b9-9b9b9b9b9b9b"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = CurrentModelSceneImporterVersion();
+    meta.settings["IMPORT_MESH_LODS"] = "true";
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "AuthoredLODs",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* lod0Artifact = result.manifest.FindSubAsset("mesh:mesh/0");
+    ASSERT_NE(lod0Artifact, nullptr);
+    EXPECT_EQ(result.manifest.FindSubAsset("mesh:mesh/1"), nullptr);
+    const auto bundle = NLS::Render::Assets::DeserializeMeshArtifactBundle(
+        ReadArtifactFile(root, *lod0Artifact));
+    ASSERT_TRUE(bundle.has_value());
+    ASSERT_EQ(bundle->lodResources.size(), 2u);
+    EXPECT_FLOAT_EQ(bundle->lodResources[0].mesh.vertices[0].position[0], 0.0f);
+    EXPECT_FLOAT_EQ(bundle->lodResources[1].mesh.vertices[0].position[0], 10.0f);
+
+    auto defaultMeta = meta;
+    defaultMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("9c9c9c9c-9c9c-49c9-89c9-9c9c9c9c9c9c"));
+    defaultMeta.settings.erase("IMPORT_MESH_LODS");
+    const auto defaultResult = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "DefaultStaging",
+        root / "Library" / "Artifacts" / defaultMeta.id.ToString(),
+        defaultMeta,
+        "AuthoredLODsDefault",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(defaultResult.imported) << JoinDiagnosticSummaries(defaultResult.diagnostics);
+    const auto* defaultLOD0 = defaultResult.manifest.FindSubAsset("mesh:mesh/0");
+    const auto* defaultLOD1 = defaultResult.manifest.FindSubAsset("mesh:mesh/1");
+    ASSERT_NE(defaultLOD0, nullptr);
+    ASSERT_NE(defaultLOD1, nullptr);
+    EXPECT_TRUE(NLS::Render::Assets::DeserializeMeshArtifact(
+        ReadArtifactFile(root, *defaultLOD0)).has_value());
+    EXPECT_TRUE(NLS::Render::Assets::DeserializeMeshArtifact(
+        ReadArtifactFile(root, *defaultLOD1)).has_value());
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImportPipelineTests, ExternalObjModelImportWritesMaterialTextureUniforms)
 {
     const auto root = MakeImportTestRoot();

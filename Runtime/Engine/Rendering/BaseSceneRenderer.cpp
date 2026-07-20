@@ -1567,6 +1567,7 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			visibilityOptions.visibleLayerMask = camera.GetVisibleLayerMask();
 			visibilityOptions.largeSceneSettings = &occlusionSettings;
 			visibilityOptions.lodBias = 1.0f;
+			visibilityOptions.verticalFovRadians = Maths::DegreesToRadians(camera.GetFov());
 			visibilityOptions.lodHistoryViewKey = 0u;
 			visibilityOptions.allowHLOD = true;
 			visibilityOptions.inspectionRootObjects = GetEditorInspectionRoots();

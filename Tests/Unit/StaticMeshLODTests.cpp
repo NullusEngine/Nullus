@@ -4,6 +4,7 @@
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/MeshReduction.h"
 #include "Rendering/Assets/StaticMeshBuilder.h"
+#include "Rendering/Assets/StaticMeshCookBuilder.h"
 
 #include <cstring>
 #include <filesystem>
@@ -26,6 +27,8 @@ using NLS::Render::Assets::BuildStaticMeshLODArtifact;
 using NLS::Render::Assets::LoadMeshArtifact;
 using NLS::Render::Assets::LoadMeshArtifactBundle;
 using NLS::Render::Assets::SelectMeshArtifactLOD;
+using NLS::Render::Assets::StaticMeshCookRequest;
+using NLS::Render::Assets::BuildStaticMeshCookArtifact;
 
 TEST(StaticMeshLODTests, BuiltinPresetsMatchUE426Defaults)
 {
@@ -338,5 +341,75 @@ TEST(StaticMeshLODTests, BundleFileLoadsAllLODsAndLegacyLoadReturnsLOD0)
     ASSERT_TRUE(legacyLOD0.has_value());
     EXPECT_EQ(legacyLOD0->materialIndex, 4u);
     std::filesystem::remove(path);
+}
+
+TEST(StaticMeshLODTests, BundleRoundTripPreservesMinimumLOD)
+{
+    NLS::Render::Assets::MeshArtifactData mesh;
+    mesh.vertices.resize(3u);
+    mesh.vertices[1].position[0] = 1.0f;
+    mesh.vertices[2].position[1] = 1.0f;
+    mesh.indices = {0u, 1u, 2u};
+    NLS::Render::Assets::MeshArtifactBundle bundle;
+    bundle.minLOD = 1u;
+    bundle.lodResources = {
+        {mesh, 1.0f},
+        {mesh, 0.5f}};
+
+    const auto loaded = NLS::Render::Assets::DeserializeMeshArtifactBundle(
+        NLS::Render::Assets::SerializeMeshArtifactBundle(bundle));
+
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->minLOD, 1u);
+}
+
+TEST(StaticMeshLODTests, StaticMeshCookUsesSharedBuilderAndPlatformScopedCache)
+{
+    NLS::Render::Assets::MeshArtifactData lod0 {
+        {{{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+         {{1.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+         {{0.0f, 1.0f, 0.0f}, {}, {}, {}, {}}},
+        {0u, 1u, 2u},
+        6u};
+
+    const auto root = std::filesystem::temp_directory_path() / "nullus-static-mesh-cook-cache";
+    std::filesystem::remove_all(root);
+
+    StaticMeshCookRequest request;
+    request.sourceAsset = {};
+    request.sourceAsset.lodGroup = "SmallProp";
+    request.importedLOD0 = lod0;
+    request.sourceAssetIdentity = "asset:static-mesh-cook-test";
+    request.sourceContentHash = "source-hash-v1";
+    request.targetPlatform = "editor";
+    request.outputPath = root / "editor" / "mesh.nmesh";
+
+    const auto first = BuildStaticMeshCookArtifact(request);
+    ASSERT_TRUE(first.success);
+    EXPECT_FALSE(first.cacheHit);
+    ASSERT_FALSE(first.artifactBytes.empty());
+    EXPECT_TRUE(std::filesystem::exists(request.outputPath));
+    EXPECT_EQ(request.sourceAsset.lodGroup, "SmallProp");
+    EXPECT_TRUE(request.sourceAsset.sourceModels.empty());
+
+    const auto second = BuildStaticMeshCookArtifact(request);
+    ASSERT_TRUE(second.success);
+    EXPECT_TRUE(second.cacheHit);
+    EXPECT_EQ(second.buildIdentity, first.buildIdentity);
+    EXPECT_EQ(second.artifactBytes, first.artifactBytes);
+
+    request.targetPlatform = "win64-dx12";
+    request.outputPath = root / "win64-dx12" / "mesh.nmesh";
+    const auto otherPlatform = BuildStaticMeshCookArtifact(request);
+    ASSERT_TRUE(otherPlatform.success);
+    EXPECT_FALSE(otherPlatform.cacheHit);
+    EXPECT_NE(otherPlatform.buildIdentity, first.buildIdentity);
+
+    const auto loaded = NLS::Render::Assets::DeserializeMeshArtifactBundle(otherPlatform.artifactBytes);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->lodResources.size(), 4u);
+    EXPECT_EQ(loaded->lodResources[0].mesh.materialIndex, 6u);
+
+    std::filesystem::remove_all(root);
 }
 }

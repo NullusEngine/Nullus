@@ -105,6 +105,29 @@ bool IsAuthorizedContentArtifactPath(const std::string& path)
         NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath);
 }
 
+NLS::Render::Resources::Mesh* CreateRuntimeMesh(const NLS::Render::Assets::MeshArtifactBundle& bundle)
+{
+    if (bundle.lodResources.empty())
+        return nullptr;
+    const auto& lod0 = bundle.lodResources.front().mesh;
+    auto root = std::make_unique<NLS::Render::Resources::Mesh>(lod0.vertices, lod0.indices, lod0.materialIndex,
+        NLS::Render::Resources::MeshBufferUploadMode::GpuOnly, lod0.boundingSphere);
+    std::vector<std::unique_ptr<NLS::Render::Resources::Mesh>> lods;
+    std::vector<float> screenSizes;
+    screenSizes.reserve(bundle.lodResources.size());
+    screenSizes.push_back(bundle.lodResources.front().screenSize);
+    for (size_t index = 1u; index < bundle.lodResources.size(); ++index)
+    {
+        const auto& level = bundle.lodResources[index];
+        lods.push_back(std::make_unique<NLS::Render::Resources::Mesh>(level.mesh.vertices, level.mesh.indices,
+            level.mesh.materialIndex, NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+            level.mesh.boundingSphere));
+        screenSizes.push_back(level.screenSize);
+    }
+    root->SetLODResources(std::move(lods), std::move(screenSizes), bundle.minLOD);
+    return root.release();
+}
+
 std::filesystem::path NormalizeVirtualBuiltinPath(const std::string& path)
 {
     std::string relativePath = path;
@@ -286,7 +309,7 @@ struct AsyncMeshArtifactRequest
     size_t sharedInterestCount = 0u;
     bool retryCancelledCompletion = false;
     NLS::Base::Jobs::JobHandle jobHandle;
-    std::future<std::optional<NLS::Render::Assets::MeshArtifactData>> future;
+    std::future<std::optional<NLS::Render::Assets::MeshArtifactBundle>> future;
     uint64_t runtimeUploadRequestId = 0u;
 };
 
@@ -463,13 +486,13 @@ struct MeshArtifactJobPayload
 {
     std::string realPath;
     std::shared_ptr<std::atomic_bool> cancellationFlag;
-    std::promise<std::optional<NLS::Render::Assets::MeshArtifactData>> promise;
+    std::promise<std::optional<NLS::Render::Assets::MeshArtifactBundle>> promise;
 };
 
 struct MeshArtifactLoadSubmission
 {
     NLS::Base::Jobs::JobHandle handle;
-    std::future<std::optional<NLS::Render::Assets::MeshArtifactData>> future;
+    std::future<std::optional<NLS::Render::Assets::MeshArtifactBundle>> future;
 };
 
 void RunMeshArtifactJob(void* userData)
@@ -478,9 +501,10 @@ void RunMeshArtifactJob(void* userData)
     MeshArtifactWorkerScope workerScope;
     try
     {
-        payload->promise.set_value(NLS::Render::Assets::LoadMeshArtifact(
-            payload->realPath,
-            payload->cancellationFlag.get()));
+        if (payload->cancellationFlag && payload->cancellationFlag->load(std::memory_order_acquire))
+            payload->promise.set_value(std::nullopt);
+        else
+            payload->promise.set_value(NLS::Render::Assets::LoadMeshArtifactBundle(payload->realPath));
     }
     catch (...)
     {
@@ -701,7 +725,7 @@ void PumpAsyncMeshArtifactLoads(
             g_asyncMeshRequests.erase(found);
         }
 
-        std::optional<NLS::Render::Assets::MeshArtifactData> artifact;
+        std::optional<NLS::Render::Assets::MeshArtifactBundle> artifact;
         try
         {
             artifact = request.future.get();
@@ -761,10 +785,20 @@ void PumpAsyncMeshArtifactLoads(
                 NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(*driver))
             {
                 NLS::Render::Context::MeshRuntimeUploadRequest uploadRequest;
-                uploadRequest.vertices = std::move(artifact->vertices);
-                uploadRequest.indices = std::move(artifact->indices);
-                uploadRequest.materialIndex = artifact->materialIndex;
-                uploadRequest.boundingSphere = artifact->boundingSphere;
+                auto& lod0 = artifact->lodResources.front().mesh;
+                uploadRequest.vertices = std::move(lod0.vertices);
+                uploadRequest.indices = std::move(lod0.indices);
+                uploadRequest.materialIndex = lod0.materialIndex;
+                uploadRequest.boundingSphere = lod0.boundingSphere;
+                uploadRequest.minLOD = artifact->minLOD;
+                uploadRequest.lodResources.reserve(artifact->lodResources.size() - 1u);
+                for (size_t lodIndex = 1u; lodIndex < artifact->lodResources.size(); ++lodIndex)
+                {
+                    auto& level = artifact->lodResources[lodIndex];
+                    uploadRequest.lodResources.push_back({
+                        std::move(level.mesh.vertices), std::move(level.mesh.indices),
+                        level.mesh.materialIndex, level.mesh.boundingSphere, level.screenSize});
+                }
                 uploadRequest.debugName = request.path;
                 const uint64_t uploadRequestId =
                     NLS::Render::Context::DriverResourceAccess::RequestMeshRuntimeUpload(
@@ -787,12 +821,7 @@ void PumpAsyncMeshArtifactLoads(
             MeshManager::Mesh* mesh = nullptr;
             try
             {
-                mesh = new MeshManager::Mesh(
-                    artifact->vertices,
-                    artifact->indices,
-                    artifact->materialIndex,
-                    NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
-                    artifact->boundingSphere);
+                mesh = CreateRuntimeMesh(*artifact);
                 manager.RegisterResource(request.path, mesh);
                 mesh = nullptr;
                 std::lock_guard lock(g_asyncMeshMutex);
@@ -929,13 +958,13 @@ MeshManager::Mesh* MeshManager::CreateResource(const std::string& path)
     if (!IsMeshArtifactPath(realPath))
         return nullptr;
 
-    std::optional<NLS::Render::Assets::MeshArtifactData> meshArtifact;
+    std::optional<NLS::Render::Assets::MeshArtifactBundle> meshArtifact;
     {
         NLS::Base::Profiling::PerformanceStageScope scope(
             NLS::Base::Profiling::PerformanceStageDomain::Prefab,
             "PrewarmMeshArtifactLoad",
             NLS::Base::Profiling::PerformanceStageThread::Main);
-        meshArtifact = NLS::Render::Assets::LoadMeshArtifact(realPath);
+        meshArtifact = NLS::Render::Assets::LoadMeshArtifactBundle(realPath);
     }
     if (!meshArtifact.has_value())
         return nullptr;
@@ -944,12 +973,7 @@ MeshManager::Mesh* MeshManager::CreateResource(const std::string& path)
         NLS::Base::Profiling::PerformanceStageDomain::Prefab,
         "PrewarmMeshRuntimeCreate",
         NLS::Base::Profiling::PerformanceStageThread::Main);
-    return new Mesh(
-        meshArtifact->vertices,
-        meshArtifact->indices,
-        meshArtifact->materialIndex,
-        NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
-        meshArtifact->boundingSphere);
+    return CreateRuntimeMesh(*meshArtifact);
 }
 
 MeshManager::Mesh* MeshManager::PrewarmArtifact(const std::string& path)
@@ -1304,15 +1328,28 @@ void MeshManager::ReloadResource(Mesh* resource, const std::string& path)
     if (!IsMeshArtifactPath(realPath))
         return;
 
-    auto meshArtifact = NLS::Render::Assets::LoadMeshArtifact(realPath);
+    auto meshArtifact = NLS::Render::Assets::LoadMeshArtifactBundle(realPath);
     if (!meshArtifact.has_value())
         return;
 
+    const auto& lod0 = meshArtifact->lodResources.front().mesh;
     resource->Reload(
-        meshArtifact->vertices,
-        meshArtifact->indices,
-        meshArtifact->materialIndex,
+        lod0.vertices,
+        lod0.indices,
+        lod0.materialIndex,
         NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
-        meshArtifact->boundingSphere);
+        lod0.boundingSphere);
+    std::vector<std::unique_ptr<MeshManager::Mesh>> lods;
+    std::vector<float> screenSizes;
+    for (size_t index = 1u; index < meshArtifact->lodResources.size(); ++index)
+    {
+        const auto& level = meshArtifact->lodResources[index];
+        lods.push_back(std::make_unique<MeshManager::Mesh>(
+            level.mesh.vertices, level.mesh.indices, level.mesh.materialIndex,
+            NLS::Render::Resources::MeshBufferUploadMode::GpuOnly, level.mesh.boundingSphere));
+        screenSizes.push_back(level.screenSize);
+    }
+    screenSizes.insert(screenSizes.begin(), meshArtifact->lodResources.front().screenSize);
+    resource->SetLODResources(std::move(lods), std::move(screenSizes), meshArtifact->minLOD);
 }
 }

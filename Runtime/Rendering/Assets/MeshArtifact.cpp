@@ -23,7 +23,7 @@ constexpr uint32_t kMeshArtifactVersion = 1u;
 constexpr uint32_t kMeshArtifactVersionWithBoundingSphere = 2u;
 constexpr uint32_t kMeshArtifactContainerSchemaVersion = 3u;
 constexpr uint32_t kMeshArtifactBundleMagic = 0x444F4C4Eu; // "NLOD"
-constexpr uint32_t kMeshArtifactBundleVersion = 1u;
+constexpr uint32_t kMeshArtifactBundleVersion = 2u;
 
 struct MeshArtifactHeader
 {
@@ -519,6 +519,25 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
         return std::nullopt;
 
     const ByteView payload {prefix->bytes.data(), prefix->bytes.size()};
+    size_t payloadMagicOffset = 0u;
+    uint32_t payloadMagic = 0u;
+    if (ReadUInt32(payload, payloadMagicOffset, payloadMagic) &&
+        payloadMagic == kMeshArtifactBundleMagic)
+    {
+        const auto bundle = LoadMeshArtifactBundle(path);
+        if (!bundle.has_value() || bundle->lodResources.empty())
+            return std::nullopt;
+
+        const auto& mesh = bundle->lodResources.front().mesh;
+        MeshArtifactHeaderPreview preview;
+        preview.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+        preview.indexCount = static_cast<uint32_t>(mesh.indices.size());
+        preview.materialIndex = mesh.materialIndex;
+        preview.boundingSphere = mesh.boundingSphere;
+        preview.hasBoundingSphere = mesh.hasBoundingSphere;
+        return preview;
+    }
+
     MeshArtifactHeader header;
     if (!ReadHeader(payload, header))
         return std::nullopt;
@@ -649,6 +668,7 @@ std::vector<uint8_t> SerializeMeshArtifactBundle(const MeshArtifactBundle& bundl
     AppendUInt32(bytes, kMeshArtifactBundleMagic);
     AppendUInt32(bytes, kMeshArtifactBundleVersion);
     AppendUInt32(bytes, static_cast<uint32_t>(bundle.lodResources.size()));
+    AppendUInt32(bytes, bundle.minLOD);
     for (const auto& lod : bundle.lodResources)
     {
         const auto meshBytes = SerializeMeshArtifact(lod.mesh);
@@ -664,7 +684,16 @@ std::vector<uint8_t> SerializeMeshArtifactBundle(const MeshArtifactBundle& bundl
 std::optional<MeshArtifactBundle> DeserializeMeshArtifactBundle(
     const std::vector<uint8_t>& bytes)
 {
-    const ByteView view {bytes.data(), bytes.size()};
+    ByteView view {bytes.data(), bytes.size()};
+    if (const auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
+            bytes,
+            NLS::Core::Assets::ArtifactType::Mesh,
+            kMeshArtifactContainerSchemaVersion,
+            NLS::Core::Assets::NativeArtifactPayloadValidation::VerifyHash))
+    {
+        view = {container->payloadData, container->payloadSize};
+    }
+
     size_t offset = 0u;
     uint32_t magic = 0u;
     uint32_t version = 0u;
@@ -673,7 +702,7 @@ std::optional<MeshArtifactBundle> DeserializeMeshArtifactBundle(
         !ReadUInt32(view, offset, version) ||
         !ReadUInt32(view, offset, lodCount) ||
         magic != kMeshArtifactBundleMagic ||
-        version != kMeshArtifactBundleVersion ||
+        (version != 1u && version != kMeshArtifactBundleVersion) ||
         lodCount == 0u)
     {
         return std::nullopt;
@@ -681,6 +710,8 @@ std::optional<MeshArtifactBundle> DeserializeMeshArtifactBundle(
 
     MeshArtifactBundle bundle;
     bundle.schemaVersion = version;
+    if (version >= 2u && !ReadUInt32(view, offset, bundle.minLOD))
+        return std::nullopt;
     bundle.lodResources.reserve(lodCount);
     for (uint32_t lodIndex = 0u; lodIndex < lodCount; ++lodIndex)
     {
@@ -701,6 +732,8 @@ std::optional<MeshArtifactBundle> DeserializeMeshArtifactBundle(
             return std::nullopt;
         bundle.lodResources.push_back({std::move(*mesh), screenSize});
     }
+    if (bundle.minLOD >= bundle.lodResources.size())
+        return std::nullopt;
     if (offset != view.size)
         return std::nullopt;
     return bundle;

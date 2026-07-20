@@ -75,6 +75,7 @@ namespace NLS::Engine::Rendering
 		uint32_t maxVisibilityJobs = 0u;
 		float spatialQueryRadius = 0.0f;
 		float lodBias = 1.0f;
+		float verticalFovRadians = 0.0f;
 		uint64_t lodHistoryViewKey = 0u;
 		bool allowHLOD = true;
 		bool editorInspectionView = false;

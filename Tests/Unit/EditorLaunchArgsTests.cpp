@@ -2962,6 +2962,35 @@ TEST(EditorLaunchArgsTests, VisibleMaterialTexturePumpIsFrameBudgeted)
         << "Scene validation readback should not spend a fixed frame cap waiting for the visible texture pump after scene-load reveal.";
 }
 
+TEST(EditorLaunchArgsTests, ProductionDrawCallOptimizationStatsAccessorIsNotTestHookGated)
+{
+    const auto rendererSource = ReadTextFile("Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+    const auto precedingFunction = rendererSource.find(
+        "BaseSceneRenderer::HasCompletedVisibleMaterialTexturePumpForReadback() const");
+    const auto productionAccessor = rendererSource.find(
+        "BaseSceneRenderer::GetLastDrawCallOptimizationStats() const",
+        precedingFunction);
+    ASSERT_NE(precedingFunction, std::string::npos);
+    ASSERT_NE(productionAccessor, std::string::npos);
+
+    const auto productionPrefix = rendererSource.substr(
+        precedingFunction,
+        productionAccessor - precedingFunction);
+    EXPECT_EQ(
+        productionPrefix.find("#if defined(NLS_ENABLE_TEST_HOOKS)"),
+        std::string::npos);
+
+    const auto testHookGuard = rendererSource.find(
+        "#if defined(NLS_ENABLE_TEST_HOOKS)",
+        productionAccessor);
+    const auto testAccessor = rendererSource.find(
+        "BaseSceneRenderer::GetLastDrawCallOptimizationStatsForTesting() const",
+        productionAccessor);
+    ASSERT_NE(testHookGuard, std::string::npos);
+    ASSERT_NE(testAccessor, std::string::npos);
+    EXPECT_LT(testHookGuard, testAccessor);
+}
+
 TEST(EditorLaunchArgsTests, SceneLoadRendererResourceManagersKeepEnoughAsyncArtifactWorkersActive)
 {
 #if !defined(NLS_ENABLE_TEST_HOOKS)

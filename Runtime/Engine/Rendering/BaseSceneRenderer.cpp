@@ -1270,7 +1270,6 @@ bool BaseSceneRenderer::HasCompletedVisibleMaterialTexturePumpForReadback() cons
 		diagnostics.queuedRequests == 0u;
 }
 
-#if defined(NLS_ENABLE_TEST_HOOKS)
 const Render::Data::DrawCallOptimizationStats& BaseSceneRenderer::GetLastDrawCallOptimizationStats() const
 {
 	return m_renderScene.GetLastDrawCallOptimizationStats();
@@ -1281,7 +1280,6 @@ const Render::Data::DrawCallOptimizationStats& BaseSceneRenderer::GetLastDrawCal
 {
 	return GetLastDrawCallOptimizationStats();
 }
-#endif
 #endif
 
 const SceneOcclusionFrameInput& BaseSceneRenderer::GetLastHZBOcclusionFrameInput() const

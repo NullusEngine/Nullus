@@ -326,6 +326,12 @@ bool IsDxcUnavailableDiagnostic(const std::string& diagnostics)
         diagnostics.find("[dxc-exit-code] 127") != std::string::npos;
 }
 
+bool IsNativeDxcUnavailable()
+{
+    return NLS::Render::ShaderCompiler::GetCurrentShaderCompilerToolchainIdentity().compilerPath ==
+        "unavailable";
+}
+
 NLS::Render::ShaderCompiler::ShaderCompilationInput MakeNativeShaderCompileInput(
     const std::filesystem::path& sourcePath,
     NLS::Render::ShaderCompiler::ShaderStage stage,
@@ -806,6 +812,9 @@ TEST(PBRShadingContractTests, ShadingDirectSkipsBrdfOutsideLightHemisphereOnly)
 
 TEST(PBRShadingContractTests, ForwardAccumulatorsKeepAmbientOutsideGeometryGatedDirectLoop)
 {
+    if (IsNativeDxcUnavailable())
+        GTEST_SKIP() << "Native dxc is unavailable in this environment.";
+
     ScopedTemporaryDirectory temporaryDirectory;
     const auto wrapperPath = temporaryDirectory.GetPath() / "DeferredAmbientVisibilityContract.hlsl";
     struct VisibilityCase
@@ -1368,6 +1377,9 @@ TEST(PBRShadingContractTests, SharedNormalShaderCompilesThroughNativeDxcForDxilA
 
 TEST(PBRShadingContractTests, SafeNormalizeSemanticsAreIndependentOfPbrIncludeOrder)
 {
+    if (IsNativeDxcUnavailable())
+        GTEST_SKIP() << "Native dxc is unavailable in this environment.";
+
     ScopedTemporaryDirectory temporaryDirectory;
     const auto wrapperPath = temporaryDirectory.GetPath() / "PBRSafeNormalizeSemantics.hlsl";
 
@@ -1789,6 +1801,9 @@ TEST(PBRShadingContractTests, DeferredDecalPassesAreColorOnlyAndIndependentOfGBu
 
 TEST(PBRShadingContractTests, DeferredDecalShadersCompileThroughNativeDxcForDxilAndSpirv)
 {
+    if (IsNativeDxcUnavailable())
+        GTEST_SKIP() << "Native dxc is unavailable in this environment.";
+
     struct CompileTarget
     {
         NLS::Render::ShaderCompiler::ShaderTargetPlatform platform;
@@ -1901,6 +1916,9 @@ TEST(PBRShadingContractTests, DeferredDecalShadersCompileThroughNativeDxcForDxil
 
 TEST(PBRShadingContractTests, DeferredShadersCompileThroughNativeDxcForDxilSpirvAndShaderLabVariants)
 {
+    if (IsNativeDxcUnavailable())
+        GTEST_SKIP() << "Native dxc is unavailable in this environment.";
+
     struct CompileTarget
     {
         NLS::Render::ShaderCompiler::ShaderTargetPlatform platform;

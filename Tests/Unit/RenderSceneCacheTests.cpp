@@ -1315,6 +1315,8 @@ TEST(RenderSceneCacheTests, TransformAndUserMatrixUpdateVisibleObjectDescriptorW
 
 TEST(RenderSceneCacheTests, GatherVisibleCommandsAssignsStablePerFrameObjectIndices)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     ManyPrimitiveFixture fixture(6u);
     NLS::Engine::Rendering::RenderScene renderScene;
 
@@ -3987,6 +3989,8 @@ TEST(RenderSceneCacheTests, SynchronizeKeepsManuallyRegisteredHLODClusters)
 
 TEST(RenderSceneCacheTests, OpaqueQueueGroupsCompatibleStateAndTransparentKeepsBackToFront)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     fixture.AddObject("OpaqueNearA", *fixture.sharedMesh, fixture.opaqueMaterialA, 5.0f);
     fixture.AddObject("OpaqueMiddleB", *fixture.otherMesh, fixture.opaqueMaterialB, 10.0f);
@@ -4368,6 +4372,8 @@ TEST(RenderSceneCacheTests, SceneRendererRespectsGlobalObjectDataCapacityAcrossA
 
 TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoObjectIndexRange)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     fixture.AddObject("InstanceNear", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
     fixture.AddObject("InstanceMiddle", *fixture.sharedMesh, fixture.opaqueMaterialA, 12.0f);
@@ -4401,6 +4407,8 @@ TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoO
 
 TEST(RenderSceneCacheTests, OpaqueInstanceOrderRemainsStableWhenCameraMoves)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     fixture.AddObject("StableFirst", *fixture.sharedMesh, fixture.opaqueMaterialA, 3.0f);
     fixture.AddObject("StableSecond", *fixture.sharedMesh, fixture.opaqueMaterialA, 1.0f);
@@ -4435,6 +4443,8 @@ TEST(RenderSceneCacheTests, OpaqueInstanceOrderRemainsStableWhenCameraMoves)
 #if defined(NLS_ENABLE_TEST_HOOKS)
 TEST(RenderSceneCacheTests, OpaqueSortKeepsStableAndDistanceFallbackKeysInStrictOrder)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     fixture.AddObject("StableHigh", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
     fixture.AddObject("StableLow", *fixture.sharedMesh, fixture.opaqueMaterialA, 12.0f);
@@ -4478,6 +4488,8 @@ TEST(RenderSceneCacheTests, OpaqueSortKeepsStableAndDistanceFallbackKeysInStrict
 
 TEST(RenderSceneCacheTests, ShadowCastFlagDifferenceSplitsDynamicInstances)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     fixture.AddObject("CastA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
     fixture.AddObject("CastB", *fixture.sharedMesh, fixture.opaqueMaterialA, 8.0f);
@@ -4504,6 +4516,8 @@ TEST(RenderSceneCacheTests, ShadowCastFlagDifferenceSplitsDynamicInstances)
 
 TEST(RenderSceneCacheTests, ShadowReceiveFlagDifferenceSplitsDynamicInstances)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     fixture.AddObject("ReceiveA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
     fixture.AddObject("ReceiveB", *fixture.sharedMesh, fixture.opaqueMaterialA, 8.0f);
@@ -4531,6 +4545,8 @@ TEST(RenderSceneCacheTests, ShadowReceiveFlagDifferenceSplitsDynamicInstances)
 
 TEST(RenderSceneCacheTests, DynamicInstancingKeepsSiblingVisibleAfterDeletingOneSharedPrefabLikeObject)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     auto& first = fixture.AddObject("SharedPrefabA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
     fixture.AddObject("SharedPrefabB", *fixture.sharedMesh, fixture.opaqueMaterialA, 12.0f);
@@ -4554,6 +4570,8 @@ TEST(RenderSceneCacheTests, DynamicInstancingKeepsSiblingVisibleAfterDeletingOne
 
 TEST(RenderSceneCacheTests, DynamicInstancingBuildsMergedDescriptorInLinearPass)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     constexpr size_t kInstanceCount = 96u;
     for (size_t index = 0u; index < kInstanceCount; ++index)
@@ -4594,6 +4612,8 @@ TEST(RenderSceneCacheTests, DynamicInstancingBuildsMergedDescriptorInLinearPass)
 
 TEST(RenderSceneCacheTests, DynamicInstancingRejectsIncompatibleMeshMaterialAndTransparentCommands)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     fixture.AddObject("CompatibleA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
     fixture.AddObject("CompatibleB", *fixture.sharedMesh, fixture.opaqueMaterialA, 8.0f);
@@ -4650,6 +4670,8 @@ TEST(RenderSceneCacheTests, DynamicInstancingRejectsDifferentUserMatrices)
 
 TEST(RenderSceneCacheTests, DynamicInstancingSplitsSubmittedDrawsWhenObjectDataLimitIsExceeded)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
     QueueSortFixture fixture;
     for (size_t index = 0u; index < 4u; ++index)
@@ -4695,6 +4717,8 @@ TEST(RenderSceneCacheTests, DynamicInstancingSplitsSubmittedDrawsWhenObjectDataL
 
 TEST(RenderSceneCacheTests, DynamicInstancingDropsOverflowObjectsWithDiagnosticWhenObjectDataCapacityIsExceeded)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
     QueueSortFixture fixture;
     for (size_t index = 0u; index < 4u; ++index)
@@ -4779,6 +4803,8 @@ TEST(RenderSceneCacheTests, NonIndexedObjectDataDrawsDoNotConsumeGlobalObjectDat
 
 TEST(RenderSceneCacheTests, DynamicInstancingDropsOverflowObjectsAfterPerDrawChunksWithDiagnostic)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
     QueueSortFixture fixture;
     for (size_t index = 0u; index < 8u; ++index)
@@ -4823,6 +4849,8 @@ TEST(RenderSceneCacheTests, DynamicInstancingDropsOverflowObjectsAfterPerDrawChu
 
 TEST(RenderSceneCacheTests, DenseCompatibleInstancesStayBoundedBySubmittedDrawLimit)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
     QueueSortFixture fixture;
     constexpr size_t kInstanceCount = 513u;
@@ -4860,6 +4888,8 @@ TEST(RenderSceneCacheTests, DenseCompatibleInstancesStayBoundedBySubmittedDrawLi
 
 TEST(RenderSceneCacheTests, RetainedSingleDrawPreservesMaterialGpuInstances)
 {
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     QueueSortFixture fixture;
     fixture.opaqueMaterialA.SetGPUInstances(4);
     fixture.AddObject("MaterialInstancedA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);

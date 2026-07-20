@@ -45,6 +45,7 @@
 #include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Components/LightComponent.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
@@ -52,6 +53,21 @@
 
 namespace
 {
+    bool NativeDxcUnavailableForFrameObjectBindingTests()
+    {
+        static const bool unavailable =
+            NLS::Render::ShaderCompiler::GetCurrentShaderCompilerToolchainIdentity().compilerPath ==
+            "unavailable";
+        return unavailable;
+    }
+
+#define NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE()      \
+    do                                                                \
+    {                                                                 \
+        if (NativeDxcUnavailableForFrameObjectBindingTests())         \
+            GTEST_SKIP() << "Native dxc is unavailable in this environment."; \
+    } while (false)
+
     struct CopyTrackedDrawableDescriptor
     {
         CopyTrackedDrawableDescriptor() = default;
@@ -2124,6 +2140,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderPreservesEarlierObjectDataWh
 
 TEST(RendererFrameObjectBindingTests, EngineProviderShrinksIdleHighWaterObjectBuffer)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -2200,6 +2218,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderShrinksIdleHighWaterObjectBu
 
 TEST(RendererFrameObjectBindingTests, EngineProviderRejectsSparseExternalObjectIndexForIndexedDraw)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -2262,6 +2282,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsSparseExternalObjectI
 
 TEST(RendererFrameObjectBindingTests, EngineProviderAssignsObjectIndexForManualIndexedShaderDraw)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -2570,6 +2592,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderUploadsObjectIndexRangeForIn
 
 TEST(RendererFrameObjectBindingTests, EngineProviderUploadsMaterialOwnedGpuInstanceRangeForIndexedDraw)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -2723,6 +2747,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderUsesLegacyObjectConstantsWhe
 
 TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObjectDataRangeCannotBePrepared)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -2783,6 +2809,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObje
 
 TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObjectDataRangeExceedsSharedLimit)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -2850,6 +2878,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObje
 
 TEST(RendererFrameObjectBindingTests, EngineProviderRejectsInvalidObjectIndexAfterObjectDataSlotIsFull)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
     const ScopedObjectDataCountLimitOverride scopedLimit(3u);
     NLS::Render::Settings::DriverSettings settings;
@@ -2926,6 +2956,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsInvalidObjectIndexAft
 
 TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderBeforeAllocatingWhenInstanceMatricesAreIncomplete)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -2992,6 +3024,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderBeforeAl
 
 TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObjectDescriptorIsMissing)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -3602,6 +3636,8 @@ TEST(RendererFrameObjectBindingTests, ReflectionObjectDataRequiresMatrixStrideFo
 
 TEST(RendererFrameObjectBindingTests, ImmediateIndexedShaderDrawIsSkippedWhenObjectDataRangeCannotBePrepared)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -3745,6 +3781,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderKeepsIndexedObjectBuffersIso
 
 TEST(RendererFrameObjectBindingTests, EngineProviderFailsClosedWhenPreparedThreadedSlotsAreBackPressured)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -4229,6 +4267,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderReusesPreparedObjectBufferAf
 
 TEST(RendererFrameObjectBindingTests, ImmediateIndexedDrawPushesReceiveShadowObjectConstantsAfterProviderBindsObjectData)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -4382,6 +4422,8 @@ TEST(RendererFrameObjectBindingTests, ImmediateNonIndexedDrawPushesCompleteObjec
 
 TEST(RendererFrameObjectBindingTests, ImmediateIndexedShaderDrawAssignsObjectIndexWhenMissing)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -4854,6 +4896,8 @@ TEST(RendererFrameObjectBindingTests, EngineGraphicsShadersExposeRendererOwnedPa
 
 TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutUsesRendererOwnedShaderParameterStructs)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -5564,6 +5608,8 @@ TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutRejectsIndexedObject
 
 TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutUsesShadowObjectConstantsOnSupportedBackend)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -7246,6 +7292,8 @@ TEST(RendererFrameObjectBindingTests, DeferredDecalShaderDestroyReleasesFallback
 
 TEST(RendererFrameObjectBindingTests, ThreadedDeferredDecalDrawUsesDeferredDecalPassAndPipelineState)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -7443,6 +7491,8 @@ TEST(RendererFrameObjectBindingTests, ImmediateDeferredDecalDrawUsesDeferredDeca
 
 TEST(RendererFrameObjectBindingTests, ThreadedDeferredDecalMissingFallbackSkipsOnlyUnresolvedDecal)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -7503,6 +7553,8 @@ TEST(RendererFrameObjectBindingTests, ThreadedDeferredDecalMissingFallbackSkipsO
 
 TEST(RendererFrameObjectBindingTests, ImmediateDeferredDecalMissingFallbackSkipsOnlyUnresolvedDecal)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -7573,6 +7625,8 @@ TEST(RendererFrameObjectBindingTests, ImmediateDeferredDecalMissingFallbackSkips
 
 TEST(RendererFrameObjectBindingTests, ThreadedDeferredFrameWithoutDecalsPublishesWhenFallbackShaderMissing)
 {
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;

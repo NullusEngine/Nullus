@@ -345,6 +345,8 @@ constexpr std::array<AssetThumbnailKindPolicy, kAssetThumbnailKindCount> kAssetT
 constexpr size_t kMaxMeshPreviewLoadedVertices = 240000u;
 constexpr size_t kMaxMeshPreviewLoadedIndices = 720000u;
 constexpr size_t kMaxMeshPreviewRenderedTriangles = 12000u;
+constexpr float kMeshThumbnailFormalLODScreenSize =
+    2.0f / (4.0f * 0.26794919243f); // 30-degree FOV, object framed at four radii.
 constexpr size_t kMaxObsoleteThumbnailGenerationInFlightRequests = 2u;
 constexpr size_t kMaxCurrentThumbnailGenerationInFlightRequests = 2u;
 constexpr size_t kMaxThumbnailGenerationTotalInFlightSlots =
@@ -615,16 +617,17 @@ std::optional<NLS::Render::Assets::MeshArtifactData> LoadMeshArtifactForThumbnai
     const std::filesystem::path& path,
     const NLS::Render::Assets::MeshArtifactHeaderPreview& header)
 {
-    if (MeshPreviewHeaderExceedsCpuLoadBudget(header))
+    (void)header;
+    auto mesh = NLS::Render::Assets::LoadMeshArtifactLOD(
+        path,
+        kMeshThumbnailFormalLODScreenSize);
+    if (!mesh.has_value() ||
+        mesh->vertices.size() > kMaxMeshPreviewLoadedVertices ||
+        mesh->indices.size() > kMaxMeshPreviewLoadedIndices)
     {
-        return NLS::Render::Assets::LoadMeshArtifactPreviewSample(
-            path,
-            static_cast<uint32_t>(kMaxMeshPreviewLoadedVertices),
-            static_cast<uint32_t>(kMaxMeshPreviewLoadedIndices),
-            kMaxStructurePreviewArtifactPayloadBytes);
+        return std::nullopt;
     }
-
-    return NLS::Render::Assets::LoadMeshArtifact(path);
+    return mesh;
 }
 
 bool IsTextureThumbnailSourceExtension(const std::filesystem::path& path)
@@ -1738,8 +1741,8 @@ bool MeshArtifactFileExceedsThumbnailPreviewBudget(
     const std::filesystem::path& path,
     const NLS::Render::Assets::MeshArtifactHeaderPreview& header)
 {
-    return !MeshPreviewHeaderExceedsCpuLoadBudget(header) &&
-        NativeArtifactFileExceedsThumbnailPreviewBudget(path);
+    (void)header;
+    return NativeArtifactFileExceedsThumbnailPreviewBudget(path);
 }
 
 std::optional<std::filesystem::path> ResolveArtifactPathForPreview(
@@ -4950,6 +4953,27 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItemWithContex
     uint32_t requestedSize,
     AssetThumbnailRequestBuildContext* context);
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+ThumbnailFormalLODSelectionForTesting LoadThumbnailFormalLODForTesting(
+    const std::filesystem::path& path)
+{
+    ThumbnailFormalLODSelectionForTesting result;
+    const auto header = NLS::Render::Assets::ReadMeshArtifactHeaderPreview(
+        path,
+        kMaxStructurePreviewArtifactPayloadBytes);
+    if (!header.has_value())
+        return result;
+    const auto mesh = LoadMeshArtifactForThumbnailPreview(path, *header);
+    if (!mesh.has_value())
+        return result;
+    result.loaded = true;
+    result.materialIndex = mesh->materialIndex;
+    result.vertexCount = mesh->vertices.size();
+    result.indexCount = mesh->indices.size();
+    return result;
+}
+#endif
 
 std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItem(
     const std::filesystem::path& projectRoot,

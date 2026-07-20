@@ -47,6 +47,18 @@ NLS_RENDER_API std::optional<MeshArtifactData> DeserializeMeshArtifact(const std
 NLS_RENDER_API std::vector<uint8_t> SerializeMeshArtifactBundle(const MeshArtifactBundle& bundle);
 NLS_RENDER_API std::optional<MeshArtifactBundle> DeserializeMeshArtifactBundle(
     const std::vector<uint8_t>& bytes);
+NLS_RENDER_API uint32_t SelectMeshArtifactLOD(
+    const MeshArtifactBundle& bundle,
+    float screenSize,
+    uint32_t minLOD = 0u,
+    uint32_t maxLOD = UINT32_MAX);
+NLS_RENDER_API std::optional<MeshArtifactBundle> LoadMeshArtifactBundle(
+    const std::filesystem::path& path);
+NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifactLOD(
+    const std::filesystem::path& path,
+    float screenSize,
+    uint32_t minLOD = 0u,
+    uint32_t maxLOD = UINT32_MAX);
 #if defined(NLS_ENABLE_TEST_HOOKS)
 // Reproduces the trusted buffered artifact path for same-process performance comparisons.
 NLS_RENDER_API std::optional<MeshArtifactData> DeserializeMeshArtifactTrustedForTesting(
@@ -57,16 +69,6 @@ NLS_RENDER_API std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPr
     uint64_t maxMetadataBytes = UINT64_MAX);
 // Validates the fixed native container header without parsing artifact metadata.
 NLS_RENDER_API bool IsMeshArtifactFile(const std::filesystem::path& path);
-// Builds a topology-aware preview LOD and compacts it to the requested GPU budgets.
-NLS_RENDER_API std::optional<MeshArtifactData> SimplifyMeshArtifactForPreview(
-    const MeshArtifactData& mesh,
-    uint32_t maxVertices,
-    uint32_t maxIndices);
-NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifactPreviewSample(
-    const std::filesystem::path& path,
-    uint32_t maxVertices,
-    uint32_t maxIndices,
-    uint64_t maxMetadataBytes = UINT64_MAX);
 NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifact(const std::filesystem::path& path);
 NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifact(
     const std::filesystem::path& path,

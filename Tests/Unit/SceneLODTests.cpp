@@ -95,7 +95,7 @@ TEST(SceneLODTests, ForcedLODOverridesThresholdsAndClampsToAvailableLevels)
 TEST(SceneLODTests, UsesProjectionAwareBoundsSphereWhenViewProjectionIsProvided)
 {
     auto group = MakeThreeLevelGroup();
-    group.levels[0].screenRelativeThreshold = 0.15f;
+    group.levels[0].screenRelativeThreshold = 0.25f;
     group.levels[1].screenRelativeThreshold = 0.05f;
     group.worldSize = 999.0f;
     group.boundsSphereRadius = 10.0f;
@@ -106,7 +106,7 @@ TEST(SceneLODTests, UsesProjectionAwareBoundsSphereWhenViewProjectionIsProvided)
 
     const auto result = SceneLODSystem::Select(input, group, nullptr);
 
-    EXPECT_NEAR(result.screenRelativeSize, 0.1f, 0.0001f);
+    EXPECT_NEAR(result.screenRelativeSize, 0.2f, 0.0001f);
     EXPECT_EQ(result.selectedLOD, 1u);
 }
 

@@ -93,6 +93,19 @@ std::optional<AssetThumbnailRequest> BuildAssetThumbnailRequestForItem(
     uint32_t requestedSize,
     AssetThumbnailRequestBuildContext& context);
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+struct ThumbnailFormalLODSelectionForTesting
+{
+    bool loaded = false;
+    uint32_t materialIndex = 0u;
+    size_t vertexCount = 0u;
+    size_t indexCount = 0u;
+};
+
+ThumbnailFormalLODSelectionForTesting LoadThumbnailFormalLODForTesting(
+    const std::filesystem::path& path);
+#endif
+
 class AssetThumbnailService
 {
 public:

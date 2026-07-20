@@ -212,7 +212,7 @@ constexpr size_t kMaxGpuPreviewPrefabProxyDrawItems = 32u;
 constexpr size_t kMaxGpuPreviewPrefabProxyCandidateDrawItems = 64u;
 constexpr size_t kPersistentPrefabProxyThreshold = 64u;
 constexpr uint32_t kPersistentPrefabProxyMaxIndices = 480000u;
-constexpr uint32_t kPersistentPrefabProxyMinimumIndicesPerSource = 72u;
+constexpr float kPersistentPrefabProxyFormalLODScreenSize = 0.25f;
 constexpr size_t kGpuPreviewPrefabProxyBinsX = 2u;
 constexpr size_t kGpuPreviewPrefabProxyBinsY = 2u;
 constexpr size_t kGpuPreviewPrefabProxyBinsZ = 2u;
@@ -1435,7 +1435,9 @@ std::optional<NLS::Render::Assets::MeshArtifactData> LoadPersistentPrefabPreview
         if (!NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portablePath))
             return std::nullopt;
     }
-    return NLS::Render::Assets::LoadMeshArtifact(*resolvedPath);
+    return NLS::Render::Assets::LoadMeshArtifactLOD(
+        *resolvedPath,
+        kPersistentPrefabProxyFormalLODScreenSize);
 }
 
 std::optional<PersistentPrefabPreviewProxy> BuildOrLoadPersistentPrefabPreviewProxy(
@@ -1522,44 +1524,13 @@ std::optional<PersistentPrefabPreviewProxy> BuildOrLoadPersistentPrefabPreviewPr
         proxy.materialIndex = 0u;
 
     uint32_t remainingIndexBudget = kPersistentPrefabProxyMaxIndices;
-    std::map<std::pair<std::string, uint32_t>, NLS::Render::Assets::MeshArtifactData>
-        simplifiedSourceCache;
-    const auto minimumIndicesPerSource =
-        static_cast<uint64_t>(sources.size()) * kPersistentPrefabProxyMinimumIndicesPerSource <=
-            kPersistentPrefabProxyMaxIndices
-        ? kPersistentPrefabProxyMinimumIndicesPerSource
-        : 3u;
+    std::map<std::string, NLS::Render::Assets::MeshArtifactData> sourceMeshCache;
     size_t processedSourceCount = 0u;
     for (size_t sourceIndex = 0u; sourceIndex < sources.size(); ++sourceIndex)
     {
         const auto& source = sources[sourceIndex];
-        const auto remainingSourceCount = sources.size() - sourceIndex;
-        if (remainingIndexBudget < 3u)
-            break;
-
-        const auto sourceTriangleIndices = source.indexCount - (source.indexCount % 3u);
-        const auto proportionalIndices = remainingSourceIndices == 0u
-            ? uint64_t {3u}
-            : (static_cast<uint64_t>(remainingIndexBudget) * sourceTriangleIndices) /
-                remainingSourceIndices;
-        const auto reservedIndicesForLater = remainingSourceCount > 1u
-            ? static_cast<uint32_t>((remainingSourceCount - 1u) * minimumIndicesPerSource)
-            : 0u;
-        const auto availableIndices = remainingIndexBudget > reservedIndicesForLater
-            ? remainingIndexBudget - reservedIndicesForLater
-            : minimumIndicesPerSource;
-        auto indexBudget = static_cast<uint32_t>((std::min)(
-            static_cast<uint64_t>(availableIndices),
-            (std::max)(static_cast<uint64_t>(minimumIndicesPerSource), proportionalIndices)));
-        indexBudget -= indexBudget % 3u;
-        indexBudget = (std::max)(indexBudget, 3u);
-        remainingSourceIndices -= (std::min)(
-            remainingSourceIndices,
-            static_cast<uint64_t>(sourceTriangleIndices));
-
-        const auto sampleKey = std::make_pair(source.planned->meshLoadPath, indexBudget);
-        auto sampleIterator = simplifiedSourceCache.find(sampleKey);
-        if (sampleIterator == simplifiedSourceCache.end())
+        auto meshIterator = sourceMeshCache.find(source.planned->meshLoadPath);
+        if (meshIterator == sourceMeshCache.end())
         {
             const auto sourceMesh = LoadPersistentPrefabPreviewSourceMesh(
                 request,
@@ -1570,23 +1541,13 @@ std::optional<PersistentPrefabPreviewProxy> BuildOrLoadPersistentPrefabPreviewPr
                     "persistent-proxy-source-load-failed:path=" +
                     source.planned->meshLoadPath);
             }
-            auto sample = NLS::Render::Assets::SimplifyMeshArtifactForPreview(
-                *sourceMesh,
-                indexBudget,
-                indexBudget);
-            if (!sample.has_value() || sample->indices.size() < 3u || sample->vertices.empty())
-            {
-                throw std::runtime_error(
-                    "persistent-proxy-source-simplify-failed:path=" +
-                    source.planned->meshLoadPath +
-                    "|sourceVertices=" + std::to_string(sourceMesh->vertices.size()) +
-                    "|sourceIndices=" + std::to_string(sourceMesh->indices.size()) +
-                    "|vertexBudget=" + std::to_string(indexBudget) +
-                    "|indexBudget=" + std::to_string(indexBudget));
-            }
-            sampleIterator = simplifiedSourceCache.emplace(sampleKey, std::move(*sample)).first;
+            meshIterator = sourceMeshCache.emplace(
+                source.planned->meshLoadPath,
+                std::move(*sourceMesh)).first;
         }
-        const auto& sample = sampleIterator->second;
+        const auto& sample = meshIterator->second;
+        if (sample.indices.size() > remainingIndexBudget)
+            return std::nullopt;
 
         auto& proxy = proxyMeshes[source.materialGroupIndex];
         if (sample.vertices.size() >

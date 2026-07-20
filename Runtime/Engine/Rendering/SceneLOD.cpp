@@ -28,7 +28,7 @@ namespace
 				std::numeric_limits<float>::epsilon());
 			return std::max(
 				0.0f,
-				group.boundsSphereRadius / distance / std::tan(halfFov)) * bias;
+				2.0f * group.boundsSphereRadius / distance / std::tan(halfFov)) * bias;
 		}
 		return std::max(0.0f, group.worldSize) / distance * bias;
 	}

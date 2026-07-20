@@ -6,6 +6,8 @@
 #include "Rendering/Assets/StaticMeshBuilder.h"
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 
 namespace
 {
@@ -21,6 +23,9 @@ using NLS::Render::Assets::MeshArtifactLODResource;
 using NLS::Render::Assets::SerializeMeshArtifactBundle;
 using NLS::Render::Assets::ReduceMeshArtifact;
 using NLS::Render::Assets::BuildStaticMeshLODArtifact;
+using NLS::Render::Assets::LoadMeshArtifact;
+using NLS::Render::Assets::LoadMeshArtifactBundle;
+using NLS::Render::Assets::SelectMeshArtifactLOD;
 
 TEST(StaticMeshLODTests, BuiltinPresetsMatchUE426Defaults)
 {
@@ -287,5 +292,51 @@ TEST(StaticMeshLODTests, StaticMeshBuilderPreservesAuthoredLOD)
     EXPECT_EQ(result.bundle.lodResources[1].mesh.materialIndex, 8u);
     EXPECT_EQ(result.bundle.lodResources[1].mesh.vertices[1].position[0], 2.0f);
     EXPECT_EQ(result.bundle.lodResources[1].screenSize, 0.4f);
+}
+
+TEST(StaticMeshLODTests, FormalLODSelectionUsesDescendingScreenSizeThresholds)
+{
+    MeshArtifactBundle bundle;
+    bundle.lodResources = {
+        {{{}, {0u, 1u, 2u}, 0u}, 1.0f},
+        {{{}, {0u, 1u, 2u}, 1u}, 0.5f},
+        {{{}, {0u, 1u, 2u}, 2u}, 0.25f}};
+
+    EXPECT_EQ(SelectMeshArtifactLOD(bundle, 1.2f), 0u);
+    EXPECT_EQ(SelectMeshArtifactLOD(bundle, 0.75f), 1u);
+    EXPECT_EQ(SelectMeshArtifactLOD(bundle, 0.25f), 2u);
+    EXPECT_EQ(SelectMeshArtifactLOD(bundle, 0.01f), 2u);
+}
+
+TEST(StaticMeshLODTests, BundleFileLoadsAllLODsAndLegacyLoadReturnsLOD0)
+{
+    MeshArtifactBundle bundle;
+    bundle.lodResources = {
+        {{{{{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+           {{1.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+           {{0.0f, 1.0f, 0.0f}, {}, {}, {}, {}}}, {0u, 1u, 2u}, 4u}, 1.0f},
+        {{{{{0.0f, 0.0f, 0.0f}, {}, {}, {}, {}},
+           {{0.5f, 0.0f, 0.0f}, {}, {}, {}, {}},
+           {{0.0f, 0.5f, 0.0f}, {}, {}, {}, {}}}, {0u, 1u, 2u}, 7u}, 0.5f}};
+    const auto bytes = SerializeMeshArtifactBundle(bundle);
+    ASSERT_FALSE(bytes.empty());
+
+    const auto path = std::filesystem::temp_directory_path() / "nullus-static-mesh-lod-bundle.nmesh";
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(
+            reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+    }
+
+    const auto loadedBundle = LoadMeshArtifactBundle(path);
+    const auto legacyLOD0 = LoadMeshArtifact(path);
+
+    ASSERT_TRUE(loadedBundle.has_value());
+    ASSERT_EQ(loadedBundle->lodResources.size(), 2u);
+    EXPECT_EQ(loadedBundle->lodResources[1].mesh.materialIndex, 7u);
+    ASSERT_TRUE(legacyLOD0.has_value());
+    EXPECT_EQ(legacyLOD0->materialIndex, 4u);
+    std::filesystem::remove(path);
 }
 }

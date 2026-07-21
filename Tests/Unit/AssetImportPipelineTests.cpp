@@ -10142,6 +10142,15 @@ TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsStoreSelectionAndClampM
     EXPECT_EQ(serialized.at("AUTO_COMPUTE_LOD_SCREEN_SIZE"), "false");
 }
 
+TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsLoadNegativeMinLODAsZero)
+{
+    const std::map<std::string, std::string> serialized {{"MIN_LOD", "-7"}};
+
+    const auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+
+    EXPECT_EQ(view.minLOD, 0);
+}
+
 TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsStoreInvalidSelectionAsNone)
 {
     std::map<std::string, std::string> serialized;

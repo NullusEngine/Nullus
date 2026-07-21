@@ -131,6 +131,48 @@ uint64_t Mesh::GetContentRevision() const
 	return m_contentRevision;
 }
 
+uint32_t Mesh::GetLODCount() const
+{
+	return static_cast<uint32_t>(m_lodResources.size() + 1u);
+}
+
+Mesh* Mesh::GetLODMesh(const uint32_t lodIndex)
+{
+	if (lodIndex == 0u || lodIndex > m_lodResources.size())
+		return this;
+	return m_lodResources[lodIndex - 1u].get();
+}
+
+const Mesh* Mesh::GetLODMesh(const uint32_t lodIndex) const
+{
+	return const_cast<Mesh*>(this)->GetLODMesh(lodIndex);
+}
+
+float Mesh::GetLODScreenSize(const uint32_t lodIndex) const
+{
+	return lodIndex < m_lodScreenSizes.size() ? m_lodScreenSizes[lodIndex] : 0.0f;
+}
+
+void Mesh::SetLODResources(
+    std::vector<std::unique_ptr<Mesh>> lodResources,
+    std::vector<float> screenSizes,
+    const uint32_t minLOD)
+{
+	m_lodResources = std::move(lodResources);
+	m_lodScreenSizes = std::move(screenSizes);
+	if (m_lodScreenSizes.size() != m_lodResources.size() + 1u)
+		m_lodScreenSizes.assign(m_lodResources.size() + 1u, 0.0f);
+	if (!m_lodScreenSizes.empty())
+		m_lodScreenSizes[0] = 1.0f;
+	m_minLOD = std::min(minLOD, GetLODCount() - 1u);
+	TouchContentRevision();
+}
+
+uint32_t Mesh::GetMinLOD() const
+{
+	return m_minLOD;
+}
+
 void Mesh::Reload(
 	const std::vector<Geometry::Vertex>& vertices,
 	const std::vector<uint32_t>& indices,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -16,6 +17,7 @@ namespace NLS::Engine::Rendering
 		float screenRelativeThreshold = 0.0f;
 		std::vector<ScenePrimitiveHandle> primitiveHandles;
 		float fadeDurationSeconds = 0.0f;
+		bool resident = true;
 	};
 
 	struct LODGroupRecord
@@ -25,13 +27,18 @@ namespace NLS::Engine::Rendering
 		float hysteresis = 0.0f;
 		Maths::Vector3 worldReferencePoint {};
 		float worldSize = 1.0f;
+		float boundsSphereRadius = 0.0f;
+		uint32_t minLOD = 0u;
+		uint32_t maxLOD = (std::numeric_limits<uint32_t>::max)();
 		std::optional<uint32_t> forcedLOD;
+		bool selectsMeshLOD = false;
 	};
 
 	struct SceneLODViewInput
 	{
 		Maths::Vector3 cameraPosition {};
 		float lodBias = 1.0f;
+		float verticalFovRadians = 0.0f;
 	};
 
 	struct LODSelectionHistory
@@ -47,6 +54,8 @@ namespace NLS::Engine::Rendering
 		float screenRelativeSize = 0.0f;
 		bool usedHysteresis = false;
 		bool usedForcedLOD = false;
+		bool usedLODConstraint = false;
+		bool usedResidencyFallback = false;
 	};
 
 	class NLS_ENGINE_API SceneLODSystem

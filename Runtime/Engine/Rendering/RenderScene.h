@@ -188,6 +188,7 @@ namespace NLS::Engine::Rendering
 		uint32_t visibleLayerMask = 0xFFFF'FFFFu;
 		const LargeSceneSettings* largeSceneSettings = nullptr;
 		float lodBias = 1.0f;
+		float verticalFovRadians = 0.0f;
 		uint64_t lodHistoryViewKey = 0u;
 		bool allowHLOD = true;
 		bool editorInspectionView = false;
@@ -233,6 +234,7 @@ namespace NLS::Engine::Rendering
 		uint64_t occlusionCulledCount = 0u;
 		std::array<uint64_t, NLS::Render::Data::kLargeSceneCullReasonCount> culledByReason {};
 		std::array<uint64_t, NLS::Render::Data::kLargeSceneLodSelectionBucketCount> lodSelectionCount {};
+		std::vector<uint32_t> selectedLODByPrimitive;
 		uint64_t activeHLODClusterCount = 0u;
 		uint64_t spatialCandidateCount = 0u;
 		uint64_t fullScanCandidateCount = 0u;

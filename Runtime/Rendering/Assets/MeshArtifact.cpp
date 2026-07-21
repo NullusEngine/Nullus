@@ -5,8 +5,6 @@
 #include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/NativeArtifactContainer.h"
 
-#include <meshoptimizer.h>
-
 #include <cstring>
 #include <algorithm>
 #include <array>
@@ -14,9 +12,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
-#include <numeric>
 #include <string>
-#include <unordered_map>
 
 namespace NLS::Render::Assets
 {
@@ -26,6 +22,8 @@ constexpr uint32_t kMeshArtifactMagic = 0x484D4E4Eu; // "NNMH" little-endian.
 constexpr uint32_t kMeshArtifactVersion = 1u;
 constexpr uint32_t kMeshArtifactVersionWithBoundingSphere = 2u;
 constexpr uint32_t kMeshArtifactContainerSchemaVersion = 3u;
+constexpr uint32_t kMeshArtifactBundleMagic = 0x444F4C4Eu; // "NLOD"
+constexpr uint32_t kMeshArtifactBundleVersion = 2u;
 
 struct MeshArtifactHeader
 {
@@ -43,9 +41,6 @@ constexpr uint32_t kNativeArtifactMagic = 0x41534C4Eu;
 constexpr uint32_t kNativeArtifactContainerVersion = 1u;
 constexpr uint32_t kNativeArtifactHeaderSize = 64u;
 constexpr uint32_t kNativeArtifactFlagsLittleEndian = 1u;
-constexpr uint32_t kPreviewSimplificationMinimumIndexCount = 3u;
-constexpr float kPreviewSimplificationMaximumRelativeError = 1.0f;
-constexpr size_t kPreviewSimplificationMaximumAttempts = 8u;
 
 struct NativeArtifactHeaderPreview
 {
@@ -207,27 +202,6 @@ bool ReadBoundingSphere(const ByteView bytes, size_t& offset, Geometry::Bounding
         ReadFloat(bytes, offset, boundingSphere.radius);
 }
 
-uint32_t AlignSampleCountToTriangleIndexCount(uint32_t value)
-{
-    return value - (value % 3u);
-}
-
-bool ReadExactAt(
-    std::ifstream& input,
-    const uint64_t offset,
-    uint8_t* destination,
-    const size_t size)
-{
-    if (size == 0u)
-        return true;
-    if (offset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()))
-        return false;
-    input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    if (!input)
-        return false;
-    input.read(reinterpret_cast<char*>(destination), static_cast<std::streamsize>(size));
-    return input.gcount() == static_cast<std::streamsize>(size);
-}
 }
 
 std::vector<uint8_t> SerializeMeshArtifactPayload(const MeshArtifactData& mesh)
@@ -283,123 +257,6 @@ struct MeshArtifactPayloadLayout
     size_t dataOffset = 0u;
     bool hasBoundingSphere = false;
 };
-
-uint32_t AlignToTriangleIndexCount(const size_t count)
-{
-    const auto clamped = (std::min)(
-        count,
-        static_cast<size_t>(std::numeric_limits<uint32_t>::max()));
-    return static_cast<uint32_t>(clamped - clamped % 3u);
-}
-
-bool IsValidSimplificationInput(const MeshArtifactData& mesh)
-{
-    if (mesh.vertices.empty() ||
-        mesh.indices.size() < kPreviewSimplificationMinimumIndexCount ||
-        mesh.indices.size() % 3u != 0u)
-    {
-        return false;
-    }
-
-    for (const auto& vertex : mesh.vertices)
-    {
-        if (!std::isfinite(vertex.position[0]) ||
-            !std::isfinite(vertex.position[1]) ||
-            !std::isfinite(vertex.position[2]))
-        {
-            return false;
-        }
-    }
-    return std::all_of(
-        mesh.indices.begin(),
-        mesh.indices.end(),
-        [&mesh](const uint32_t index)
-        {
-            return index < mesh.vertices.size();
-        });
-}
-
-std::optional<MeshArtifactData> CompactPreviewMesh(
-    const MeshArtifactData& source,
-    const uint32_t* indices,
-    const size_t indexCount,
-    const uint32_t maxVertices)
-{
-    if (indices == nullptr || indexCount < 3u || indexCount % 3u != 0u)
-        return std::nullopt;
-
-    constexpr uint32_t kUnmappedVertex = std::numeric_limits<uint32_t>::max();
-    std::vector<uint32_t> remap(source.vertices.size(), kUnmappedVertex);
-    MeshArtifactData result;
-    result.vertices.reserve((std::min)(static_cast<size_t>(maxVertices), indexCount));
-    result.indices.reserve(indexCount);
-    result.materialIndex = source.materialIndex;
-
-    for (size_t indexOffset = 0u; indexOffset < indexCount; ++indexOffset)
-    {
-        const auto sourceIndex = indices[indexOffset];
-        auto& compactedIndex = remap[sourceIndex];
-        if (compactedIndex == kUnmappedVertex)
-        {
-            if (result.vertices.size() >= maxVertices)
-                return std::nullopt;
-            compactedIndex = static_cast<uint32_t>(result.vertices.size());
-            result.vertices.push_back(source.vertices[sourceIndex]);
-        }
-        result.indices.push_back(compactedIndex);
-    }
-
-    result.boundingSphere = Geometry::ComputeBoundingSphere(result.vertices);
-    result.hasBoundingSphere = true;
-    return result;
-}
-
-std::optional<MeshArtifactData> BuildEvenTriangleSubset(
-    const MeshArtifactData& source,
-    const uint32_t maxVertices,
-    const uint32_t maxIndices)
-{
-    const auto triangleCount = source.indices.size() / 3u;
-    const auto targetTriangleCount = (std::min)(
-        triangleCount,
-        static_cast<size_t>(maxIndices / 3u));
-    if (targetTriangleCount == 0u)
-        return std::nullopt;
-
-    std::vector<uint32_t> selectedIndices;
-    selectedIndices.reserve(targetTriangleCount * 3u);
-    std::vector<uint8_t> selectedVertices(source.vertices.size(), 0u);
-    size_t selectedVertexCount = 0u;
-    for (size_t outputTriangle = 0u; outputTriangle < targetTriangleCount; ++outputTriangle)
-    {
-        const auto sourceTriangle = outputTriangle * triangleCount / targetTriangleCount;
-        const auto sourceOffset = sourceTriangle * 3u;
-        const auto first = source.indices[sourceOffset];
-        const auto second = source.indices[sourceOffset + 1u];
-        const auto third = source.indices[sourceOffset + 2u];
-        if (first == second || first == third || second == third)
-            continue;
-        const auto newVertexCount =
-            static_cast<size_t>(selectedVertices[first] == 0u) +
-            static_cast<size_t>(selectedVertices[second] == 0u && second != first) +
-            static_cast<size_t>(selectedVertices[third] == 0u && third != first && third != second);
-        if (selectedVertexCount + newVertexCount > maxVertices)
-            continue;
-        selectedVertices[first] = 1u;
-        selectedVertices[second] = 1u;
-        selectedVertices[third] = 1u;
-        selectedVertexCount += newVertexCount;
-        selectedIndices.insert(selectedIndices.end(), {first, second, third});
-    }
-
-    if (selectedIndices.empty())
-        return std::nullopt;
-    return CompactPreviewMesh(
-        source,
-        selectedIndices.data(),
-        selectedIndices.size(),
-        maxVertices);
-}
 
 std::optional<MeshArtifactPayloadLayout> ParseMeshArtifactPayloadLayout(
     const ByteView payloadPrefix,
@@ -631,6 +488,28 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
     const std::filesystem::path& path,
     const uint64_t maxMetadataBytes)
 {
+    {
+        std::ifstream input(path, std::ios::binary);
+        uint32_t magic = 0u;
+        if (input.read(reinterpret_cast<char*>(&magic), sizeof(magic)) &&
+            magic == kMeshArtifactBundleMagic)
+        {
+            const auto bundle = LoadMeshArtifactBundle(path);
+            if (!bundle.has_value() || bundle->lodResources.empty())
+                return std::nullopt;
+
+            const auto& mesh = bundle->lodResources.front().mesh;
+            MeshArtifactHeaderPreview preview;
+            preview.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+            preview.indexCount = static_cast<uint32_t>(mesh.indices.size());
+            preview.materialIndex = mesh.materialIndex;
+            preview.boundingSphere = mesh.boundingSphere;
+            preview.hasBoundingSphere = mesh.hasBoundingSphere;
+            preview.isLODBundle = true;
+            return preview;
+        }
+    }
+
     const auto prefix = NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
         path,
         NLS::Core::Assets::ArtifactType::Mesh,
@@ -641,6 +520,26 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
         return std::nullopt;
 
     const ByteView payload {prefix->bytes.data(), prefix->bytes.size()};
+    size_t payloadMagicOffset = 0u;
+    uint32_t payloadMagic = 0u;
+    if (ReadUInt32(payload, payloadMagicOffset, payloadMagic) &&
+        payloadMagic == kMeshArtifactBundleMagic)
+    {
+        const auto bundle = LoadMeshArtifactBundle(path);
+        if (!bundle.has_value() || bundle->lodResources.empty())
+            return std::nullopt;
+
+        const auto& mesh = bundle->lodResources.front().mesh;
+        MeshArtifactHeaderPreview preview;
+        preview.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+        preview.indexCount = static_cast<uint32_t>(mesh.indices.size());
+        preview.materialIndex = mesh.materialIndex;
+        preview.boundingSphere = mesh.boundingSphere;
+        preview.hasBoundingSphere = mesh.hasBoundingSphere;
+        preview.isLODBundle = true;
+        return preview;
+    }
+
     MeshArtifactHeader header;
     if (!ReadHeader(payload, header))
         return std::nullopt;
@@ -665,6 +564,16 @@ bool IsMeshArtifactFile(const std::filesystem::path& path)
     if (!input)
         return false;
 
+    uint32_t prefixMagic = 0u;
+    input.read(reinterpret_cast<char*>(&prefixMagic), sizeof(prefixMagic));
+    if (input.gcount() == static_cast<std::streamsize>(sizeof(prefixMagic)) &&
+        prefixMagic == kMeshArtifactBundleMagic)
+    {
+        return LoadMeshArtifactBundle(path).has_value();
+    }
+    input.clear();
+    input.seekg(0, std::ios::beg);
+
     std::array<uint8_t, kNativeArtifactHeaderSize> headerBytes {};
     input.read(
         reinterpret_cast<char*>(headerBytes.data()),
@@ -685,369 +594,6 @@ bool IsMeshArtifactFile(const std::filesystem::path& path)
     return !error &&
         header.payloadOffset <= fileSize &&
         header.payloadSize == fileSize - header.payloadOffset;
-}
-
-std::optional<MeshArtifactData> SimplifyMeshArtifactForPreview(
-    const MeshArtifactData& mesh,
-    const uint32_t maxVertices,
-    const uint32_t maxIndices)
-{
-    const auto targetIndexCount = AlignToTriangleIndexCount(
-        (std::min)(mesh.indices.size(), static_cast<size_t>(maxIndices)));
-    if (maxVertices == 0u ||
-        targetIndexCount < kPreviewSimplificationMinimumIndexCount ||
-        !IsValidSimplificationInput(mesh))
-    {
-        return std::nullopt;
-    }
-
-    if (mesh.indices.size() <= targetIndexCount)
-    {
-        auto compacted = CompactPreviewMesh(
-            mesh,
-            mesh.indices.data(),
-            mesh.indices.size(),
-            maxVertices);
-        if (compacted.has_value())
-            return compacted;
-    }
-
-    std::vector<uint32_t> simplifiedIndices(mesh.indices.size());
-    auto attemptTarget = targetIndexCount;
-    for (size_t attempt = 0u;
-        attempt < kPreviewSimplificationMaximumAttempts &&
-        attemptTarget >= kPreviewSimplificationMinimumIndexCount;
-        ++attempt)
-    {
-        const auto simplifiedCount = meshopt_simplify(
-            simplifiedIndices.data(),
-            mesh.indices.data(),
-            mesh.indices.size(),
-            mesh.vertices.front().position,
-            mesh.vertices.size(),
-            sizeof(Geometry::Vertex),
-            attemptTarget,
-            kPreviewSimplificationMaximumRelativeError,
-            meshopt_SimplifyLockBorder |
-                meshopt_SimplifyRegularize,
-            nullptr);
-        if (simplifiedCount >= kPreviewSimplificationMinimumIndexCount &&
-            simplifiedCount <= targetIndexCount)
-        {
-            auto compacted = CompactPreviewMesh(
-                mesh,
-                simplifiedIndices.data(),
-                simplifiedCount,
-                maxVertices);
-            if (compacted.has_value())
-                return compacted;
-        }
-
-        if (attemptTarget == kPreviewSimplificationMinimumIndexCount)
-            break;
-        attemptTarget = AlignToTriangleIndexCount((std::max)(
-            static_cast<size_t>(kPreviewSimplificationMinimumIndexCount),
-            static_cast<size_t>(attemptTarget) * 3u / 4u));
-    }
-
-    attemptTarget = targetIndexCount;
-    for (size_t attempt = 0u;
-        attempt < kPreviewSimplificationMaximumAttempts &&
-        attemptTarget >= kPreviewSimplificationMinimumIndexCount;
-        ++attempt)
-    {
-        const auto simplifiedCount = meshopt_simplifySloppy(
-            simplifiedIndices.data(),
-            mesh.indices.data(),
-            mesh.indices.size(),
-            mesh.vertices.front().position,
-            mesh.vertices.size(),
-            sizeof(Geometry::Vertex),
-            nullptr,
-            attemptTarget,
-            kPreviewSimplificationMaximumRelativeError,
-            nullptr);
-        if (simplifiedCount >= kPreviewSimplificationMinimumIndexCount &&
-            simplifiedCount <= targetIndexCount)
-        {
-            auto compacted = CompactPreviewMesh(
-                mesh,
-                simplifiedIndices.data(),
-                simplifiedCount,
-                maxVertices);
-            if (compacted.has_value())
-                return compacted;
-        }
-
-        if (attemptTarget == kPreviewSimplificationMinimumIndexCount)
-            break;
-        attemptTarget = AlignToTriangleIndexCount((std::max)(
-            static_cast<size_t>(kPreviewSimplificationMinimumIndexCount),
-            static_cast<size_t>(attemptTarget) * 3u / 4u));
-    }
-    // Some imported triangle soups and degenerate CAD meshes have no valid
-    // QEM/sloppy collapse at thumbnail budgets. Keep a spatially distributed
-    // triangle subset instead of failing the entire prefab back to 405 draws.
-    return BuildEvenTriangleSubset(mesh, maxVertices, maxIndices);
-}
-
-std::optional<MeshArtifactData> LoadMeshArtifactPreviewSample(
-    const std::filesystem::path& path,
-    const uint32_t maxVertices,
-    const uint32_t maxIndices,
-    const uint64_t maxMetadataBytes)
-{
-    if (maxVertices == 0u || maxIndices < 3u)
-        return std::nullopt;
-
-    NLS::Core::Assets::RecordArtifactLoadTelemetry({
-        NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
-        {},
-        sizeof(MeshArtifactHeader),
-        path.generic_string()
-    });
-
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        return std::nullopt;
-
-    std::array<uint8_t, kNativeArtifactHeaderSize> nativeHeaderBytes {};
-    input.read(
-        reinterpret_cast<char*>(nativeHeaderBytes.data()),
-        static_cast<std::streamsize>(nativeHeaderBytes.size()));
-    if (input.gcount() != static_cast<std::streamsize>(nativeHeaderBytes.size()))
-        return std::nullopt;
-
-    NativeArtifactHeaderPreview nativeHeader;
-    if (!ReadNativeArtifactHeaderPreview(nativeHeaderBytes, nativeHeader) ||
-        nativeHeader.metadataSize > maxMetadataBytes ||
-        nativeHeader.metadataSize > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
-        nativeHeader.payloadOffset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()))
-    {
-        return std::nullopt;
-    }
-
-    std::error_code error;
-    const auto fileSize = std::filesystem::file_size(path, error);
-    if (error ||
-        nativeHeader.payloadOffset > fileSize ||
-        nativeHeader.payloadSize > fileSize - nativeHeader.payloadOffset ||
-        nativeHeader.payloadOffset != kNativeArtifactHeaderSize + nativeHeader.metadataSize)
-    {
-        return std::nullopt;
-    }
-
-    const uint64_t payloadHeaderBytes =
-        sizeof(MeshArtifactHeader) + sizeof(float) * 4u;
-    if (nativeHeader.payloadSize < payloadHeaderBytes)
-        return std::nullopt;
-
-    std::array<uint8_t, sizeof(MeshArtifactHeader) + sizeof(float) * 4u> meshHeaderBytes {};
-    if (!ReadExactAt(
-            input,
-            nativeHeader.payloadOffset,
-            meshHeaderBytes.data(),
-            meshHeaderBytes.size()))
-    {
-        return std::nullopt;
-    }
-
-    const ByteView payloadPrefix {meshHeaderBytes.data(), meshHeaderBytes.size()};
-    MeshArtifactHeader meshHeader;
-    if (!ReadHeader(payloadPrefix, meshHeader) ||
-        meshHeader.version < kMeshArtifactVersionWithBoundingSphere)
-    {
-        return std::nullopt;
-    }
-
-    const uint64_t vertexBytes =
-        static_cast<uint64_t>(meshHeader.vertexCount) * sizeof(Geometry::Vertex);
-    const uint64_t indexBytes =
-        static_cast<uint64_t>(meshHeader.indexCount) * sizeof(uint32_t);
-    if (payloadHeaderBytes + vertexBytes + indexBytes != nativeHeader.payloadSize)
-        return std::nullopt;
-
-    MeshArtifactData mesh;
-    mesh.materialIndex = meshHeader.materialIndex;
-    size_t offset = sizeof(MeshArtifactHeader);
-    if (!ReadBoundingSphere(payloadPrefix, offset, mesh.boundingSphere))
-        return std::nullopt;
-    mesh.hasBoundingSphere = true;
-
-    const uint32_t sampledIndexCount =
-        AlignSampleCountToTriangleIndexCount(std::min(meshHeader.indexCount, maxIndices));
-    if (sampledIndexCount < 3u)
-        return std::nullopt;
-
-    const uint64_t indexStartOffset =
-        nativeHeader.payloadOffset + payloadHeaderBytes + vertexBytes;
-    constexpr uint32_t kCandidateOversampleFactor = 4u;
-    constexpr uint32_t kMaximumSampleWindows = 64u;
-    const uint32_t totalTriangleCount = meshHeader.indexCount / 3u;
-    const uint32_t sampledTriangleCount = sampledIndexCount / 3u;
-    const uint32_t candidateTriangleCount = static_cast<uint32_t>((std::min)(
-        static_cast<uint64_t>(totalTriangleCount),
-        static_cast<uint64_t>(sampledTriangleCount) * kCandidateOversampleFactor));
-    const uint32_t sampleWindowCount = (std::min)({
-        kMaximumSampleWindows,
-        sampledTriangleCount,
-        candidateTriangleCount
-    });
-    if (sampleWindowCount == 0u)
-        return std::nullopt;
-
-    std::vector<uint32_t> candidateIndices;
-    candidateIndices.reserve(static_cast<size_t>(candidateTriangleCount) * 3u);
-    for (uint32_t window = 0u; window < sampleWindowCount; ++window)
-    {
-        const uint32_t sourceBegin = static_cast<uint32_t>(
-            (static_cast<uint64_t>(window) * totalTriangleCount) / sampleWindowCount);
-        const uint32_t sourceEnd = static_cast<uint32_t>(
-            (static_cast<uint64_t>(window + 1u) * totalTriangleCount) / sampleWindowCount);
-        const uint32_t sourceCount = sourceEnd - sourceBegin;
-        const uint32_t requestedCount =
-            candidateTriangleCount / sampleWindowCount +
-            (window < candidateTriangleCount % sampleWindowCount ? 1u : 0u);
-        const uint32_t readTriangleCount = (std::min)(sourceCount, requestedCount);
-        if (readTriangleCount == 0u)
-            continue;
-
-        const uint32_t readBegin = sourceBegin + (sourceCount - readTriangleCount) / 2u;
-        const size_t destinationOffset = candidateIndices.size();
-        candidateIndices.resize(destinationOffset + static_cast<size_t>(readTriangleCount) * 3u);
-        if (!ReadExactAt(
-                input,
-                indexStartOffset + static_cast<uint64_t>(readBegin) * 3u * sizeof(uint32_t),
-                reinterpret_cast<uint8_t*>(candidateIndices.data() + destinationOffset),
-                static_cast<size_t>(readTriangleCount) * 3u * sizeof(uint32_t)))
-        {
-            return std::nullopt;
-        }
-    }
-
-    std::unordered_map<uint32_t, uint32_t> remappedVertexIndices;
-    remappedVertexIndices.reserve((std::min)(
-        static_cast<size_t>(maxVertices),
-        candidateIndices.size()));
-    std::vector<uint32_t> originalVertexBySampleIndex;
-    originalVertexBySampleIndex.reserve((std::min)(
-        static_cast<size_t>(maxVertices),
-        candidateIndices.size()));
-    mesh.indices.reserve(sampledIndexCount);
-
-    const size_t loadedCandidateTriangleCount = candidateIndices.size() / 3u;
-    std::vector<bool> inspectedCandidateTriangles(loadedCandidateTriangleCount, false);
-    const auto tryAppendCandidateTriangle = [&](const size_t candidateTriangleIndex)
-    {
-        if (candidateTriangleIndex >= loadedCandidateTriangleCount ||
-            inspectedCandidateTriangles[candidateTriangleIndex] ||
-            mesh.indices.size() + 2u >= sampledIndexCount)
-        {
-            return;
-        }
-        inspectedCandidateTriangles[candidateTriangleIndex] = true;
-        const size_t index = candidateTriangleIndex * 3u;
-        const std::array<uint32_t, 3u> triangle {
-            candidateIndices[index + 0u],
-            candidateIndices[index + 1u],
-            candidateIndices[index + 2u]
-        };
-        if (triangle[0] >= meshHeader.vertexCount ||
-            triangle[1] >= meshHeader.vertexCount ||
-            triangle[2] >= meshHeader.vertexCount)
-        {
-            return;
-        }
-
-        size_t newVertexCount = 0u;
-        for (const auto originalIndex : triangle)
-        {
-            if (remappedVertexIndices.find(originalIndex) == remappedVertexIndices.end())
-                ++newVertexCount;
-        }
-        if (originalVertexBySampleIndex.size() + newVertexCount > maxVertices)
-            return;
-
-        for (const auto originalIndex : triangle)
-        {
-            auto [iterator, inserted] = remappedVertexIndices.emplace(
-                originalIndex,
-                static_cast<uint32_t>(originalVertexBySampleIndex.size()));
-            if (inserted)
-                originalVertexBySampleIndex.push_back(originalIndex);
-            mesh.indices.push_back(iterator->second);
-        }
-    };
-
-    for (uint32_t phase = 0u;
-        phase < kCandidateOversampleFactor && mesh.indices.size() < sampledIndexCount;
-        ++phase)
-    {
-        for (uint32_t sample = 0u;
-            sample < sampledTriangleCount && mesh.indices.size() < sampledIndexCount;
-            ++sample)
-        {
-            const auto candidateTriangleIndex = static_cast<size_t>(
-                ((static_cast<uint64_t>(sample) * kCandidateOversampleFactor + phase) *
-                    loadedCandidateTriangleCount) /
-                (static_cast<uint64_t>(sampledTriangleCount) * kCandidateOversampleFactor));
-            tryAppendCandidateTriangle(candidateTriangleIndex);
-        }
-    }
-    for (size_t candidateTriangleIndex = 0u;
-        candidateTriangleIndex < loadedCandidateTriangleCount && mesh.indices.size() < sampledIndexCount;
-        ++candidateTriangleIndex)
-    {
-        tryAppendCandidateTriangle(candidateTriangleIndex);
-    }
-    if (mesh.indices.empty())
-        return std::nullopt;
-
-    mesh.vertices.resize(originalVertexBySampleIndex.size());
-    std::vector<uint32_t> sampleOrder(originalVertexBySampleIndex.size());
-    std::iota(sampleOrder.begin(), sampleOrder.end(), 0u);
-    std::sort(
-        sampleOrder.begin(),
-        sampleOrder.end(),
-        [&originalVertexBySampleIndex](const uint32_t left, const uint32_t right)
-        {
-            return originalVertexBySampleIndex[left] < originalVertexBySampleIndex[right];
-        });
-
-    const uint64_t vertexStartOffset = nativeHeader.payloadOffset + payloadHeaderBytes;
-    for (size_t orderIndex = 0u; orderIndex < sampleOrder.size();)
-    {
-        const uint32_t firstSampleIndex = sampleOrder[orderIndex];
-        const uint32_t firstOriginalIndex = originalVertexBySampleIndex[firstSampleIndex];
-        size_t runCount = 1u;
-        while (orderIndex + runCount < sampleOrder.size())
-        {
-            const uint32_t previousSampleIndex = sampleOrder[orderIndex + runCount - 1u];
-            const uint32_t currentSampleIndex = sampleOrder[orderIndex + runCount];
-            if (originalVertexBySampleIndex[currentSampleIndex] !=
-                originalVertexBySampleIndex[previousSampleIndex] + 1u)
-            {
-                break;
-            }
-            ++runCount;
-        }
-
-        std::vector<Geometry::Vertex> runVertices(runCount);
-        if (!ReadExactAt(
-                input,
-                vertexStartOffset + static_cast<uint64_t>(firstOriginalIndex) * sizeof(Geometry::Vertex),
-                reinterpret_cast<uint8_t*>(runVertices.data()),
-                runVertices.size() * sizeof(Geometry::Vertex)))
-        {
-            return std::nullopt;
-        }
-        for (size_t runIndex = 0u; runIndex < runCount; ++runIndex)
-            mesh.vertices[sampleOrder[orderIndex + runIndex]] = runVertices[runIndex];
-
-        orderIndex += runCount;
-    }
-
-    return mesh;
 }
 
 std::optional<MeshArtifactData> LoadMeshArtifact(const std::filesystem::path& path)
@@ -1098,11 +644,170 @@ std::optional<MeshArtifactData> LoadMeshArtifact(
         path.generic_string()
     });
 
+    if (auto bundle = DeserializeMeshArtifactBundle(bytes);
+        bundle.has_value() && !bundle->lodResources.empty())
+    {
+        return std::move(bundle->lodResources.front().mesh);
+    }
+
     auto artifact = DeserializeMeshArtifactInternal(
         bytes,
         payloadValidation);
     if (isCancelled())
         return std::nullopt;
     return artifact;
+}
+
+std::vector<uint8_t> SerializeMeshArtifactBundle(const MeshArtifactBundle& bundle)
+{
+    if (bundle.lodResources.empty() ||
+        bundle.lodResources.size() > std::numeric_limits<uint32_t>::max())
+    {
+        return {};
+    }
+
+    std::vector<uint8_t> bytes;
+    AppendUInt32(bytes, kMeshArtifactBundleMagic);
+    AppendUInt32(bytes, kMeshArtifactBundleVersion);
+    AppendUInt32(bytes, static_cast<uint32_t>(bundle.lodResources.size()));
+    AppendUInt32(bytes, bundle.minLOD);
+    for (const auto& lod : bundle.lodResources)
+    {
+        const auto meshBytes = SerializeMeshArtifact(lod.mesh);
+        if (meshBytes.empty() || meshBytes.size() > std::numeric_limits<uint32_t>::max())
+            return {};
+        AppendFloat32(bytes, lod.screenSize);
+        AppendUInt32(bytes, static_cast<uint32_t>(meshBytes.size()));
+        bytes.insert(bytes.end(), meshBytes.begin(), meshBytes.end());
+    }
+    return bytes;
+}
+
+std::optional<MeshArtifactBundle> DeserializeMeshArtifactBundle(
+    const std::vector<uint8_t>& bytes)
+{
+    ByteView view {bytes.data(), bytes.size()};
+    if (const auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
+            bytes,
+            NLS::Core::Assets::ArtifactType::Mesh,
+            kMeshArtifactContainerSchemaVersion,
+            NLS::Core::Assets::NativeArtifactPayloadValidation::VerifyHash))
+    {
+        view = {container->payloadData, container->payloadSize};
+    }
+
+    size_t offset = 0u;
+    uint32_t magic = 0u;
+    uint32_t version = 0u;
+    uint32_t lodCount = 0u;
+    if (!ReadUInt32(view, offset, magic) ||
+        !ReadUInt32(view, offset, version) ||
+        !ReadUInt32(view, offset, lodCount) ||
+        magic != kMeshArtifactBundleMagic ||
+        (version != 1u && version != kMeshArtifactBundleVersion) ||
+        lodCount == 0u)
+    {
+        return std::nullopt;
+    }
+
+    MeshArtifactBundle bundle;
+    bundle.schemaVersion = version;
+    if (version >= 2u && !ReadUInt32(view, offset, bundle.minLOD))
+        return std::nullopt;
+    bundle.lodResources.reserve(lodCount);
+    for (uint32_t lodIndex = 0u; lodIndex < lodCount; ++lodIndex)
+    {
+        float screenSize = 0.0f;
+        uint32_t meshByteCount = 0u;
+        if (!ReadFloat(view, offset, screenSize) ||
+            !ReadUInt32(view, offset, meshByteCount) ||
+            meshByteCount > view.size - offset)
+        {
+            return std::nullopt;
+        }
+        std::vector<uint8_t> meshBytes(
+            view.data + offset,
+            view.data + offset + meshByteCount);
+        offset += meshByteCount;
+        auto mesh = DeserializeMeshArtifact(meshBytes);
+        if (!mesh.has_value())
+            return std::nullopt;
+        bundle.lodResources.push_back({std::move(*mesh), screenSize});
+    }
+    if (bundle.minLOD >= bundle.lodResources.size())
+        return std::nullopt;
+    if (offset != view.size)
+        return std::nullopt;
+    return bundle;
+}
+
+uint32_t SelectMeshArtifactLOD(
+    const MeshArtifactBundle& bundle,
+    const float screenSize,
+    const uint32_t minLOD,
+    const uint32_t maxLOD)
+{
+    if (bundle.lodResources.empty())
+        return 0u;
+
+    uint32_t selectedLOD = static_cast<uint32_t>(bundle.lodResources.size() - 1u);
+    for (size_t index = 0u; index < bundle.lodResources.size(); ++index)
+    {
+        if (screenSize >= bundle.lodResources[index].screenSize)
+        {
+            selectedLOD = static_cast<uint32_t>(index);
+            break;
+        }
+    }
+
+    const auto availableMax = static_cast<uint32_t>(bundle.lodResources.size() - 1u);
+    const auto clampedMin = (std::min)(minLOD, availableMax);
+    const auto clampedMax = (std::min)((std::max)(maxLOD, clampedMin), availableMax);
+    return std::clamp(selectedLOD, clampedMin, clampedMax);
+}
+
+std::optional<MeshArtifactBundle> LoadMeshArtifactBundle(const std::filesystem::path& path)
+{
+    const auto portableArtifactPath =
+        NLS::Core::Assets::TryMakePortableContentArtifactPath(path.generic_string());
+    if (!portableArtifactPath.empty() &&
+        !NLS::Core::Assets::IsRuntimeArtifactPathAuthorized(portableArtifactPath))
+    {
+        return std::nullopt;
+    }
+
+    std::vector<uint8_t> bytes;
+    const auto fileReadBegin = std::chrono::steady_clock::now();
+    if (!Detail::ReadArtifactFileBytes(path, bytes, nullptr))
+        return std::nullopt;
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - fileReadBegin),
+        bytes.size(),
+        path.generic_string()
+    });
+    if (auto bundle = DeserializeMeshArtifactBundle(bytes))
+        return bundle;
+    if (auto mesh = DeserializeMeshArtifact(bytes))
+    {
+        MeshArtifactBundle bundle;
+        bundle.lodResources.push_back({std::move(*mesh), 1.0f});
+        return bundle;
+    }
+    return std::nullopt;
+}
+
+std::optional<MeshArtifactData> LoadMeshArtifactLOD(
+    const std::filesystem::path& path,
+    const float screenSize,
+    const uint32_t minLOD,
+    const uint32_t maxLOD)
+{
+    auto bundle = LoadMeshArtifactBundle(path);
+    if (!bundle.has_value() || bundle->lodResources.empty())
+        return std::nullopt;
+    const auto selectedLOD = SelectMeshArtifactLOD(*bundle, screenSize, minLOD, maxLOD);
+    return std::move(bundle->lodResources[selectedLOD].mesh);
 }
 }

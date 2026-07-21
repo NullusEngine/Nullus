@@ -4916,6 +4916,23 @@ namespace NLS::Render::Context
                     pending.request.materialIndex,
                     Render::Resources::MeshBufferUploadMode::GpuOnly,
                     pending.request.boundingSphere);
+                if (completed.mesh != nullptr && !pending.request.lodResources.empty())
+                {
+                    std::vector<std::unique_ptr<Render::Resources::Mesh>> lodMeshes;
+                    std::vector<float> screenSizes {1.0f};
+                    lodMeshes.reserve(pending.request.lodResources.size());
+                    for (const auto& lod : pending.request.lodResources)
+                    {
+                        lodMeshes.push_back(std::make_unique<Render::Resources::Mesh>(
+                            lod.vertices, lod.indices, lod.materialIndex,
+                            Render::Resources::MeshBufferUploadMode::GpuOnly, lod.boundingSphere));
+                        screenSizes.push_back(lod.screenSize);
+                    }
+                    completed.mesh->SetLODResources(
+                        std::move(lodMeshes),
+                        std::move(screenSizes),
+                        pending.request.minLOD);
+                }
                 completed.success = completed.mesh != nullptr;
                 if (!completed.success)
                     completed.diagnostic = "mesh runtime upload returned no resource";

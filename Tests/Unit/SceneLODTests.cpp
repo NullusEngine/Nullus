@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 #include "Rendering/SceneLOD.h"
 
 namespace
@@ -87,5 +89,52 @@ TEST(SceneLODTests, ForcedLODOverridesThresholdsAndClampsToAvailableLevels)
 
 	EXPECT_TRUE(result.usedForcedLOD);
 	EXPECT_EQ(result.selectedLOD, 2u);
-	EXPECT_EQ(result.activePrimitiveHandles, group.levels[2].primitiveHandles);
+    EXPECT_EQ(result.activePrimitiveHandles, group.levels[2].primitiveHandles);
+}
+
+TEST(SceneLODTests, UsesProjectionAwareBoundsSphereWhenViewProjectionIsProvided)
+{
+    auto group = MakeThreeLevelGroup();
+    group.levels[0].screenRelativeThreshold = 0.25f;
+    group.levels[1].screenRelativeThreshold = 0.05f;
+    group.worldSize = 999.0f;
+    group.boundsSphereRadius = 10.0f;
+
+    SceneLODViewInput input;
+    input.cameraPosition = {0.0f, 0.0f, 0.0f};
+    input.verticalFovRadians = 1.57079632679f;
+
+    const auto result = SceneLODSystem::Select(input, group, nullptr);
+
+    EXPECT_NEAR(result.screenRelativeSize, 0.2f, 0.0001f);
+    EXPECT_EQ(result.selectedLOD, 1u);
+}
+
+TEST(SceneLODTests, AppliesMinAndQualityMaxLODConstraints)
+{
+    auto group = MakeThreeLevelGroup();
+    group.minLOD = 1u;
+    group.maxLOD = 1u;
+
+    SceneLODViewInput input;
+    input.cameraPosition = {0.0f, 0.0f, -99.0f};
+
+    const auto result = SceneLODSystem::Select(input, group, nullptr);
+
+    EXPECT_EQ(result.selectedLOD, 1u);
+    EXPECT_TRUE(result.usedLODConstraint);
+}
+
+TEST(SceneLODTests, FallsBackToResidentLODWhenSelectedResourceIsUnavailable)
+{
+    auto group = MakeThreeLevelGroup();
+    group.levels[1].resident = false;
+
+    SceneLODViewInput input;
+    input.cameraPosition = {0.0f, 0.0f, 0.0f};
+
+    const auto result = SceneLODSystem::Select(input, group, nullptr);
+
+    EXPECT_EQ(result.selectedLOD, 2u);
+    EXPECT_TRUE(result.usedResidencyFallback);
 }

@@ -399,6 +399,7 @@ namespace
 		SceneLODViewInput input;
 		input.cameraPosition = options.cameraPosition;
 		input.lodBias = options.lodBias;
+		input.verticalFovRadians = options.verticalFovRadians;
 
 		for (const auto& group : *representation.lodGroups)
 		{
@@ -418,6 +419,16 @@ namespace
 				history = &(*representation.lodSelectionHistory)[group.groupHandle.index];
 			}
 			const auto selection = SceneLODSystem::Select(input, group, history);
+			if (group.selectsMeshLOD)
+			{
+				for (const auto handle : selection.activePrimitiveHandles)
+				{
+					const auto denseIndex = FindDenseIndex(lookup, primitives, handle);
+					if (denseIndex.has_value())
+						result.selectedLOD[*denseIndex] = selection.selectedLOD;
+				}
+				continue;
+			}
 			for (size_t levelIndex = 0u; levelIndex < group.levels.size(); ++levelIndex)
 			{
 				const auto& level = group.levels[levelIndex];

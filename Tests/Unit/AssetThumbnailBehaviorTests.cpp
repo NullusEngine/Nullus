@@ -3780,6 +3780,56 @@ TEST(AssetThumbnailBehaviorTests, PrefabPreviewResourcePlanKeepsHighDensityMeshF
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetThumbnailBehaviorTests, AssetPanelThumbnailLoadsSelectedFormalLODFromBundle)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect thumbnail LOD selection.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    const auto path = root / "Assets" / "formal-lod-thumbnail.nmesh";
+    auto lod0 = TriangleMeshArtifact();
+    lod0.materialIndex = 4u;
+    auto lod1 = TriangleMeshArtifact();
+    lod1.materialIndex = 7u;
+    NLS::Render::Assets::MeshArtifactBundle bundle;
+    bundle.lodResources = {
+        {std::move(lod0), 2.0f},
+        {std::move(lod1), 0.5f}};
+    WriteBinaryFile(path, NLS::Render::Assets::SerializeMeshArtifactBundle(bundle));
+
+    const auto selected = LoadThumbnailFormalLODForTesting(path);
+
+    EXPECT_TRUE(selected.loaded);
+    EXPECT_EQ(selected.materialIndex, 7u)
+        << "The asset panel must use the formal screen-size LOD instead of simplifying LOD0.";
+    EXPECT_EQ(selected.indexCount, 3u);
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailBehaviorTests, AssetPanelThumbnailDoesNotCreatePreviewSampleForLargeLegacyMesh)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect thumbnail LOD selection.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeThumbnailPerformanceRoot();
+    const auto path = root / "Assets" / "large-legacy-thumbnail.nmesh";
+    auto mesh = TriangleMeshArtifact();
+    mesh.vertices.resize(250001u);
+    WriteBinaryFile(path, NLS::Render::Assets::SerializeMeshArtifact(mesh));
+
+    const auto selected = LoadThumbnailFormalLODForTesting(path);
+
+    EXPECT_FALSE(selected.loaded)
+        << "A legacy mesh over the preview budget must fall back instead of generating a temporary simplified model.";
+    std::filesystem::remove_all(root);
+#endif
+}
+
 TEST(AssetThumbnailBehaviorTests, PrefabPreviewResourcePlanStopsAtUnreadyDependencyBudget)
 {
     using namespace NLS::Editor::Assets;

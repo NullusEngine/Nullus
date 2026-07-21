@@ -37,6 +37,7 @@ target_link_libraries(
     NLS_Engine
   PRIVATE
     DirectXTex::DirectXTex
+    NLS_StaticMeshBuild
 )
 
 nls_target_precompile_headers(EditorProject "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")

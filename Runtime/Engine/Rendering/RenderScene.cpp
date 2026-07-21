@@ -985,6 +985,37 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RebuildImportedHierarchyHLODRecords");
 		RebuildImportedHierarchyHLODRecords(scene);
+		for (auto& primitive : m_primitives)
+		{
+			if (!primitive.occupied || primitive.tombstoned)
+				continue;
+			const bool hasIntrinsicGroup = primitive.lodGroup.has_value() &&
+				primitive.lodGroup->index < m_representationRegistry->lodGroups.size() &&
+				m_representationRegistry->lodGroups[primitive.lodGroup->index].selectsMeshLOD;
+			if (primitive.mesh == nullptr || primitive.mesh->GetLODCount() <= 1u)
+			{
+				if (hasIntrinsicGroup)
+				{
+					m_representationRegistry->lodGroups[primitive.lodGroup->index] = {};
+					primitive.lodGroup.reset();
+					m_representationRegistry->RebuildLookup();
+				}
+				continue;
+			}
+			if (primitive.lodGroup.has_value() && !hasIntrinsicGroup)
+				continue;
+			LODGroupRecord group;
+			if (hasIntrinsicGroup)
+				group.groupHandle = *primitive.lodGroup;
+			group.selectsMeshLOD = true;
+			group.worldReferencePoint = primitive.worldPosition;
+			group.worldSize = std::max(primitive.modelBoundingSphere.radius * 2.0f, 1.0f);
+			group.boundsSphereRadius = primitive.modelBoundingSphere.radius;
+			group.minLOD = primitive.mesh->GetMinLOD();
+			for (uint32_t lod = 0u; lod < primitive.mesh->GetLODCount(); ++lod)
+				group.levels.push_back({primitive.mesh->GetLODScreenSize(lod), {primitive.handle}});
+			RegisterLODGroup(group);
+		}
 	}
 	if (!m_lastDirtySyncHandles.empty() || !m_lastRemovedHandles.empty())
 		m_spatialCandidateSnapshotCache.reset();
@@ -1126,7 +1157,12 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 				continue;
 			}
 
-			AppendVisibleDrawable(output, primitive, slot.command, options);
+			auto command = slot.command;
+			const auto selectedLOD = primitiveIndex < visibility.selectedLODByPrimitive.size()
+				? visibility.selectedLODByPrimitive[primitiveIndex]
+				: 0u;
+			command.mesh = command.mesh->GetLODMesh(selectedLOD);
+			AppendVisibleDrawable(output, primitive, command, options);
 			++m_lastDrawCallOptimizationStats.rawVisibleObjectCount;
 			++m_lastLargeSceneTelemetry.rawVisibleDrawCount;
 		}
@@ -2491,6 +2527,7 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityThroughPipeline(
 	pipelineOptions.parallelVisibilityPrimitivesPerTask = settings.parallelVisibilityPrimitivesPerTask;
 	pipelineOptions.maxVisibilityJobs = settings.maxVisibilityJobs;
 	pipelineOptions.lodBias = options.lodBias;
+	pipelineOptions.verticalFovRadians = options.verticalFovRadians;
 	pipelineOptions.lodHistoryViewKey = options.lodHistoryViewKey;
 	pipelineOptions.allowHLOD = options.allowHLOD;
 	pipelineOptions.editorInspectionView = options.editorInspectionView;
@@ -2537,6 +2574,14 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityThroughPipeline(
 	snapshot.usedParallelEvaluation = pipelineResult.usedParallelEvaluation;
 	snapshot.representationStreamingInterest = pipelineResult.representationStreamingInterest;
 	CopyCullReasonCounts(snapshot, pipelineResult);
+	snapshot.selectedLODByPrimitive.assign(m_primitives.size(), 0u);
+	for (size_t denseIndex = 0u; denseIndex < primitiveSnapshot.primitiveRecords.size(); ++denseIndex)
+	{
+		const auto primitiveIndex = primitiveSnapshot.primitiveRecords[denseIndex].handle.index;
+		if (primitiveIndex < snapshot.selectedLODByPrimitive.size() && denseIndex < pipelineResult.selectedLOD.size() &&
+			pipelineResult.selectedLOD[denseIndex] != ~0u)
+			snapshot.selectedLODByPrimitive[primitiveIndex] = pipelineResult.selectedLOD[denseIndex];
+	}
 
 	for (const auto handle : pipelineResult.visiblePrimitiveHandles)
 	{
@@ -2742,6 +2787,7 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 	representation.residency = &residency;
 	representation.occlusion = options.occlusion;
 	pipelineOptions.lodBias = options.lodBias;
+	pipelineOptions.verticalFovRadians = options.verticalFovRadians;
 	pipelineOptions.lodHistoryViewKey = options.lodHistoryViewKey;
 	pipelineOptions.allowHLOD = options.allowHLOD;
 	pipelineOptions.editorInspectionView = options.editorInspectionView;
@@ -2786,6 +2832,14 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 	snapshot.dynamicIndexUpdateCount = candidates.telemetry.dynamicIndexUpdateCount;
 	snapshot.representationStreamingInterest = pipelineResult.representationStreamingInterest;
 	CopyCullReasonCounts(snapshot, pipelineResult);
+	snapshot.selectedLODByPrimitive.assign(m_primitives.size(), 0u);
+	for (size_t denseIndex = 0u; denseIndex < initialCandidateSnapshot.primitiveRecords.size(); ++denseIndex)
+	{
+		const auto primitiveIndex = initialCandidateSnapshot.primitiveRecords[denseIndex].handle.index;
+		if (primitiveIndex < snapshot.selectedLODByPrimitive.size() && denseIndex < pipelineResult.selectedLOD.size() &&
+			pipelineResult.selectedLOD[denseIndex] != ~0u)
+			snapshot.selectedLODByPrimitive[primitiveIndex] = pipelineResult.selectedLOD[denseIndex];
+	}
 
 	for (const auto& handle : pipelineResult.visiblePrimitiveHandles)
 	{

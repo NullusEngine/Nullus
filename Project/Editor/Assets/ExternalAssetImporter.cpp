@@ -15,6 +15,7 @@
 #include "Rendering/Assets/MaterialConversion.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
+#include "Rendering/Assets/StaticMeshBuilder.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Assets/TextureEncoder.h"
 #include "Rendering/Assets/TextureFormatResolver.h"
@@ -43,6 +44,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -63,6 +65,9 @@ namespace
 {
 constexpr uint32_t kExternalTextureSafetyMaxDimension = 16384u;
 constexpr uint64_t kExternalTextureSafetyMaxPixels = 16384ull * 16384ull;
+constexpr uint32_t kExternalStaticMeshLODPostprocessorVersion = 1u;
+constexpr const char* kExternalStaticMeshLODSettingsDependencyName = "static-mesh-lod-settings";
+constexpr const char* kExternalStaticMeshLODBuildPipelineDependencyName = "static-mesh-lod-build-pipeline";
 
 using ImportedSceneJson = nlohmann::json;
 
@@ -408,6 +413,16 @@ struct MeshSerializationContext
     std::unordered_map<std::string, size_t> meshPrimitiveCountBySourceKey;
 };
 
+std::optional<size_t> ParseIndexedSourceKey(
+    const std::string& sourceKey,
+    const std::string& prefix);
+
+struct StaticMeshAuthoredLODImportContext
+{
+    std::unordered_map<std::string, std::vector<NLS::Render::Assets::StaticMeshSourceModel>>
+        sourceModelsByBaseSourceKey;
+};
+
 MeshSerializationContext BuildMeshSerializationContext(
     const NLS::Render::Assets::ImportedScene& scene,
     const std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& sourceMeshes)
@@ -439,6 +454,201 @@ MeshSerializationContext BuildMeshSerializationContext(
     }
 
     return context;
+}
+
+std::optional<NLS::Render::Assets::MeshArtifactData> BuildMeshSubAssetData(
+    const NLS::Render::Assets::GeneratedSceneSubAsset& subAsset,
+    const std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& sourceMeshes,
+    const MeshSerializationContext& context)
+{
+    const auto mappedMesh = context.meshesByExactSourceKey.find(subAsset.sourceKey);
+    if (mappedMesh != context.meshesByExactSourceKey.end())
+    {
+        NLS::Render::Assets::MeshArtifactData mesh;
+        mesh.vertices = mappedMesh->second->vertices;
+        mesh.indices = mappedMesh->second->indices;
+        mesh.materialIndex = mappedMesh->second->materialIndex;
+        return mesh;
+    }
+
+    std::optional<size_t> sourceIndex;
+    if (const auto foundStartIndex = context.meshStartIndexBySourceKey.find(subAsset.sourceKey);
+        foundStartIndex != context.meshStartIndexBySourceKey.end())
+    {
+        sourceIndex = foundStartIndex->second;
+    }
+    else
+    {
+        sourceIndex = ParseIndexedSourceKey(subAsset.sourceKey, "mesh");
+        if (!sourceIndex.has_value())
+            sourceIndex = ParseIndexedSourceKey(subAsset.sourceKey, "parser/mesh");
+    }
+    if (!sourceIndex.has_value() || *sourceIndex >= sourceMeshes.size())
+        return std::nullopt;
+
+    const auto primitiveCount = [&context, &subAsset]()
+    {
+        if (const auto found = context.meshPrimitiveCountBySourceKey.find(subAsset.sourceKey);
+            found != context.meshPrimitiveCountBySourceKey.end() && found->second > 0u)
+        {
+            return found->second;
+        }
+        return size_t {1u};
+    }();
+
+    NLS::Render::Assets::MeshArtifactData mergedMesh;
+    for (size_t primitiveIndex = 0u;
+        primitiveIndex < primitiveCount && *sourceIndex + primitiveIndex < sourceMeshes.size();
+        ++primitiveIndex)
+    {
+        const auto& sourceMesh = sourceMeshes[*sourceIndex + primitiveIndex];
+        if (primitiveIndex == 0u)
+            mergedMesh.materialIndex = sourceMesh.materialIndex;
+
+        const auto vertexOffset = static_cast<uint32_t>(mergedMesh.vertices.size());
+        mergedMesh.vertices.insert(
+            mergedMesh.vertices.end(),
+            sourceMesh.vertices.begin(),
+            sourceMesh.vertices.end());
+        mergedMesh.indices.reserve(mergedMesh.indices.size() + sourceMesh.indices.size());
+        for (const auto index : sourceMesh.indices)
+            mergedMesh.indices.push_back(vertexOffset + index);
+    }
+    return mergedMesh;
+}
+
+std::optional<std::pair<std::string, uint32_t>> ParseStaticMeshLODName(const std::string& name)
+{
+    const auto lowered = ToLower(name);
+    const auto marker = lowered.rfind("_lod");
+    if (marker == std::string::npos || marker == 0u || marker + 4u == lowered.size())
+        return std::nullopt;
+
+    uint32_t lodIndex = 0u;
+    for (size_t index = marker + 4u; index < lowered.size(); ++index)
+    {
+        const char character = lowered[index];
+        if (character < '0' || character > '9')
+            return std::nullopt;
+        const uint32_t digit = static_cast<uint32_t>(character - '0');
+        if (lodIndex > (std::numeric_limits<uint32_t>::max() - digit) / 10u)
+            return std::nullopt;
+        lodIndex = lodIndex * 10u + digit;
+    }
+    return std::make_pair(lowered.substr(0u, marker), lodIndex);
+}
+
+StaticMeshAuthoredLODImportContext PrepareStaticMeshAuthoredLODs(
+    NLS::Render::Assets::ImportedScene& scene,
+    const std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& sourceMeshes,
+    const MeshSerializationContext& meshContext)
+{
+    StaticMeshAuthoredLODImportContext result;
+    if (!scene.importSettings.importMeshLODs)
+        return result;
+
+    std::unordered_map<
+        std::string,
+        std::map<uint32_t, const NLS::Render::Assets::ImportedSceneNamedRecord*>> groups;
+    for (const auto& mesh : scene.meshes)
+    {
+        const auto parsed = ParseStaticMeshLODName(mesh.name);
+        if (parsed.has_value())
+            groups[parsed->first].emplace(parsed->second, &mesh);
+    }
+
+    std::unordered_set<std::string> consumedHigherLODSourceKeys;
+    for (const auto& [baseName, levels] : groups)
+    {
+        const auto lod0 = levels.find(0u);
+        if (lod0 == levels.end() || levels.find(1u) == levels.end())
+            continue;
+
+        std::vector<NLS::Render::Assets::StaticMeshSourceModel> sourceModels;
+        sourceModels.push_back({
+            NLS::Render::Assets::StaticMeshLODSourceKind::Imported,
+            1.0f,
+            {}});
+        for (uint32_t lodIndex = 1u;; ++lodIndex)
+        {
+            const auto level = levels.find(lodIndex);
+            if (level == levels.end())
+                break;
+
+            const NLS::Render::Assets::GeneratedSceneSubAsset subAsset {
+                NLS::Render::Assets::ImportedSceneSubAssetType::Mesh,
+                {},
+                level->second->sourceKey,
+                level->second->name};
+            auto mesh = BuildMeshSubAssetData(subAsset, sourceMeshes, meshContext);
+            if (!mesh.has_value())
+                break;
+            sourceModels.push_back({
+                NLS::Render::Assets::StaticMeshLODSourceKind::Authored,
+                std::ldexp(1.0f, -static_cast<int>(lodIndex)),
+                std::move(*mesh)});
+            consumedHigherLODSourceKeys.insert(level->second->sourceKey);
+        }
+        if (sourceModels.size() > 1u)
+        {
+            result.sourceModelsByBaseSourceKey.emplace(
+                lod0->second->sourceKey,
+                std::move(sourceModels));
+        }
+    }
+    if (consumedHigherLODSourceKeys.empty())
+        return result;
+
+    scene.meshes.erase(
+        std::remove_if(
+            scene.meshes.begin(),
+            scene.meshes.end(),
+            [&consumedHigherLODSourceKeys](const NLS::Render::Assets::ImportedSceneNamedRecord& mesh)
+            {
+                return consumedHigherLODSourceKeys.find(mesh.sourceKey) !=
+                    consumedHigherLODSourceKeys.end();
+            }),
+        scene.meshes.end());
+
+    std::unordered_set<std::string> removedNodeKeys;
+    bool removedNode = true;
+    while (removedNode)
+    {
+        removedNode = false;
+        for (const auto& node : scene.nodes)
+        {
+            if (removedNodeKeys.find(node.sourceKey) != removedNodeKeys.end())
+                continue;
+            if (consumedHigherLODSourceKeys.find(node.meshKey) != consumedHigherLODSourceKeys.end() ||
+                (!node.parentKey.empty() && removedNodeKeys.find(node.parentKey) != removedNodeKeys.end()))
+            {
+                removedNodeKeys.insert(node.sourceKey);
+                removedNode = true;
+            }
+        }
+    }
+    scene.nodes.erase(
+        std::remove_if(
+            scene.nodes.begin(),
+            scene.nodes.end(),
+            [&removedNodeKeys](const NLS::Render::Assets::ImportedSceneNode& node)
+            {
+                return removedNodeKeys.find(node.sourceKey) != removedNodeKeys.end();
+            }),
+        scene.nodes.end());
+    return result;
+}
+
+std::string BuildStaticMeshImportSettingsIdentity(
+    const NLS::Render::Assets::SceneImportSettings& settings)
+{
+    std::ostringstream stream;
+    stream
+        << "lodGroup=" << settings.lodGroup
+        << "|importMeshLODs=" << (settings.importMeshLODs ? 1u : 0u)
+        << "|minLOD=" << settings.minLOD
+        << "|autoScreen=" << (settings.autoComputeLODScreenSize ? 1u : 0u);
+    return stream.str();
 }
 
 std::optional<size_t> ParseIndexedSourceKey(const std::string& sourceKey, const std::string& prefix)
@@ -4593,63 +4803,44 @@ std::vector<uint8_t> SerializeMeshSubAsset(
     const NLS::Render::Assets::ImportedScene& scene,
     const NLS::Render::Assets::GeneratedSceneSubAsset& subAsset,
     const std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& sourceMeshes,
-    const MeshSerializationContext& context)
+    const MeshSerializationContext& context,
+    const StaticMeshAuthoredLODImportContext& authoredLODContext)
 {
-    const auto mappedMesh = context.meshesByExactSourceKey.find(subAsset.sourceKey);
-    const auto primitiveCount = [&context, &subAsset]()
-    {
-        if (const auto found = context.meshPrimitiveCountBySourceKey.find(subAsset.sourceKey);
-            found != context.meshPrimitiveCountBySourceKey.end() && found->second > 0u)
-        {
-            return found->second;
-        }
-        return size_t {1u};
-    }();
-
-    if (mappedMesh != context.meshesByExactSourceKey.end())
-    {
-        NLS::Render::Assets::MeshArtifactData mesh;
-        mesh.vertices = mappedMesh->second->vertices;
-        mesh.indices = mappedMesh->second->indices;
-        mesh.materialIndex = mappedMesh->second->materialIndex;
-        auto bytes = NLS::Render::Assets::SerializeMeshArtifact(mesh);
-        return bytes.empty() ? ToBytes(SerializeGenericSubAsset(scene, subAsset)) : std::move(bytes);
-    }
-
-    std::optional<size_t> sourceIndex;
-    if (const auto foundStartIndex = context.meshStartIndexBySourceKey.find(subAsset.sourceKey);
-        foundStartIndex != context.meshStartIndexBySourceKey.end())
-    {
-        sourceIndex = foundStartIndex->second;
-    }
-    else
-    {
-        sourceIndex = ParseIndexedSourceKey(subAsset.sourceKey, "mesh");
-        if (!sourceIndex.has_value())
-            sourceIndex = ParseIndexedSourceKey(subAsset.sourceKey, "parser/mesh");
-    }
-
-    if (!sourceIndex.has_value() || *sourceIndex >= sourceMeshes.size())
+    const auto mesh = BuildMeshSubAssetData(subAsset, sourceMeshes, context);
+    if (!mesh.has_value())
         return ToBytes(SerializeGenericSubAsset(scene, subAsset));
 
-    NLS::Render::Assets::MeshArtifactData mergedMesh;
-    for (size_t primitiveIndex = 0u;
-        primitiveIndex < primitiveCount && *sourceIndex + primitiveIndex < sourceMeshes.size();
-        ++primitiveIndex)
+    const auto serializeBuiltMesh = [&scene, &subAsset, &authoredLODContext](
+        const NLS::Render::Assets::MeshArtifactData& importedLOD0)
     {
-        const auto& sourceMesh = sourceMeshes[*sourceIndex + primitiveIndex];
-        if (primitiveIndex == 0u)
-            mergedMesh.materialIndex = sourceMesh.materialIndex;
+        NLS::Render::Assets::StaticMeshSourceAsset sourceAsset;
+        sourceAsset.lodGroup = scene.importSettings.lodGroup;
+        sourceAsset.minLOD = scene.importSettings.minLOD;
+        sourceAsset.autoComputeLODScreenSize = scene.importSettings.autoComputeLODScreenSize;
+        if (const auto authored = authoredLODContext.sourceModelsByBaseSourceKey.find(subAsset.sourceKey);
+            authored != authoredLODContext.sourceModelsByBaseSourceKey.end())
+        {
+            sourceAsset.sourceModels = authored->second;
+        }
+        else
+        {
+            sourceAsset.sourceModels.push_back({
+                NLS::Render::Assets::StaticMeshLODSourceKind::Imported,
+                1.0f,
+                {}});
+        }
 
-        const auto vertexOffset = static_cast<uint32_t>(mergedMesh.vertices.size());
-        mergedMesh.vertices.insert(mergedMesh.vertices.end(), sourceMesh.vertices.begin(), sourceMesh.vertices.end());
-        mergedMesh.indices.reserve(mergedMesh.indices.size() + sourceMesh.indices.size());
-        for (const auto index : sourceMesh.indices)
-            mergedMesh.indices.push_back(vertexOffset + index);
-    }
-
-    auto bytes = NLS::Render::Assets::SerializeMeshArtifact(mergedMesh);
-    return bytes.empty() ? ToBytes(SerializeGenericSubAsset(scene, subAsset)) : std::move(bytes);
+        auto buildResult = NLS::Render::Assets::BuildStaticMeshLODArtifact(
+            sourceAsset,
+            importedLOD0);
+        if (!buildResult.success || buildResult.bundle.lodResources.empty())
+            return std::vector<uint8_t> {};
+        if (buildResult.bundle.lodResources.size() == 1u)
+            return NLS::Render::Assets::SerializeMeshArtifact(
+                buildResult.bundle.lodResources.front().mesh);
+        return NLS::Render::Assets::SerializeMeshArtifactBundle(buildResult.bundle);
+    };
+    return serializeBuiltMesh(*mesh);
 }
 
 void AppendConvertedMaterialPayloads(
@@ -4774,6 +4965,15 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
 
     ReportProgress(request, ImportPhase::IntermediateConversion, 0.25, "Converting scene hierarchy and materials");
     const auto conversionBegin = std::chrono::steady_clock::now();
+    StaticMeshAuthoredLODImportContext authoredLODContext;
+    if (!sourceMeshes.empty())
+    {
+        const auto authoredContext = BuildMeshSerializationContext(scene, sourceMeshes);
+        authoredLODContext = PrepareStaticMeshAuthoredLODs(
+            scene,
+            sourceMeshes,
+            authoredContext);
+    }
     std::vector<NLS::Render::Assets::GeneratedSceneSubAsset> subAssets;
     {
         const auto begin = std::chrono::steady_clock::now();
@@ -4973,7 +5173,12 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                 subAssetProgress,
                 "Converting " + subAsset.key);
             auto artifactPayload = subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Mesh
-                ? SerializeMeshSubAsset(scene, subAsset, sourceMeshes, meshSerializationContext)
+                ? SerializeMeshSubAsset(
+                    scene,
+                    subAsset,
+                    sourceMeshes,
+                    meshSerializationContext,
+                    authoredLODContext)
                 : subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture
                     ? SerializeTextureSubAsset(
                         scene,
@@ -4986,6 +5191,19 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                         ResolveExternalTextureBuildTargetPlatform(request.targetPlatform),
                         textureEncoders)
                     : ToBytes(SerializeGenericSubAsset(scene, subAsset));
+            if (subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Mesh &&
+                artifactPayload.empty())
+            {
+                AddError(
+                    result.diagnostics,
+                    request.meta.id,
+                    request.sourcePath,
+                    "external-model-importer-mesh-lod-build-failed",
+                    "Mesh " + subAsset.key + " could not be converted into a valid static mesh LOD artifact.");
+                timingStats.diagnosticCount = result.diagnostics.size();
+                timingStats.status = "failed";
+                return result;
+            }
             if (subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture &&
                 artifactPayload.empty())
             {
@@ -5070,6 +5288,16 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
             kExternalTextureBuildPipelineDependencyName,
             std::to_string(kExternalTexturePostprocessorVersion)
+        });
+        writeRequest.dependencies.push_back({
+            NLS::Core::Assets::AssetDependencyKind::RuntimeComponentCapability,
+            kExternalStaticMeshLODSettingsDependencyName,
+            BuildStaticMeshImportSettingsIdentity(scene.importSettings)
+        });
+        writeRequest.dependencies.push_back({
+            NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+            kExternalStaticMeshLODBuildPipelineDependencyName,
+            std::to_string(kExternalStaticMeshLODPostprocessorVersion)
         });
         writeRequest.dependencies.push_back({
             NLS::Core::Assets::AssetDependencyKind::BuildTarget,

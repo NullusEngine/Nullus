@@ -22,6 +22,12 @@ endif()
 
 get_target_property(_nls_render_sources NLS_Render SOURCES)
 if(_nls_render_sources)
+  set(_nls_static_mesh_build_sources
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/MeshReduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshBuilder.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshCookBuilder.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/StaticMeshLODSettings.cpp")
+  list(REMOVE_ITEM _nls_render_sources ${_nls_static_mesh_build_sources})
   list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]DX11[/\\\\]")
   list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]OpenGL[/\\\\]")
   list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]Vulkan[/\\\\]")
@@ -38,6 +44,14 @@ if(_nls_render_sources)
   set_property(TARGET NLS_Render PROPERTY SOURCES "${_nls_render_sources}")
 endif()
 
+add_library(NLS_StaticMeshBuild STATIC ${_nls_static_mesh_build_sources})
+target_compile_features(NLS_StaticMeshBuild PUBLIC cxx_std_20)
+target_include_directories(NLS_StaticMeshBuild PUBLIC
+  $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime>
+  $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime/Rendering>)
+target_link_libraries(NLS_StaticMeshBuild PUBLIC NLS_Render PRIVATE meshoptimizer)
+set_target_properties(NLS_StaticMeshBuild PROPERTIES FOLDER "Runtime/Build")
+
 if(Vulkan_FOUND)
   target_link_libraries(NLS_Render PUBLIC Vulkan::Vulkan)
   target_compile_definitions(NLS_Render PUBLIC NLS_HAS_VULKAN=1)
@@ -48,8 +62,6 @@ endif()
 if(WIN32)
   target_link_libraries(NLS_Render PUBLIC d3d12 dxgi dxguid d3d11)
 endif()
-
-target_link_libraries(NLS_Render PRIVATE meshoptimizer)
 
 if(APPLE)
   target_compile_definitions(NLS_Render PUBLIC NLS_HAS_METAL=1)

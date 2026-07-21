@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -10083,6 +10084,73 @@ TEST(AssetImportPipelineTests, ModelTextureResolutionReportEscapesSpecialCharact
     EXPECT_EQ(parsed->entries[0].source.stableKey, entry.source.stableKey);
     ASSERT_EQ(parsed->entries[0].diagnostics.size(), 1u);
     EXPECT_EQ(parsed->entries[0].diagnostics[0].message, "missing=A;B|C\nline2");
+}
+
+TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsExposeRegistryChoicesAndPreserveValues)
+{
+    const std::vector<std::string> expectedGroups {
+        "None",
+        "LevelArchitecture",
+        "SmallProp",
+        "LargeProp",
+        "Deco",
+        "Vista",
+        "Foliage",
+        "HighDetail"};
+    const std::map<std::string, std::string> serialized {
+        {"LOD_GROUP", "LargeProp"},
+        {"IMPORT_MESH_LODS", "true"},
+        {"MIN_LOD", "2"},
+        {"AUTO_COMPUTE_LOD_SCREEN_SIZE", "false"}};
+
+    const auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+
+    ASSERT_EQ(view.lodGroupChoices.size(), expectedGroups.size());
+    for (size_t index = 0u; index < expectedGroups.size(); ++index)
+        EXPECT_EQ(view.lodGroupChoices.at(static_cast<int>(index)), expectedGroups[index]);
+    EXPECT_EQ(view.selectedLODGroup, 3);
+    EXPECT_TRUE(view.importMeshLODs);
+    EXPECT_EQ(view.minLOD, 2);
+    EXPECT_FALSE(view.autoComputeLODScreenSize);
+}
+
+TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsNormalizeUnknownGroupToNone)
+{
+    std::map<std::string, std::string> serialized {{"LOD_GROUP", "RemovedPreset"}};
+
+    const auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+    EXPECT_EQ(view.selectedLODGroup, 0);
+
+    NLS::Editor::Panels::StoreModelLODAssetPropertiesSettings(serialized, view);
+    EXPECT_EQ(serialized.at("LOD_GROUP"), "None");
+}
+
+TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsStoreSelectionAndClampMinLOD)
+{
+    std::map<std::string, std::string> serialized;
+    auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+    view.selectedLODGroup = 2;
+    view.importMeshLODs = true;
+    view.minLOD = -7;
+    view.autoComputeLODScreenSize = false;
+
+    NLS::Editor::Panels::StoreModelLODAssetPropertiesSettings(serialized, view);
+
+    EXPECT_EQ(serialized.at("LOD_GROUP"), "SmallProp");
+    EXPECT_EQ(serialized.at("IMPORT_MESH_LODS"), "true");
+    EXPECT_EQ(serialized.at("MIN_LOD"), "0");
+    EXPECT_EQ(serialized.at("AUTO_COMPUTE_LOD_SCREEN_SIZE"), "false");
+}
+
+TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsStoreInvalidSelectionAsNone)
+{
+    std::map<std::string, std::string> serialized;
+    auto view = NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+    view.selectedLODGroup = 99;
+
+    NLS::Editor::Panels::StoreModelLODAssetPropertiesSettings(serialized, view);
+
+    EXPECT_EQ(serialized.at("LOD_GROUP"), "None");
 }
 
 TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsHideMissingStaleAndMalformedReports)

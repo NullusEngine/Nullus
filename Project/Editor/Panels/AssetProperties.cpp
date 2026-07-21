@@ -3,6 +3,9 @@
 #include <Utils/PathParser.h>
 #include <Utils/SizeConverter.h>
 
+#include <algorithm>
+#include <limits>
+#include <map>
 #include <optional>
 
 #include <UI/GUIDrawer.h>
@@ -32,6 +35,7 @@
 #include "Assets/EditorAssetPath.h"
 #include "Assets/ModelTextureResolutionReport.h"
 #include "Core/EditorActions.h"
+#include "Rendering/Assets/StaticMeshLODSettings.h"
 using namespace NLS;
 
 namespace
@@ -257,6 +261,47 @@ void ClearModelTextureRemapInIni(
 {
     metadata.Remove(NLS::Editor::Assets::MakeModelTextureRemapSettingKey(stableSourceKey));
 }
+}
+
+Editor::Panels::ModelLODAssetPropertiesView Editor::Panels::BuildModelLODAssetPropertiesView(
+    const std::map<std::string, std::string>& serializedSettings)
+{
+    ModelLODAssetPropertiesView view;
+    const NLS::Render::Assets::StaticMeshLODSettingsRegistry registry;
+    const auto settings = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(serializedSettings);
+    const auto& presets = registry.GetPresets();
+
+    for (size_t index = 0u; index < presets.size(); ++index)
+        view.lodGroupChoices.emplace(static_cast<int>(index), presets[index].name);
+
+    const auto selected = std::find_if(
+        presets.begin(),
+        presets.end(),
+        [&settings](const auto& preset) { return preset.name == settings.lodGroup; });
+    view.selectedLODGroup = selected == presets.end()
+        ? 0
+        : static_cast<int>(std::distance(presets.begin(), selected));
+    view.importMeshLODs = settings.importMeshLODs;
+    view.minLOD = static_cast<int>((std::min)(
+        settings.minLOD,
+        static_cast<uint32_t>((std::numeric_limits<int>::max)())));
+    view.autoComputeLODScreenSize = settings.autoComputeLODScreenSize;
+    return view;
+}
+
+void Editor::Panels::StoreModelLODAssetPropertiesSettings(
+    std::map<std::string, std::string>& serializedSettings,
+    const ModelLODAssetPropertiesView& view)
+{
+    const auto choice = view.lodGroupChoices.find(view.selectedLODGroup);
+    serializedSettings["LOD_GROUP"] = choice == view.lodGroupChoices.end()
+        ? "None"
+        : choice->second;
+    serializedSettings["IMPORT_MESH_LODS"] =
+        NLS::Editor::Assets::BoolToImporterSettingString(view.importMeshLODs);
+    serializedSettings["MIN_LOD"] = std::to_string((std::max)(0, view.minLOD));
+    serializedSettings["AUTO_COMPUTE_LOD_SCREEN_SIZE"] =
+        NLS::Editor::Assets::BoolToImporterSettingString(view.autoComputeLODScreenSize);
 }
 
 Editor::Panels::ModelTextureAssetPropertiesView Editor::Panels::BuildModelTextureAssetPropertiesView(

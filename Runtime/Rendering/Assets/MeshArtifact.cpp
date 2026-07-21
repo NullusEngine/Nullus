@@ -505,6 +505,7 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
             preview.materialIndex = mesh.materialIndex;
             preview.boundingSphere = mesh.boundingSphere;
             preview.hasBoundingSphere = mesh.hasBoundingSphere;
+            preview.isLODBundle = true;
             return preview;
         }
     }
@@ -535,6 +536,7 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
         preview.materialIndex = mesh.materialIndex;
         preview.boundingSphere = mesh.boundingSphere;
         preview.hasBoundingSphere = mesh.hasBoundingSphere;
+        preview.isLODBundle = true;
         return preview;
     }
 
@@ -775,8 +777,16 @@ std::optional<MeshArtifactBundle> LoadMeshArtifactBundle(const std::filesystem::
     }
 
     std::vector<uint8_t> bytes;
+    const auto fileReadBegin = std::chrono::steady_clock::now();
     if (!Detail::ReadArtifactFileBytes(path, bytes, nullptr))
         return std::nullopt;
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - fileReadBegin),
+        bytes.size(),
+        path.generic_string()
+    });
     if (auto bundle = DeserializeMeshArtifactBundle(bytes))
         return bundle;
     if (auto mesh = DeserializeMeshArtifact(bytes))

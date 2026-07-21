@@ -8322,7 +8322,7 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsMalformedTextureArtifactBeforeFullP
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, ServiceSamplesOversizedMeshPreviewWithoutFullPayloadRead)
+TEST(AssetThumbnailCacheTests, ServiceRejectsOversizedLegacyMeshPreviewWithoutFullPayloadRead)
 {
     using namespace NLS::Editor::Assets;
 
@@ -8351,10 +8351,10 @@ TEST(AssetThumbnailCacheTests, ServiceSamplesOversizedMeshPreviewWithoutFullPayl
     NLS::Core::Assets::ClearArtifactLoadTelemetry();
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
-    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh) << generated->diagnostic;
-    EXPECT_TRUE(generated->diagnostic.empty());
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback) << generated->diagnostic;
+    EXPECT_EQ(generated->diagnostic, "thumbnail-model-preview-budget-exceeded");
     EXPECT_TRUE(std::filesystem::exists(entry->metadataPath));
-    EXPECT_TRUE(std::filesystem::exists(entry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_GE(
         CountArtifactTelemetryStage(telemetry, NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
@@ -8367,11 +8367,12 @@ TEST(AssetThumbnailCacheTests, ServiceSamplesOversizedMeshPreviewWithoutFullPayl
         0u);
 
     const auto evaluated = EvaluateAssetThumbnailCache(request);
-    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Fresh);
-    EXPECT_TRUE(evaluated.diagnostic.empty());
+    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
+    EXPECT_EQ(evaluated.diagnostic, "thumbnail-model-preview-budget-exceeded");
 
     const auto repeated = service.GetThumbnail(request);
-    EXPECT_EQ(repeated.status, AssetThumbnailServiceStatus::Fresh);
+    EXPECT_EQ(repeated.status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(repeated.diagnostic, "thumbnail-model-preview-budget-exceeded");
     EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
 
     std::filesystem::remove_all(root);

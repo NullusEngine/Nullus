@@ -28,6 +28,7 @@ struct MeshArtifactHeaderPreview
     uint32_t materialIndex = 0u;
     Geometry::BoundingSphere boundingSphere {};
     bool hasBoundingSphere = false;
+    bool isLODBundle = false;
 };
 
 struct MeshArtifactLODResource

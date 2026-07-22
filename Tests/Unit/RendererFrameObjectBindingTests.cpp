@@ -870,6 +870,18 @@ namespace
                 GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
         }
 
+        uint64_t GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting() const
+        {
+            return NLS::Render::Core::ABaseRenderer::
+                GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+        }
+
+        void SetActivePreparedPassBindingSetForTesting(
+            const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet)
+        {
+            SetActivePreparedPassBindingSet(bindingSet);
+        }
+
         void ClearPreparedRecordedDrawStaticBaseCacheForTesting() const
         {
             NLS::Render::Core::ABaseRenderer::ClearPreparedRecordedDrawStaticBaseCache();
@@ -8342,6 +8354,8 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
         renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
     const auto lruSpliceCountAfterGeneralMiss =
         renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+    const auto generalCacheLookupCountAfterGeneralMiss =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
 
     ASSERT_TRUE(renderer.CaptureDrawForTesting(
         drawable,
@@ -8359,6 +8373,9 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
     EXPECT_EQ(
         renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
         lruSpliceCountAfterGeneralMiss);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountAfterGeneralMiss);
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 1u);
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 2u);
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 1u);
@@ -8445,11 +8462,84 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
     ASSERT_NE(changedReusePermissionDescriptor, nullptr);
     changedReusePermissionDescriptor->allowsSingleObjectDataReuse = false;
     expectMissThenRefresh("single object data reuse permission", std::move(changedReusePermissionDrawable));
+
+    auto passBindingSet = std::make_shared<TestBindingSet>(NLS::Render::RHI::RHIBindingSetDesc{});
+    renderer.SetActivePreparedPassBindingSetForTesting(passBindingSet);
+    const auto fullKeyBuildCountBeforePassBindingChange =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto generalCacheLookupCountBeforePassBindingChange =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforePassBindingChange);
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountBeforePassBindingChange);
+    const auto fullKeyBuildCountAfterPassBindingRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto lruSpliceCountAfterPassBindingRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+    const auto generalCacheLookupCountAfterPassBindingRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountAfterPassBindingRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+        lruSpliceCountAfterPassBindingRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountAfterPassBindingRefresh);
+    renderer.SetActivePreparedPassBindingSetForTesting(nullptr);
+
+    const auto fullKeyBuildCountBeforeOverrideChange =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto lruSpliceCountBeforeOverrideChange =
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+    auto changedOverrides = overrides;
+    changedOverrides.blending = true;
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        changedOverrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeOverrideChange);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+        lruSpliceCountBeforeOverrideChange);
+    const auto fullKeyBuildCountAfterOverrideRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto lruSpliceCountAfterOverrideRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+    const auto generalCacheLookupCountAfterOverrideRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        changedOverrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountAfterOverrideRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+        lruSpliceCountAfterOverrideRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountAfterOverrideRefresh);
     renderer.EndFrame();
 
-    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 13u);
-    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 13u);
-    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 15u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 15u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 2u);
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 13u);
 
     frameContext.frameIndex = 44u;
@@ -8581,6 +8671,34 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
             overrides,
             NLS::Render::Settings::EComparaisonAlgorithm::LESS));
     }
+    const auto fullKeyBuildCountBeforeEvictedRevisionRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeEvictedRevisionRefresh);
+    const auto fullKeyBuildCountAfterEvictedRevisionRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto lruSpliceCountAfterEvictedRevisionRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+    const auto generalCacheLookupCountAfterEvictedRevisionRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountAfterEvictedRevisionRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+        lruSpliceCountAfterEvictedRevisionRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountAfterEvictedRevisionRefresh);
     renderer.EndFrame();
 
     EXPECT_LE(
@@ -8589,6 +8707,45 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
     renderer.AdvancePreparedRecordedDrawStaticBaseCacheForTesting(
         RecordedDrawCacheProbeSceneRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting() + 1u);
     EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(), 0u);
+
+    auto secondDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, secondDevice);
+    auto& secondFrameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    secondFrameContext.frameIndex = 48u;
+    secondFrameContext.commandBuffer = nullptr;
+    secondFrameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(64u);
+    ASSERT_NE(secondFrameContext.descriptorAllocator, nullptr);
+    secondFrameContext.descriptorAllocator->BeginFrame(secondFrameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+    renderer.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    const auto fullKeyBuildCountAfterDeviceRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto lruSpliceCountAfterDeviceRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+    const auto generalCacheLookupCountAfterDeviceRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    renderer.EndFrame();
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountAfterDeviceRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+        lruSpliceCountAfterDeviceRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountAfterDeviceRefresh);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 0u);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(depthShader));

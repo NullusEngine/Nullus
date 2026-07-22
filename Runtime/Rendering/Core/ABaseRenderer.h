@@ -275,6 +275,7 @@ protected:
     size_t GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting() const;
     uint64_t GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting() const;
     uint64_t GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting() const;
+    uint64_t GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting() const;
     static size_t GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting();
     static uint64_t GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting();
     static size_t GetPreparedRecordedDrawStaticBaseCacheAgeSweepBudgetForTesting();
@@ -402,17 +403,6 @@ private:
 
         bool operator==(const PreparedRecordedDrawStaticBaseRevisionStamp& rhs) const = default;
     };
-    struct PreparedRecordedDrawStaticBaseRevisionIndexEntry
-    {
-        PreparedRecordedDrawStaticBaseRevisionStamp stamp;
-        PreparedRecordedDrawStaticBaseCacheKey fullKey;
-        const Resources::Material* material = nullptr;
-        const Resources::Mesh* mesh = nullptr;
-        const Resources::Shader* shader = nullptr;
-        uint64_t lastUsedFrame = 0u;
-        std::list<PreparedRecordedDrawStaticBaseRevisionKey>::iterator lruIterator {};
-        bool lruLinked = false;
-    };
     struct PreparedRecordedDrawStaticBase
     {
         std::shared_ptr<RHI::RHIGraphicsPipeline> pipeline;
@@ -424,6 +414,18 @@ private:
         std::list<PreparedRecordedDrawStaticBaseCacheKey>::iterator lruIterator {};
         bool lruLinked = false;
         std::vector<PreparedRecordedDrawStaticBaseRevisionKey> revisionKeys;
+    };
+    struct PreparedRecordedDrawStaticBaseRevisionIndexEntry
+    {
+        PreparedRecordedDrawStaticBaseRevisionStamp stamp;
+        PreparedRecordedDrawStaticBaseCacheKey fullKey;
+        std::shared_ptr<PreparedRecordedDrawStaticBase> preparedBase;
+        const Resources::Material* material = nullptr;
+        const Resources::Mesh* mesh = nullptr;
+        const Resources::Shader* shader = nullptr;
+        uint64_t lastUsedFrame = 0u;
+        std::list<PreparedRecordedDrawStaticBaseRevisionKey>::iterator lruIterator {};
+        bool lruLinked = false;
     };
 
     const PreparedRecordedDrawStaticBase* ResolvePreparedRecordedDrawStaticBase(
@@ -492,7 +494,7 @@ private:
     static std::atomic_bool s_isDrawing;
     mutable std::unordered_map<
         PreparedRecordedDrawStaticBaseCacheKey,
-        PreparedRecordedDrawStaticBase,
+        std::shared_ptr<PreparedRecordedDrawStaticBase>,
         PreparedRecordedDrawStaticBaseCacheKeyHash> m_preparedRecordedDrawStaticBaseCache;
     mutable std::unordered_map<
         PreparedRecordedDrawStaticBaseStableKey,
@@ -508,6 +510,7 @@ private:
 #if defined(NLS_ENABLE_TEST_HOOKS)
     mutable uint64_t m_preparedRecordedDrawStaticBaseFullKeyBuildCountForTesting = 0u;
     mutable uint64_t m_preparedRecordedDrawStaticBaseLruSpliceCountForTesting = 0u;
+    mutable uint64_t m_preparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting = 0u;
 #endif
     mutable uint64_t m_preparedRecordedDrawStaticBaseCacheFrame = 0u;
     mutable uint64_t m_cachedExplicitDeviceIdentity = 0u;

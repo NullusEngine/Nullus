@@ -1556,7 +1556,7 @@ void ABaseRenderer::ErasePreparedRecordedDrawStaticBaseEntry(
     if (const auto found = m_preparedRecordedDrawStaticBaseCache.find(key);
         found != m_preparedRecordedDrawStaticBaseCache.end())
     {
-        for (const auto& revisionKey : found->second.revisionKeys)
+        for (const auto& revisionKey : found->second->revisionKeys)
         {
             const auto indexedRevision = m_preparedRecordedDrawStaticBaseRevisionIndex.find(revisionKey);
             if (indexedRevision != m_preparedRecordedDrawStaticBaseRevisionIndex.end() &&
@@ -1570,8 +1570,8 @@ void ABaseRenderer::ErasePreparedRecordedDrawStaticBaseEntry(
                 m_preparedRecordedDrawStaticBaseRevisionIndex.erase(indexedRevision);
             }
         }
-        if (found->second.lruLinked)
-            m_preparedRecordedDrawStaticBaseLruKeys.erase(found->second.lruIterator);
+        if (found->second->lruLinked)
+            m_preparedRecordedDrawStaticBaseLruKeys.erase(found->second->lruIterator);
 
         m_preparedRecordedDrawStaticBaseCache.erase(found);
     }
@@ -1613,11 +1613,10 @@ void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
     if (existing != m_preparedRecordedDrawStaticBaseRevisionIndex.end() &&
         existing->second.fullKey != fullKey)
     {
-        if (const auto previousCacheEntry =
-                m_preparedRecordedDrawStaticBaseCache.find(existing->second.fullKey);
-            previousCacheEntry != m_preparedRecordedDrawStaticBaseCache.end())
+        if (const auto& previousPreparedBase = existing->second.preparedBase;
+            previousPreparedBase != nullptr)
         {
-            auto& previousRevisionKeys = previousCacheEntry->second.revisionKeys;
+            auto& previousRevisionKeys = previousPreparedBase->revisionKeys;
             previousRevisionKeys.erase(
                 std::remove(previousRevisionKeys.begin(), previousRevisionKeys.end(), revisionKey),
                 previousRevisionKeys.end());
@@ -1627,6 +1626,7 @@ void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
     auto [revisionEntry, inserted] = m_preparedRecordedDrawStaticBaseRevisionIndex.try_emplace(revisionKey);
     revisionEntry->second.stamp = revisionStamp;
     revisionEntry->second.fullKey = fullKey;
+    revisionEntry->second.preparedBase = cacheEntry->second;
     revisionEntry->second.material = &material;
     revisionEntry->second.mesh = &mesh;
     revisionEntry->second.shader = &shader;
@@ -1646,7 +1646,7 @@ void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
             revisionEntry->second.lruIterator);
     }
 
-    auto& revisionKeys = cacheEntry->second.revisionKeys;
+    auto& revisionKeys = cacheEntry->second->revisionKeys;
     if (std::find(revisionKeys.begin(), revisionKeys.end(), revisionKey) == revisionKeys.end())
         revisionKeys.push_back(revisionKey);
 
@@ -1660,10 +1660,10 @@ void ABaseRenderer::ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(
     if (indexed == m_preparedRecordedDrawStaticBaseRevisionIndex.end())
         return;
 
-    if (const auto cacheEntry = m_preparedRecordedDrawStaticBaseCache.find(indexed->second.fullKey);
-        cacheEntry != m_preparedRecordedDrawStaticBaseCache.end())
+    if (const auto& preparedBase = indexed->second.preparedBase;
+        preparedBase != nullptr)
     {
-        auto& revisionKeys = cacheEntry->second.revisionKeys;
+        auto& revisionKeys = preparedBase->revisionKeys;
         revisionKeys.erase(
             std::remove(revisionKeys.begin(), revisionKeys.end(), revisionKey),
             revisionKeys.end());
@@ -1774,15 +1774,15 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
                 continue;
             }
 
-            const auto age = m_preparedRecordedDrawStaticBaseCacheFrame >= oldest->second.lastUsedFrame
-                ? m_preparedRecordedDrawStaticBaseCacheFrame - oldest->second.lastUsedFrame
+            const auto age = m_preparedRecordedDrawStaticBaseCacheFrame >= oldest->second->lastUsedFrame
+                ? m_preparedRecordedDrawStaticBaseCacheFrame - oldest->second->lastUsedFrame
                 : 0u;
             if (age <= kMaxPreparedRecordedDrawStaticBaseCacheFrameAge)
             {
                 m_preparedRecordedDrawStaticBaseLruKeys.splice(
                     m_preparedRecordedDrawStaticBaseLruKeys.end(),
                     m_preparedRecordedDrawStaticBaseLruKeys,
-                    oldest->second.lruIterator);
+                    oldest->second->lruIterator);
                 continue;
             }
 
@@ -1873,21 +1873,21 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         const auto indexedRevision = m_preparedRecordedDrawStaticBaseRevisionIndex.find(*revisionKey);
         if (indexedRevision != m_preparedRecordedDrawStaticBaseRevisionIndex.end())
         {
-            const auto cached = m_preparedRecordedDrawStaticBaseCache.find(indexedRevision->second.fullKey);
-            if (cached != m_preparedRecordedDrawStaticBaseCache.end() &&
+            const auto& preparedBase = indexedRevision->second.preparedBase;
+            if (preparedBase != nullptr &&
                 indexedRevision->second.stamp == *revisionStamp &&
                 indexedRevision->second.material == &material &&
                 indexedRevision->second.mesh == mesh &&
                 indexedRevision->second.shader == effectiveShader)
             {
-                cached->second.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
+                preparedBase->lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
                 indexedRevision->second.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
                 if (auto* stats = GetMutableRendererStats(); stats != nullptr)
                     stats->RecordPreparedRecordedDrawStaticBaseFastPath(true);
-                return &cached->second;
+                return preparedBase.get();
             }
 
-            if (cached == m_preparedRecordedDrawStaticBaseCache.end())
+            if (preparedBase == nullptr)
                 ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(*revisionKey);
         }
 
@@ -1921,14 +1921,17 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         pipelineState,
         passBindingSet,
         effectiveShader);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++m_preparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting;
+#endif
     if (const auto found = m_preparedRecordedDrawStaticBaseCache.find(key);
         found != m_preparedRecordedDrawStaticBaseCache.end())
     {
-        TouchPreparedRecordedDrawStaticBaseEntry(found->second);
+        TouchPreparedRecordedDrawStaticBaseEntry(*found->second);
         refreshRevisionIndex(key);
         if (auto* stats = GetMutableRendererStats(); stats != nullptr)
             stats->RecordPreparedRecordedDrawStaticBaseCache(true);
-        return &found->second;
+        return found->second.get();
     }
 
     auto bindingSet = material.GetRecordedBindingSet(device, effectiveShader);
@@ -1946,14 +1949,17 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         effectiveShader);
     if (finalKey != key)
     {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        ++m_preparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting;
+#endif
         if (const auto found = m_preparedRecordedDrawStaticBaseCache.find(finalKey);
             found != m_preparedRecordedDrawStaticBaseCache.end())
         {
-            TouchPreparedRecordedDrawStaticBaseEntry(found->second);
+            TouchPreparedRecordedDrawStaticBaseEntry(*found->second);
             refreshRevisionIndex(finalKey);
             if (auto* stats = GetMutableRendererStats(); stats != nullptr)
                 stats->RecordPreparedRecordedDrawStaticBaseCache(true);
-            return &found->second;
+            return found->second.get();
         }
     }
 
@@ -1992,24 +1998,24 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         return nullptr;
     }
 
-    PreparedRecordedDrawStaticBase staticBase;
-    staticBase.pipeline = std::move(pipeline);
-    staticBase.materialBindingSet = std::move(bindingSet);
-    staticBase.passBindingSet = passBindingSet;
-    staticBase.mesh = std::move(rhiMesh);
-    staticBase.gpuInstances = material.GetGPUInstances();
+    auto staticBase = std::make_shared<PreparedRecordedDrawStaticBase>();
+    staticBase->pipeline = std::move(pipeline);
+    staticBase->materialBindingSet = std::move(bindingSet);
+    staticBase->passBindingSet = passBindingSet;
+    staticBase->mesh = std::move(rhiMesh);
+    staticBase->gpuInstances = material.GetGPUInstances();
     EraseStalePreparedRecordedDrawStaticBaseEntries(finalKey);
     auto [entry, inserted] = m_preparedRecordedDrawStaticBaseCache.emplace(finalKey, std::move(staticBase));
     if (inserted)
-        LinkPreparedRecordedDrawStaticBaseEntry(finalKey, entry->second);
+        LinkPreparedRecordedDrawStaticBaseEntry(finalKey, *entry->second);
     else
-        TouchPreparedRecordedDrawStaticBaseEntry(entry->second);
+        TouchPreparedRecordedDrawStaticBaseEntry(*entry->second);
     IndexPreparedRecordedDrawStaticBaseEntry(finalKey);
     refreshRevisionIndex(finalKey);
     TrimPreparedRecordedDrawStaticBaseCache(false);
     if (auto* stats = GetMutableRendererStats(); stats != nullptr)
         stats->RecordPreparedRecordedDrawStaticBaseCache(false);
-    return &entry->second;
+    return entry->second.get();
 }
 
 bool ABaseRenderer::PrepareRecordedDraw(
@@ -2230,6 +2236,11 @@ uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTes
 uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting() const
 {
     return m_preparedRecordedDrawStaticBaseLruSpliceCountForTesting;
+}
+
+uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting() const
+{
+    return m_preparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting;
 }
 
 size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting()

@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 #include <variant>
@@ -31,6 +32,21 @@ namespace NLS::UI::Widgets
 
 namespace NLS::Editor::Panels
 {
+    struct ModelLODAssetPropertiesView
+    {
+        std::map<int, std::string> lodGroupChoices;
+        int selectedLODGroup = 0;
+        bool importMeshLODs = false;
+        int minLOD = 0;
+        bool autoComputeLODScreenSize = true;
+    };
+
+    ModelLODAssetPropertiesView BuildModelLODAssetPropertiesView(
+        const std::map<std::string, std::string>& serializedSettings);
+    void StoreModelLODAssetPropertiesSettings(
+        std::map<std::string, std::string>& serializedSettings,
+        const ModelLODAssetPropertiesView& view);
+
     struct ModelTextureAssetPropertiesRow
     {
         std::string sourceStableKey;

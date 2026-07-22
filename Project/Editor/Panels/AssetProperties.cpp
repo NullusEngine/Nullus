@@ -3,6 +3,9 @@
 #include <Utils/PathParser.h>
 #include <Utils/SizeConverter.h>
 
+#include <algorithm>
+#include <limits>
+#include <map>
 #include <optional>
 
 #include <UI/GUIDrawer.h>
@@ -32,6 +35,7 @@
 #include "Assets/EditorAssetPath.h"
 #include "Assets/ModelTextureResolutionReport.h"
 #include "Core/EditorActions.h"
+#include "Rendering/Assets/StaticMeshLODSettings.h"
 using namespace NLS;
 
 namespace
@@ -204,6 +208,34 @@ void SetOrAddIniValue(
         metadata.Add(key, value);
 }
 
+NLS::Editor::Panels::ModelLODAssetPropertiesView LoadModelLODSettingsFromIni(
+    Filesystem::IniFile& metadata)
+{
+    const std::map<std::string, std::string> serialized {
+        {"LOD_GROUP", metadata.GetOrDefault<std::string>("LOD_GROUP", "None")},
+        {"IMPORT_MESH_LODS", metadata.GetOrDefault<std::string>("IMPORT_MESH_LODS", "false")},
+        {"MIN_LOD", metadata.GetOrDefault<std::string>("MIN_LOD", "0")},
+        {"AUTO_COMPUTE_LOD_SCREEN_SIZE", metadata.GetOrDefault<std::string>(
+            "AUTO_COMPUTE_LOD_SCREEN_SIZE", "true")}
+    };
+    return NLS::Editor::Panels::BuildModelLODAssetPropertiesView(serialized);
+}
+
+void StoreModelLODSettingsInIni(
+    Filesystem::IniFile& metadata,
+    const NLS::Editor::Panels::ModelLODAssetPropertiesView& view)
+{
+    std::map<std::string, std::string> serialized;
+    NLS::Editor::Panels::StoreModelLODAssetPropertiesSettings(serialized, view);
+    SetOrAddIniValue(metadata, "LOD_GROUP", serialized.at("LOD_GROUP"));
+    SetOrAddIniValue(metadata, "IMPORT_MESH_LODS", serialized.at("IMPORT_MESH_LODS"));
+    SetOrAddIniValue(metadata, "MIN_LOD", serialized.at("MIN_LOD"));
+    SetOrAddIniValue(
+        metadata,
+        "AUTO_COMPUTE_LOD_SCREEN_SIZE",
+        serialized.at("AUTO_COMPUTE_LOD_SCREEN_SIZE"));
+}
+
 NLS::Editor::Assets::ModelTextureResolutionSettings LoadModelTextureResolutionSettingsFromIni(
     Filesystem::IniFile& metadata)
 {
@@ -257,6 +289,52 @@ void ClearModelTextureRemapInIni(
 {
     metadata.Remove(NLS::Editor::Assets::MakeModelTextureRemapSettingKey(stableSourceKey));
 }
+}
+
+Editor::Panels::ModelLODAssetPropertiesView Editor::Panels::BuildModelLODAssetPropertiesView(
+    const std::map<std::string, std::string>& serializedSettings)
+{
+    ModelLODAssetPropertiesView view;
+    const NLS::Render::Assets::StaticMeshLODSettingsRegistry registry;
+    const auto settings = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(serializedSettings);
+    const auto& presets = registry.GetPresets();
+
+    for (size_t index = 0u; index < presets.size(); ++index)
+        view.lodGroupChoices.emplace(static_cast<int>(index), presets[index].name);
+
+    const auto selected = std::find_if(
+        presets.begin(),
+        presets.end(),
+        [&settings](const auto& preset) { return preset.name == settings.lodGroup; });
+    view.selectedLODGroup = selected == presets.end()
+        ? 0
+        : static_cast<int>(std::distance(presets.begin(), selected));
+    view.importMeshLODs = settings.importMeshLODs;
+    const auto serializedMinLOD = serializedSettings.find("MIN_LOD");
+    view.minLOD = serializedMinLOD != serializedSettings.end() &&
+        !serializedMinLOD->second.empty() &&
+        serializedMinLOD->second.front() == '-'
+        ? 0
+        : static_cast<int>((std::min)(
+            settings.minLOD,
+            static_cast<uint32_t>((std::numeric_limits<int>::max)())));
+    view.autoComputeLODScreenSize = settings.autoComputeLODScreenSize;
+    return view;
+}
+
+void Editor::Panels::StoreModelLODAssetPropertiesSettings(
+    std::map<std::string, std::string>& serializedSettings,
+    const ModelLODAssetPropertiesView& view)
+{
+    const auto choice = view.lodGroupChoices.find(view.selectedLODGroup);
+    serializedSettings["LOD_GROUP"] = choice == view.lodGroupChoices.end()
+        ? "None"
+        : choice->second;
+    serializedSettings["IMPORT_MESH_LODS"] =
+        NLS::Editor::Assets::BoolToImporterSettingString(view.importMeshLODs);
+    serializedSettings["MIN_LOD"] = std::to_string((std::max)(0, view.minLOD));
+    serializedSettings["AUTO_COMPUTE_LOD_SCREEN_SIZE"] =
+        NLS::Editor::Assets::BoolToImporterSettingString(view.autoComputeLODScreenSize);
 }
 
 Editor::Panels::ModelTextureAssetPropertiesView Editor::Panels::BuildModelTextureAssetPropertiesView(
@@ -648,6 +726,10 @@ void Editor::Panels::AssetProperties::CreateModelSettings()
 	m_metadata->Add("FORCE_GEN_NORMALS", false);
 	m_metadata->Add("DROP_NORMALS", false);
 	m_metadata->Add("GEN_BOUNDING_BOXES", false);
+    m_metadata->Add("LOD_GROUP", std::string("None"));
+    m_metadata->Add("IMPORT_MESH_LODS", std::string("false"));
+    m_metadata->Add("MIN_LOD", std::string("0"));
+    m_metadata->Add("AUTO_COMPUTE_LOD_SCREEN_SIZE", std::string("true"));
 
 	MODEL_FLAG_ENTRY("CALC_TANGENT_SPACE");
 	MODEL_FLAG_ENTRY("JOIN_IDENTICAL_VERTICES");
@@ -680,6 +762,60 @@ void Editor::Panels::AssetProperties::CreateModelSettings()
 	MODEL_FLAG_ENTRY("FORCE_GEN_NORMALS");
 	MODEL_FLAG_ENTRY("DROP_NORMALS");
 	MODEL_FLAG_ENTRY("GEN_BOUNDING_BOXES");
+
+    const auto loadLODView = [this]() { return LoadModelLODSettingsFromIni(*m_metadata); };
+    const auto storeLODView = [this](const ModelLODAssetPropertiesView& view)
+    {
+        StoreModelLODSettingsInIni(*m_metadata, view);
+    };
+
+    auto lodView = loadLODView();
+    StoreModelLODSettingsInIni(*m_metadata, lodView);
+
+    NLS::UI::GUIDrawer::CreateTitle(*m_settingsColumns, "LOD Group");
+    auto& lodGroup = m_settingsColumns->CreateWidget<UI::Widgets::ComboBox>(lodView.selectedLODGroup);
+    lodGroup.choices = lodView.lodGroupChoices;
+    lodGroup.ValueChangedEvent += [loadLODView, storeLODView](int selection)
+    {
+        auto changed = loadLODView();
+        changed.selectedLODGroup = selection;
+        storeLODView(changed);
+    };
+
+    NLS::UI::GUIDrawer::DrawBoolean(
+        *m_settingsColumns,
+        "Import Mesh LODs",
+        [loadLODView]() { return loadLODView().importMeshLODs; },
+        [loadLODView, storeLODView](bool value)
+        {
+            auto changed = loadLODView();
+            changed.importMeshLODs = value;
+            storeLODView(changed);
+        });
+    NLS::UI::GUIDrawer::DrawScalar<int>(
+        *m_settingsColumns,
+        "Min LOD",
+        [loadLODView]() { return loadLODView().minLOD; },
+        [loadLODView, storeLODView](int value)
+        {
+            auto changed = loadLODView();
+            changed.minLOD = value;
+            storeLODView(changed);
+        },
+        1.0f,
+        0,
+        (std::numeric_limits<int>::max)());
+    NLS::UI::GUIDrawer::DrawBoolean(
+        *m_settingsColumns,
+        "Auto Compute LOD Screen Size",
+        [loadLODView]() { return loadLODView().autoComputeLODScreenSize; },
+        [loadLODView, storeLODView](bool value)
+        {
+            auto changed = loadLODView();
+            changed.autoComputeLODScreenSize = value;
+            storeLODView(changed);
+        });
+
     CreateModelTextureResolutionProperties();
 };
 

@@ -28,6 +28,7 @@ public:
     void RecordGBufferMaterialSync();
     void RecordGBufferMaterialResolve(bool hit);
     void RecordPreparedRecordedDrawStaticBaseCache(bool hit);
+    void RecordPreparedRecordedDrawStaticBaseFastPath(bool hit);
     void RecordRenderBindingSetCreation(uint64_t count = 1u);
     void RecordRenderSnapshotBufferCreation(uint64_t count = 1u);
     void RecordDrawCallOptimizationStats(const NLS::Render::Data::DrawCallOptimizationStats& stats);

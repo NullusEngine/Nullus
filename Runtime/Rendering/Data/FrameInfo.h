@@ -161,6 +161,8 @@ namespace NLS::Render::Data
         uint64_t gBufferMaterialResolveMissCount = 0;
         uint64_t preparedRecordedDrawStaticBaseCacheHitCount = 0;
         uint64_t preparedRecordedDrawStaticBaseCacheMissCount = 0;
+        uint64_t preparedRecordedDrawStaticBaseFastPathHitCount = 0;
+        uint64_t preparedRecordedDrawStaticBaseFastPathMissCount = 0;
         uint64_t renderBindingSetCreationCount = 0;
         uint64_t renderSnapshotBufferCreationCount = 0;
         uint64_t rawVisibleObjectCount = 0;

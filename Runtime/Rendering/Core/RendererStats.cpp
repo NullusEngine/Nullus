@@ -114,6 +114,8 @@ void RendererStats::BeginFrame()
     m_frameInfo.gBufferMaterialResolveMissCount = 0u;
     m_frameInfo.preparedRecordedDrawStaticBaseCacheHitCount = 0u;
     m_frameInfo.preparedRecordedDrawStaticBaseCacheMissCount = 0u;
+    m_frameInfo.preparedRecordedDrawStaticBaseFastPathHitCount = 0u;
+    m_frameInfo.preparedRecordedDrawStaticBaseFastPathMissCount = 0u;
     m_frameInfo.renderBindingSetCreationCount = 0u;
     m_frameInfo.renderSnapshotBufferCreationCount = 0u;
     m_frameInfo.rawVisibleObjectCount = 0u;
@@ -210,6 +212,14 @@ void RendererStats::RecordDrawCallOptimizationStats(
     m_frameInfo.opaqueSortTokenHitCount = stats.opaqueSortTokenHitCount;
     m_frameInfo.opaqueSortTokenRebuildCount = stats.opaqueSortTokenRebuildCount;
     m_frameInfo.objectDataOverflowDroppedObjectCount = stats.objectDataOverflowDroppedObjectCount;
+}
+
+void RendererStats::RecordPreparedRecordedDrawStaticBaseFastPath(const bool hit)
+{
+    if (hit)
+        ++m_frameInfo.preparedRecordedDrawStaticBaseFastPathHitCount;
+    else
+        ++m_frameInfo.preparedRecordedDrawStaticBaseFastPathMissCount;
 }
 
 void RendererStats::RecordLargeSceneTelemetry(

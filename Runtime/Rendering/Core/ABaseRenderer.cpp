@@ -1368,6 +1368,40 @@ size_t ABaseRenderer::PreparedRecordedDrawStaticBaseStableKeyHash::operator()(
     return seed;
 }
 
+bool ABaseRenderer::PreparedRecordedDrawStaticBaseRevisionKey::operator==(
+    const PreparedRecordedDrawStaticBaseRevisionKey& rhs) const
+{
+    return stableSceneIdentity == rhs.stableSceneIdentity &&
+        groupIdentity == rhs.groupIdentity &&
+        deviceIdentity == rhs.deviceIdentity &&
+        backend == rhs.backend &&
+        passBindingSetAddress == rhs.passBindingSetAddress &&
+        primitiveMode == rhs.primitiveMode &&
+        depthCompareOverride == rhs.depthCompareOverride &&
+        pipelineState.bits == rhs.pipelineState.bits &&
+        pipelineOverrides == rhs.pipelineOverrides &&
+        lightMode == rhs.lightMode;
+}
+
+size_t ABaseRenderer::PreparedRecordedDrawStaticBaseRevisionKeyHash::operator()(
+    const PreparedRecordedDrawStaticBaseRevisionKey& key) const
+{
+    size_t seed = 0u;
+    HashCombine(seed, key.stableSceneIdentity.sceneId);
+    HashCombine(seed, key.stableSceneIdentity.primitiveIndex);
+    HashCombine(seed, key.stableSceneIdentity.primitiveGeneration);
+    HashCombine(seed, key.groupIdentity);
+    HashCombine(seed, key.deviceIdentity);
+    HashCombine(seed, static_cast<uint32_t>(key.backend));
+    HashCombine(seed, key.passBindingSetAddress);
+    HashCombine(seed, static_cast<uint32_t>(key.primitiveMode));
+    HashCombine(seed, static_cast<uint32_t>(key.depthCompareOverride));
+    HashCombine(seed, HashPipelineState(key.pipelineState));
+    HashCombine(seed, key.pipelineOverrides.GetHash());
+    HashCombine(seed, key.lightMode);
+    return seed;
+}
+
 ABaseRenderer::PreparedRecordedDrawStaticBaseStableKey ABaseRenderer::BuildPreparedRecordedDrawStaticBaseStableKey(
     const PreparedRecordedDrawStaticBaseCacheKey& key)
 {
@@ -1383,6 +1417,78 @@ ABaseRenderer::PreparedRecordedDrawStaticBaseStableKey ABaseRenderer::BuildPrepa
     stableKey.pipelineState = key.pipelineState;
     stableKey.pipelineOverrides = key.pipelineOverrides;
     return stableKey;
+}
+
+ABaseRenderer::PreparedRecordedDrawStaticBaseRevisionKey
+ABaseRenderer::BuildPreparedRecordedDrawStaticBaseRevisionKey(
+    const Data::DrawableObjectDescriptor& descriptor,
+    const std::shared_ptr<RHI::RHIDevice>& device,
+    const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
+    const Settings::EComparaisonAlgorithm depthCompareOverride,
+    const Data::PipelineState& pipelineState,
+    const std::shared_ptr<RHI::RHIBindingSet>& activePassBindingSet,
+    const Settings::EPrimitiveMode primitiveMode,
+    const std::string_view lightMode)
+{
+    PreparedRecordedDrawStaticBaseRevisionKey key;
+    key.stableSceneIdentity = descriptor.stableSceneIdentity;
+    key.groupIdentity = descriptor.groupIdentity;
+    key.deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
+    key.backend = ResolveDeviceBackendType(device);
+    key.passBindingSetAddress = reinterpret_cast<uintptr_t>(activePassBindingSet.get());
+    key.primitiveMode = primitiveMode;
+    key.depthCompareOverride = depthCompareOverride;
+    key.pipelineState = pipelineState;
+    key.pipelineOverrides = pipelineOverrides;
+    key.lightMode = lightMode;
+    return key;
+}
+
+ABaseRenderer::PreparedRecordedDrawStaticBaseRevisionStamp
+ABaseRenderer::BuildPreparedRecordedDrawStaticBaseRevisionStamp(
+    const Data::DrawableObjectDescriptor& descriptor,
+    const Resources::Mesh& mesh,
+    const Resources::Material& material,
+    const Resources::Shader& shader)
+{
+    PreparedRecordedDrawStaticBaseRevisionStamp stamp;
+    stamp.cachedCommandBuildSerial = descriptor.cachedCommandBuildSerial;
+    stamp.meshInstanceId = descriptor.meshInstanceId;
+    stamp.meshContentRevision = descriptor.meshContentRevision;
+    stamp.materialInstanceId = descriptor.materialInstanceId;
+    stamp.materialParameterRevision = descriptor.materialParameterRevision;
+    stamp.materialRenderStateRevision = descriptor.materialRenderStateRevision;
+    stamp.materialBindingRevision = descriptor.materialBindingRevision;
+    stamp.shaderInstanceId = descriptor.shaderInstanceId;
+    stamp.shaderGeneration = descriptor.shaderGeneration;
+    stamp.transformRevision = descriptor.transformRevision;
+    stamp.liveMeshInstanceId = mesh.GetInstanceId();
+    stamp.liveMeshContentRevision = mesh.GetContentRevision();
+    stamp.effectiveMaterialInstanceId = material.GetInstanceId();
+    stamp.effectiveMaterialParameterRevision = material.GetParameterRevision();
+    stamp.effectiveMaterialRenderStateRevision = material.GetRenderStateRevision();
+    stamp.effectiveMaterialBindingRevision = material.GetBindingRevision();
+    stamp.effectiveShaderInstanceId = shader.GetInstanceId();
+    stamp.effectiveShaderGeneration = shader.GetGeneration();
+    stamp.allowsSingleObjectDataReuse = descriptor.allowsSingleObjectDataReuse;
+    return stamp;
+}
+
+bool ABaseRenderer::HasCompleteTrustedPreparedRecordedDrawStaticBaseRevision(
+    const Data::DrawableObjectDescriptor& descriptor)
+{
+    return descriptor.hasTrustedStaticDrawRevision &&
+        descriptor.stableSceneIdentity.IsValid() &&
+        descriptor.cachedCommandBuildSerial != 0u &&
+        descriptor.meshInstanceId != 0u &&
+        descriptor.meshContentRevision != 0u &&
+        descriptor.materialInstanceId != 0u &&
+        descriptor.materialParameterRevision != 0u &&
+        descriptor.materialRenderStateRevision != 0u &&
+        descriptor.materialBindingRevision != 0u &&
+        descriptor.shaderInstanceId != 0u &&
+        descriptor.shaderGeneration != 0u &&
+        descriptor.transformRevision != 0u;
 }
 
 ABaseRenderer::PreparedRecordedDrawStaticBaseCacheKey ABaseRenderer::BuildPreparedRecordedDrawStaticBaseCacheKey(
@@ -1450,6 +1556,20 @@ void ABaseRenderer::ErasePreparedRecordedDrawStaticBaseEntry(
     if (const auto found = m_preparedRecordedDrawStaticBaseCache.find(key);
         found != m_preparedRecordedDrawStaticBaseCache.end())
     {
+        for (const auto& revisionKey : found->second.revisionKeys)
+        {
+            const auto indexedRevision = m_preparedRecordedDrawStaticBaseRevisionIndex.find(revisionKey);
+            if (indexedRevision != m_preparedRecordedDrawStaticBaseRevisionIndex.end() &&
+                indexedRevision->second.fullKey == key)
+            {
+                if (indexedRevision->second.lruLinked)
+                {
+                    m_preparedRecordedDrawStaticBaseRevisionLruKeys.erase(
+                        indexedRevision->second.lruIterator);
+                }
+                m_preparedRecordedDrawStaticBaseRevisionIndex.erase(indexedRevision);
+            }
+        }
         if (found->second.lruLinked)
             m_preparedRecordedDrawStaticBaseLruKeys.erase(found->second.lruIterator);
 
@@ -1477,6 +1597,128 @@ void ABaseRenderer::IndexPreparedRecordedDrawStaticBaseEntry(
     m_preparedRecordedDrawStaticBaseStableIndex[BuildPreparedRecordedDrawStaticBaseStableKey(key)] = key;
 }
 
+void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
+    const PreparedRecordedDrawStaticBaseRevisionKey& revisionKey,
+    const PreparedRecordedDrawStaticBaseRevisionStamp& revisionStamp,
+    const PreparedRecordedDrawStaticBaseCacheKey& fullKey,
+    const Resources::Material& material,
+    const Resources::Mesh& mesh,
+    const Resources::Shader& shader) const
+{
+    const auto cacheEntry = m_preparedRecordedDrawStaticBaseCache.find(fullKey);
+    if (cacheEntry == m_preparedRecordedDrawStaticBaseCache.end())
+        return;
+
+    const auto existing = m_preparedRecordedDrawStaticBaseRevisionIndex.find(revisionKey);
+    if (existing != m_preparedRecordedDrawStaticBaseRevisionIndex.end() &&
+        existing->second.fullKey != fullKey)
+    {
+        if (const auto previousCacheEntry =
+                m_preparedRecordedDrawStaticBaseCache.find(existing->second.fullKey);
+            previousCacheEntry != m_preparedRecordedDrawStaticBaseCache.end())
+        {
+            auto& previousRevisionKeys = previousCacheEntry->second.revisionKeys;
+            previousRevisionKeys.erase(
+                std::remove(previousRevisionKeys.begin(), previousRevisionKeys.end(), revisionKey),
+                previousRevisionKeys.end());
+        }
+    }
+
+    auto [revisionEntry, inserted] = m_preparedRecordedDrawStaticBaseRevisionIndex.try_emplace(revisionKey);
+    revisionEntry->second.stamp = revisionStamp;
+    revisionEntry->second.fullKey = fullKey;
+    revisionEntry->second.material = &material;
+    revisionEntry->second.mesh = &mesh;
+    revisionEntry->second.shader = &shader;
+    revisionEntry->second.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
+    if (inserted)
+    {
+        m_preparedRecordedDrawStaticBaseRevisionLruKeys.push_back(revisionKey);
+        revisionEntry->second.lruIterator =
+            std::prev(m_preparedRecordedDrawStaticBaseRevisionLruKeys.end());
+        revisionEntry->second.lruLinked = true;
+    }
+    else if (revisionEntry->second.lruLinked)
+    {
+        m_preparedRecordedDrawStaticBaseRevisionLruKeys.splice(
+            m_preparedRecordedDrawStaticBaseRevisionLruKeys.end(),
+            m_preparedRecordedDrawStaticBaseRevisionLruKeys,
+            revisionEntry->second.lruIterator);
+    }
+
+    auto& revisionKeys = cacheEntry->second.revisionKeys;
+    if (std::find(revisionKeys.begin(), revisionKeys.end(), revisionKey) == revisionKeys.end())
+        revisionKeys.push_back(revisionKey);
+
+    TrimPreparedRecordedDrawStaticBaseRevisionIndex(false);
+}
+
+void ABaseRenderer::ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(
+    const PreparedRecordedDrawStaticBaseRevisionKey& revisionKey) const
+{
+    const auto indexed = m_preparedRecordedDrawStaticBaseRevisionIndex.find(revisionKey);
+    if (indexed == m_preparedRecordedDrawStaticBaseRevisionIndex.end())
+        return;
+
+    if (const auto cacheEntry = m_preparedRecordedDrawStaticBaseCache.find(indexed->second.fullKey);
+        cacheEntry != m_preparedRecordedDrawStaticBaseCache.end())
+    {
+        auto& revisionKeys = cacheEntry->second.revisionKeys;
+        revisionKeys.erase(
+            std::remove(revisionKeys.begin(), revisionKeys.end(), revisionKey),
+            revisionKeys.end());
+    }
+    if (indexed->second.lruLinked)
+        m_preparedRecordedDrawStaticBaseRevisionLruKeys.erase(indexed->second.lruIterator);
+    m_preparedRecordedDrawStaticBaseRevisionIndex.erase(indexed);
+}
+
+void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseRevisionIndex(
+    const bool includeFrameAgeSweep) const
+{
+    if (includeFrameAgeSweep)
+    {
+        const auto entryCountToInspect = std::min(
+            kPreparedRecordedDrawStaticBaseCacheAgeSweepBudget,
+            m_preparedRecordedDrawStaticBaseRevisionLruKeys.size());
+        size_t processedEntryCount = 0u;
+        while (!m_preparedRecordedDrawStaticBaseRevisionLruKeys.empty() &&
+               processedEntryCount < entryCountToInspect)
+        {
+            const auto oldestKey = m_preparedRecordedDrawStaticBaseRevisionLruKeys.front();
+            const auto oldest = m_preparedRecordedDrawStaticBaseRevisionIndex.find(oldestKey);
+            ++processedEntryCount;
+            if (oldest == m_preparedRecordedDrawStaticBaseRevisionIndex.end())
+            {
+                m_preparedRecordedDrawStaticBaseRevisionLruKeys.pop_front();
+                continue;
+            }
+
+            const auto age = m_preparedRecordedDrawStaticBaseCacheFrame >= oldest->second.lastUsedFrame
+                ? m_preparedRecordedDrawStaticBaseCacheFrame - oldest->second.lastUsedFrame
+                : 0u;
+            if (age > kMaxPreparedRecordedDrawStaticBaseCacheFrameAge)
+            {
+                ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(oldestKey);
+                continue;
+            }
+
+            m_preparedRecordedDrawStaticBaseRevisionLruKeys.splice(
+                m_preparedRecordedDrawStaticBaseRevisionLruKeys.end(),
+                m_preparedRecordedDrawStaticBaseRevisionLruKeys,
+                oldest->second.lruIterator);
+        }
+    }
+
+    while (m_preparedRecordedDrawStaticBaseRevisionIndex.size() >
+               kMaxPreparedRecordedDrawStaticBaseCacheEntries &&
+           !m_preparedRecordedDrawStaticBaseRevisionLruKeys.empty())
+    {
+        const auto oldestKey = m_preparedRecordedDrawStaticBaseRevisionLruKeys.front();
+        ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(oldestKey);
+    }
+}
+
 void ABaseRenderer::LinkPreparedRecordedDrawStaticBaseEntry(
     const PreparedRecordedDrawStaticBaseCacheKey& key,
     PreparedRecordedDrawStaticBase& entry) const
@@ -1493,6 +1735,9 @@ void ABaseRenderer::TouchPreparedRecordedDrawStaticBaseEntry(
     entry.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
     if (entry.lruLinked)
     {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        ++m_preparedRecordedDrawStaticBaseLruSpliceCountForTesting;
+#endif
         m_preparedRecordedDrawStaticBaseLruKeys.splice(
             m_preparedRecordedDrawStaticBaseLruKeys.end(),
             m_preparedRecordedDrawStaticBaseLruKeys,
@@ -1505,15 +1750,20 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
     if (m_preparedRecordedDrawStaticBaseCache.empty())
     {
         m_preparedRecordedDrawStaticBaseStableIndex.clear();
+        m_preparedRecordedDrawStaticBaseRevisionIndex.clear();
+        m_preparedRecordedDrawStaticBaseRevisionLruKeys.clear();
         m_preparedRecordedDrawStaticBaseLruKeys.clear();
         return;
     }
 
     if (includeFrameAgeSweep)
     {
+        const auto entryCountToInspect = std::min(
+            kPreparedRecordedDrawStaticBaseCacheAgeSweepBudget,
+            m_preparedRecordedDrawStaticBaseLruKeys.size());
         size_t processedEntryCount = 0u;
         while (!m_preparedRecordedDrawStaticBaseLruKeys.empty() &&
-               processedEntryCount < kPreparedRecordedDrawStaticBaseCacheAgeSweepBudget)
+               processedEntryCount < entryCountToInspect)
         {
             const auto& oldestKey = m_preparedRecordedDrawStaticBaseLruKeys.front();
             const auto oldest = m_preparedRecordedDrawStaticBaseCache.find(oldestKey);
@@ -1528,7 +1778,13 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
                 ? m_preparedRecordedDrawStaticBaseCacheFrame - oldest->second.lastUsedFrame
                 : 0u;
             if (age <= kMaxPreparedRecordedDrawStaticBaseCacheFrameAge)
-                break;
+            {
+                m_preparedRecordedDrawStaticBaseLruKeys.splice(
+                    m_preparedRecordedDrawStaticBaseLruKeys.end(),
+                    m_preparedRecordedDrawStaticBaseLruKeys,
+                    oldest->second.lruIterator);
+                continue;
+            }
 
             const auto expiredKey = oldestKey;
             ErasePreparedRecordedDrawStaticBaseEntry(expiredKey);
@@ -1545,7 +1801,13 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
     if (m_preparedRecordedDrawStaticBaseCache.empty())
     {
         m_preparedRecordedDrawStaticBaseStableIndex.clear();
+        m_preparedRecordedDrawStaticBaseRevisionIndex.clear();
+        m_preparedRecordedDrawStaticBaseRevisionLruKeys.clear();
         m_preparedRecordedDrawStaticBaseLruKeys.clear();
+    }
+    else
+    {
+        TrimPreparedRecordedDrawStaticBaseRevisionIndex(includeFrameAgeSweep);
     }
 }
 
@@ -1587,6 +1849,69 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         return nullptr;
     }
     const auto passBindingSet = material.RequiresPassDescriptorSet(effectiveShader) ? m_activePreparedPassBindingSet : nullptr;
+    const auto* drawableDescriptor = drawable.TryGetDescriptor<Data::DrawableObjectDescriptor>();
+    const bool hasTrustedRevision = drawableDescriptor != nullptr &&
+        HasCompleteTrustedPreparedRecordedDrawStaticBaseRevision(*drawableDescriptor);
+    std::optional<PreparedRecordedDrawStaticBaseRevisionKey> revisionKey;
+    std::optional<PreparedRecordedDrawStaticBaseRevisionStamp> revisionStamp;
+    if (hasTrustedRevision)
+    {
+        revisionKey = BuildPreparedRecordedDrawStaticBaseRevisionKey(
+            *drawableDescriptor,
+            device,
+            pipelineOverrides,
+            depthCompareOverride,
+            pipelineState,
+            m_activePreparedPassBindingSet,
+            drawable.primitiveMode,
+            lightMode);
+        revisionStamp = BuildPreparedRecordedDrawStaticBaseRevisionStamp(
+            *drawableDescriptor,
+            *mesh,
+            material,
+            *effectiveShader);
+        const auto indexedRevision = m_preparedRecordedDrawStaticBaseRevisionIndex.find(*revisionKey);
+        if (indexedRevision != m_preparedRecordedDrawStaticBaseRevisionIndex.end())
+        {
+            const auto cached = m_preparedRecordedDrawStaticBaseCache.find(indexedRevision->second.fullKey);
+            if (cached != m_preparedRecordedDrawStaticBaseCache.end() &&
+                indexedRevision->second.stamp == *revisionStamp &&
+                indexedRevision->second.material == &material &&
+                indexedRevision->second.mesh == mesh &&
+                indexedRevision->second.shader == effectiveShader)
+            {
+                cached->second.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
+                indexedRevision->second.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
+                if (auto* stats = GetMutableRendererStats(); stats != nullptr)
+                    stats->RecordPreparedRecordedDrawStaticBaseFastPath(true);
+                return &cached->second;
+            }
+
+            if (cached == m_preparedRecordedDrawStaticBaseCache.end())
+                ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(*revisionKey);
+        }
+
+        if (auto* stats = GetMutableRendererStats(); stats != nullptr)
+            stats->RecordPreparedRecordedDrawStaticBaseFastPath(false);
+    }
+
+    const auto refreshRevisionIndex =
+        [&](const PreparedRecordedDrawStaticBaseCacheKey& fullKey)
+        {
+            if (revisionKey.has_value() && revisionStamp.has_value())
+            {
+                RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
+                    *revisionKey,
+                    *revisionStamp,
+                    fullKey,
+                    material,
+                    *mesh,
+                    *effectiveShader);
+            }
+        };
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++m_preparedRecordedDrawStaticBaseFullKeyBuildCountForTesting;
+#endif
     const auto key = BuildPreparedRecordedDrawStaticBaseCacheKey(
         drawable,
         material,
@@ -1600,12 +1925,16 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
         found != m_preparedRecordedDrawStaticBaseCache.end())
     {
         TouchPreparedRecordedDrawStaticBaseEntry(found->second);
+        refreshRevisionIndex(key);
         if (auto* stats = GetMutableRendererStats(); stats != nullptr)
             stats->RecordPreparedRecordedDrawStaticBaseCache(true);
         return &found->second;
     }
 
     auto bindingSet = material.GetRecordedBindingSet(device, effectiveShader);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++m_preparedRecordedDrawStaticBaseFullKeyBuildCountForTesting;
+#endif
     const auto finalKey = BuildPreparedRecordedDrawStaticBaseCacheKey(
         drawable,
         material,
@@ -1621,6 +1950,7 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
             found != m_preparedRecordedDrawStaticBaseCache.end())
         {
             TouchPreparedRecordedDrawStaticBaseEntry(found->second);
+            refreshRevisionIndex(finalKey);
             if (auto* stats = GetMutableRendererStats(); stats != nullptr)
                 stats->RecordPreparedRecordedDrawStaticBaseCache(true);
             return &found->second;
@@ -1675,6 +2005,7 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
     else
         TouchPreparedRecordedDrawStaticBaseEntry(entry->second);
     IndexPreparedRecordedDrawStaticBaseEntry(finalKey);
+    refreshRevisionIndex(finalKey);
     TrimPreparedRecordedDrawStaticBaseCache(false);
     if (auto* stats = GetMutableRendererStats(); stats != nullptr)
         stats->RecordPreparedRecordedDrawStaticBaseCache(false);
@@ -1870,6 +2201,8 @@ void ABaseRenderer::ClearPreparedRecordedDrawStaticBaseCache() const
 {
     m_preparedRecordedDrawStaticBaseCache.clear();
     m_preparedRecordedDrawStaticBaseStableIndex.clear();
+    m_preparedRecordedDrawStaticBaseRevisionIndex.clear();
+    m_preparedRecordedDrawStaticBaseRevisionLruKeys.clear();
     m_preparedRecordedDrawStaticBaseLruKeys.clear();
 }
 
@@ -1882,6 +2215,21 @@ size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheSizeForTesting() con
 size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting() const
 {
     return m_preparedRecordedDrawStaticBaseStableIndex.size();
+}
+
+size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting() const
+{
+    return m_preparedRecordedDrawStaticBaseRevisionIndex.size();
+}
+
+uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting() const
+{
+    return m_preparedRecordedDrawStaticBaseFullKeyBuildCountForTesting;
+}
+
+uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting() const
+{
+    return m_preparedRecordedDrawStaticBaseLruSpliceCountForTesting;
 }
 
 size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting()

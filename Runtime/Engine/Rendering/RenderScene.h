@@ -359,6 +359,9 @@ namespace NLS::Engine::Rendering
 			uint64_t materialInstanceId = 0u;
 			uint64_t materialParameterRevision = 0u;
 			uint64_t materialRenderStateRevision = 0u;
+			uint64_t materialBindingRevision = 0u;
+			uint64_t shaderInstanceId = 0u;
+			uint64_t shaderGeneration = 0u;
 			uint8_t stateMask = 0u;
 			NLS::Render::Settings::EPrimitiveMode primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
 

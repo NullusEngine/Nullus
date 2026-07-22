@@ -272,6 +272,9 @@ protected:
 #if defined(NLS_ENABLE_TEST_HOOKS)
     size_t GetPreparedRecordedDrawStaticBaseCacheSizeForTesting() const;
     size_t GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting() const;
+    size_t GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting() const;
+    uint64_t GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting() const;
+    uint64_t GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting() const;
     static size_t GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting();
     static uint64_t GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting();
     static size_t GetPreparedRecordedDrawStaticBaseCacheAgeSweepBudgetForTesting();
@@ -356,6 +359,60 @@ private:
     {
         size_t operator()(const PreparedRecordedDrawStaticBaseStableKey& key) const;
     };
+    struct PreparedRecordedDrawStaticBaseRevisionKey
+    {
+        Data::StaticDrawSceneIdentity stableSceneIdentity;
+        uint64_t groupIdentity = Data::DrawableObjectDescriptor::kInvalidStaticDrawGroupIdentity;
+        uint64_t deviceIdentity = 0u;
+        RHI::NativeBackendType backend = RHI::NativeBackendType::None;
+        uintptr_t passBindingSetAddress = 0u;
+        Settings::EPrimitiveMode primitiveMode = Settings::EPrimitiveMode::TRIANGLES;
+        Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS;
+        Data::PipelineState pipelineState {};
+        Resources::MaterialPipelineStateOverrides pipelineOverrides {};
+        std::string lightMode;
+
+        bool operator==(const PreparedRecordedDrawStaticBaseRevisionKey& rhs) const;
+    };
+    struct PreparedRecordedDrawStaticBaseRevisionKeyHash
+    {
+        size_t operator()(const PreparedRecordedDrawStaticBaseRevisionKey& key) const;
+    };
+    struct PreparedRecordedDrawStaticBaseRevisionStamp
+    {
+        uint64_t cachedCommandBuildSerial = 0u;
+        uint64_t meshInstanceId = 0u;
+        uint64_t meshContentRevision = 0u;
+        uint64_t materialInstanceId = 0u;
+        uint64_t materialParameterRevision = 0u;
+        uint64_t materialRenderStateRevision = 0u;
+        uint64_t materialBindingRevision = 0u;
+        uint64_t shaderInstanceId = 0u;
+        uint64_t shaderGeneration = 0u;
+        uint64_t transformRevision = 0u;
+        uint64_t liveMeshInstanceId = 0u;
+        uint64_t liveMeshContentRevision = 0u;
+        uint64_t effectiveMaterialInstanceId = 0u;
+        uint64_t effectiveMaterialParameterRevision = 0u;
+        uint64_t effectiveMaterialRenderStateRevision = 0u;
+        uint64_t effectiveMaterialBindingRevision = 0u;
+        uint64_t effectiveShaderInstanceId = 0u;
+        uint64_t effectiveShaderGeneration = 0u;
+        bool allowsSingleObjectDataReuse = false;
+
+        bool operator==(const PreparedRecordedDrawStaticBaseRevisionStamp& rhs) const = default;
+    };
+    struct PreparedRecordedDrawStaticBaseRevisionIndexEntry
+    {
+        PreparedRecordedDrawStaticBaseRevisionStamp stamp;
+        PreparedRecordedDrawStaticBaseCacheKey fullKey;
+        const Resources::Material* material = nullptr;
+        const Resources::Mesh* mesh = nullptr;
+        const Resources::Shader* shader = nullptr;
+        uint64_t lastUsedFrame = 0u;
+        std::list<PreparedRecordedDrawStaticBaseRevisionKey>::iterator lruIterator {};
+        bool lruLinked = false;
+    };
     struct PreparedRecordedDrawStaticBase
     {
         std::shared_ptr<RHI::RHIGraphicsPipeline> pipeline;
@@ -366,6 +423,7 @@ private:
         uint64_t lastUsedFrame = 0u;
         std::list<PreparedRecordedDrawStaticBaseCacheKey>::iterator lruIterator {};
         bool lruLinked = false;
+        std::vector<PreparedRecordedDrawStaticBaseRevisionKey> revisionKeys;
     };
 
     const PreparedRecordedDrawStaticBase* ResolvePreparedRecordedDrawStaticBase(
@@ -382,6 +440,16 @@ private:
         const PreparedRecordedDrawStaticBaseCacheKey& key) const;
     void IndexPreparedRecordedDrawStaticBaseEntry(
         const PreparedRecordedDrawStaticBaseCacheKey& key) const;
+    void RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
+        const PreparedRecordedDrawStaticBaseRevisionKey& revisionKey,
+        const PreparedRecordedDrawStaticBaseRevisionStamp& revisionStamp,
+        const PreparedRecordedDrawStaticBaseCacheKey& fullKey,
+        const Resources::Material& material,
+        const Resources::Mesh& mesh,
+        const Resources::Shader& shader) const;
+    void ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(
+        const PreparedRecordedDrawStaticBaseRevisionKey& revisionKey) const;
+    void TrimPreparedRecordedDrawStaticBaseRevisionIndex(bool includeFrameAgeSweep) const;
     void LinkPreparedRecordedDrawStaticBaseEntry(
         const PreparedRecordedDrawStaticBaseCacheKey& key,
         PreparedRecordedDrawStaticBase& entry) const;
@@ -390,6 +458,22 @@ private:
     void InvalidateExplicitDeviceDependentCachesIfNeeded() const;
     static PreparedRecordedDrawStaticBaseStableKey BuildPreparedRecordedDrawStaticBaseStableKey(
         const PreparedRecordedDrawStaticBaseCacheKey& key);
+    static PreparedRecordedDrawStaticBaseRevisionKey BuildPreparedRecordedDrawStaticBaseRevisionKey(
+        const Data::DrawableObjectDescriptor& descriptor,
+        const std::shared_ptr<RHI::RHIDevice>& device,
+        const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
+        Settings::EComparaisonAlgorithm depthCompareOverride,
+        const Data::PipelineState& pipelineState,
+        const std::shared_ptr<RHI::RHIBindingSet>& activePassBindingSet,
+        Settings::EPrimitiveMode primitiveMode,
+        std::string_view lightMode);
+    static PreparedRecordedDrawStaticBaseRevisionStamp BuildPreparedRecordedDrawStaticBaseRevisionStamp(
+        const Data::DrawableObjectDescriptor& descriptor,
+        const Resources::Mesh& mesh,
+        const Resources::Material& material,
+        const Resources::Shader& shader);
+    static bool HasCompleteTrustedPreparedRecordedDrawStaticBaseRevision(
+        const Data::DrawableObjectDescriptor& descriptor);
     static PreparedRecordedDrawStaticBaseCacheKey BuildPreparedRecordedDrawStaticBaseCacheKey(
         const Entities::Drawable& drawable,
         const Resources::Material& material,
@@ -414,7 +498,17 @@ private:
         PreparedRecordedDrawStaticBaseStableKey,
         PreparedRecordedDrawStaticBaseCacheKey,
         PreparedRecordedDrawStaticBaseStableKeyHash> m_preparedRecordedDrawStaticBaseStableIndex;
+    mutable std::unordered_map<
+        PreparedRecordedDrawStaticBaseRevisionKey,
+        PreparedRecordedDrawStaticBaseRevisionIndexEntry,
+        PreparedRecordedDrawStaticBaseRevisionKeyHash> m_preparedRecordedDrawStaticBaseRevisionIndex;
+    mutable std::list<PreparedRecordedDrawStaticBaseRevisionKey>
+        m_preparedRecordedDrawStaticBaseRevisionLruKeys;
     mutable std::list<PreparedRecordedDrawStaticBaseCacheKey> m_preparedRecordedDrawStaticBaseLruKeys;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    mutable uint64_t m_preparedRecordedDrawStaticBaseFullKeyBuildCountForTesting = 0u;
+    mutable uint64_t m_preparedRecordedDrawStaticBaseLruSpliceCountForTesting = 0u;
+#endif
     mutable uint64_t m_preparedRecordedDrawStaticBaseCacheFrame = 0u;
     mutable uint64_t m_cachedExplicitDeviceIdentity = 0u;
     mutable RHI::NativeBackendType m_cachedExplicitDeviceBackend = RHI::NativeBackendType::None;

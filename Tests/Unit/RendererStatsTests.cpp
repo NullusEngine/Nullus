@@ -434,6 +434,9 @@ TEST(RendererStatsTests, RendererStatsTracksRenderPreparationCounters)
     stats.RecordPreparedRecordedDrawStaticBaseCache(false);
     stats.RecordPreparedRecordedDrawStaticBaseCache(true);
     stats.RecordPreparedRecordedDrawStaticBaseCache(true);
+    stats.RecordPreparedRecordedDrawStaticBaseFastPath(false);
+    stats.RecordPreparedRecordedDrawStaticBaseFastPath(true);
+    stats.RecordPreparedRecordedDrawStaticBaseFastPath(true);
     stats.RecordRenderBindingSetCreation();
     stats.RecordRenderBindingSetCreation();
     stats.RecordRenderSnapshotBufferCreation();
@@ -449,6 +452,8 @@ TEST(RendererStatsTests, RendererStatsTracksRenderPreparationCounters)
     EXPECT_EQ(frameInfo.gBufferMaterialResolveMissCount, 1u);
     EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseCacheHitCount, 2u);
     EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseCacheMissCount, 1u);
+    EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseFastPathHitCount, 2u);
+    EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseFastPathMissCount, 1u);
     EXPECT_EQ(frameInfo.renderBindingSetCreationCount, 2u);
     EXPECT_EQ(frameInfo.renderSnapshotBufferCreationCount, 1u);
 }

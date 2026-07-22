@@ -75,6 +75,57 @@ namespace
 		return token;
 	}
 
+	bool PopulateTrustedStaticDrawRevision(
+		NLS::Engine::Rendering::EngineDrawableDescriptor& descriptor,
+		const ScenePrimitiveHandle& handle,
+		const uint64_t transformRevision,
+		const RenderCachedDrawCommand& command)
+	{
+		auto* mesh = command.mesh;
+		auto* material = command.material;
+		auto* shader = material != nullptr ? material->GetShader() : nullptr;
+		if (!handle.IsValid() || command.buildSerial == 0u || transformRevision == 0u ||
+			mesh == nullptr || material == nullptr || shader == nullptr)
+		{
+			return false;
+		}
+
+		descriptor.cachedCommandBuildSerial = command.buildSerial;
+		descriptor.meshInstanceId = mesh->GetInstanceId();
+		descriptor.meshContentRevision = mesh->GetContentRevision();
+		descriptor.materialInstanceId = material->GetInstanceId();
+		descriptor.materialParameterRevision = material->GetParameterRevision();
+		descriptor.materialRenderStateRevision = material->GetRenderStateRevision();
+		descriptor.materialBindingRevision = material->GetBindingRevision();
+		descriptor.shaderInstanceId = shader->GetInstanceId();
+		descriptor.shaderGeneration = shader->GetGeneration();
+		descriptor.transformRevision = transformRevision;
+		descriptor.stableSceneIdentity = { handle.sceneId, handle.index, handle.generation };
+		descriptor.groupIdentity =
+			NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidStaticDrawGroupIdentity;
+		descriptor.allowsSingleObjectDataReuse = true;
+		descriptor.hasTrustedStaticDrawRevision =
+			descriptor.meshInstanceId != 0u && descriptor.meshContentRevision != 0u &&
+			descriptor.materialInstanceId != 0u && descriptor.materialParameterRevision != 0u &&
+			descriptor.materialRenderStateRevision != 0u && descriptor.materialBindingRevision != 0u &&
+			descriptor.shaderInstanceId != 0u && descriptor.shaderGeneration != 0u;
+		return descriptor.hasTrustedStaticDrawRevision;
+	}
+
+	bool TrustedStaticDrawResourcesMatch(
+		const NLS::Engine::Rendering::EngineDrawableDescriptor& lhs,
+		const NLS::Engine::Rendering::EngineDrawableDescriptor& rhs)
+	{
+		return lhs.meshInstanceId == rhs.meshInstanceId &&
+			lhs.meshContentRevision == rhs.meshContentRevision &&
+			lhs.materialInstanceId == rhs.materialInstanceId &&
+			lhs.materialParameterRevision == rhs.materialParameterRevision &&
+			lhs.materialRenderStateRevision == rhs.materialRenderStateRevision &&
+			lhs.materialBindingRevision == rhs.materialBindingRevision &&
+			lhs.shaderInstanceId == rhs.shaderInstanceId &&
+			lhs.shaderGeneration == rhs.shaderGeneration;
+	}
+
 	uint64_t BuildOpaqueDrawSortToken(
 		const NLS::Render::Resources::Mesh* mesh,
 		const NLS::Render::Resources::Material* material,
@@ -880,6 +931,9 @@ bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputSt
 		materialInstanceId == other.materialInstanceId &&
 		materialParameterRevision == other.materialParameterRevision &&
 		materialRenderStateRevision == other.materialRenderStateRevision &&
+		materialBindingRevision == other.materialBindingRevision &&
+		shaderInstanceId == other.shaderInstanceId &&
+		shaderGeneration == other.shaderGeneration &&
 		stateMask == other.stateMask &&
 		primitiveMode == other.primitiveMode;
 }
@@ -2210,6 +2264,12 @@ RenderScene::CachedCommandInputStamp RenderScene::BuildCommandInputStamp(
 	stamp.materialInstanceId = material.GetInstanceId();
 	stamp.materialParameterRevision = material.GetParameterRevision();
 	stamp.materialRenderStateRevision = material.GetRenderStateRevision();
+	stamp.materialBindingRevision = material.GetBindingRevision();
+	if (const auto* shader = material.GetShader(); shader != nullptr)
+	{
+		stamp.shaderInstanceId = shader->GetInstanceId();
+		stamp.shaderGeneration = shader->GetGeneration();
+	}
 	stamp.stateMask = stateMask.mask;
 	stamp.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
 	return stamp;
@@ -3124,15 +3184,25 @@ void RenderScene::AppendVisibleDrawable(
 	};
 	descriptor.stableSortKey = primitive.handle.index;
 	descriptor.opaqueSortToken = command.opaqueSortToken;
+	const bool isDecal = command.material != nullptr && command.material->IsDecal();
+	const bool isTransparent = command.material != nullptr && command.material->IsBlendable();
+	if (!isDecal && !isTransparent)
+	{
+		PopulateTrustedStaticDrawRevision(
+			descriptor,
+			primitive.handle,
+			primitive.lastInputStamp.transformRenderRevision,
+			command);
+	}
 	drawable.AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
 
 	const float distanceToActor = Maths::Vector3::Distance(
 		primitive.worldPosition,
 		options.cameraPosition);
 
-	if (command.material != nullptr && command.material->IsDecal())
+	if (isDecal)
 		output.decals.emplace_back(distanceToActor, std::move(drawable));
-	else if (command.material != nullptr && command.material->IsBlendable())
+	else if (isTransparent)
 		output.transparents.emplace_back(distanceToActor, std::move(drawable));
 	else
 	{
@@ -3218,15 +3288,65 @@ void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& 
 				descriptor->instanceModelMatrices.clear();
 				descriptor->instanceModelMatrices.reserve(runEnd - index);
 				float nearestDistance = keyedDrawables[index].distance;
+				constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
+				auto groupIdentity = HashOpaqueSortTokenComponent(
+					kFnvOffsetBasis,
+					static_cast<uint64_t>(runEnd - index));
+				auto groupCommandBuildSerial = groupIdentity;
+				auto groupTransformRevision = groupIdentity;
+				bool hasTrustedGroupRevision = descriptor->hasTrustedStaticDrawRevision;
 
 				for (size_t runIndex = index; runIndex < runEnd; ++runIndex)
 				{
 					const auto* sourceDescriptor =
 						keyedDrawables[runIndex].drawable.TryGetDescriptor<EngineDrawableDescriptor>();
 					if (sourceDescriptor == nullptr)
+					{
+						hasTrustedGroupRevision = false;
 						continue;
+					}
 					descriptor->instanceModelMatrices.push_back(sourceDescriptor->modelMatrix);
 					nearestDistance = std::min(nearestDistance, keyedDrawables[runIndex].distance);
+					hasTrustedGroupRevision = hasTrustedGroupRevision &&
+						sourceDescriptor->hasTrustedStaticDrawRevision &&
+						sourceDescriptor->stableSceneIdentity.IsValid() &&
+						TrustedStaticDrawResourcesMatch(*descriptor, *sourceDescriptor);
+					groupIdentity = HashOpaqueSortTokenComponent(
+						groupIdentity,
+						sourceDescriptor->stableSceneIdentity.sceneId);
+					groupIdentity = HashOpaqueSortTokenComponent(
+						groupIdentity,
+						sourceDescriptor->stableSceneIdentity.primitiveIndex);
+					groupIdentity = HashOpaqueSortTokenComponent(
+						groupIdentity,
+						sourceDescriptor->stableSceneIdentity.primitiveGeneration);
+					groupCommandBuildSerial = HashOpaqueSortTokenComponent(
+						groupCommandBuildSerial,
+						sourceDescriptor->cachedCommandBuildSerial);
+					groupTransformRevision = HashOpaqueSortTokenComponent(
+						groupTransformRevision,
+						sourceDescriptor->transformRevision);
+				}
+
+				if (hasTrustedGroupRevision)
+				{
+					if (groupIdentity == EngineDrawableDescriptor::kInvalidStaticDrawGroupIdentity)
+						--groupIdentity;
+					if (groupCommandBuildSerial == 0u)
+						groupCommandBuildSerial = 1u;
+					if (groupTransformRevision == 0u)
+						groupTransformRevision = 1u;
+					descriptor->groupIdentity = groupIdentity;
+					descriptor->cachedCommandBuildSerial = groupCommandBuildSerial;
+					descriptor->transformRevision = groupTransformRevision;
+					descriptor->allowsSingleObjectDataReuse = false;
+				}
+				else
+				{
+					descriptor->hasTrustedStaticDrawRevision = false;
+					descriptor->allowsSingleObjectDataReuse = false;
+					descriptor->groupIdentity =
+						EngineDrawableDescriptor::kInvalidStaticDrawGroupIdentity;
 				}
 
 				descriptor->objectCount = static_cast<uint32_t>(descriptor->instanceModelMatrices.size());
@@ -3376,7 +3496,7 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 						chunkDrawable.vertexStart = entry.second.vertexStart;
 						chunkDrawable.vertexCount = entry.second.vertexCount;
 
-						EngineDrawableDescriptor chunkDescriptor;
+						EngineDrawableDescriptor chunkDescriptor = descriptor;
 						chunkDescriptor.modelMatrix = descriptor.modelMatrix;
 						chunkDescriptor.userMatrix = descriptor.userMatrix;
 						chunkDescriptor.objectIndex = objectIndex;

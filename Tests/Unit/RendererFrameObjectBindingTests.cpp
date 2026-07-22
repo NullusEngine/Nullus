@@ -805,6 +805,22 @@ namespace
 
         bool CaptureDrawForTesting(
             const Drawable& drawable,
+            NLS::Render::Resources::MaterialPipelineStateOverrides overrides,
+            const NLS::Render::Settings::EComparaisonAlgorithm depthCompareOverride,
+            const std::string_view lightMode)
+        {
+            PreparedRecordedDraw preparedDraw;
+            return CaptureThreadedPreparedDraw(
+                drawable,
+                std::move(overrides),
+                depthCompareOverride,
+                lightMode,
+                preparedDraw) &&
+                QueueThreadedRecordedDraw(preparedDraw);
+        }
+
+        bool CaptureDrawForTesting(
+            const Drawable& drawable,
             Material& effectiveMaterial,
             NLS::Render::Resources::MaterialPipelineStateOverrides overrides,
             const NLS::Render::Settings::EComparaisonAlgorithm depthCompareOverride)
@@ -834,6 +850,24 @@ namespace
         size_t GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting() const
         {
             return NLS::Render::Core::ABaseRenderer::GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting();
+        }
+
+        size_t GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting() const
+        {
+            return NLS::Render::Core::ABaseRenderer::
+                GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting();
+        }
+
+        uint64_t GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting() const
+        {
+            return NLS::Render::Core::ABaseRenderer::
+                GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+        }
+
+        uint64_t GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting() const
+        {
+            return NLS::Render::Core::ABaseRenderer::
+                GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
         }
 
         void ClearPreparedRecordedDrawStaticBaseCacheForTesting() const
@@ -8214,6 +8248,499 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCacheReusesP
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevisionUsesPreKeyFastPath)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 42u;
+    frameContext.commandBuffer = nullptr;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(64u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    RecordedDrawCacheProbeSceneRenderer renderer(driver);
+    renderer.SetFrameObjectBindingProvider(std::make_unique<PreparedBindingProbeProvider>(renderer));
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+
+    auto* shader = CreateTestGraphicsShader("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* depthShader = CreateTestGraphicsShader("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+    ASSERT_NE(depthShader, nullptr);
+    shader->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/TrustedRevision.shader",
+        "shader:TrustedRevision/Forward#0",
+        "Forward",
+        NLS::Render::ShaderLab::ShaderLabPassState{});
+    depthShader->SetImportedShaderLabPassForTesting(
+        "Assets/Shaders/TrustedRevision.shader",
+        "shader:TrustedRevision/DepthOnly#1",
+        "DepthOnly",
+        NLS::Render::ShaderLab::ShaderLabPassState{});
+    NLS::Render::Resources::Material material(shader);
+    material.SetShaderLabSourcePath("Assets/Shaders/TrustedRevision.shader");
+    material.RegisterShaderLabPassShader(shader);
+    material.RegisterShaderLabPassShader(depthShader);
+    NLS::Render::Resources::Mesh mesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu);
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+    overrides.depthTest = true;
+    overrides.depthWrite = true;
+    overrides.colorWrite = true;
+    overrides.hasDepthAttachment = false;
+
+    NLS::Render::Entities::Drawable drawable;
+    drawable.material = &material;
+    drawable.mesh = &mesh;
+    drawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+    drawable.instanceCount = 1u;
+    drawable.vertexCount = 3u;
+    NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+    descriptor.hasTrustedStaticDrawRevision = true;
+    descriptor.stableSceneIdentity = { 11u, 7u, 3u };
+    descriptor.cachedCommandBuildSerial = 19u;
+    descriptor.meshInstanceId = mesh.GetInstanceId();
+    descriptor.meshContentRevision = mesh.GetContentRevision();
+    descriptor.materialInstanceId = material.GetInstanceId();
+    descriptor.materialParameterRevision = material.GetParameterRevision();
+    descriptor.materialRenderStateRevision = material.GetRenderStateRevision();
+    descriptor.materialBindingRevision = material.GetBindingRevision();
+    descriptor.shaderInstanceId = shader->GetInstanceId();
+    descriptor.shaderGeneration = shader->GetGeneration();
+    descriptor.transformRevision = 5u;
+    descriptor.allowsSingleObjectDataReuse = true;
+    drawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(std::move(descriptor));
+
+    renderer.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    const auto fullKeyBuildCountAfterGeneralMiss =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto lruSpliceCountAfterGeneralMiss =
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    renderer.EndFrame();
+
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountAfterGeneralMiss);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+        lruSpliceCountAfterGeneralMiss);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 0u);
+
+    frameContext.frameIndex = 43u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+
+    using StaticDescriptor = NLS::Engine::Rendering::EngineDrawableDescriptor;
+    struct RevisionCase
+    {
+        const char* name = nullptr;
+        uint64_t StaticDescriptor::* member = nullptr;
+    };
+    const std::array<RevisionCase, 11u> revisionCases = {{
+        { "command build serial", &StaticDescriptor::cachedCommandBuildSerial },
+        { "mesh identity", &StaticDescriptor::meshInstanceId },
+        { "mesh content revision", &StaticDescriptor::meshContentRevision },
+        { "material identity", &StaticDescriptor::materialInstanceId },
+        { "material parameter revision", &StaticDescriptor::materialParameterRevision },
+        { "material render revision", &StaticDescriptor::materialRenderStateRevision },
+        { "material binding revision", &StaticDescriptor::materialBindingRevision },
+        { "shader identity", &StaticDescriptor::shaderInstanceId },
+        { "shader generation", &StaticDescriptor::shaderGeneration },
+        { "transform revision", &StaticDescriptor::transformRevision },
+        { "group identity", &StaticDescriptor::groupIdentity }
+    }};
+
+    const auto expectMissThenRefresh =
+        [&](const char* caseName, NLS::Render::Entities::Drawable changedDrawable)
+        {
+            SCOPED_TRACE(caseName);
+            const auto fullKeyBuildCountBeforeMiss =
+                renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+            const auto lruSpliceCountBeforeMiss =
+                renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+            ASSERT_TRUE(renderer.CaptureDrawForTesting(
+                changedDrawable,
+                overrides,
+                NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+            EXPECT_EQ(
+                renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+                fullKeyBuildCountBeforeMiss + 1u);
+            EXPECT_EQ(
+                renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+                lruSpliceCountBeforeMiss + 1u);
+
+            const auto fullKeyBuildCountAfterRefresh =
+                renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+            const auto lruSpliceCountAfterRefresh =
+                renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+            ASSERT_TRUE(renderer.CaptureDrawForTesting(
+                changedDrawable,
+                overrides,
+                NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+            EXPECT_EQ(
+                renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+                fullKeyBuildCountAfterRefresh);
+            EXPECT_EQ(
+                renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+                lruSpliceCountAfterRefresh);
+        };
+
+    for (const auto& revisionCase : revisionCases)
+    {
+        auto changedDrawable = drawable;
+        auto* changedDescriptor = changedDrawable.TryGetDescriptor<StaticDescriptor>();
+        ASSERT_NE(changedDescriptor, nullptr);
+        ++(changedDescriptor->*(revisionCase.member));
+        expectMissThenRefresh(revisionCase.name, std::move(changedDrawable));
+    }
+
+    auto changedStableIdentityDrawable = drawable;
+    auto* changedStableIdentityDescriptor =
+        changedStableIdentityDrawable.TryGetDescriptor<StaticDescriptor>();
+    ASSERT_NE(changedStableIdentityDescriptor, nullptr);
+    ++changedStableIdentityDescriptor->stableSceneIdentity.primitiveGeneration;
+    expectMissThenRefresh("stable scene identity", std::move(changedStableIdentityDrawable));
+
+    auto changedReusePermissionDrawable = drawable;
+    auto* changedReusePermissionDescriptor =
+        changedReusePermissionDrawable.TryGetDescriptor<StaticDescriptor>();
+    ASSERT_NE(changedReusePermissionDescriptor, nullptr);
+    changedReusePermissionDescriptor->allowsSingleObjectDataReuse = false;
+    expectMissThenRefresh("single object data reuse permission", std::move(changedReusePermissionDrawable));
+    renderer.EndFrame();
+
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 13u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 13u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 13u);
+
+    frameContext.frameIndex = 44u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS,
+        "DepthOnly"));
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS,
+        "DepthOnly"));
+    const auto fullKeyBuildCountBeforeDepthShaderReload =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    NLS::Render::ShaderLab::ShaderLabPassState reloadedDepthState;
+    reloadedDepthState.cullMode = NLS::Render::ShaderLab::ShaderLabCullMode::Off;
+    depthShader->SetShaderLabPassStateForTesting(reloadedDepthState);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS,
+        "DepthOnly"));
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS,
+        "DepthOnly"));
+    renderer.EndFrame();
+
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeDepthShaderReload);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 0u);
+
+    NLS::Render::Resources::Material effectiveMaterial(shader);
+    frameContext.frameIndex = 45u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        effectiveMaterial,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        effectiveMaterial,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    const auto fullKeyBuildCountBeforeEffectiveMaterialMutation =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    effectiveMaterial.SetBackfaceCulling(false);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        effectiveMaterial,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        effectiveMaterial,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    renderer.EndFrame();
+
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeEffectiveMaterialMutation);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 0u);
+
+    auto untrustedDrawable = drawable;
+    auto* untrustedDescriptor = untrustedDrawable.TryGetDescriptor<StaticDescriptor>();
+    ASSERT_NE(untrustedDescriptor, nullptr);
+    untrustedDescriptor->hasTrustedStaticDrawRevision = false;
+    frameContext.frameIndex = 46u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+    const auto fullKeyBuildCountBeforeUntrustedDraws =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto lruSpliceCountBeforeUntrustedDraws =
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        untrustedDrawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        untrustedDrawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    renderer.EndFrame();
+
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeUntrustedDraws + 2u);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
+        lruSpliceCountBeforeUntrustedDraws + 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 2u);
+    EXPECT_GT(renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(), 0u);
+    renderer.ClearPreparedRecordedDrawStaticBaseCacheForTesting();
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseCacheSizeForTesting(), 0u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting(), 0u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(), 0u);
+
+    frameContext.frameIndex = 47u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+    const auto revisionIndexLimit =
+        RecordedDrawCacheProbeSceneRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting();
+    for (size_t index = 0u; index < revisionIndexLimit + 32u; ++index)
+    {
+        auto uniqueIdentityDrawable = drawable;
+        auto* uniqueIdentityDescriptor =
+            uniqueIdentityDrawable.TryGetDescriptor<StaticDescriptor>();
+        ASSERT_NE(uniqueIdentityDescriptor, nullptr);
+        uniqueIdentityDescriptor->stableSceneIdentity.primitiveIndex = static_cast<uint32_t>(index);
+        ASSERT_TRUE(renderer.CaptureDrawForTesting(
+            uniqueIdentityDrawable,
+            overrides,
+            NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    }
+    renderer.EndFrame();
+
+    EXPECT_LE(
+        renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(),
+        revisionIndexLimit);
+    renderer.AdvancePreparedRecordedDrawStaticBaseCacheForTesting(
+        RecordedDrawCacheProbeSceneRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting() + 1u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(), 0u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(depthShader));
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, RenderSceneOpaqueCommandsEmitResolvedTrustedStaticDrawMetadata)
+{
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+
+    auto* shader = CreateTestGraphicsShader("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    NLS::Render::Resources::Mesh mesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+        {{ 0.0f, 0.0f, 0.0f }, 1.0f});
+    std::vector<std::unique_ptr<NLS::Render::Resources::Mesh>> lodResources;
+    lodResources.push_back(std::make_unique<NLS::Render::Resources::Mesh>(
+        MakeTriangleVertices(),
+        std::vector<uint32_t>{},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+        NLS::Render::Geometry::BoundingSphere{{ 0.0f, 0.0f, 0.0f }, 1.0f}));
+    mesh.SetLODResources(std::move(lodResources), { 1.0f, 0.15f });
+    auto* resolvedLodMesh = mesh.GetLODMesh(1u);
+    ASSERT_NE(resolvedLodMesh, nullptr);
+    ASSERT_NE(resolvedLodMesh, &mesh);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    const auto addObject = [&](const char* name, const float x)
+    {
+        auto& object = scene.CreateGameObject(name);
+        object.GetTransform()->SetWorldPosition({ x, 0.0f, -10.0f });
+        auto* meshFilter = object.AddComponent<NLS::Engine::Components::MeshFilter>();
+        auto* meshRenderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
+        EXPECT_NE(meshFilter, nullptr);
+        EXPECT_NE(meshRenderer, nullptr);
+        if (meshFilter != nullptr)
+            meshFilter->SetMesh(&mesh);
+        if (meshRenderer != nullptr)
+            meshRenderer->FillWithMaterial(material);
+        return &object;
+    };
+
+    auto* firstObject = addObject("TrustedStaticDrawFirst", -1.0f);
+    ASSERT_NE(firstObject, nullptr);
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &material;
+    ASSERT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 1u);
+
+    NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
+    largeSceneSettings.enableLOD = true;
+    largeSceneSettings.enableSpatialIndex = false;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.verticalFovRadians = 1.57079632679f;
+    auto visible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    const auto& singleDrawable = visible.opaques.front().second;
+    ASSERT_EQ(singleDrawable.mesh, resolvedLodMesh);
+    const auto* singleDescriptor =
+        singleDrawable.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>();
+    ASSERT_NE(singleDescriptor, nullptr);
+    ASSERT_TRUE(singleDescriptor->hasTrustedStaticDrawRevision);
+    ASSERT_TRUE(singleDescriptor->stableSceneIdentity.IsValid());
+    const auto liveHandles = renderScene.GetLivePrimitiveHandles();
+    ASSERT_EQ(liveHandles.size(), 1u);
+    EXPECT_EQ(singleDescriptor->stableSceneIdentity.sceneId, liveHandles.front().sceneId);
+    EXPECT_EQ(singleDescriptor->stableSceneIdentity.primitiveIndex, liveHandles.front().index);
+    EXPECT_EQ(singleDescriptor->stableSceneIdentity.primitiveGeneration, liveHandles.front().generation);
+    EXPECT_NE(singleDescriptor->cachedCommandBuildSerial, 0u);
+    EXPECT_EQ(singleDescriptor->meshInstanceId, resolvedLodMesh->GetInstanceId());
+    EXPECT_EQ(singleDescriptor->meshContentRevision, resolvedLodMesh->GetContentRevision());
+    ASSERT_NE(singleDrawable.material, nullptr);
+    EXPECT_EQ(singleDescriptor->materialInstanceId, singleDrawable.material->GetInstanceId());
+    EXPECT_EQ(singleDescriptor->materialParameterRevision, singleDrawable.material->GetParameterRevision());
+    EXPECT_EQ(singleDescriptor->materialRenderStateRevision, singleDrawable.material->GetRenderStateRevision());
+    EXPECT_EQ(singleDescriptor->materialBindingRevision, singleDrawable.material->GetBindingRevision());
+    ASSERT_NE(singleDrawable.material->GetShader(), nullptr);
+    EXPECT_EQ(singleDescriptor->shaderInstanceId, singleDrawable.material->GetShader()->GetInstanceId());
+    EXPECT_EQ(singleDescriptor->shaderGeneration, singleDrawable.material->GetShader()->GetGeneration());
+    EXPECT_EQ(singleDescriptor->transformRevision, firstObject->GetTransform()->GetRenderRevision());
+    EXPECT_EQ(
+        singleDescriptor->groupIdentity,
+        NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidStaticDrawGroupIdentity);
+    EXPECT_TRUE(singleDescriptor->allowsSingleObjectDataReuse);
+
+    ASSERT_NE(addObject("TrustedStaticDrawSecond", 1.0f), nullptr);
+    ASSERT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    visible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    const auto* groupDescriptor = visible.opaques.front().second.TryGetDescriptor<
+        NLS::Engine::Rendering::EngineDrawableDescriptor>();
+    ASSERT_NE(groupDescriptor, nullptr);
+    ASSERT_TRUE(groupDescriptor->hasTrustedStaticDrawRevision);
+    EXPECT_NE(
+        groupDescriptor->groupIdentity,
+        NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidStaticDrawGroupIdentity);
+    EXPECT_FALSE(groupDescriptor->allowsSingleObjectDataReuse);
+    const auto groupIdentity = groupDescriptor->groupIdentity;
+    const auto groupCommandBuildSerial = groupDescriptor->cachedCommandBuildSerial;
+    const auto groupTransformRevision = groupDescriptor->transformRevision;
+
+    const auto repeatedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(repeatedVisible.opaques.size(), 1u);
+    const auto* repeatedGroupDescriptor = repeatedVisible.opaques.front().second.TryGetDescriptor<
+        NLS::Engine::Rendering::EngineDrawableDescriptor>();
+    ASSERT_NE(repeatedGroupDescriptor, nullptr);
+    EXPECT_EQ(repeatedGroupDescriptor->groupIdentity, groupIdentity);
+    EXPECT_EQ(repeatedGroupDescriptor->cachedCommandBuildSerial, groupCommandBuildSerial);
+    EXPECT_EQ(repeatedGroupDescriptor->transformRevision, groupTransformRevision);
+
+    NLS::Render::Resources::Material transparentMaterial(shader);
+    transparentMaterial.SetBlendable(true);
+    syncOptions.overrideMaterial = &transparentMaterial;
+    ASSERT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    const auto transparentVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(transparentVisible.transparents.size(), 2u);
+    for (const auto& entry : transparentVisible.transparents)
+    {
+        const auto* transparentDescriptor = entry.second.TryGetDescriptor<
+            NLS::Engine::Rendering::EngineDrawableDescriptor>();
+        ASSERT_NE(transparentDescriptor, nullptr);
+        EXPECT_FALSE(transparentDescriptor->hasTrustedStaticDrawRevision);
+    }
+
+    NLS::Render::Resources::Material decalMaterial(shader);
+    decalMaterial.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Decal);
+    syncOptions.overrideMaterial = &decalMaterial;
+    ASSERT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    const auto decalVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(decalVisible.decals.size(), 2u);
+    for (const auto& entry : decalVisible.decals)
+    {
+        const auto* decalDescriptor = entry.second.TryGetDescriptor<
+            NLS::Engine::Rendering::EngineDrawableDescriptor>();
+        ASSERT_NE(decalDescriptor, nullptr);
+        EXPECT_FALSE(decalDescriptor->hasTrustedStaticDrawRevision);
+    }
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
 TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCachePersistsAcrossFramesUntilMaterialDirty)

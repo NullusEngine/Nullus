@@ -44,6 +44,9 @@ namespace NLS::Render::Settings
         std::string editorValidationSelectGameObject;
         std::string editorValidationSceneCamera;
         uint32_t editorValidationCameraForwardFrames = 0u;
+        std::string editorCameraPerformanceOutput;
+        uint32_t editorCameraPerformanceWarmupFrames = 30u;
+        uint32_t editorCameraPerformanceFrames = 300u;
 	        std::string editorValidationCreateAsset;
 	        std::string editorValidationAssetBrowserFolder;
 	        std::string editorValidationSceneReadbackOutput;

@@ -245,6 +245,95 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationCameraForwardFrames)
     EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
 }
 
+TEST(EditorLaunchArgsTests, ParsesEditorCameraPerformanceBenchmark)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-camera-performance-output",
+        "D:/perf/debug.json",
+        "--editor-camera-performance-warmup-frames",
+        "30",
+        "--editor-camera-performance-frames",
+        "300",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.hasDiagnosticsOverride);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorCameraPerformanceOutput, "D:/perf/debug.json");
+    EXPECT_EQ(parsed.diagnosticsSettings.editorCameraPerformanceWarmupFrames, 30u);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorCameraPerformanceFrames, 300u);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationCameraForwardFrames, 330u);
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
+TEST(EditorLaunchArgsTests, RejectsZeroEditorCameraPerformanceFrameCounts)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-camera-performance-output",
+        "D:/perf/debug.json",
+        "--editor-camera-performance-frames",
+        "0",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_TRUE(parsed.hasError);
+}
+
+TEST(EditorLaunchArgsTests, RejectsEditorCameraPerformanceWithProfilerOrTimelineTrace)
+{
+    std::vector<std::string> profilerStorage;
+    char** profilerArgv = MutableArgv({
+        "Editor.exe",
+        "--editor-camera-performance-output",
+        "D:/perf/profiler.json",
+        "--editor-validation-open-profiler",
+        "TestProject.nullus"
+    }, profilerStorage);
+    EXPECT_TRUE(NLS::Editor::Launch::ParseEditorArgs(
+        static_cast<int>(profilerStorage.size()),
+        profilerArgv).hasError);
+
+    std::vector<std::string> traceStorage;
+    char** traceArgv = MutableArgv({
+        "Editor.exe",
+        "--editor-validation-trace-frames",
+        "300",
+        "--editor-camera-performance-output",
+        "D:/perf/trace.json",
+        "TestProject.nullus"
+    }, traceStorage);
+    EXPECT_TRUE(NLS::Editor::Launch::ParseEditorArgs(
+        static_cast<int>(traceStorage.size()),
+        traceArgv).hasError);
+}
+
+TEST(EditorLaunchArgsTests, RejectsEditorCameraPerformanceFrameCountOverflow)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-camera-performance-output",
+        "D:/perf/debug.json",
+        "--editor-camera-performance-warmup-frames",
+        "4294967295",
+        "--editor-camera-performance-frames",
+        "1",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_TRUE(parsed.hasError);
+}
+
 TEST(EditorLaunchArgsTests, ValidationCameraForwardMotionUsesDeterministicFixedStepAfterViewUpdate)
 {
     const auto editorSource = ReadTextFile("Project/Editor/Core/Editor.cpp");

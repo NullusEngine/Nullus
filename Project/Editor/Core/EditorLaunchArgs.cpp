@@ -1,6 +1,7 @@
 #include "Core/EditorLaunchArgs.h"
 
 #include <cstdio>
+#include <limits>
 #include <string>
 
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -22,6 +23,9 @@ namespace NLS::Editor::Launch
         std::printf("  --editor-validation-trace-frames <N>  Export TimelineProfiler trace for N validation frames\n");
         std::printf("  --editor-validation-select-gameobject <name>  Select a GameObject during startup validation\n");
         std::printf("  --editor-validation-camera-forward-frames <N>  Move Scene View camera forward for N fixed-step frames\n");
+        std::printf("  --editor-camera-performance-output <path>  Write low-overhead Scene View camera benchmark JSON\n");
+        std::printf("  --editor-camera-performance-warmup-frames <N>  Set benchmark warm-up frames (default 30)\n");
+        std::printf("  --editor-camera-performance-frames <N>  Set benchmark measured frames (default 300)\n");
 	        std::printf("  --editor-validation-create-asset <path>  Create an asset instance during startup validation\n");
 	        std::printf("  --editor-validation-asset-browser-folder <path>  Select an Asset Browser folder during startup validation\n");
 	        std::printf("  --editor-validation-disable-hzb-occlusion  Disable HZB occlusion for A/B validation\n");
@@ -46,6 +50,7 @@ namespace NLS::Editor::Launch
     ParsedEditorLaunchArgs ParseEditorArgs(int argc, char** argv)
     {
         ParsedEditorLaunchArgs parsed;
+        bool editorCameraPerformanceOutputSpecified = false;
         for (int i = 1; i < argc; ++i)
         {
             const std::string arg = argv[i];
@@ -160,6 +165,42 @@ namespace NLS::Editor::Launch
 	                return parsed;
 	            }
 	        }
+            else if (arg == "--editor-camera-performance-output" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorCameraPerformanceOutput = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+                editorCameraPerformanceOutputSpecified = true;
+            }
+            else if (arg == "--editor-camera-performance-warmup-frames" && i + 1 < argc)
+            {
+                try
+                {
+                    parsed.diagnosticsSettings.editorCameraPerformanceWarmupFrames =
+                        static_cast<uint32_t>(std::stoul(argv[++i]));
+                    parsed.hasDiagnosticsOverride = true;
+                }
+                catch (...)
+                {
+                    std::fprintf(stderr, "[main] Invalid value for --editor-camera-performance-warmup-frames: %s\n", argv[i]);
+                    parsed.hasError = true;
+                    return parsed;
+                }
+            }
+            else if (arg == "--editor-camera-performance-frames" && i + 1 < argc)
+            {
+                try
+                {
+                    parsed.diagnosticsSettings.editorCameraPerformanceFrames =
+                        static_cast<uint32_t>(std::stoul(argv[++i]));
+                    parsed.hasDiagnosticsOverride = true;
+                }
+                catch (...)
+                {
+                    std::fprintf(stderr, "[main] Invalid value for --editor-camera-performance-frames: %s\n", argv[i]);
+                    parsed.hasError = true;
+                    return parsed;
+                }
+            }
 	            else if (arg == "--editor-validation-create-asset" && i + 1 < argc)
 	            {
 	                parsed.diagnosticsSettings.editorValidationCreateAsset = argv[++i];
@@ -236,6 +277,40 @@ namespace NLS::Editor::Launch
                 parsed.hasError = true;
                 return parsed;
             }
+        }
+        if (editorCameraPerformanceOutputSpecified)
+        {
+            const auto warmupFrames = parsed.diagnosticsSettings.editorCameraPerformanceWarmupFrames;
+            const auto measuredFrames = parsed.diagnosticsSettings.editorCameraPerformanceFrames;
+            if (parsed.diagnosticsSettings.editorCameraPerformanceOutput.empty())
+            {
+                std::fprintf(stderr, "[main] --editor-camera-performance-output requires a non-empty path.\n");
+                parsed.hasError = true;
+                return parsed;
+            }
+            if (warmupFrames == 0u || measuredFrames == 0u)
+            {
+                std::fprintf(stderr, "[main] Editor camera performance frame counts must be greater than zero.\n");
+                parsed.hasError = true;
+                return parsed;
+            }
+            if (warmupFrames > std::numeric_limits<uint32_t>::max() - measuredFrames)
+            {
+                std::fprintf(stderr, "[main] Editor camera performance frame count sum overflows uint32.\n");
+                parsed.hasError = true;
+                return parsed;
+            }
+            if (parsed.diagnosticsSettings.editorValidationOpenProfiler ||
+                parsed.diagnosticsSettings.editorValidationTimelineTraceFrames != 0u)
+            {
+                std::fprintf(stderr, "[main] Editor camera performance mode cannot run with Profiler or Timeline trace.\n");
+                parsed.hasError = true;
+                return parsed;
+            }
+
+            parsed.diagnosticsSettings.editorValidationCameraForwardFrames = warmupFrames + measuredFrames;
+            parsed.diagnosticsSettings.editorValidationFocusView = "scene";
+            parsed.diagnosticsSettings.editorValidationExclusiveView = "scene";
         }
         return parsed;
     }

@@ -1497,6 +1497,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	uint64_t submittedSceneDrawCount = 0u;
 	uint64_t dynamicInstanceGroupCount = 0u;
 	uint64_t largestInstanceGroupSize = 0u;
+	uint64_t opaqueSortTokenHitCount = 0u;
+	uint64_t opaqueSortTokenRebuildCount = 0u;
 	uint64_t objectDataOverflowDroppedObjectCount = 0u;
 	const uint64_t streamingFrameSerial = ++m_streamingResidencyFrameSerial;
 	std::vector<uint64_t> currentFrameStreamingDependencyPins;
@@ -1584,6 +1586,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			logStartupParseSceneStage("AppendPickablePrimitiveDrawSources");
 		dynamicInstanceGroupCount += sceneStats.dynamicInstanceGroupCount;
 		largestInstanceGroupSize = std::max(largestInstanceGroupSize, sceneStats.largestInstanceGroupSize);
+		opaqueSortTokenHitCount += sceneStats.opaqueSortTokenHitCount;
+		opaqueSortTokenRebuildCount += sceneStats.opaqueSortTokenRebuildCount;
 		objectDataOverflowDroppedObjectCount += sceneStats.objectDataOverflowDroppedObjectCount;
 		auto largeSceneTelemetry = renderScene.GetLastLargeSceneTelemetry();
 		SetLastCullReasonDebugSnapshot(renderScene.GetLastCullReasonDebugSnapshot());
@@ -1931,6 +1935,8 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	optimizationStats.submittedSceneDrawCount = submittedSceneDrawCount + static_cast<uint64_t>(skyboxes.size());
 	optimizationStats.dynamicInstanceGroupCount = dynamicInstanceGroupCount;
 	optimizationStats.largestInstanceGroupSize = largestInstanceGroupSize;
+	optimizationStats.opaqueSortTokenHitCount = opaqueSortTokenHitCount;
+	optimizationStats.opaqueSortTokenRebuildCount = opaqueSortTokenRebuildCount;
 	optimizationStats.objectDataOverflowDroppedObjectCount = objectDataOverflowDroppedObjectCount;
 	m_rendererStats.RecordDrawCallOptimizationStats(optimizationStats);
 	return { opaques, decals, transparents, skyboxes };

@@ -4464,6 +4464,120 @@ TEST(RenderSceneCacheTests, OpaqueInstanceOrderRemainsStableWhenCameraMoves)
             secondDescriptor.instanceModelMatrices[index].data[3]);
 }
 
+TEST(RenderSceneCacheTests, CachedOpaqueSortTokenReusesAcrossCameraMovesAndRebuildsForDrawRevisions)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = { 0.0f, 0.0f, 0.0f };
+    const auto firstVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(firstVisible.opaques.size(), 1u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor firstDescriptor;
+    ASSERT_TRUE(firstVisible.opaques.front().second.TryGetDescriptor(firstDescriptor));
+    EXPECT_NE(
+        firstDescriptor.opaqueSortToken,
+        NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidOpaqueSortToken);
+    auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    EXPECT_EQ(optimizationStats.opaqueSortTokenHitCount, 1u);
+    EXPECT_EQ(optimizationStats.opaqueSortTokenRebuildCount, 1u);
+    EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 1u);
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    visibilityOptions.cameraPosition = { 10.0f, 3.0f, -4.0f };
+    const auto cameraMovedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(cameraMovedVisible.opaques.size(), 1u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor cameraMovedDescriptor;
+    ASSERT_TRUE(cameraMovedVisible.opaques.front().second.TryGetDescriptor(cameraMovedDescriptor));
+    EXPECT_EQ(cameraMovedDescriptor.opaqueSortToken, firstDescriptor.opaqueSortToken);
+    optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    EXPECT_EQ(optimizationStats.opaqueSortTokenHitCount, 1u);
+    EXPECT_EQ(optimizationStats.opaqueSortTokenRebuildCount, 0u);
+    EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 1u);
+
+    fixture.material.SetBackfaceCulling(!fixture.material.HasBackfaceCulling());
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    const auto materialChangedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(materialChangedVisible.opaques.size(), 1u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor materialChangedDescriptor;
+    ASSERT_TRUE(materialChangedVisible.opaques.front().second.TryGetDescriptor(materialChangedDescriptor));
+    EXPECT_NE(materialChangedDescriptor.opaqueSortToken, firstDescriptor.opaqueSortToken);
+    optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    EXPECT_EQ(optimizationStats.opaqueSortTokenHitCount, 1u);
+    EXPECT_EQ(optimizationStats.opaqueSortTokenRebuildCount, 1u);
+    EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 2u);
+
+    fixture.mesh->Reload(
+        {
+            VertexAt(-0.75f, -0.5f, 0.0f),
+            VertexAt(0.75f, -0.5f, 0.0f),
+            VertexAt(0.0f, 0.75f, 0.0f)
+        },
+        { 0u, 1u, 2u },
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+        { { 0.0f, 0.0f, 0.0f }, 1.0f });
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    const auto meshChangedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(meshChangedVisible.opaques.size(), 1u);
+    optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    EXPECT_EQ(optimizationStats.opaqueSortTokenHitCount, 1u);
+    EXPECT_EQ(optimizationStats.opaqueSortTokenRebuildCount, 1u);
+    EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 3u);
+}
+
+TEST(RenderSceneCacheTests, TransparentAndDecalOrderingRemainCameraDistanceDependentWithoutOpaqueTokens)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    QueueSortFixture fixture;
+    fixture.AddObject("TransparentNear", *fixture.sharedMesh, fixture.transparentMaterial, 3.0f);
+    fixture.AddObject("TransparentFar", *fixture.otherMesh, fixture.transparentMaterial, 30.0f);
+    fixture.AddObject("DecalNear", *fixture.sharedMesh, fixture.decalMaterial, 4.0f);
+    fixture.AddObject("DecalFar", *fixture.otherMesh, fixture.decalMaterial, 40.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.cameraPosition = { 0.0f, 0.0f, 0.0f };
+    const auto originVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(originVisible.transparents.size(), 2u);
+    ASSERT_EQ(originVisible.decals.size(), 2u);
+    EXPECT_EQ(originVisible.transparents.front().second.mesh, fixture.otherMesh);
+    EXPECT_EQ(originVisible.decals.front().second.mesh, fixture.otherMesh);
+
+    for (const auto* queue : { &originVisible.transparents, &originVisible.decals })
+    {
+        for (const auto& entry : *queue)
+        {
+            NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+            ASSERT_TRUE(entry.second.TryGetDescriptor(descriptor));
+            EXPECT_EQ(
+                descriptor.opaqueSortToken,
+                NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidOpaqueSortToken);
+        }
+    }
+    auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    EXPECT_EQ(optimizationStats.opaqueSortTokenHitCount, 0u);
+    EXPECT_EQ(optimizationStats.opaqueSortTokenRebuildCount, 0u);
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    visibilityOptions.cameraPosition = { 100.0f, 0.0f, 0.0f };
+    const auto movedVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(movedVisible.transparents.size(), 2u);
+    ASSERT_EQ(movedVisible.decals.size(), 2u);
+    EXPECT_EQ(movedVisible.transparents.front().second.mesh, fixture.sharedMesh);
+    EXPECT_EQ(movedVisible.decals.front().second.mesh, fixture.sharedMesh);
+}
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
 TEST(RenderSceneCacheTests, OpaqueSortKeepsStableAndDistanceFallbackKeysInStrictOrder)
 {

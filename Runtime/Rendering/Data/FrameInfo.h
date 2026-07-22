@@ -168,6 +168,8 @@ namespace NLS::Render::Data
         uint64_t dynamicInstanceGroupCount = 0;
         uint64_t largestInstanceGroupSize = 0;
         uint64_t cachedCommandRebuildCount = 0;
+        uint64_t opaqueSortTokenHitCount = 0;
+        uint64_t opaqueSortTokenRebuildCount = 0;
         uint64_t objectDataOverflowDroppedObjectCount = 0;
         uint64_t parallelCommandWorkUnitCount = 0;
         uint64_t parallelRecordingWorkerCount = 0;

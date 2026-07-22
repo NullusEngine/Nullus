@@ -67,81 +67,58 @@ namespace
 			});
 	}
 
-	struct OpaqueDrawSortKey
+	uint64_t HashOpaqueSortTokenComponent(uint64_t token, const uint64_t value)
 	{
-		struct SortToken
-		{
-			uint64_t stableId = 0u;
-			const void* address = nullptr;
-		};
-
-		SortToken material{};
-		SortToken mesh{};
-		uint8_t stateMask = 0u;
-		uint8_t primitiveMode = 0u;
-		uint32_t vertexStart = 0u;
-		uint32_t vertexCount = 0u;
-	};
-
-	bool operator<(const OpaqueDrawSortKey::SortToken& lhs, const OpaqueDrawSortKey::SortToken& rhs)
-	{
-		if (lhs.stableId != rhs.stableId)
-			return lhs.stableId < rhs.stableId;
-		return std::less<const void*>{}(lhs.address, rhs.address);
+		constexpr uint64_t kFnvPrime = 1099511628211ull;
+		token ^= value;
+		token *= kFnvPrime;
+		return token;
 	}
 
-	bool operator==(const OpaqueDrawSortKey::SortToken& lhs, const OpaqueDrawSortKey::SortToken& rhs)
+	uint64_t BuildOpaqueDrawSortToken(
+		const NLS::Render::Resources::Mesh* mesh,
+		const NLS::Render::Resources::Material* material,
+		const NLS::Render::Data::StateMask stateMask,
+		const NLS::Render::Settings::EPrimitiveMode primitiveMode,
+		const uint32_t vertexStart,
+		const uint32_t vertexCount)
 	{
-		return lhs.stableId == rhs.stableId && lhs.address == rhs.address;
+		constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
+		auto token = HashOpaqueSortTokenComponent(
+			kFnvOffsetBasis,
+			material != nullptr ? material->GetInstanceId() : 0u);
+		token = HashOpaqueSortTokenComponent(token, reinterpret_cast<uintptr_t>(material));
+		token = HashOpaqueSortTokenComponent(
+			token,
+			mesh != nullptr ? mesh->GetInstanceId() : 0u);
+		token = HashOpaqueSortTokenComponent(token, reinterpret_cast<uintptr_t>(mesh));
+		token = HashOpaqueSortTokenComponent(token, stateMask.mask);
+		token = HashOpaqueSortTokenComponent(token, static_cast<uint8_t>(primitiveMode));
+		token = HashOpaqueSortTokenComponent(token, vertexStart);
+		token = HashOpaqueSortTokenComponent(token, vertexCount);
+		if (token == EngineDrawableDescriptor::kInvalidOpaqueSortToken)
+			--token;
+		return token;
 	}
 
-	uint64_t ResolveMaterialSortId(const NLS::Render::Resources::Material* material)
+	uint64_t BuildOpaqueDrawSortToken(const NLS::Render::Entities::Drawable& drawable)
 	{
-		return material != nullptr ? material->GetInstanceId() : 0u;
-	}
-
-	OpaqueDrawSortKey::SortToken BuildMaterialSortToken(const NLS::Render::Resources::Material* material)
-	{
-		return { ResolveMaterialSortId(material), material };
-	}
-
-	OpaqueDrawSortKey::SortToken BuildResourceSortToken(const void* resource)
-	{
-		return { 0u, resource };
-	}
-
-	OpaqueDrawSortKey BuildOpaqueDrawSortKey(const NLS::Render::Entities::Drawable& drawable)
-	{
-		return {
-			BuildMaterialSortToken(drawable.material),
-			BuildResourceSortToken(drawable.mesh),
-			drawable.stateMask.mask,
-			static_cast<uint8_t>(drawable.primitiveMode),
+		return BuildOpaqueDrawSortToken(
+			drawable.mesh,
+			drawable.material,
+			drawable.stateMask,
+			drawable.primitiveMode,
 			drawable.vertexStart,
-			drawable.vertexCount
-		};
+			drawable.vertexCount);
 	}
 
-	bool operator<(const OpaqueDrawSortKey& lhs, const OpaqueDrawSortKey& rhs)
-	{
-		if (lhs.material != rhs.material)
-			return lhs.material < rhs.material;
-		if (lhs.mesh != rhs.mesh)
-			return lhs.mesh < rhs.mesh;
-		if (lhs.stateMask != rhs.stateMask)
-			return lhs.stateMask < rhs.stateMask;
-		if (lhs.primitiveMode != rhs.primitiveMode)
-			return lhs.primitiveMode < rhs.primitiveMode;
-		if (lhs.vertexStart != rhs.vertexStart)
-			return lhs.vertexStart < rhs.vertexStart;
-		return lhs.vertexCount < rhs.vertexCount;
-	}
-
-	bool operator==(const OpaqueDrawSortKey& lhs, const OpaqueDrawSortKey& rhs)
+	bool OpaqueDrawStateMatches(
+		const NLS::Render::Entities::Drawable& lhs,
+		const NLS::Render::Entities::Drawable& rhs)
 	{
 		return lhs.material == rhs.material &&
 			lhs.mesh == rhs.mesh &&
-			lhs.stateMask == rhs.stateMask &&
+			lhs.stateMask.mask == rhs.stateMask.mask &&
 			lhs.primitiveMode == rhs.primitiveMode &&
 			lhs.vertexStart == rhs.vertexStart &&
 			lhs.vertexCount == rhs.vertexCount;
@@ -168,11 +145,9 @@ namespace
 
 	bool CanMergeOpaqueDrawables(
 		const NLS::Render::Entities::Drawable& lhs,
-		const NLS::Render::Entities::Drawable& rhs,
-		const OpaqueDrawSortKey& lhsKey,
-		const OpaqueDrawSortKey& rhsKey)
+		const NLS::Render::Entities::Drawable& rhs)
 	{
-		if (!(lhsKey == rhsKey))
+		if (!OpaqueDrawStateMatches(lhs, rhs))
 			return false;
 		if (lhs.material == nullptr || lhs.mesh == nullptr)
 			return false;
@@ -786,6 +761,7 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_lastSceneSynchronizationStamp(other.m_lastSceneSynchronizationStamp),
 	  m_nextCachedCommandBuildSerial(other.m_nextCachedCommandBuildSerial),
 	  m_cachedCommandBuildCount(other.m_cachedCommandBuildCount),
+	  m_opaqueSortTokenBuildCount(other.m_opaqueSortTokenBuildCount),
 	  m_nextPrimitiveSnapshotSerial(other.m_nextPrimitiveSnapshotSerial),
 	  m_cachedMeshBaseIndices(std::move(other.m_cachedMeshBaseIndices)),
 	  m_commandOffsetTableDirty(other.m_commandOffsetTableDirty),
@@ -819,6 +795,7 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_lastSceneSynchronizationStamp = other.m_lastSceneSynchronizationStamp;
 	m_nextCachedCommandBuildSerial = other.m_nextCachedCommandBuildSerial;
 	m_cachedCommandBuildCount = other.m_cachedCommandBuildCount;
+	m_opaqueSortTokenBuildCount = other.m_opaqueSortTokenBuildCount;
 	m_nextPrimitiveSnapshotSerial = other.m_nextPrimitiveSnapshotSerial;
 	m_cachedMeshBaseIndices = std::move(other.m_cachedMeshBaseIndices);
 	m_commandOffsetTableDirty = other.m_commandOffsetTableDirty;
@@ -850,6 +827,7 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_lastSceneSynchronizationStamp.reset();
 	m_nextCachedCommandBuildSerial = 1u;
 	m_cachedCommandBuildCount = 0u;
+	m_opaqueSortTokenBuildCount = 0u;
 	m_nextPrimitiveSnapshotSerial = 1u;
 	m_cachedMeshBaseIndices.clear();
 	m_commandOffsetTableDirty = true;
@@ -871,6 +849,7 @@ bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputSt
 {
 	return mesh == other.mesh &&
 		material == other.material &&
+		meshContentRevision == other.meshContentRevision &&
 		materialInstanceId == other.materialInstanceId &&
 		materialParameterRevision == other.materialParameterRevision &&
 		materialRenderStateRevision == other.materialRenderStateRevision &&
@@ -1216,6 +1195,8 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 			std::max<uint64_t>(m_lastDrawCallOptimizationStats.largestInstanceGroupSize, instanceCount);
 	}
 	m_lastDrawCallOptimizationStats.cachedCommandRebuildCount = m_lastSyncStats.rebuiltCachedCommandCount;
+	m_lastDrawCallOptimizationStats.opaqueSortTokenRebuildCount =
+		m_lastSyncStats.rebuiltOpaqueSortTokenCount;
 	m_lastLargeSceneTelemetry.submittedDrawCount = m_lastDrawCallOptimizationStats.submittedSceneDrawCount;
 	m_lastLargeSceneTelemetry.dynamicInstanceGroupCount = m_lastDrawCallOptimizationStats.dynamicInstanceGroupCount;
 	m_lastLargeSceneTelemetry.queueFinalizationTimeNs =
@@ -1236,6 +1217,11 @@ uint64_t RenderScene::GetSceneId() const
 uint64_t RenderScene::GetCachedCommandBuildCountForTesting() const
 {
 	return m_cachedCommandBuildCount;
+}
+
+uint64_t RenderScene::GetOpaqueSortTokenBuildCountForTesting() const
+{
+	return m_opaqueSortTokenBuildCount;
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -2170,6 +2156,7 @@ RenderScene::CachedCommandInputStamp RenderScene::BuildCommandInputStamp(
 	CachedCommandInputStamp stamp;
 	stamp.mesh = &mesh;
 	stamp.material = &material;
+	stamp.meshContentRevision = mesh.GetContentRevision();
 	stamp.materialInstanceId = material.GetInstanceId();
 	stamp.materialParameterRevision = material.GetParameterRevision();
 	stamp.materialRenderStateRevision = material.GetRenderStateRevision();
@@ -2189,6 +2176,21 @@ void RenderScene::RebuildCachedCommand(
 	slot.command.stateMask.mask = stamp.stateMask;
 	slot.command.primitiveMode = stamp.primitiveMode;
 	slot.command.buildSerial = m_nextCachedCommandBuildSerial++;
+	slot.command.opaqueSortToken = EngineDrawableDescriptor::kInvalidOpaqueSortToken;
+	if (slot.command.material != nullptr &&
+		!slot.command.material->IsBlendable() &&
+		!slot.command.material->IsDecal())
+	{
+		slot.command.opaqueSortToken = BuildOpaqueDrawSortToken(
+			slot.command.mesh,
+			slot.command.material,
+			slot.command.stateMask,
+			slot.command.primitiveMode,
+			0u,
+			0u);
+		++m_opaqueSortTokenBuildCount;
+		++stats.rebuiltOpaqueSortTokenCount;
+	}
 	slot.valid = true;
 	++m_cachedCommandBuildCount;
 	++stats.rebuiltCachedCommandCount;
@@ -3043,6 +3045,7 @@ void RenderScene::AppendVisibleDrawable(
 		primitive.userMatrix
 	};
 	descriptor.stableSortKey = primitive.handle.index;
+	descriptor.opaqueSortToken = command.opaqueSortToken;
 	drawable.AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
 
 	const float distanceToActor = Maths::Vector3::Distance(
@@ -3054,7 +3057,11 @@ void RenderScene::AppendVisibleDrawable(
 	else if (command.material != nullptr && command.material->IsBlendable())
 		output.transparents.emplace_back(distanceToActor, std::move(drawable));
 	else
+	{
+		if (command.opaqueSortToken != EngineDrawableDescriptor::kInvalidOpaqueSortToken)
+			++m_lastDrawCallOptimizationStats.opaqueSortTokenHitCount;
 		output.opaques.emplace_back(distanceToActor, std::move(drawable));
+	}
 }
 
 void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& opaques) const
@@ -3063,18 +3070,27 @@ void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& 
 	{
 		float distance = 0.0f;
 		NLS::Render::Entities::Drawable drawable;
-		OpaqueDrawSortKey sortKey;
+		uint64_t opaqueSortToken = EngineDrawableDescriptor::kInvalidOpaqueSortToken;
+		uint64_t stablePrimitiveIdentity = EngineDrawableDescriptor::kInvalidStableSortKey;
 	};
 
 	std::vector<KeyedOpaqueDrawable> keyedDrawables;
 	keyedDrawables.reserve(opaques.size());
 	for (auto& entry : opaques)
 	{
-		const auto sortKey = BuildOpaqueDrawSortKey(entry.second);
+		const auto* descriptor = entry.second.TryGetDescriptor<EngineDrawableDescriptor>();
+		const auto opaqueSortToken = descriptor != nullptr &&
+			descriptor->opaqueSortToken != EngineDrawableDescriptor::kInvalidOpaqueSortToken
+				? descriptor->opaqueSortToken
+				: BuildOpaqueDrawSortToken(entry.second);
+		const auto stablePrimitiveIdentity = descriptor != nullptr
+			? descriptor->stableSortKey
+			: EngineDrawableDescriptor::kInvalidStableSortKey;
 		keyedDrawables.push_back({
 			entry.first,
 			std::move(entry.second),
-			sortKey
+			opaqueSortToken,
+			stablePrimitiveIdentity
 		});
 	}
 	opaques.clear();
@@ -3084,25 +3100,19 @@ void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& 
 		keyedDrawables.end(),
 		[](const auto& lhs, const auto& rhs)
 		{
-			if (!(lhs.sortKey == rhs.sortKey))
-				return lhs.sortKey < rhs.sortKey;
+			if (lhs.opaqueSortToken != rhs.opaqueSortToken)
+				return lhs.opaqueSortToken < rhs.opaqueSortToken;
 
-			const auto* lhsDescriptor =
-				lhs.drawable.template TryGetDescriptor<EngineDrawableDescriptor>();
-			const auto* rhsDescriptor =
-				rhs.drawable.template TryGetDescriptor<EngineDrawableDescriptor>();
 			const bool lhsHasStableSortKey =
-				lhsDescriptor != nullptr &&
-				lhsDescriptor->stableSortKey != EngineDrawableDescriptor::kInvalidStableSortKey;
+				lhs.stablePrimitiveIdentity != EngineDrawableDescriptor::kInvalidStableSortKey;
 			const bool rhsHasStableSortKey =
-				rhsDescriptor != nullptr &&
-				rhsDescriptor->stableSortKey != EngineDrawableDescriptor::kInvalidStableSortKey;
+				rhs.stablePrimitiveIdentity != EngineDrawableDescriptor::kInvalidStableSortKey;
 			if (lhsHasStableSortKey != rhsHasStableSortKey)
 				return lhsHasStableSortKey;
 			if (lhsHasStableSortKey &&
-				lhsDescriptor->stableSortKey != rhsDescriptor->stableSortKey)
+				lhs.stablePrimitiveIdentity != rhs.stablePrimitiveIdentity)
 			{
-				return lhsDescriptor->stableSortKey < rhsDescriptor->stableSortKey;
+				return lhs.stablePrimitiveIdentity < rhs.stablePrimitiveIdentity;
 			}
 			return lhs.distance < rhs.distance;
 		});
@@ -3116,9 +3126,7 @@ void RenderScene::FinalizeOpaqueQueue(RenderSceneVisibleQueues::SceneDrawables& 
 		while (runEnd < keyedDrawables.size() &&
 			CanMergeOpaqueDrawables(
 				keyedDrawables[index].drawable,
-				keyedDrawables[runEnd].drawable,
-				keyedDrawables[index].sortKey,
-				keyedDrawables[runEnd].sortKey))
+				keyedDrawables[runEnd].drawable))
 		{
 			++runEnd;
 		}
@@ -3296,6 +3304,8 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 						chunkDescriptor.objectIndex = objectIndex;
 						chunkDescriptor.objectCount = chunkObjectCount;
 						chunkDescriptor.objectFlags = descriptor.objectFlags;
+						chunkDescriptor.stableSortKey = descriptor.stableSortKey;
+						chunkDescriptor.opaqueSortToken = descriptor.opaqueSortToken;
 						if (!descriptor.instanceModelMatrices.empty())
 						{
 							const auto sliceBegin = std::min(

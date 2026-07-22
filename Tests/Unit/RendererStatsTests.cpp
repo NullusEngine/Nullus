@@ -728,6 +728,8 @@ TEST(RendererStatsTests, RendererStatsTracksDrawCallOptimizationCounters)
         .dynamicInstanceGroupCount = 12u,
         .largestInstanceGroupSize = 128u,
         .cachedCommandRebuildCount = 4u,
+        .opaqueSortTokenHitCount = 95u,
+        .opaqueSortTokenRebuildCount = 5u,
         .objectDataOverflowDroppedObjectCount = 7u
     });
     stats.EndFrame();
@@ -738,6 +740,8 @@ TEST(RendererStatsTests, RendererStatsTracksDrawCallOptimizationCounters)
     EXPECT_EQ(frameInfo.dynamicInstanceGroupCount, 12u);
     EXPECT_EQ(frameInfo.largestInstanceGroupSize, 128u);
     EXPECT_EQ(frameInfo.cachedCommandRebuildCount, 4u);
+    EXPECT_EQ(frameInfo.opaqueSortTokenHitCount, 95u);
+    EXPECT_EQ(frameInfo.opaqueSortTokenRebuildCount, 5u);
     EXPECT_EQ(frameInfo.objectDataOverflowDroppedObjectCount, 7u);
 }
 

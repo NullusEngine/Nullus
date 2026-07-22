@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -168,6 +169,7 @@ namespace NLS::Engine::Rendering
 		uint64_t reusedPrimitiveCount = 0u;
 		uint64_t removedPrimitiveCount = 0u;
 		uint64_t rebuiltCachedCommandCount = 0u;
+		uint64_t rebuiltOpaqueSortTokenCount = 0u;
 		uint64_t syncTouchedPrimitiveCount = 0u;
 		uint64_t syncFullSweepCount = 0u;
 		uint64_t syncSweepTouchedSlotCount = 0u;
@@ -259,6 +261,7 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Data::StateMask stateMask{};
 		NLS::Render::Settings::EPrimitiveMode primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
 		uint64_t buildSerial = 0u;
+		uint64_t opaqueSortToken = (std::numeric_limits<uint64_t>::max)();
 	};
 
 	struct ScenePickablePrimitiveDrawSource
@@ -290,6 +293,7 @@ namespace NLS::Engine::Rendering
 		[[nodiscard]] size_t GetPrimitiveCount() const;
 		[[nodiscard]] uint64_t GetSceneId() const;
 		[[nodiscard]] uint64_t GetCachedCommandBuildCountForTesting() const;
+		[[nodiscard]] uint64_t GetOpaqueSortTokenBuildCountForTesting() const;
 #if defined(NLS_ENABLE_TEST_HOOKS)
 		[[nodiscard]] uint64_t GetSpatialCandidateSnapshotCacheHitCountForTesting() const;
 #endif
@@ -350,6 +354,7 @@ namespace NLS::Engine::Rendering
 		{
 			NLS::Render::Resources::Mesh* mesh = nullptr;
 			NLS::Render::Resources::Material* material = nullptr;
+			uint64_t meshContentRevision = 0u;
 			uint64_t materialInstanceId = 0u;
 			uint64_t materialParameterRevision = 0u;
 			uint64_t materialRenderStateRevision = 0u;
@@ -544,6 +549,7 @@ namespace NLS::Engine::Rendering
 		std::optional<SceneSynchronizationStamp> m_lastSceneSynchronizationStamp;
 		uint64_t m_nextCachedCommandBuildSerial = 1u;
 		uint64_t m_cachedCommandBuildCount = 0u;
+		uint64_t m_opaqueSortTokenBuildCount = 0u;
 		mutable uint64_t m_nextPrimitiveSnapshotSerial = 1u;
 		mutable std::vector<size_t> m_cachedMeshBaseIndices;
 		mutable bool m_commandOffsetTableDirty = true;

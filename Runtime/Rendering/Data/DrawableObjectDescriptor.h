@@ -25,6 +25,8 @@ namespace NLS::Render::Data
         // Stable scene identity used to keep static opaque instance ordering independent of camera distance.
         static constexpr uint64_t kInvalidStableSortKey = (std::numeric_limits<uint64_t>::max)();
         uint64_t stableSortKey = kInvalidStableSortKey;
+        static constexpr uint64_t kInvalidOpaqueSortToken = (std::numeric_limits<uint64_t>::max)();
+        uint64_t opaqueSortToken = kInvalidOpaqueSortToken;
     };
 
     struct ObjectDrawConstants

@@ -13,6 +13,8 @@ namespace NLS::Render::Data
 		uint64_t dynamicInstanceGroupCount = 0u;
 		uint64_t largestInstanceGroupSize = 0u;
 		uint64_t cachedCommandRebuildCount = 0u;
+		uint64_t opaqueSortTokenHitCount = 0u;
+		uint64_t opaqueSortTokenRebuildCount = 0u;
 		uint64_t objectDataOverflowDroppedObjectCount = 0u;
 	};
 }

@@ -121,6 +121,8 @@ void RendererStats::BeginFrame()
     m_frameInfo.dynamicInstanceGroupCount = 0u;
     m_frameInfo.largestInstanceGroupSize = 0u;
     m_frameInfo.cachedCommandRebuildCount = 0u;
+    m_frameInfo.opaqueSortTokenHitCount = 0u;
+    m_frameInfo.opaqueSortTokenRebuildCount = 0u;
     m_frameInfo.objectDataOverflowDroppedObjectCount = 0u;
     m_frameInfo.parallelCommandWorkUnitCount = 0u;
     m_frameInfo.parallelRecordingWorkerCount = 0u;
@@ -205,6 +207,8 @@ void RendererStats::RecordDrawCallOptimizationStats(
     m_frameInfo.dynamicInstanceGroupCount = stats.dynamicInstanceGroupCount;
     m_frameInfo.largestInstanceGroupSize = stats.largestInstanceGroupSize;
     m_frameInfo.cachedCommandRebuildCount = stats.cachedCommandRebuildCount;
+    m_frameInfo.opaqueSortTokenHitCount = stats.opaqueSortTokenHitCount;
+    m_frameInfo.opaqueSortTokenRebuildCount = stats.opaqueSortTokenRebuildCount;
     m_frameInfo.objectDataOverflowDroppedObjectCount = stats.objectDataOverflowDroppedObjectCount;
 }
 

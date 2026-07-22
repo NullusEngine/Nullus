@@ -688,6 +688,11 @@ namespace NLS::Render::Context
         std::optional<size_t> ReserveReusableSlotIndexExcluding(
             const std::vector<size_t>& excludedSlotIndices,
             std::chrono::nanoseconds retirementWaitTimeout = std::chrono::nanoseconds::zero());
+        std::optional<size_t> ReserveReusableSlotIndexUntil(
+            std::chrono::steady_clock::time_point retirementDeadline);
+        std::optional<size_t> ReserveReusableSlotIndexExcludingUntil(
+            const std::vector<size_t>& excludedSlotIndices,
+            std::chrono::steady_clock::time_point retirementDeadline);
         bool ReleaseReservedReusableSlotIndex(size_t slotIndex);
         std::optional<size_t> GetReservedReusableSlotIndex() const;
         const InFlightFrameSlot* PeekSlot(size_t slotIndex) const;

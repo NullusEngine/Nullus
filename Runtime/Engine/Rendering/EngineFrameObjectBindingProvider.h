@@ -36,6 +36,8 @@ class NLS_ENGINE_API EngineFrameObjectBindingProvider final : public NLS::Render
 {
 public:
     explicit EngineFrameObjectBindingProvider(NLS::Render::Core::CompositeRenderer& renderer);
+    bool TryReservePreparedFrameResourcesUntil(
+        std::chrono::steady_clock::time_point retirementDeadline);
     void PrepareRenderScenePackage(
         const NLS::Render::Context::FrameSnapshot& snapshot,
         NLS::Render::Context::RenderScenePackage& package) const;
@@ -70,7 +72,8 @@ private:
     void RefreshExplicitFrameBindingSet();
     void RefreshExplicitObjectBindingSet();
     struct ObjectDataFrameSlot;
-    std::optional<size_t> ResolveActiveObjectDataSlotIndex();
+    std::optional<size_t> ResolveActiveObjectDataSlotIndex(
+        std::optional<std::chrono::steady_clock::time_point> retirementDeadline = std::nullopt);
     ObjectDataFrameSlot* ResolveActiveObjectDataSlot();
     void ReleaseStalePreparedObjectDataSlotReservation();
     void RetireIdleObjectDataSlots();

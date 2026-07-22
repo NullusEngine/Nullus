@@ -1446,12 +1446,28 @@ uint64_t ThreadedRenderingLifecycle::GetPublishedFrameCount() const
 std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex(
     const std::chrono::nanoseconds retirementWaitTimeout)
 {
-    return ReserveReusableSlotIndexExcluding({}, retirementWaitTimeout);
+    return ReserveReusableSlotIndexUntil(
+        std::chrono::steady_clock::now() + retirementWaitTimeout);
 }
 
 std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndexExcluding(
     const std::vector<size_t>& excludedSlotIndices,
     const std::chrono::nanoseconds retirementWaitTimeout)
+{
+    return ReserveReusableSlotIndexExcludingUntil(
+        excludedSlotIndices,
+        std::chrono::steady_clock::now() + retirementWaitTimeout);
+}
+
+std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndexUntil(
+    const std::chrono::steady_clock::time_point retirementDeadline)
+{
+    return ReserveReusableSlotIndexExcludingUntil({}, retirementDeadline);
+}
+
+std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndexExcludingUntil(
+    const std::vector<size_t>& excludedSlotIndices,
+    const std::chrono::steady_clock::time_point retirementDeadline)
 {
     std::unique_lock<std::mutex> lock(m_mutex);
     if (m_reservedReusableSlotIndex.has_value())
@@ -1469,14 +1485,11 @@ std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndexExclud
 
     if (FindReservableSlotReadOnlyLocked(excludedSlotIndices) == nullptr)
     {
-        if (retirementWaitTimeout <= std::chrono::nanoseconds::zero())
-            return std::nullopt;
-
         const auto waitStart = std::chrono::steady_clock::now();
         ++m_telemetry.reservedSlotWaitCount;
-        const bool hasReusableSlot = m_slotAvailable.wait_for(
+        const bool hasReusableSlot = m_slotAvailable.wait_until(
             lock,
-            retirementWaitTimeout,
+            retirementDeadline,
             [this, &excludedSlotIndices]()
             {
                 return FindReservableSlotReadOnlyLocked(excludedSlotIndices) != nullptr;

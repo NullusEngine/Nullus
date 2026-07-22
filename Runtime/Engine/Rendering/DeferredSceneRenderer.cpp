@@ -1,4 +1,5 @@
 #include "Rendering/DeferredSceneRenderer.h"
+#include "Rendering/EngineFrameObjectBindingProvider.h"
 
 #include <fg/Blackboard.hpp>
 
@@ -68,9 +69,15 @@ namespace
 	}
 
 	bool TryReservePreparedFrameResourcesForThreadedCapture(
-		NLS::Render::Core::CompositeRenderer& renderer)
+		NLS::Render::Core::CompositeRenderer& renderer,
+		const std::chrono::steady_clock::time_point retirementDeadline)
 	{
 		auto* provider = renderer.GetFrameObjectBindingProvider();
+		if (auto* engineProvider = dynamic_cast<NLS::Engine::Rendering::EngineFrameObjectBindingProvider*>(provider);
+			engineProvider != nullptr)
+		{
+			return engineProvider->TryReservePreparedFrameResourcesUntil(retirementDeadline);
+		}
 		return provider == nullptr || provider->TryReservePreparedFrameResources();
 	}
 
@@ -1056,9 +1063,11 @@ namespace NLS::Engine::Rendering
 				const bool shouldCaptureDeferredScene =
 					hasPreparedSceneDrawables ||
 					!drawables.skyboxes.empty();
+				const auto retirementDeadline = std::chrono::steady_clock::now() +
+					NLS::Render::Context::DriverRendererAccess::GetThreadedPublishRetirementWait(m_driver);
 				const bool preparedFrameResourcesAvailable =
 					!hasPreparedSceneDrawables ||
-					TryReservePreparedFrameResourcesForThreadedCapture(*this);
+					TryReservePreparedFrameResourcesForThreadedCapture(*this, retirementDeadline);
 				logStartupBeginFrameStage("ReservePreparedFrameResources");
 			if (!preparedFrameResourcesAvailable && queuedGBufferDrawCount == 0u)
 			{

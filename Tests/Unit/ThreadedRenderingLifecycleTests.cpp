@@ -3898,6 +3898,100 @@ TEST(ThreadedRenderingLifecycleTests, ReservedReusableSlotWaitsAreVisibleInTelem
     EXPECT_GT(telemetry.reservedSlotWaitTotalNs, 0u);
 }
 
+TEST(ThreadedRenderingLifecycleTests, ReservedReusableSlotDeadlineSucceedsBeforeAbsoluteDeadline)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 1u;
+    size_t slotIndex = 99u;
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrameBuilder(
+        snapshot,
+        []()
+        {
+            NLS::Render::Context::RenderScenePackage package;
+            package.frameId = 1u;
+            return package;
+        },
+        &slotIndex));
+
+    std::atomic_bool retireThreadReady{ false };
+    std::atomic_bool startRetirementDelay{ false };
+    std::thread retireThread([&lifecycle, slotIndex, &retireThreadReady, &startRetirementDelay]()
+    {
+        retireThreadReady.store(true, std::memory_order_release);
+        while (!startRetirementDelay.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        const auto releaseAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(3);
+        while (std::chrono::steady_clock::now() < releaseAt)
+            std::this_thread::yield();
+        NLS::Render::Context::RenderScenePackage package;
+        package.frameId = 1u;
+        NLS::Render::Context::RhiSubmissionFrame submission;
+        submission.frameId = 1u;
+        EXPECT_TRUE(lifecycle.TryBeginRenderScene(slotIndex));
+        EXPECT_TRUE(lifecycle.CompleteRenderScene(slotIndex, package));
+        EXPECT_TRUE(lifecycle.TryBeginRhiSubmission(slotIndex));
+        EXPECT_TRUE(lifecycle.CompleteRhiSubmission(slotIndex, submission));
+        EXPECT_TRUE(lifecycle.RetireFrame(slotIndex));
+    });
+
+    while (!retireThreadReady.load(std::memory_order_acquire))
+        std::this_thread::yield();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8);
+    startRetirementDelay.store(true, std::memory_order_release);
+    const auto reservedSlot = lifecycle.ReserveReusableSlotIndexExcludingUntil({}, deadline);
+    retireThread.join();
+
+    ASSERT_TRUE(reservedSlot.has_value());
+    EXPECT_EQ(reservedSlot.value(), slotIndex);
+    const auto telemetry = lifecycle.GetTelemetry();
+    EXPECT_EQ(telemetry.reservedSlotWaitCount, 1u);
+    EXPECT_EQ(telemetry.reservedSlotWaitTimeoutCount, 0u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ExpiredReusableSlotDeadlineReturnsWithoutMutatingOccupiedSlots)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(2u);
+    for (uint64_t frameId = 1u; frameId <= 2u; ++frameId)
+    {
+        NLS::Render::Context::FrameSnapshot snapshot;
+        snapshot.frameId = frameId;
+        ASSERT_TRUE(lifecycle.TryPublishPreparedFrameBuilder(
+            snapshot,
+            [frameId]()
+            {
+                NLS::Render::Context::RenderScenePackage package;
+                package.frameId = frameId;
+                return package;
+            }));
+    }
+
+    const auto slotsBefore = lifecycle.CopySlots();
+    const auto callStart = std::chrono::steady_clock::now();
+    const auto reservedSlot = lifecycle.ReserveReusableSlotIndexExcludingUntil(
+        {},
+        callStart - std::chrono::milliseconds(1));
+    const auto elapsed = std::chrono::steady_clock::now() - callStart;
+
+    EXPECT_FALSE(reservedSlot.has_value());
+    EXPECT_LT(elapsed, std::chrono::milliseconds(5));
+    EXPECT_EQ(lifecycle.GetInFlightDepth(), 2u);
+    const auto slotsAfter = lifecycle.CopySlots();
+    ASSERT_EQ(slotsAfter.size(), slotsBefore.size());
+    for (size_t index = 0u; index < slotsBefore.size(); ++index)
+    {
+        EXPECT_EQ(slotsAfter[index].stage, slotsBefore[index].stage);
+        ASSERT_TRUE(slotsAfter[index].snapshot.has_value());
+        ASSERT_TRUE(slotsBefore[index].snapshot.has_value());
+        EXPECT_EQ(slotsAfter[index].snapshot->frameId, slotsBefore[index].snapshot->frameId);
+    }
+
+    const auto telemetry = lifecycle.GetTelemetry();
+    EXPECT_EQ(telemetry.reservedSlotWaitCount, 1u);
+    EXPECT_EQ(telemetry.reservedSlotWaitTimeoutCount, 1u);
+}
+
 TEST(ThreadedRenderingLifecycleTests, ReleasedReusableSlotCanBeUsedBySnapshotPublication)
 {
     NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);

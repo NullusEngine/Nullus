@@ -131,6 +131,11 @@ namespace NLS::Render::Context
         static std::optional<size_t> ReserveReusableFrameContextSlotIndexForPreparedPublication(
             Driver& driver,
             bool waitForRetirement = true);
+        static std::optional<size_t> ReserveReusableFrameContextSlotIndexForPreparedPublication(
+            Driver& driver,
+            std::chrono::steady_clock::time_point retirementDeadline,
+            bool waitForRetirement = true);
+        static std::chrono::nanoseconds GetThreadedPublishRetirementWait(const Driver& driver);
         static bool ReleaseReservedFrameContextSlotIndex(Driver& driver, size_t slotIndex);
         static std::optional<size_t> GetReservedFrameContextSlotIndex(const Driver& driver);
         static std::shared_ptr<RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer(const Driver& driver);

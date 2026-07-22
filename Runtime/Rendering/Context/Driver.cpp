@@ -2435,10 +2435,31 @@ size_t DriverRendererAccess::GetLifecycleFrameSlotCount(const Driver& driver)
 
 namespace
 {
+    std::chrono::steady_clock::time_point ResolveThreadedPublishRetirementDeadline(
+        const DriverImpl& impl,
+        const bool waitForRetirement)
+    {
+        const auto wait = waitForRetirement
+            ? std::chrono::milliseconds(impl.threadedPublishRetirementWaitMs)
+            : std::chrono::milliseconds::zero();
+        return std::chrono::steady_clock::now() + wait;
+    }
+
+    uint64_t ResolveRemainingWaitNanoseconds(
+        const std::chrono::steady_clock::time_point retirementDeadline)
+    {
+        const auto remaining = retirementDeadline - std::chrono::steady_clock::now();
+        if (remaining <= std::chrono::steady_clock::duration::zero())
+            return 0u;
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count());
+    }
+
     std::optional<size_t> ReserveReusableFrameContextSlotIndexForDriver(
         DriverImpl& impl,
         const bool waitForDeferredFrameFence,
-        const bool waitForRetirement)
+        const bool waitForRetirement,
+        const std::chrono::steady_clock::time_point retirementDeadline)
     {
         auto* threadedLifecycle = impl.threadedLifecycle.get();
         if (threadedLifecycle != nullptr)
@@ -2459,11 +2480,13 @@ namespace
             std::vector<size_t> skippedUnsafeSlots;
             while (skippedUnsafeSlots.size() < threadedLifecycle->GetSlotCount())
             {
-                const auto reservedSlotIndex = threadedLifecycle->ReserveReusableSlotIndexExcluding(
-                    skippedUnsafeSlots,
-                    waitForRetirement
-                        ? std::chrono::milliseconds(impl.threadedPublishRetirementWaitMs)
-                        : std::chrono::milliseconds::zero());
+                const auto reservedSlotIndex = waitForRetirement
+                    ? threadedLifecycle->ReserveReusableSlotIndexExcludingUntil(
+                        skippedUnsafeSlots,
+                        retirementDeadline)
+                    : threadedLifecycle->ReserveReusableSlotIndexExcluding(
+                        skippedUnsafeSlots,
+                        std::chrono::nanoseconds::zero());
                 if (!reservedSlotIndex.has_value())
                     return std::nullopt;
 
@@ -2492,12 +2515,11 @@ namespace
                     skippedUnsafeSlots.size() + 1u >= threadedLifecycle->GetSlotCount();
                 if (!deferredFenceComplete &&
                     waitForDeferredFrameFence &&
-                    exhaustedOtherLifecycleSlots &&
-                    impl.threadedPublishRetirementWaitMs > 0u)
+                    exhaustedOtherLifecycleSlots)
                 {
-                    const uint64_t waitTimeoutNs =
-                        static_cast<uint64_t>(impl.threadedPublishRetirementWaitMs) * 1'000'000ull;
-                    deferredFenceComplete = frameContext.frameFence->Wait(waitTimeoutNs);
+                    const uint64_t waitTimeoutNs = ResolveRemainingWaitNanoseconds(retirementDeadline);
+                    if (waitTimeoutNs > 0u)
+                        deferredFenceComplete = frameContext.frameFence->Wait(waitTimeoutNs);
                 }
                 if (!deferredFenceComplete)
                 {
@@ -2531,7 +2553,11 @@ std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex
     if (driver.m_impl == nullptr)
         return std::nullopt;
 
-    return ReserveReusableFrameContextSlotIndexForDriver(*driver.m_impl, false, true);
+    return ReserveReusableFrameContextSlotIndexForDriver(
+        *driver.m_impl,
+        false,
+        true,
+        ResolveThreadedPublishRetirementDeadline(*driver.m_impl, true));
 }
 
 std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
@@ -2541,10 +2567,32 @@ std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex
     if (driver.m_impl == nullptr)
         return std::nullopt;
 
+    return ReserveReusableFrameContextSlotIndexForPreparedPublication(
+        driver,
+        ResolveThreadedPublishRetirementDeadline(*driver.m_impl, waitForRetirement),
+        waitForRetirement);
+}
+
+std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
+    Driver& driver,
+    const std::chrono::steady_clock::time_point retirementDeadline,
+    const bool waitForRetirement)
+{
+    if (driver.m_impl == nullptr)
+        return std::nullopt;
+
     return ReserveReusableFrameContextSlotIndexForDriver(
         *driver.m_impl,
         waitForRetirement,
-        waitForRetirement);
+        waitForRetirement,
+        retirementDeadline);
+}
+
+std::chrono::nanoseconds DriverRendererAccess::GetThreadedPublishRetirementWait(const Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return std::chrono::nanoseconds::zero();
+    return std::chrono::milliseconds(driver.m_impl->threadedPublishRetirementWaitMs);
 }
 
 bool DriverRendererAccess::ReleaseReservedFrameContextSlotIndex(Driver& driver, const size_t slotIndex)

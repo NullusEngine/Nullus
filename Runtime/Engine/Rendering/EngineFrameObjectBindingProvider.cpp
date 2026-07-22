@@ -69,6 +69,21 @@ EngineFrameObjectBindingProvider::EngineFrameObjectBindingProvider(NLS::Render::
     m_startTime = std::chrono::high_resolution_clock::now();
 }
 
+bool EngineFrameObjectBindingProvider::TryReservePreparedFrameResourcesUntil(
+    const std::chrono::steady_clock::time_point retirementDeadline)
+{
+    if (m_preparedFrameObjectDataSlotUnavailable)
+        return false;
+
+    const auto slotIndex = ResolveActiveObjectDataSlotIndex(retirementDeadline);
+    if (!slotIndex.has_value())
+    {
+        m_preparedFrameObjectDataSlotUnavailable = true;
+        return false;
+    }
+    return true;
+}
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
 uint64_t EngineFrameObjectBindingProvider::GetIndexedObjectDataShaderSupportQueryCountForTesting() const
 {
@@ -352,7 +367,8 @@ void EngineFrameObjectBindingProvider::RefreshExplicitObjectBindingSet()
     m_currentDrawUsesIndexedObjectData = false;
 }
 
-std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataSlotIndex()
+std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataSlotIndex(
+    const std::optional<std::chrono::steady_clock::time_point> retirementDeadline)
 {
     if (m_preparedFrameObjectDataSlotUnavailable)
         return std::nullopt;
@@ -369,8 +385,12 @@ std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataS
     }
     else
     {
-        const auto reusableSlotIndex =
-            NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(m_renderer.GetDriver());
+        const auto reusableSlotIndex = retirementDeadline.has_value()
+            ? NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
+                m_renderer.GetDriver(),
+                retirementDeadline.value())
+            : NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
+                m_renderer.GetDriver());
         if (!reusableSlotIndex.has_value())
         {
             m_preparedFrameObjectDataSlotUnavailable = true;

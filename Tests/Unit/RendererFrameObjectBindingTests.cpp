@@ -552,15 +552,24 @@ namespace
         std::string_view GetDebugName() const override { return m_debugName; }
         bool IsSignaled() const override { return m_signaled; }
         void Reset() override { m_signaled = false; }
-        bool Wait(uint64_t = 0u) override
+        bool Wait(const uint64_t timeoutNanoseconds = 0u) override
         {
-            m_signaled = true;
-            return true;
+            m_lastWaitTimeoutNanoseconds = timeoutNanoseconds;
+            ++m_waitCount;
+            if (m_waitSucceeds)
+                m_signaled = true;
+            return m_waitSucceeds;
         }
+        void SetWaitSucceeds(const bool waitSucceeds) { m_waitSucceeds = waitSucceeds; }
+        uint64_t GetLastWaitTimeoutNanoseconds() const { return m_lastWaitTimeoutNanoseconds; }
+        uint64_t GetWaitCount() const { return m_waitCount; }
 
     private:
         std::string m_debugName;
         bool m_signaled = true;
+        bool m_waitSucceeds = true;
+        uint64_t m_lastWaitTimeoutNanoseconds = 0u;
+        uint64_t m_waitCount = 0u;
     };
 
     class TestSemaphore final : public NLS::Render::RHI::RHISemaphore
@@ -4002,6 +4011,146 @@ TEST(RendererFrameObjectBindingTests, EngineProviderPreparedFrameResourcePreflig
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     provider.EndFrame();
+}
+
+TEST(RendererFrameObjectBindingTests, DriverReservationSharesRemainingDeadlineWithDeferredFence)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.threadedPublishRetirementWaitMs = 8u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto fence = std::make_shared<TestFence>("RemainingDeadlineFence");
+    fence->Reset();
+    fence->SetWaitSucceeds(false);
+    frameContext.frameFence = fence;
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 1u;
+    size_t slotIndex = 99u;
+    ASSERT_TRUE(lifecycle->TryPublishPreparedFrameBuilder(
+        snapshot,
+        []()
+        {
+            NLS::Render::Context::RenderScenePackage package;
+            package.frameId = 1u;
+            return package;
+        },
+        &slotIndex));
+
+    std::atomic_bool retireThreadReady{ false };
+    std::atomic_bool startRetirementDelay{ false };
+    std::thread retireThread([lifecycle, slotIndex, &retireThreadReady, &startRetirementDelay]()
+    {
+        retireThreadReady.store(true, std::memory_order_release);
+        while (!startRetirementDelay.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        const auto retireAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+        while (std::chrono::steady_clock::now() < retireAt)
+            std::this_thread::yield();
+
+        NLS::Render::Context::RenderScenePackage package;
+        package.frameId = 1u;
+        NLS::Render::Context::RhiSubmissionFrame submission;
+        submission.frameId = 1u;
+        submission.deferredFrameScopedRetirement = true;
+        EXPECT_TRUE(lifecycle->TryBeginRenderScene(slotIndex));
+        EXPECT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
+        EXPECT_TRUE(lifecycle->TryBeginRhiSubmission(slotIndex));
+        EXPECT_TRUE(lifecycle->CompleteRhiSubmission(slotIndex, submission));
+        EXPECT_TRUE(lifecycle->RetireFrame(slotIndex));
+    });
+
+    while (!retireThreadReady.load(std::memory_order_acquire))
+        std::this_thread::yield();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8);
+    startRetirementDelay.store(true, std::memory_order_release);
+    const auto reservedSlot =
+        NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(
+            driver,
+            deadline);
+    retireThread.join();
+
+    EXPECT_FALSE(reservedSlot.has_value());
+    EXPECT_EQ(fence->GetWaitCount(), 1u);
+    EXPECT_GT(fence->GetLastWaitTimeoutNanoseconds(), 0u);
+    EXPECT_LE(fence->GetLastWaitTimeoutNanoseconds(), 4'000'000u);
+    EXPECT_FALSE(
+        NLS::Render::Context::DriverRendererAccess::GetReservedFrameContextSlotIndex(driver).has_value());
+    const auto retiredSlot = lifecycle->CopySlot(slotIndex);
+    ASSERT_TRUE(retiredSlot.has_value());
+    EXPECT_EQ(retiredSlot->stage, NLS::Render::Context::ThreadedFrameStage::Retired);
+    fence->SetWaitSucceeds(true);
+    EXPECT_TRUE(fence->Wait());
+}
+
+TEST(RendererFrameObjectBindingTests, EngineProviderHonorsExpiredPreparedResourceDeadline)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.threadedPublishRetirementWaitMs = 8u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 1u;
+    size_t occupiedSlot = 99u;
+    ASSERT_TRUE(lifecycle->TryPublishPreparedFrameBuilder(
+        snapshot,
+        []()
+        {
+            NLS::Render::Context::RenderScenePackage package;
+            package.frameId = 1u;
+            return package;
+        },
+        &occupiedSlot));
+
+    ProviderAwareRenderer renderer(driver);
+    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    provider.BeginFrame(frameDescriptor);
+
+    const auto callStart = std::chrono::steady_clock::now();
+    EXPECT_FALSE(provider.TryReservePreparedFrameResourcesUntil(
+        callStart - std::chrono::milliseconds(1)));
+    EXPECT_LT(std::chrono::steady_clock::now() - callStart, std::chrono::milliseconds(5));
+    EXPECT_FALSE(
+        NLS::Render::Context::DriverRendererAccess::GetReservedFrameContextSlotIndex(driver).has_value());
+    provider.EndFrame();
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = 1u;
+    NLS::Render::Context::RhiSubmissionFrame submission;
+    submission.frameId = 1u;
+    EXPECT_TRUE(lifecycle->TryBeginRenderScene(occupiedSlot));
+    EXPECT_TRUE(lifecycle->CompleteRenderScene(occupiedSlot, package));
+    EXPECT_TRUE(lifecycle->TryBeginRhiSubmission(occupiedSlot));
+    EXPECT_TRUE(lifecycle->CompleteRhiSubmission(occupiedSlot, submission));
+    EXPECT_TRUE(lifecycle->RetireFrame(occupiedSlot));
 }
 
 TEST(RendererFrameObjectBindingTests, EngineProviderCanReleasePreparedFrameReservationAfterPublishFailure)

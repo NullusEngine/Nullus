@@ -289,7 +289,7 @@ public:
     /**
      * Returns the attached shader
      */
-    Shader*& GetShader();
+    Shader* GetShader();
     const Shader* GetShader() const;
     Shader* ResolveShaderForLightMode(std::string_view lightMode) const;
     void SetShaderLabSourcePath(std::string sourcePath);
@@ -480,6 +480,7 @@ public:
     uint64_t GetInstanceId() const;
     uint64_t GetParameterRevision() const;
     uint64_t GetRenderStateRevision() const;
+    static uint64_t GetGlobalMutationEpoch() noexcept;
     uint64_t GetBindingRevision() const;
     uint64_t GetExplicitBindingSetCreationCount() const;
     uint64_t GetExplicitSnapshotBufferCreationCount() const;
@@ -516,6 +517,7 @@ protected:
     mutable uint64_t m_bindingRevision = 1u;
 
 private:
+    void TouchRenderStateRevision();
     void PruneStaleExplicitShaderGenerationEntries(
         uint64_t shaderInstanceId,
         uint64_t shaderGeneration) const;

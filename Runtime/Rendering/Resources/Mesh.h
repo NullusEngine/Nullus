@@ -70,6 +70,7 @@ namespace NLS::Render::Resources
 		Mesh& operator=(const Mesh&) = delete;
 		Mesh(Mesh&&) = delete;
 		Mesh& operator=(Mesh&&) = delete;
+		~Mesh() override;
 
 		/**
 		* Returns the number of vertices
@@ -104,6 +105,7 @@ namespace NLS::Render::Resources
 		const Render::Geometry::Bounds& GetBounds() const;
 		uint64_t GetInstanceId() const;
 		uint64_t GetContentRevision() const;
+		static uint64_t GetGlobalMutationEpoch() noexcept;
 		uint32_t GetLODCount() const;
 		Mesh* GetLODMesh(uint32_t lodIndex);
 		const Mesh* GetLODMesh(uint32_t lodIndex) const;
@@ -120,9 +122,18 @@ namespace NLS::Render::Resources
 			const std::vector<Geometry::Vertex>& p_vertices,
 			const Geometry::BoundingSphere& boundingSphere,
 			uint32_t destinationVertexOffset = 0u);
+		bool UpdateVerticesTransient(
+			const std::vector<Geometry::Vertex>& p_vertices,
+			const Geometry::BoundingSphere& boundingSphere,
+			uint32_t destinationVertexOffset = 0u);
 
 	private:
 		void TouchContentRevision();
+		bool UpdateVerticesInternal(
+			const std::vector<Geometry::Vertex>& p_vertices,
+			const Geometry::BoundingSphere& boundingSphere,
+			uint32_t destinationVertexOffset,
+			bool invalidateSceneResources);
 		void CreateBuffers(
 			const std::vector<Geometry::Vertex>& p_vertices,
 			const std::vector<uint32_t>& p_indices,

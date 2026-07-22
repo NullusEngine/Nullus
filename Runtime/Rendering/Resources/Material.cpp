@@ -136,6 +136,17 @@ namespace
 		return instanceId;
 	}
 
+	std::atomic<uint64_t>& MaterialMutationEpoch()
+	{
+		static std::atomic<uint64_t> epoch { 1u };
+		return epoch;
+	}
+
+	void TouchMaterialMutationEpoch()
+	{
+		MaterialMutationEpoch().fetch_add(1u, std::memory_order_relaxed);
+	}
+
 	std::mutex& LiveMaterialRegistryMutex()
 	{
 		static std::mutex mutex;
@@ -1174,6 +1185,7 @@ namespace NLS::Render::Resources
 	{
 		auto& state = GetRuntimeState();
 		++m_bindingRevision;
+		TouchMaterialMutationEpoch();
 		state.explicitBindingSet.reset();
 		state.explicitPipelineLayout.reset();
 		state.explicitBindingSetsByShaderKey.clear();
@@ -1203,6 +1215,15 @@ namespace NLS::Render::Resources
 	Material::~Material()
 	{
 		UnregisterLiveMaterial(this);
+		TouchMaterialMutationEpoch();
+	}
+
+	void Material::TouchRenderStateRevision()
+	{
+		++m_renderStateRevision;
+		if (m_renderStateRevision == 0u)
+			m_renderStateRevision = 1u;
+		TouchMaterialMutationEpoch();
 	}
 
 	void Material::SetShader(Shader* p_shader)
@@ -1214,7 +1235,7 @@ namespace NLS::Render::Resources
 			m_shaderLabSourcePath.clear();
 		if (m_shader == nullptr)
 			m_shaderReferencePath.clear();
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 		ResetRuntimeState();
 
 		if (m_shader)
@@ -1230,6 +1251,7 @@ namespace NLS::Render::Resources
 
 	void Material::FillUniform()
 	{
+		TouchMaterialMutationEpoch();
 		m_parameterBlock.Clear();
 		m_textureResourcePaths.clear();
 		m_samplerOverrides.clear();
@@ -1446,7 +1468,7 @@ namespace NLS::Render::Resources
 		}
 	}
 
-	Shader*& Material::GetShader()
+	Shader* Material::GetShader()
 	{
 		return m_shader;
 	}
@@ -1494,7 +1516,7 @@ namespace NLS::Render::Resources
 		m_shaderLabSourcePath = std::move(sourcePath);
 		m_shaderLabSourcePathExplicit = sourcePathExplicit;
 		m_shaderLabPassShadersByLightMode.clear();
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 		ResetRuntimeState();
 	}
 
@@ -1514,7 +1536,7 @@ namespace NLS::Render::Resources
 			return;
 
 		m_shaderReferencePath = std::move(shaderPath);
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 		ResetRuntimeState();
 	}
 
@@ -1553,7 +1575,7 @@ namespace NLS::Render::Resources
 			m_materialLayout.bindings = m_bindingLayout;
 		}
 
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 		ResetRuntimeState();
 	}
 
@@ -1617,7 +1639,7 @@ namespace NLS::Render::Resources
 			}
 		}
 
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 		ResetRuntimeState();
 	}
 
@@ -1638,7 +1660,7 @@ namespace NLS::Render::Resources
 			if (!m_blendable)
 			{
 				m_blendable = true;
-				++m_renderStateRevision;
+				TouchRenderStateRevision();
 			}
 			return;
 		}
@@ -1648,12 +1670,12 @@ namespace NLS::Render::Resources
 			if (m_surfaceMode == MaterialSurfaceMode::Opaque && p_transparent)
 			{
 				m_surfaceMode = MaterialSurfaceMode::Transparent;
-				++m_renderStateRevision;
+				TouchRenderStateRevision();
 			}
 			else if (m_surfaceMode == MaterialSurfaceMode::Transparent && !p_transparent)
 			{
 				m_surfaceMode = MaterialSurfaceMode::Opaque;
-				++m_renderStateRevision;
+				TouchRenderStateRevision();
 			}
 			return;
 		}
@@ -1662,7 +1684,7 @@ namespace NLS::Render::Resources
 			m_surfaceMode = MaterialSurfaceMode::Transparent;
 		else if (m_surfaceMode == MaterialSurfaceMode::Transparent && !p_transparent)
 			m_surfaceMode = MaterialSurfaceMode::Opaque;
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 	}
 
 	void Material::SetSurfaceMode(const MaterialSurfaceMode surfaceMode)
@@ -1674,7 +1696,7 @@ namespace NLS::Render::Resources
 
 		m_surfaceMode = surfaceMode;
 		m_blendable = blendable;
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 	}
 
 	void Material::SetBackfaceCulling(bool p_backfaceCulling)
@@ -1682,7 +1704,7 @@ namespace NLS::Render::Resources
 		if (m_backfaceCulling == p_backfaceCulling)
 			return;
 		m_backfaceCulling = p_backfaceCulling;
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 	}
 
 	void Material::SetFrontfaceCulling(bool p_frontfaceCulling)
@@ -1690,7 +1712,7 @@ namespace NLS::Render::Resources
 		if (m_frontfaceCulling == p_frontfaceCulling)
 			return;
 		m_frontfaceCulling = p_frontfaceCulling;
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 	}
 
 	void Material::SetDepthTest(bool p_depthTest)
@@ -1698,7 +1720,7 @@ namespace NLS::Render::Resources
 		if (m_depthTest == p_depthTest)
 			return;
 		m_depthTest = p_depthTest;
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 	}
 
 	void Material::SetDepthWriting(bool p_depthWriting)
@@ -1706,7 +1728,7 @@ namespace NLS::Render::Resources
 		if (m_depthWriting == p_depthWriting)
 			return;
 		m_depthWriting = p_depthWriting;
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 	}
 
 	void Material::SetColorWriting(bool p_colorWriting)
@@ -1714,7 +1736,7 @@ namespace NLS::Render::Resources
 		if (m_colorWriting == p_colorWriting)
 			return;
 		m_colorWriting = p_colorWriting;
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 	}
 
 	void Material::SetGPUInstances(int p_instances)
@@ -1722,7 +1744,7 @@ namespace NLS::Render::Resources
 		if (m_gpuInstances == p_instances)
 			return;
 		m_gpuInstances = p_instances;
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 	}
 
 	void Material::EnableKeyword(std::string keyword)
@@ -1730,7 +1752,7 @@ namespace NLS::Render::Resources
 		if (keyword.empty() || m_shaderLabKeywords.Contains(keyword))
 			return;
 		m_shaderLabKeywords.Enable(std::move(keyword));
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 		ResetRuntimeState();
 	}
 
@@ -1739,7 +1761,7 @@ namespace NLS::Render::Resources
 		if (!m_shaderLabKeywords.Contains(keyword))
 			return;
 		m_shaderLabKeywords.Disable(keyword);
-		++m_renderStateRevision;
+		TouchRenderStateRevision();
 		ResetRuntimeState();
 	}
 
@@ -2608,6 +2630,11 @@ namespace NLS::Render::Resources
 	uint64_t Material::GetRenderStateRevision() const
 	{
 		return m_renderStateRevision;
+	}
+
+	uint64_t Material::GetGlobalMutationEpoch() noexcept
+	{
+		return MaterialMutationEpoch().load(std::memory_order_relaxed);
 	}
 
 	uint64_t Material::GetBindingRevision() const

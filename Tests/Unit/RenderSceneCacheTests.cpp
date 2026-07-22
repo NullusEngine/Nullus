@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -52,6 +53,10 @@
 
 namespace
 {
+    static_assert(std::is_same_v<
+        decltype(std::declval<NLS::Render::Resources::Material&>().GetShader()),
+        NLS::Render::Resources::Shader*>);
+
     class RenderSceneReadyTestTexture final : public NLS::Render::RHI::RHITexture
     {
     public:
@@ -966,6 +971,189 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionSkipsStablePrimitiveScan)
     const auto invalidated = renderScene.Synchronize(fixture.scene, options);
     EXPECT_FALSE(invalidated.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(invalidated.reusedPrimitiveCount, 128u);
+}
+
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterMeshReload)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    options.trustSceneRenderContentRevision = true;
+
+    const auto first = renderScene.Synchronize(fixture.scene, options);
+    ASSERT_EQ(first.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(renderScene.GatherVisibleCommands({}).opaques.size(), 1u);
+    EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), 1u);
+    EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 1u);
+
+    const auto stable = renderScene.Synchronize(fixture.scene, options);
+    ASSERT_TRUE(stable.usedSceneRenderContentRevisionFastPath);
+    ASSERT_EQ(stable.rebuiltCachedCommandCount, 0u);
+
+    fixture.mesh->Reload(
+        {
+            VertexAt(-0.75f, -0.5f, 0.0f),
+            VertexAt(0.75f, -0.5f, 0.0f),
+            VertexAt(0.0f, 0.75f, 0.0f)
+        },
+        {0u, 1u, 2u},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+        {{0.0f, 0.0f, 0.0f}, 2.0f});
+
+    const auto reloaded = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_FALSE(reloaded.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(reloaded.syncTouchedPrimitiveCount, 1u);
+    EXPECT_EQ(reloaded.rebuiltCachedCommandCount, 1u);
+    EXPECT_EQ(reloaded.rebuiltOpaqueSortTokenCount, 1u);
+    EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), 2u);
+    EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 2u);
+
+    const auto visible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+    ASSERT_TRUE(visible.opaques.front().second.TryGetDescriptor(descriptor));
+    EXPECT_NE(
+        descriptor.opaqueSortToken,
+        NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidOpaqueSortToken);
+}
+
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterExplicitMaterialStateChange)
+{
+    QueueSortFixture fixture;
+    fixture.AddObject("ExplicitMaterial", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.opaqueMaterialB;
+    options.trustSceneRenderContentRevision = true;
+
+    const auto first = renderScene.Synchronize(fixture.scene, options);
+    ASSERT_EQ(first.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath, true);
+
+    fixture.opaqueMaterialA.SetBackfaceCulling(!fixture.opaqueMaterialA.HasBackfaceCulling());
+    const auto changed = renderScene.Synchronize(fixture.scene, options);
+
+    EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(changed.syncTouchedPrimitiveCount, 1u);
+    EXPECT_EQ(changed.rebuiltCachedCommandCount, 1u);
+    EXPECT_EQ(changed.rebuiltOpaqueSortTokenCount, 1u);
+    EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), 2u);
+    EXPECT_EQ(renderScene.GetOpaqueSortTokenBuildCountForTesting(), 2u);
+}
+
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterMaterialUniformReset)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    options.trustSceneRenderContentRevision = true;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+
+    const auto mutationEpoch = NLS::Render::Resources::Material::GetGlobalMutationEpoch();
+    fixture.material.FillUniform();
+    EXPECT_GT(NLS::Render::Resources::Material::GetGlobalMutationEpoch(), mutationEpoch);
+
+    const auto changed = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(changed.syncTouchedPrimitiveCount, 1u);
+    EXPECT_EQ(changed.rebuiltCachedCommandCount, 1u);
+}
+
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionRejectsDestroyedReplacedMaterialBeforeDereference)
+{
+    QueueSortFixture fixture;
+    auto previewMaterial = std::make_unique<NLS::Render::Resources::Material>();
+    previewMaterial->SetShader(fixture.shader);
+    auto& object = fixture.AddObject("PreviewMaterial", *fixture.sharedMesh, *previewMaterial, 4.0f);
+    auto* meshRenderer = object.GetComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshRenderer, nullptr);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.opaqueMaterialB;
+    options.trustSceneRenderContentRevision = true;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+
+    meshRenderer->SetMaterialAtIndex(0u, fixture.opaqueMaterialA);
+    previewMaterial.reset();
+    const auto changed = renderScene.Synchronize(fixture.scene, options);
+
+    EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(changed.rebuiltCachedCommandCount, 1u);
+    const auto visible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.material, &fixture.opaqueMaterialA);
+}
+
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionDetectsExplicitMaterialBecomingValid)
+{
+    QueueSortFixture fixture;
+    NLS::Render::Resources::Material explicitMaterial;
+    fixture.AddObject("PendingExplicitMaterial", *fixture.sharedMesh, explicitMaterial, 4.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.opaqueMaterialB;
+    options.trustSceneRenderContentRevision = true;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+
+    explicitMaterial.SetShader(fixture.shader);
+    const auto changed = renderScene.Synchronize(fixture.scene, options);
+
+    EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(changed.rebuiltCachedCommandCount, 1u);
+    const auto visible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.material, &explicitMaterial);
+}
+
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionTracksMeshWithoutValidCachedCommand)
+{
+    EnsureRenderSceneTestDriver();
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Render::Resources::Material invalidMaterial;
+    auto* mesh = CreateSingleMesh();
+    auto& actor = scene.CreateGameObject("InvalidCommandMesh");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    meshFilter->SetMesh(mesh);
+    meshRenderer->FillWithMaterial(invalidMaterial);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.trustSceneRenderContentRevision = true;
+    ASSERT_EQ(renderScene.Synchronize(scene, options).rebuiltCachedCommandCount, 0u);
+    ASSERT_TRUE(renderScene.Synchronize(scene, options).usedSceneRenderContentRevisionFastPath);
+
+    mesh->Reload(
+        {
+            VertexAt(-1.0f, -1.0f, 0.0f),
+            VertexAt(1.0f, -1.0f, 0.0f),
+            VertexAt(0.0f, 1.0f, 0.0f)
+        },
+        {0u, 1u, 2u},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+        {{0.0f, 0.0f, 0.0f}, 3.0f});
+    const auto changed = renderScene.Synchronize(scene, options);
+
+    EXPECT_FALSE(changed.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(changed.syncTouchedPrimitiveCount, 1u);
+    const auto snapshot = renderScene.CreatePrimitiveSnapshotForHandles(
+        renderScene.GetLivePrimitiveHandles(),
+        {});
+    ASSERT_EQ(snapshot.primitiveRecords.size(), 1u);
+    EXPECT_FLOAT_EQ(snapshot.primitiveRecords.front().modelBoundingSphere.radius, 3.0f);
+    delete mesh;
 }
 
 TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionFastPathIsDisabledWhilePlaying)
@@ -5189,6 +5377,87 @@ TEST(RenderSceneCacheTests, GatherVisibleCommandsSubmitsSceneSelectedRuntimeMesh
     const auto nearQueues = renderScene.GatherVisibleCommands(view);
     ASSERT_EQ(nearQueues.opaques.size(), 1u);
     EXPECT_EQ(nearQueues.opaques[0].second.mesh, mesh->GetLODMesh(0u));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RenderSceneCacheTests, MixedRuntimeMeshLODsGroupByResolvedMeshForDynamicInstancing)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    EnsureRenderSceneTestDriver();
+    auto* mesh = CreateSingleMesh();
+    std::vector<std::unique_ptr<NLS::Render::Resources::Mesh>> lodResources;
+    lodResources.emplace_back(CreateTriangleMesh(0u, {{0.0f, 0.0f, 0.0f}, 1.0f}));
+    mesh->SetLODResources(std::move(lodResources), {1.0f, 0.15f});
+    ASSERT_EQ(mesh->GetLODCount(), 2u);
+    auto* lodMesh = mesh->GetLODMesh(1u);
+    ASSERT_NE(lodMesh, nullptr);
+    ASSERT_NE(lodMesh, mesh);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl(
+        "App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    const auto addObject = [&](const char* name, const float z)
+    {
+        auto& actor = scene.CreateGameObject(name);
+        actor.GetTransform()->SetWorldPosition({0.0f, 0.0f, z});
+        auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+        auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+        meshFilter->SetMesh(mesh);
+        meshRenderer->FillWithMaterial(material);
+    };
+    addObject("LOD0First", -1.0f);
+    addObject("LOD1First", -10.0f);
+    addObject("LOD0Second", -1.0f);
+    addObject("LOD1Second", -10.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &material;
+    ASSERT_EQ(renderScene.Synchronize(scene, syncOptions).rebuiltCachedCommandCount, 4u);
+
+    NLS::Engine::Rendering::LargeSceneSettings settings;
+    settings.enableLOD = true;
+    settings.enableSpatialIndex = false;
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions view;
+    view.largeSceneSettings = &settings;
+    view.cameraPosition = {0.0f, 0.0f, 0.0f};
+    view.verticalFovRadians = 1.57079632679f;
+    const auto visible = renderScene.GatherVisibleCommands(view);
+
+    ASSERT_EQ(visible.opaques.size(), 2u)
+        << "Resolved LOD meshes must sort into contiguous runs before dynamic instancing.";
+    uint64_t baseMeshToken = NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidOpaqueSortToken;
+    uint64_t lodMeshToken = NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidOpaqueSortToken;
+    for (const auto& entry : visible.opaques)
+    {
+        EXPECT_EQ(ResolveVisibleInstanceCount(entry.second), 2u);
+        NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+        ASSERT_TRUE(entry.second.TryGetDescriptor(descriptor));
+        EXPECT_NE(
+            descriptor.opaqueSortToken,
+            NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidOpaqueSortToken);
+        if (entry.second.mesh == mesh)
+            baseMeshToken = descriptor.opaqueSortToken;
+        else if (entry.second.mesh == lodMesh)
+            lodMeshToken = descriptor.opaqueSortToken;
+        else
+            ADD_FAILURE() << "Unexpected resolved LOD mesh.";
+    }
+    EXPECT_NE(baseMeshToken, NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidOpaqueSortToken);
+    EXPECT_NE(lodMeshToken, NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidOpaqueSortToken);
+    EXPECT_NE(baseMeshToken, lodMeshToken);
+
+    const auto stats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    EXPECT_EQ(stats.rawVisibleObjectCount, 4u);
+    EXPECT_EQ(stats.submittedSceneDrawCount, 2u);
+    EXPECT_EQ(stats.opaqueSortTokenHitCount, 4u);
+
+    delete mesh;
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 

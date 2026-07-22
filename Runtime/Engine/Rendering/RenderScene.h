@@ -355,6 +355,7 @@ namespace NLS::Engine::Rendering
 			NLS::Render::Resources::Mesh* mesh = nullptr;
 			NLS::Render::Resources::Material* material = nullptr;
 			uint64_t meshContentRevision = 0u;
+			uint64_t meshLODRevisionDigest = 0u;
 			uint64_t materialInstanceId = 0u;
 			uint64_t materialParameterRevision = 0u;
 			uint64_t materialRenderStateRevision = 0u;
@@ -377,6 +378,7 @@ namespace NLS::Engine::Rendering
 				uint64_t meshFilterRenderRevision = 0u;
 				uint64_t meshRendererRenderRevision = 0u;
 				uint64_t meshContentRevision = 0u;
+				uint64_t meshLODRevisionDigest = 0u;
 				uint64_t materialInstanceId = 0u;
 				uint64_t materialParameterRevision = 0u;
 				uint64_t materialRenderStateRevision = 0u;
@@ -392,8 +394,16 @@ namespace NLS::Engine::Rendering
 
 		struct CachedCommandSlot
 		{
+			struct OpaqueSortTokenEntry
+			{
+				NLS::Render::Resources::Mesh* mesh = nullptr;
+				uint64_t meshContentRevision = 0u;
+				uint64_t token = (std::numeric_limits<uint64_t>::max)();
+			};
+
 			CachedCommandInputStamp stamp;
 			RenderCachedDrawCommand command;
+			std::vector<OpaqueSortTokenEntry> opaqueSortTokensByLOD;
 			bool valid = false;
 		};
 
@@ -480,6 +490,8 @@ namespace NLS::Engine::Rendering
 			CachedCommandSlot& slot,
 			const CachedCommandInputStamp& stamp,
 			RenderSceneSyncStats& stats);
+		[[nodiscard]] uint64_t GetMeshLODRevisionDigestForSynchronization(
+			const NLS::Render::Resources::Mesh& mesh) const;
 		[[nodiscard]] bool IsPrimitiveVisible(
 			const RenderPrimitive& primitive,
 			const RenderSceneVisibilityOptions& options) const;
@@ -547,6 +559,10 @@ namespace NLS::Engine::Rendering
 		size_t m_livePrimitiveCount = 0u;
 		uint64_t m_lastSceneFastAccessRevision = 0u;
 		std::optional<SceneSynchronizationStamp> m_lastSceneSynchronizationStamp;
+		uint64_t m_lastMeshMutationEpoch = 0u;
+		uint64_t m_lastMaterialMutationEpoch = 0u;
+		mutable std::unordered_map<const NLS::Render::Resources::Mesh*, uint64_t>
+			m_syncMeshLODRevisionDigestCache;
 		uint64_t m_nextCachedCommandBuildSerial = 1u;
 		uint64_t m_cachedCommandBuildCount = 0u;
 		uint64_t m_opaqueSortTokenBuildCount = 0u;

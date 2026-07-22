@@ -112,6 +112,24 @@ namespace
 			drawable.vertexCount);
 	}
 
+	uint64_t BuildMeshLODRevisionDigest(const NLS::Render::Resources::Mesh& mesh)
+	{
+		constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
+		auto digest = HashOpaqueSortTokenComponent(kFnvOffsetBasis, mesh.GetLODCount());
+		for (uint32_t lodIndex = 0u; lodIndex < mesh.GetLODCount(); ++lodIndex)
+		{
+			const auto* lodMesh = mesh.GetLODMesh(lodIndex);
+			digest = HashOpaqueSortTokenComponent(digest, reinterpret_cast<uintptr_t>(lodMesh));
+			digest = HashOpaqueSortTokenComponent(
+				digest,
+				lodMesh != nullptr ? lodMesh->GetInstanceId() : 0u);
+			digest = HashOpaqueSortTokenComponent(
+				digest,
+				lodMesh != nullptr ? lodMesh->GetContentRevision() : 0u);
+		}
+		return digest;
+	}
+
 	bool OpaqueDrawStateMatches(
 		const NLS::Render::Entities::Drawable& lhs,
 		const NLS::Render::Entities::Drawable& rhs)
@@ -759,6 +777,8 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_livePrimitiveCount(other.m_livePrimitiveCount),
 	  m_lastSceneFastAccessRevision(other.m_lastSceneFastAccessRevision),
 	  m_lastSceneSynchronizationStamp(other.m_lastSceneSynchronizationStamp),
+	  m_lastMeshMutationEpoch(other.m_lastMeshMutationEpoch),
+	  m_lastMaterialMutationEpoch(other.m_lastMaterialMutationEpoch),
 	  m_nextCachedCommandBuildSerial(other.m_nextCachedCommandBuildSerial),
 	  m_cachedCommandBuildCount(other.m_cachedCommandBuildCount),
 	  m_opaqueSortTokenBuildCount(other.m_opaqueSortTokenBuildCount),
@@ -793,6 +813,9 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 	m_livePrimitiveCount = other.m_livePrimitiveCount;
 	m_lastSceneFastAccessRevision = other.m_lastSceneFastAccessRevision;
 	m_lastSceneSynchronizationStamp = other.m_lastSceneSynchronizationStamp;
+	m_lastMeshMutationEpoch = other.m_lastMeshMutationEpoch;
+	m_lastMaterialMutationEpoch = other.m_lastMaterialMutationEpoch;
+	m_syncMeshLODRevisionDigestCache.clear();
 	m_nextCachedCommandBuildSerial = other.m_nextCachedCommandBuildSerial;
 	m_cachedCommandBuildCount = other.m_cachedCommandBuildCount;
 	m_opaqueSortTokenBuildCount = other.m_opaqueSortTokenBuildCount;
@@ -825,6 +848,9 @@ void RenderScene::ResetMovedFromState() noexcept
 	m_livePrimitiveCount = 0u;
 	m_lastSceneFastAccessRevision = 0u;
 	m_lastSceneSynchronizationStamp.reset();
+	m_lastMeshMutationEpoch = 0u;
+	m_lastMaterialMutationEpoch = 0u;
+	m_syncMeshLODRevisionDigestCache.clear();
 	m_nextCachedCommandBuildSerial = 1u;
 	m_cachedCommandBuildCount = 0u;
 	m_opaqueSortTokenBuildCount = 0u;
@@ -850,6 +876,7 @@ bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputSt
 	return mesh == other.mesh &&
 		material == other.material &&
 		meshContentRevision == other.meshContentRevision &&
+		meshLODRevisionDigest == other.meshLODRevisionDigest &&
 		materialInstanceId == other.materialInstanceId &&
 		materialParameterRevision == other.materialParameterRevision &&
 		materialRenderStateRevision == other.materialRenderStateRevision &&
@@ -869,6 +896,7 @@ bool RenderScene::PrimitiveInputStamp::operator==(const PrimitiveInputStamp& oth
 			meshFilterRenderRevision == other.meshFilterRenderRevision &&
 			meshRendererRenderRevision == other.meshRendererRenderRevision &&
 			meshContentRevision == other.meshContentRevision &&
+			meshLODRevisionDigest == other.meshLODRevisionDigest &&
 			materialInstanceId == other.materialInstanceId &&
 			materialParameterRevision == other.materialParameterRevision &&
 				materialRenderStateRevision == other.materialRenderStateRevision &&
@@ -887,8 +915,11 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	const auto syncStart = std::chrono::steady_clock::now();
 	RenderSceneSyncStats stats;
 	RenderSceneDeclaredTextureLookupCache declaredTextureCache;
+	m_syncMeshLODRevisionDigestCache.clear();
 	m_lastDirtySyncHandles.clear();
 	m_lastRemovedHandles.clear();
+	const auto meshMutationEpoch = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
+	const auto materialMutationEpoch = NLS::Render::Resources::Material::GetGlobalMutationEpoch();
 	const auto& fastAccess = scene.GetFastAccessComponents();
 	const auto fastAccessRevision = scene.GetFastAccessComponentsRevision();
 	const bool fastAccessMembershipChanged =
@@ -899,7 +930,9 @@ RenderSceneSyncStats RenderScene::Synchronize(
 		!scene.IsPlaying() &&
 		!fastAccessMembershipChanged &&
 		m_lastSceneSynchronizationStamp.has_value() &&
-		*m_lastSceneSynchronizationStamp == synchronizationStamp;
+		*m_lastSceneSynchronizationStamp == synchronizationStamp &&
+		m_lastMeshMutationEpoch == meshMutationEpoch &&
+		m_lastMaterialMutationEpoch == materialMutationEpoch;
 
 	std::unordered_map<Components::MeshRenderer*, NLS::InstanceID> liveMeshRenderers;
 	if (fastAccessMembershipChanged)
@@ -956,6 +989,8 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	}
 	m_lastSceneFastAccessRevision = fastAccessRevision;
 	m_lastSceneSynchronizationStamp = synchronizationStamp;
+	m_lastMeshMutationEpoch = meshMutationEpoch;
+	m_lastMaterialMutationEpoch = materialMutationEpoch;
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshSpatialIndex");
 		RefreshSpatialIndex(options);
@@ -1141,6 +1176,17 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 				? visibility.selectedLODByPrimitive[primitiveIndex]
 				: 0u;
 			command.mesh = command.mesh->GetLODMesh(selectedLOD);
+			command.opaqueSortToken = EngineDrawableDescriptor::kInvalidOpaqueSortToken;
+			if (selectedLOD < slot.opaqueSortTokensByLOD.size())
+			{
+				const auto& tokenEntry = slot.opaqueSortTokensByLOD[selectedLOD];
+				if (tokenEntry.mesh == command.mesh &&
+					command.mesh != nullptr &&
+					tokenEntry.meshContentRevision == command.mesh->GetContentRevision())
+				{
+					command.opaqueSortToken = tokenEntry.token;
+				}
+			}
 			AppendVisibleDrawable(output, primitive, command, options);
 			++m_lastDrawCallOptimizationStats.rawVisibleObjectCount;
 			++m_lastLargeSceneTelemetry.rawVisibleDrawCount;
@@ -2016,6 +2062,9 @@ RenderScene::PrimitiveInputStamp RenderScene::BuildPrimitiveInputStamp(
 	stamp.meshRendererRenderRevision = meshRenderer.GetRenderRevision();
 		stamp.mesh = stamp.meshFilter != nullptr ? stamp.meshFilter->ResolveMesh() : primitive.mesh;
 		stamp.meshContentRevision = stamp.mesh != nullptr ? stamp.mesh->GetContentRevision() : 0u;
+		stamp.meshLODRevisionDigest = stamp.mesh != nullptr
+			? GetMeshLODRevisionDigestForSynchronization(*stamp.mesh)
+			: 0u;
 		stamp.requireExplicitMaterialTextures = options.requireExplicitMaterialTextures;
 		stamp.allowDefaultMaterialForUnresolvedExplicitMaterials =
 			options.allowDefaultMaterialForUnresolvedExplicitMaterials;
@@ -2157,6 +2206,7 @@ RenderScene::CachedCommandInputStamp RenderScene::BuildCommandInputStamp(
 	stamp.mesh = &mesh;
 	stamp.material = &material;
 	stamp.meshContentRevision = mesh.GetContentRevision();
+	stamp.meshLODRevisionDigest = GetMeshLODRevisionDigestForSynchronization(mesh);
 	stamp.materialInstanceId = material.GetInstanceId();
 	stamp.materialParameterRevision = material.GetParameterRevision();
 	stamp.materialRenderStateRevision = material.GetRenderStateRevision();
@@ -2177,23 +2227,51 @@ void RenderScene::RebuildCachedCommand(
 	slot.command.primitiveMode = stamp.primitiveMode;
 	slot.command.buildSerial = m_nextCachedCommandBuildSerial++;
 	slot.command.opaqueSortToken = EngineDrawableDescriptor::kInvalidOpaqueSortToken;
+	slot.opaqueSortTokensByLOD.clear();
 	if (slot.command.material != nullptr &&
 		!slot.command.material->IsBlendable() &&
 		!slot.command.material->IsDecal())
 	{
-		slot.command.opaqueSortToken = BuildOpaqueDrawSortToken(
-			slot.command.mesh,
-			slot.command.material,
-			slot.command.stateMask,
-			slot.command.primitiveMode,
-			0u,
-			0u);
-		++m_opaqueSortTokenBuildCount;
-		++stats.rebuiltOpaqueSortTokenCount;
+		const auto lodCount = slot.command.mesh != nullptr
+			? slot.command.mesh->GetLODCount()
+			: 0u;
+		slot.opaqueSortTokensByLOD.reserve(lodCount);
+		for (uint32_t lodIndex = 0u; lodIndex < lodCount; ++lodIndex)
+		{
+			auto* lodMesh = slot.command.mesh->GetLODMesh(lodIndex);
+			const auto token = BuildOpaqueDrawSortToken(
+				lodMesh,
+				slot.command.material,
+				slot.command.stateMask,
+				slot.command.primitiveMode,
+				0u,
+				0u);
+			slot.opaqueSortTokensByLOD.push_back({
+				lodMesh,
+				lodMesh != nullptr ? lodMesh->GetContentRevision() : 0u,
+				token
+			});
+			++m_opaqueSortTokenBuildCount;
+			++stats.rebuiltOpaqueSortTokenCount;
+		}
+		if (!slot.opaqueSortTokensByLOD.empty())
+			slot.command.opaqueSortToken = slot.opaqueSortTokensByLOD.front().token;
 	}
 	slot.valid = true;
 	++m_cachedCommandBuildCount;
 	++stats.rebuiltCachedCommandCount;
+}
+
+uint64_t RenderScene::GetMeshLODRevisionDigestForSynchronization(
+	const NLS::Render::Resources::Mesh& mesh) const
+{
+	const auto found = m_syncMeshLODRevisionDigestCache.find(&mesh);
+	if (found != m_syncMeshLODRevisionDigestCache.end())
+		return found->second;
+
+	const auto digest = BuildMeshLODRevisionDigest(mesh);
+	m_syncMeshLODRevisionDigestCache.emplace(&mesh, digest);
+	return digest;
 }
 
 bool RenderScene::IsPrimitiveVisible(

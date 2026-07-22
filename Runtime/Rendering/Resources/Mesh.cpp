@@ -26,6 +26,17 @@ uint64_t NextMeshInstanceId()
 	return instanceId;
 }
 
+std::atomic<uint64_t>& MeshMutationEpoch()
+{
+	static std::atomic<uint64_t> epoch { 1u };
+	return epoch;
+}
+
+void TouchMeshMutationEpoch()
+{
+	MeshMutationEpoch().fetch_add(1u, std::memory_order_relaxed);
+}
+
 NLS::Render::RHI::MemoryUsage ToBufferMemoryUsage(const MeshBufferUploadMode uploadMode)
 {
 	return uploadMode == MeshBufferUploadMode::CpuToGpu
@@ -56,6 +67,7 @@ Mesh::Mesh(
 	ComputeBoundingSphere(vertices);
 	ComputeBounds(vertices);
 	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
+	TouchMeshMutationEpoch();
 }
 
 Mesh::Mesh(
@@ -73,6 +85,12 @@ Mesh::Mesh(
 {
 	CreateBuffers(vertices, indices, uploadMode);
 	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
+	TouchMeshMutationEpoch();
+}
+
+Mesh::~Mesh()
+{
+	TouchMeshMutationEpoch();
 }
 
 uint32_t Mesh::GetVertexCount() const
@@ -131,6 +149,11 @@ uint64_t Mesh::GetContentRevision() const
 	return m_contentRevision;
 }
 
+uint64_t Mesh::GetGlobalMutationEpoch() noexcept
+{
+	return MeshMutationEpoch().load(std::memory_order_relaxed);
+}
+
 uint32_t Mesh::GetLODCount() const
 {
 	return static_cast<uint32_t>(m_lodResources.size() + 1u);
@@ -166,6 +189,7 @@ void Mesh::SetLODResources(
 		m_lodScreenSizes[0] = 1.0f;
 	m_minLOD = std::min(minLOD, GetLODCount() - 1u);
 	TouchContentRevision();
+	TouchMeshMutationEpoch();
 }
 
 uint32_t Mesh::GetMinLOD() const
@@ -188,12 +212,30 @@ void Mesh::Reload(
 	CreateBuffers(vertices, indices, uploadMode);
 	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
 	TouchContentRevision();
+	TouchMeshMutationEpoch();
 }
 
 bool Mesh::UpdateVertices(
 	const std::vector<Geometry::Vertex>& vertices,
 	const Geometry::BoundingSphere& boundingSphere,
 	const uint32_t destinationVertexOffset)
+{
+	return UpdateVerticesInternal(vertices, boundingSphere, destinationVertexOffset, true);
+}
+
+bool Mesh::UpdateVerticesTransient(
+	const std::vector<Geometry::Vertex>& vertices,
+	const Geometry::BoundingSphere& boundingSphere,
+	const uint32_t destinationVertexOffset)
+{
+	return UpdateVerticesInternal(vertices, boundingSphere, destinationVertexOffset, false);
+}
+
+bool Mesh::UpdateVerticesInternal(
+	const std::vector<Geometry::Vertex>& vertices,
+	const Geometry::BoundingSphere& boundingSphere,
+	const uint32_t destinationVertexOffset,
+	const bool invalidateSceneResources)
 {
 	const auto destinationEnd = static_cast<size_t>(destinationVertexOffset) + vertices.size();
 	if (destinationEnd > m_vertexCount || m_vertexBuffer == nullptr || m_indexBuffer != nullptr)
@@ -208,6 +250,8 @@ bool Mesh::UpdateVertices(
 	else
 		ExpandBoundsForUpdatedVertices(vertices);
 	TouchContentRevision();
+	if (invalidateSceneResources)
+		TouchMeshMutationEpoch();
 	return true;
 }
 

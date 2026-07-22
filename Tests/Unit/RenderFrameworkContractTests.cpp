@@ -1126,6 +1126,7 @@ TEST(RenderFrameworkContractTests, MeshContentRevisionChangesWhenGeometryBuffers
         {{0.0f, 0.0f, 0.0f}, 1.0f});
 
     const auto initialRevision = mesh.GetContentRevision();
+    const auto mutationEpochBeforeUpdate = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
 
     vertices[0].position[0] = 2.0f;
     ASSERT_TRUE(mesh.UpdateVertices(
@@ -1134,6 +1135,18 @@ TEST(RenderFrameworkContractTests, MeshContentRevisionChangesWhenGeometryBuffers
     const auto updatedRevision = mesh.GetContentRevision();
     EXPECT_GT(updatedRevision, initialRevision)
         << "Selection-outline mask reuse must be able to detect in-place mesh buffer updates.";
+    EXPECT_GT(NLS::Render::Resources::Mesh::GetGlobalMutationEpoch(), mutationEpochBeforeUpdate)
+        << "Scene mesh updates must invalidate trusted scene resource snapshots.";
+
+    const auto mutationEpochBeforeTransientUpdate = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
+    vertices[0].position[0] = 3.0f;
+    ASSERT_TRUE(mesh.UpdateVerticesTransient(
+        vertices,
+        {{0.0f, 0.0f, 0.0f}, 3.0f}));
+    const auto transientRevision = mesh.GetContentRevision();
+    EXPECT_GT(transientRevision, updatedRevision);
+    EXPECT_EQ(NLS::Render::Resources::Mesh::GetGlobalMutationEpoch(), mutationEpochBeforeTransientUpdate)
+        << "Renderer-owned transient geometry must not invalidate unrelated scene fast paths.";
 
     std::vector<uint32_t> indices{0u, 1u, 2u};
     mesh.Reload(
@@ -1142,8 +1155,10 @@ TEST(RenderFrameworkContractTests, MeshContentRevisionChangesWhenGeometryBuffers
         0u,
         NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
         {{0.0f, 0.0f, 0.0f}, 3.0f});
-    EXPECT_GT(mesh.GetContentRevision(), updatedRevision)
+    EXPECT_GT(mesh.GetContentRevision(), transientRevision)
         << "Asset hot reload can keep the Mesh pointer stable while replacing geometry content.";
+    EXPECT_GT(NLS::Render::Resources::Mesh::GetGlobalMutationEpoch(), mutationEpochBeforeUpdate)
+        << "Asset hot reload must invalidate trusted scene resource snapshots.";
 }
 
 TEST(RenderFrameworkContractTests, StandaloneFrameFenceWaitUsesBoundedDriverPolicy)

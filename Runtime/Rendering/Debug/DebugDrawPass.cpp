@@ -381,7 +381,7 @@ Resources::Mesh* DebugDrawPass::UploadLineVertices(const Geometry::BoundingSpher
         return slot.mesh.get();
     }
 
-    if (!slot.mesh->UpdateVertices(m_lineBatchVertices, boundingSphere))
+    if (!slot.mesh->UpdateVerticesTransient(m_lineBatchVertices, boundingSphere))
     {
         auto reloadVertices = m_lineBatchVertices;
         reloadVertices.resize(slot.capacity);

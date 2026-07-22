@@ -198,6 +198,8 @@ uint32_t UIntFromImporterSettings(
 
     try
     {
+        if (found->second.empty() || found->second.front() == '-')
+            return fallback;
         return static_cast<uint32_t>(std::stoul(found->second));
     }
     catch (...)

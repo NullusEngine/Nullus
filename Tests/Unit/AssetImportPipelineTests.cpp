@@ -10162,6 +10162,15 @@ TEST(AssetImportPipelineTests, AssetPropertiesLODSettingsStoreInvalidSelectionAs
     EXPECT_EQ(serialized.at("LOD_GROUP"), "None");
 }
 
+TEST(AssetImportPipelineTests, ModelImporterSettingsRejectNegativeMinLOD)
+{
+    const std::map<std::string, std::string> serialized {{"MIN_LOD", "-7"}};
+
+    const auto parsed = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(serialized);
+
+    EXPECT_EQ(parsed.minLOD, 0u);
+}
+
 TEST(AssetImportPipelineTests, AssetPropertiesModelTextureReportRowsHideMissingStaleAndMalformedReports)
 {
     NLS::Core::Assets::AssetMeta modelMeta;

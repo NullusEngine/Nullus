@@ -498,7 +498,6 @@ void Editor::Core::Application::Run()
             TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true);
             const auto frameEnd = std::chrono::steady_clock::now();
             const auto completedAfter = m_editor->GetValidationCameraForwardCompletedFrames();
-            FlushDeferredResizeTick();
 
             if (completedAfter <= completedBefore)
                 continue;

@@ -124,6 +124,26 @@ namespace
         EXPECT_NE(mainSource.find("return app->DidRunSuccessfully();"), std::string::npos);
     }
 
+    TEST(EditorCameraPerformanceBenchmarkTests, RuntimeDoesNotAdvanceCameraOutsideTimedBenchmarkFrame)
+    {
+        const auto applicationSource = ReadRepositoryTextFile("Project/Editor/Core/Application.cpp");
+        const auto benchmarkStart = applicationSource.find(
+            "if (!diagnostics.editorCameraPerformanceOutput.empty())");
+        const auto normalLoopStart = applicationSource.find(
+            "Time::Clock clock;",
+            benchmarkStart);
+
+        ASSERT_NE(benchmarkStart, std::string::npos);
+        ASSERT_NE(normalLoopStart, std::string::npos);
+        const auto benchmarkLoop = applicationSource.substr(
+            benchmarkStart,
+            normalLoopStart - benchmarkStart);
+        const auto normalLoop = applicationSource.substr(normalLoopStart);
+
+        EXPECT_EQ(benchmarkLoop.find("FlushDeferredResizeTick();"), std::string::npos);
+        EXPECT_NE(normalLoop.find("FlushDeferredResizeTick();"), std::string::npos);
+    }
+
     TEST(EditorCameraPerformanceBenchmarkTests, ContextPropagatesAllBenchmarkOverrides)
     {
         const auto contextHeader = ReadRepositoryTextFile("Project/Editor/Core/Context.h");

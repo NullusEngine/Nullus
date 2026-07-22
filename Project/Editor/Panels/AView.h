@@ -119,6 +119,7 @@ namespace NLS::Editor::Panels
 		* Returns the frame info snapshot published after this view's latest successful render.
 		*/
 		const std::optional<Render::Data::FrameInfo>& GetLastRenderedFrameInfoSnapshot() const;
+		bool WasLastRenderFramePublished() const;
 
 		/**
 		* Returns true if the given mouse position is inside the rendered view content.
@@ -213,5 +214,6 @@ namespace NLS::Editor::Panels
         bool m_resizedViewThisFrame = false;
         bool m_viewportImageAvailableForInput = false;
         bool m_skipNextRenderFrame = false;
+		bool m_lastRenderFramePublished = false;
 		};
 }

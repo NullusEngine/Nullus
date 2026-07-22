@@ -156,6 +156,12 @@ private:
             settings.editorValidationSelectGameObject = m_diagnosticsOverride->editorValidationSelectGameObject;
         if (m_diagnosticsOverride->editorValidationCameraForwardFrames != 0u)
             settings.editorValidationCameraForwardFrames = m_diagnosticsOverride->editorValidationCameraForwardFrames;
+        if (!m_diagnosticsOverride->editorCameraPerformanceOutput.empty())
+        {
+            settings.editorCameraPerformanceOutput = m_diagnosticsOverride->editorCameraPerformanceOutput;
+            settings.editorCameraPerformanceWarmupFrames = m_diagnosticsOverride->editorCameraPerformanceWarmupFrames;
+            settings.editorCameraPerformanceFrames = m_diagnosticsOverride->editorCameraPerformanceFrames;
+        }
         if (!m_diagnosticsOverride->editorValidationCreateAsset.empty())
             settings.editorValidationCreateAsset = m_diagnosticsOverride->editorValidationCreateAsset;
         if (!m_diagnosticsOverride->editorValidationAssetBrowserFolder.empty())

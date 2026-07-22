@@ -14,6 +14,12 @@ namespace
     using NLS::Editor::Core::EditorCameraPerformanceMetadata;
     using NLS::Editor::Core::EditorCameraPerformanceTelemetry;
 
+    std::string ReadRepositoryTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(stream)), {});
+    }
+
     TEST(EditorCameraPerformanceBenchmarkTests, UsesMeasuredSamplesAndNearestRankPercentiles)
     {
         const std::vector<double> samples { 10.0, 20.0, 30.0, 40.0, 50.0 };
@@ -85,5 +91,44 @@ namespace
         EXPECT_NE(body.find("\"meanFps\""), std::string::npos);
         EXPECT_NE(body.find("\"p99FrameMs\""), std::string::npos);
         EXPECT_NE(body.find("\"telemetryDelta\""), std::string::npos);
+    }
+
+    TEST(EditorCameraPerformanceBenchmarkTests, RuntimeTimesOnlyCompletedCameraStepsAndWritesAfterSampling)
+    {
+        const auto applicationSource = ReadRepositoryTextFile("Project/Editor/Core/Application.cpp");
+        const auto editorHeader = ReadRepositoryTextFile("Project/Editor/Core/Editor.h");
+        const auto viewHeader = ReadRepositoryTextFile("Project/Editor/Panels/AView.h");
+        const auto mainSource = ReadRepositoryTextFile("Project/Editor/Main.cpp");
+
+        const auto completedBefore = applicationSource.find("GetValidationCameraForwardCompletedFrames()");
+        const auto frameStart = applicationSource.find("const auto frameStart = std::chrono::steady_clock::now()");
+        const auto tick = applicationSource.find("TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true)");
+        const auto frameEnd = applicationSource.find("const auto frameEnd = std::chrono::steady_clock::now()");
+        const auto addSample = applicationSource.find("m_cameraPerformanceFrameMs.push_back");
+        const auto writeSummary = applicationSource.find("WriteEditorCameraPerformanceSummaryJson");
+
+        ASSERT_NE(completedBefore, std::string::npos);
+        ASSERT_NE(frameStart, std::string::npos);
+        ASSERT_NE(tick, std::string::npos);
+        ASSERT_NE(frameEnd, std::string::npos);
+        ASSERT_NE(addSample, std::string::npos);
+        ASSERT_NE(writeSummary, std::string::npos);
+        EXPECT_LT(completedBefore, frameStart);
+        EXPECT_LT(frameStart, tick);
+        EXPECT_LT(tick, frameEnd);
+        EXPECT_LT(frameEnd, addSample);
+        EXPECT_LT(addSample, writeSummary);
+        EXPECT_NE(editorHeader.find("GetValidationCameraForwardCompletedFrames() const"), std::string::npos);
+        EXPECT_NE(editorHeader.find("WasLastSceneViewThreadedFramePublished() const"), std::string::npos);
+        EXPECT_NE(viewHeader.find("WasLastRenderFramePublished() const"), std::string::npos);
+        EXPECT_NE(mainSource.find("return app->DidRunSuccessfully();"), std::string::npos);
+    }
+
+    TEST(EditorCameraPerformanceBenchmarkTests, ContextPropagatesAllBenchmarkOverrides)
+    {
+        const auto contextHeader = ReadRepositoryTextFile("Project/Editor/Core/Context.h");
+        EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceOutput"), std::string::npos);
+        EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceWarmupFrames"), std::string::npos);
+        EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceFrames"), std::string::npos);
     }
 }

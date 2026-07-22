@@ -14,6 +14,11 @@ namespace NLS::Editor::Core
         bool vsync = false;
         uint32_t warmupFrameCount = 30u;
         uint32_t requestedFrameCount = 300u;
+        std::string projectPath;
+        std::string scenePath;
+        uint32_t viewportWidth = 0u;
+        uint32_t viewportHeight = 0u;
+        double cameraForwardStep = 0.1;
     };
 
     struct EditorCameraPerformanceTelemetry

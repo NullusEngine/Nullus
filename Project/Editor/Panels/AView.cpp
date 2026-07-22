@@ -244,6 +244,7 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_height)
 {
 	NLS_PROFILE_NAMED_SCOPE(name.c_str());
+    m_lastRenderFramePublished = false;
     const bool logStartupRenderStages = []()
     {
         static bool shouldLog = true;
@@ -443,6 +444,7 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
                 latestRetiredFrameId = beforeTelemetry.latestRetiredFrameId;
             }
         }
+        m_lastRenderFramePublished = framePublished;
         logStartupRenderStage("ResolveAfterTelemetry");
         const bool outputFrameRenderedSynchronously =
             rendererFrameActive &&
@@ -475,6 +477,11 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
         m_staticFrameCacheValid = ShouldUseStaticFrameCache();
         logStartupRenderStage("CommitStaticFrameCache");
 	}
+}
+
+bool Editor::Panels::AView::WasLastRenderFramePublished() const
+{
+    return m_lastRenderFramePublished;
 }
 
 void Editor::Panels::AView::DrawFrame()

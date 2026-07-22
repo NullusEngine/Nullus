@@ -1171,6 +1171,21 @@ void Editor::Core::Editor::UpdateValidationSceneCameraMotion()
     }
 }
 
+uint32_t Editor::Core::Editor::GetValidationCameraForwardCompletedFrames() const
+{
+    return m_validationCameraForwardCompletedFrames;
+}
+
+bool Editor::Core::Editor::WasLastSceneViewThreadedFramePublished() const
+{
+    return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").WasLastRenderFramePublished();
+}
+
+std::pair<uint16_t, uint16_t> Editor::Core::Editor::GetSceneViewSafeSize() const
+{
+    return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").GetSafeSize();
+}
+
 void Editor::Core::Editor::HandleGlobalShortcuts()
 {
     m_shortcutService.ExecutePressedShortcut(

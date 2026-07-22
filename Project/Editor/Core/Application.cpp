@@ -18,6 +18,7 @@
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Settings/EditorSettings.h"
 #include "Windowing/Inputs/EMouseButton.h"
 #include "Windowing/Inputs/EMouseButtonState.h"
@@ -33,6 +34,8 @@ namespace
 {
 constexpr auto kStartupSceneRendererResourceProgressLogInterval = std::chrono::seconds(1);
 constexpr auto kStartupSceneRendererResourceProgressDialogInterval = std::chrono::milliseconds(250);
+constexpr float kEditorCameraPerformanceFixedDeltaSeconds = 1.0f / 60.0f;
+constexpr double kEditorCameraPerformanceForwardStep = 0.1;
 
 class ScopedBoolFlag final
 {
@@ -387,6 +390,11 @@ bool Editor::Core::Application::DidShowEditorWindow() const
         m_context.window->IsVisible();
 }
 
+bool Editor::Core::Application::DidRunSuccessfully() const
+{
+    return m_runSucceeded;
+}
+
 bool Editor::Core::Application::WaitForStartupSceneRendererResources()
 {
     const auto initialPendingCounts = GetStartupSceneRendererResourcePendingCounts();
@@ -476,6 +484,64 @@ bool Editor::Core::Application::WaitForStartupSceneRendererResources()
 
 void Editor::Core::Application::Run()
 {
+    const auto& diagnostics = m_context.GetDiagnosticsSettings();
+    if (!diagnostics.editorCameraPerformanceOutput.empty())
+    {
+        const uint32_t warmupFrames = diagnostics.editorCameraPerformanceWarmupFrames;
+        const uint32_t measuredFrames = diagnostics.editorCameraPerformanceFrames;
+        const uint32_t requestedFrames = warmupFrames + measuredFrames;
+
+        while (IsRunning())
+        {
+            const auto completedBefore = m_editor->GetValidationCameraForwardCompletedFrames();
+            const auto frameStart = std::chrono::steady_clock::now();
+            TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true);
+            const auto frameEnd = std::chrono::steady_clock::now();
+            const auto completedAfter = m_editor->GetValidationCameraForwardCompletedFrames();
+            FlushDeferredResizeTick();
+
+            if (completedAfter <= completedBefore)
+                continue;
+
+            if (completedAfter == warmupFrames)
+            {
+                m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry();
+                m_cameraPerformanceTelemetryBeforeCaptured = true;
+            }
+            else if (completedAfter > warmupFrames)
+            {
+                if (!m_cameraPerformanceTelemetryBeforeCaptured)
+                {
+                    m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry();
+                    m_cameraPerformanceTelemetryBeforeCaptured = true;
+                }
+                const double frameMs = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+                m_cameraPerformanceFrameMs.push_back(frameMs);
+                if (m_editor->WasLastSceneViewThreadedFramePublished())
+                    ++m_cameraPerformancePublishedCameraStepCount;
+            }
+
+            if (completedAfter >= requestedFrames)
+            {
+                m_runSucceeded = FinalizeCameraPerformanceBenchmark();
+                if (m_context.window != nullptr)
+                    m_context.window->SetShouldClose(true);
+                break;
+            }
+        }
+
+        if (m_cameraPerformanceFrameMs.size() != measuredFrames)
+        {
+            m_runSucceeded = false;
+            NLS_LOG_ERROR(
+                "Editor camera performance benchmark ended before all samples were collected: collected=" +
+                std::to_string(m_cameraPerformanceFrameMs.size()) +
+                " requested=" +
+                std::to_string(measuredFrames));
+        }
+        return;
+    }
+
     Time::Clock clock;
 
     while (IsRunning())
@@ -489,6 +555,75 @@ void Editor::Core::Application::Run()
             clock.Update();
         }
     }
+}
+
+Editor::Core::EditorCameraPerformanceTelemetry
+Editor::Core::Application::CaptureCameraPerformanceTelemetry() const
+{
+    EditorCameraPerformanceTelemetry result;
+    if (m_context.driver == nullptr)
+        return result;
+
+    const auto telemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*m_context.driver);
+    result.blockedPublishCount = telemetry.blockedPublishCount;
+    result.publishedFrameCount = telemetry.publishedFrameCount;
+    result.reservedSlotWaitCount = telemetry.reservedSlotWaitCount;
+    result.reservedSlotWaitTimeoutCount = telemetry.reservedSlotWaitTimeoutCount;
+    result.reservedSlotWaitTotalNs = telemetry.reservedSlotWaitTotalNs;
+    result.latestPublishedFrameId = telemetry.latestPublishedFrameId;
+    result.latestRetiredFrameId = telemetry.latestRetiredFrameId;
+    result.descriptorAllocationFailureCount = telemetry.descriptorAllocationFailures;
+    result.deviceLostCount = telemetry.deviceLostDetected ? 1u : 0u;
+    result.unsafeGpuQuarantineCount = telemetry.unsafeGpuWorkQuarantined ? 1u : 0u;
+    return result;
+}
+
+bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
+{
+    const auto& diagnostics = m_context.GetDiagnosticsSettings();
+    const auto telemetryAfter = CaptureCameraPerformanceTelemetry();
+    const auto [viewportWidth, viewportHeight] = m_editor->GetSceneViewSafeSize();
+
+    EditorCameraPerformanceMetadata metadata;
+#if defined(_DEBUG)
+    metadata.configuration = "Debug";
+#else
+    metadata.configuration = "Release";
+#endif
+    metadata.backend = m_context.driver != nullptr
+        ? std::string(Render::Settings::ToString(m_context.driver->GetActiveGraphicsBackend()))
+        : "none";
+    metadata.vsync = m_context.projectSettings.GetOrDefault<bool>("vsync", true);
+    metadata.warmupFrameCount = diagnostics.editorCameraPerformanceWarmupFrames;
+    metadata.requestedFrameCount = diagnostics.editorCameraPerformanceFrames;
+    metadata.projectPath = m_context.projectFilePath;
+    metadata.scenePath = m_context.sceneManager.GetCurrentSceneSourcePath();
+    metadata.viewportWidth = viewportWidth;
+    metadata.viewportHeight = viewportHeight;
+    metadata.cameraForwardStep = kEditorCameraPerformanceForwardStep;
+
+    const auto summary = BuildEditorCameraPerformanceSummary(
+        std::move(metadata),
+        m_cameraPerformanceFrameMs,
+        m_cameraPerformanceTelemetryBefore,
+        telemetryAfter,
+        m_cameraPerformancePublishedCameraStepCount);
+    std::string error;
+    if (!WriteEditorCameraPerformanceSummaryJson(
+        diagnostics.editorCameraPerformanceOutput,
+        summary,
+        &error))
+    {
+        NLS_LOG_ERROR("Editor camera performance benchmark write failed: " + error);
+        return false;
+    }
+
+    NLS_LOG_INFO(
+        "Editor camera performance benchmark finished: " +
+        diagnostics.editorCameraPerformanceOutput +
+        " measuredFrames=" +
+        std::to_string(summary.measuredFrameMs.size()));
+    return true;
 }
 
 void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)

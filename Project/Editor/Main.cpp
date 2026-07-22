@@ -155,7 +155,7 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
 	if (app)
 	{
 		app->Run();
-		return true;
+		return app->DidRunSuccessfully();
 	}
 	return false;
 }

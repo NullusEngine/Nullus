@@ -53,6 +53,12 @@ namespace NLS::Editor::Core
 			return *static_cast<T*>(m_panels[p_id].get());
 		}
 
+		template<typename T>
+		const T& GetPanelAs(const std::string& p_id) const
+		{
+			return *static_cast<const T*>(m_panels.at(p_id).get());
+		}
+
 		void DestroyPanels()
 		{
 			m_canvas.RemoveAllPanels();

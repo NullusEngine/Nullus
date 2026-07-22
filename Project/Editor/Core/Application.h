@@ -5,9 +5,11 @@
 #include <memory>
 #include <string>
 #include <optional>
+#include <vector>
 #include "Math/Vector2.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Core/EditorCameraPerformanceBenchmark.h"
 
 namespace NLS
 {
@@ -52,12 +54,15 @@ namespace NLS
 			bool IsRunning() const;
 			/** Returns true only after startup progress has shown the main editor window. */
 			bool DidShowEditorWindow() const;
+			bool DidRunSuccessfully() const;
 
 		private:
 			void RunEditorFrame(float deltaTime);
 			bool WaitForStartupSceneRendererResources();
 			void SyncPlatformSwapchainToFramebufferSize();
 			void PaceIdleFrameIfNeeded();
+			EditorCameraPerformanceTelemetry CaptureCameraPerformanceTelemetry() const;
+			bool FinalizeCameraPerformanceBenchmark();
 			bool m_isPollingEvents = false;
 			bool m_isResizeTicking = false;
 			bool m_isTicking = false;
@@ -69,6 +74,11 @@ namespace NLS
 			Maths::Vector2 m_lastNativeResizeTickSize;
 			bool m_logNextEditorFrameStages = false;
 			bool m_editorWindowShown = false;
+			bool m_runSucceeded = true;
+			bool m_cameraPerformanceTelemetryBeforeCaptured = false;
+			uint64_t m_cameraPerformancePublishedCameraStepCount = 0u;
+			std::vector<double> m_cameraPerformanceFrameMs;
+			EditorCameraPerformanceTelemetry m_cameraPerformanceTelemetryBefore;
 			Context m_context;
 			std::unique_ptr<Editor> m_editor;
 		};

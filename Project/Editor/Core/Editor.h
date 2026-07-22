@@ -72,6 +72,9 @@ public:
     void UpdateValidationSceneCameraMotion();
     void UpdateValidationTimelineTraceExport();
     void UpdateThumbnailTelemetrySummaryExport();
+    uint32_t GetValidationCameraForwardCompletedFrames() const;
+    bool WasLastSceneViewThreadedFramePublished() const;
+    std::pair<uint16_t, uint16_t> GetSceneViewSafeSize() const;
 
     /**
      * Update the current editor mode

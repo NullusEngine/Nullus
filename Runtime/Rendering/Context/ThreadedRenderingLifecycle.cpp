@@ -1494,9 +1494,11 @@ std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndexExclud
             {
                 return FindReservableSlotReadOnlyLocked(excludedSlotIndices) != nullptr;
             });
-        m_telemetry.reservedSlotWaitTotalNs += static_cast<uint64_t>(
+        const auto waitDurationNs = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - waitStart).count());
+        m_telemetry.reservedSlotWaitTotalNs += waitDurationNs;
+        m_telemetry.reservedSlotWaitMaxNs = std::max(m_telemetry.reservedSlotWaitMaxNs, waitDurationNs);
         if (!hasReusableSlot)
         {
             ++m_telemetry.reservedSlotWaitTimeoutCount;

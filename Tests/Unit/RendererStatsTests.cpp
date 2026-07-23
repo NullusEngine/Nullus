@@ -612,6 +612,7 @@ TEST(RendererStatsTests, RendererStatsReusesLastThreadedTelemetryWhenRefreshIsUn
     telemetry.reservedSlotWaitCount = 3u;
     telemetry.reservedSlotWaitTimeoutCount = 1u;
     telemetry.reservedSlotWaitTotalNs = 2400000u;
+    telemetry.reservedSlotWaitMaxNs = 1700000u;
     telemetry.publishState = NLS::Render::Data::FramePublishState::BackPressured;
     telemetry.stageSummary = NLS::Render::Data::ThreadedFrameStageSummary::Rhi;
     telemetry.retirementState = NLS::Render::Data::FrameRetirementState::Pending;
@@ -637,6 +638,7 @@ TEST(RendererStatsTests, RendererStatsReusesLastThreadedTelemetryWhenRefreshIsUn
     EXPECT_EQ(frameInfo.reservedSlotWaitCount, 3u);
     EXPECT_EQ(frameInfo.reservedSlotWaitTimeoutCount, 1u);
     EXPECT_EQ(frameInfo.reservedSlotWaitTotalNs, 2400000u);
+    EXPECT_EQ(frameInfo.reservedSlotWaitMaxNs, 1700000u);
     EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::BackPressured);
     EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Rhi);
     EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Pending);
@@ -771,6 +773,45 @@ TEST(RendererStatsTests, RendererStatsTracksObjectDataRevisionReuseCountersPerFr
     const auto& resetFrameInfo = stats.GetFrameInfo();
     EXPECT_EQ(resetFrameInfo.objectDataRevisionReuseHitCount, 0u);
     EXPECT_EQ(resetFrameInfo.objectDataRevisionReuseFallbackCount, 0u);
+}
+
+TEST(RendererStatsTests, RendererStatsKeepsCumulativeCameraOptimizationTelemetrySnapshot)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    stats.BeginFrame();
+    stats.RecordPreparedRecordedDrawStaticBaseCache(true);
+    stats.RecordPreparedRecordedDrawStaticBaseCache(false);
+    stats.RecordPreparedRecordedDrawStaticBaseFastPath(true);
+    stats.RecordObjectDataRevisionReuse(false);
+    stats.RecordDrawCallOptimizationStats({
+        .opaqueSortTokenHitCount = 4u,
+        .opaqueSortTokenRebuildCount = 2u,
+        .objectDataOverflowDroppedObjectCount = 1u
+    });
+    stats.EndFrame();
+
+    stats.BeginFrame();
+    stats.RecordPreparedRecordedDrawStaticBaseCache(true);
+    stats.RecordPreparedRecordedDrawStaticBaseFastPath(false);
+    stats.RecordObjectDataRevisionReuse(true);
+    stats.RecordDrawCallOptimizationStats({
+        .opaqueSortTokenHitCount = 3u,
+        .opaqueSortTokenRebuildCount = 1u,
+        .objectDataOverflowDroppedObjectCount = 5u
+    });
+    stats.EndFrame();
+
+    const auto& snapshot = stats.GetCumulativeFrameInfo();
+    EXPECT_EQ(snapshot.preparedRecordedDrawStaticBaseCacheHitCount, 2u);
+    EXPECT_EQ(snapshot.preparedRecordedDrawStaticBaseCacheMissCount, 1u);
+    EXPECT_EQ(snapshot.preparedRecordedDrawStaticBaseFastPathHitCount, 1u);
+    EXPECT_EQ(snapshot.preparedRecordedDrawStaticBaseFastPathMissCount, 1u);
+    EXPECT_EQ(snapshot.objectDataRevisionReuseHitCount, 1u);
+    EXPECT_EQ(snapshot.objectDataRevisionReuseFallbackCount, 1u);
+    EXPECT_EQ(snapshot.opaqueSortTokenHitCount, 7u);
+    EXPECT_EQ(snapshot.opaqueSortTokenRebuildCount, 3u);
+    EXPECT_EQ(snapshot.objectDataOverflowDroppedObjectCount, 6u);
 }
 
 TEST(RendererStatsTests, DrawCallOptimizationStatsDoesNotOverwriteThreadedTelemetry)

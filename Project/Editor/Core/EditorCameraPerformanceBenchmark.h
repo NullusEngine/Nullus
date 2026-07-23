@@ -28,6 +28,7 @@ namespace NLS::Editor::Core
         uint64_t reservedSlotWaitCount = 0u;
         uint64_t reservedSlotWaitTimeoutCount = 0u;
         uint64_t reservedSlotWaitTotalNs = 0u;
+        uint64_t reservedSlotWaitMaxNs = 0u;
         uint64_t latestPublishedFrameId = 0u;
         uint64_t latestRetiredFrameId = 0u;
         uint64_t preparedStaticBaseCacheHitCount = 0u;

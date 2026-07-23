@@ -127,6 +127,7 @@ namespace NLS::Render::Data
         uint64_t reservedSlotWaitCount = 0;
         uint64_t reservedSlotWaitTimeoutCount = 0;
         uint64_t reservedSlotWaitTotalNs = 0;
+        uint64_t reservedSlotWaitMaxNs = 0;
 		FramePublishState publishState = FramePublishState::Direct;
 		ThreadedFrameStageSummary stageSummary = ThreadedFrameStageSummary::Direct;
 		FrameRetirementState retirementState = FrameRetirementState::Direct;

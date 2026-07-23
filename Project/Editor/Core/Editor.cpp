@@ -1186,6 +1186,11 @@ std::pair<uint16_t, uint16_t> Editor::Core::Editor::GetSceneViewSafeSize() const
     return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").GetSafeSize();
 }
 
+const Render::Data::FrameInfo& Editor::Core::Editor::GetSceneViewCumulativeFrameInfo() const
+{
+    return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").GetRenderer().GetCumulativeFrameInfo();
+}
+
 void Editor::Core::Editor::HandleGlobalShortcuts()
 {
     m_shortcutService.ExecutePressedShortcut(

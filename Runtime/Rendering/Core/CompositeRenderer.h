@@ -78,6 +78,7 @@ public:
     bool HasDebugDrawService() const;
 
     const Data::FrameInfo& GetFrameInfo() const;
+    const Data::FrameInfo& GetCumulativeFrameInfo() const;
     bool IsFrameInfoValid() const;
     void ResetFrameStatistics();
     void FinalizeFrameStatistics();

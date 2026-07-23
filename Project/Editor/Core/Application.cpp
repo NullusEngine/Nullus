@@ -494,6 +494,11 @@ void Editor::Core::Application::Run()
         while (IsRunning())
         {
             const auto completedBefore = m_editor->GetValidationCameraForwardCompletedFrames();
+            if (completedBefore >= warmupFrames && !m_cameraPerformanceTelemetryBeforeCaptured)
+            {
+                m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry();
+                m_cameraPerformanceTelemetryBeforeCaptured = true;
+            }
             const auto frameStart = std::chrono::steady_clock::now();
             TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true);
             const auto frameEnd = std::chrono::steady_clock::now();
@@ -502,18 +507,8 @@ void Editor::Core::Application::Run()
             if (completedAfter <= completedBefore)
                 continue;
 
-            if (completedAfter == warmupFrames)
+            if (completedAfter > warmupFrames)
             {
-                m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry();
-                m_cameraPerformanceTelemetryBeforeCaptured = true;
-            }
-            else if (completedAfter > warmupFrames)
-            {
-                if (!m_cameraPerformanceTelemetryBeforeCaptured)
-                {
-                    m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry();
-                    m_cameraPerformanceTelemetryBeforeCaptured = true;
-                }
                 const double frameMs = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
                 m_cameraPerformanceFrameMs.push_back(frameMs);
                 if (m_editor->WasLastSceneViewThreadedFramePublished())
@@ -569,11 +564,26 @@ Editor::Core::Application::CaptureCameraPerformanceTelemetry() const
     result.reservedSlotWaitCount = telemetry.reservedSlotWaitCount;
     result.reservedSlotWaitTimeoutCount = telemetry.reservedSlotWaitTimeoutCount;
     result.reservedSlotWaitTotalNs = telemetry.reservedSlotWaitTotalNs;
+    result.reservedSlotWaitMaxNs = telemetry.reservedSlotWaitMaxNs;
     result.latestPublishedFrameId = telemetry.latestPublishedFrameId;
     result.latestRetiredFrameId = telemetry.latestRetiredFrameId;
     result.descriptorAllocationFailureCount = telemetry.descriptorAllocationFailures;
     result.deviceLostCount = telemetry.deviceLostDetected ? 1u : 0u;
     result.unsafeGpuQuarantineCount = telemetry.unsafeGpuWorkQuarantined ? 1u : 0u;
+
+    if (m_editor != nullptr)
+    {
+        const auto& frameInfo = m_editor->GetSceneViewCumulativeFrameInfo();
+        result.preparedStaticBaseCacheHitCount = frameInfo.preparedRecordedDrawStaticBaseCacheHitCount;
+        result.preparedStaticBaseCacheMissCount = frameInfo.preparedRecordedDrawStaticBaseCacheMissCount;
+        result.staticDrawFastPathHitCount = frameInfo.preparedRecordedDrawStaticBaseFastPathHitCount;
+        result.staticDrawFastPathMissCount = frameInfo.preparedRecordedDrawStaticBaseFastPathMissCount;
+        result.objectDataRevisionHitCount = frameInfo.objectDataRevisionReuseHitCount;
+        result.objectDataRevisionFallbackCount = frameInfo.objectDataRevisionReuseFallbackCount;
+        result.opaqueSortTokenHitCount = frameInfo.opaqueSortTokenHitCount;
+        result.opaqueSortTokenRebuildCount = frameInfo.opaqueSortTokenRebuildCount;
+        result.objectDataOverflowCount = frameInfo.objectDataOverflowDroppedObjectCount;
+    }
     return result;
 }
 

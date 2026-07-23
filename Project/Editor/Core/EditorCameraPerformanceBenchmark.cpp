@@ -37,6 +37,7 @@ namespace
             { "reservedSlotWaitCount", telemetry.reservedSlotWaitCount },
             { "reservedSlotWaitTimeoutCount", telemetry.reservedSlotWaitTimeoutCount },
             { "reservedSlotWaitTotalNs", telemetry.reservedSlotWaitTotalNs },
+            { "reservedSlotWaitMaxNs", telemetry.reservedSlotWaitMaxNs },
             { "latestPublishedFrameId", telemetry.latestPublishedFrameId },
             { "latestRetiredFrameId", telemetry.latestRetiredFrameId },
             { "preparedStaticBaseCacheHitCount", telemetry.preparedStaticBaseCacheHitCount },
@@ -67,6 +68,7 @@ EditorCameraPerformanceTelemetry CalculateEditorCameraPerformanceTelemetryDelta(
         before.reservedSlotWaitTimeoutCount,
         after.reservedSlotWaitTimeoutCount);
     delta.reservedSlotWaitTotalNs = SaturatingDelta(before.reservedSlotWaitTotalNs, after.reservedSlotWaitTotalNs);
+    delta.reservedSlotWaitMaxNs = SaturatingDelta(before.reservedSlotWaitMaxNs, after.reservedSlotWaitMaxNs);
     delta.latestPublishedFrameId = SaturatingDelta(before.latestPublishedFrameId, after.latestPublishedFrameId);
     delta.latestRetiredFrameId = SaturatingDelta(before.latestRetiredFrameId, after.latestRetiredFrameId);
     delta.preparedStaticBaseCacheHitCount = SaturatingDelta(
@@ -116,6 +118,8 @@ EditorCameraPerformanceSummary BuildEditorCameraPerformanceSummary(
     summary.measuredFrameMs = std::move(measuredFrameMs);
     summary.telemetryDelta = CalculateEditorCameraPerformanceTelemetryDelta(telemetryBefore, telemetryAfter);
     summary.publishedCameraStepCount = publishedCameraStepCount;
+    const auto measuredFrameCount = static_cast<uint64_t>(summary.measuredFrameMs.size());
+    summary.telemetryDelta.blockedPublishCount = SaturatingDelta(publishedCameraStepCount, measuredFrameCount);
 
     if (summary.measuredFrameMs.empty())
         return summary;
@@ -166,7 +170,7 @@ bool WriteEditorCameraPerformanceSummaryJson(
         { "viewportWidth", summary.metadata.viewportWidth },
         { "viewportHeight", summary.metadata.viewportHeight },
         { "cameraForwardStep", summary.metadata.cameraForwardStep },
-        { "measuredFrameCount", summary.measuredFrameMs.size() },
+        { "measuredFrameCount", static_cast<uint64_t>(summary.measuredFrameMs.size()) },
         { "measuredFrameMs", summary.measuredFrameMs },
         { "meanFrameMs", summary.meanFrameMs },
         { "meanFps", summary.meanFps },

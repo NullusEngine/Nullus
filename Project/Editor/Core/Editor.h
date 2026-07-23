@@ -5,6 +5,7 @@
 #include "Core/PanelsManager.h"
 #include "Assets/EditorStartupAssetPreimport.h"
 #include "Shortcuts/EditorShortcutService.h"
+#include <Rendering/Data/FrameInfo.h>
 #include <UI/Modules/Canvas.h>
 #include <chrono>
 #include <filesystem>
@@ -75,6 +76,7 @@ public:
     uint32_t GetValidationCameraForwardCompletedFrames() const;
     bool WasLastSceneViewThreadedFramePublished() const;
     std::pair<uint16_t, uint16_t> GetSceneViewSafeSize() const;
+    const Render::Data::FrameInfo& GetSceneViewCumulativeFrameInfo() const;
 
     /**
      * Update the current editor mode

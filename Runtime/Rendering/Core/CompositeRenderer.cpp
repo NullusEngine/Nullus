@@ -646,6 +646,11 @@ const Data::FrameInfo& CompositeRenderer::GetFrameInfo() const
     return m_rendererStats.GetFrameInfo();
 }
 
+const Data::FrameInfo& CompositeRenderer::GetCumulativeFrameInfo() const
+{
+    return m_rendererStats.GetCumulativeFrameInfo();
+}
+
 bool CompositeRenderer::IsFrameInfoValid() const
 {
     return m_rendererStats.IsFrameInfoValid();

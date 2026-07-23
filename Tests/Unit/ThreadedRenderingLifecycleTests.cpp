@@ -3896,6 +3896,8 @@ TEST(ThreadedRenderingLifecycleTests, ReservedReusableSlotWaitsAreVisibleInTelem
     EXPECT_EQ(telemetry.reservedSlotWaitCount, 1u);
     EXPECT_EQ(telemetry.reservedSlotWaitTimeoutCount, 1u);
     EXPECT_GT(telemetry.reservedSlotWaitTotalNs, 0u);
+    EXPECT_GT(telemetry.reservedSlotWaitMaxNs, 0u);
+    EXPECT_LE(telemetry.reservedSlotWaitMaxNs, telemetry.reservedSlotWaitTotalNs);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ReservedReusableSlotDeadlineSucceedsBeforeAbsoluteDeadline)

@@ -169,6 +169,23 @@ namespace
         NLS::Core::ResourceManagement::ShaderManager::ProvideAssetPaths({}, {});
     }
 
+    class ScopedDriverService final
+    {
+    public:
+        explicit ScopedDriverService(NLS::Render::Context::Driver& driver)
+        {
+            NLS::Core::ServiceLocator::Provide(driver);
+        }
+
+        ~ScopedDriverService()
+        {
+            NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+        }
+
+        ScopedDriverService(const ScopedDriverService&) = delete;
+        ScopedDriverService& operator=(const ScopedDriverService&) = delete;
+    };
+
     class ScopedRenderSceneCacheJobSystem
     {
     public:
@@ -599,6 +616,7 @@ namespace
         NLS::Render::Settings::DriverSettings driverSettings;
         driverSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
         NLS::Render::Context::Driver driver(driverSettings);
+        ScopedDriverService driverService(driver);
         SceneDrawableProbeRenderer renderer(driver);
 
         auto settings = NLS::Engine::Rendering::LargeSceneSettings::Defaults();

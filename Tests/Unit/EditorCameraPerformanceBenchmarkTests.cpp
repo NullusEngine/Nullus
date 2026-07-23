@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include <Json/json.hpp>
+
 #include "Core/EditorCameraPerformanceBenchmark.h"
 
 namespace
@@ -65,13 +67,59 @@ namespace
         EXPECT_EQ(delta.reservedSlotWaitTotalNs, 250u);
     }
 
-    TEST(EditorCameraPerformanceBenchmarkTests, SerializesRequiredSummaryFields)
+    TEST(EditorCameraPerformanceBenchmarkTests, SerializesCompleteTelemetrySchemaWithExactIntegerCounters)
     {
+        constexpr uint64_t integerBase = 9007199254740992ull;
+        EditorCameraPerformanceTelemetry before;
+        before.blockedPublishCount = integerBase;
+        before.publishedFrameCount = integerBase;
+        before.reservedSlotWaitCount = integerBase;
+        before.reservedSlotWaitTimeoutCount = integerBase;
+        before.reservedSlotWaitTotalNs = integerBase;
+        before.reservedSlotWaitMaxNs = integerBase;
+        before.latestPublishedFrameId = integerBase;
+        before.latestRetiredFrameId = integerBase;
+        before.preparedStaticBaseCacheHitCount = integerBase;
+        before.preparedStaticBaseCacheMissCount = integerBase;
+        before.staticDrawFastPathHitCount = integerBase;
+        before.staticDrawFastPathMissCount = integerBase;
+        before.objectDataRevisionHitCount = integerBase;
+        before.objectDataRevisionFallbackCount = integerBase;
+        before.opaqueSortTokenHitCount = integerBase;
+        before.opaqueSortTokenRebuildCount = integerBase;
+        before.descriptorAllocationFailureCount = integerBase;
+        before.deviceLostCount = integerBase;
+        before.unsafeGpuQuarantineCount = integerBase;
+        before.objectDataOverflowCount = integerBase;
+
+        auto after = before;
+        after.publishedFrameCount += 301u;
+        after.reservedSlotWaitCount += 302u;
+        after.reservedSlotWaitTimeoutCount += 303u;
+        after.reservedSlotWaitTotalNs += 304u;
+        after.reservedSlotWaitMaxNs += 305u;
+        after.latestPublishedFrameId += 306u;
+        after.latestRetiredFrameId += 307u;
+        after.preparedStaticBaseCacheHitCount += 308u;
+        after.preparedStaticBaseCacheMissCount += 309u;
+        after.staticDrawFastPathHitCount += 310u;
+        after.staticDrawFastPathMissCount += 311u;
+        after.objectDataRevisionHitCount += 312u;
+        after.objectDataRevisionFallbackCount += 313u;
+        after.opaqueSortTokenHitCount += 314u;
+        after.opaqueSortTokenRebuildCount += 315u;
+        after.descriptorAllocationFailureCount += 316u;
+        after.deviceLostCount += 317u;
+        after.unsafeGpuQuarantineCount += 318u;
+        after.objectDataOverflowCount += 319u;
+
+        std::vector<double> samples(300u, 10.0);
         const auto summary = BuildEditorCameraPerformanceSummary(
-            EditorCameraPerformanceMetadata { "Release", "DX12", false, 30u, 2u },
-            { 8.0, 12.0 },
-            EditorCameraPerformanceTelemetry {},
-            EditorCameraPerformanceTelemetry {});
+            EditorCameraPerformanceMetadata { "Release", "DX12", false, 30u, 300u },
+            samples,
+            before,
+            after,
+            237u);
         const auto outputPath = std::filesystem::temp_directory_path() /
             "nullus-editor-camera-performance-test.json";
 
@@ -81,16 +129,57 @@ namespace
             summary,
             &error)) << error;
 
-        std::string body;
-        {
-            std::ifstream stream(outputPath);
-            body.assign(std::istreambuf_iterator<char>(stream), {});
-        }
+        std::ifstream stream(outputPath);
+        const auto document = nlohmann::json::parse(stream);
+        stream.close();
         std::filesystem::remove(outputPath);
-        EXPECT_NE(body.find("\"meanFrameMs\""), std::string::npos);
-        EXPECT_NE(body.find("\"meanFps\""), std::string::npos);
-        EXPECT_NE(body.find("\"p99FrameMs\""), std::string::npos);
-        EXPECT_NE(body.find("\"telemetryDelta\""), std::string::npos);
+
+        ASSERT_TRUE(document.at("measuredFrameCount").is_number_unsigned());
+        EXPECT_EQ(document.at("measuredFrameCount").get<uint64_t>(), 300u);
+        ASSERT_TRUE(document.at("publishedCameraStepCount").is_number_unsigned());
+        EXPECT_EQ(document.at("publishedCameraStepCount").get<uint64_t>(), 237u);
+        ASSERT_TRUE(document.at("publicationRatio").is_number_float());
+        EXPECT_DOUBLE_EQ(document.at("publicationRatio").get<double>(), 237.0 / 300.0);
+
+        const auto& telemetry = document.at("telemetryDelta");
+        const auto expectInteger = [&telemetry](const char* field, const uint64_t expected)
+        {
+            ASSERT_TRUE(telemetry.at(field).is_number_unsigned()) << field;
+            EXPECT_EQ(telemetry.at(field).get<uint64_t>(), expected) << field;
+        };
+        expectInteger("blockedPublishCount", 63u);
+        expectInteger("publishedFrameCount", 301u);
+        expectInteger("reservedSlotWaitCount", 302u);
+        expectInteger("reservedSlotWaitTimeoutCount", 303u);
+        expectInteger("reservedSlotWaitTotalNs", 304u);
+        expectInteger("reservedSlotWaitMaxNs", 305u);
+        expectInteger("latestPublishedFrameId", 306u);
+        expectInteger("latestRetiredFrameId", 307u);
+        expectInteger("preparedStaticBaseCacheHitCount", 308u);
+        expectInteger("preparedStaticBaseCacheMissCount", 309u);
+        expectInteger("staticDrawFastPathHitCount", 310u);
+        expectInteger("staticDrawFastPathMissCount", 311u);
+        expectInteger("objectDataRevisionHitCount", 312u);
+        expectInteger("objectDataRevisionFallbackCount", 313u);
+        expectInteger("opaqueSortTokenHitCount", 314u);
+        expectInteger("opaqueSortTokenRebuildCount", 315u);
+        expectInteger("descriptorAllocationFailureCount", 316u);
+        expectInteger("deviceLostCount", 317u);
+        expectInteger("unsafeGpuQuarantineCount", 318u);
+        expectInteger("objectDataOverflowCount", 319u);
+    }
+
+    TEST(EditorCameraPerformanceBenchmarkTests, BlockedPublicationCountSaturatesWhenPublishedCountExceedsSamples)
+    {
+        const auto summary = BuildEditorCameraPerformanceSummary(
+            EditorCameraPerformanceMetadata {},
+            { 8.0, 12.0 },
+            EditorCameraPerformanceTelemetry {},
+            EditorCameraPerformanceTelemetry {},
+            3u);
+
+        EXPECT_EQ(summary.telemetryDelta.blockedPublishCount, 0u);
+        EXPECT_DOUBLE_EQ(summary.publicationRatio, 1.5);
     }
 
     TEST(EditorCameraPerformanceBenchmarkTests, RuntimeTimesOnlyCompletedCameraStepsAndWritesAfterSampling)
@@ -101,6 +190,9 @@ namespace
         const auto mainSource = ReadRepositoryTextFile("Project/Editor/Main.cpp");
 
         const auto completedBefore = applicationSource.find("GetValidationCameraForwardCompletedFrames()");
+        const auto telemetryBefore = applicationSource.find(
+            "m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry()",
+            completedBefore);
         const auto frameStart = applicationSource.find("const auto frameStart = std::chrono::steady_clock::now()");
         const auto tick = applicationSource.find("TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true)");
         const auto frameEnd = applicationSource.find("const auto frameEnd = std::chrono::steady_clock::now()");
@@ -108,12 +200,15 @@ namespace
         const auto writeSummary = applicationSource.find("WriteEditorCameraPerformanceSummaryJson");
 
         ASSERT_NE(completedBefore, std::string::npos);
+        ASSERT_NE(telemetryBefore, std::string::npos);
         ASSERT_NE(frameStart, std::string::npos);
         ASSERT_NE(tick, std::string::npos);
         ASSERT_NE(frameEnd, std::string::npos);
         ASSERT_NE(addSample, std::string::npos);
         ASSERT_NE(writeSummary, std::string::npos);
         EXPECT_LT(completedBefore, frameStart);
+        EXPECT_LT(completedBefore, telemetryBefore);
+        EXPECT_LT(telemetryBefore, frameStart);
         EXPECT_LT(frameStart, tick);
         EXPECT_LT(tick, frameEnd);
         EXPECT_LT(frameEnd, addSample);

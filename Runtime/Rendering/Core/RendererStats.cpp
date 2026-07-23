@@ -34,6 +34,7 @@ namespace
         frameInfo.reservedSlotWaitCount = telemetry.reservedSlotWaitCount;
         frameInfo.reservedSlotWaitTimeoutCount = telemetry.reservedSlotWaitTimeoutCount;
         frameInfo.reservedSlotWaitTotalNs = telemetry.reservedSlotWaitTotalNs;
+        frameInfo.reservedSlotWaitMaxNs = telemetry.reservedSlotWaitMaxNs;
         frameInfo.publishState = telemetry.publishState;
         frameInfo.stageSummary = telemetry.stageSummary;
         frameInfo.retirementState = telemetry.retirementState;
@@ -80,6 +81,7 @@ void RendererStats::BeginFrame()
     m_frameInfo.reservedSlotWaitCount = 0u;
     m_frameInfo.reservedSlotWaitTimeoutCount = 0u;
     m_frameInfo.reservedSlotWaitTotalNs = 0u;
+    m_frameInfo.reservedSlotWaitMaxNs = 0u;
     m_frameInfo.publishState = Data::FramePublishState::Direct;
     m_frameInfo.stageSummary = Data::ThreadedFrameStageSummary::Direct;
     m_frameInfo.retirementState = Data::FrameRetirementState::Direct;
@@ -188,9 +190,15 @@ void RendererStats::RecordGBufferMaterialResolve(const bool hit)
 void RendererStats::RecordPreparedRecordedDrawStaticBaseCache(const bool hit)
 {
     if (hit)
+    {
         ++m_frameInfo.preparedRecordedDrawStaticBaseCacheHitCount;
+        ++m_cumulativeFrameInfo.preparedRecordedDrawStaticBaseCacheHitCount;
+    }
     else
+    {
         ++m_frameInfo.preparedRecordedDrawStaticBaseCacheMissCount;
+        ++m_cumulativeFrameInfo.preparedRecordedDrawStaticBaseCacheMissCount;
+    }
 }
 
 void RendererStats::RecordRenderBindingSetCreation(const uint64_t count)
@@ -214,22 +222,37 @@ void RendererStats::RecordDrawCallOptimizationStats(
     m_frameInfo.opaqueSortTokenHitCount = stats.opaqueSortTokenHitCount;
     m_frameInfo.opaqueSortTokenRebuildCount = stats.opaqueSortTokenRebuildCount;
     m_frameInfo.objectDataOverflowDroppedObjectCount = stats.objectDataOverflowDroppedObjectCount;
+    m_cumulativeFrameInfo.opaqueSortTokenHitCount += stats.opaqueSortTokenHitCount;
+    m_cumulativeFrameInfo.opaqueSortTokenRebuildCount += stats.opaqueSortTokenRebuildCount;
+    m_cumulativeFrameInfo.objectDataOverflowDroppedObjectCount += stats.objectDataOverflowDroppedObjectCount;
 }
 
 void RendererStats::RecordPreparedRecordedDrawStaticBaseFastPath(const bool hit)
 {
     if (hit)
+    {
         ++m_frameInfo.preparedRecordedDrawStaticBaseFastPathHitCount;
+        ++m_cumulativeFrameInfo.preparedRecordedDrawStaticBaseFastPathHitCount;
+    }
     else
+    {
         ++m_frameInfo.preparedRecordedDrawStaticBaseFastPathMissCount;
+        ++m_cumulativeFrameInfo.preparedRecordedDrawStaticBaseFastPathMissCount;
+    }
 }
 
 void RendererStats::RecordObjectDataRevisionReuse(const bool hit)
 {
     if (hit)
+    {
         ++m_frameInfo.objectDataRevisionReuseHitCount;
+        ++m_cumulativeFrameInfo.objectDataRevisionReuseHitCount;
+    }
     else
+    {
         ++m_frameInfo.objectDataRevisionReuseFallbackCount;
+        ++m_cumulativeFrameInfo.objectDataRevisionReuseFallbackCount;
+    }
 }
 
 void RendererStats::RecordLargeSceneTelemetry(
@@ -334,6 +357,11 @@ const Data::FrameInfo& RendererStats::GetFrameInfo() const
 {
     NLS_ASSERT(m_isFrameInfoValid, "Invalid FrameInfo data! Make sure to retrieve frame info after the frame got fully rendered");
     return m_frameInfo;
+}
+
+const Data::FrameInfo& RendererStats::GetCumulativeFrameInfo() const
+{
+    return m_cumulativeFrameInfo;
 }
 
 bool RendererStats::IsFrameInfoValid() const

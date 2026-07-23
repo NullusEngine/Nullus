@@ -42,11 +42,13 @@ public:
         Data::FrameInfo& frameInfo);
 
     const Data::FrameInfo& GetFrameInfo() const;
+    const Data::FrameInfo& GetCumulativeFrameInfo() const;
     bool IsFrameInfoValid() const;
 
 private:
     bool m_isFrameInfoValid = true;
     Data::FrameInfo m_frameInfo;
+    Data::FrameInfo m_cumulativeFrameInfo;
     std::optional<Data::FrameInfo> m_lastThreadedFrameInfoTelemetry;
 };
 }

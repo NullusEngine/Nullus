@@ -58,13 +58,22 @@ namespace
         EditorCameraPerformanceTelemetry before;
         before.publishedFrameCount = 40u;
         before.reservedSlotWaitTotalNs = 100u;
+        before.reservedSlotWaitMaxNs = 10000000u;
+        before.latestPublishedFrameId = 120u;
+        before.latestRetiredFrameId = 118u;
         EditorCameraPerformanceTelemetry after = before;
         after.publishedFrameCount = 44u;
         after.reservedSlotWaitTotalNs = 350u;
+        after.reservedSlotWaitMaxNs = 8000000u;
+        after.latestPublishedFrameId = 124u;
+        after.latestRetiredFrameId = 123u;
 
         const auto delta = CalculateEditorCameraPerformanceTelemetryDelta(before, after);
         EXPECT_EQ(delta.publishedFrameCount, 4u);
         EXPECT_EQ(delta.reservedSlotWaitTotalNs, 250u);
+        EXPECT_EQ(delta.reservedSlotWaitMaxNs, 8000000u);
+        EXPECT_EQ(delta.latestPublishedFrameId, 124u);
+        EXPECT_EQ(delta.latestRetiredFrameId, 123u);
     }
 
     TEST(EditorCameraPerformanceBenchmarkTests, SerializesCompleteTelemetrySchemaWithExactIntegerCounters)
@@ -152,9 +161,9 @@ namespace
         expectInteger("reservedSlotWaitCount", 302u);
         expectInteger("reservedSlotWaitTimeoutCount", 303u);
         expectInteger("reservedSlotWaitTotalNs", 304u);
-        expectInteger("reservedSlotWaitMaxNs", 305u);
-        expectInteger("latestPublishedFrameId", 306u);
-        expectInteger("latestRetiredFrameId", 307u);
+        expectInteger("reservedSlotWaitMaxNs", integerBase + 305u);
+        expectInteger("latestPublishedFrameId", integerBase + 306u);
+        expectInteger("latestRetiredFrameId", integerBase + 307u);
         expectInteger("preparedStaticBaseCacheHitCount", 308u);
         expectInteger("preparedStaticBaseCacheMissCount", 309u);
         expectInteger("staticDrawFastPathHitCount", 310u);
@@ -167,6 +176,39 @@ namespace
         expectInteger("deviceLostCount", 317u);
         expectInteger("unsafeGpuQuarantineCount", 318u);
         expectInteger("objectDataOverflowCount", 319u);
+    }
+
+    TEST(EditorCameraPerformanceBenchmarkTests, SerializesMeasurementWindowWaitMaximumWithoutHistoricalSubtraction)
+    {
+        EditorCameraPerformanceTelemetry before;
+        before.reservedSlotWaitMaxNs = 10000000u;
+        EditorCameraPerformanceTelemetry after;
+        after.reservedSlotWaitMaxNs = 8000000u;
+
+        const auto outputPath = std::filesystem::temp_directory_path() /
+            "nullus-editor-camera-performance-window-max-test.json";
+        const auto writeAndReadMaximum = [&](const uint64_t measuredMaximum)
+        {
+            after.reservedSlotWaitMaxNs = measuredMaximum;
+            const auto summary = BuildEditorCameraPerformanceSummary(
+                EditorCameraPerformanceMetadata {},
+                { 8.0 },
+                before,
+                after,
+                1u);
+            std::string error;
+            EXPECT_TRUE(NLS::Editor::Core::WriteEditorCameraPerformanceSummaryJson(
+                outputPath,
+                summary,
+                &error)) << error;
+            std::ifstream stream(outputPath);
+            const auto document = nlohmann::json::parse(stream);
+            return document.at("telemetryDelta").at("reservedSlotWaitMaxNs").get<uint64_t>();
+        };
+
+        EXPECT_EQ(writeAndReadMaximum(8000000u), 8000000u);
+        EXPECT_EQ(writeAndReadMaximum(12000000u), 12000000u);
+        std::filesystem::remove(outputPath);
     }
 
     TEST(EditorCameraPerformanceBenchmarkTests, BlockedPublicationCountSaturatesWhenPublishedCountExceedsSamples)
@@ -190,6 +232,9 @@ namespace
         const auto mainSource = ReadRepositoryTextFile("Project/Editor/Main.cpp");
 
         const auto completedBefore = applicationSource.find("GetValidationCameraForwardCompletedFrames()");
+        const auto resetWaitMaximum = applicationSource.find(
+            "ResetThreadedReservedSlotWaitMeasurementWindowMaxNs",
+            completedBefore);
         const auto telemetryBefore = applicationSource.find(
             "m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry()",
             completedBefore);
@@ -200,6 +245,7 @@ namespace
         const auto writeSummary = applicationSource.find("WriteEditorCameraPerformanceSummaryJson");
 
         ASSERT_NE(completedBefore, std::string::npos);
+        ASSERT_NE(resetWaitMaximum, std::string::npos);
         ASSERT_NE(telemetryBefore, std::string::npos);
         ASSERT_NE(frameStart, std::string::npos);
         ASSERT_NE(tick, std::string::npos);
@@ -207,6 +253,8 @@ namespace
         ASSERT_NE(addSample, std::string::npos);
         ASSERT_NE(writeSummary, std::string::npos);
         EXPECT_LT(completedBefore, frameStart);
+        EXPECT_LT(completedBefore, resetWaitMaximum);
+        EXPECT_LT(resetWaitMaximum, telemetryBefore);
         EXPECT_LT(completedBefore, telemetryBefore);
         EXPECT_LT(telemetryBefore, frameStart);
         EXPECT_LT(frameStart, tick);

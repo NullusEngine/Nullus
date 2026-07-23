@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -75,9 +76,13 @@ namespace NLS::Render::RHI
     {
     public:
         DescriptorRangeAllocator() = default;
-        explicit DescriptorRangeAllocator(const DescriptorRangeAllocatorDesc& desc);
+        explicit DescriptorRangeAllocator(
+            const DescriptorRangeAllocatorDesc& desc,
+            std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount = {});
 
         void Configure(const DescriptorRangeAllocatorDesc& desc);
+        void SetSharedAllocationFailureCounter(
+            std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount);
         void BeginFrame(uint64_t frameIndex);
         DescriptorAllocation Allocate(const DescriptorAllocationRequest& request);
         DescriptorAllocationBatch AllocateBatch(const std::vector<DescriptorAllocationRequest>& requests);
@@ -94,6 +99,7 @@ namespace NLS::Render::RHI
 
         DescriptorAllocation AllocateLocked(const DescriptorAllocationRequest& request);
         void ReleasePersistentLocked(const DescriptorAllocation& allocation);
+        void RecordAllocationFailureLocked();
 
     private:
         mutable std::mutex m_mutex;
@@ -103,6 +109,7 @@ namespace NLS::Render::RHI
         uint64_t m_transientOffset = 0u;
         uint64_t m_persistentOffset = 0u;
         std::vector<FreeRange> m_persistentFreeRanges;
+        std::shared_ptr<std::atomic_uint64_t> m_sharedAllocationFailureCount;
     };
 
     class NLS_RENDER_API DescriptorAllocator
@@ -116,7 +123,11 @@ namespace NLS::Render::RHI
         virtual void Release(const DescriptorAllocation& allocation) = 0;
         virtual void Reset() = 0;
         virtual DescriptorAllocatorStats GetStats() const = 0;
+        virtual void SetSharedAllocationFailureCounter(
+            std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount) = 0;
     };
 
-    NLS_RENDER_API std::shared_ptr<DescriptorAllocator> CreateDefaultDescriptorAllocator(uint64_t transientCapacity = 65536);
+    NLS_RENDER_API std::shared_ptr<DescriptorAllocator> CreateDefaultDescriptorAllocator(
+        uint64_t transientCapacity = 65536,
+        std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount = {});
 }

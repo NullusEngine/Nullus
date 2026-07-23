@@ -113,6 +113,8 @@ namespace NLS::Render::Context
         static void DrainThreadedRendering(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
         static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);
+        static void ResetThreadedReservedSlotWaitMeasurementWindowMaxNs(Driver& driver);
+        static uint64_t GetThreadedReservedSlotWaitMeasurementWindowMaxNs(const Driver& driver);
         static std::vector<uint64_t> CollectStreamingDependencyPins(const Driver& driver);
 
         static void SetViewport(
@@ -362,6 +364,10 @@ namespace NLS::Render::Context
         static void RebuildExplicitFrameContexts(Driver& driver, size_t frameContextCount);
         static void SetExplicitSwapchain(Driver& driver, std::shared_ptr<RHI::RHISwapchain> explicitSwapchain);
         static RHI::RHIFrameContext& EnsureFrameContext(Driver& driver, size_t index);
+        static void SetFrameContextDescriptorAllocator(
+            Driver& driver,
+            size_t index,
+            std::shared_ptr<RHI::DescriptorAllocator> descriptorAllocator);
         static const RHI::RHIFrameContext* PeekFrameContext(const Driver& driver, size_t index);
         static void SetCompletedReadbackTexture(
             Driver& driver,

@@ -496,6 +496,8 @@ void Editor::Core::Application::Run()
             const auto completedBefore = m_editor->GetValidationCameraForwardCompletedFrames();
             if (completedBefore >= warmupFrames && !m_cameraPerformanceTelemetryBeforeCaptured)
             {
+                Render::Context::DriverRendererAccess::ResetThreadedReservedSlotWaitMeasurementWindowMaxNs(
+                    *m_context.driver);
                 m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry();
                 m_cameraPerformanceTelemetryBeforeCaptured = true;
             }
@@ -564,7 +566,9 @@ Editor::Core::Application::CaptureCameraPerformanceTelemetry() const
     result.reservedSlotWaitCount = telemetry.reservedSlotWaitCount;
     result.reservedSlotWaitTimeoutCount = telemetry.reservedSlotWaitTimeoutCount;
     result.reservedSlotWaitTotalNs = telemetry.reservedSlotWaitTotalNs;
-    result.reservedSlotWaitMaxNs = telemetry.reservedSlotWaitMaxNs;
+    result.reservedSlotWaitMaxNs =
+        Render::Context::DriverRendererAccess::GetThreadedReservedSlotWaitMeasurementWindowMaxNs(
+            *m_context.driver);
     result.latestPublishedFrameId = telemetry.latestPublishedFrameId;
     result.latestRetiredFrameId = telemetry.latestRetiredFrameId;
     result.descriptorAllocationFailureCount = telemetry.descriptorAllocationFailures;

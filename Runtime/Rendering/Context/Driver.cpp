@@ -411,6 +411,11 @@ namespace
             }
         }
 
+        telemetry.descriptorAllocationFailures =
+            impl != nullptr && impl->descriptorAllocationFailureCount != nullptr
+            ? impl->descriptorAllocationFailureCount->load(std::memory_order_relaxed)
+            : 0u;
+
         return true;
     }
 
@@ -1951,7 +1956,9 @@ namespace
                 impl.explicitDevice->CreateSemaphore("FrameCompute" + std::to_string(frameIndex));
             NLS_ASSERT(frameContext.computeFinishedSemaphore != nullptr, "Failed to create compute semaphore for explicit RHI");
             frameContext.resourceStateTracker = Render::RHI::CreateDefaultResourceStateTracker();
-            frameContext.descriptorAllocator = Render::RHI::CreateDefaultDescriptorAllocator();
+            frameContext.descriptorAllocator = Render::RHI::CreateDefaultDescriptorAllocator(
+                65536u,
+                impl.descriptorAllocationFailureCount);
             frameContext.uploadContext = Render::Backend::CreateUploadContextForRhiDevice(impl.explicitDevice);
             impl.frameContexts.push_back(std::move(frameContext));
         }
@@ -2355,6 +2362,19 @@ std::optional<ThreadedFrameTelemetry> DriverRendererAccess::TryGetThreadedFrameT
     if (!AppendDriverTelemetry(driver.m_impl.get(), telemetry.value(), false))
         return std::nullopt;
     return telemetry;
+}
+
+void DriverRendererAccess::ResetThreadedReservedSlotWaitMeasurementWindowMaxNs(Driver& driver)
+{
+    if (driver.m_impl != nullptr && driver.m_impl->threadedLifecycle != nullptr)
+        driver.m_impl->threadedLifecycle->ResetReservedSlotWaitMeasurementWindowMaxNs();
+}
+
+uint64_t DriverRendererAccess::GetThreadedReservedSlotWaitMeasurementWindowMaxNs(const Driver& driver)
+{
+    return driver.m_impl != nullptr && driver.m_impl->threadedLifecycle != nullptr
+        ? driver.m_impl->threadedLifecycle->GetReservedSlotWaitMeasurementWindowMaxNs()
+        : 0u;
 }
 
 std::vector<uint64_t> DriverRendererAccess::CollectStreamingDependencyPins(const Driver& driver)
@@ -3661,6 +3681,19 @@ Render::RHI::RHIFrameContext& DriverTestAccess::EnsureFrameContext(Driver& drive
 	if (driver.m_impl->frameContexts.size() <= index)
 		driver.m_impl->frameContexts.resize(index + 1u);
 	return driver.m_impl->frameContexts[index];
+}
+
+void DriverTestAccess::SetFrameContextDescriptorAllocator(
+    Driver& driver,
+    const size_t index,
+    std::shared_ptr<Render::RHI::DescriptorAllocator> descriptorAllocator)
+{
+    if (descriptorAllocator != nullptr)
+    {
+        descriptorAllocator->SetSharedAllocationFailureCounter(
+            driver.m_impl->descriptorAllocationFailureCount);
+    }
+    EnsureFrameContext(driver, index).descriptorAllocator = std::move(descriptorAllocator);
 }
 
 const Render::RHI::RHIFrameContext* DriverTestAccess::PeekFrameContext(const Driver& driver, const size_t index)

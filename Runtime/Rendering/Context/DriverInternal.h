@@ -159,6 +159,8 @@ namespace NLS::Render::Context
         bool lightGridEnabled = true;
         Render::Settings::EngineDiagnosticsSettings diagnostics;
         mutable std::mutex driverTelemetryMutex;
+        std::shared_ptr<std::atomic_uint64_t> descriptorAllocationFailureCount =
+            std::make_shared<std::atomic_uint64_t>(0u);
         uint64_t queueOperationFailureCount = 0u;
         std::string lastQueueOperationFailure;
         uint64_t currentFrameQueueOperationFailureCount = 0u;

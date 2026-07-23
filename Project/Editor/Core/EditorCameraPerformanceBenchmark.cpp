@@ -68,9 +68,9 @@ EditorCameraPerformanceTelemetry CalculateEditorCameraPerformanceTelemetryDelta(
         before.reservedSlotWaitTimeoutCount,
         after.reservedSlotWaitTimeoutCount);
     delta.reservedSlotWaitTotalNs = SaturatingDelta(before.reservedSlotWaitTotalNs, after.reservedSlotWaitTotalNs);
-    delta.reservedSlotWaitMaxNs = SaturatingDelta(before.reservedSlotWaitMaxNs, after.reservedSlotWaitMaxNs);
-    delta.latestPublishedFrameId = SaturatingDelta(before.latestPublishedFrameId, after.latestPublishedFrameId);
-    delta.latestRetiredFrameId = SaturatingDelta(before.latestRetiredFrameId, after.latestRetiredFrameId);
+    delta.reservedSlotWaitMaxNs = after.reservedSlotWaitMaxNs;
+    delta.latestPublishedFrameId = after.latestPublishedFrameId;
+    delta.latestRetiredFrameId = after.latestRetiredFrameId;
     delta.preparedStaticBaseCacheHitCount = SaturatingDelta(
         before.preparedStaticBaseCacheHitCount,
         after.preparedStaticBaseCacheHitCount);

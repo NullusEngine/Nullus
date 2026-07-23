@@ -1497,8 +1497,7 @@ std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndexExclud
         const auto waitDurationNs = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - waitStart).count());
-        m_telemetry.reservedSlotWaitTotalNs += waitDurationNs;
-        m_telemetry.reservedSlotWaitMaxNs = std::max(m_telemetry.reservedSlotWaitMaxNs, waitDurationNs);
+        RecordReservedSlotWaitDurationLocked(waitDurationNs);
         if (!hasReusableSlot)
         {
             ++m_telemetry.reservedSlotWaitTimeoutCount;
@@ -1586,6 +1585,33 @@ std::optional<ThreadedFrameTelemetry> ThreadedRenderingLifecycle::TryGetTelemetr
     return m_telemetry;
 }
 
+void ThreadedRenderingLifecycle::ResetReservedSlotWaitMeasurementWindowMaxNs()
+{
+    std::lock_guard lock(m_mutex);
+    m_reservedSlotWaitMeasurementWindowMaxNs.store(0u, std::memory_order_release);
+}
+
+uint64_t ThreadedRenderingLifecycle::GetReservedSlotWaitMeasurementWindowMaxNs() const
+{
+    return m_reservedSlotWaitMeasurementWindowMaxNs.load(std::memory_order_acquire);
+}
+
+void ThreadedRenderingLifecycle::RecordReservedSlotWaitDurationLocked(const uint64_t waitDurationNs)
+{
+    m_telemetry.reservedSlotWaitTotalNs += waitDurationNs;
+    m_telemetry.reservedSlotWaitMaxNs = std::max(m_telemetry.reservedSlotWaitMaxNs, waitDurationNs);
+
+    auto currentMax = m_reservedSlotWaitMeasurementWindowMaxNs.load(std::memory_order_relaxed);
+    while (currentMax < waitDurationNs &&
+        !m_reservedSlotWaitMeasurementWindowMaxNs.compare_exchange_weak(
+            currentMax,
+            waitDurationNs,
+            std::memory_order_release,
+            std::memory_order_relaxed))
+    {
+    }
+}
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
 bool ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(ThreadedRenderingLifecycle& lifecycle)
 {
@@ -1595,6 +1621,14 @@ bool ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(ThreadedRenderingLif
 void ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(ThreadedRenderingLifecycle& lifecycle)
 {
     lifecycle.m_mutex.unlock();
+}
+
+void ThreadedRenderingLifecycleTestAccess::RecordReservedSlotWaitDuration(
+    ThreadedRenderingLifecycle& lifecycle,
+    const std::chrono::nanoseconds waitDuration)
+{
+    std::lock_guard lock(lifecycle.m_mutex);
+    lifecycle.RecordReservedSlotWaitDurationLocked(static_cast<uint64_t>(waitDuration.count()));
 }
 #endif
 
@@ -1905,7 +1939,6 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
         m_telemetry.retiredTransientTextureCount = latestSubmissionFrame->retiredTransientTextureCount;
         m_telemetry.retiredTransientBufferCount = latestSubmissionFrame->retiredTransientBufferCount;
         m_telemetry.descriptorTransientPeak = latestSubmissionFrame->descriptorTransientPeak;
-        m_telemetry.descriptorAllocationFailures = latestSubmissionFrame->descriptorAllocationFailures;
         m_telemetry.pipelineMainlineActive = latestSubmissionFrame->pipelineMainlineActive;
         m_telemetry.pipelineBypassCount = latestSubmissionFrame->pipelineBypassCount;
         m_telemetry.pipelineCacheGraphicsHits = latestSubmissionFrame->pipelineCacheGraphicsHits;

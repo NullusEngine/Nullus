@@ -1002,6 +1002,8 @@ namespace
                 if (m_transientUsed + request.count > m_transientCapacity)
                 {
                     ++m_stats.allocationFailures;
+                    if (m_sharedAllocationFailureCount != nullptr)
+                        m_sharedAllocationFailureCount->fetch_add(1u, std::memory_order_relaxed);
                     return {};
                 }
 
@@ -1063,6 +1065,12 @@ namespace
 
         NLS::Render::RHI::DescriptorAllocatorStats GetStats() const override { return m_stats; }
 
+        void SetSharedAllocationFailureCounter(
+            std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount) override
+        {
+            m_sharedAllocationFailureCount = std::move(sharedAllocationFailureCount);
+        }
+
         size_t beginFrameCalls = 0u;
         size_t endFrameCalls = 0u;
         size_t resetCalls = 0u;
@@ -1074,6 +1082,7 @@ namespace
         uint64_t m_transientUsed = 0u;
         uint64_t m_persistentUsed = 0u;
         NLS::Render::RHI::DescriptorAllocatorStats m_stats{};
+        std::shared_ptr<std::atomic_uint64_t> m_sharedAllocationFailureCount;
     };
 
     class ShutdownOrderDescriptorAllocator final : public NLS::Render::RHI::DescriptorAllocator
@@ -1131,6 +1140,7 @@ namespace
         void Release(const NLS::Render::RHI::DescriptorAllocation&) override {}
         void Reset() override {}
         NLS::Render::RHI::DescriptorAllocatorStats GetStats() const override { return m_stats; }
+        void SetSharedAllocationFailureCounter(std::shared_ptr<std::atomic_uint64_t>) override {}
 
     private:
         std::shared_ptr<ShutdownOrderProbe> m_probe;
@@ -1336,6 +1346,7 @@ namespace
         void Release(const NLS::Render::RHI::DescriptorAllocation&) override {}
         void Reset() override {}
         NLS::Render::RHI::DescriptorAllocatorStats GetStats() const override { return {}; }
+        void SetSharedAllocationFailureCounter(std::shared_ptr<std::atomic_uint64_t>) override {}
 
         bool WaitForFirstBeginFrame(std::chrono::milliseconds timeout)
         {
@@ -3898,6 +3909,65 @@ TEST(ThreadedRenderingLifecycleTests, ReservedReusableSlotWaitsAreVisibleInTelem
     EXPECT_GT(telemetry.reservedSlotWaitTotalNs, 0u);
     EXPECT_GT(telemetry.reservedSlotWaitMaxNs, 0u);
     EXPECT_LE(telemetry.reservedSlotWaitMaxNs, telemetry.reservedSlotWaitTotalNs);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ReservedSlotWaitMeasurementWindowMaximumResetsIndependently)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::RecordReservedSlotWaitDuration(
+        lifecycle,
+        std::chrono::milliseconds(10));
+    EXPECT_EQ(lifecycle.GetTelemetry().reservedSlotWaitMaxNs, 10000000u);
+    EXPECT_EQ(lifecycle.GetReservedSlotWaitMeasurementWindowMaxNs(), 10000000u);
+
+    lifecycle.ResetReservedSlotWaitMeasurementWindowMaxNs();
+    EXPECT_EQ(lifecycle.GetReservedSlotWaitMeasurementWindowMaxNs(), 0u);
+    EXPECT_EQ(lifecycle.GetTelemetry().reservedSlotWaitMaxNs, 10000000u);
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::RecordReservedSlotWaitDuration(
+        lifecycle,
+        std::chrono::milliseconds(8));
+    EXPECT_EQ(lifecycle.GetReservedSlotWaitMeasurementWindowMaxNs(), 8000000u);
+    EXPECT_EQ(lifecycle.GetTelemetry().reservedSlotWaitMaxNs, 10000000u);
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::RecordReservedSlotWaitDuration(
+        lifecycle,
+        std::chrono::milliseconds(12));
+    EXPECT_EQ(lifecycle.GetReservedSlotWaitMeasurementWindowMaxNs(), 12000000u);
+    EXPECT_EQ(lifecycle.GetTelemetry().reservedSlotWaitMaxNs, 12000000u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, DriverDescriptorAllocationFailuresAccumulateAcrossSlotsAndAllocatorReset)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::RebuildExplicitFrameContexts(driver, 2u);
+
+    const auto* firstContext = NLS::Render::Context::DriverTestAccess::PeekFrameContext(driver, 0u);
+    const auto* secondContext = NLS::Render::Context::DriverTestAccess::PeekFrameContext(driver, 1u);
+    ASSERT_NE(firstContext, nullptr);
+    ASSERT_NE(secondContext, nullptr);
+    ASSERT_NE(firstContext->descriptorAllocator, nullptr);
+    ASSERT_NE(secondContext->descriptorAllocator, nullptr);
+
+    NLS::Render::RHI::DescriptorAllocationRequest overflowRequest;
+    overflowRequest.count = 65537u;
+    overflowRequest.lifetime = NLS::Render::RHI::DescriptorAllocationLifetime::TransientFrame;
+    const auto before = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver);
+
+    EXPECT_FALSE(firstContext->descriptorAllocator->Allocate(overflowRequest).IsValid());
+    firstContext->descriptorAllocator->Reset();
+    EXPECT_FALSE(firstContext->descriptorAllocator->Allocate(overflowRequest).IsValid());
+    EXPECT_FALSE(secondContext->descriptorAllocator->Allocate(overflowRequest).IsValid());
+
+    const auto after = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver);
+    EXPECT_EQ(after.descriptorAllocationFailures - before.descriptorAllocationFailures, 3u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ReservedReusableSlotDeadlineSucceedsBeforeAbsoluteDeadline)
@@ -13395,7 +13465,10 @@ TEST(ThreadedRenderingLifecycleTests, SubmissionDiagnosticsCaptureDescriptorAndT
     frameContext.commandPool = commandPool;
     frameContext.frameFence = frameFence;
     frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
-    frameContext.descriptorAllocator = descriptorAllocator;
+    NLS::Render::Context::DriverTestAccess::SetFrameContextDescriptorAllocator(
+        driver,
+        0u,
+        descriptorAllocator);
     frameContext.uploadContext = uploadContext;
 
     auto transientBuffer = std::make_shared<TestBuffer>(128u);

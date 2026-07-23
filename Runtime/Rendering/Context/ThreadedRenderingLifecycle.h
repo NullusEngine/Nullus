@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <chrono>
@@ -702,6 +703,8 @@ namespace NLS::Render::Context
         std::vector<uint64_t> CollectStreamingDependencyPins() const;
         ThreadedFrameTelemetry GetTelemetry() const;
         std::optional<ThreadedFrameTelemetry> TryGetTelemetry() const;
+        void ResetReservedSlotWaitMeasurementWindowMaxNs();
+        uint64_t GetReservedSlotWaitMeasurementWindowMaxNs() const;
         void ReleaseRetainedFrameResources();
 
     private:
@@ -734,12 +737,14 @@ namespace NLS::Render::Context
         bool IsSlotExcludedFromReservationLocked(size_t slotIndex, const std::vector<size_t>& excludedSlotIndices) const;
         void ClearReservedSlotLocked(size_t slotIndex);
         const InFlightFrameSlot* PeekSlotLocked(size_t slotIndex) const;
+        void RecordReservedSlotWaitDurationLocked(uint64_t waitDurationNs);
         void RefreshTelemetryLocked();
 
         mutable std::mutex m_mutex;
         std::condition_variable m_slotAvailable;
         std::vector<InFlightFrameSlot> m_slots;
         ThreadedFrameTelemetry m_telemetry;
+        std::atomic_uint64_t m_reservedSlotWaitMeasurementWindowMaxNs{ 0u };
         std::optional<size_t> m_reservedReusableSlotIndex;
         uint64_t m_latestPublishedFrameId = 0u;
         uint64_t m_latestRetiredFrameId = 0u;
@@ -753,6 +758,9 @@ namespace NLS::Render::Context
     {
         static bool TryLockTelemetry(ThreadedRenderingLifecycle& lifecycle);
         static void UnlockTelemetry(ThreadedRenderingLifecycle& lifecycle);
+        static void RecordReservedSlotWaitDuration(
+            ThreadedRenderingLifecycle& lifecycle,
+            std::chrono::nanoseconds waitDuration);
     };
 #endif
 }

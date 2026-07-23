@@ -11,7 +11,10 @@ namespace NLS::Render::RHI
         class DefaultDescriptorAllocator final : public DescriptorAllocator
         {
         public:
-            explicit DefaultDescriptorAllocator(uint64_t transientCapacity)
+            DefaultDescriptorAllocator(
+                uint64_t transientCapacity,
+                std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount)
+                : m_rangeAllocator({}, std::move(sharedAllocationFailureCount))
             {
                 DescriptorRangeAllocatorDesc desc;
                 desc.transientCapacity = std::max<uint64_t>(transientCapacity, 1024);
@@ -53,12 +56,22 @@ namespace NLS::Render::RHI
                 return m_rangeAllocator.GetStats();
             }
 
+            void SetSharedAllocationFailureCounter(
+                std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount) override
+            {
+                m_rangeAllocator.SetSharedAllocationFailureCounter(
+                    std::move(sharedAllocationFailureCount));
+            }
+
         private:
             DescriptorRangeAllocator m_rangeAllocator;
         };
     }
 
-    DescriptorRangeAllocator::DescriptorRangeAllocator(const DescriptorRangeAllocatorDesc& desc)
+    DescriptorRangeAllocator::DescriptorRangeAllocator(
+        const DescriptorRangeAllocatorDesc& desc,
+        std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount)
+        : m_sharedAllocationFailureCount(std::move(sharedAllocationFailureCount))
     {
         Configure(desc);
     }
@@ -75,6 +88,13 @@ namespace NLS::Render::RHI
         m_stats = {};
         m_stats.transientCapacity = m_desc.transientCapacity;
         m_stats.persistentCapacity = m_desc.boundPersistentCapacity ? m_desc.persistentCapacity : 0u;
+    }
+
+    void DescriptorRangeAllocator::SetSharedAllocationFailureCounter(
+        std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount)
+    {
+        std::scoped_lock lock(m_mutex);
+        m_sharedAllocationFailureCount = std::move(sharedAllocationFailureCount);
     }
 
     void DescriptorRangeAllocator::BeginFrame(uint64_t frameIndex)
@@ -156,7 +176,7 @@ namespace NLS::Render::RHI
         {
             if (m_transientOffset + request.count > m_desc.transientCapacity)
             {
-                ++m_stats.allocationFailures;
+                RecordAllocationFailureLocked();
                 return {};
             }
 
@@ -196,7 +216,7 @@ namespace NLS::Render::RHI
         if (m_desc.boundPersistentCapacity &&
             m_persistentOffset + request.count > m_desc.persistentCapacity)
         {
-            ++m_stats.allocationFailures;
+            RecordAllocationFailureLocked();
             return {};
         }
 
@@ -240,8 +260,19 @@ namespace NLS::Render::RHI
         }
     }
 
-    std::shared_ptr<DescriptorAllocator> CreateDefaultDescriptorAllocator(uint64_t transientCapacity)
+    void DescriptorRangeAllocator::RecordAllocationFailureLocked()
     {
-        return std::make_shared<DefaultDescriptorAllocator>(transientCapacity);
+        ++m_stats.allocationFailures;
+        if (m_sharedAllocationFailureCount != nullptr)
+            m_sharedAllocationFailureCount->fetch_add(1u, std::memory_order_relaxed);
+    }
+
+    std::shared_ptr<DescriptorAllocator> CreateDefaultDescriptorAllocator(
+        const uint64_t transientCapacity,
+        std::shared_ptr<std::atomic_uint64_t> sharedAllocationFailureCount)
+    {
+        return std::make_shared<DefaultDescriptorAllocator>(
+            transientCapacity,
+            std::move(sharedAllocationFailureCount));
     }
 }

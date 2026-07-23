@@ -3655,6 +3655,24 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRevisionMetadataIsSlotLocalA
     EXPECT_EQ(afterGrowthFallback.transposeCount, afterGrowth.transposeCount);
     EXPECT_EQ(afterGrowthFallback.uploadCount, afterGrowth.uploadCount);
 
+    const auto hitCountBeforeRearmedDraw =
+        renderer.GetFrameInfo().objectDataRevisionReuseHitCount;
+    const auto fallbackCountAfterGrowthComparison =
+        renderer.GetFrameInfo().objectDataRevisionReuseFallbackCount;
+    auto rearmedBuffer = prepareInSlot(0u, descriptor);
+    ASSERT_EQ(rearmedBuffer, preservedBuffer);
+    const auto afterRearmedHit = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(afterRearmedHit.validityScanCount, afterGrowthFallback.validityScanCount);
+    EXPECT_EQ(afterRearmedHit.memcmpCount, afterGrowthFallback.memcmpCount);
+    EXPECT_EQ(afterRearmedHit.transposeCount, afterGrowthFallback.transposeCount);
+    EXPECT_EQ(afterRearmedHit.uploadCount, afterGrowthFallback.uploadCount);
+    EXPECT_EQ(
+        renderer.GetFrameInfo().objectDataRevisionReuseHitCount,
+        hitCountBeforeRearmedDraw + 1u);
+    EXPECT_EQ(
+        renderer.GetFrameInfo().objectDataRevisionReuseFallbackCount,
+        fallbackCountAfterGrowthComparison);
+
     auto secondDevice = std::make_shared<TestExplicitDevice>();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, secondDevice);
     auto& secondDeviceFrameContext =

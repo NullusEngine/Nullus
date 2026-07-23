@@ -811,18 +811,19 @@ bool EngineFrameObjectBindingProvider::TryPrepareIndexedObjectData(
                 objectDataSlot->objectDataSourceValid.begin() + objectIndex + objectCount,
                 uint8_t {1u});
 
-            if (canUseRevisionMetadata)
-            {
-                if (objectDataSlot->objectDataRevisionMetadata.size() < requiredShadowSize)
-                    objectDataSlot->objectDataRevisionMetadata.resize(requiredShadowSize);
-                objectDataSlot->objectDataRevisionMetadata[objectIndex] = {
-                    descriptor.stableSceneIdentity,
-                    descriptor.transformRevision,
-                    objectIndex,
-                    objectCount,
-                    true
-                };
-            }
+        }
+
+        if (canUseRevisionMetadata)
+        {
+            if (objectDataSlot->objectDataRevisionMetadata.size() < requiredShadowSize)
+                objectDataSlot->objectDataRevisionMetadata.resize(requiredShadowSize);
+            objectDataSlot->objectDataRevisionMetadata[objectIndex] = {
+                descriptor.stableSceneIdentity,
+                descriptor.transformRevision,
+                objectIndex,
+                objectCount,
+                true
+            };
         }
     }
 

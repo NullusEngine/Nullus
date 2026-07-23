@@ -3404,6 +3404,276 @@ TEST(RendererFrameObjectBindingTests, EngineProviderSkipsUnchangedObjectDataUplo
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 
+TEST(RendererFrameObjectBindingTests, EngineProviderRevisionReuseSkipsChangedMatrixUploadInSameFrameSlot)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 59u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    ProviderAwareRenderer renderer(driver);
+    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    NLS::Render::Data::PipelineState pso;
+
+    renderer.ResetFrameStatistics();
+    const auto prepareObject = [&](
+        NLS::Engine::Rendering::EngineDrawableDescriptor descriptor,
+        std::vector<NLS::Maths::Matrix4> instanceMatrices = {})
+        -> std::shared_ptr<TestBuffer>
+    {
+        provider.BeginFrame(frameDescriptor);
+        NLS::Render::Entities::Drawable drawable;
+        if (!instanceMatrices.empty())
+        {
+            drawable.instanceCount = static_cast<uint32_t>(instanceMatrices.size());
+            descriptor.instanceModelMatrices = std::move(instanceMatrices);
+        }
+        drawable.AddDescriptor(std::move(descriptor));
+        EXPECT_TRUE(provider.PrepareDraw(pso, drawable));
+        NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindings;
+        EXPECT_TRUE(provider.CapturePreparedBindingSets(pso, drawable, bindings));
+        provider.EndFrame();
+        return std::dynamic_pointer_cast<TestBuffer>(
+            bindings.objectBindingSet->GetDesc().entries[0].buffer);
+    };
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor trustedDescriptor;
+    trustedDescriptor.modelMatrix = NLS::Maths::Matrix4::Identity;
+    trustedDescriptor.objectIndex = 12u;
+    trustedDescriptor.objectCount = 1u;
+    trustedDescriptor.hasTrustedStaticDrawRevision = true;
+    trustedDescriptor.stableSceneIdentity = { 42u, 1u, 1u };
+    trustedDescriptor.transformRevision = 7u;
+    trustedDescriptor.allowsSingleObjectDataReuse = true;
+
+    auto objectBuffer = prepareObject(trustedDescriptor);
+    ASSERT_NE(objectBuffer, nullptr);
+    ASSERT_EQ(objectBuffer->updateCalls, 1u);
+    const auto primeWork = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(primeWork.validityScanCount, 0u);
+    EXPECT_EQ(primeWork.memcmpCount, 0u);
+    EXPECT_EQ(primeWork.transposeCount, 1u);
+    EXPECT_EQ(primeWork.uploadCount, 1u);
+
+    auto changedBytesSameRevision = trustedDescriptor;
+    changedBytesSameRevision.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 9.0f, 8.0f, 7.0f });
+    auto reusedBuffer = prepareObject(changedBytesSameRevision);
+    ASSERT_EQ(reusedBuffer, objectBuffer);
+    EXPECT_EQ(objectBuffer->updateCalls, 1u);
+    const auto hitWork = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(hitWork.validityScanCount, primeWork.validityScanCount);
+    EXPECT_EQ(hitWork.memcmpCount, primeWork.memcmpCount);
+    EXPECT_EQ(hitWork.transposeCount, primeWork.transposeCount);
+    EXPECT_EQ(hitWork.uploadCount, primeWork.uploadCount);
+
+    const auto expectFallbackUpload = [&](
+        NLS::Engine::Rendering::EngineDrawableDescriptor descriptor,
+        std::vector<NLS::Maths::Matrix4> instanceMatrices = {})
+    {
+        const auto before = provider.GetObjectDataWorkCountsForTesting();
+        auto buffer = prepareObject(std::move(descriptor), std::move(instanceMatrices));
+        ASSERT_NE(buffer, nullptr);
+        const auto after = provider.GetObjectDataWorkCountsForTesting();
+        EXPECT_EQ(after.transposeCount, before.transposeCount + 1u);
+        EXPECT_EQ(after.uploadCount, before.uploadCount + 1u);
+    };
+
+    auto changedTransformRevision = trustedDescriptor;
+    changedTransformRevision.transformRevision = 8u;
+    changedTransformRevision.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 1.0f, 0.0f, 0.0f });
+    expectFallbackUpload(changedTransformRevision);
+
+    auto changedObjectIndex = trustedDescriptor;
+    changedObjectIndex.objectIndex = 13u;
+    changedObjectIndex.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 2.0f, 0.0f, 0.0f });
+    expectFallbackUpload(changedObjectIndex);
+
+    auto changedObjectCount = trustedDescriptor;
+    changedObjectCount.objectCount = 2u;
+    expectFallbackUpload(
+        changedObjectCount,
+        {
+            NLS::Maths::Matrix4::Translation({ 3.0f, 0.0f, 0.0f }),
+            NLS::Maths::Matrix4::Translation({ 4.0f, 0.0f, 0.0f })
+        });
+
+    auto mergedGroup = trustedDescriptor;
+    mergedGroup.groupIdentity = 71u;
+    mergedGroup.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 5.0f, 0.0f, 0.0f });
+    expectFallbackUpload(mergedGroup);
+
+    auto reuseDisallowed = trustedDescriptor;
+    reuseDisallowed.allowsSingleObjectDataReuse = false;
+    reuseDisallowed.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 6.0f, 0.0f, 0.0f });
+    expectFallbackUpload(reuseDisallowed);
+
+    auto untrusted = trustedDescriptor;
+    untrusted.hasTrustedStaticDrawRevision = false;
+    untrusted.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 7.0f, 0.0f, 0.0f });
+    expectFallbackUpload(untrusted);
+
+    renderer.FinalizeFrameStatistics();
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionReuseHitCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionReuseFallbackCount, 7u);
+
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, EngineProviderRevisionMetadataIsSlotLocalAndInvalidatedByStorageChanges)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 2u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto firstDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, firstDevice);
+    for (size_t slotIndex = 0u; slotIndex < 2u; ++slotIndex)
+    {
+        auto& frameContext =
+            NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, slotIndex);
+        frameContext.frameIndex = 70u + slotIndex;
+        frameContext.descriptorAllocator =
+            NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+        ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+        frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    }
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    ProviderAwareRenderer renderer(driver);
+    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    NLS::Render::Data::PipelineState pso;
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+    descriptor.modelMatrix = NLS::Maths::Matrix4::Identity;
+    descriptor.objectIndex = 12u;
+    descriptor.objectCount = 1u;
+    descriptor.hasTrustedStaticDrawRevision = true;
+    descriptor.stableSceneIdentity = { 42u, 1u, 1u };
+    descriptor.transformRevision = 7u;
+    descriptor.allowsSingleObjectDataReuse = true;
+
+    const auto prepareInSlot = [&](
+        const size_t slotIndex,
+        NLS::Engine::Rendering::EngineDrawableDescriptor drawDescriptor)
+        -> std::shared_ptr<TestBuffer>
+    {
+        provider.SetActiveObjectDataSlotIndexForTesting(slotIndex);
+        provider.BeginFrame(frameDescriptor);
+        NLS::Render::Entities::Drawable drawable;
+        drawable.AddDescriptor(std::move(drawDescriptor));
+        EXPECT_TRUE(provider.PrepareDraw(pso, drawable));
+        NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindings;
+        if (!provider.CapturePreparedBindingSets(pso, drawable, bindings))
+        {
+            ADD_FAILURE() << "Failed to capture prepared bindings for slot " << slotIndex;
+            provider.EndFrame();
+            return nullptr;
+        }
+        provider.EndFrame();
+        return std::dynamic_pointer_cast<TestBuffer>(
+            bindings.objectBindingSet->GetDesc().entries[0].buffer);
+    };
+
+    auto slot0Buffer = prepareInSlot(0u, descriptor);
+    ASSERT_NE(slot0Buffer, nullptr);
+    const auto afterSlot0Prime = provider.GetObjectDataWorkCountsForTesting();
+
+    auto slot1Descriptor = descriptor;
+    slot1Descriptor.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 1.0f, 0.0f, 0.0f });
+    auto slot1Buffer = prepareInSlot(1u, slot1Descriptor);
+    ASSERT_NE(slot1Buffer, nullptr);
+    EXPECT_NE(slot1Buffer, slot0Buffer);
+    const auto afterSlot1Fallback = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(afterSlot1Fallback.transposeCount, afterSlot0Prime.transposeCount + 1u);
+    EXPECT_EQ(afterSlot1Fallback.uploadCount, afterSlot0Prime.uploadCount + 1u);
+
+    auto slot0ReusedBuffer = prepareInSlot(0u, slot1Descriptor);
+    EXPECT_EQ(slot0ReusedBuffer, slot0Buffer);
+    const auto afterSlot0Hit = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(afterSlot0Hit.validityScanCount, afterSlot1Fallback.validityScanCount);
+    EXPECT_EQ(afterSlot0Hit.memcmpCount, afterSlot1Fallback.memcmpCount);
+    EXPECT_EQ(afterSlot0Hit.transposeCount, afterSlot1Fallback.transposeCount);
+    EXPECT_EQ(afterSlot0Hit.uploadCount, afterSlot1Fallback.uploadCount);
+
+    provider.ResetObjectDataSlotForTesting(0u);
+    auto resetBuffer = prepareInSlot(0u, descriptor);
+    ASSERT_NE(resetBuffer, nullptr);
+    EXPECT_NE(resetBuffer, slot0Buffer);
+    const auto afterResetFallback = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(afterResetFallback.transposeCount, afterSlot0Hit.transposeCount + 1u);
+    EXPECT_EQ(afterResetFallback.uploadCount, afterSlot0Hit.uploadCount + 1u);
+
+    auto growthDescriptor = descriptor;
+    growthDescriptor.stableSceneIdentity = { 43u, 2u, 1u };
+    growthDescriptor.transformRevision = 1u;
+    growthDescriptor.objectIndex = 300u;
+    growthDescriptor.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 2.0f, 0.0f, 0.0f });
+    ASSERT_NE(prepareInSlot(0u, growthDescriptor), nullptr);
+    const auto afterGrowth = provider.GetObjectDataWorkCountsForTesting();
+    auto preservedBuffer = prepareInSlot(0u, descriptor);
+    ASSERT_NE(preservedBuffer, nullptr);
+    const auto afterGrowthFallback = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(afterGrowthFallback.validityScanCount, afterGrowth.validityScanCount + 1u);
+    EXPECT_EQ(afterGrowthFallback.memcmpCount, afterGrowth.memcmpCount + 1u);
+    EXPECT_EQ(afterGrowthFallback.transposeCount, afterGrowth.transposeCount);
+    EXPECT_EQ(afterGrowthFallback.uploadCount, afterGrowth.uploadCount);
+
+    auto secondDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, secondDevice);
+    auto& secondDeviceFrameContext =
+        NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    secondDeviceFrameContext.frameIndex = 80u;
+    secondDeviceFrameContext.descriptorAllocator =
+        NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    ASSERT_NE(secondDeviceFrameContext.descriptorAllocator, nullptr);
+    secondDeviceFrameContext.descriptorAllocator->BeginFrame(secondDeviceFrameContext.frameIndex);
+    auto deviceChangedBuffer = prepareInSlot(0u, descriptor);
+    ASSERT_NE(deviceChangedBuffer, nullptr);
+    EXPECT_NE(deviceChangedBuffer, preservedBuffer);
+    const auto afterDeviceFallback = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(afterDeviceFallback.transposeCount, afterGrowthFallback.transposeCount + 1u);
+    EXPECT_EQ(afterDeviceFallback.uploadCount, afterGrowthFallback.uploadCount + 1u);
+
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
 TEST(RendererFrameObjectBindingTests, SpatialVisibilityPipelineDrawsKeepRendererAssignedObjectIndices)
 {
     NLS::Render::Settings::DriverSettings settings;

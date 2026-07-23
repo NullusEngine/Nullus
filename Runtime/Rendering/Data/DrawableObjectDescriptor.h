@@ -59,6 +59,17 @@ namespace NLS::Render::Data
         uint64_t transformRevision = 0u;
         uint64_t groupIdentity = kInvalidStaticDrawGroupIdentity;
         bool allowsSingleObjectDataReuse = false;
+
+        [[nodiscard]] bool HasCompleteTrustedSingleObjectDataRevision() const
+        {
+            return hasTrustedStaticDrawRevision &&
+                allowsSingleObjectDataReuse &&
+                stableSceneIdentity.IsValid() &&
+                transformRevision != 0u &&
+                groupIdentity == kInvalidStaticDrawGroupIdentity &&
+                objectIndex != kInvalidObjectIndex &&
+                objectCount == 1u;
+        }
     };
 
     struct ObjectDrawConstants

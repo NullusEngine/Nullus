@@ -125,6 +125,8 @@ void RendererStats::BeginFrame()
     m_frameInfo.cachedCommandRebuildCount = 0u;
     m_frameInfo.opaqueSortTokenHitCount = 0u;
     m_frameInfo.opaqueSortTokenRebuildCount = 0u;
+    m_frameInfo.objectDataRevisionReuseHitCount = 0u;
+    m_frameInfo.objectDataRevisionReuseFallbackCount = 0u;
     m_frameInfo.objectDataOverflowDroppedObjectCount = 0u;
     m_frameInfo.parallelCommandWorkUnitCount = 0u;
     m_frameInfo.parallelRecordingWorkerCount = 0u;
@@ -220,6 +222,14 @@ void RendererStats::RecordPreparedRecordedDrawStaticBaseFastPath(const bool hit)
         ++m_frameInfo.preparedRecordedDrawStaticBaseFastPathHitCount;
     else
         ++m_frameInfo.preparedRecordedDrawStaticBaseFastPathMissCount;
+}
+
+void RendererStats::RecordObjectDataRevisionReuse(const bool hit)
+{
+    if (hit)
+        ++m_frameInfo.objectDataRevisionReuseHitCount;
+    else
+        ++m_frameInfo.objectDataRevisionReuseFallbackCount;
 }
 
 void RendererStats::RecordLargeSceneTelemetry(

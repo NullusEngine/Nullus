@@ -666,4 +666,9 @@ void CompositeRenderer::RecordPickingDiagnostics(const Data::PickingDiagnostics&
     m_rendererStats.RecordPickingDiagnostics(diagnostics);
 }
 
+void CompositeRenderer::RecordObjectDataRevisionReuse(const bool hit)
+{
+    m_rendererStats.RecordObjectDataRevisionReuse(hit);
+}
+
 }

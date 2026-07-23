@@ -42,8 +42,19 @@ public:
         const NLS::Render::Context::FrameSnapshot& snapshot,
         NLS::Render::Context::RenderScenePackage& package) const;
 #if defined(NLS_ENABLE_TEST_HOOKS)
+    struct ObjectDataWorkCountsForTesting
+    {
+        uint64_t validityScanCount = 0u;
+        uint64_t memcmpCount = 0u;
+        uint64_t transposeCount = 0u;
+        uint64_t uploadCount = 0u;
+    };
+
     uint64_t GetIndexedObjectDataShaderSupportQueryCountForTesting() const;
     uint64_t GetLegacyObjectBufferWriteCountForTesting() const;
+    ObjectDataWorkCountsForTesting GetObjectDataWorkCountsForTesting() const;
+    void SetActiveObjectDataSlotIndexForTesting(size_t slotIndex);
+    void ResetObjectDataSlotForTesting(size_t slotIndex);
 #endif
 
 protected:
@@ -115,6 +126,15 @@ private:
 
     struct ObjectDataFrameSlot
     {
+        struct RevisionMetadata
+        {
+            NLS::Render::Data::StaticDrawSceneIdentity stableSceneIdentity;
+            uint64_t transformRevision = 0u;
+            uint32_t objectIndex = NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex;
+            uint32_t objectCount = 0u;
+            bool valid = false;
+        };
+
         std::shared_ptr<NLS::Render::RHI::RHIBuffer> buffer;
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> bindingSet;
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> deferredBindingSet;
@@ -122,6 +142,7 @@ private:
         std::vector<Maths::Matrix4> objectDataShadow;
         std::vector<Maths::Matrix4> objectDataSourceShadow;
         std::vector<uint8_t> objectDataSourceValid;
+        std::vector<RevisionMetadata> objectDataRevisionMetadata;
         uint32_t nextTransientObjectIndex = 0u;
         size_t capacity = 0u;
         uint32_t idleFrameCount = 0u;
@@ -138,6 +159,8 @@ private:
     mutable uint64_t m_indexedObjectDataShaderSupportQueryCount = 0u;
 #if defined(NLS_ENABLE_TEST_HOOKS)
     uint64_t m_legacyObjectBufferWriteCount = 0u;
+    ObjectDataWorkCountsForTesting m_objectDataWorkCountsForTesting;
+    std::optional<size_t> m_activeObjectDataSlotIndexForTesting;
 #endif
 };
 }

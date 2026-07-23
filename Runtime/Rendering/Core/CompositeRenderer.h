@@ -82,6 +82,7 @@ public:
     void ResetFrameStatistics();
     void FinalizeFrameStatistics();
     void RecordPickingDiagnostics(const Data::PickingDiagnostics& diagnostics);
+    void RecordObjectDataRevisionReuse(bool hit);
 
 protected:
     void DrawEntity(

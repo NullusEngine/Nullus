@@ -750,6 +750,29 @@ TEST(RendererStatsTests, RendererStatsTracksDrawCallOptimizationCounters)
     EXPECT_EQ(frameInfo.objectDataOverflowDroppedObjectCount, 7u);
 }
 
+TEST(RendererStatsTests, RendererStatsTracksObjectDataRevisionReuseCountersPerFrame)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    stats.BeginFrame();
+    stats.RecordObjectDataRevisionReuse(true);
+    stats.RecordObjectDataRevisionReuse(false);
+    stats.RecordObjectDataRevisionReuse(true);
+    stats.RecordObjectDataRevisionReuse(false);
+    stats.RecordObjectDataRevisionReuse(false);
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.objectDataRevisionReuseHitCount, 2u);
+    EXPECT_EQ(frameInfo.objectDataRevisionReuseFallbackCount, 3u);
+
+    stats.BeginFrame();
+    stats.EndFrame();
+    const auto& resetFrameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(resetFrameInfo.objectDataRevisionReuseHitCount, 0u);
+    EXPECT_EQ(resetFrameInfo.objectDataRevisionReuseFallbackCount, 0u);
+}
+
 TEST(RendererStatsTests, DrawCallOptimizationStatsDoesNotOverwriteThreadedTelemetry)
 {
     NLS::Render::Core::RendererStats stats;

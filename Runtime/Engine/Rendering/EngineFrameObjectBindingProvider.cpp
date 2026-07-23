@@ -94,6 +94,23 @@ uint64_t EngineFrameObjectBindingProvider::GetLegacyObjectBufferWriteCountForTes
 {
     return m_legacyObjectBufferWriteCount;
 }
+
+EngineFrameObjectBindingProvider::ObjectDataWorkCountsForTesting
+EngineFrameObjectBindingProvider::GetObjectDataWorkCountsForTesting() const
+{
+    return m_objectDataWorkCountsForTesting;
+}
+
+void EngineFrameObjectBindingProvider::SetActiveObjectDataSlotIndexForTesting(const size_t slotIndex)
+{
+    m_activeObjectDataSlotIndexForTesting = slotIndex;
+}
+
+void EngineFrameObjectBindingProvider::ResetObjectDataSlotForTesting(const size_t slotIndex)
+{
+    if (slotIndex < m_objectDataSlots.size())
+        ResetObjectDataSlot(m_objectDataSlots[slotIndex]);
+}
 #endif
 
 void EngineFrameObjectBindingProvider::PrepareRenderScenePackage(
@@ -373,6 +390,16 @@ std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataS
     if (m_preparedFrameObjectDataSlotUnavailable)
         return std::nullopt;
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    if (m_activeObjectDataSlotIndexForTesting.has_value())
+    {
+        m_activeObjectDataSlotIndex = m_activeObjectDataSlotIndexForTesting.value();
+        if (m_objectDataSlots.size() <= m_activeObjectDataSlotIndex)
+            m_objectDataSlots.resize(m_activeObjectDataSlotIndex + 1u);
+        return m_activeObjectDataSlotIndex;
+    }
+#endif
+
     const auto activeSlotIndex =
         NLS::Render::Context::DriverRendererAccess::GetActiveFrameContextSlotIndex(m_renderer.GetDriver());
     if (activeSlotIndex.has_value())
@@ -437,6 +464,7 @@ void EngineFrameObjectBindingProvider::ResetObjectDataSlot(ObjectDataFrameSlot& 
     slot.objectDataShadow = {};
     slot.objectDataSourceShadow = {};
     slot.objectDataSourceValid = {};
+    slot.objectDataRevisionMetadata = {};
     slot.nextTransientObjectIndex = 0u;
     slot.capacity = 0u;
     slot.idleFrameCount = 0u;
@@ -529,12 +557,16 @@ bool EngineFrameObjectBindingProvider::EnsureObjectDataBufferCapacity(
         const auto updateResult = buffer->UpdateData(uploadDesc);
         if (!updateResult.Succeeded())
             return false;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        ++m_objectDataWorkCountsForTesting.uploadCount;
+#endif
     }
 
     slot.buffer = std::move(buffer);
     slot.deviceIdentity = deviceIdentity;
     slot.capacity = newCapacity;
     slot.bindingSetDirty = true;
+    slot.objectDataRevisionMetadata = {};
     return true;
 }
 
@@ -678,61 +710,120 @@ bool EngineFrameObjectBindingProvider::TryPrepareIndexedObjectData(
         return false;
 
     const auto requiredShadowSize = static_cast<size_t>(objectIndex) + objectCount;
-    bool objectDataChanged =
-        objectDataSlot->objectDataShadow.size() < requiredShadowSize ||
-        objectDataSlot->objectDataSourceShadow.size() < requiredShadowSize ||
-        objectDataSlot->objectDataSourceValid.size() < requiredShadowSize;
-    if (!objectDataChanged)
+    const bool canUseRevisionMetadata =
+        descriptor.HasCompleteTrustedSingleObjectDataRevision() &&
+        descriptor.objectIndex == objectIndex &&
+        descriptor.objectCount == objectCount;
+    bool revisionMetadataHit = false;
+    if (canUseRevisionMetadata &&
+        objectDataSlot->objectDataRevisionMetadata.size() > objectIndex)
     {
-        const auto validBegin = objectDataSlot->objectDataSourceValid.begin() + objectIndex;
-        const auto validEnd = validBegin + objectCount;
-        objectDataChanged =
-            std::find(validBegin, validEnd, uint8_t {0u}) != validEnd ||
-            std::memcmp(
-                objectDataSlot->objectDataSourceShadow.data() + objectIndex,
-                sourceMatrixData,
-                static_cast<size_t>(objectCount) * sizeof(Maths::Matrix4)) != 0;
+        const auto& metadata = objectDataSlot->objectDataRevisionMetadata[objectIndex];
+        revisionMetadataHit =
+            metadata.valid &&
+            metadata.stableSceneIdentity == descriptor.stableSceneIdentity &&
+            metadata.transformRevision == descriptor.transformRevision &&
+            metadata.objectIndex == objectIndex &&
+            metadata.objectCount == objectCount;
     }
+    m_renderer.RecordObjectDataRevisionReuse(revisionMetadataHit);
 
-    if (objectDataChanged)
+    if (!revisionMetadataHit)
     {
-        m_objectDataTransposeScratch.resize(objectCount);
-        std::transform(
-            sourceMatrixData,
-            sourceMatrixData + objectCount,
-            m_objectDataTransposeScratch.begin(),
-            [](const Maths::Matrix4& matrix)
+        const auto metadataInvalidateEnd = std::min(
+            objectDataSlot->objectDataRevisionMetadata.size(),
+            requiredShadowSize);
+        for (size_t index = objectIndex; index < metadataInvalidateEnd; ++index)
+            objectDataSlot->objectDataRevisionMetadata[index].valid = false;
+
+        bool objectDataChanged =
+            objectDataSlot->objectDataShadow.size() < requiredShadowSize ||
+            objectDataSlot->objectDataSourceShadow.size() < requiredShadowSize ||
+            objectDataSlot->objectDataSourceValid.size() < requiredShadowSize;
+        if (!objectDataChanged)
+        {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            ++m_objectDataWorkCountsForTesting.validityScanCount;
+#endif
+            const auto validBegin = objectDataSlot->objectDataSourceValid.begin() + objectIndex;
+            const auto validEnd = validBegin + objectCount;
+            const bool hasInvalidSource = std::find(validBegin, validEnd, uint8_t {0u}) != validEnd;
+            if (hasInvalidSource)
             {
-                return Maths::Matrix4::Transpose(matrix);
-            });
+                objectDataChanged = true;
+            }
+            else
+            {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+                ++m_objectDataWorkCountsForTesting.memcmpCount;
+#endif
+                objectDataChanged =
+                    std::memcmp(
+                        objectDataSlot->objectDataSourceShadow.data() + objectIndex,
+                        sourceMatrixData,
+                        static_cast<size_t>(objectCount) * sizeof(Maths::Matrix4)) != 0;
+            }
+        }
 
-        NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
-        uploadDesc.data = m_objectDataTransposeScratch.data();
-        uploadDesc.dataSize = static_cast<size_t>(objectCount) * sizeof(Maths::Matrix4);
-        uploadDesc.destinationOffset = static_cast<uint64_t>(objectIndex) * sizeof(Maths::Matrix4);
-        uploadDesc.debugName = "EngineObjectDataUpdate";
-        const auto updateResult = objectDataSlot->buffer->UpdateData(uploadDesc);
-        if (!updateResult.Succeeded())
-            return false;
+        if (objectDataChanged)
+        {
+            m_objectDataTransposeScratch.resize(objectCount);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            ++m_objectDataWorkCountsForTesting.transposeCount;
+#endif
+            std::transform(
+                sourceMatrixData,
+                sourceMatrixData + objectCount,
+                m_objectDataTransposeScratch.begin(),
+                [](const Maths::Matrix4& matrix)
+                {
+                    return Maths::Matrix4::Transpose(matrix);
+                });
 
-        if (objectDataSlot->objectDataShadow.size() < requiredShadowSize)
-            objectDataSlot->objectDataShadow.resize(requiredShadowSize, Maths::Matrix4::Identity);
-        if (objectDataSlot->objectDataSourceShadow.size() < requiredShadowSize)
-            objectDataSlot->objectDataSourceShadow.resize(requiredShadowSize, Maths::Matrix4::Identity);
-        if (objectDataSlot->objectDataSourceValid.size() < requiredShadowSize)
-            objectDataSlot->objectDataSourceValid.resize(requiredShadowSize, uint8_t {0u});
-        std::copy(
-            m_objectDataTransposeScratch.begin(),
-            m_objectDataTransposeScratch.end(),
-            objectDataSlot->objectDataShadow.begin() + objectIndex);
-        std::copy(
-            sourceMatrixData,
-            sourceMatrixData + objectCount,
-            objectDataSlot->objectDataSourceShadow.begin() + objectIndex);
-        std::fill(
-            objectDataSlot->objectDataSourceValid.begin() + objectIndex,
-            objectDataSlot->objectDataSourceValid.begin() + objectIndex + objectCount,
-            uint8_t {1u});
+            NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+            uploadDesc.data = m_objectDataTransposeScratch.data();
+            uploadDesc.dataSize = static_cast<size_t>(objectCount) * sizeof(Maths::Matrix4);
+            uploadDesc.destinationOffset = static_cast<uint64_t>(objectIndex) * sizeof(Maths::Matrix4);
+            uploadDesc.debugName = "EngineObjectDataUpdate";
+            const auto updateResult = objectDataSlot->buffer->UpdateData(uploadDesc);
+            if (!updateResult.Succeeded())
+                return false;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            ++m_objectDataWorkCountsForTesting.uploadCount;
+#endif
+
+            if (objectDataSlot->objectDataShadow.size() < requiredShadowSize)
+                objectDataSlot->objectDataShadow.resize(requiredShadowSize, Maths::Matrix4::Identity);
+            if (objectDataSlot->objectDataSourceShadow.size() < requiredShadowSize)
+                objectDataSlot->objectDataSourceShadow.resize(requiredShadowSize, Maths::Matrix4::Identity);
+            if (objectDataSlot->objectDataSourceValid.size() < requiredShadowSize)
+                objectDataSlot->objectDataSourceValid.resize(requiredShadowSize, uint8_t {0u});
+            std::copy(
+                m_objectDataTransposeScratch.begin(),
+                m_objectDataTransposeScratch.end(),
+                objectDataSlot->objectDataShadow.begin() + objectIndex);
+            std::copy(
+                sourceMatrixData,
+                sourceMatrixData + objectCount,
+                objectDataSlot->objectDataSourceShadow.begin() + objectIndex);
+            std::fill(
+                objectDataSlot->objectDataSourceValid.begin() + objectIndex,
+                objectDataSlot->objectDataSourceValid.begin() + objectIndex + objectCount,
+                uint8_t {1u});
+
+            if (canUseRevisionMetadata)
+            {
+                if (objectDataSlot->objectDataRevisionMetadata.size() < requiredShadowSize)
+                    objectDataSlot->objectDataRevisionMetadata.resize(requiredShadowSize);
+                objectDataSlot->objectDataRevisionMetadata[objectIndex] = {
+                    descriptor.stableSceneIdentity,
+                    descriptor.transformRevision,
+                    objectIndex,
+                    objectCount,
+                    true
+                };
+            }
+        }
     }
 
     if (RefreshExplicitIndexedObjectBindingSet(*objectDataSlot) == nullptr)

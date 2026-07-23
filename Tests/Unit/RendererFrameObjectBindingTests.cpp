@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -8752,6 +8753,139 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseRejectsSyntheticFullscreenAndIncompleteTrustedDescriptors)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 51u;
+    frameContext.commandBuffer = nullptr;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(64u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    RecordedDrawCacheProbeSceneRenderer renderer(driver);
+    renderer.SetFrameObjectBindingProvider(std::make_unique<PreparedBindingProbeProvider>(renderer));
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+
+    auto* shader = CreateTestGraphicsShader("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    NLS::Render::Resources::Mesh mesh(
+        MakeTriangleVertices(),
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu);
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+    overrides.depthTest = true;
+    overrides.depthWrite = true;
+    overrides.colorWrite = true;
+    overrides.hasDepthAttachment = false;
+
+    using StaticDescriptor = NLS::Engine::Rendering::EngineDrawableDescriptor;
+    NLS::Render::Entities::Drawable trustedDrawable;
+    trustedDrawable.material = &material;
+    trustedDrawable.mesh = &mesh;
+    trustedDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+    trustedDrawable.instanceCount = 1u;
+    trustedDrawable.vertexCount = 3u;
+    StaticDescriptor trustedDescriptor;
+    trustedDescriptor.hasTrustedStaticDrawRevision = true;
+    trustedDescriptor.stableSceneIdentity = { 31u, 2u, 1u };
+    trustedDescriptor.cachedCommandBuildSerial = 7u;
+    trustedDescriptor.meshInstanceId = mesh.GetInstanceId();
+    trustedDescriptor.meshContentRevision = mesh.GetContentRevision();
+    trustedDescriptor.materialInstanceId = material.GetInstanceId();
+    trustedDescriptor.materialParameterRevision = material.GetParameterRevision();
+    trustedDescriptor.materialRenderStateRevision = material.GetRenderStateRevision();
+    trustedDescriptor.materialBindingRevision = material.GetBindingRevision();
+    trustedDescriptor.shaderInstanceId = shader->GetInstanceId();
+    trustedDescriptor.shaderGeneration = shader->GetGeneration();
+    trustedDescriptor.transformRevision = 3u;
+    trustedDescriptor.allowsSingleObjectDataReuse = true;
+    trustedDrawable.AddDescriptor<StaticDescriptor>(std::move(trustedDescriptor));
+
+    renderer.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        trustedDrawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    renderer.EndFrame();
+
+    frameContext.frameIndex = 52u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+
+    auto syntheticDrawable = trustedDrawable;
+    auto* syntheticDescriptor = syntheticDrawable.TryGetDescriptor<StaticDescriptor>();
+    ASSERT_NE(syntheticDescriptor, nullptr);
+    *syntheticDescriptor = StaticDescriptor{};
+    syntheticDescriptor->hasTrustedStaticDrawRevision = true;
+
+    auto zeroRevisionDrawable = trustedDrawable;
+    auto* zeroRevisionDescriptor = zeroRevisionDrawable.TryGetDescriptor<StaticDescriptor>();
+    ASSERT_NE(zeroRevisionDescriptor, nullptr);
+    zeroRevisionDescriptor->meshContentRevision = 0u;
+
+    auto missingRevisionDrawable = trustedDrawable;
+    auto* missingRevisionDescriptor = missingRevisionDrawable.TryGetDescriptor<StaticDescriptor>();
+    ASSERT_NE(missingRevisionDescriptor, nullptr);
+    missingRevisionDescriptor->transformRevision = 0u;
+
+    auto fullscreenDrawable = trustedDrawable;
+    fullscreenDrawable.RemoveDescriptor<StaticDescriptor>();
+
+    const auto fullKeyBuildCountBeforeRejectedDraws =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto generalCacheLookupCountBeforeRejectedDraws =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+    for (const auto& rejectedDrawable : {
+             std::cref(syntheticDrawable),
+             std::cref(fullscreenDrawable),
+             std::cref(zeroRevisionDrawable),
+             std::cref(missingRevisionDrawable) })
+    {
+        ASSERT_TRUE(renderer.CaptureDrawForTesting(
+            rejectedDrawable.get(),
+            overrides,
+            NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    }
+    renderer.EndFrame();
+
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 4u);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeRejectedDraws + 4u);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountBeforeRejectedDraws + 4u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+#endif
+
 TEST(RendererFrameObjectBindingTests, RenderSceneOpaqueCommandsEmitResolvedTrustedStaticDrawMetadata)
 {
     NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
@@ -9077,10 +9211,21 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCacheInvalid
     drawable.instanceCount = 1u;
     drawable.vertexStart = 0u;
     drawable.vertexCount = 3u;
-    drawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
-        NLS::Maths::Matrix4::Identity,
-        NLS::Maths::Matrix4::Identity
-    });
+    NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+    descriptor.hasTrustedStaticDrawRevision = true;
+    descriptor.stableSceneIdentity = { 41u, 0u, 1u };
+    descriptor.cachedCommandBuildSerial = 1u;
+    descriptor.meshInstanceId = mesh.GetInstanceId();
+    descriptor.meshContentRevision = mesh.GetContentRevision();
+    descriptor.materialInstanceId = material.GetInstanceId();
+    descriptor.materialParameterRevision = material.GetParameterRevision();
+    descriptor.materialRenderStateRevision = material.GetRenderStateRevision();
+    descriptor.materialBindingRevision = material.GetBindingRevision();
+    descriptor.shaderInstanceId = shader->GetInstanceId();
+    descriptor.shaderGeneration = shader->GetGeneration();
+    descriptor.transformRevision = 1u;
+    descriptor.allowsSingleObjectDataReuse = true;
+    drawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(std::move(descriptor));
 
     renderer.BeginFrame(frameDescriptor);
     ASSERT_TRUE(renderer.CaptureDrawForTesting(
@@ -9096,6 +9241,9 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCacheInvalid
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 1u);
     EXPECT_EQ(firstDevice->graphicsPipelineCreateCalls, 1u);
     EXPECT_EQ(firstDevice->bindingSetCreateCalls, 1u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseCacheSizeForTesting(), 1u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting(), 1u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(), 1u);
 
     auto secondDevice = std::make_shared<TestExplicitDevice>();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, secondDevice);
@@ -9107,16 +9255,48 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCacheInvalid
     secondFrameContext.descriptorAllocator->BeginFrame(secondFrameContext.frameIndex);
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
     renderer.BeginFrame(frameDescriptor);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseCacheSizeForTesting(), 0u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting(), 0u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(), 0u);
+    const auto fullKeyBuildCountBeforeDeviceRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto generalCacheLookupCountBeforeDeviceRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
     ASSERT_TRUE(renderer.CaptureDrawForTesting(
         drawable,
         overrides,
         NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeDeviceRefresh + 2u);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountBeforeDeviceRefresh + 1u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseCacheSizeForTesting(), 1u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting(), 1u);
+    EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(), 1u);
     const auto secondSnapshot = renderer.CaptureSnapshotForTesting();
     ASSERT_TRUE(secondSnapshot.has_value());
     ASSERT_EQ(secondSnapshot->recordedDrawCommands.size(), 1u);
     EXPECT_NE(secondSnapshot->recordedDrawCommands[0].pipeline, firstPipeline);
     EXPECT_NE(secondSnapshot->recordedDrawCommands[0].materialBindingSet, firstMaterialBinding);
+    const auto fullKeyBuildCountAfterDeviceRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    const auto generalCacheLookupCountAfterDeviceRefresh =
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountAfterDeviceRefresh);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+        generalCacheLookupCountAfterDeviceRefresh);
     renderer.EndFrame();
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 1u);
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 1u);
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 0u);
     EXPECT_EQ(secondDevice->graphicsPipelineCreateCalls, 1u);

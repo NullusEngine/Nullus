@@ -8893,8 +8893,21 @@ TEST(RendererFrameObjectBindingTests, RenderSceneOpaqueCommandsEmitResolvedTrust
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 81u;
+    frameContext.commandBuffer = nullptr;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(64u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
 
     auto* shader = CreateTestGraphicsShader("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
@@ -9031,7 +9044,51 @@ TEST(RendererFrameObjectBindingTests, RenderSceneOpaqueCommandsEmitResolvedTrust
         EXPECT_FALSE(decalDescriptor->hasTrustedStaticDrawRevision);
     }
 
+    RecordedDrawCacheProbeSceneRenderer renderer(driver);
+    renderer.SetFrameObjectBindingProvider(std::make_unique<PreparedBindingProbeProvider>(renderer));
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+
+    const auto captureUntrustedVisibleDraws =
+        [&](const auto& visibleDraws, const uint64_t frameIndex, const char* category)
+        {
+            SCOPED_TRACE(category);
+            frameContext.frameIndex = frameIndex;
+            frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+            renderer.BeginFrame(frameDescriptor);
+            const auto fullKeyBuildCountBefore =
+                renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+            const auto generalCacheLookupCountBefore =
+                renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
+            for (const auto& entry : visibleDraws)
+            {
+                ASSERT_TRUE(renderer.CaptureDrawForTesting(
+                    entry.second,
+                    {},
+                    NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+            }
+            renderer.EndFrame();
+
+            EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathMissCount, 0u);
+            EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseFastPathHitCount, 0u);
+            EXPECT_GT(
+                renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+                fullKeyBuildCountBefore);
+            EXPECT_GT(
+                renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
+                generalCacheLookupCountBefore);
+            EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 1u);
+            EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 1u);
+        };
+
+    captureUntrustedVisibleDraws(transparentVisible.transparents, 82u, "transparent");
+    captureUntrustedVisibleDraws(decalVisible.decals, 83u, "decal");
+
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 
 TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCachePersistsAcrossFramesUntilMaterialDirty)

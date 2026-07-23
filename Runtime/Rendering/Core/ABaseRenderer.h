@@ -3,11 +3,14 @@
 #include <atomic>
 #include <cstdint>
 #include <list>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
+#include <type_traits>
 #include <vector>
 
 #include "Rendering/Core/IRenderer.h"
@@ -277,6 +280,11 @@ protected:
     uint64_t GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting() const;
     uint64_t GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting() const;
     static size_t GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting();
+    static size_t GetPreparedRecordedDrawStaticBaseRevisionIndexMaxEntriesForTesting();
+    static bool IsPreparedRecordedDrawStaticBaseRevisionLookupKeyCompactForTesting();
+    static size_t GetPreparedRecordedDrawStaticBaseRevisionLookupKeySizeForTesting();
+    static size_t GetPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSizeForTesting();
+    void SetPreparedRecordedDrawStaticBaseRevisionDigestMaskForTesting(uint64_t mask) const;
     static uint64_t GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting();
     static size_t GetPreparedRecordedDrawStaticBaseCacheAgeSweepBudgetForTesting();
     size_t AdvancePreparedRecordedDrawStaticBaseCacheForTesting(uint64_t frameCount) const;
@@ -365,19 +373,31 @@ private:
         Data::StaticDrawSceneIdentity stableSceneIdentity;
         uint64_t groupIdentity = Data::DrawableObjectDescriptor::kInvalidStaticDrawGroupIdentity;
         uint64_t deviceIdentity = 0u;
-        RHI::NativeBackendType backend = RHI::NativeBackendType::None;
         uintptr_t passBindingSetAddress = 0u;
+        uint64_t pipelineStateBits = 0u;
+        uint64_t pipelineOverridesDigest = 0u;
+        uint64_t lightModeDigest = 0u;
+        RHI::NativeBackendType backend = RHI::NativeBackendType::None;
         Settings::EPrimitiveMode primitiveMode = Settings::EPrimitiveMode::TRIANGLES;
         Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS;
-        Data::PipelineState pipelineState {};
-        Resources::MaterialPipelineStateOverrides pipelineOverrides {};
-        std::string lightMode;
 
-        bool operator==(const PreparedRecordedDrawStaticBaseRevisionKey& rhs) const;
+        bool operator==(const PreparedRecordedDrawStaticBaseRevisionKey& rhs) const = default;
     };
+    static constexpr size_t kPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSize = 80u;
+    static_assert(std::is_trivially_copyable_v<PreparedRecordedDrawStaticBaseRevisionKey>);
+    static_assert(std::is_standard_layout_v<PreparedRecordedDrawStaticBaseRevisionKey>);
+    static_assert(
+        sizeof(PreparedRecordedDrawStaticBaseRevisionKey) <=
+        kPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSize);
     struct PreparedRecordedDrawStaticBaseRevisionKeyHash
     {
         size_t operator()(const PreparedRecordedDrawStaticBaseRevisionKey& key) const;
+    };
+    struct PreparedRecordedDrawStaticBaseRevisionExactState
+    {
+        Data::PipelineState pipelineState {};
+        Resources::MaterialPipelineStateOverrides pipelineOverrides {};
+        std::string lightMode;
     };
     struct PreparedRecordedDrawStaticBaseRevisionStamp
     {
@@ -411,12 +431,16 @@ private:
         std::shared_ptr<RHI::RHIMesh> mesh;
         int gpuInstances = 0;
         uint64_t lastUsedFrame = 0u;
+        uint64_t observedUseFrame = 0u;
         std::list<PreparedRecordedDrawStaticBaseCacheKey>::iterator lruIterator {};
         bool lruLinked = false;
-        std::vector<PreparedRecordedDrawStaticBaseRevisionKey> revisionKeys;
+        std::unordered_set<
+            PreparedRecordedDrawStaticBaseRevisionKey,
+            PreparedRecordedDrawStaticBaseRevisionKeyHash> revisionKeys;
     };
     struct PreparedRecordedDrawStaticBaseRevisionIndexEntry
     {
+        PreparedRecordedDrawStaticBaseRevisionExactState exactState;
         PreparedRecordedDrawStaticBaseRevisionStamp stamp;
         PreparedRecordedDrawStaticBaseCacheKey fullKey;
         std::shared_ptr<PreparedRecordedDrawStaticBase> preparedBase;
@@ -424,6 +448,7 @@ private:
         const Resources::Mesh* mesh = nullptr;
         const Resources::Shader* shader = nullptr;
         uint64_t lastUsedFrame = 0u;
+        uint64_t observedUseFrame = 0u;
         std::list<PreparedRecordedDrawStaticBaseRevisionKey>::iterator lruIterator {};
         bool lruLinked = false;
     };
@@ -446,6 +471,9 @@ private:
         const PreparedRecordedDrawStaticBaseRevisionKey& revisionKey,
         const PreparedRecordedDrawStaticBaseRevisionStamp& revisionStamp,
         const PreparedRecordedDrawStaticBaseCacheKey& fullKey,
+        const Data::PipelineState& pipelineState,
+        const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
+        std::string_view lightMode,
         const Resources::Material& material,
         const Resources::Mesh& mesh,
         const Resources::Shader& shader) const;
@@ -460,7 +488,7 @@ private:
     void InvalidateExplicitDeviceDependentCachesIfNeeded() const;
     static PreparedRecordedDrawStaticBaseStableKey BuildPreparedRecordedDrawStaticBaseStableKey(
         const PreparedRecordedDrawStaticBaseCacheKey& key);
-    static PreparedRecordedDrawStaticBaseRevisionKey BuildPreparedRecordedDrawStaticBaseRevisionKey(
+    PreparedRecordedDrawStaticBaseRevisionKey BuildPreparedRecordedDrawStaticBaseRevisionKey(
         const Data::DrawableObjectDescriptor& descriptor,
         const std::shared_ptr<RHI::RHIDevice>& device,
         const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
@@ -468,8 +496,19 @@ private:
         const Data::PipelineState& pipelineState,
         const std::shared_ptr<RHI::RHIBindingSet>& activePassBindingSet,
         Settings::EPrimitiveMode primitiveMode,
-        std::string_view lightMode);
+        std::string_view lightMode) const;
     static PreparedRecordedDrawStaticBaseRevisionStamp BuildPreparedRecordedDrawStaticBaseRevisionStamp(
+        const Data::DrawableObjectDescriptor& descriptor,
+        const Resources::Mesh& mesh,
+        const Resources::Material& material,
+        const Resources::Shader& shader);
+    static bool MatchesPreparedRecordedDrawStaticBaseRevisionExactState(
+        const PreparedRecordedDrawStaticBaseRevisionExactState& exactState,
+        const Data::PipelineState& pipelineState,
+        const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
+        std::string_view lightMode);
+    static bool MatchesPreparedRecordedDrawStaticBaseRevisionStamp(
+        const PreparedRecordedDrawStaticBaseRevisionStamp& stamp,
         const Data::DrawableObjectDescriptor& descriptor,
         const Resources::Mesh& mesh,
         const Resources::Material& material,
@@ -511,6 +550,8 @@ private:
     mutable uint64_t m_preparedRecordedDrawStaticBaseFullKeyBuildCountForTesting = 0u;
     mutable uint64_t m_preparedRecordedDrawStaticBaseLruSpliceCountForTesting = 0u;
     mutable uint64_t m_preparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting = 0u;
+    mutable uint64_t m_preparedRecordedDrawStaticBaseRevisionDigestMaskForTesting =
+        (std::numeric_limits<uint64_t>::max)();
 #endif
     mutable uint64_t m_preparedRecordedDrawStaticBaseCacheFrame = 0u;
     mutable uint64_t m_cachedExplicitDeviceIdentity = 0u;

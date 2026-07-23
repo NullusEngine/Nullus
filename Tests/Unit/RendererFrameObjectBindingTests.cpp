@@ -8,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -883,6 +884,12 @@ namespace
             SetActivePreparedPassBindingSet(bindingSet);
         }
 
+        void SetPreparedRecordedDrawStaticBaseRevisionDigestMaskForTesting(const uint64_t mask)
+        {
+            NLS::Render::Core::ABaseRenderer::
+                SetPreparedRecordedDrawStaticBaseRevisionDigestMaskForTesting(mask);
+        }
+
         void ClearPreparedRecordedDrawStaticBaseCacheForTesting() const
         {
             NLS::Render::Core::ABaseRenderer::ClearPreparedRecordedDrawStaticBaseCache();
@@ -891,6 +898,30 @@ namespace
         static size_t GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting()
         {
             return NLS::Render::Core::ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting();
+        }
+
+        static size_t GetPreparedRecordedDrawStaticBaseRevisionIndexMaxEntriesForTesting()
+        {
+            return NLS::Render::Core::ABaseRenderer::
+                GetPreparedRecordedDrawStaticBaseRevisionIndexMaxEntriesForTesting();
+        }
+
+        static bool IsPreparedRecordedDrawStaticBaseRevisionLookupKeyCompactForTesting()
+        {
+            return NLS::Render::Core::ABaseRenderer::
+                IsPreparedRecordedDrawStaticBaseRevisionLookupKeyCompactForTesting();
+        }
+
+        static size_t GetPreparedRecordedDrawStaticBaseRevisionLookupKeySizeForTesting()
+        {
+            return NLS::Render::Core::ABaseRenderer::
+                GetPreparedRecordedDrawStaticBaseRevisionLookupKeySizeForTesting();
+        }
+
+        static size_t GetPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSizeForTesting()
+        {
+            return NLS::Render::Core::ABaseRenderer::
+                GetPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSizeForTesting();
         }
 
         static uint64_t GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting()
@@ -8346,6 +8377,19 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
     descriptor.allowsSingleObjectDataReuse = true;
     drawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(std::move(descriptor));
 
+    EXPECT_TRUE(RecordedDrawCacheProbeSceneRenderer::
+        IsPreparedRecordedDrawStaticBaseRevisionLookupKeyCompactForTesting());
+    EXPECT_LE(
+        RecordedDrawCacheProbeSceneRenderer::
+            GetPreparedRecordedDrawStaticBaseRevisionLookupKeySizeForTesting(),
+        RecordedDrawCacheProbeSceneRenderer::
+            GetPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSizeForTesting());
+    EXPECT_GT(
+        RecordedDrawCacheProbeSceneRenderer::
+            GetPreparedRecordedDrawStaticBaseRevisionIndexMaxEntriesForTesting(),
+        RecordedDrawCacheProbeSceneRenderer::
+            GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting());
+
     renderer.BeginFrame(frameDescriptor);
     ASSERT_TRUE(renderer.CaptureDrawForTesting(
         drawable,
@@ -8543,6 +8587,53 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheMissCount, 2u);
     EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 13u);
 
+    renderer.ClearPreparedRecordedDrawStaticBaseCacheForTesting();
+    renderer.SetPreparedRecordedDrawStaticBaseRevisionDigestMaskForTesting(0u);
+    frameContext.frameIndex = 431u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+
+    auto collidingOverrides = overrides;
+    collidingOverrides.blending = true;
+    const auto fullKeyBuildCountBeforeCollidingOverride =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        collidingOverrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeCollidingOverride);
+
+    const auto fullKeyBuildCountBeforeCollidingOriginal =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeCollidingOriginal);
+    renderer.EndFrame();
+    renderer.SetPreparedRecordedDrawStaticBaseRevisionDigestMaskForTesting((std::numeric_limits<uint64_t>::max)());
+    renderer.ClearPreparedRecordedDrawStaticBaseCacheForTesting();
+    frameContext.frameIndex = 432u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+    ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable,
+        overrides,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    renderer.EndFrame();
+
     frameContext.frameIndex = 44u;
     frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
     renderer.BeginFrame(frameDescriptor);
@@ -8658,48 +8749,82 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseTrustedRevis
     frameContext.frameIndex = 47u;
     frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
     renderer.BeginFrame(frameDescriptor);
-    const auto revisionIndexLimit =
+    const auto generalCacheLimit =
         RecordedDrawCacheProbeSceneRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting();
-    for (size_t index = 0u; index < revisionIndexLimit + 32u; ++index)
+    const auto revisionIndexLimit =
+        RecordedDrawCacheProbeSceneRenderer::GetPreparedRecordedDrawStaticBaseRevisionIndexMaxEntriesForTesting();
+    const auto sceneIdentityCount = generalCacheLimit + 32u;
+    const auto captureSceneIdentity = [&](const size_t index)
     {
         auto uniqueIdentityDrawable = drawable;
         auto* uniqueIdentityDescriptor =
             uniqueIdentityDrawable.TryGetDescriptor<StaticDescriptor>();
-        ASSERT_NE(uniqueIdentityDescriptor, nullptr);
+        if (uniqueIdentityDescriptor == nullptr)
+            return false;
         uniqueIdentityDescriptor->stableSceneIdentity.primitiveIndex = static_cast<uint32_t>(index);
-        ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        return renderer.CaptureDrawForTesting(
             uniqueIdentityDrawable,
             overrides,
-            NLS::Render::Settings::EComparaisonAlgorithm::LESS));
-    }
-    const auto fullKeyBuildCountBeforeEvictedRevisionRefresh =
+            NLS::Render::Settings::EComparaisonAlgorithm::LESS);
+    };
+    for (size_t index = 0u; index < sceneIdentityCount; ++index)
+        ASSERT_TRUE(captureSceneIdentity(index));
+
+    const auto fullKeyBuildCountBeforeSecondSceneScan =
         renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
-    ASSERT_TRUE(renderer.CaptureDrawForTesting(
-        drawable,
-        overrides,
-        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    for (size_t index = 0u; index < sceneIdentityCount; ++index)
+        ASSERT_TRUE(captureSceneIdentity(index));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeSecondSceneScan);
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(),
+        sceneIdentityCount);
+
+    renderer.ClearPreparedRecordedDrawStaticBaseCacheForTesting();
+    for (size_t index = 0u; index < revisionIndexLimit; ++index)
+        ASSERT_TRUE(captureSceneIdentity(index));
+    EXPECT_EQ(renderer.AdvancePreparedRecordedDrawStaticBaseCacheForTesting(1u), 0u);
+    for (size_t index = 0u; index < revisionIndexLimit; ++index)
+        ASSERT_TRUE(captureSceneIdentity(index));
+    ASSERT_TRUE(captureSceneIdentity(revisionIndexLimit));
+    const auto fullKeyBuildCountBeforeAllHotRevisionOverflowProbe =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(captureSceneIdentity(revisionIndexLimit));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeAllHotRevisionOverflowProbe);
+
+    renderer.ClearPreparedRecordedDrawStaticBaseCacheForTesting();
+    for (size_t index = 0u; index < revisionIndexLimit; ++index)
+        ASSERT_TRUE(captureSceneIdentity(index));
+    constexpr size_t hotRevisionIdentity = 33u;
+    constexpr size_t coldRevisionIdentity = 34u;
+    EXPECT_EQ(renderer.AdvancePreparedRecordedDrawStaticBaseCacheForTesting(1u), 0u);
+    ASSERT_TRUE(captureSceneIdentity(hotRevisionIdentity));
+    for (size_t index = revisionIndexLimit; index < revisionIndexLimit + 32u; ++index)
+    {
+        ASSERT_TRUE(captureSceneIdentity(index));
+        if (index == revisionIndexLimit)
+        {
+            EXPECT_EQ(renderer.AdvancePreparedRecordedDrawStaticBaseCacheForTesting(1u), 0u);
+            ASSERT_TRUE(captureSceneIdentity(hotRevisionIdentity));
+        }
+    }
+
+    const auto fullKeyBuildCountBeforeHotRevisionProbe =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(captureSceneIdentity(hotRevisionIdentity));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeHotRevisionProbe);
+
+    const auto fullKeyBuildCountBeforeColdRevisionProbe =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(captureSceneIdentity(coldRevisionIdentity));
     EXPECT_GT(
         renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
-        fullKeyBuildCountBeforeEvictedRevisionRefresh);
-    const auto fullKeyBuildCountAfterEvictedRevisionRefresh =
-        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
-    const auto lruSpliceCountAfterEvictedRevisionRefresh =
-        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting();
-    const auto generalCacheLookupCountAfterEvictedRevisionRefresh =
-        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting();
-    ASSERT_TRUE(renderer.CaptureDrawForTesting(
-        drawable,
-        overrides,
-        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
-    EXPECT_EQ(
-        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
-        fullKeyBuildCountAfterEvictedRevisionRefresh);
-    EXPECT_EQ(
-        renderer.GetPreparedRecordedDrawStaticBaseLruSpliceCountForTesting(),
-        lruSpliceCountAfterEvictedRevisionRefresh);
-    EXPECT_EQ(
-        renderer.GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCountForTesting(),
-        generalCacheLookupCountAfterEvictedRevisionRefresh);
+        fullKeyBuildCountBeforeColdRevisionProbe);
     renderer.EndFrame();
 
     EXPECT_LE(
@@ -9417,8 +9542,10 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCacheIsBound
 
     const auto cacheLimit = RecordedDrawCacheProbeSceneRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting();
     auto hotMaterial = std::make_unique<NLS::Render::Resources::Material>(shader);
+    auto coldMaterial = std::make_unique<NLS::Render::Resources::Material>(shader);
     std::vector<std::unique_ptr<NLS::Render::Resources::Material>> materials;
     materials.reserve(cacheLimit + 32u);
+    std::vector<NLS::Render::Resources::Material*> materialsByIdentity(cacheLimit + 32u, nullptr);
 
     renderer.BeginFrame(frameDescriptor);
     NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
@@ -9427,54 +9554,89 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCacheIsBound
     overrides.colorWrite = true;
     overrides.hasDepthAttachment = false;
 
-    drawable.material = hotMaterial.get();
-    ASSERT_TRUE(renderer.CaptureDrawForTesting(
-        drawable,
-        overrides,
-        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
-    renderer.ClearPreparedRecordedDrawStaticBaseCacheForTesting();
+    auto* descriptor = drawable.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>();
+    ASSERT_NE(descriptor, nullptr);
+    descriptor->hasTrustedStaticDrawRevision = true;
+    descriptor->cachedCommandBuildSerial = 1u;
+    descriptor->meshInstanceId = mesh.GetInstanceId();
+    descriptor->meshContentRevision = mesh.GetContentRevision();
+    descriptor->shaderInstanceId = shader->GetInstanceId();
+    descriptor->shaderGeneration = shader->GetGeneration();
+    descriptor->transformRevision = 1u;
+    descriptor->allowsSingleObjectDataReuse = true;
 
-    ASSERT_TRUE(renderer.CaptureDrawForTesting(
-        drawable,
-        overrides,
-        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
-
-    for (size_t index = 0u; index < cacheLimit - 1u; ++index)
+    const auto captureMaterial = [&](NLS::Render::Resources::Material& target, const size_t identity)
     {
-        materials.push_back(std::make_unique<NLS::Render::Resources::Material>(shader));
-        drawable.material = materials.back().get();
-        ASSERT_TRUE(renderer.CaptureDrawForTesting(
+        drawable.material = &target;
+        descriptor->stableSceneIdentity = { 37u, static_cast<uint32_t>(identity), 1u };
+        descriptor->materialInstanceId = target.GetInstanceId();
+        descriptor->materialParameterRevision = target.GetParameterRevision();
+        descriptor->materialRenderStateRevision = target.GetRenderStateRevision();
+        descriptor->materialBindingRevision = target.GetBindingRevision();
+        return renderer.CaptureDrawForTesting(
             drawable,
             overrides,
-            NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+            NLS::Render::Settings::EComparaisonAlgorithm::LESS);
+    };
+
+    constexpr size_t hotMaterialIdentity = 33u;
+    constexpr size_t coldMaterialIdentity = 34u;
+    for (size_t index = 0u; index < cacheLimit; ++index)
+    {
+        if (index == hotMaterialIdentity)
+        {
+            materialsByIdentity[index] = hotMaterial.get();
+            ASSERT_TRUE(captureMaterial(*hotMaterial, index));
+        }
+        else if (index == coldMaterialIdentity)
+        {
+            materialsByIdentity[index] = coldMaterial.get();
+            ASSERT_TRUE(captureMaterial(*coldMaterial, index));
+        }
+        else
+        {
+            materials.push_back(std::make_unique<NLS::Render::Resources::Material>(shader));
+            materialsByIdentity[index] = materials.back().get();
+            ASSERT_TRUE(captureMaterial(*materials.back(), index));
+        }
     }
 
-    drawable.material = hotMaterial.get();
-    ASSERT_TRUE(renderer.CaptureDrawForTesting(
-        drawable,
-        overrides,
-        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    EXPECT_EQ(renderer.AdvancePreparedRecordedDrawStaticBaseCacheForTesting(1u), 0u);
+    ASSERT_TRUE(captureMaterial(*hotMaterial, hotMaterialIdentity));
 
     for (size_t index = 0u; index < 32u; ++index)
     {
         materials.push_back(std::make_unique<NLS::Render::Resources::Material>(shader));
-        drawable.material = materials.back().get();
-        ASSERT_TRUE(renderer.CaptureDrawForTesting(
-            drawable,
-            overrides,
-            NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+        materialsByIdentity[cacheLimit + index] = materials.back().get();
+        ASSERT_TRUE(captureMaterial(*materials.back(), cacheLimit + index));
+        if (index == 0u)
+        {
+            EXPECT_EQ(renderer.AdvancePreparedRecordedDrawStaticBaseCacheForTesting(1u), 0u);
+            ASSERT_TRUE(captureMaterial(*hotMaterial, hotMaterialIdentity));
+        }
     }
 
-    drawable.material = hotMaterial.get();
-    ASSERT_TRUE(renderer.CaptureDrawForTesting(
-        drawable,
-        overrides,
-        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
+    const auto fullKeyBuildCountBeforeHotProbe =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(captureMaterial(*hotMaterial, hotMaterialIdentity));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeHotProbe);
+
+    const auto fullKeyBuildCountBeforeColdProbe =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(captureMaterial(*coldMaterial, coldMaterialIdentity));
+    EXPECT_GT(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeColdProbe);
     renderer.EndFrame();
 
     EXPECT_LE(renderer.GetPreparedRecordedDrawStaticBaseCacheSizeForTesting(), cacheLimit);
     EXPECT_LE(renderer.GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting(), cacheLimit);
-    EXPECT_EQ(renderer.GetFrameInfo().preparedRecordedDrawStaticBaseCacheHitCount, 2u);
+    EXPECT_LE(
+        renderer.GetPreparedRecordedDrawStaticBaseRevisionIndexSizeForTesting(),
+        RecordedDrawCacheProbeSceneRenderer::
+            GetPreparedRecordedDrawStaticBaseRevisionIndexMaxEntriesForTesting());
 
     const auto ageSweepBudget =
         RecordedDrawCacheProbeSceneRenderer::GetPreparedRecordedDrawStaticBaseCacheAgeSweepBudgetForTesting();
@@ -9499,6 +9661,27 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCacheIsBound
             sizeBeforeSweep - evictedCount);
     }
     EXPECT_EQ(renderer.GetPreparedRecordedDrawStaticBaseStableIndexSizeForTesting(), 0u);
+
+    frameContext.frameIndex = 72u;
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    renderer.BeginFrame(frameDescriptor);
+    for (size_t index = 0u; index < cacheLimit; ++index)
+    {
+        ASSERT_NE(materialsByIdentity[index], nullptr);
+        ASSERT_TRUE(captureMaterial(*materialsByIdentity[index], index));
+    }
+    EXPECT_EQ(renderer.AdvancePreparedRecordedDrawStaticBaseCacheForTesting(1u), 0u);
+    for (size_t index = 0u; index < cacheLimit; ++index)
+        ASSERT_TRUE(captureMaterial(*materialsByIdentity[index], index));
+    ASSERT_NE(materialsByIdentity[cacheLimit], nullptr);
+    ASSERT_TRUE(captureMaterial(*materialsByIdentity[cacheLimit], cacheLimit));
+    const auto fullKeyBuildCountBeforeAllHotGeneralOverflowProbe =
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting();
+    ASSERT_TRUE(captureMaterial(*materialsByIdentity[cacheLimit], cacheLimit));
+    EXPECT_EQ(
+        renderer.GetPreparedRecordedDrawStaticBaseFullKeyBuildCountForTesting(),
+        fullKeyBuildCountBeforeAllHotGeneralOverflowProbe);
+    renderer.EndFrame();
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);

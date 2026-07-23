@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <iterator>
 #include <sstream>
+#include <type_traits>
 #include "Profiling/Profiler.h"
 #include "Rendering/Core/ABaseRenderer.h"
 #include "Rendering/Buffers/Framebuffer.h"
@@ -227,12 +228,25 @@ namespace
         return std::hash<unsigned long long>{}(pipelineState.bits.to_ullong());
     }
 
+    uint64_t HashStringView(const std::string_view value)
+    {
+        uint64_t hash = 14695981039346656037ull;
+        for (const unsigned char character : value)
+        {
+            hash ^= character;
+            hash *= 1099511628211ull;
+        }
+        return hash;
+    }
+
     RHI::NativeBackendType ResolveDeviceBackendType(const std::shared_ptr<RHI::RHIDevice>& device)
     {
         return device != nullptr ? device->GetNativeDeviceInfo().backend : RHI::NativeBackendType::None;
     }
 
     constexpr size_t kMaxPreparedRecordedDrawStaticBaseCacheEntries = 1024u;
+    constexpr size_t kMaxPreparedRecordedDrawStaticBaseRevisionIndexEntries =
+        kMaxPreparedRecordedDrawStaticBaseCacheEntries * 4u;
     constexpr uint64_t kMaxPreparedRecordedDrawStaticBaseCacheFrameAge = 120u;
     constexpr size_t kPreparedRecordedDrawStaticBaseCacheAgeSweepBudget = 16u;
 
@@ -1368,21 +1382,6 @@ size_t ABaseRenderer::PreparedRecordedDrawStaticBaseStableKeyHash::operator()(
     return seed;
 }
 
-bool ABaseRenderer::PreparedRecordedDrawStaticBaseRevisionKey::operator==(
-    const PreparedRecordedDrawStaticBaseRevisionKey& rhs) const
-{
-    return stableSceneIdentity == rhs.stableSceneIdentity &&
-        groupIdentity == rhs.groupIdentity &&
-        deviceIdentity == rhs.deviceIdentity &&
-        backend == rhs.backend &&
-        passBindingSetAddress == rhs.passBindingSetAddress &&
-        primitiveMode == rhs.primitiveMode &&
-        depthCompareOverride == rhs.depthCompareOverride &&
-        pipelineState.bits == rhs.pipelineState.bits &&
-        pipelineOverrides == rhs.pipelineOverrides &&
-        lightMode == rhs.lightMode;
-}
-
 size_t ABaseRenderer::PreparedRecordedDrawStaticBaseRevisionKeyHash::operator()(
     const PreparedRecordedDrawStaticBaseRevisionKey& key) const
 {
@@ -1396,9 +1395,9 @@ size_t ABaseRenderer::PreparedRecordedDrawStaticBaseRevisionKeyHash::operator()(
     HashCombine(seed, key.passBindingSetAddress);
     HashCombine(seed, static_cast<uint32_t>(key.primitiveMode));
     HashCombine(seed, static_cast<uint32_t>(key.depthCompareOverride));
-    HashCombine(seed, HashPipelineState(key.pipelineState));
-    HashCombine(seed, key.pipelineOverrides.GetHash());
-    HashCombine(seed, key.lightMode);
+    HashCombine(seed, key.pipelineStateBits);
+    HashCombine(seed, key.pipelineOverridesDigest);
+    HashCombine(seed, key.lightModeDigest);
     return seed;
 }
 
@@ -1428,7 +1427,7 @@ ABaseRenderer::BuildPreparedRecordedDrawStaticBaseRevisionKey(
     const Data::PipelineState& pipelineState,
     const std::shared_ptr<RHI::RHIBindingSet>& activePassBindingSet,
     const Settings::EPrimitiveMode primitiveMode,
-    const std::string_view lightMode)
+    const std::string_view lightMode) const
 {
     PreparedRecordedDrawStaticBaseRevisionKey key;
     key.stableSceneIdentity = descriptor.stableSceneIdentity;
@@ -1438,9 +1437,13 @@ ABaseRenderer::BuildPreparedRecordedDrawStaticBaseRevisionKey(
     key.passBindingSetAddress = reinterpret_cast<uintptr_t>(activePassBindingSet.get());
     key.primitiveMode = primitiveMode;
     key.depthCompareOverride = depthCompareOverride;
-    key.pipelineState = pipelineState;
-    key.pipelineOverrides = pipelineOverrides;
-    key.lightMode = lightMode;
+    key.pipelineStateBits = pipelineState.bits.to_ullong();
+    key.pipelineOverridesDigest = static_cast<uint64_t>(pipelineOverrides.GetHash());
+    key.lightModeDigest = HashStringView(lightMode);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    key.pipelineOverridesDigest &= m_preparedRecordedDrawStaticBaseRevisionDigestMaskForTesting;
+    key.lightModeDigest &= m_preparedRecordedDrawStaticBaseRevisionDigestMaskForTesting;
+#endif
     return key;
 }
 
@@ -1472,6 +1475,45 @@ ABaseRenderer::BuildPreparedRecordedDrawStaticBaseRevisionStamp(
     stamp.effectiveShaderGeneration = shader.GetGeneration();
     stamp.allowsSingleObjectDataReuse = descriptor.allowsSingleObjectDataReuse;
     return stamp;
+}
+
+bool ABaseRenderer::MatchesPreparedRecordedDrawStaticBaseRevisionExactState(
+    const PreparedRecordedDrawStaticBaseRevisionExactState& exactState,
+    const Data::PipelineState& pipelineState,
+    const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
+    const std::string_view lightMode)
+{
+    return exactState.pipelineState.bits == pipelineState.bits &&
+        exactState.pipelineOverrides == pipelineOverrides &&
+        exactState.lightMode == lightMode;
+}
+
+bool ABaseRenderer::MatchesPreparedRecordedDrawStaticBaseRevisionStamp(
+    const PreparedRecordedDrawStaticBaseRevisionStamp& stamp,
+    const Data::DrawableObjectDescriptor& descriptor,
+    const Resources::Mesh& mesh,
+    const Resources::Material& material,
+    const Resources::Shader& shader)
+{
+    return stamp.cachedCommandBuildSerial == descriptor.cachedCommandBuildSerial &&
+        stamp.meshInstanceId == descriptor.meshInstanceId &&
+        stamp.meshContentRevision == descriptor.meshContentRevision &&
+        stamp.materialInstanceId == descriptor.materialInstanceId &&
+        stamp.materialParameterRevision == descriptor.materialParameterRevision &&
+        stamp.materialRenderStateRevision == descriptor.materialRenderStateRevision &&
+        stamp.materialBindingRevision == descriptor.materialBindingRevision &&
+        stamp.shaderInstanceId == descriptor.shaderInstanceId &&
+        stamp.shaderGeneration == descriptor.shaderGeneration &&
+        stamp.transformRevision == descriptor.transformRevision &&
+        stamp.liveMeshInstanceId == mesh.GetInstanceId() &&
+        stamp.liveMeshContentRevision == mesh.GetContentRevision() &&
+        stamp.effectiveMaterialInstanceId == material.GetInstanceId() &&
+        stamp.effectiveMaterialParameterRevision == material.GetParameterRevision() &&
+        stamp.effectiveMaterialRenderStateRevision == material.GetRenderStateRevision() &&
+        stamp.effectiveMaterialBindingRevision == material.GetBindingRevision() &&
+        stamp.effectiveShaderInstanceId == shader.GetInstanceId() &&
+        stamp.effectiveShaderGeneration == shader.GetGeneration() &&
+        stamp.allowsSingleObjectDataReuse == descriptor.allowsSingleObjectDataReuse;
 }
 
 bool ABaseRenderer::HasCompleteTrustedPreparedRecordedDrawStaticBaseRevision(
@@ -1601,6 +1643,9 @@ void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
     const PreparedRecordedDrawStaticBaseRevisionKey& revisionKey,
     const PreparedRecordedDrawStaticBaseRevisionStamp& revisionStamp,
     const PreparedRecordedDrawStaticBaseCacheKey& fullKey,
+    const Data::PipelineState& pipelineState,
+    const Resources::MaterialPipelineStateOverrides& pipelineOverrides,
+    const std::string_view lightMode,
     const Resources::Material& material,
     const Resources::Mesh& mesh,
     const Resources::Shader& shader) const
@@ -1617,13 +1662,14 @@ void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
             previousPreparedBase != nullptr)
         {
             auto& previousRevisionKeys = previousPreparedBase->revisionKeys;
-            previousRevisionKeys.erase(
-                std::remove(previousRevisionKeys.begin(), previousRevisionKeys.end(), revisionKey),
-                previousRevisionKeys.end());
+            previousRevisionKeys.erase(revisionKey);
         }
     }
 
     auto [revisionEntry, inserted] = m_preparedRecordedDrawStaticBaseRevisionIndex.try_emplace(revisionKey);
+    revisionEntry->second.exactState.pipelineState = pipelineState;
+    revisionEntry->second.exactState.pipelineOverrides = pipelineOverrides;
+    revisionEntry->second.exactState.lightMode = lightMode;
     revisionEntry->second.stamp = revisionStamp;
     revisionEntry->second.fullKey = fullKey;
     revisionEntry->second.preparedBase = cacheEntry->second;
@@ -1633,6 +1679,7 @@ void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
     revisionEntry->second.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
     if (inserted)
     {
+        revisionEntry->second.observedUseFrame = revisionEntry->second.lastUsedFrame - 1u;
         m_preparedRecordedDrawStaticBaseRevisionLruKeys.push_back(revisionKey);
         revisionEntry->second.lruIterator =
             std::prev(m_preparedRecordedDrawStaticBaseRevisionLruKeys.end());
@@ -1640,15 +1687,14 @@ void ABaseRenderer::RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
     }
     else if (revisionEntry->second.lruLinked)
     {
+        revisionEntry->second.observedUseFrame = revisionEntry->second.lastUsedFrame;
         m_preparedRecordedDrawStaticBaseRevisionLruKeys.splice(
             m_preparedRecordedDrawStaticBaseRevisionLruKeys.end(),
             m_preparedRecordedDrawStaticBaseRevisionLruKeys,
             revisionEntry->second.lruIterator);
     }
 
-    auto& revisionKeys = cacheEntry->second->revisionKeys;
-    if (std::find(revisionKeys.begin(), revisionKeys.end(), revisionKey) == revisionKeys.end())
-        revisionKeys.push_back(revisionKey);
+    cacheEntry->second->revisionKeys.insert(revisionKey);
 
     TrimPreparedRecordedDrawStaticBaseRevisionIndex(false);
 }
@@ -1664,9 +1710,7 @@ void ABaseRenderer::ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(
         preparedBase != nullptr)
     {
         auto& revisionKeys = preparedBase->revisionKeys;
-        revisionKeys.erase(
-            std::remove(revisionKeys.begin(), revisionKeys.end(), revisionKey),
-            revisionKeys.end());
+        revisionKeys.erase(revisionKey);
     }
     if (indexed->second.lruLinked)
         m_preparedRecordedDrawStaticBaseRevisionLruKeys.erase(indexed->second.lruIterator);
@@ -1711,10 +1755,25 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseRevisionIndex(
     }
 
     while (m_preparedRecordedDrawStaticBaseRevisionIndex.size() >
-               kMaxPreparedRecordedDrawStaticBaseCacheEntries &&
+               kMaxPreparedRecordedDrawStaticBaseRevisionIndexEntries &&
            !m_preparedRecordedDrawStaticBaseRevisionLruKeys.empty())
     {
         const auto oldestKey = m_preparedRecordedDrawStaticBaseRevisionLruKeys.front();
+        const auto oldest = m_preparedRecordedDrawStaticBaseRevisionIndex.find(oldestKey);
+        if (oldest == m_preparedRecordedDrawStaticBaseRevisionIndex.end())
+        {
+            m_preparedRecordedDrawStaticBaseRevisionLruKeys.pop_front();
+            continue;
+        }
+        if (oldest->second.lastUsedFrame != oldest->second.observedUseFrame)
+        {
+            oldest->second.observedUseFrame = oldest->second.lastUsedFrame;
+            m_preparedRecordedDrawStaticBaseRevisionLruKeys.splice(
+                m_preparedRecordedDrawStaticBaseRevisionLruKeys.end(),
+                m_preparedRecordedDrawStaticBaseRevisionLruKeys,
+                oldest->second.lruIterator);
+            continue;
+        }
         ErasePreparedRecordedDrawStaticBaseRevisionIndexEntry(oldestKey);
     }
 }
@@ -1724,6 +1783,7 @@ void ABaseRenderer::LinkPreparedRecordedDrawStaticBaseEntry(
     PreparedRecordedDrawStaticBase& entry) const
 {
     entry.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
+    entry.observedUseFrame = entry.lastUsedFrame - 1u;
     m_preparedRecordedDrawStaticBaseLruKeys.push_back(key);
     entry.lruIterator = std::prev(m_preparedRecordedDrawStaticBaseLruKeys.end());
     entry.lruLinked = true;
@@ -1733,6 +1793,7 @@ void ABaseRenderer::TouchPreparedRecordedDrawStaticBaseEntry(
     PreparedRecordedDrawStaticBase& entry) const
 {
     entry.lastUsedFrame = m_preparedRecordedDrawStaticBaseCacheFrame;
+    entry.observedUseFrame = entry.lastUsedFrame;
     if (entry.lruLinked)
     {
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -1795,6 +1856,21 @@ void ABaseRenderer::TrimPreparedRecordedDrawStaticBaseCache(const bool includeFr
            !m_preparedRecordedDrawStaticBaseLruKeys.empty())
     {
         const auto evictedKey = m_preparedRecordedDrawStaticBaseLruKeys.front();
+        const auto evicted = m_preparedRecordedDrawStaticBaseCache.find(evictedKey);
+        if (evicted == m_preparedRecordedDrawStaticBaseCache.end())
+        {
+            m_preparedRecordedDrawStaticBaseLruKeys.pop_front();
+            continue;
+        }
+        if (evicted->second->lastUsedFrame != evicted->second->observedUseFrame)
+        {
+            evicted->second->observedUseFrame = evicted->second->lastUsedFrame;
+            m_preparedRecordedDrawStaticBaseLruKeys.splice(
+                m_preparedRecordedDrawStaticBaseLruKeys.end(),
+                m_preparedRecordedDrawStaticBaseLruKeys,
+                evicted->second->lruIterator);
+            continue;
+        }
         ErasePreparedRecordedDrawStaticBaseEntry(evictedKey);
     }
 
@@ -1853,7 +1929,6 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
     const bool hasTrustedRevision = drawableDescriptor != nullptr &&
         HasCompleteTrustedPreparedRecordedDrawStaticBaseRevision(*drawableDescriptor);
     std::optional<PreparedRecordedDrawStaticBaseRevisionKey> revisionKey;
-    std::optional<PreparedRecordedDrawStaticBaseRevisionStamp> revisionStamp;
     if (hasTrustedRevision)
     {
         revisionKey = BuildPreparedRecordedDrawStaticBaseRevisionKey(
@@ -1865,17 +1940,22 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
             m_activePreparedPassBindingSet,
             drawable.primitiveMode,
             lightMode);
-        revisionStamp = BuildPreparedRecordedDrawStaticBaseRevisionStamp(
-            *drawableDescriptor,
-            *mesh,
-            material,
-            *effectiveShader);
         const auto indexedRevision = m_preparedRecordedDrawStaticBaseRevisionIndex.find(*revisionKey);
         if (indexedRevision != m_preparedRecordedDrawStaticBaseRevisionIndex.end())
         {
             const auto& preparedBase = indexedRevision->second.preparedBase;
             if (preparedBase != nullptr &&
-                indexedRevision->second.stamp == *revisionStamp &&
+                MatchesPreparedRecordedDrawStaticBaseRevisionExactState(
+                    indexedRevision->second.exactState,
+                    pipelineState,
+                    pipelineOverrides,
+                    lightMode) &&
+                MatchesPreparedRecordedDrawStaticBaseRevisionStamp(
+                    indexedRevision->second.stamp,
+                    *drawableDescriptor,
+                    *mesh,
+                    material,
+                    *effectiveShader) &&
                 indexedRevision->second.material == &material &&
                 indexedRevision->second.mesh == mesh &&
                 indexedRevision->second.shader == effectiveShader)
@@ -1898,12 +1978,19 @@ const ABaseRenderer::PreparedRecordedDrawStaticBase* ABaseRenderer::ResolvePrepa
     const auto refreshRevisionIndex =
         [&](const PreparedRecordedDrawStaticBaseCacheKey& fullKey)
         {
-            if (revisionKey.has_value() && revisionStamp.has_value())
+            if (revisionKey.has_value())
             {
                 RefreshPreparedRecordedDrawStaticBaseRevisionIndex(
                     *revisionKey,
-                    *revisionStamp,
+                    BuildPreparedRecordedDrawStaticBaseRevisionStamp(
+                        *drawableDescriptor,
+                        *mesh,
+                        material,
+                        *effectiveShader),
                     fullKey,
+                    pipelineState,
+                    pipelineOverrides,
+                    lightMode,
                     material,
                     *mesh,
                     *effectiveShader);
@@ -2246,6 +2333,34 @@ uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseGeneralCacheLookupCount
 size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxEntriesForTesting()
 {
     return kMaxPreparedRecordedDrawStaticBaseCacheEntries;
+}
+
+size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseRevisionIndexMaxEntriesForTesting()
+{
+    return kMaxPreparedRecordedDrawStaticBaseRevisionIndexEntries;
+}
+
+bool ABaseRenderer::IsPreparedRecordedDrawStaticBaseRevisionLookupKeyCompactForTesting()
+{
+    return std::is_trivially_copyable_v<PreparedRecordedDrawStaticBaseRevisionKey> &&
+        std::is_standard_layout_v<PreparedRecordedDrawStaticBaseRevisionKey> &&
+        sizeof(PreparedRecordedDrawStaticBaseRevisionKey) <=
+            kPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSize;
+}
+
+size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseRevisionLookupKeySizeForTesting()
+{
+    return sizeof(PreparedRecordedDrawStaticBaseRevisionKey);
+}
+
+size_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSizeForTesting()
+{
+    return kPreparedRecordedDrawStaticBaseRevisionLookupKeyMaxSize;
+}
+
+void ABaseRenderer::SetPreparedRecordedDrawStaticBaseRevisionDigestMaskForTesting(const uint64_t mask) const
+{
+    m_preparedRecordedDrawStaticBaseRevisionDigestMaskForTesting = mask;
 }
 
 uint64_t ABaseRenderer::GetPreparedRecordedDrawStaticBaseCacheMaxFrameAgeForTesting()

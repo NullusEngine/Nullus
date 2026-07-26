@@ -38,6 +38,18 @@ namespace NLS::Render::Data
 		Consumed
 	};
 
+	enum class ObjectDataRevisionFallbackReason : uint8_t
+	{
+		Descriptor = 0,
+		MetadataUnavailable,
+		MetadataUninitialized,
+		MetadataInvalid,
+		StableIdentityMismatch,
+		TransformMismatch,
+		ObjectIndexMismatch,
+		ObjectCountMismatch
+	};
+
 	struct NLS_RENDER_API LargeSceneTelemetry
 	{
 		uint64_t registeredPrimitiveCount = 0;
@@ -175,6 +187,15 @@ namespace NLS::Render::Data
         uint64_t opaqueSortTokenRebuildCount = 0;
         uint64_t objectDataRevisionReuseHitCount = 0;
         uint64_t objectDataRevisionReuseFallbackCount = 0;
+        uint64_t objectDataRevisionDescriptorFallbackCount = 0;
+        uint64_t objectDataRevisionMetadataUnavailableCount = 0;
+        uint64_t objectDataRevisionMetadataUninitializedCount = 0;
+        uint64_t objectDataRevisionMetadataMismatchCount = 0;
+        uint64_t objectDataRevisionMetadataInvalidCount = 0;
+        uint64_t objectDataRevisionStableIdentityMismatchCount = 0;
+        uint64_t objectDataRevisionTransformMismatchCount = 0;
+        uint64_t objectDataRevisionObjectIndexMismatchCount = 0;
+        uint64_t objectDataRevisionObjectCountMismatchCount = 0;
         uint64_t objectDataOverflowDroppedObjectCount = 0;
         uint64_t parallelCommandWorkUnitCount = 0;
         uint64_t parallelRecordingWorkerCount = 0;

@@ -37,6 +37,15 @@ namespace NLS::Editor::Core
         uint64_t staticDrawFastPathMissCount = 0u;
         uint64_t objectDataRevisionHitCount = 0u;
         uint64_t objectDataRevisionFallbackCount = 0u;
+        uint64_t objectDataRevisionDescriptorFallbackCount = 0u;
+        uint64_t objectDataRevisionMetadataUnavailableCount = 0u;
+        uint64_t objectDataRevisionMetadataUninitializedCount = 0u;
+        uint64_t objectDataRevisionMetadataMismatchCount = 0u;
+        uint64_t objectDataRevisionMetadataInvalidCount = 0u;
+        uint64_t objectDataRevisionStableIdentityMismatchCount = 0u;
+        uint64_t objectDataRevisionTransformMismatchCount = 0u;
+        uint64_t objectDataRevisionObjectIndexMismatchCount = 0u;
+        uint64_t objectDataRevisionObjectCountMismatchCount = 0u;
         uint64_t opaqueSortTokenHitCount = 0u;
         uint64_t opaqueSortTokenRebuildCount = 0u;
         uint64_t descriptorAllocationFailureCount = 0u;

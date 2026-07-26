@@ -84,6 +84,7 @@ public:
     void FinalizeFrameStatistics();
     void RecordPickingDiagnostics(const Data::PickingDiagnostics& diagnostics);
     void RecordObjectDataRevisionReuse(bool hit);
+    void RecordObjectDataRevisionFallback(Data::ObjectDataRevisionFallbackReason reason);
 
 protected:
     void DrawEntity(

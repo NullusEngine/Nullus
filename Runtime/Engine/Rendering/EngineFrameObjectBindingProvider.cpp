@@ -715,18 +715,53 @@ bool EngineFrameObjectBindingProvider::TryPrepareIndexedObjectData(
         descriptor.objectIndex == objectIndex &&
         descriptor.objectCount == objectCount;
     bool revisionMetadataHit = false;
-    if (canUseRevisionMetadata &&
-        objectDataSlot->objectDataRevisionMetadata.size() > objectIndex)
+    NLS::Render::Data::ObjectDataRevisionFallbackReason fallbackReason =
+        NLS::Render::Data::ObjectDataRevisionFallbackReason::Descriptor;
+    if (canUseRevisionMetadata)
     {
-        const auto& metadata = objectDataSlot->objectDataRevisionMetadata[objectIndex];
-        revisionMetadataHit =
-            metadata.valid &&
-            metadata.stableSceneIdentity == descriptor.stableSceneIdentity &&
-            metadata.transformRevision == descriptor.transformRevision &&
-            metadata.objectIndex == objectIndex &&
-            metadata.objectCount == objectCount;
+        if (objectDataSlot->objectDataRevisionMetadata.size() <= objectIndex)
+        {
+            fallbackReason = NLS::Render::Data::ObjectDataRevisionFallbackReason::MetadataUnavailable;
+        }
+        else
+        {
+            const auto& metadata = objectDataSlot->objectDataRevisionMetadata[objectIndex];
+            if (!metadata.valid)
+            {
+                const bool metadataIsUninitialized =
+                    metadata.stableSceneIdentity == NLS::Render::Data::StaticDrawSceneIdentity {} &&
+                    metadata.transformRevision == 0u &&
+                    metadata.objectIndex == NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex &&
+                    metadata.objectCount == 0u;
+                fallbackReason = metadataIsUninitialized
+                    ? NLS::Render::Data::ObjectDataRevisionFallbackReason::MetadataUninitialized
+                    : NLS::Render::Data::ObjectDataRevisionFallbackReason::MetadataInvalid;
+            }
+            else if (metadata.stableSceneIdentity != descriptor.stableSceneIdentity)
+            {
+                fallbackReason = NLS::Render::Data::ObjectDataRevisionFallbackReason::StableIdentityMismatch;
+            }
+            else if (metadata.transformRevision != descriptor.transformRevision)
+            {
+                fallbackReason = NLS::Render::Data::ObjectDataRevisionFallbackReason::TransformMismatch;
+            }
+            else if (metadata.objectIndex != objectIndex)
+            {
+                fallbackReason = NLS::Render::Data::ObjectDataRevisionFallbackReason::ObjectIndexMismatch;
+            }
+            else if (metadata.objectCount != objectCount)
+            {
+                fallbackReason = NLS::Render::Data::ObjectDataRevisionFallbackReason::ObjectCountMismatch;
+            }
+            else
+            {
+                revisionMetadataHit = true;
+            }
+        }
     }
     m_renderer.RecordObjectDataRevisionReuse(revisionMetadataHit);
+    if (!revisionMetadataHit)
+        m_renderer.RecordObjectDataRevisionFallback(fallbackReason);
 
     if (!revisionMetadataHit)
     {

@@ -142,9 +142,28 @@ namespace
 		return epoch;
 	}
 
-	void TouchMaterialMutationEpoch()
+	constexpr size_t kMaterialMutationJournalCapacity = 4096u;
+
+	struct MaterialMutationJournalEntry
 	{
-		MaterialMutationEpoch().fetch_add(1u, std::memory_order_relaxed);
+		std::atomic<uint64_t> epoch { 0u };
+		std::atomic<uint64_t> instanceId { 0u };
+		std::atomic<const NLS::Render::Resources::Material*> material { nullptr };
+	};
+
+	std::array<MaterialMutationJournalEntry, kMaterialMutationJournalCapacity>& MaterialMutationJournal()
+	{
+		static std::array<MaterialMutationJournalEntry, kMaterialMutationJournalCapacity> journal;
+		return journal;
+	}
+
+	void TouchMaterialMutationEpoch(NLS::Render::Resources::Material* material)
+	{
+		const auto epoch = MaterialMutationEpoch().fetch_add(1u, std::memory_order_relaxed) + 1u;
+		auto& entry = MaterialMutationJournal()[epoch % kMaterialMutationJournalCapacity];
+		entry.material.store(material, std::memory_order_relaxed);
+		entry.instanceId.store(material != nullptr ? material->GetInstanceId() : 0u, std::memory_order_relaxed);
+		entry.epoch.store(epoch, std::memory_order_release);
 	}
 
 	std::mutex& LiveMaterialRegistryMutex()
@@ -1185,7 +1204,7 @@ namespace NLS::Render::Resources
 	{
 		auto& state = GetRuntimeState();
 		++m_bindingRevision;
-		TouchMaterialMutationEpoch();
+		TouchMaterialMutationEpoch(const_cast<Material*>(this));
 		state.explicitBindingSet.reset();
 		state.explicitPipelineLayout.reset();
 		state.explicitBindingSetsByShaderKey.clear();
@@ -1215,7 +1234,7 @@ namespace NLS::Render::Resources
 	Material::~Material()
 	{
 		UnregisterLiveMaterial(this);
-		TouchMaterialMutationEpoch();
+		TouchMaterialMutationEpoch(this);
 	}
 
 	void Material::TouchRenderStateRevision()
@@ -1223,7 +1242,7 @@ namespace NLS::Render::Resources
 		++m_renderStateRevision;
 		if (m_renderStateRevision == 0u)
 			m_renderStateRevision = 1u;
-		TouchMaterialMutationEpoch();
+		TouchMaterialMutationEpoch(this);
 	}
 
 	void Material::SetShader(Shader* p_shader)
@@ -1251,7 +1270,7 @@ namespace NLS::Render::Resources
 
 	void Material::FillUniform()
 	{
-		TouchMaterialMutationEpoch();
+		TouchMaterialMutationEpoch(this);
 		m_parameterBlock.Clear();
 		m_textureResourcePaths.clear();
 		m_samplerOverrides.clear();
@@ -2635,6 +2654,57 @@ namespace NLS::Render::Resources
 	uint64_t Material::GetGlobalMutationEpoch() noexcept
 	{
 		return MaterialMutationEpoch().load(std::memory_order_relaxed);
+	}
+
+	bool Material::GetMutationsSince(
+		const uint64_t sinceEpoch,
+		MaterialMutationRecord* mutations,
+		const size_t capacity,
+		size_t& mutationCount)
+	{
+		mutationCount = 0u;
+		const auto currentEpoch = GetGlobalMutationEpoch();
+		if (sinceEpoch >= currentEpoch)
+			return true;
+
+		const auto mutationDelta = currentEpoch - sinceEpoch;
+		if (mutationDelta > kMaterialMutationJournalCapacity ||
+			mutationDelta > capacity ||
+			mutations == nullptr)
+			return false;
+
+		for (uint64_t epoch = sinceEpoch + 1u; epoch <= currentEpoch; ++epoch)
+		{
+			auto& entry = MaterialMutationJournal()[epoch % kMaterialMutationJournalCapacity];
+			bool captured = false;
+			for (uint32_t attempt = 0u; attempt < 2u && !captured; ++attempt)
+			{
+				const auto sequenceBefore = entry.epoch.load(std::memory_order_acquire);
+				if (sequenceBefore != epoch)
+					return false;
+
+				const auto* material = entry.material.load(std::memory_order_relaxed);
+				const auto instanceId = entry.instanceId.load(std::memory_order_relaxed);
+				const auto sequenceAfter = entry.epoch.load(std::memory_order_acquire);
+				if (sequenceAfter != epoch)
+					continue;
+
+				mutations[mutationCount++] = {material, instanceId};
+				captured = true;
+			}
+			if (!captured)
+				return false;
+		}
+		return true;
+	}
+
+	bool Material::IsLive(const Material* material) noexcept
+	{
+		if (material == nullptr)
+			return false;
+
+		std::lock_guard lock(LiveMaterialRegistryMutex());
+		return LiveMaterialRegistry().contains(const_cast<Material*>(material));
 	}
 
 	uint64_t Material::GetBindingRevision() const

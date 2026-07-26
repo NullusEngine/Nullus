@@ -129,6 +129,15 @@ void RendererStats::BeginFrame()
     m_frameInfo.opaqueSortTokenRebuildCount = 0u;
     m_frameInfo.objectDataRevisionReuseHitCount = 0u;
     m_frameInfo.objectDataRevisionReuseFallbackCount = 0u;
+    m_frameInfo.objectDataRevisionDescriptorFallbackCount = 0u;
+    m_frameInfo.objectDataRevisionMetadataUnavailableCount = 0u;
+    m_frameInfo.objectDataRevisionMetadataUninitializedCount = 0u;
+    m_frameInfo.objectDataRevisionMetadataMismatchCount = 0u;
+    m_frameInfo.objectDataRevisionMetadataInvalidCount = 0u;
+    m_frameInfo.objectDataRevisionStableIdentityMismatchCount = 0u;
+    m_frameInfo.objectDataRevisionTransformMismatchCount = 0u;
+    m_frameInfo.objectDataRevisionObjectIndexMismatchCount = 0u;
+    m_frameInfo.objectDataRevisionObjectCountMismatchCount = 0u;
     m_frameInfo.objectDataOverflowDroppedObjectCount = 0u;
     m_frameInfo.parallelCommandWorkUnitCount = 0u;
     m_frameInfo.parallelRecordingWorkerCount = 0u;
@@ -253,6 +262,48 @@ void RendererStats::RecordObjectDataRevisionReuse(const bool hit)
         ++m_frameInfo.objectDataRevisionReuseFallbackCount;
         ++m_cumulativeFrameInfo.objectDataRevisionReuseFallbackCount;
     }
+}
+
+void RendererStats::RecordObjectDataRevisionFallback(
+    const NLS::Render::Data::ObjectDataRevisionFallbackReason reason)
+{
+    auto record = [reason](NLS::Render::Data::FrameInfo& frameInfo)
+    {
+        switch (reason)
+        {
+        case NLS::Render::Data::ObjectDataRevisionFallbackReason::Descriptor:
+            ++frameInfo.objectDataRevisionDescriptorFallbackCount;
+            break;
+        case NLS::Render::Data::ObjectDataRevisionFallbackReason::MetadataUnavailable:
+            ++frameInfo.objectDataRevisionMetadataUnavailableCount;
+            break;
+        case NLS::Render::Data::ObjectDataRevisionFallbackReason::MetadataUninitialized:
+            ++frameInfo.objectDataRevisionMetadataUninitializedCount;
+            break;
+        case NLS::Render::Data::ObjectDataRevisionFallbackReason::MetadataInvalid:
+            ++frameInfo.objectDataRevisionMetadataMismatchCount;
+            ++frameInfo.objectDataRevisionMetadataInvalidCount;
+            break;
+        case NLS::Render::Data::ObjectDataRevisionFallbackReason::StableIdentityMismatch:
+            ++frameInfo.objectDataRevisionMetadataMismatchCount;
+            ++frameInfo.objectDataRevisionStableIdentityMismatchCount;
+            break;
+        case NLS::Render::Data::ObjectDataRevisionFallbackReason::TransformMismatch:
+            ++frameInfo.objectDataRevisionMetadataMismatchCount;
+            ++frameInfo.objectDataRevisionTransformMismatchCount;
+            break;
+        case NLS::Render::Data::ObjectDataRevisionFallbackReason::ObjectIndexMismatch:
+            ++frameInfo.objectDataRevisionMetadataMismatchCount;
+            ++frameInfo.objectDataRevisionObjectIndexMismatchCount;
+            break;
+        case NLS::Render::Data::ObjectDataRevisionFallbackReason::ObjectCountMismatch:
+            ++frameInfo.objectDataRevisionMetadataMismatchCount;
+            ++frameInfo.objectDataRevisionObjectCountMismatchCount;
+            break;
+        }
+    };
+    record(m_frameInfo);
+    record(m_cumulativeFrameInfo);
 }
 
 void RendererStats::RecordLargeSceneTelemetry(

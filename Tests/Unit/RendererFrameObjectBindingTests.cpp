@@ -3486,6 +3486,12 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRevisionReuseSkipsChangedMat
     EXPECT_EQ(hitWork.transposeCount, primeWork.transposeCount);
     EXPECT_EQ(hitWork.uploadCount, primeWork.uploadCount);
 
+    auto sparseStableDescriptor = trustedDescriptor;
+    sparseStableDescriptor.objectIndex = 3u;
+    auto sparseBuffer = prepareObject(sparseStableDescriptor);
+    ASSERT_EQ(sparseBuffer, objectBuffer);
+    EXPECT_EQ(objectBuffer->updateCalls, 2u);
+
     const auto expectFallbackUpload = [&](
         NLS::Engine::Rendering::EngineDrawableDescriptor descriptor,
         std::vector<NLS::Maths::Matrix4> instanceMatrices = {})
@@ -3537,9 +3543,27 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRevisionReuseSkipsChangedMat
         NLS::Maths::Matrix4::Translation({ 7.0f, 0.0f, 0.0f });
     expectFallbackUpload(untrusted);
 
+    auto untrustedSparse = sparseStableDescriptor;
+    untrustedSparse.hasTrustedStaticDrawRevision = false;
+    untrustedSparse.allowsSingleObjectDataReuse = false;
+    untrustedSparse.modelMatrix =
+        NLS::Maths::Matrix4::Translation({ 8.0f, 0.0f, 0.0f });
+    expectFallbackUpload(untrustedSparse);
+    auto repairedSparseBuffer = prepareObject(sparseStableDescriptor);
+    ASSERT_EQ(repairedSparseBuffer, objectBuffer);
+
     renderer.FinalizeFrameStatistics();
     EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionReuseHitCount, 1u);
-    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionReuseFallbackCount, 7u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionReuseFallbackCount, 10u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionDescriptorFallbackCount, 5u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionMetadataUnavailableCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionMetadataUninitializedCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionMetadataMismatchCount, 2u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionMetadataInvalidCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionStableIdentityMismatchCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionTransformMismatchCount, 1u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionObjectIndexMismatchCount, 0u);
+    EXPECT_EQ(renderer.GetFrameInfo().objectDataRevisionObjectCountMismatchCount, 0u);
 
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }

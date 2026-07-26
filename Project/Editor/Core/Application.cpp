@@ -584,6 +584,24 @@ Editor::Core::Application::CaptureCameraPerformanceTelemetry() const
         result.staticDrawFastPathMissCount = frameInfo.preparedRecordedDrawStaticBaseFastPathMissCount;
         result.objectDataRevisionHitCount = frameInfo.objectDataRevisionReuseHitCount;
         result.objectDataRevisionFallbackCount = frameInfo.objectDataRevisionReuseFallbackCount;
+        result.objectDataRevisionDescriptorFallbackCount =
+            frameInfo.objectDataRevisionDescriptorFallbackCount;
+        result.objectDataRevisionMetadataUnavailableCount =
+            frameInfo.objectDataRevisionMetadataUnavailableCount;
+        result.objectDataRevisionMetadataUninitializedCount =
+            frameInfo.objectDataRevisionMetadataUninitializedCount;
+        result.objectDataRevisionMetadataMismatchCount =
+            frameInfo.objectDataRevisionMetadataMismatchCount;
+        result.objectDataRevisionMetadataInvalidCount =
+            frameInfo.objectDataRevisionMetadataInvalidCount;
+        result.objectDataRevisionStableIdentityMismatchCount =
+            frameInfo.objectDataRevisionStableIdentityMismatchCount;
+        result.objectDataRevisionTransformMismatchCount =
+            frameInfo.objectDataRevisionTransformMismatchCount;
+        result.objectDataRevisionObjectIndexMismatchCount =
+            frameInfo.objectDataRevisionObjectIndexMismatchCount;
+        result.objectDataRevisionObjectCountMismatchCount =
+            frameInfo.objectDataRevisionObjectCountMismatchCount;
         result.opaqueSortTokenHitCount = frameInfo.opaqueSortTokenHitCount;
         result.opaqueSortTokenRebuildCount = frameInfo.opaqueSortTokenRebuildCount;
         result.objectDataOverflowCount = frameInfo.objectDataOverflowDroppedObjectCount;

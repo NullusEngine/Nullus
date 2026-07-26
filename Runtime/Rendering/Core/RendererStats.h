@@ -30,6 +30,8 @@ public:
     void RecordPreparedRecordedDrawStaticBaseCache(bool hit);
     void RecordPreparedRecordedDrawStaticBaseFastPath(bool hit);
     void RecordObjectDataRevisionReuse(bool hit);
+    void RecordObjectDataRevisionFallback(
+        NLS::Render::Data::ObjectDataRevisionFallbackReason reason);
     void RecordRenderBindingSetCreation(uint64_t count = 1u);
     void RecordRenderSnapshotBufferCreation(uint64_t count = 1u);
     void RecordDrawCallOptimizationStats(const NLS::Render::Data::DrawCallOptimizationStats& stats);

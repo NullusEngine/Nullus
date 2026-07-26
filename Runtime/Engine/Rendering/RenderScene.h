@@ -12,6 +12,7 @@
 
 #include <Math/Matrix4.h>
 #include <Rendering/Data/DrawCallOptimizationStats.h>
+#include <Rendering/Data/DrawableObjectDescriptor.h>
 #include <Rendering/Data/Frustum.h>
 #include <Rendering/Data/FrameInfo.h>
 #include <Rendering/Data/StateMask.h>
@@ -382,6 +383,7 @@ namespace NLS::Engine::Rendering
 				uint64_t meshRendererRenderRevision = 0u;
 				uint64_t meshContentRevision = 0u;
 				uint64_t meshLODRevisionDigest = 0u;
+				NLS::Render::Resources::Material* material = nullptr;
 				uint64_t materialInstanceId = 0u;
 				uint64_t materialParameterRevision = 0u;
 				uint64_t materialRenderStateRevision = 0u;
@@ -426,9 +428,18 @@ namespace NLS::Engine::Rendering
 			[[nodiscard]] bool operator==(const SceneSynchronizationStamp& other) const = default;
 		};
 
+		struct TrackedMaterialState
+		{
+			uint64_t instanceId = 0u;
+			uint64_t parameterRevision = 0u;
+			uint64_t renderStateRevision = 0u;
+			uint64_t bindingRevision = 0u;
+		};
+
 		struct RenderPrimitive
 		{
 			ScenePrimitiveHandle handle;
+			uint32_t stableObjectIndex = NLS::Render::Data::DrawableObjectDescriptor::kInvalidStableObjectIndex;
 			Components::MeshRenderer* meshRenderer = nullptr;
 			NLS::InstanceID meshRendererInstanceId = NLS::InstanceID_None;
 			Engine::GameObject* owner = nullptr;
@@ -550,6 +561,8 @@ namespace NLS::Engine::Rendering
 		void AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) const;
 		void RefreshSyncTelemetry(const RenderSceneSyncStats& stats);
 		void RebuildImportedHierarchyHLODRecords(const SceneSystem::Scene& scene);
+		[[nodiscard]] bool HasTrackedMaterialMutation();
+		void RefreshTrackedMaterialStates();
 		[[nodiscard]] static SceneSynchronizationStamp BuildSceneSynchronizationStamp(
 			const SceneSystem::Scene& scene,
 			const RenderSceneSyncOptions& options);
@@ -557,15 +570,19 @@ namespace NLS::Engine::Rendering
 
 		uint64_t m_sceneId = 0u;
 		std::vector<RenderPrimitive> m_primitives;
+		uint32_t m_nextStableObjectIndex = 0u;
+		std::vector<uint32_t> m_freeStableObjectIndices;
 		std::unordered_map<Components::MeshRenderer*, size_t> m_primitiveIndexByMeshRenderer;
 		std::optional<size_t> m_firstFreePrimitiveSlot;
 		size_t m_livePrimitiveCount = 0u;
 		uint64_t m_lastSceneFastAccessRevision = 0u;
 		std::optional<SceneSynchronizationStamp> m_lastSceneSynchronizationStamp;
 		uint64_t m_lastMeshMutationEpoch = 0u;
-		uint64_t m_lastMaterialMutationEpoch = 0u;
+		uint64_t m_lastObservedMaterialMutationEpoch = 0u;
 		mutable std::unordered_map<const NLS::Render::Resources::Mesh*, uint64_t>
 			m_syncMeshLODRevisionDigestCache;
+		std::unordered_map<NLS::Render::Resources::Material*, TrackedMaterialState>
+			m_trackedMaterialStates;
 		uint64_t m_nextCachedCommandBuildSerial = 1u;
 		uint64_t m_cachedCommandBuildCount = 0u;
 		uint64_t m_opaqueSortTokenBuildCount = 0u;

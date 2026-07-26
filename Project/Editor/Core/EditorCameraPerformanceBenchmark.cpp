@@ -46,6 +46,15 @@ namespace
             { "staticDrawFastPathMissCount", telemetry.staticDrawFastPathMissCount },
             { "objectDataRevisionHitCount", telemetry.objectDataRevisionHitCount },
             { "objectDataRevisionFallbackCount", telemetry.objectDataRevisionFallbackCount },
+            { "objectDataRevisionDescriptorFallbackCount", telemetry.objectDataRevisionDescriptorFallbackCount },
+            { "objectDataRevisionMetadataUnavailableCount", telemetry.objectDataRevisionMetadataUnavailableCount },
+            { "objectDataRevisionMetadataUninitializedCount", telemetry.objectDataRevisionMetadataUninitializedCount },
+            { "objectDataRevisionMetadataMismatchCount", telemetry.objectDataRevisionMetadataMismatchCount },
+            { "objectDataRevisionMetadataInvalidCount", telemetry.objectDataRevisionMetadataInvalidCount },
+            { "objectDataRevisionStableIdentityMismatchCount", telemetry.objectDataRevisionStableIdentityMismatchCount },
+            { "objectDataRevisionTransformMismatchCount", telemetry.objectDataRevisionTransformMismatchCount },
+            { "objectDataRevisionObjectIndexMismatchCount", telemetry.objectDataRevisionObjectIndexMismatchCount },
+            { "objectDataRevisionObjectCountMismatchCount", telemetry.objectDataRevisionObjectCountMismatchCount },
             { "opaqueSortTokenHitCount", telemetry.opaqueSortTokenHitCount },
             { "opaqueSortTokenRebuildCount", telemetry.opaqueSortTokenRebuildCount },
             { "descriptorAllocationFailureCount", telemetry.descriptorAllocationFailureCount },
@@ -89,6 +98,33 @@ EditorCameraPerformanceTelemetry CalculateEditorCameraPerformanceTelemetryDelta(
     delta.objectDataRevisionFallbackCount = SaturatingDelta(
         before.objectDataRevisionFallbackCount,
         after.objectDataRevisionFallbackCount);
+    delta.objectDataRevisionDescriptorFallbackCount = SaturatingDelta(
+        before.objectDataRevisionDescriptorFallbackCount,
+        after.objectDataRevisionDescriptorFallbackCount);
+    delta.objectDataRevisionMetadataUnavailableCount = SaturatingDelta(
+        before.objectDataRevisionMetadataUnavailableCount,
+        after.objectDataRevisionMetadataUnavailableCount);
+    delta.objectDataRevisionMetadataUninitializedCount = SaturatingDelta(
+        before.objectDataRevisionMetadataUninitializedCount,
+        after.objectDataRevisionMetadataUninitializedCount);
+    delta.objectDataRevisionMetadataMismatchCount = SaturatingDelta(
+        before.objectDataRevisionMetadataMismatchCount,
+        after.objectDataRevisionMetadataMismatchCount);
+    delta.objectDataRevisionMetadataInvalidCount = SaturatingDelta(
+        before.objectDataRevisionMetadataInvalidCount,
+        after.objectDataRevisionMetadataInvalidCount);
+    delta.objectDataRevisionStableIdentityMismatchCount = SaturatingDelta(
+        before.objectDataRevisionStableIdentityMismatchCount,
+        after.objectDataRevisionStableIdentityMismatchCount);
+    delta.objectDataRevisionTransformMismatchCount = SaturatingDelta(
+        before.objectDataRevisionTransformMismatchCount,
+        after.objectDataRevisionTransformMismatchCount);
+    delta.objectDataRevisionObjectIndexMismatchCount = SaturatingDelta(
+        before.objectDataRevisionObjectIndexMismatchCount,
+        after.objectDataRevisionObjectIndexMismatchCount);
+    delta.objectDataRevisionObjectCountMismatchCount = SaturatingDelta(
+        before.objectDataRevisionObjectCountMismatchCount,
+        after.objectDataRevisionObjectCountMismatchCount);
     delta.opaqueSortTokenHitCount = SaturatingDelta(
         before.opaqueSortTokenHitCount,
         after.opaqueSortTokenHitCount);

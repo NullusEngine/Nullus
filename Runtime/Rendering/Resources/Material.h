@@ -39,6 +39,12 @@ namespace NLS::Render::Resources
     class Material;
     class Shader;
     struct ShaderPropertyDesc;
+
+    struct MaterialMutationRecord
+    {
+        const Material* material = nullptr;
+        uint64_t instanceId = 0u;
+    };
     class Texture2D;
 }
 namespace NLS::Render::RHI
@@ -481,6 +487,12 @@ public:
     uint64_t GetParameterRevision() const;
     uint64_t GetRenderStateRevision() const;
     static uint64_t GetGlobalMutationEpoch() noexcept;
+    static bool GetMutationsSince(
+        uint64_t sinceEpoch,
+        MaterialMutationRecord* mutations,
+        size_t capacity,
+        size_t& mutationCount);
+    static bool IsLive(const Material* material) noexcept;
     uint64_t GetBindingRevision() const;
     uint64_t GetExplicitBindingSetCreationCount() const;
     uint64_t GetExplicitSnapshotBufferCreationCount() const;

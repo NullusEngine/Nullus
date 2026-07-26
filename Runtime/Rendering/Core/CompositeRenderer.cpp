@@ -676,4 +676,10 @@ void CompositeRenderer::RecordObjectDataRevisionReuse(const bool hit)
     m_rendererStats.RecordObjectDataRevisionReuse(hit);
 }
 
+void CompositeRenderer::RecordObjectDataRevisionFallback(
+    const Data::ObjectDataRevisionFallbackReason reason)
+{
+    m_rendererStats.RecordObjectDataRevisionFallback(reason);
+}
+
 }

@@ -8,6 +8,7 @@
 #include <functional>
 #include <fstream>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -1828,8 +1829,94 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 			}
 			logStartupParseSceneStage("SortSceneDrawables");
 
+	const auto maxObjectDataCount = NLS::Render::Data::GetMaxObjectDataCount();
+	const auto resolveStableObjectIndex = [](const EngineDrawableDescriptor& descriptor)
+	{
+		return descriptor.stableObjectIndex != EngineDrawableDescriptor::kInvalidStableObjectIndex
+			? descriptor.stableObjectIndex
+			: descriptor.stableSceneIdentity.primitiveIndex;
+	};
+	const auto hasTrustedStableSingleObjectIdentity = [](const EngineDrawableDescriptor& descriptor)
+	{
+		return descriptor.hasTrustedStaticDrawRevision &&
+			descriptor.allowsSingleObjectDataReuse &&
+			descriptor.stableSceneIdentity.IsValid() &&
+			descriptor.transformRevision != 0u &&
+			descriptor.groupIdentity == EngineDrawableDescriptor::kInvalidStaticDrawGroupIdentity &&
+			descriptor.objectCount == 1u;
+	};
+	std::vector<uint32_t> reservedStableObjectIndices;
+	for (const auto* queue : { &opaques, &decals, &skyboxes, &transparents })
+	{
+		for (const auto& entry : *queue)
+		{
+			EngineDrawableDescriptor descriptor;
+			if (!entry.second.template TryGetDescriptor<EngineDrawableDescriptor>(descriptor) ||
+				!hasTrustedStableSingleObjectIdentity(descriptor))
+			{
+				continue;
+			}
+
+			const auto stableObjectIndex = resolveStableObjectIndex(descriptor);
+			if (stableObjectIndex < maxObjectDataCount)
+				reservedStableObjectIndices.push_back(stableObjectIndex);
+		}
+	}
+	std::sort(reservedStableObjectIndices.begin(), reservedStableObjectIndices.end());
+	reservedStableObjectIndices.erase(
+		std::unique(reservedStableObjectIndices.begin(), reservedStableObjectIndices.end()),
+		reservedStableObjectIndices.end());
+
+	const auto tryAllocateDynamicRange =
+		[&reservedStableObjectIndices, maxObjectDataCount](
+			uint32_t& nextObjectIndex,
+			const uint32_t objectCount,
+			uint32_t& outObjectIndex)
+		{
+			if (objectCount == 0u)
+				return false;
+
+			while (true)
+			{
+				uint32_t lastObjectIndex = 0u;
+				if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
+					nextObjectIndex,
+					objectCount,
+					lastObjectIndex))
+				{
+					return false;
+				}
+
+				const auto conflictingStableIndex = std::lower_bound(
+					reservedStableObjectIndices.begin(),
+					reservedStableObjectIndices.end(),
+					nextObjectIndex);
+				if (conflictingStableIndex == reservedStableObjectIndices.end() ||
+					*conflictingStableIndex > lastObjectIndex)
+				{
+					outObjectIndex = nextObjectIndex;
+					nextObjectIndex = lastObjectIndex + 1u;
+					return true;
+				}
+
+				if (*conflictingStableIndex == (std::numeric_limits<uint32_t>::max)())
+					return false;
+				nextObjectIndex = *conflictingStableIndex + 1u;
+				if (nextObjectIndex >= maxObjectDataCount)
+					return false;
+			}
+		};
+
 	uint32_t nextObjectIndex = 0u;
-	auto reassignObjectIndices = [&nextObjectIndex, &objectDataOverflowDroppedObjectCount](auto& queue)
+	std::unordered_set<uint32_t> claimedStableObjectIndices;
+	auto reassignObjectIndices = [
+		&nextObjectIndex,
+		&claimedStableObjectIndices,
+		&reservedStableObjectIndices,
+		&resolveStableObjectIndex,
+		&hasTrustedStableSingleObjectIdentity,
+		&tryAllocateDynamicRange,
+		&objectDataOverflowDroppedObjectCount](auto& queue)
 	{
 		for (auto& entry : queue)
 		{
@@ -1838,19 +1925,29 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 				continue;
 
 			const uint32_t objectCount = std::max<uint32_t>(1u, descriptor.objectCount);
-			uint32_t lastObjectIndex = 0u;
-			if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
-				nextObjectIndex,
-				objectCount,
-				lastObjectIndex))
+			const auto stableObjectIndex = resolveStableObjectIndex(descriptor);
+			const bool preservesStableObjectIndex =
+				hasTrustedStableSingleObjectIdentity(descriptor) &&
+				std::binary_search(
+					reservedStableObjectIndices.begin(),
+					reservedStableObjectIndices.end(),
+					stableObjectIndex) &&
+				claimedStableObjectIndices.insert(stableObjectIndex).second;
+			uint32_t objectIndex = stableObjectIndex;
+			if (preservesStableObjectIndex)
+			{
+				descriptor.objectIndex = objectIndex;
+			}
+			else if (!tryAllocateDynamicRange(nextObjectIndex, objectCount, objectIndex))
 			{
 				descriptor.objectIndex = EngineDrawableDescriptor::kInvalidObjectIndex;
+				descriptor.allowsSingleObjectDataReuse = false;
 				objectDataOverflowDroppedObjectCount += objectCount;
 			}
 			else
 			{
-				descriptor.objectIndex = nextObjectIndex;
-				nextObjectIndex = lastObjectIndex + 1u;
+				descriptor.objectIndex = objectIndex;
+				descriptor.allowsSingleObjectDataReuse = false;
 			}
 			entry.second.template RemoveDescriptor<EngineDrawableDescriptor>();
 			entry.second.template AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));

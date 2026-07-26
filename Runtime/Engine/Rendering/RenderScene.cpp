@@ -823,13 +823,15 @@ RenderScene::~RenderScene() = default;
 RenderScene::RenderScene(RenderScene&& other) noexcept
 	: m_sceneId(other.m_sceneId),
 	  m_primitives(std::move(other.m_primitives)),
+	  m_nextStableObjectIndex(other.m_nextStableObjectIndex),
+	  m_freeStableObjectIndices(std::move(other.m_freeStableObjectIndices)),
 	  m_primitiveIndexByMeshRenderer(std::move(other.m_primitiveIndexByMeshRenderer)),
 	  m_firstFreePrimitiveSlot(other.m_firstFreePrimitiveSlot),
 	  m_livePrimitiveCount(other.m_livePrimitiveCount),
 	  m_lastSceneFastAccessRevision(other.m_lastSceneFastAccessRevision),
 	  m_lastSceneSynchronizationStamp(other.m_lastSceneSynchronizationStamp),
 	  m_lastMeshMutationEpoch(other.m_lastMeshMutationEpoch),
-	  m_lastMaterialMutationEpoch(other.m_lastMaterialMutationEpoch),
+	  m_lastObservedMaterialMutationEpoch(other.m_lastObservedMaterialMutationEpoch),
 	  m_nextCachedCommandBuildSerial(other.m_nextCachedCommandBuildSerial),
 	  m_cachedCommandBuildCount(other.m_cachedCommandBuildCount),
 	  m_opaqueSortTokenBuildCount(other.m_opaqueSortTokenBuildCount),
@@ -847,7 +849,8 @@ RenderScene::RenderScene(RenderScene&& other) noexcept
 	  m_representationRegistry(std::move(other.m_representationRegistry)),
 	  m_spatialCandidateSnapshotCache(std::move(other.m_spatialCandidateSnapshotCache)),
 	  m_spatialCandidateSnapshotCacheHitCount(other.m_spatialCandidateSnapshotCacheHitCount),
-	  m_importedHierarchyHLODClusterHandles(std::move(other.m_importedHierarchyHLODClusterHandles))
+	  m_importedHierarchyHLODClusterHandles(std::move(other.m_importedHierarchyHLODClusterHandles)),
+	  m_trackedMaterialStates(std::move(other.m_trackedMaterialStates))
 {
 	other.ResetMovedFromState();
 }
@@ -859,14 +862,17 @@ RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
 
 	m_sceneId = other.m_sceneId;
 	m_primitives = std::move(other.m_primitives);
+	m_nextStableObjectIndex = other.m_nextStableObjectIndex;
+	m_freeStableObjectIndices = std::move(other.m_freeStableObjectIndices);
 	m_primitiveIndexByMeshRenderer = std::move(other.m_primitiveIndexByMeshRenderer);
 	m_firstFreePrimitiveSlot = other.m_firstFreePrimitiveSlot;
 	m_livePrimitiveCount = other.m_livePrimitiveCount;
 	m_lastSceneFastAccessRevision = other.m_lastSceneFastAccessRevision;
 	m_lastSceneSynchronizationStamp = other.m_lastSceneSynchronizationStamp;
 	m_lastMeshMutationEpoch = other.m_lastMeshMutationEpoch;
-	m_lastMaterialMutationEpoch = other.m_lastMaterialMutationEpoch;
+	m_lastObservedMaterialMutationEpoch = other.m_lastObservedMaterialMutationEpoch;
 	m_syncMeshLODRevisionDigestCache.clear();
+	m_trackedMaterialStates = std::move(other.m_trackedMaterialStates);
 	m_nextCachedCommandBuildSerial = other.m_nextCachedCommandBuildSerial;
 	m_cachedCommandBuildCount = other.m_cachedCommandBuildCount;
 	m_opaqueSortTokenBuildCount = other.m_opaqueSortTokenBuildCount;
@@ -894,14 +900,17 @@ void RenderScene::ResetMovedFromState() noexcept
 {
 	m_sceneId = AllocateRenderSceneId();
 	m_primitives.clear();
+	m_nextStableObjectIndex = 0u;
+	m_freeStableObjectIndices.clear();
 	m_primitiveIndexByMeshRenderer.clear();
 	m_firstFreePrimitiveSlot.reset();
 	m_livePrimitiveCount = 0u;
 	m_lastSceneFastAccessRevision = 0u;
 	m_lastSceneSynchronizationStamp.reset();
 	m_lastMeshMutationEpoch = 0u;
-	m_lastMaterialMutationEpoch = 0u;
+	m_lastObservedMaterialMutationEpoch = 0u;
 	m_syncMeshLODRevisionDigestCache.clear();
+	m_trackedMaterialStates.clear();
 	m_nextCachedCommandBuildSerial = 1u;
 	m_cachedCommandBuildCount = 0u;
 	m_opaqueSortTokenBuildCount = 0u;
@@ -951,6 +960,7 @@ bool RenderScene::PrimitiveInputStamp::operator==(const PrimitiveInputStamp& oth
 			meshRendererRenderRevision == other.meshRendererRenderRevision &&
 			meshContentRevision == other.meshContentRevision &&
 			meshLODRevisionDigest == other.meshLODRevisionDigest &&
+			material == other.material &&
 			materialInstanceId == other.materialInstanceId &&
 			materialParameterRevision == other.materialParameterRevision &&
 				materialRenderStateRevision == other.materialRenderStateRevision &&
@@ -973,7 +983,7 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	m_lastDirtySyncHandles.clear();
 	m_lastRemovedHandles.clear();
 	const auto meshMutationEpoch = NLS::Render::Resources::Mesh::GetGlobalMutationEpoch();
-	const auto materialMutationEpoch = NLS::Render::Resources::Material::GetGlobalMutationEpoch();
+	const bool trackedMaterialMutation = HasTrackedMaterialMutation();
 	const auto& fastAccess = scene.GetFastAccessComponents();
 	const auto fastAccessRevision = scene.GetFastAccessComponentsRevision();
 	const bool fastAccessMembershipChanged =
@@ -986,7 +996,7 @@ RenderSceneSyncStats RenderScene::Synchronize(
 		m_lastSceneSynchronizationStamp.has_value() &&
 		*m_lastSceneSynchronizationStamp == synchronizationStamp &&
 		m_lastMeshMutationEpoch == meshMutationEpoch &&
-		m_lastMaterialMutationEpoch == materialMutationEpoch;
+		!trackedMaterialMutation;
 
 	std::unordered_map<Components::MeshRenderer*, NLS::InstanceID> liveMeshRenderers;
 	if (fastAccessMembershipChanged)
@@ -1044,7 +1054,8 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	m_lastSceneFastAccessRevision = fastAccessRevision;
 	m_lastSceneSynchronizationStamp = synchronizationStamp;
 	m_lastMeshMutationEpoch = meshMutationEpoch;
-	m_lastMaterialMutationEpoch = materialMutationEpoch;
+	if (!canReuseSceneSynchronization)
+		RefreshTrackedMaterialStates();
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::Synchronize::RefreshSpatialIndex");
 		RefreshSpatialIndex(options);
@@ -1092,6 +1103,66 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	m_lastSyncStats.syncTimeNs = stats.syncTimeNs;
 	RefreshSyncTelemetry(stats);
 	return stats;
+}
+
+bool RenderScene::HasTrackedMaterialMutation()
+{
+	const auto mutationEpoch = NLS::Render::Resources::Material::GetGlobalMutationEpoch();
+	if (mutationEpoch == m_lastObservedMaterialMutationEpoch)
+		return false;
+	const auto observedEpoch = m_lastObservedMaterialMutationEpoch;
+	std::array<NLS::Render::Resources::MaterialMutationRecord, 512u> mutations;
+	size_t mutationCount = 0u;
+	const bool hasCompleteMutationJournal =
+		NLS::Render::Resources::Material::GetMutationsSince(
+			observedEpoch,
+			mutations.data(),
+			mutations.size(),
+			mutationCount);
+	m_lastObservedMaterialMutationEpoch = mutationEpoch;
+	if (!hasCompleteMutationJournal)
+		return true;
+
+	for (size_t mutationIndex = 0u; mutationIndex < mutationCount; ++mutationIndex)
+	{
+		const auto& mutation = mutations[mutationIndex];
+		const auto found = m_trackedMaterialStates.find(
+			const_cast<NLS::Render::Resources::Material*>(mutation.material));
+		if (found == m_trackedMaterialStates.end())
+			continue;
+
+		return true;
+	}
+
+	return false;
+}
+
+void RenderScene::RefreshTrackedMaterialStates()
+{
+	m_trackedMaterialStates.clear();
+	const auto trackMaterial = [this](NLS::Render::Resources::Material* material)
+	{
+		if (material == nullptr || !NLS::Render::Resources::Material::IsLive(material))
+			return;
+		m_trackedMaterialStates[material] = {
+			material->GetInstanceId(),
+			material->GetParameterRevision(),
+			material->GetRenderStateRevision(),
+			material->GetBindingRevision()
+		};
+	};
+
+	for (const auto& primitive : m_primitives)
+	{
+		if (!primitive.occupied || primitive.tombstoned)
+			continue;
+		trackMaterial(primitive.lastInputStamp.material);
+		for (const auto& slot : primitive.cachedCommands)
+		{
+			if (slot.valid)
+				trackMaterial(slot.stamp.material);
+		}
+	}
 }
 
 RenderScene::SceneSynchronizationStamp RenderScene::BuildSceneSynchronizationStamp(
@@ -1832,6 +1903,18 @@ RenderScene::RenderPrimitive& RenderScene::AllocatePrimitiveSlot(
 	Components::MeshRenderer& meshRenderer,
 	RenderSceneSyncStats& stats)
 {
+	const auto allocateStableObjectIndex = [this]()
+	{
+		if (!m_freeStableObjectIndices.empty())
+		{
+			const auto stableObjectIndex = m_freeStableObjectIndices.back();
+			m_freeStableObjectIndices.pop_back();
+			return stableObjectIndex;
+		}
+		if (m_nextStableObjectIndex < NLS::Render::Data::GetMaxObjectDataCount())
+			return m_nextStableObjectIndex++;
+		return NLS::Render::Data::DrawableObjectDescriptor::kInvalidStableObjectIndex;
+	};
 	if (m_firstFreePrimitiveSlot.has_value())
 	{
 		const auto primitiveIndex = m_firstFreePrimitiveSlot.value();
@@ -1839,6 +1922,7 @@ RenderScene::RenderPrimitive& RenderScene::AllocatePrimitiveSlot(
 		m_firstFreePrimitiveSlot = primitive.nextFreePrimitiveSlot;
 		const auto generation = IncrementPrimitiveGeneration(primitive.handle.generation);
 		primitive = {};
+		primitive.stableObjectIndex = allocateStableObjectIndex();
 		primitive.handle = {
 			m_sceneId,
 			static_cast<uint32_t>(primitiveIndex),
@@ -1857,6 +1941,7 @@ RenderScene::RenderPrimitive& RenderScene::AllocatePrimitiveSlot(
 
 	const auto primitiveIndex = m_primitives.size();
 	RenderPrimitive primitive;
+	primitive.stableObjectIndex = allocateStableObjectIndex();
 	primitive.handle = {
 		m_sceneId,
 		static_cast<uint32_t>(primitiveIndex),
@@ -1941,6 +2026,8 @@ void RenderScene::TombstonePrimitive(const size_t primitiveIndex, RenderSceneSyn
 	if (!primitive.cachedCommands.empty())
 		MarkCommandOffsetTableDirty();
 	primitive.cachedCommands.clear();
+	if (primitive.stableObjectIndex != NLS::Render::Data::DrawableObjectDescriptor::kInvalidStableObjectIndex)
+		m_freeStableObjectIndices.push_back(primitive.stableObjectIndex);
 	primitive.occupied = false;
 	primitive.tombstoned = true;
 	primitive.nextFreePrimitiveSlot = m_firstFreePrimitiveSlot;
@@ -2137,6 +2224,7 @@ RenderScene::PrimitiveInputStamp RenderScene::BuildPrimitiveInputStamp(
 
 	if (material != nullptr)
 	{
+		stamp.material = material;
 		stamp.materialInstanceId = material->GetInstanceId();
 		stamp.materialParameterRevision = material->GetParameterRevision();
 		stamp.materialRenderStateRevision = material->GetRenderStateRevision();
@@ -3183,6 +3271,7 @@ void RenderScene::AppendVisibleDrawable(
 		primitive.userMatrix
 	};
 	descriptor.stableSortKey = primitive.handle.index;
+	descriptor.stableObjectIndex = primitive.stableObjectIndex;
 	descriptor.opaqueSortToken = command.opaqueSortToken;
 	const bool isDecal = command.material != nullptr && command.material->IsDecal();
 	const bool isTransparent = command.material != nullptr && command.material->IsBlendable();
@@ -3374,22 +3463,131 @@ void RenderScene::FinalizeOpaqueQueueForTesting(RenderSceneVisibleQueues::SceneD
 
 void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) const
 {
-	uint32_t nextObjectIndex = 0u;
 	const std::array<RenderSceneVisibleQueues::SceneDrawables*, 4u> queues = {
 		&output.opaques,
 		&output.decals,
 		&output.skyboxes,
 		&output.transparents
 	};
+	const auto maxObjectDataCount = NLS::Render::Data::GetMaxObjectDataCount();
+	const auto maxObjectsPerSubmittedDraw = ResolveMaxObjectsPerSubmittedDraw();
+	const auto isTrustedSingleObject = [](const NLS::Render::Entities::Drawable& drawable,
+		const EngineDrawableDescriptor& descriptor)
+	{
+		return ResolveVisibleInstanceCount(drawable) == 1u &&
+			descriptor.hasTrustedStaticDrawRevision &&
+			descriptor.allowsSingleObjectDataReuse &&
+			descriptor.stableSceneIdentity.IsValid() &&
+			descriptor.transformRevision != 0u &&
+			descriptor.groupIdentity == EngineDrawableDescriptor::kInvalidStaticDrawGroupIdentity;
+	};
+
+	std::vector<uint32_t> reservedStableObjectIndices;
+	for (const auto* queue : queues)
+	{
+		for (const auto& entry : *queue)
+		{
+			const auto* descriptor = entry.second.TryGetDescriptor<EngineDrawableDescriptor>();
+			if (descriptor == nullptr ||
+				!DrawableRequiresIndexedObjectDataRange(entry.second) ||
+				!isTrustedSingleObject(entry.second, *descriptor))
+			{
+				continue;
+			}
+
+			const auto stableObjectIndex = descriptor->stableObjectIndex !=
+				EngineDrawableDescriptor::kInvalidStableObjectIndex
+				? descriptor->stableObjectIndex
+				: descriptor->stableSceneIdentity.primitiveIndex;
+			if (stableObjectIndex < maxObjectDataCount)
+				reservedStableObjectIndices.push_back(stableObjectIndex);
+		}
+	}
+	std::sort(reservedStableObjectIndices.begin(), reservedStableObjectIndices.end());
+	reservedStableObjectIndices.erase(
+		std::unique(reservedStableObjectIndices.begin(), reservedStableObjectIndices.end()),
+		reservedStableObjectIndices.end());
+
+	const auto tryResolveStableObjectIndex =
+		[&reservedStableObjectIndices, &isTrustedSingleObject](
+			const NLS::Render::Entities::Drawable& drawable,
+			const EngineDrawableDescriptor& descriptor,
+			std::unordered_set<uint32_t>& claimedStableObjectIndices,
+			uint32_t& outObjectIndex)
+		{
+			if (!isTrustedSingleObject(drawable, descriptor))
+				return false;
+
+			const auto stableObjectIndex = descriptor.stableObjectIndex !=
+				EngineDrawableDescriptor::kInvalidStableObjectIndex
+				? descriptor.stableObjectIndex
+				: descriptor.stableSceneIdentity.primitiveIndex;
+			if (!std::binary_search(
+				reservedStableObjectIndices.begin(),
+				reservedStableObjectIndices.end(),
+				stableObjectIndex))
+			{
+				return false;
+			}
+			if (!claimedStableObjectIndices.insert(stableObjectIndex).second)
+				return false;
+
+			outObjectIndex = stableObjectIndex;
+			return true;
+		};
+
+	const auto tryAllocateDynamicRange =
+		[&reservedStableObjectIndices, maxObjectDataCount](
+			uint32_t& nextObjectIndex,
+			const uint32_t objectCount,
+			uint32_t& outObjectIndex)
+		{
+			if (objectCount == 0u)
+				return false;
+
+			while (true)
+			{
+				uint32_t lastObjectIndex = 0u;
+				if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
+					nextObjectIndex,
+					objectCount,
+					lastObjectIndex))
+				{
+					return false;
+				}
+
+				const auto conflictingStableIndex = std::lower_bound(
+					reservedStableObjectIndices.begin(),
+					reservedStableObjectIndices.end(),
+					nextObjectIndex);
+				if (conflictingStableIndex == reservedStableObjectIndices.end() ||
+					*conflictingStableIndex > lastObjectIndex)
+				{
+					outObjectIndex = nextObjectIndex;
+					nextObjectIndex = lastObjectIndex + 1u;
+					return true;
+				}
+
+				if (*conflictingStableIndex == (std::numeric_limits<uint32_t>::max)())
+					return false;
+				nextObjectIndex = *conflictingStableIndex + 1u;
+				if (nextObjectIndex >= maxObjectDataCount)
+					return false;
+			}
+		};
+
+	uint32_t nextObjectIndex = 0u;
 	const auto tryAssignInPlace = [&]()
 	{
-		const auto maxObjectsPerSubmittedDraw = ResolveMaxObjectsPerSubmittedDraw();
-		uint32_t requiredObjectCount = 0u;
+		uint32_t simulatedNextObjectIndex = 0u;
+		std::unordered_set<uint32_t> simulatedStableObjectIndices;
+		simulatedStableObjectIndices.reserve(reservedStableObjectIndices.size());
 		for (const auto* queue : queues)
 		{
 			for (const auto& entry : *queue)
 			{
-				if (entry.second.TryGetDescriptor<EngineDrawableDescriptor>() == nullptr ||
+				const auto* descriptor = entry.second.TryGetDescriptor<EngineDrawableDescriptor>();
+				if (descriptor == nullptr ||
 					!DrawableRequiresIndexedObjectDataRange(entry.second))
 				{
 					continue;
@@ -3399,18 +3597,25 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 				if (objectCount > maxObjectsPerSubmittedDraw)
 					return false;
 
-				uint32_t lastObjectIndex = 0u;
-				if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
-					requiredObjectCount,
-					objectCount,
-					lastObjectIndex))
+				uint32_t objectIndex = 0u;
+				if (tryResolveStableObjectIndex(
+					entry.second,
+					*descriptor,
+					simulatedStableObjectIndices,
+					objectIndex))
+				{
+					continue;
+				}
+				if (!tryAllocateDynamicRange(simulatedNextObjectIndex, objectCount, objectIndex))
 				{
 					return false;
 				}
-				requiredObjectCount = lastObjectIndex + 1u;
 			}
 		}
 
+		nextObjectIndex = 0u;
+		std::unordered_set<uint32_t> claimedStableObjectIndices;
+		claimedStableObjectIndices.reserve(reservedStableObjectIndices.size());
 		for (auto* queue : queues)
 		{
 			for (auto& entry : *queue)
@@ -3423,13 +3628,24 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 				const auto objectCount = std::max(1u, instanceCount);
 				const bool preservesMaterialInstanceCount =
 					entry.second.instanceCount == 0u && objectCount == instanceCount;
-				descriptor->objectIndex = nextObjectIndex;
+				uint32_t objectIndex = 0u;
+				const bool usesStableObjectIndex = tryResolveStableObjectIndex(
+					entry.second,
+					*descriptor,
+					claimedStableObjectIndices,
+					objectIndex);
+				if (!usesStableObjectIndex &&
+					!tryAllocateDynamicRange(nextObjectIndex, objectCount, objectIndex))
+				{
+					return false;
+				}
+				descriptor->objectIndex = objectIndex;
 				descriptor->objectCount = objectCount;
+				descriptor->allowsSingleObjectDataReuse = usesStableObjectIndex;
 				if (descriptor->instanceModelMatrices.empty())
 					ExpandDescriptorForObjectDataRange(*descriptor, objectCount);
 				if (!preservesMaterialInstanceCount || objectCount != instanceCount)
 					entry.second.instanceCount = objectCount;
-				nextObjectIndex += objectCount;
 			}
 		}
 		return true;
@@ -3438,11 +3654,17 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 		return;
 
 	nextObjectIndex = 0u;
+	std::unordered_set<uint32_t> claimedStableObjectIndices;
+	claimedStableObjectIndices.reserve(reservedStableObjectIndices.size());
 	const auto assignQueue =
-		[this, &nextObjectIndex](RenderSceneVisibleQueues::SceneDrawables& queue)
+		[this,
+		 &maxObjectsPerSubmittedDraw,
+		 &nextObjectIndex,
+		 &claimedStableObjectIndices,
+		 &tryResolveStableObjectIndex,
+		 &tryAllocateDynamicRange](RenderSceneVisibleQueues::SceneDrawables& queue)
 		{
 			RenderSceneVisibleQueues::SceneDrawables assigned;
-			const auto maxObjectsPerSubmittedDraw = ResolveMaxObjectsPerSubmittedDraw();
 			size_t estimatedSubmittedDraws = queue.size();
 			for (const auto& entry : queue)
 			{
@@ -3504,6 +3726,7 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 						chunkDescriptor.objectFlags = descriptor.objectFlags;
 						chunkDescriptor.stableSortKey = descriptor.stableSortKey;
 						chunkDescriptor.opaqueSortToken = descriptor.opaqueSortToken;
+						chunkDescriptor.allowsSingleObjectDataReuse = false;
 						if (!descriptor.instanceModelMatrices.empty())
 						{
 							const auto sliceBegin = std::min(
@@ -3529,60 +3752,55 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 						assigned.emplace_back(entry.first, std::move(chunkDrawable));
 					};
 
-				if (objectCount <= maxObjectsPerSubmittedDraw &&
-					nextObjectIndex < NLS::Render::Data::GetMaxObjectDataCount())
+				uint32_t objectIndex = 0u;
+				const bool usesStableObjectIndex = tryResolveStableObjectIndex(
+					entry.second,
+					descriptor,
+					claimedStableObjectIndices,
+					objectIndex);
+				if (usesStableObjectIndex ||
+					(objectCount <= maxObjectsPerSubmittedDraw &&
+						tryAllocateDynamicRange(nextObjectIndex, objectCount, objectIndex)))
 				{
-					uint32_t lastObjectIndex = 0u;
-					if (NLS::Render::Data::TryResolveObjectDataRangeEnd(
-							nextObjectIndex,
-							objectCount,
-							lastObjectIndex))
-					{
-						EngineDrawableDescriptor updatedDescriptor = descriptor;
-						updatedDescriptor.objectIndex = nextObjectIndex;
-						updatedDescriptor.objectCount = objectCount;
-						if (updatedDescriptor.instanceModelMatrices.empty())
-							ExpandDescriptorForObjectDataRange(updatedDescriptor, objectCount);
-						entry.second.RemoveDescriptor<EngineDrawableDescriptor>();
-						entry.second.AddDescriptor<EngineDrawableDescriptor>(std::move(updatedDescriptor));
-						if (!preservesMaterialInstanceCount || objectCount != instanceCount)
-							entry.second.instanceCount = objectCount;
-						assigned.push_back(std::move(entry));
-						nextObjectIndex = lastObjectIndex + 1u;
-						continue;
-					}
+					EngineDrawableDescriptor updatedDescriptor = descriptor;
+					updatedDescriptor.objectIndex = objectIndex;
+					updatedDescriptor.objectCount = objectCount;
+					updatedDescriptor.allowsSingleObjectDataReuse = usesStableObjectIndex;
+					if (updatedDescriptor.instanceModelMatrices.empty())
+						ExpandDescriptorForObjectDataRange(updatedDescriptor, objectCount);
+					entry.second.RemoveDescriptor<EngineDrawableDescriptor>();
+					entry.second.AddDescriptor<EngineDrawableDescriptor>(std::move(updatedDescriptor));
+					if (!preservesMaterialInstanceCount || objectCount != instanceCount)
+						entry.second.instanceCount = objectCount;
+					assigned.push_back(std::move(entry));
+					continue;
 				}
 
 				while (remainingObjectCount > 0u)
 				{
-					const auto remainingGlobalCapacity =
-						nextObjectIndex < NLS::Render::Data::GetMaxObjectDataCount()
-							? NLS::Render::Data::GetMaxObjectDataCount() - nextObjectIndex
-							: 0u;
-					if (remainingGlobalCapacity == 0u)
+					if (maxObjectsPerSubmittedDraw == 0u)
 					{
 						m_lastDrawCallOptimizationStats.objectDataOverflowDroppedObjectCount += remainingObjectCount;
 						break;
 					}
 
-					const auto chunkObjectCount = std::min<uint32_t>(
+					uint32_t chunkObjectCount = std::min<uint32_t>(
 						remainingObjectCount,
-						std::min<uint32_t>(
-							remainingGlobalCapacity,
-							ResolveMaxObjectsPerSubmittedDraw()));
-					uint32_t lastObjectIndex = 0u;
-					if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
-						nextObjectIndex,
-						chunkObjectCount,
-						lastObjectIndex))
+						maxObjectsPerSubmittedDraw);
+					uint32_t chunkObjectIndex = 0u;
+					while (chunkObjectCount > 0u &&
+						!tryAllocateDynamicRange(nextObjectIndex, chunkObjectCount, chunkObjectIndex))
+					{
+						--chunkObjectCount;
+					}
+					if (chunkObjectCount == 0u)
 					{
 						m_lastDrawCallOptimizationStats.objectDataOverflowDroppedObjectCount += remainingObjectCount;
 						break;
 					}
 
-					appendChunk(chunkObjectCount, nextObjectIndex, matrixOffset);
+					appendChunk(chunkObjectCount, chunkObjectIndex, matrixOffset);
 
-					nextObjectIndex = lastObjectIndex + 1u;
 					remainingObjectCount -= chunkObjectCount;
 					matrixOffset += chunkObjectCount;
 				}

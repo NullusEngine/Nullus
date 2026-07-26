@@ -1084,6 +1084,49 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionInvalidatesAfterMaterialUn
     EXPECT_EQ(changed.rebuiltCachedCommandCount, 1u);
 }
 
+TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionIgnoresUnrelatedMaterialMutation)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    options.trustSceneRenderContentRevision = true;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
+    ASSERT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+
+    NLS::Render::Resources::Material unrelatedMaterial;
+    unrelatedMaterial.FillUniform();
+
+    const auto unchanged = renderScene.Synchronize(fixture.scene, options);
+    EXPECT_TRUE(unchanged.usedSceneRenderContentRevisionFastPath);
+    EXPECT_EQ(unchanged.syncTouchedPrimitiveCount, 0u);
+}
+
+TEST(RenderSceneCacheTests, MaterialMutationSnapshotReportsChangesSinceEpoch)
+{
+    NLS::Render::Resources::Material material;
+    const auto before = NLS::Render::Resources::Material::GetGlobalMutationEpoch();
+    material.FillUniform();
+
+    std::array<NLS::Render::Resources::MaterialMutationRecord, 8u> mutations;
+    size_t mutationCount = 0u;
+    ASSERT_TRUE(NLS::Render::Resources::Material::GetMutationsSince(
+        before,
+        mutations.data(),
+        mutations.size(),
+        mutationCount));
+    ASSERT_GT(mutationCount, 0u);
+    EXPECT_TRUE(std::any_of(
+        mutations.begin(),
+        mutations.begin() + static_cast<std::ptrdiff_t>(mutationCount),
+        [&material](const auto& mutation)
+        {
+            return mutation.material == &material &&
+                mutation.instanceId == material.GetInstanceId();
+        }));
+}
+
 TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionRejectsDestroyedReplacedMaterialBeforeDereference)
 {
     QueueSortFixture fixture;
@@ -1212,6 +1255,21 @@ TEST(RenderSceneCacheTests, ReuseCheckValidatesCachedCommandStampBeforeMaterialD
     EXPECT_NE(texturePathDereference, std::string::npos);
     if (stampMaterialCheck != std::string::npos && texturePathDereference != std::string::npos)
         EXPECT_LT(stampMaterialCheck, texturePathDereference);
+}
+
+TEST(RenderSceneCacheTests, StableObjectIndexAssignmentReservesClaimedIndexStorage)
+{
+    const auto source = ReadRepoText("Runtime/Engine/Rendering/RenderScene.cpp");
+    const auto functionStart = source.find("void RenderScene::AssignVisibleObjectIndices(");
+    ASSERT_NE(functionStart, std::string::npos);
+    const auto functionEnd = source.find("#undef NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE", functionStart);
+    const auto body = source.substr(functionStart, functionEnd == std::string::npos
+        ? std::string::npos
+        : functionEnd - functionStart);
+
+    EXPECT_NE(
+        body.find("claimedStableObjectIndices.reserve(reservedStableObjectIndices.size())"),
+        std::string::npos);
 }
 
 TEST(RenderSceneCacheTests, MutableTransformAccessUpdatesPrimitiveWorldMatrixWithoutCommandRebuild)
@@ -1563,14 +1621,29 @@ TEST(RenderSceneCacheTests, GatherVisibleCommandsAssignsStablePerFrameObjectIndi
     for (size_t drawIndex = 0u; drawIndex < firstVisible.opaques.size(); ++drawIndex)
     {
         NLS::Engine::Rendering::EngineDrawableDescriptor firstDescriptor;
-        NLS::Engine::Rendering::EngineDrawableDescriptor secondDescriptor;
         ASSERT_TRUE(firstVisible.opaques[drawIndex].second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(
             firstDescriptor));
-        ASSERT_TRUE(secondVisible.opaques[drawIndex].second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(
-            secondDescriptor));
 
-        EXPECT_EQ(firstDescriptor.objectIndex, static_cast<uint32_t>(drawIndex));
-        EXPECT_EQ(secondDescriptor.objectIndex, static_cast<uint32_t>(drawIndex));
+        const auto secondEntry = std::find_if(
+            secondVisible.opaques.begin(),
+            secondVisible.opaques.end(),
+            [&firstDescriptor](const auto& entry)
+            {
+                const auto* descriptor = entry.second.TryGetDescriptor<
+                    NLS::Engine::Rendering::EngineDrawableDescriptor>();
+                return descriptor != nullptr &&
+                    descriptor->stableSceneIdentity == firstDescriptor.stableSceneIdentity;
+            });
+        ASSERT_NE(secondEntry, secondVisible.opaques.end());
+
+        NLS::Engine::Rendering::EngineDrawableDescriptor secondDescriptor;
+        ASSERT_TRUE(secondEntry->second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(
+            secondDescriptor));
+        EXPECT_TRUE(firstDescriptor.allowsSingleObjectDataReuse);
+        EXPECT_TRUE(secondDescriptor.allowsSingleObjectDataReuse);
+        EXPECT_LT(firstDescriptor.objectIndex, static_cast<uint32_t>(firstVisible.opaques.size()));
+        EXPECT_LT(secondDescriptor.objectIndex, static_cast<uint32_t>(secondVisible.opaques.size()));
+        EXPECT_EQ(firstDescriptor.objectIndex, secondDescriptor.objectIndex);
     }
 }
 
@@ -4668,6 +4741,144 @@ TEST(RenderSceneCacheTests, OpaqueInstanceOrderRemainsStableWhenCameraMoves)
         EXPECT_FLOAT_EQ(
             firstDescriptor.instanceModelMatrices[index].data[3],
             secondDescriptor.instanceModelMatrices[index].data[3]);
+}
+
+TEST(RenderSceneCacheTests, TrustedSingleObjectIndexRemainsStableWhenAVisiblePrimitiveLeavesTheQueue)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    QueueSortFixture fixture;
+    auto& firstObject = fixture.AddObject(
+        "HiddenAfterFirstFrame",
+        *fixture.sharedMesh,
+        fixture.opaqueMaterialA,
+        6.0f);
+    auto& secondObject = fixture.AddObject(
+        "RetainedAcrossFrames",
+        *fixture.otherMesh,
+        fixture.opaqueMaterialB,
+        8.0f);
+    firstObject.GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -6.0f });
+    secondObject.GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -8.0f });
+    secondObject.GetComponent<NLS::Engine::Components::MeshRenderer>()
+        ->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+    firstObject.GetComponent<NLS::Engine::Components::MeshRenderer>()
+        ->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    const auto frustum = CreateForwardFrustum();
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    const auto firstVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(firstVisible.opaques.size(), 2u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor firstDescriptor;
+    NLS::Engine::Rendering::EngineDrawableDescriptor secondDescriptor;
+    ASSERT_TRUE(firstVisible.opaques[0].second.TryGetDescriptor(firstDescriptor));
+    ASSERT_TRUE(firstVisible.opaques[1].second.TryGetDescriptor(secondDescriptor));
+    EXPECT_TRUE(firstDescriptor.allowsSingleObjectDataReuse);
+    EXPECT_TRUE(secondDescriptor.allowsSingleObjectDataReuse);
+    ASSERT_NE(firstDescriptor.objectIndex, secondDescriptor.objectIndex);
+    ASSERT_TRUE(
+        (firstDescriptor.objectIndex == 0u && secondDescriptor.objectIndex == 1u) ||
+        (firstDescriptor.objectIndex == 1u && secondDescriptor.objectIndex == 0u));
+
+    ASSERT_NE(
+        firstDescriptor.stableSceneIdentity.primitiveIndex,
+        secondDescriptor.stableSceneIdentity.primitiveIndex);
+    const auto& hiddenDescriptor = firstDescriptor.objectIndex == 0u
+        ? firstDescriptor
+        : secondDescriptor;
+    auto* hiddenObject = hiddenDescriptor.stableSceneIdentity.primitiveIndex == 0u
+        ? &firstObject
+        : &secondObject;
+    const auto retainedBefore = firstDescriptor.objectIndex == 0u ? secondDescriptor : firstDescriptor;
+    ASSERT_NE(
+        retainedBefore.stableSceneIdentity,
+        NLS::Render::Data::StaticDrawSceneIdentity {});
+    ASSERT_NE(retainedBefore.objectIndex, 0u);
+
+    hiddenObject->GetTransform()->SetWorldPosition({ 250.0f, 0.0f, -6.0f });
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u);
+    const auto secondVisible = renderScene.GatherVisibleCommands(visibilityOptions);
+    ASSERT_EQ(secondVisible.opaques.size(), 1u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor retainedAfter;
+    ASSERT_TRUE(secondVisible.opaques.front().second.TryGetDescriptor(retainedAfter));
+    EXPECT_EQ(retainedAfter.stableSceneIdentity, retainedBefore.stableSceneIdentity);
+    EXPECT_EQ(retainedAfter.objectIndex, retainedBefore.objectIndex);
+}
+
+TEST(RenderSceneCacheTests, BaseSceneRendererPreservesTrustedSingleObjectIndexAcrossVisibilityChanges)
+{
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
+    auto& driver = EnsureRenderSceneTestDriver();
+    QueueSortFixture fixture;
+    auto& firstObject = fixture.AddObject(
+        "BaseRendererHiddenAfterFirstFrame",
+        *fixture.sharedMesh,
+        fixture.opaqueMaterialA,
+        6.0f);
+    auto& secondObject = fixture.AddObject(
+        "BaseRendererRetainedAcrossFrames",
+        *fixture.otherMesh,
+        fixture.opaqueMaterialB,
+        8.0f);
+    firstObject.GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -6.0f });
+    secondObject.GetTransform()->SetWorldPosition({ 0.0f, 0.0f, -8.0f });
+    firstObject.GetComponent<NLS::Engine::Components::MeshRenderer>()
+        ->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+    secondObject.GetComponent<NLS::Engine::Components::MeshRenderer>()
+        ->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        CreateForwardFrustum(),
+        nullptr
+    });
+
+    NLS::Maths::Transform cameraTransform;
+    NLS::Render::Entities::Camera camera(&cameraTransform);
+    camera.SetFrustumGeometryCulling(true);
+    camera.CacheMatrices(128u, 128u);
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto firstVisible = renderer.CaptureSceneDrawables(frameDescriptor);
+    ASSERT_EQ(firstVisible.opaques.size(), 2u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor firstDescriptor;
+    NLS::Engine::Rendering::EngineDrawableDescriptor secondDescriptor;
+    ASSERT_TRUE(firstVisible.opaques[0].second.TryGetDescriptor(firstDescriptor));
+    ASSERT_TRUE(firstVisible.opaques[1].second.TryGetDescriptor(secondDescriptor));
+    ASSERT_NE(firstDescriptor.objectIndex, secondDescriptor.objectIndex);
+    ASSERT_TRUE(
+        (firstDescriptor.objectIndex == 0u && secondDescriptor.objectIndex == 1u) ||
+        (firstDescriptor.objectIndex == 1u && secondDescriptor.objectIndex == 0u));
+
+    const auto& hiddenDescriptor = firstDescriptor.objectIndex == 0u
+        ? firstDescriptor
+        : secondDescriptor;
+    auto* hiddenObject = hiddenDescriptor.stableSceneIdentity.primitiveIndex == 0u
+        ? &firstObject
+        : &secondObject;
+    const auto retainedBefore = firstDescriptor.objectIndex == 0u ? secondDescriptor : firstDescriptor;
+    ASSERT_NE(retainedBefore.objectIndex, 0u);
+
+    hiddenObject->GetTransform()->SetWorldPosition({ 250.0f, 0.0f, -6.0f });
+    const auto secondVisible = renderer.CaptureSceneDrawables(frameDescriptor);
+    ASSERT_EQ(secondVisible.opaques.size(), 1u);
+    NLS::Engine::Rendering::EngineDrawableDescriptor retainedAfter;
+    ASSERT_TRUE(secondVisible.opaques.front().second.TryGetDescriptor(retainedAfter));
+    EXPECT_EQ(retainedAfter.stableSceneIdentity, retainedBefore.stableSceneIdentity);
+    EXPECT_EQ(retainedAfter.objectIndex, retainedBefore.objectIndex);
 }
 
 TEST(RenderSceneCacheTests, CachedOpaqueSortTokenReusesAcrossCameraMovesAndRebuildsForDrawRevisions)

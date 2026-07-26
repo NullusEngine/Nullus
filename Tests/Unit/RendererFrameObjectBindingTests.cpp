@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -10,6 +12,7 @@
 #include <memory>
 #include <limits>
 #include <span>
+#include <thread>
 #include <vector>
 
 #include "Guid.h"

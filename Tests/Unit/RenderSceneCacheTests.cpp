@@ -1629,7 +1629,7 @@ TEST(RenderSceneCacheTests, GatherVisibleCommandsAssignsStablePerFrameObjectIndi
             secondVisible.opaques.end(),
             [&firstDescriptor](const auto& entry)
             {
-                const auto* descriptor = entry.second.TryGetDescriptor<
+                const auto* descriptor = entry.second.template TryGetDescriptor<
                     NLS::Engine::Rendering::EngineDrawableDescriptor>();
                 return descriptor != nullptr &&
                     descriptor->stableSceneIdentity == firstDescriptor.stableSceneIdentity;

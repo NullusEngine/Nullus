@@ -751,8 +751,18 @@ void UIManager::Render()
     }
     else
     {
-        NLS_LOG_WARNING("UIManager::Render: no frame-graph UI overlay renderer is available for this backend.");
-        logStartupRenderStage("SkipUiDrawDataSnapshot");
+        if (m_uiBridge != nullptr && m_uiBridge->HasRendererBackend())
+        {
+            NLS_PROFILE_NAMED_SCOPE("RHIUIBridge::RenderDrawData");
+            m_uiBridge->RenderDrawData(ImGui::GetDrawData(), 0u);
+            m_uiBridge->SubmitCommandBuffer(0u);
+            logStartupRenderStage("RenderUiBridgeDrawData");
+        }
+        else
+        {
+            NLS_LOG_WARNING("UIManager::Render: no UI renderer is available for this backend.");
+            logStartupRenderStage("SkipUiDrawDataSnapshot");
+        }
     }
     m_isRenderingFrame = false;
 }

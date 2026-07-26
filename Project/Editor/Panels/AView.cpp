@@ -3,6 +3,7 @@
 #include "Core/EditorActions.h"
 #include "Debug/Logger.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Core/RendererStats.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Settings/EditorSettings.h"
@@ -14,6 +15,10 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+
+#if defined(__APPLE__)
+#include "Rendering/MetalViewportRenderer.h"
+#endif
 
 using namespace NLS;
 
@@ -124,6 +129,34 @@ void Editor::Panels::AView::_Draw_Impl()
 
 void Editor::Panels::AView::OnBeforeDrawWidgets()
 {
+#if defined(__APPLE__)
+    if (!IsSceneRendererAvailable())
+    {
+        if (auto* driver = Render::Context::TryGetLocatedDriver();
+            driver != nullptr && driver->GetActiveGraphicsBackend() == Render::Settings::EGraphicsBackend::METAL)
+        {
+            if (m_metalViewportRenderer == nullptr)
+                m_metalViewportRenderer = Editor::Rendering::CreateMetalViewportRenderer(*driver, name);
+
+            if (m_metalViewportRenderer != nullptr)
+            {
+                SyncViewToCurrentContentRegion();
+                if (m_metalViewportRenderer->Render(
+                        m_lastResolvedViewSize.first,
+                        m_lastResolvedViewSize.second,
+                        GetCamera()))
+                {
+                    m_image->textureView = m_metalViewportRenderer->GetOutputTextureView();
+                    return;
+                }
+            }
+        }
+
+        ImGui::TextUnformatted("Scene rendering is unavailable in Metal UI-only mode.");
+        return;
+    }
+#endif
+
     {
         NLS_PROFILE_NAMED_SCOPE("AView::SyncViewToCurrentContentRegion");
 	    SyncViewToCurrentContentRegion();
@@ -201,6 +234,24 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 
     std::pair<uint16_t, uint16_t> requestedSize { winWidth, winHeight };
     auto* driver = Render::Context::TryGetLocatedDriver();
+#if defined(__APPLE__)
+    if (!IsSceneRendererAvailable() &&
+        driver != nullptr &&
+        driver->GetActiveGraphicsBackend() == Render::Settings::EGraphicsBackend::METAL)
+    {
+        m_resizedViewThisFrame = m_lastResolvedViewSize != requestedSize;
+        if (m_resizedViewThisFrame)
+            InvalidateStaticFrameCache();
+
+        // Metal previews own their output texture and must not resize the legacy framebuffer.
+        m_lastResolvedViewSize = requestedSize;
+        m_pendingResolvedViewSize.reset();
+        m_image->size = Maths::Vector2(
+            static_cast<float>(requestedSize.first),
+            static_cast<float>(requestedSize.second));
+        return;
+    }
+#endif
     const bool threadedRendering =
         driver != nullptr &&
         Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
@@ -245,6 +296,18 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 {
 	NLS_PROFILE_NAMED_SCOPE(name.c_str());
     m_lastRenderFramePublished = false;
+    if (!IsSceneRendererAvailable())
+    {
+        if (!m_loggedSceneRendererUnavailable)
+        {
+            NLS_LOG_INFO(
+                "AView: skipping scene renderer for panel=" +
+                name +
+                " because the active backend does not provide scene rendering.");
+            m_loggedSceneRendererUnavailable = true;
+        }
+        return;
+    }
     const bool logStartupRenderStages = []()
     {
         static bool shouldLog = true;
@@ -520,6 +583,17 @@ void Editor::Panels::AView::SetRequiresImmediateRetiredFrameReadback(
     const bool requiresImmediateRetiredFrameReadback)
 {
     m_requiresImmediateRetiredFrameReadback = requiresImmediateRetiredFrameReadback;
+}
+
+bool Editor::Panels::AView::IsSceneRendererAvailable() const
+{
+    auto* driver = Render::Context::TryGetLocatedDriver();
+    if (driver == nullptr)
+        return false;
+
+    const auto device = Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+    return device != nullptr && device->GetCapabilities().GetFeature(
+        Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported;
 }
 
 bool Editor::Panels::AView::RequiresSynchronizedRetiredFramePresentation() const

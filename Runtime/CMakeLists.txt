@@ -572,7 +572,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
 
     set(_meta_parser_env_args "")
     set(_meta_parser_native_dirs "")
-    set(_meta_parser_setup_commands "")
+    set(_meta_parser_dependency_target MetaParser)
     set(_meta_parser_command "${NLS_META_PARSER_EXECUTABLE}")
     if(WIN32)
         set(_nuget_root "$ENV{USERPROFILE}/.nuget/packages")
@@ -620,9 +620,19 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         list(APPEND _meta_parser_native_dirs
             "${_nuget_root}/libclang.runtime.${_nuget_runtime_id}/${NLS_META_LIBCLANG_OSX_VERSION}/runtimes/${_nuget_runtime_id}/native"
             "${_nuget_root}/libclangsharp.runtime.${_nuget_runtime_id}/${NLS_META_LIBCLANGSHARP_VERSION}/runtimes/${_nuget_runtime_id}/native")
-        list(APPEND _meta_parser_setup_commands
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_meta_parser_libclang}" "${_meta_parser_exe_dir}/libclang.dylib"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_meta_parser_clangsharp}" "${_meta_parser_exe_dir}/libClangSharp.dylib")
+        if(NOT TARGET MetaParserNativeDependencies)
+            add_custom_target(MetaParserNativeDependencies
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${_meta_parser_exe_dir}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_meta_parser_libclang}" "${_meta_parser_exe_dir}/libclang.dylib"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_meta_parser_clangsharp}" "${_meta_parser_exe_dir}/libClangSharp.dylib"
+                COMMAND /bin/ln -sfn "libClangSharp.dylib" "${_meta_parser_exe_dir}/libClangSharp.18.1.3.dylib"
+                DEPENDS MetaParser
+                VERBATIM
+                COMMENT "Staging native dependencies for MetaParser"
+            )
+            set_target_properties(MetaParserNativeDependencies PROPERTIES FOLDER Tools)
+        endif()
+        set(_meta_parser_dependency_target MetaParserNativeDependencies)
         set(_meta_parser_dyld "$ENV{DYLD_LIBRARY_PATH}")
         foreach(_native_dir IN LISTS _meta_parser_native_dirs)
             if(EXISTS "${_native_dir}")
@@ -663,11 +673,10 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     add_custom_command(
         OUTPUT "${_gen_stamp}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen_dir}"
-        ${_meta_parser_setup_commands}
         COMMAND ${CMAKE_COMMAND} -E env ${_meta_parser_env_args} "${_meta_parser_command}" "${_params_file}"
         COMMAND ${CMAKE_COMMAND} -E touch "${_gen_stamp}"
         DEPENDS
-            MetaParser
+            ${_meta_parser_dependency_target}
             ${_headers}
             "${_params_file}"
             "${_params_template}"

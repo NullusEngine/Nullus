@@ -23,6 +23,7 @@
 #include "Debug/FileHandler.h"
 #include "Platform/Process/Process.h"
 #include "Rendering/BaseSceneRenderer.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Settings/EditorSettings.h"
@@ -880,7 +881,10 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     /* Graphics context creation */
     NLS::Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = graphicsBackend;
-    driverSettings.enableThreadedRendering = runtimeSettings.enableThreadedRendering;
+    // Metal currently owns ImGui submission directly, while scene frame submission is unfinished.
+    driverSettings.enableThreadedRendering =
+        runtimeSettings.enableThreadedRendering &&
+        graphicsBackend != Render::Settings::EGraphicsBackend::METAL;
     driverSettings.enableLightGrid = Editor::Settings::EditorSettings::GetRenderingSettingsObject().enableLightGrid;
     driverSettings.threadedFrameSlotCount = Editor::Core::ResolveEditorThreadedFrameSlotCount(driverSettings.framesInFlight);
     driverSettings.threadedPublishRetirementWaitMs = Editor::Core::ResolveEditorThreadedPublishRetirementWaitMs();
@@ -918,9 +922,26 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     if (runtimeReadiness.detailWarning.has_value())
         NLS_LOG_WARNING(runtimeReadiness.detailWarning.value());
 
-    if (runtimeReadiness.primaryWarning.has_value())
+    const auto explicitDevice = Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+    if (explicitDevice != nullptr)
+    {
+        const auto capabilities = explicitDevice->GetCapabilities();
+        m_sceneRenderingAvailable = capabilities.GetFeature(
+            Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported;
+    }
+
+    const bool metalUiOnlyRuntime =
+        graphicsBackend == Render::Settings::EGraphicsBackend::METAL &&
+        !m_sceneRenderingAvailable;
+    if (runtimeReadiness.primaryWarning.has_value() && !metalUiOnlyRuntime)
     {
         throw std::runtime_error(runtimeReadiness.primaryWarning.value());
+    }
+    if (metalUiOnlyRuntime)
+    {
+        NLS_LOG_WARNING(
+            "Editor is starting with Metal UI-only rendering. Scene, Game, and asset previews remain disabled "
+            "until Metal scene command encoding is implemented.");
     }
 
     if (driver == nullptr || driver->GetActiveGraphicsBackend() == Render::Settings::EGraphicsBackend::NONE)
@@ -984,14 +1005,18 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     NLS::Core::ServiceLocator::Provide<MaterialManager>(materialManager);
     NLS::Core::ServiceLocator::Provide<ResourceLifetimeRegistry>(resourceLifetimeRegistry);
     RefreshRuntimeAssetDatabaseFromArtifactDB();
-    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager, false);
+    if (m_sceneRenderingAvailable)
+        NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager, false);
 
     PresentStartupProgressFrame("Preparing editor resources", 0.34f);
 
     /* Editor resources */
     editorResources = std::make_unique<Editor::Core::EditorResources>(editorAssetsPath, projectAssetsPath);
     PresentStartupProgressFrame("Loading editor helper shaders and models", 0.38f);
-    editorResources->PreloadStartupResources();
+    if (m_sceneRenderingAvailable)
+        editorResources->PreloadStartupResources();
+    else
+        NLS_LOG_INFO("Editor: skipping scene-only helper resources for Metal UI-only rendering.");
 
     PresentStartupProgressFrame("Registering runtime services", 0.50f);
 

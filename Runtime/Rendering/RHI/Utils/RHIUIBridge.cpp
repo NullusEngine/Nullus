@@ -5,6 +5,10 @@
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/RHI/Utils/RHIUIBridgeInternal.h"
 
+#if defined(__APPLE__)
+#include "Rendering/RHI/Backends/Metal/MetalUIBridge.h"
+#endif
+
 #include <algorithm>
 
 namespace NLS::Render::RHI
@@ -112,20 +116,32 @@ namespace NLS::Render::RHI
             }
 
             NLS_LOG_INFO(
-                "CreateRHIUIBridge: UIOverlayFrameGraph is unsupported; returning null UI bridge. Reason: " +
+                "CreateRHIUIBridge: UIOverlayFrameGraph is unsupported; continuing with the direct backend UI bridge. Reason: " +
                 overlayFeature.reason);
         }
 
         const auto resolvedGraphicsBackend = Render::Settings::ToGraphicsBackend(resolvedNativeInfo.backend);
-        if (!Render::Settings::SupportsImGuiRendererBackend(resolvedGraphicsBackend))
+		if (!Render::Settings::SupportsImGuiRendererBackend(resolvedGraphicsBackend))
         {
             NLS_LOG_WARNING(
                 "CreateRHIUIBridge: phase-1 selector rejected backend " +
                 std::string(Render::Settings::ToString(resolvedGraphicsBackend)) +
                 "; returning null UI bridge.");
-            return std::make_unique<NullUIBridge>();
-        }
+			return std::make_unique<NullUIBridge>();
+		}
 
-        return std::make_unique<NullUIBridge>();
+#if defined(__APPLE__)
+		if (resolvedNativeInfo.backend == NativeBackendType::Metal)
+		{
+			auto bridge = CreateMetalRHIUIBridge(resolvedNativeInfo);
+			if (bridge != nullptr && bridge->HasRendererBackend())
+				return bridge;
+
+			NLS_LOG_ERROR("CreateRHIUIBridge: Metal UI bridge initialization failed.");
+			return std::make_unique<NullUIBridge>();
+		}
+#endif
+
+		return std::make_unique<NullUIBridge>();
     }
 }

@@ -15,7 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="@NLS_META_PARSER_CPPAST_CSPROJ@" />
+    <ProjectReference Include="@NLS_META_PARSER_CPPAST_CSPROJ@" GlobalPropertiesToRemove="AssemblyName;TargetName" AdditionalProperties="AssemblyName=CppAst;TargetName=CppAst" />
   </ItemGroup>
 
   <ItemGroup>

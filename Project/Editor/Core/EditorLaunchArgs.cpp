@@ -12,7 +12,7 @@ namespace NLS::Editor::Launch
     {
         std::printf("Usage: %s [options] [project_path]\n", executableName);
         std::printf("\nOptions:\n");
-        std::printf("  --backend <name>, -b <name>  Specify graphics backend (dx12 only during phase 1)\n");
+        std::printf("  --backend <name>, -b <name>  Specify the graphics backend for this platform\n");
         std::printf("  --renderdoc                  Enable RenderDoc debugging\n");
         std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
         std::printf("  --capture-after-frames <N>   Automatically capture frame after N presents\n");
@@ -42,7 +42,10 @@ namespace NLS::Editor::Launch
         std::printf("  project_path   Path to .nullus project file or project directory (required)\n");
         std::printf("\nExamples:\n");
         std::printf("  %s MyProject.nullus                       # Open project with default backend\n", executableName);
-        std::printf("  %s -b dx12 MyProject.nullus                # Open with DX12 backend\n", executableName);
+        std::printf(
+            "  %s -b %s MyProject.nullus                # Open with the platform backend\n",
+            executableName,
+            Render::Settings::ToString(Render::Settings::GetPhase1RequiredRuntimeBackend()));
         std::printf("  %s --renderdoc MyProject.nullus            # Enable RenderDoc and open project\n", executableName);
         std::printf("  %s --capture-after-frames 60 MyProject.nullus  # Auto-capture after 60 frames\n", executableName);
     }
@@ -61,7 +64,10 @@ namespace NLS::Editor::Launch
                 if (!parsed.backendOverride.has_value())
                 {
                     std::fprintf(stderr, "[main] Unknown graphics backend: %s\n", backendName.c_str());
-                    std::fprintf(stderr, "[main] Supported backends during phase 1: dx12\n");
+                    std::fprintf(
+                        stderr,
+                        "[main] Supported backend during phase 1: %s\n",
+                        Render::Settings::ToString(Render::Settings::GetPhase1RequiredRuntimeBackend()));
                     parsed.hasError = true;
                     return parsed;
                 }

@@ -21,6 +21,13 @@ list(APPEND imgui_impl
 )
 endif()
 
+if(APPLE)
+list(APPEND imgui_impl
+    "${imgui_SOURCE_DIR_}/backends/imgui_impl_metal.mm"
+    "${imgui_SOURCE_DIR_}/backends/imgui_impl_metal.h"
+)
+endif()
+
 find_package(Vulkan QUIET)
 if(Vulkan_FOUND)
 list(APPEND imgui_impl
@@ -80,10 +87,16 @@ else()
     target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_DX12_BACKEND=0 NLS_HAS_IMGUI_DX11_BACKEND=0)
 endif()
 
+if(APPLE)
+    target_link_libraries(ImGui PRIVATE "-framework Metal" "-framework QuartzCore" "-framework Cocoa")
+    target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_METAL_BACKEND=1)
+else()
+    target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_METAL_BACKEND=0)
+endif()
+
 if(Vulkan_FOUND)
     target_link_libraries(ImGui PRIVATE Vulkan::Vulkan)
     target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_VULKAN_BACKEND=1)
 else()
     target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_VULKAN_BACKEND=0)
 endif()
-

@@ -9,6 +9,13 @@ file(GLOB_RECURSE EDITOR_SOURCE_FILES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/*.c
 )
 
+if(APPLE)
+  file(GLOB_RECURSE EDITOR_OBJCXX_SOURCE_FILES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/*.mm
+  )
+  list(APPEND EDITOR_SOURCE_FILES ${EDITOR_OBJCXX_SOURCE_FILES})
+endif()
+
 list(FILTER EDITOR_HEAD_FILES EXCLUDE REGEX "/Gen/")
 list(FILTER EDITOR_SOURCE_FILES EXCLUDE REGEX "/Gen/")
 nls_split_project_entry_sources(EDITOR_ENTRY_SOURCE EDITOR_SOURCE_FILES ${EDITOR_SOURCE_FILES})
@@ -43,7 +50,7 @@ target_link_libraries(
 nls_target_precompile_headers(EditorProject "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")
 
 if(APPLE)
-  target_link_libraries(EditorProject PUBLIC "-framework CoreServices")
+  target_link_libraries(EditorProject PUBLIC "-framework CoreServices" "-framework Metal")
 endif()
 
 if(WIN32)

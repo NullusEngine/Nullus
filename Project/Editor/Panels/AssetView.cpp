@@ -43,6 +43,8 @@ void Editor::Panels::AssetView::EnsureRenderer()
 {
     if (m_renderer != nullptr)
         return;
+    if (!IsSceneRendererAvailable())
+        return;
 
     NLS_LOG_INFO("[Startup] Creating Asset View renderer");
     m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
@@ -116,7 +118,9 @@ void Editor::Panels::AssetView::ClearResource()
 void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture2D& p_texture)
 {
     EnsureRenderer();
-	m_resource = &p_texture;
+    if (m_renderer == nullptr)
+        return;
+    m_resource = &p_texture;
 	m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
 	m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One * 3.0f);
 	m_meshFilter->SetMesh(EDITOR_CONTEXT(editorResources)->GetMesh("Plane"));
@@ -129,7 +133,9 @@ void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture2D& p_textu
 void Editor::Panels::AssetView::SetMesh(Render::Resources::Mesh& p_mesh)
 {
     EnsureRenderer();
-	m_resource = &p_mesh;
+    if (m_renderer == nullptr)
+        return;
+    m_resource = &p_mesh;
     m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
     m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One);
 	m_meshFilter->SetMesh(&p_mesh);
@@ -141,7 +147,9 @@ void Editor::Panels::AssetView::SetMesh(Render::Resources::Mesh& p_mesh)
 void Editor::Panels::AssetView::SetMaterial(Render::Resources::Material& p_material)
 {
     EnsureRenderer();
-	m_resource = &p_material;
+    if (m_renderer == nullptr)
+        return;
+    m_resource = &p_material;
     m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
     m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One);
 	m_meshFilter->SetMesh(EDITOR_CONTEXT(editorResources)->GetMesh("Sphere"));

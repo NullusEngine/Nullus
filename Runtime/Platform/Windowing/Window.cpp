@@ -112,6 +112,12 @@ NLS::Windowing::Window::~Window()
 
 void NLS::Windowing::Window::SetIcon(const std::string& p_filePath)
 {
+#if defined(__APPLE__)
+    // GLFW reports an error for regular macOS windows; application icons come from the app bundle.
+    (void)p_filePath;
+    return;
+#endif
+
     auto image = Image(p_filePath);
     if (image.GetData() == nullptr || image.GetWidth() <= 0 || image.GetHeight() <= 0)
         return;
@@ -159,6 +165,13 @@ void NLS::Windowing::Window::SetIcon(const std::string& p_filePath)
 
 void NLS::Windowing::Window::SetIconFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height)
 {
+#if defined(__APPLE__)
+    (void)p_data;
+    (void)p_width;
+    (void)p_height;
+    return;
+#endif
+
 	GLFWimage images[1];
 	images[0].pixels = p_data;
 	images[0].width = static_cast<int>(p_width);

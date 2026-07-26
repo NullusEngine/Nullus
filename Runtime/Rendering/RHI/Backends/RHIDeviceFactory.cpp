@@ -4,6 +4,9 @@
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 #endif
+#if defined(__APPLE__)
+#include "Rendering/RHI/Backends/Metal/MetalExplicitDeviceFactory.h"
+#endif
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -39,26 +42,33 @@ namespace NLS::Render::Backend
 			return nullptr;
 		}
 
-		if (settings.graphicsBackend != NLS::Render::Settings::EGraphicsBackend::DX12)
-		{
-			NLS_LOG_ERROR(
-				std::string("CreateRhiDevice: phase-1 runtime only allows DX12 through the top-level selector. Requested backend: ") +
-				Render::Settings::ToString(settings.graphicsBackend));
-			return nullptr;
-		}
-
 #if defined(_WIN32)
-		auto device = CreateDX12Device(settings);
-		if (device == nullptr)
+		if (settings.graphicsBackend == NLS::Render::Settings::EGraphicsBackend::DX12)
 		{
-			NLS_LOG_ERROR(
-				"CreateRhiDevice: DX12 device creation failed and the phase-1 runtime does not permit alternate backend selection.");
+			auto device = CreateDX12Device(settings);
+			if (device == nullptr)
+			{
+				NLS_LOG_ERROR("CreateRhiDevice: DX12 device creation failed.");
+			}
+			return device;
 		}
-		return device;
+#elif defined(__APPLE__)
+		if (settings.graphicsBackend == NLS::Render::Settings::EGraphicsBackend::METAL)
+		{
+			auto device = CreateMetalRhiDevice(settings.debugMode);
+			if (device == nullptr)
+			{
+				NLS_LOG_ERROR("CreateRhiDevice: Metal device creation failed.");
+			}
+			return device;
+		}
 #else
-		NLS_LOG_ERROR("CreateRhiDevice: DX12 is unavailable on this platform/build.");
-		return nullptr;
 #endif
+
+		NLS_LOG_ERROR(
+			std::string("CreateRhiDevice: selected backend is unavailable on this platform/build. Requested backend: ") +
+			Render::Settings::ToString(settings.graphicsBackend));
+		return nullptr;
 	}
 
 #if defined(_WIN32)

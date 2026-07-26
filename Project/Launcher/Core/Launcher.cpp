@@ -1115,7 +1115,7 @@ Render::Settings::EGraphicsBackend ResolveLauncherGraphicsBackend()
         return resolvedBackend;
 
     throw std::runtime_error(
-        "Launcher startup failed: phase-1 runtime requires a compiled DX12 UI backend and does not permit fallback.");
+        "Launcher startup failed: the selected phase-1 backend does not have a compiled ImGui renderer backend.");
 }
 
 Launcher::Launcher(
@@ -1159,7 +1159,8 @@ LauncherRunResult Launcher::Run()
         m_device->PollEvents();
 
         m_uiManager->Render();
-        Render::Context::DriverUIAccess::PresentSwapchain(*m_driver);
+        if (m_graphicsBackend != Render::Settings::EGraphicsBackend::METAL)
+            Render::Context::DriverUIAccess::PresentSwapchain(*m_driver);
 
         if (!m_mainPanel->IsOpened())
             m_window->SetShouldClose(true);
@@ -1206,8 +1207,8 @@ void Launcher::SetupContext()
 
     Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = m_graphicsBackend;
-    // The Launcher's UI-only frame graph publishes through the threaded lifecycle.
-    driverSettings.enableThreadedRendering = true;
+    // Metal submits ImGui directly to CAMetalLayer while the generic scene frame graph is unfinished.
+    driverSettings.enableThreadedRendering = m_graphicsBackend != Render::Settings::EGraphicsBackend::METAL;
     driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
     if (m_renderDocOverride.has_value() &&
         (m_renderDocOverride->enabled || m_renderDocOverride->startupCaptureAfterFrames > 0))
@@ -1236,7 +1237,7 @@ void Launcher::SetupContext()
     if (m_driver == nullptr || m_driver->GetActiveGraphicsBackend() == Render::Settings::EGraphicsBackend::NONE)
     {
         throw std::runtime_error(
-            "Launcher startup failed: could not create a usable DX12 RHI device and phase-1 does not permit fallback.");
+            "Launcher startup failed: could not create a usable phase-1 RHI device.");
     }
 
     NLS::Core::ServiceLocator::Provide<Render::Context::Driver>(*m_driver);

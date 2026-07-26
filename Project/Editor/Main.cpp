@@ -117,7 +117,7 @@ static bool TryRun(const std::string& projectPath, const std::string& projectNam
 	auto errorEvent =
 		[](NLS::EDeviceError, std::string errMsg)
 		{
-			errMsg = "Nullus phase-1 editor runtime requires a working DX12 path.\r\n" + errMsg;
+			errMsg = "Nullus editor runtime startup failed.\r\n" + errMsg;
 			NLS_LOG_ERROR(errMsg);
 		};
 

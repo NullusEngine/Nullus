@@ -26,6 +26,10 @@
 #define NLS_HAS_IMGUI_VULKAN_BACKEND 0
 #endif
 
+#ifndef NLS_HAS_IMGUI_METAL_BACKEND
+#define NLS_HAS_IMGUI_METAL_BACKEND 0
+#endif
+
 namespace NLS::Render::Settings
 {
 	struct RuntimeBackendReadinessDecision
@@ -226,7 +230,11 @@ namespace NLS::Render::Settings
 
 	inline EGraphicsBackend GetPhase1RequiredRuntimeBackend()
 	{
+	#if defined(__APPLE__)
+		return EGraphicsBackend::METAL;
+	#else
 		return EGraphicsBackend::DX12;
+	#endif
 	}
 
 	inline bool IsPhase1RuntimeBackend(EGraphicsBackend backend)
@@ -238,6 +246,8 @@ namespace NLS::Render::Settings
 	{
 #if defined(_WIN32)
 		return IsPhase1RuntimeBackend(backend);
+#elif defined(__APPLE__)
+		return backend == EGraphicsBackend::METAL;
 #else
 		(void)backend;
 		return false;
@@ -257,7 +267,9 @@ namespace NLS::Render::Settings
 			message += std::string(consumer);
 			message += ' ';
 		}
-		message += "only supports DX12 during UE5 alignment phase 1.";
+		message += "only supports ";
+		message += ToString(GetPhase1RequiredRuntimeBackend());
+		message += " during UE5 alignment phase 1.";
 
 		if (backend != EGraphicsBackend::NONE)
 		{
@@ -299,7 +311,11 @@ namespace NLS::Render::Settings
 			return false;
 #endif
 		case EGraphicsBackend::METAL:
+#if defined(__APPLE__) && NLS_HAS_IMGUI_METAL_BACKEND
+			return true;
+#else
 			return false;
+#endif
 		case EGraphicsBackend::NONE:
 		default:
 			return false;
@@ -334,7 +350,11 @@ namespace NLS::Render::Settings
 			return false;
 #endif
 		case EGraphicsBackend::METAL:
+#if defined(__APPLE__) && NLS_HAS_IMGUI_METAL_BACKEND
+			return true;
+#else
 			return false;
+#endif
 		case EGraphicsBackend::NONE:
 		default:
 			return false;
@@ -354,7 +374,11 @@ namespace NLS::Render::Settings
 		case EGraphicsBackend::VULKAN:
 			return "Vulkan architecture boundaries remain in source for future multi-backend work, but the phase-1 runtime path is intentionally DX12-only.";
 		case EGraphicsBackend::METAL:
+#if defined(__APPLE__)
+			return "Metal provides the macOS phase-1 Launcher UI runtime; the scene renderer is not implemented yet.";
+#else
 			return "Metal is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits DX12.";
+#endif
 		case EGraphicsBackend::NONE:
 		default:
 			return "This backend does not provide a runnable scene renderer.";

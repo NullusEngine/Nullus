@@ -22,6 +22,8 @@ void Editor::Panels::GameView::EnsureRenderer()
 {
     if (m_renderer != nullptr)
         return;
+    if (!IsSceneRendererAvailable())
+        return;
 
     NLS_LOG_INFO("[Startup] Creating Game View renderer");
     m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
@@ -45,4 +47,3 @@ Engine::SceneSystem::Scene* Editor::Panels::GameView::GetScene()
 {
 	return m_sceneManager.GetCurrentScene();
 }
-

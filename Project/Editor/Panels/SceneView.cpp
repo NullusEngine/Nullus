@@ -484,13 +484,18 @@ Editor::Panels::SceneView::SceneView(
     const UI::PanelWindowSettings& p_windowSettings)
     : AViewControllable(p_title, p_opened, p_windowSettings), m_sceneManager(EDITOR_CONTEXT(sceneManager))
 {
-    // Scene View always renders editor overlays (grid/gizmo/light billboards),
-    // so create the editor renderer during startup while the native startup
-    // progress window is still visible.
-    NLS_LOG_INFO("[Startup] Creating Scene View renderer");
-    m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
-    SetRequiresRetiredFrameConsumption(true);
-    SetRequiresImmediateRetiredFrameReadback(ShouldSceneViewRequestImmediatePickingReadback());
+    if (IsSceneRendererAvailable())
+    {
+        // Create the overlay renderer during startup while the native progress window is visible.
+        NLS_LOG_INFO("[Startup] Creating Scene View renderer");
+        m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
+        SetRequiresRetiredFrameConsumption(true);
+        SetRequiresImmediateRetiredFrameReadback(ShouldSceneViewRequestImmediatePickingReadback());
+    }
+    else
+    {
+        NLS_LOG_INFO("[Startup] Scene View renderer skipped because Metal is running in UI-only mode.");
+    }
 
     m_camera.SetFar(5000.0f);
     m_image->AddPlugin<ViewportDragDropTarget>(*this);
@@ -1042,6 +1047,8 @@ Editor::Panels::SceneView::ValidatePrefabDragProxySceneViewLoopForTesting(
 void Editor::Panels::SceneView::EnsureRenderer()
 {
     if (m_renderer != nullptr)
+        return;
+    if (!IsSceneRendererAvailable())
         return;
 
     NLS_LOG_INFO("[Startup] Creating Scene View renderer");

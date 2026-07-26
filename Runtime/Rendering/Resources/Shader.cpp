@@ -23,6 +23,7 @@ namespace
 		{
 		case NLS::Render::RHI::NativeBackendType::DX12: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
 		case NLS::Render::RHI::NativeBackendType::Vulkan: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV;
+		case NLS::Render::RHI::NativeBackendType::Metal: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV;
 		case NLS::Render::RHI::NativeBackendType::OpenGL: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL;
 		default: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::Unknown;
 		}

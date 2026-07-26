@@ -99,6 +99,7 @@ class Context
     }
 
     const Render::Settings::EngineDiagnosticsSettings& GetDiagnosticsSettings() const;
+    bool IsSceneRenderingAvailable() const { return m_sceneRenderingAvailable; }
 
 	public:
     const std::string projectPath;
@@ -192,6 +193,7 @@ private:
     uint64_t m_activeTaskProgressKey = 0u;
     float m_lastTaskProgress = 0.0f;
     bool m_taskProgressVisible = false;
+    bool m_sceneRenderingAvailable = false;
 };
 } // namespace Editor::Core
 } // namespace NLS

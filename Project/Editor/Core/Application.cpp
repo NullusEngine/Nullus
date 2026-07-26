@@ -142,7 +142,8 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
         if (startupPreimport.importedAssetCount > 0u)
         {
             m_context.RefreshRuntimeAssetDatabaseFromArtifactDB();
-            NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager, false);
+            if (m_context.IsSceneRenderingAvailable())
+                NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager, false);
         }
         NLS_LOG_INFO(
             "Startup asset preimport completed: " +
@@ -276,12 +277,14 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
     if (startupWatcherPreimport.requiresRuntimeAssetRefresh)
     {
         m_context.RefreshRuntimeAssetDatabaseFromArtifactDB();
-        NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager, false);
+        if (m_context.IsSceneRenderingAvailable())
+            NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager, false);
         logStartupStep("RefreshRuntimeAssetsAfterWatcherPreimport");
     }
     m_editor->RefreshProjectAssetBrowser();
     logStartupStep("RefreshProjectAssetBrowser");
-    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager, false);
+    if (m_context.IsSceneRenderingAvailable())
+        NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager, false);
     logStartupStep("PreloadSceneFallbackShaderBeforeFirstFrame");
     m_context.PresentStartupProgressFrame("Rendering first editor frame", 0.96f);
     m_editor->LogNextUpdateStages();
@@ -307,7 +310,8 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
     if (finalStartupWatcherImport.requiresRuntimeAssetRefresh)
     {
         m_context.RefreshRuntimeAssetDatabaseFromArtifactDB();
-        NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager);
+        if (m_context.IsSceneRenderingAvailable())
+            NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(m_context.shaderManager);
         logStartupStep("RefreshRuntimeAssetsAfterFinalWatcherImport");
     }
     const auto finalizationStatus = FinalizeStartupSceneBeforeWindow(

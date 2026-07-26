@@ -12,6 +12,13 @@
 #include <Rendering/Entities/Camera.h>
 #include <Rendering/BaseSceneRenderer.h>
 
+#if defined(__APPLE__)
+namespace NLS::Editor::Rendering
+{
+    class MetalViewportRenderer;
+}
+#endif
+
 namespace NLS::Editor::Panels
 {
     struct ViewOverlayCameraMatrices;
@@ -164,6 +171,7 @@ namespace NLS::Editor::Panels
 		void SetRequiresRetiredFrameConsumption(bool requiresRetiredFrameConsumption);
         virtual bool RequiresImmediateRetiredFrameReadback() const;
         void SetRequiresImmediateRetiredFrameReadback(bool requiresImmediateRetiredFrameReadback);
+        bool IsSceneRendererAvailable() const;
         virtual bool RequiresSynchronizedRetiredFramePresentation() const;
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);
@@ -212,8 +220,12 @@ namespace NLS::Editor::Panels
         bool m_staticFrameCacheEnabled = false;
         bool m_staticFrameCacheValid = false;
         bool m_resizedViewThisFrame = false;
-        bool m_viewportImageAvailableForInput = false;
+		bool m_viewportImageAvailableForInput = false;
         bool m_skipNextRenderFrame = false;
 		bool m_lastRenderFramePublished = false;
+		bool m_loggedSceneRendererUnavailable = false;
+#if defined(__APPLE__)
+        std::unique_ptr<NLS::Editor::Rendering::MetalViewportRenderer> m_metalViewportRenderer;
+#endif
 		};
 }

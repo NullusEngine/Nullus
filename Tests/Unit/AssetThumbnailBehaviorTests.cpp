@@ -2407,6 +2407,8 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewRendersReadyPrefabToVisiblePix
     material->SetRawParameter("u_EnableNormalMapping", 0.0f);
     material->SetRawParameter("u_Emissive", NLS::Maths::Vector4(0.72f, 0.74f, 0.78f, 1.0f));
     material->SetRawParameter("u_Specular", NLS::Maths::Vector4(0.0f, 0.0f, 0.0f, 1.0f));
+    material->SetRawParameter("u_MetallicMapChannel", NLS::Maths::Vector4(0.0f, 0.0f, 1.0f, 0.0f));
+    material->SetRawParameter("u_RoughnessMapChannel", NLS::Maths::Vector4(0.0f, 0.0f, 1.0f, 0.0f));
     material->SetRawParameter("u_AlbedoMap", whiteTexture);
     material->SetRawParameter("u_MetallicMap", whiteTexture);
     material->SetRawParameter("u_RoughnessMap", whiteTexture);

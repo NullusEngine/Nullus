@@ -1207,8 +1207,7 @@ void Launcher::SetupContext()
 
     Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = m_graphicsBackend;
-    // Metal submits ImGui directly to CAMetalLayer while the generic scene frame graph is unfinished.
-    driverSettings.enableThreadedRendering = m_graphicsBackend != Render::Settings::EGraphicsBackend::METAL;
+    driverSettings.enableThreadedRendering = true;
     driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
     if (m_renderDocOverride.has_value() &&
         (m_renderDocOverride->enabled || m_renderDocOverride->startupCaptureAfterFrames > 0))

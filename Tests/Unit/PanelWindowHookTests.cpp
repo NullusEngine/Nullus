@@ -210,6 +210,11 @@ public:
         m_renderer = std::move(renderer);
     }
 
+    bool IsSceneRendererAvailable() const override
+    {
+        return true;
+    }
+
     void RenderForTest()
     {
         Render(64u, 64u);

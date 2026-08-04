@@ -4,6 +4,7 @@
 #include <atomic>
 #include <string>
 
+#include "Debug/Logger.h"
 #include "Math/Matrix4.h"
 #include "Math/Vector2.h"
 #include "Math/Vector3.h"
@@ -235,7 +236,22 @@ namespace NLS::Render::Resources
 				candidate.keywordHash == keywordHash;
 		});
 		if (artifact == data->compiledArtifacts.end())
+		{
+			if (stage == ShaderCompiler::ShaderStage::Compute)
+			{
+				std::string availableArtifacts;
+				for (const auto& candidate : data->compiledArtifacts)
+				{
+					availableArtifacts += " [stage=" + std::to_string(static_cast<uint32_t>(candidate.stage)) +
+						" target=" + std::to_string(static_cast<uint32_t>(candidate.targetPlatform)) +
+						" bytes=" + std::to_string(candidate.output.bytecode.size()) + "]";
+				}
+				NLS_LOG_INFO("Shader explicit compute module unavailable: path=" + path +
+					" target=" + std::to_string(static_cast<uint32_t>(targetPlatform)) +
+					" artifacts=" + availableArtifacts);
+			}
 			return nullptr;
+		}
 
 		RHI::RHIShaderModuleDesc desc;
 		desc.stage = ToRHIStage(stage);

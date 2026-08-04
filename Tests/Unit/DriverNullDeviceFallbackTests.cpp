@@ -19,22 +19,23 @@ TEST(DriverNullDeviceReadinessTests, ReturnsSafeReadinessDecisionsWhenExplicitDe
 
     NLS::Render::Context::Driver driver(settings);
 
-    const auto editorDecision = driver.EvaluateEditorMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX12);
+    const auto requiredBackend = NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
+    const auto editorDecision = driver.EvaluateEditorMainRuntimeReadiness(requiredBackend);
     ASSERT_TRUE(editorDecision.primaryWarning.has_value());
-    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::DX12))
+    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(requiredBackend))
         EXPECT_NE(editorDecision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
     else
-        EXPECT_NE(editorDecision.primaryWarning->find("only supports DX12"), std::string::npos);
+        EXPECT_NE(editorDecision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(requiredBackend))), std::string::npos);
     ASSERT_TRUE(editorDecision.detailWarning.has_value());
 
-    const auto gameDecision = driver.EvaluateGameMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX12);
+    const auto gameDecision = driver.EvaluateGameMainRuntimeReadiness(requiredBackend);
     ASSERT_TRUE(gameDecision.primaryWarning.has_value());
-    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::DX12))
+    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(requiredBackend))
         EXPECT_NE(gameDecision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
     else
-        EXPECT_NE(gameDecision.primaryWarning->find("only supports DX12"), std::string::npos);
+        EXPECT_NE(gameDecision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(requiredBackend))), std::string::npos);
     ASSERT_TRUE(gameDecision.detailWarning.has_value());
 }
 
@@ -91,8 +92,9 @@ TEST(DriverNullDeviceReadinessTests, ThreadedOffscreenOnlyFramesRetireWithoutExp
 
 TEST(DriverNullDeviceReadinessTests, DX12NullDeviceDoesNotExposeDirectExplicitLegacyPath)
 {
+    const auto requiredBackend = NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
     NLS::Render::Settings::DriverSettings settings;
-    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+    settings.graphicsBackend = requiredBackend;
     settings.framesInFlight = 1;
     settings.enableThreadedRendering = true;
     settings.threadedFrameSlotCount = 1u;
@@ -106,23 +108,23 @@ TEST(DriverNullDeviceReadinessTests, DX12NullDeviceDoesNotExposeDirectExplicitLe
     EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
     EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
 
-    const auto editorDecision = driver.EvaluateEditorMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX12);
+    const auto editorDecision = driver.EvaluateEditorMainRuntimeReadiness(requiredBackend);
     ASSERT_TRUE(editorDecision.primaryWarning.has_value());
-    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::DX12))
+    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(requiredBackend))
         EXPECT_NE(editorDecision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
     else
-        EXPECT_NE(editorDecision.primaryWarning->find("only supports DX12"), std::string::npos);
+        EXPECT_NE(editorDecision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(requiredBackend))), std::string::npos);
     ASSERT_TRUE(editorDecision.detailWarning.has_value());
     EXPECT_NE(editorDecision.detailWarning->find("only active runtime backend"), std::string::npos);
 
-    const auto gameDecision = driver.EvaluateGameMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX12);
+    const auto gameDecision = driver.EvaluateGameMainRuntimeReadiness(requiredBackend);
     ASSERT_TRUE(gameDecision.primaryWarning.has_value());
-    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::DX12))
+    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(requiredBackend))
         EXPECT_NE(gameDecision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
     else
-        EXPECT_NE(gameDecision.primaryWarning->find("only supports DX12"), std::string::npos);
+        EXPECT_NE(gameDecision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(requiredBackend))), std::string::npos);
     ASSERT_TRUE(gameDecision.detailWarning.has_value());
     EXPECT_NE(gameDecision.detailWarning->find("only active runtime backend"), std::string::npos);
 }

@@ -251,6 +251,7 @@ inline bool ShaderSupportsIndexedObjectData(const Shader& shader)
 
 inline bool BackendSupportsIndexedObjectDataPushConstants(const NLS::Render::RHI::NativeBackendType backend)
 {
-    return backend == NLS::Render::RHI::NativeBackendType::DX12;
+    return backend == NLS::Render::RHI::NativeBackendType::DX12 ||
+        backend == NLS::Render::RHI::NativeBackendType::Metal;
 }
 }

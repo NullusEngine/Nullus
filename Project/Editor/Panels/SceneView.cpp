@@ -494,7 +494,8 @@ Editor::Panels::SceneView::SceneView(
     }
     else
     {
-        NLS_LOG_INFO("[Startup] Scene View renderer skipped because Metal is running in UI-only mode.");
+        NLS_LOG_INFO(
+            "[Startup] Generic Scene View renderer skipped; native Metal viewport preview will be used.");
     }
 
     m_camera.SetFar(5000.0f);
@@ -1535,9 +1536,20 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
     if (driver == nullptr)
         return;
 
-    auto texture = m_fbo.GetExplicitTextureHandle();
+    std::shared_ptr<Render::RHI::RHITexture> texture;
+    bool usingMetalViewportPreview = false;
+#if defined(__APPLE__)
+    if (!IsSceneRendererAvailable() && m_image != nullptr && m_image->textureView != nullptr)
+    {
+        texture = m_image->textureView->GetTexture();
+        usingMetalViewportPreview = texture != nullptr;
+    }
+#endif
+    if (texture == nullptr)
+        texture = m_fbo.GetExplicitTextureHandle();
     if (texture == nullptr ||
-        !Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(*driver, texture))
+        (!usingMetalViewportPreview &&
+            !Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(*driver, texture)))
     {
         m_validationReadbackReadyFrames = 0u;
         return;

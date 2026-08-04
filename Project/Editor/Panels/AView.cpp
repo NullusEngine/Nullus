@@ -147,12 +147,15 @@ void Editor::Panels::AView::OnBeforeDrawWidgets()
                         GetCamera()))
                 {
                     m_image->textureView = m_metalViewportRenderer->GetOutputTextureView();
+                    // The native preview submits outside the generic scene renderer, so
+                    // keep view-level post-frame validation and bookkeeping on the same path.
+                    AfterRenderFrame();
                     return;
                 }
             }
         }
 
-        ImGui::TextUnformatted("Scene rendering is unavailable in Metal UI-only mode.");
+        ImGui::TextUnformatted("Native Metal viewport preview is unavailable.");
         return;
     }
 #endif

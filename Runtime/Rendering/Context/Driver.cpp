@@ -3922,7 +3922,7 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
             Render::Settings::RuntimeConsumer::Editor,
             Render::RHI::RHIDeviceCapabilities{});
         NLS_LOG_WARNING(
-            "Driver: rejecting non-DX12 runtime backend during UE5 alignment phase 1: " +
+            "Driver: rejecting runtime backend outside the platform phase-1 selection: " +
             std::string(Render::Settings::ToString(m_impl->requestedGraphicsBackend)) +
             " phaseGate=" + phaseGateReport.summary);
     }

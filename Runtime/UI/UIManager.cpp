@@ -753,9 +753,7 @@ void UIManager::Render()
     {
         if (m_uiBridge != nullptr && m_uiBridge->HasRendererBackend())
         {
-            NLS_PROFILE_NAMED_SCOPE("RHIUIBridge::RenderDrawData");
-            m_uiBridge->RenderDrawData(ImGui::GetDrawData(), 0u);
-            m_uiBridge->SubmitCommandBuffer(0u);
+            RenderDirectUiBridgeDrawData();
             logStartupRenderStage("RenderUiBridgeDrawData");
         }
         else
@@ -765,6 +763,13 @@ void UIManager::Render()
         }
     }
     m_isRenderingFrame = false;
+}
+
+void UIManager::RenderDirectUiBridgeDrawData()
+{
+    NLS_PROFILE_NAMED_SCOPE("RHIUIBridge::RenderDrawData");
+    m_uiBridge->RenderDrawData(ImGui::GetDrawData(), 0u);
+    m_uiBridge->SubmitCommandBuffer(0u);
 }
 
 NLS::Render::RHI::NativeHandle UIManager::ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)

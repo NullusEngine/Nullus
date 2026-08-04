@@ -33,12 +33,29 @@ namespace NLS::Render::Backend
     namespace
     {
         constexpr NLS::Render::RHI::BackendType kMetalBackendType = NLS::Render::RHI::BackendType::Metal;
-        constexpr uint32_t kMetalPushConstantBufferIndex = 28u;
+        constexpr uint32_t kMetalPushConstantBufferIndex = 30u;
+        constexpr uint32_t kMetalPassStorageBufferBase = 23u;
+        constexpr uint32_t kMetalSpirvStorageBindingOffset = 64u;
+        constexpr uint32_t kMetalSpirvTextureBindingOffset = 128u;
+        constexpr uint32_t kMetalSpirvSamplerBindingOffset = 192u;
 
         std::optional<uint32_t> ToMetalBufferBindingIndex(const uint32_t bindingSpace, const uint32_t binding)
         {
             const uint32_t index = NLS::Render::RHI::BindingPointMap::GetUniformBufferBindingPoint(bindingSpace, binding);
             return index < kMetalPushConstantBufferIndex ? std::optional<uint32_t>(index) : std::nullopt;
+        }
+
+        std::optional<uint32_t> ToMetalStorageBufferBindingIndex(const uint32_t bindingSpace, const uint32_t binding)
+        {
+            // Pass parameters intentionally use both b0 and t0 in the same register space.
+            // Keep storage buffers in a separate Metal buffer range from uniform buffers.
+            if (bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
+            {
+                const uint32_t index = kMetalPassStorageBufferBase + binding;
+                return index < kMetalPushConstantBufferIndex ? std::optional<uint32_t>(index) : std::nullopt;
+            }
+
+            return ToMetalBufferBindingIndex(bindingSpace, binding);
         }
 
         std::optional<uint32_t> ToMetalTextureBindingIndex(const uint32_t bindingSpace, const uint32_t binding)
@@ -221,7 +238,9 @@ namespace NLS::Render::Backend
             case TextureFormat::RG32F: return MTLPixelFormatRG32Float;
             case TextureFormat::RGBA32F: return MTLPixelFormatRGBA32Float;
             case TextureFormat::Depth32F: return MTLPixelFormatDepth32Float;
-            case TextureFormat::Depth24Stencil8: return MTLPixelFormatDepth24Unorm_Stencil8;
+            // Metal exposes Depth24Unorm_Stencil8 on macOS as the invalid sentinel
+            // value 255. Use the supported 32-bit depth/stencil attachment instead.
+            case TextureFormat::Depth24Stencil8: return MTLPixelFormatDepth32Float_Stencil8;
             case TextureFormat::RGB8:
             case TextureFormat::BC1:
             case TextureFormat::BC3:
@@ -505,10 +524,12 @@ namespace NLS::Render::Backend
             MetalShaderModule(
                 id<MTLLibrary> library,
                 id<MTLFunction> function,
-                NLS::Render::RHI::RHIShaderModuleDesc desc)
+                NLS::Render::RHI::RHIShaderModuleDesc desc,
+                MTLSize threadgroupSize = MTLSizeMake(1u, 1u, 1u))
                 : m_library([library retain])
                 , m_function([function retain])
                 , m_desc(std::move(desc))
+                , m_threadgroupSize(threadgroupSize)
             {
             }
 
@@ -521,11 +542,13 @@ namespace NLS::Render::Backend
             std::string_view GetDebugName() const override { return m_desc.debugName; }
             const NLS::Render::RHI::RHIShaderModuleDesc& GetDesc() const override { return m_desc; }
             id<MTLFunction> GetFunction() const { return m_function; }
+            MTLSize GetThreadgroupSize() const { return m_threadgroupSize; }
 
         private:
             id<MTLLibrary> m_library = nil;
             id<MTLFunction> m_function = nil;
             NLS::Render::RHI::RHIShaderModuleDesc m_desc{};
+            MTLSize m_threadgroupSize = MTLSizeMake(1u, 1u, 1u);
         };
 
         class MetalGraphicsPipeline final : public NLS::Render::RHI::RHIGraphicsPipeline
@@ -560,6 +583,35 @@ namespace NLS::Render::Backend
             id<MTLRenderPipelineState> m_pipelineState = nil;
             id<MTLDepthStencilState> m_depthStencilState = nil;
             NLS::Render::RHI::RHIGraphicsPipelineDesc m_desc{};
+        };
+
+        class MetalComputePipeline final : public NLS::Render::RHI::RHIComputePipeline
+        {
+        public:
+            MetalComputePipeline(
+                id<MTLComputePipelineState> pipelineState,
+                MTLSize threadgroupSize,
+                NLS::Render::RHI::RHIComputePipelineDesc desc)
+                : m_pipelineState([pipelineState retain])
+                , m_threadgroupSize(threadgroupSize)
+                , m_desc(std::move(desc))
+            {
+            }
+
+            ~MetalComputePipeline() override
+            {
+                [m_pipelineState release];
+            }
+
+            std::string_view GetDebugName() const override { return m_desc.debugName; }
+            const NLS::Render::RHI::RHIComputePipelineDesc& GetDesc() const override { return m_desc; }
+            id<MTLComputePipelineState> GetPipelineState() const { return m_pipelineState; }
+            MTLSize GetThreadgroupSize() const { return m_threadgroupSize; }
+
+        private:
+            id<MTLComputePipelineState> m_pipelineState = nil;
+            MTLSize m_threadgroupSize = MTLSizeMake(1u, 1u, 1u);
+            NLS::Render::RHI::RHIComputePipelineDesc m_desc{};
         };
 
         class MetalCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
@@ -609,6 +661,7 @@ namespace NLS::Render::Backend
                 [m_commandBuffer release];
                 m_commandBuffer = nil;
                 m_currentGraphicsPipeline.reset();
+                m_currentComputePipeline.reset();
                 m_indexBuffer = nil;
                 m_indexBufferOffset = 0u;
                 m_recording = false;
@@ -667,7 +720,7 @@ namespace NLS::Render::Backend
                     renderPass.depthAttachment.loadAction = ToMetalLoadAction(source.depthLoadOp);
                     renderPass.depthAttachment.storeAction = ToMetalStoreAction(source.depthStoreOp);
                     renderPass.depthAttachment.clearDepth = source.clearValue.depth;
-                    if (view->GetMetalTextureView().pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8)
+                    if (view->GetMetalTextureView().pixelFormat == MTLPixelFormatDepth32Float_Stencil8)
                     {
                         renderPass.stencilAttachment.texture = view->GetMetalTextureView();
                         renderPass.stencilAttachment.loadAction = ToMetalLoadAction(source.stencilLoadOp);
@@ -739,15 +792,43 @@ namespace NLS::Render::Backend
                 [m_renderEncoder setFrontFacingWinding:MTLWindingCounterClockwise];
             }
 
-            void BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>&) override {}
+            void BindComputePipeline(
+                const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>& pipeline) override
+            {
+                m_currentComputePipeline = std::dynamic_pointer_cast<MetalComputePipeline>(pipeline);
+                m_currentGraphicsPipeline.reset();
+                if (!m_recording || m_commandBuffer == nil || m_currentComputePipeline == nullptr)
+                    return;
+
+                EndRenderEncoder();
+                EndBlitEncoder();
+                if (m_computeEncoder == nil)
+                    m_computeEncoder = [[m_commandBuffer computeCommandEncoder] retain];
+                if (m_computeEncoder == nil)
+                {
+                    NLS_LOG_ERROR("MetalCommandBuffer: failed to create compute encoder.");
+                    return;
+                }
+
+                [m_computeEncoder setComputePipelineState:m_currentComputePipeline->GetPipelineState()];
+            }
 
             void BindBindingSet(
                 const uint32_t setIndex,
                 const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet) override
             {
-                if (m_renderEncoder == nil)
+                const bool bindCompute = m_computeEncoder != nil && m_renderEncoder == nil;
+                if (m_renderEncoder == nil && !bindCompute)
                     return;
-                const auto metalSet = std::dynamic_pointer_cast<MetalBindingSet>(bindingSet);
+                auto currentBindingSet = bindingSet;
+                std::shared_ptr<MetalBindingSet> metalSet;
+                while (currentBindingSet != nullptr)
+                {
+                    metalSet = std::dynamic_pointer_cast<MetalBindingSet>(currentBindingSet);
+                    if (metalSet != nullptr)
+                        break;
+                    currentBindingSet = currentBindingSet->GetWrappedBindingSetShared();
+                }
                 if (metalSet == nullptr)
                     return;
 
@@ -768,13 +849,16 @@ namespace NLS::Render::Backend
                     const uint32_t bindingSpace = hasLayoutEntry ? layoutEntry->registerSpace : setIndex;
                     const auto stageMask = hasLayoutEntry
                         ? layoutEntry->stageMask
-                        : NLS::Render::RHI::ShaderStageMask::AllGraphics;
+                        : bindCompute
+                            ? NLS::Render::RHI::ShaderStageMask::Compute
+                            : NLS::Render::RHI::ShaderStageMask::AllGraphics;
 
                     const bool bindVertex = NLS::Render::RHI::HasShaderStage(
                         stageMask, NLS::Render::RHI::ShaderStageMask::Vertex);
                     const bool bindFragment = NLS::Render::RHI::HasShaderStage(
                         stageMask, NLS::Render::RHI::ShaderStageMask::Fragment);
-
+                    const bool bindComputeStage = bindCompute && NLS::Render::RHI::HasShaderStage(
+                        stageMask, NLS::Render::RHI::ShaderStageMask::Compute);
                     switch (entry.type)
                     {
                     case NLS::Render::RHI::BindingType::UniformBuffer:
@@ -782,7 +866,9 @@ namespace NLS::Render::Backend
                     case NLS::Render::RHI::BindingType::StorageBuffer:
                     {
                         const auto buffer = std::dynamic_pointer_cast<MetalBuffer>(entry.buffer);
-                        const auto index = ToMetalBufferBindingIndex(bindingSpace, entry.binding);
+                        const auto index = entry.type == NLS::Render::RHI::BindingType::UniformBuffer
+                            ? ToMetalBufferBindingIndex(bindingSpace, entry.binding)
+                            : ToMetalStorageBufferBindingIndex(bindingSpace, entry.binding);
                         if (buffer == nullptr || !index.has_value())
                             break;
                         if (bindVertex)
@@ -793,6 +879,10 @@ namespace NLS::Render::Backend
                             [m_renderEncoder setFragmentBuffer:buffer->GetBuffer()
                                                      offset:entry.bufferOffset
                                                     atIndex:*index];
+                        if (bindComputeStage)
+                            [m_computeEncoder setBuffer:buffer->GetBuffer()
+                                                 offset:entry.bufferOffset
+                                                atIndex:*index];
                         break;
                     }
                     case NLS::Render::RHI::BindingType::Texture:
@@ -806,6 +896,8 @@ namespace NLS::Render::Backend
                             [m_renderEncoder setVertexTexture:textureView->GetMetalTextureView() atIndex:*index];
                         if (bindFragment)
                             [m_renderEncoder setFragmentTexture:textureView->GetMetalTextureView() atIndex:*index];
+                        if (bindComputeStage)
+                            [m_computeEncoder setTexture:textureView->GetMetalTextureView() atIndex:*index];
                         break;
                     }
                     case NLS::Render::RHI::BindingType::Sampler:
@@ -818,6 +910,8 @@ namespace NLS::Render::Backend
                             [m_renderEncoder setVertexSamplerState:sampler->GetSampler() atIndex:*index];
                         if (bindFragment)
                             [m_renderEncoder setFragmentSamplerState:sampler->GetSampler() atIndex:*index];
+                        if (bindComputeStage)
+                            [m_computeEncoder setSamplerState:sampler->GetSampler() atIndex:*index];
                         break;
                     }
                     }
@@ -830,12 +924,14 @@ namespace NLS::Render::Backend
                 const uint32_t size,
                 const void* data) override
             {
-                if (m_renderEncoder == nil || data == nullptr || size == 0u)
+                if ((m_renderEncoder == nil && m_computeEncoder == nil) || data == nullptr || size == 0u)
                     return;
                 if (NLS::Render::RHI::HasShaderStage(stageMask, NLS::Render::RHI::ShaderStageMask::Vertex))
                     [m_renderEncoder setVertexBytes:data length:size atIndex:kMetalPushConstantBufferIndex];
                 if (NLS::Render::RHI::HasShaderStage(stageMask, NLS::Render::RHI::ShaderStageMask::Fragment))
                     [m_renderEncoder setFragmentBytes:data length:size atIndex:kMetalPushConstantBufferIndex];
+                if (NLS::Render::RHI::HasShaderStage(stageMask, NLS::Render::RHI::ShaderStageMask::Compute))
+                    [m_computeEncoder setBytes:data length:size atIndex:kMetalPushConstantBufferIndex];
             }
 
             void BindVertexBuffer(const uint32_t slot, const NLS::Render::RHI::RHIVertexBufferView& view) override
@@ -927,7 +1023,19 @@ namespace NLS::Render::Backend
                 return {};
             }
 
-            void Dispatch(uint32_t, uint32_t, uint32_t) override {}
+            void Dispatch(
+                const uint32_t groupCountX,
+                const uint32_t groupCountY,
+                const uint32_t groupCountZ) override
+            {
+                if (m_computeEncoder == nil || m_currentComputePipeline == nullptr ||
+                    m_currentComputePipeline->GetPipelineState() == nil)
+                    return;
+
+                const MTLSize threadgroups = MTLSizeMake(groupCountX, groupCountY, groupCountZ);
+                [m_computeEncoder dispatchThreadgroups:threadgroups
+                                  threadsPerThreadgroup:m_currentComputePipeline->GetThreadgroupSize()];
+            }
 
             void CopyBuffer(
                 const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& source,
@@ -1010,6 +1118,7 @@ namespace NLS::Render::Backend
             {
                 if (!m_recording || m_commandBuffer == nil || m_renderEncoder != nil)
                     return nil;
+                EndComputeEncoder();
                 if (m_blitEncoder == nil)
                     m_blitEncoder = [[m_commandBuffer blitCommandEncoder] retain];
                 return m_blitEncoder;
@@ -1035,17 +1144,30 @@ namespace NLS::Render::Backend
                 }
             }
 
+            void EndComputeEncoder()
+            {
+                if (m_computeEncoder != nil)
+                {
+                    [m_computeEncoder endEncoding];
+                    [m_computeEncoder release];
+                    m_computeEncoder = nil;
+                }
+            }
+
             void EndActiveEncoders()
             {
                 EndRenderEncoder();
                 EndBlitEncoder();
+                EndComputeEncoder();
             }
 
             id<MTLCommandQueue> m_queue = nil;
             id<MTLCommandBuffer> m_commandBuffer = nil;
             id<MTLRenderCommandEncoder> m_renderEncoder = nil;
             id<MTLBlitCommandEncoder> m_blitEncoder = nil;
+            id<MTLComputeCommandEncoder> m_computeEncoder = nil;
             std::shared_ptr<MetalGraphicsPipeline> m_currentGraphicsPipeline;
+            std::shared_ptr<MetalComputePipeline> m_currentComputePipeline;
             id<MTLBuffer> m_indexBuffer = nil;
             uint64_t m_indexBufferOffset = 0u;
             NLS::Render::RHI::IndexType m_indexType = NLS::Render::RHI::IndexType::UInt32;
@@ -1352,8 +1474,14 @@ namespace NLS::Render::Backend
                 const auto completionFence = signalFence;
                 const auto completionSemaphores = signalSemaphores;
                 id<MTLCommandBuffer> finalCommandBuffer = commandBuffers.back()->GetMetalCommandBuffer();
-                [finalCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer>)
+                [finalCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completedCommandBuffer)
                 {
+                    if (completedCommandBuffer.status == MTLCommandBufferStatusError)
+                    {
+                        const char* message = completedCommandBuffer.error.localizedDescription.UTF8String;
+                        NLS_LOG_ERROR("Metal command buffer failed: " +
+                            std::string(message != nullptr ? message : "unknown error"));
+                    }
                     for (const auto& semaphore : completionSemaphores)
                         semaphore->Signal();
                     if (completionFence != nullptr)
@@ -1558,6 +1686,75 @@ namespace NLS::Render::Backend
                 [texture release];
                 return result;
             }
+            NLS::Render::RHI::RHIUpdateResult UpdateTexture(
+                const NLS::Render::RHI::RHITextureUpdateDesc& desc) override
+            {
+                const auto texture = std::dynamic_pointer_cast<MetalTexture>(desc.texture);
+                if (texture == nullptr || texture->GetTexture() == nil || desc.data == nullptr ||
+                    desc.extent.width == 0u || desc.extent.height == 0u || desc.extent.depth != 1u)
+                {
+                    return {
+                        NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+                        "Invalid Metal texture update"
+                    };
+                }
+
+                const auto& textureDesc = texture->GetDesc();
+                const uint32_t mipLevels = (std::max)(textureDesc.mipLevels, 1u);
+                if (desc.mipLevel >= mipLevels || desc.arrayLayer != 0u ||
+                    desc.x > (textureDesc.extent.width >> desc.mipLevel) ||
+                    desc.y > (textureDesc.extent.height >> desc.mipLevel))
+                {
+                    return {
+                        NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+                        "Metal texture update subresource is out of range"
+                    };
+                }
+
+                const uint32_t mipWidth = (std::max)(1u, textureDesc.extent.width >> desc.mipLevel);
+                const uint32_t mipHeight = (std::max)(1u, textureDesc.extent.height >> desc.mipLevel);
+                if (desc.extent.width > mipWidth - desc.x || desc.extent.height > mipHeight - desc.y)
+                {
+                    return {
+                        NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+                        "Metal texture update extent is out of range"
+                    };
+                }
+
+                const auto* formatInfo = NLS::Render::RHI::GetTextureFormatDescriptor(textureDesc.format);
+                if (formatInfo == nullptr || formatInfo->isCompressed)
+                {
+                    return {
+                        NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
+                        "Metal texture updates require an uncompressed format"
+                    };
+                }
+
+                const uint32_t minimumRowPitch = NLS::Render::RHI::CalculateTextureRowPitch(
+                    textureDesc.format,
+                    desc.extent.width);
+                const uint32_t rowPitch = desc.rowPitch != 0u ? desc.rowPitch : minimumRowPitch;
+                const uint64_t requiredBytes = static_cast<uint64_t>(rowPitch) * (desc.extent.height - 1u) +
+                    minimumRowPitch;
+                if (minimumRowPitch == 0u || rowPitch < minimumRowPitch ||
+                    requiredBytes > desc.dataSize)
+                {
+                    return {
+                        NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+                        "Invalid Metal texture update row pitch"
+                    };
+                }
+
+                [texture->GetTexture() replaceRegion:MTLRegionMake2D(
+                    desc.x,
+                    desc.y,
+                    desc.extent.width,
+                    desc.extent.height)
+                          mipmapLevel:desc.mipLevel
+                            withBytes:desc.data
+                          bytesPerRow:rowPitch];
+                return {};
+            }
             std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
                 const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
                 const NLS::Render::RHI::RHITextureViewDesc& desc) override
@@ -1627,10 +1824,11 @@ namespace NLS::Render::Backend
             {
                 for (const auto& entry : desc.entries)
                 {
-                    const auto index = entry.type == NLS::Render::RHI::BindingType::UniformBuffer ||
-                            entry.type == NLS::Render::RHI::BindingType::StructuredBuffer ||
-                            entry.type == NLS::Render::RHI::BindingType::StorageBuffer
+                        const auto index = entry.type == NLS::Render::RHI::BindingType::UniformBuffer
                         ? ToMetalBufferBindingIndex(entry.registerSpace, entry.binding)
+                        : entry.type == NLS::Render::RHI::BindingType::StructuredBuffer ||
+                            entry.type == NLS::Render::RHI::BindingType::StorageBuffer
+                        ? ToMetalStorageBufferBindingIndex(entry.registerSpace, entry.binding)
                         : entry.type == NLS::Render::RHI::BindingType::Sampler
                             ? ToMetalSamplerBindingIndex(entry.registerSpace, entry.binding)
                             : ToMetalTextureBindingIndex(entry.registerSpace, entry.binding);
@@ -1654,7 +1852,7 @@ namespace NLS::Render::Backend
             {
                 for (const auto& layout : desc.bindingLayouts)
                 {
-                    if (layout == nullptr || std::dynamic_pointer_cast<MetalBindingLayout>(layout) == nullptr)
+                    if (layout != nullptr && std::dynamic_pointer_cast<MetalBindingLayout>(layout) == nullptr)
                         return nullptr;
                 }
                 return std::make_shared<MetalPipelineLayout>(desc);
@@ -1669,6 +1867,7 @@ namespace NLS::Render::Backend
                 {
                     std::string source;
                     std::string metalEntryPoint = desc.entryPoint;
+                    MTLSize threadgroupSize = MTLSizeMake(1u, 1u, 1u);
                     uint32_t magic = 0u;
                     if (desc.bytecode.size() >= sizeof(magic))
                         std::memcpy(&magic, desc.bytecode.data(), sizeof(magic));
@@ -1684,13 +1883,32 @@ namespace NLS::Render::Backend
                         compiler.set_msl_options(options);
 
                         const auto executionModel = compiler.get_execution_model();
-                        const auto addBufferBindings = [&](const auto& resources)
+                        if (desc.stage == NLS::Render::RHI::ShaderStage::Compute)
+                        {
+                            threadgroupSize = MTLSizeMake(
+                                compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, 0u),
+                                compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, 1u),
+                                compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, 2u));
+                        }
+                        const auto addBufferBindings = [&](const auto& resources, const bool storageBuffer)
                         {
                             for (const auto& resource : resources)
                             {
                                 const uint32_t bindingSpace = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
-                                const uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
-                                const auto index = ToMetalBufferBindingIndex(bindingSpace, binding);
+                                const uint32_t sourceBinding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+                                const bool isIndexedObjectDataPushConstant = !storageBuffer &&
+                                    bindingSpace == NLS::Render::RHI::BindingPointMap::kObjectBindingSpace &&
+                                    sourceBinding == 1u;
+                                const uint32_t binding = storageBuffer
+                                    ? sourceBinding + kMetalSpirvStorageBindingOffset
+                                    : sourceBinding;
+                                if (storageBuffer)
+                                    compiler.set_decoration(resource.id, spv::DecorationBinding, binding);
+                                const auto index = isIndexedObjectDataPushConstant
+                                    ? std::optional<uint32_t>(kMetalPushConstantBufferIndex)
+                                    : storageBuffer
+                                    ? ToMetalStorageBufferBindingIndex(bindingSpace, sourceBinding)
+                                    : ToMetalBufferBindingIndex(bindingSpace, sourceBinding);
                                 if (!index.has_value())
                                     throw std::runtime_error("Metal buffer binding exceeds the supported binding map.");
                                 spirv_cross::MSLResourceBinding remap{};
@@ -1706,12 +1924,14 @@ namespace NLS::Render::Backend
                             for (const auto& resource : resources)
                             {
                                 const uint32_t bindingSpace = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
-                                const uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
-                                const auto index = ToMetalTextureBindingIndex(bindingSpace, binding);
+                                const uint32_t sourceBinding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+                                const uint32_t binding = sourceBinding + kMetalSpirvTextureBindingOffset;
+                                compiler.set_decoration(resource.id, spv::DecorationBinding, binding);
+                                const auto index = ToMetalTextureBindingIndex(bindingSpace, sourceBinding);
                                 if (!index.has_value())
                                     throw std::runtime_error("Metal texture binding exceeds the supported binding map.");
                                 const auto samplerIndex = includeSampler
-                                    ? ToMetalSamplerBindingIndex(bindingSpace, binding)
+                                    ? ToMetalSamplerBindingIndex(bindingSpace, sourceBinding)
                                     : std::optional<uint32_t>{};
                                 if (includeSampler && !samplerIndex.has_value())
                                     throw std::runtime_error("Metal sampler binding exceeds the supported binding map.");
@@ -1729,8 +1949,10 @@ namespace NLS::Render::Backend
                             for (const auto& resource : resources)
                             {
                                 const uint32_t bindingSpace = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
-                                const uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
-                                const auto index = ToMetalSamplerBindingIndex(bindingSpace, binding);
+                                const uint32_t sourceBinding = compiler.get_decoration(resource.id, spv::DecorationBinding);
+                                const uint32_t binding = sourceBinding + kMetalSpirvSamplerBindingOffset;
+                                compiler.set_decoration(resource.id, spv::DecorationBinding, binding);
+                                const auto index = ToMetalSamplerBindingIndex(bindingSpace, sourceBinding);
                                 if (!index.has_value())
                                     throw std::runtime_error("Metal sampler binding exceeds the supported binding map.");
                                 spirv_cross::MSLResourceBinding remap{};
@@ -1743,8 +1965,8 @@ namespace NLS::Render::Backend
                         };
 
                         const auto resources = compiler.get_shader_resources();
-                        addBufferBindings(resources.uniform_buffers);
-                        addBufferBindings(resources.storage_buffers);
+                        addBufferBindings(resources.uniform_buffers, false);
+                        addBufferBindings(resources.storage_buffers, true);
                         addTextureBindings(resources.sampled_images, true);
                         addTextureBindings(resources.separate_images, false);
                         addTextureBindings(resources.storage_images, false);
@@ -1777,7 +1999,7 @@ namespace NLS::Render::Backend
                         [library release];
                         return nullptr;
                     }
-                    auto result = std::make_shared<MetalShaderModule>(library, function, desc);
+                    auto result = std::make_shared<MetalShaderModule>(library, function, desc, threadgroupSize);
                     [function release];
                     [library release];
                     return result;
@@ -1858,7 +2080,7 @@ namespace NLS::Render::Backend
                         return nullptr;
                     }
                     descriptor.depthAttachmentPixelFormat = depthFormat;
-                    if (depthFormat == MTLPixelFormatDepth24Unorm_Stencil8)
+                    if (depthFormat == MTLPixelFormatDepth32Float_Stencil8)
                         descriptor.stencilAttachmentPixelFormat = depthFormat;
                 }
 
@@ -1934,7 +2156,30 @@ namespace NLS::Render::Backend
                 return result;
             }
             std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(
-                const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
+                const NLS::Render::RHI::RHIComputePipelineDesc& desc) override
+            {
+                const auto computeShader = std::dynamic_pointer_cast<MetalShaderModule>(desc.computeShader);
+                if (m_device == nil || computeShader == nullptr || computeShader->GetFunction() == nil)
+                    return nullptr;
+
+                NSError* error = nil;
+                id<MTLComputePipelineState> pipelineState =
+                    [m_device newComputePipelineStateWithFunction:computeShader->GetFunction() error:&error];
+                if (pipelineState == nil)
+                {
+                    const char* message = error != nil ? error.localizedDescription.UTF8String : "Unknown Metal compute pipeline error.";
+                    NLS_LOG_ERROR("CreateMetalComputePipeline: " +
+                        std::string(message != nullptr ? message : "Unknown compute pipeline error."));
+                    return nullptr;
+                }
+
+                auto result = std::make_shared<MetalComputePipeline>(
+                    pipelineState,
+                    computeShader->GetThreadgroupSize(),
+                    desc);
+                [pipelineState release];
+                return result;
+            }
             std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(
                 NLS::Render::RHI::QueueType queueType, std::string debugName) override
             {
@@ -1950,30 +2195,123 @@ namespace NLS::Render::Backend
                 return std::make_shared<MetalSemaphore>(debugName.empty() ? "MetalSemaphore" : std::move(debugName));
             }
             void ReadPixels(
-                const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
-                uint32_t,
-                uint32_t,
-                uint32_t,
-                uint32_t,
-                NLS::Render::Settings::EPixelDataFormat,
-                NLS::Render::Settings::EPixelDataType,
-                void*) override
+                const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+                const uint32_t x,
+                const uint32_t y,
+                const uint32_t width,
+                const uint32_t height,
+                const NLS::Render::Settings::EPixelDataFormat format,
+                const NLS::Render::Settings::EPixelDataType type,
+                void* data) override
             {
+                const auto result = ReadPixelsChecked(texture, x, y, width, height, format, type, data);
+                if (!result.Succeeded())
+                    NLS_LOG_WARNING("MetalDevice::ReadPixels failed: " + result.message);
             }
             NLS::Render::RHI::RHIReadbackResult ReadPixelsChecked(
-                const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
-                uint32_t,
-                uint32_t,
-                uint32_t,
-                uint32_t,
-                NLS::Render::Settings::EPixelDataFormat,
-                NLS::Render::Settings::EPixelDataType,
-                void*) override
+                const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+                const uint32_t x,
+                const uint32_t y,
+                const uint32_t width,
+                const uint32_t height,
+                const NLS::Render::Settings::EPixelDataFormat format,
+                const NLS::Render::Settings::EPixelDataType type,
+                void* data) override
             {
-                return {
-                    NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat,
-                    "Metal pixel readback is not implemented in the Launcher UI milestone."
-                };
+                const auto metalTexture = std::dynamic_pointer_cast<MetalTexture>(texture);
+                if (metalTexture == nullptr || metalTexture->GetTexture() == nil)
+                    return { NLS::Render::RHI::RHIReadbackStatusCode::InvalidArgument, "Metal readback texture is unavailable" };
+                if (data == nullptr || width == 0u || height == 0u)
+                    return { NLS::Render::RHI::RHIReadbackStatusCode::InvalidArgument, "Metal readback arguments are invalid" };
+                if (x >= metalTexture->GetTexture().width || y >= metalTexture->GetTexture().height ||
+                    width > metalTexture->GetTexture().width - x || height > metalTexture->GetTexture().height - y)
+                {
+                    return { NLS::Render::RHI::RHIReadbackStatusCode::InvalidArgument, "Metal readback region is outside the texture" };
+                }
+                if (type != NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE)
+                    return { NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat, "Metal readback supports only UNSIGNED_BYTE data" };
+
+                size_t destinationBytesPerPixel = 0u;
+                switch (format)
+                {
+                case NLS::Render::Settings::EPixelDataFormat::RGB:
+                case NLS::Render::Settings::EPixelDataFormat::BGR:
+                    destinationBytesPerPixel = 3u;
+                    break;
+                case NLS::Render::Settings::EPixelDataFormat::RGBA:
+                case NLS::Render::Settings::EPixelDataFormat::BGRA:
+                    destinationBytesPerPixel = 4u;
+                    break;
+                default:
+                    return { NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat, "Metal readback destination format is unsupported" };
+                }
+
+                const auto nativeFormat = metalTexture->GetTexture().pixelFormat;
+                const bool nativeRgba = nativeFormat == MTLPixelFormatRGBA8Unorm ||
+                    nativeFormat == MTLPixelFormatRGBA8Unorm_sRGB;
+                const bool nativeBgra = nativeFormat == MTLPixelFormatBGRA8Unorm ||
+                    nativeFormat == MTLPixelFormatBGRA8Unorm_sRGB;
+                if (!nativeRgba && !nativeBgra)
+                    return { NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat, "Metal readback source format is unsupported" };
+
+                // Submit a queue-ordered synchronization command so shared texture contents
+                // are complete before getBytes reads them on the CPU.
+                id<MTLCommandBuffer> synchronization = [m_graphicsQueue commandBuffer];
+                if (synchronization == nil)
+                    return { NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure, "Metal readback failed to create synchronization command buffer" };
+                [synchronization commit];
+                [synchronization waitUntilCompleted];
+                if (synchronization.status == MTLCommandBufferStatusError)
+                    return { NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure, "Metal readback synchronization command failed" };
+
+                std::vector<uint8_t> sourcePixels(static_cast<size_t>(width) * height * 4u);
+                [metalTexture->GetTexture() getBytes:sourcePixels.data()
+                                         bytesPerRow:static_cast<NSUInteger>(width) * 4u
+                                          fromRegion:MTLRegionMake2D(x, y, width, height)
+                                         mipmapLevel:0u];
+
+                auto* destination = static_cast<uint8_t*>(data);
+                for (uint32_t row = 0u; row < height; ++row)
+                {
+                    for (uint32_t column = 0u; column < width; ++column)
+                    {
+                        const size_t sourceIndex =
+                            (static_cast<size_t>(row) * width + column) * 4u;
+                        const size_t destinationIndex =
+                            (static_cast<size_t>(row) * width + column) * destinationBytesPerPixel;
+                        const uint8_t red = sourcePixels[sourceIndex + (nativeRgba ? 0u : 2u)];
+                        const uint8_t green = sourcePixels[sourceIndex + 1u];
+                        const uint8_t blue = sourcePixels[sourceIndex + (nativeRgba ? 2u : 0u)];
+                        const uint8_t alpha = sourcePixels[sourceIndex + 3u];
+                        if (format == NLS::Render::Settings::EPixelDataFormat::RGB)
+                        {
+                            destination[destinationIndex + 0u] = red;
+                            destination[destinationIndex + 1u] = green;
+                            destination[destinationIndex + 2u] = blue;
+                        }
+                        else if (format == NLS::Render::Settings::EPixelDataFormat::BGR)
+                        {
+                            destination[destinationIndex + 0u] = blue;
+                            destination[destinationIndex + 1u] = green;
+                            destination[destinationIndex + 2u] = red;
+                        }
+                        else if (format == NLS::Render::Settings::EPixelDataFormat::RGBA)
+                        {
+                            destination[destinationIndex + 0u] = red;
+                            destination[destinationIndex + 1u] = green;
+                            destination[destinationIndex + 2u] = blue;
+                            destination[destinationIndex + 3u] = alpha;
+                        }
+                        else
+                        {
+                            destination[destinationIndex + 0u] = blue;
+                            destination[destinationIndex + 1u] = green;
+                            destination[destinationIndex + 2u] = red;
+                            destination[destinationIndex + 3u] = alpha;
+                        }
+                    }
+                }
+                return { NLS::Render::RHI::RHIReadbackStatusCode::Success, {} };
             }
 
         private:

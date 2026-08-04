@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/Data/SceneOcclusionPacketLayout.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/RHI/BindingPointMap.h"
@@ -52,6 +53,11 @@ namespace
         return ShaderParameterStructBuilder(std::move(debugName))
             .SetGroup(ShaderParameterGroupKind::Object)
             .AddStructuredBuffer("ObjectData", 0u, NLS::Render::RHI::ShaderStageMask::Vertex, 64u)
+            .AddUniformBuffer(
+                "ObjectIndexConstants",
+                1u,
+                sizeof(NLS::Render::Data::ObjectDrawConstants),
+                NLS::Render::RHI::ShaderStageMask::Vertex | NLS::Render::RHI::ShaderStageMask::Fragment)
             .Build();
     }
 

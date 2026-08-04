@@ -210,6 +210,7 @@ private:
     void PushCurrentFont();
     void PopCurrentFont();
     void BeginFrame();
+    void RenderDirectUiBridgeDrawData();
     void ReleaseUnrequestedInfiniteDragCursor();
     void AccumulateInfiniteDragCursorWrapCompensation(NLS::Windowing::Window& p_window);
 

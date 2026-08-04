@@ -930,18 +930,18 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
             Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported;
     }
 
-    const bool metalUiOnlyRuntime =
+    const bool metalNativeViewportRuntime =
         graphicsBackend == Render::Settings::EGraphicsBackend::METAL &&
         !m_sceneRenderingAvailable;
-    if (runtimeReadiness.primaryWarning.has_value() && !metalUiOnlyRuntime)
+    if (runtimeReadiness.primaryWarning.has_value() && !metalNativeViewportRuntime)
     {
         throw std::runtime_error(runtimeReadiness.primaryWarning.value());
     }
-    if (metalUiOnlyRuntime)
+    if (metalNativeViewportRuntime)
     {
         NLS_LOG_WARNING(
-            "Editor is starting with Metal UI-only rendering. Scene, Game, and asset previews remain disabled "
-            "until Metal scene command encoding is implemented.");
+            "Editor is starting with Metal native viewport preview rendering. Scene and Game View use the "
+            "native Metal viewport path while the generic deferred scene renderer remains unavailable.");
     }
 
     if (driver == nullptr || driver->GetActiveGraphicsBackend() == Render::Settings::EGraphicsBackend::NONE)
@@ -1016,7 +1016,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     if (m_sceneRenderingAvailable)
         editorResources->PreloadStartupResources();
     else
-        NLS_LOG_INFO("Editor: skipping scene-only helper resources for Metal UI-only rendering.");
+        NLS_LOG_INFO("Editor: skipping generic scene-only helper resources; native Metal viewport previews remain available.");
 
     PresentStartupProgressFrame("Registering runtime services", 0.50f);
 

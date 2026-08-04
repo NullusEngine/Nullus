@@ -171,7 +171,7 @@ namespace NLS::Editor::Panels
 		void SetRequiresRetiredFrameConsumption(bool requiresRetiredFrameConsumption);
         virtual bool RequiresImmediateRetiredFrameReadback() const;
         void SetRequiresImmediateRetiredFrameReadback(bool requiresImmediateRetiredFrameReadback);
-        bool IsSceneRendererAvailable() const;
+        virtual bool IsSceneRendererAvailable() const;
         virtual bool RequiresSynchronizedRetiredFramePresentation() const;
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);

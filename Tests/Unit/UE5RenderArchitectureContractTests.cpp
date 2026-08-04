@@ -9,16 +9,18 @@
 
 TEST(UE5RenderArchitectureContractTests, Phase1BackendGateKeepsOnlyDx12Enabled)
 {
-    EXPECT_EQ(
-        NLS::Render::Settings::GetPhase1RequiredRuntimeBackend(),
-        NLS::Render::Settings::EGraphicsBackend::DX12);
-
-#if defined(_WIN32)
-    EXPECT_TRUE(NLS::Render::Settings::IsBackendEnabledForCurrentBuild(
-        NLS::Render::Settings::EGraphicsBackend::DX12));
+    const auto requiredBackend = NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
+#if defined(_WIN32) || defined(__APPLE__)
+    EXPECT_EQ(requiredBackend, NLS::Render::Settings::GetPlatformDefaultGraphicsBackend());
 #else
-    EXPECT_FALSE(NLS::Render::Settings::IsBackendEnabledForCurrentBuild(
-        NLS::Render::Settings::EGraphicsBackend::DX12));
+    EXPECT_NE(requiredBackend, NLS::Render::Settings::GetPlatformDefaultGraphicsBackend());
+#endif
+
+#if defined(_WIN32) || defined(__APPLE__)
+    EXPECT_TRUE(NLS::Render::Settings::IsBackendEnabledForCurrentBuild(
+        requiredBackend));
+#else
+    EXPECT_FALSE(NLS::Render::Settings::IsBackendEnabledForCurrentBuild(requiredBackend));
 #endif
 
     EXPECT_FALSE(NLS::Render::Settings::IsBackendEnabledForCurrentBuild(
@@ -28,25 +30,25 @@ TEST(UE5RenderArchitectureContractTests, Phase1BackendGateKeepsOnlyDx12Enabled)
     EXPECT_FALSE(NLS::Render::Settings::IsBackendEnabledForCurrentBuild(
         NLS::Render::Settings::EGraphicsBackend::DX11));
     EXPECT_FALSE(NLS::Render::Settings::IsBackendEnabledForCurrentBuild(
-        NLS::Render::Settings::EGraphicsBackend::METAL));
+        requiredBackend == NLS::Render::Settings::EGraphicsBackend::METAL
+            ? NLS::Render::Settings::EGraphicsBackend::DX12
+            : NLS::Render::Settings::EGraphicsBackend::METAL));
 }
 
 TEST(UE5RenderArchitectureContractTests, Phase1RestrictionMessageRejectsNonDx12Backends)
 {
-    const auto dx12Restriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
-        NLS::Render::Settings::EGraphicsBackend::DX12,
+    const auto requiredBackend = NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
+    const auto requiredRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
+        requiredBackend,
         "Contract test");
-#if defined(_WIN32)
-    EXPECT_FALSE(dx12Restriction.has_value());
-#else
-    ASSERT_TRUE(dx12Restriction.has_value());
-#endif
+    EXPECT_FALSE(requiredRestriction.has_value());
 
     const auto vkRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
         NLS::Render::Settings::EGraphicsBackend::VULKAN,
         "Contract test");
     ASSERT_TRUE(vkRestriction.has_value());
-    EXPECT_NE(vkRestriction->find("only supports DX12"), std::string::npos);
+    EXPECT_NE(vkRestriction->find(
+        "only supports " + std::string(NLS::Render::Settings::ToString(requiredBackend))), std::string::npos);
     EXPECT_NE(vkRestriction->find("Vulkan"), std::string::npos);
 }
 

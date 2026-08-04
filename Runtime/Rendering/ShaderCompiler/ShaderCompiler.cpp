@@ -596,6 +596,61 @@ namespace NLS::Render::ShaderCompiler
 					return path;
 			}
 
+			const auto findPathDxc = []() -> std::optional<std::filesystem::path>
+			{
+				const char* pathEnvironment = std::getenv("PATH");
+				if (pathEnvironment == nullptr || *pathEnvironment == '\0')
+					return std::nullopt;
+
+#if defined(_WIN32)
+				constexpr char pathSeparator = ';';
+				const char* executableNames[] = {"dxc.exe", "dxc"};
+#else
+				constexpr char pathSeparator = ':';
+				const char* executableNames[] = {"dxc"};
+#endif
+
+				const std::string pathList(pathEnvironment);
+				std::size_t segmentBegin = 0u;
+				while (segmentBegin <= pathList.size())
+				{
+					const std::size_t separator = pathList.find(pathSeparator, segmentBegin);
+					const std::string segment = pathList.substr(
+						segmentBegin,
+						separator == std::string::npos ? std::string::npos : separator - segmentBegin);
+					const std::filesystem::path directory = segment.empty() ? std::filesystem::path(".") : std::filesystem::path(segment);
+
+					for (const char* executableName : executableNames)
+					{
+						const auto candidate = directory / executableName;
+						if (IsUsableDxcExecutable(candidate))
+							return candidate;
+					}
+
+					if (separator == std::string::npos)
+						break;
+					segmentBegin = separator + 1u;
+				}
+
+				return std::nullopt;
+			};
+
+			if (const auto pathDxc = findPathDxc(); pathDxc.has_value())
+				return pathDxc;
+
+#if !defined(_WIN32)
+			const std::filesystem::path systemCandidates[] =
+			{
+				"/usr/local/bin/dxc",
+				"/opt/homebrew/bin/dxc"
+			};
+			for (const auto& candidate : systemCandidates)
+			{
+				if (IsUsableDxcExecutable(candidate))
+					return candidate;
+			}
+#endif
+
 			const auto findSdkDxc = [](const std::filesystem::path& sdkRoot) -> std::optional<std::filesystem::path>
 			{
 				const std::filesystem::path candidates[] =

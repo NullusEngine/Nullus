@@ -668,11 +668,10 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(
 	const bool hasPixelEntryPoint = !prepared.pixelEntry.empty() && HasEntryPointToken(sourceText, prepared.pixelEntry);
 	const bool hasComputeEntryPoint = !prepared.computeEntry.empty() && HasEntryPointToken(sourceText, prepared.computeEntry);
         const auto activeBackend = ResolveActiveGraphicsBackend();
-        const bool compileDxil =
-            !activeBackend.has_value() ||
-            activeBackend.value() == NLS::Render::Settings::EGraphicsBackend::DX12;
+        const bool compileDxil = true;
         const bool compileSpirv =
             !activeBackend.has_value() ||
+            activeBackend.value() == NLS::Render::Settings::EGraphicsBackend::METAL ||
             activeBackend.value() == NLS::Render::Settings::EGraphicsBackend::VULKAN ||
             activeBackend.value() == NLS::Render::Settings::EGraphicsBackend::OPENGL;
         const bool compileGlsl =

@@ -361,24 +361,25 @@ namespace NLS::Render::Settings
 		}
 	}
 
-	inline const char* SceneRendererSupportDescription(EGraphicsBackend backend)
+	inline std::string SceneRendererSupportDescription(EGraphicsBackend backend)
 	{
+		const std::string requiredBackend = ToString(GetPhase1RequiredRuntimeBackend());
 		switch (backend)
 		{
 		case EGraphicsBackend::OPENGL:
-			return "OpenGL is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits DX12.";
+			return "OpenGL is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits " + requiredBackend + ".";
 		case EGraphicsBackend::DX12:
-			return "DX12 is the only active runtime backend for the UE5 alignment phase-1 mainline.";
+			if (IsPhase1RuntimeBackend(backend))
+				return "DX12 is the only active runtime backend for the UE5 alignment phase-1 mainline.";
+			return "DX12 is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits " + requiredBackend + ".";
 		case EGraphicsBackend::DX11:
-			return "DX11 is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits DX12.";
+			return "DX11 is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits " + requiredBackend + ".";
 		case EGraphicsBackend::VULKAN:
-			return "Vulkan architecture boundaries remain in source for future multi-backend work, but the phase-1 runtime path is intentionally DX12-only.";
+			return "Vulkan architecture boundaries remain in source for future multi-backend work, but the phase-1 runtime path is intentionally " + requiredBackend + "-only.";
 		case EGraphicsBackend::METAL:
-#if defined(__APPLE__)
-			return "Metal provides the macOS phase-1 Launcher UI runtime; the scene renderer is not implemented yet.";
-#else
-			return "Metal is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits DX12.";
-#endif
+			if (IsPhase1RuntimeBackend(backend))
+				return "Metal is the only active runtime backend for the macOS phase-1 mainline; Scene View and Game View use the Metal-native viewport path.";
+			return "Metal is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits " + requiredBackend + ".";
 		case EGraphicsBackend::NONE:
 		default:
 			return "This backend does not provide a runnable scene renderer.";

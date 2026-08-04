@@ -1,6 +1,25 @@
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+
+namespace
+{
+using NLS::Render::Settings::EGraphicsBackend;
+
+EGraphicsBackend RequiredBackend()
+{
+    return NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
+}
+
+EGraphicsBackend UnsupportedBackend()
+{
+    return RequiredBackend() == EGraphicsBackend::METAL
+        ? EGraphicsBackend::DX12
+        : EGraphicsBackend::METAL;
+}
+}
 
 TEST(GraphicsBackendUtilsTests, ParsesAllBackendAliases)
 {
@@ -62,75 +81,68 @@ TEST(GraphicsBackendUtilsTests, ParsesTruthyEnvironmentValuesCaseInsensitively)
 
 TEST(GraphicsBackendUtilsTests, SceneRendererSupportDescriptionsMatchCurrentSupportMatrix)
 {
+    const auto requiredBackend = RequiredBackend();
+    const std::string requiredBackendName = NLS::Render::Settings::ToString(requiredBackend);
     EXPECT_NE(
-        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::DX12)).find("only active runtime backend"),
+        NLS::Render::Settings::SceneRendererSupportDescription(requiredBackend).find("only active runtime backend"),
         std::string::npos);
     EXPECT_NE(
-        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::VULKAN)).find("future multi-backend"),
+        NLS::Render::Settings::SceneRendererSupportDescription(EGraphicsBackend::VULKAN).find("future multi-backend"),
         std::string::npos);
-    EXPECT_NE(
-        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::DX11)).find("only permits DX12"),
-        std::string::npos);
-    EXPECT_NE(
-        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::OPENGL)).find("only permits DX12"),
-        std::string::npos);
-    EXPECT_NE(
-        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::METAL)).find("only permits DX12"),
-        std::string::npos);
+    for (const auto backend : {EGraphicsBackend::DX12, EGraphicsBackend::DX11,
+                               EGraphicsBackend::OPENGL, EGraphicsBackend::VULKAN,
+                               EGraphicsBackend::METAL})
+    {
+        if (backend == requiredBackend)
+            continue;
+        EXPECT_NE(
+            NLS::Render::Settings::SceneRendererSupportDescription(backend).find(requiredBackendName),
+            std::string::npos);
+    }
 }
 
 TEST(GraphicsBackendUtilsTests, Phase1BackendSelectionOnlyAcceptsDX12)
 {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
     EXPECT_TRUE(NLS::Render::Settings::IsBackendSelectableForPhase1(
-        NLS::Render::Settings::EGraphicsBackend::DX12));
+        RequiredBackend()));
 #else
     EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
-        NLS::Render::Settings::EGraphicsBackend::DX12));
+        RequiredBackend()));
 #endif
-    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
-        NLS::Render::Settings::EGraphicsBackend::DX11));
-    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
-        NLS::Render::Settings::EGraphicsBackend::VULKAN));
-    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
-        NLS::Render::Settings::EGraphicsBackend::OPENGL));
-    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
-        NLS::Render::Settings::EGraphicsBackend::METAL));
+    for (const auto backend : {EGraphicsBackend::DX12, EGraphicsBackend::DX11,
+                               EGraphicsBackend::VULKAN, EGraphicsBackend::OPENGL,
+                               EGraphicsBackend::METAL})
+    {
+        if (backend == RequiredBackend())
+            continue;
+        EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(backend));
+    }
 }
 
 TEST(GraphicsBackendUtilsTests, Phase1BackendRestrictionMessageExplainsExplicitDX12Requirement)
 {
-    const auto dx12Restriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
-        NLS::Render::Settings::EGraphicsBackend::DX12,
+    const auto requiredRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
+        RequiredBackend(),
         "Editor runtime");
-    if (NLS::Render::Settings::IsBackendSelectableForPhase1(NLS::Render::Settings::EGraphicsBackend::DX12))
-        EXPECT_FALSE(dx12Restriction.has_value());
-    else
-    {
-        ASSERT_TRUE(dx12Restriction.has_value());
-        EXPECT_NE(dx12Restriction->find("Editor runtime"), std::string::npos);
-        EXPECT_NE(dx12Restriction->find("only supports DX12"), std::string::npos);
-    }
+    EXPECT_FALSE(requiredRestriction.has_value());
 
-    const auto dx11Restriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
-        NLS::Render::Settings::EGraphicsBackend::DX11,
+    const auto unsupportedRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
+        UnsupportedBackend(),
         "Game runtime");
-    ASSERT_TRUE(dx11Restriction.has_value());
-    EXPECT_NE(dx11Restriction->find("Game runtime"), std::string::npos);
-    EXPECT_NE(dx11Restriction->find("only supports DX12"), std::string::npos);
-    EXPECT_NE(dx11Restriction->find("DX11"), std::string::npos);
+    ASSERT_TRUE(unsupportedRestriction.has_value());
+    EXPECT_NE(unsupportedRestriction->find("Game runtime"), std::string::npos);
+    EXPECT_NE(unsupportedRestriction->find(
+        "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
+    EXPECT_NE(unsupportedRestriction->find(NLS::Render::Settings::ToString(UnsupportedBackend())), std::string::npos);
 
     const auto noneRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
         NLS::Render::Settings::EGraphicsBackend::NONE,
         "Launcher");
     ASSERT_TRUE(noneRestriction.has_value());
     EXPECT_NE(noneRestriction->find("Launcher"), std::string::npos);
-    EXPECT_NE(noneRestriction->find("only supports DX12"), std::string::npos);
+    EXPECT_NE(noneRestriction->find(
+        "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
 }
 
 TEST(GraphicsBackendUtilsTests, EditorMainRuntimeDoesNotRequireFramebufferReadback)
@@ -263,7 +275,8 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionStaysClearWhenCapa
     else
     {
         ASSERT_TRUE(decision.primaryWarning.has_value());
-        EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
+        EXPECT_NE(decision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
         ASSERT_TRUE(decision.detailWarning.has_value());
     }
 }
@@ -274,15 +287,15 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionExplainsBackendNot
     capabilities.backendReady = false;
 
     const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX12,
+        RequiredBackend(),
         capabilities);
 
     ASSERT_TRUE(decision.primaryWarning.has_value());
-#if defined(_WIN32)
-    EXPECT_NE(decision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
-#else
-    EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
-#endif
+    if (NLS::Render::Settings::IsBackendSelectableForPhase1(RequiredBackend()))
+        EXPECT_NE(decision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
+    else
+        EXPECT_NE(decision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
     ASSERT_TRUE(decision.detailWarning.has_value());
     EXPECT_NE(decision.detailWarning->find("only active runtime backend"), std::string::npos);
 }
@@ -298,15 +311,16 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionExplainsCapability
     capabilities.supportsCubemaps = true;
 
     const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX12,
+        RequiredBackend(),
         capabilities);
 
     ASSERT_TRUE(decision.primaryWarning.has_value());
-#if defined(_WIN32)
-    EXPECT_NE(decision.primaryWarning->find("before startup can continue on DX12"), std::string::npos);
-#else
-    EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
-#endif
+    if (NLS::Render::Settings::IsBackendSelectableForPhase1(RequiredBackend()))
+        EXPECT_NE(decision.primaryWarning->find(
+            "before startup can continue on " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
+    else
+        EXPECT_NE(decision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
     ASSERT_TRUE(decision.detailWarning.has_value());
     EXPECT_NE(decision.detailWarning->find("only active runtime backend"), std::string::npos);
 }
@@ -325,15 +339,15 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionIncludesStructured
     capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::Cubemaps, true);
 
     const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX12,
+        RequiredBackend(),
         capabilities);
 
     ASSERT_TRUE(decision.primaryWarning.has_value());
-#if defined(_WIN32)
-    EXPECT_NE(decision.primaryWarning->find("Offscreen target allocator is disabled"), std::string::npos);
-#else
-    EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
-#endif
+    if (NLS::Render::Settings::IsBackendSelectableForPhase1(RequiredBackend()))
+        EXPECT_NE(decision.primaryWarning->find("Offscreen target allocator is disabled"), std::string::npos);
+    else
+        EXPECT_NE(decision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
 }
 
 TEST(GraphicsBackendUtilsTests, GameRuntimeReadinessDecisionExplainsBackendNotReady)
@@ -342,14 +356,15 @@ TEST(GraphicsBackendUtilsTests, GameRuntimeReadinessDecisionExplainsBackendNotRe
     capabilities.backendReady = false;
 
     const auto decision = NLS::Render::Settings::EvaluateGameMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX12,
+        RequiredBackend(),
         capabilities);
 
     ASSERT_TRUE(decision.primaryWarning.has_value());
-    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::DX12))
+    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(RequiredBackend()))
         EXPECT_NE(decision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
     else
-        EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
+        EXPECT_NE(decision.primaryWarning->find(
+            "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
     ASSERT_TRUE(decision.detailWarning.has_value());
     EXPECT_NE(decision.detailWarning->find("only active runtime backend"), std::string::npos);
 }
@@ -362,13 +377,14 @@ TEST(GraphicsBackendUtilsTests, GameRuntimeReadinessDecisionReportsUnsupportedBa
     capabilities.supportsSwapchain = true;
 
     const auto decision = NLS::Render::Settings::EvaluateGameMainRuntimeReadiness(
-        NLS::Render::Settings::EGraphicsBackend::DX11,
+        UnsupportedBackend(),
         capabilities);
 
     ASSERT_TRUE(decision.primaryWarning.has_value());
-    EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
+    EXPECT_NE(decision.primaryWarning->find(
+        "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
     ASSERT_TRUE(decision.detailWarning.has_value());
-    EXPECT_NE(decision.detailWarning->find("only permits DX12"), std::string::npos);
+    EXPECT_NE(decision.detailWarning->find(NLS::Render::Settings::ToString(RequiredBackend())), std::string::npos);
 }
 
 TEST(GraphicsBackendUtilsTests, TierARenderFoundationRequiresCentralizedDescriptorAndPipelineSupport)
@@ -515,8 +531,9 @@ TEST(GraphicsBackendUtilsTests, Phase1ImGuiRuntimeRoutingRejectsAllNonDx12Backen
         NLS::Render::Settings::EGraphicsBackend::VULKAN));
     EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
         NLS::Render::Settings::EGraphicsBackend::DX11));
-    EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
-        NLS::Render::Settings::EGraphicsBackend::METAL));
+    EXPECT_EQ(
+        NLS::Render::Settings::SupportsImGuiRendererBackend(RequiredBackend()),
+        NLS::Render::Settings::HasCompiledOfficialImGuiBackend(RequiredBackend()));
     EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
         NLS::Render::Settings::EGraphicsBackend::NONE));
 }
@@ -532,15 +549,18 @@ TEST(GraphicsBackendUtilsTests, Phase1EditorAndGameConsumersShareTheSameDx12Only
 
     ASSERT_TRUE(editorRestriction.has_value());
     ASSERT_TRUE(gameRestriction.has_value());
-    EXPECT_NE(editorRestriction->find("only supports DX12 during UE5 alignment phase 1"), std::string::npos);
-    EXPECT_NE(gameRestriction->find("only supports DX12 during UE5 alignment phase 1"), std::string::npos);
+    const std::string requiredMessage =
+        "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend())) +
+        " during UE5 alignment phase 1";
+    EXPECT_NE(editorRestriction->find(requiredMessage), std::string::npos);
+    EXPECT_NE(gameRestriction->find(requiredMessage), std::string::npos);
     EXPECT_NE(editorRestriction->find("Vulkan"), std::string::npos);
     EXPECT_NE(gameRestriction->find("Vulkan"), std::string::npos);
 }
 
 TEST(GraphicsBackendUtilsTests, WindowsPhase1DefaultBackendMatchesTheOnlyAcceptedRuntimeBackend)
 {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
     EXPECT_EQ(
         NLS::Render::Settings::GetPlatformDefaultGraphicsBackend(),
         NLS::Render::Settings::GetPhase1RequiredRuntimeBackend());
@@ -566,7 +586,8 @@ TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportExplainsUnsupportedBackend
     ASSERT_FALSE(report.gates.empty());
     EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::BackendSelection);
     EXPECT_EQ(report.gates.front().severity, NLS::Render::Settings::BackendPhaseGateSeverity::Error);
-    EXPECT_NE(report.gates.front().reason.find("only supports DX12"), std::string::npos);
+    EXPECT_NE(report.gates.front().reason.find(
+        "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
     EXPECT_NE(report.summary.find("Vulkan"), std::string::npos);
     EXPECT_NE(report.summary.find("fallback=None"), std::string::npos);
 }
@@ -585,12 +606,12 @@ TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportIncludesMissingCapabilityR
     capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::Cubemaps, true);
 
     const auto report = NLS::Render::Settings::EvaluateBackendPhaseGate(
-        NLS::Render::Settings::EGraphicsBackend::DX12,
+        RequiredBackend(),
         NLS::Render::Settings::RuntimeConsumer::Editor,
         capabilities);
 
     ASSERT_FALSE(report.gates.empty());
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
     EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::CapabilityValidation);
     EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
     EXPECT_NE(report.gates.front().reason.find("Offscreen allocator missing"), std::string::npos);
@@ -598,7 +619,8 @@ TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportIncludesMissingCapabilityR
 #else
     EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::BackendSelection);
     EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
-    EXPECT_NE(report.gates.front().reason.find("only supports DX12"), std::string::npos);
+    EXPECT_NE(report.gates.front().reason.find(
+        "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
     EXPECT_NE(report.summary.find("BackendSelection"), std::string::npos);
 #endif
 }

@@ -25,11 +25,6 @@ namespace
     constexpr size_t kInitialObjectDataBufferCapacity = 256u;
     constexpr uint32_t kObjectDataSlotShrinkIdleFrameCount = 3u;
     constexpr size_t kIndexedObjectDataShaderSupportCacheMaxEntries = 1024u;
-
-    bool ShouldLogFrameConstantDiagnostics(const Render::Context::Driver& driver)
-    {
-        return Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
-    }
 }
 
 namespace NLS::Engine::Rendering
@@ -155,19 +150,6 @@ void EngineFrameObjectBindingProvider::OnBeginFrame(const NLS::Render::Data::Fra
     viewMatrixNoTranslation(1, 3) = 0.0f;
     viewMatrixNoTranslation(2, 3) = 0.0f;
     const auto viewProjectionNoTranslation = frameDescriptor.camera->GetProjectionMatrix() * viewMatrixNoTranslation;
-
-    if (ShouldLogFrameConstantDiagnostics(m_renderer.GetDriver()))
-    {
-        const auto& cameraPos = frameDescriptor.camera->GetPosition();
-        const auto& clearColor = frameDescriptor.camera->GetClearColor();
-        NLS_LOG_INFO(
-            "[FrameConstants] renderSize=" +
-            std::to_string(frameDescriptor.renderWidth) + "x" + std::to_string(frameDescriptor.renderHeight) +
-            " cameraPos=(" + std::to_string(cameraPos.x) + "," + std::to_string(cameraPos.y) + "," + std::to_string(cameraPos.z) + ")" +
-            " clearColor=(" + std::to_string(clearColor.x) + "," + std::to_string(clearColor.y) + "," + std::to_string(clearColor.z) + ")" +
-            " vpNoTrans_row0=(" + std::to_string(viewProjectionNoTranslation.data[0]) + "," + std::to_string(viewProjectionNoTranslation.data[1]) + "," + std::to_string(viewProjectionNoTranslation.data[2]) + "," + std::to_string(viewProjectionNoTranslation.data[3]) + ")" +
-            " vpNoTrans_row1=(" + std::to_string(viewProjectionNoTranslation.data[4]) + "," + std::to_string(viewProjectionNoTranslation.data[5]) + "," + std::to_string(viewProjectionNoTranslation.data[6]) + "," + std::to_string(viewProjectionNoTranslation.data[7]) + ")");
-    }
 
     m_hlslFrameBuffer->SetSubData(Maths::Matrix4::Transpose(viewProjection), std::ref(hlslFrameOffset));
     m_hlslFrameBuffer->SetSubData(frameDescriptor.camera->GetPosition(), std::ref(hlslFrameOffset));

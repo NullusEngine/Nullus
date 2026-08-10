@@ -7208,7 +7208,7 @@ TEST(AssetBrowserPresentationTests, ThumbnailCacheContainmentMemoRejectsWindowsR
         << "Reparse points should be treated like symlinks so they remain outside the cacheable stamp set.";
 }
 
-TEST(AssetBrowserPresentationTests, PrefabHotCachePreloadStartsOnlyAfterExplicitDrag)
+TEST(AssetBrowserPresentationTests, PrefabHotCachePreloadStartsBeforeExplicitDrag)
 {
     const auto source = ReadSourceText(RepoPath("Project/Editor/Panels/AssetBrowser.cpp"));
     const auto setVisibleBody = ExtractFunctionBody(
@@ -7221,20 +7221,24 @@ TEST(AssetBrowserPresentationTests, PrefabHotCachePreloadStartsOnlyAfterExplicit
         source,
         "void Editor::Panels::AssetBrowser::DrawProjectGridItemDragSource(");
 
-    EXPECT_EQ(
-        setVisibleBody.find("SchedulePrefabHotCachePreloadForDragPayload"),
+    EXPECT_NE(
+        setVisibleBody.find("m_visiblePrefabHotCachePreloadPending = true"),
         std::string::npos)
-        << "Merely entering the visible thumbnail set must not load a cold Prefab.";
-    EXPECT_EQ(
-        drawGridBody.find("SchedulePrefabHotCachePreloadForDragPayload"),
+        << "Visible prefab cells should defer opportunistic prewarm until the Asset Browser is idle.";
+    EXPECT_NE(
+        setVisibleBody.find("FlushPendingVisiblePrefabHotCachePreload()"),
         std::string::npos)
-        << "Hovering a cold Prefab must not load it before the user starts a drag.";
+        << "An unchanged visible set should still retry pending prefab prewarm work.";
+    EXPECT_NE(
+        drawGridBody.find("SchedulePrefabHotCachePreloadForHoveredItem(item, hovered)"),
+        std::string::npos)
+        << "Hovering a prefab should begin hot-cache prewarm before the user starts a drag.";
     EXPECT_NE(
         dragBody.find("SchedulePrefabHotCachePreloadForDragPayload(*editorAssetPayload)"),
         std::string::npos)
         << "The explicit drag path may still prewarm the Prefab that the user intends to load.";
-    EXPECT_EQ(source.find("SchedulePrefabHotCachePreloadForVisibleItems"), std::string::npos);
-    EXPECT_EQ(source.find("SchedulePrefabHotCachePreloadForHoveredItem"), std::string::npos);
+    EXPECT_NE(source.find("SchedulePrefabHotCachePreloadForVisibleItems"), std::string::npos);
+    EXPECT_NE(source.find("SchedulePrefabHotCachePreloadForHoveredItem"), std::string::npos);
 }
 
 TEST(AssetBrowserPresentationTests, ThumbnailPumpAllowsBoundedInteractiveVisibleWork)

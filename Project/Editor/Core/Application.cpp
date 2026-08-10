@@ -10,7 +10,6 @@
 
 #include "Core/ApplicationIdleFramePolicy.h"
 #include "Core/Application.h"
-#include "Core/AssetFileWatcher.h"
 #include "Core/EditorActions.h"
 #include "Core/ResizeRefreshPolicy.h"
 #include "Core/StartupSceneReadyGate.h"
@@ -99,36 +98,12 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
     std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride)
     : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocOverride, p_diagnosticsOverride)
 {
-    m_context.PresentStartupProgressFrame("Watching project assets", 0.88f);
-    std::error_code projectAssetFolderError;
-    std::filesystem::create_directories(m_context.projectAssetsPath, projectAssetFolderError);
-    if (projectAssetFolderError)
-    {
-        throw std::runtime_error(
-            "Failed to create project Assets folder before startup asset watching: " +
-            projectAssetFolderError.message());
-    }
-
-    NLS::Editor::Core::AssetFileWatcher startupEngineAssetsWatcher;
-    NLS::Editor::Core::AssetFileWatcher startupProjectAssetsWatcher;
-    const auto engineWatcherStarted = startupEngineAssetsWatcher.Start(m_context.engineAssetsPath);
-    const auto projectWatcherStarted = startupProjectAssetsWatcher.Start(m_context.projectAssetsPath);
-    const auto watcherStartupReport = NLS::Editor::Assets::BuildAssetWatcherStartupReport(
-        m_context.engineAssetsPath,
-        engineWatcherStarted,
-        m_context.projectAssetsPath,
-        projectWatcherStarted);
-    for (const auto& diagnostic : watcherStartupReport.diagnostics)
-        NLS_LOG_WARNING(diagnostic.message);
-    if (!watcherStartupReport.succeeded)
-    {
-        throw std::runtime_error(
-            "Startup asset watcher failed; editor UI will not open because post-open asset changes could be missed.");
-    }
-
     m_context.PresentStartupProgressFrame("Importing project assets", 0.90f);
+    NLS::Editor::Assets::StartupAssetPreimportOptions startupPreimportOptions;
+    startupPreimportOptions.projectRoot = std::filesystem::path(m_context.projectPath);
+    startupPreimportOptions.residentPrefabPreviewRegistry = m_context.residentPrefabPreviewRegistry;
     const auto startupPreimport = NLS::Editor::Assets::RunBlockingStartupAssetPreimport(
-        {std::filesystem::path(m_context.projectPath)},
+        startupPreimportOptions,
         [this](const NLS::Editor::Assets::ImportProgressEvent& event)
         {
             const float progress =
@@ -136,7 +111,8 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
             m_context.PresentStartupProgressFrame(
                 NLS::Editor::Assets::FormatStartupAssetPreimportProgressLabel(event),
                 progress);
-        });
+        },
+        &m_context.GetStartupAssetPreimportCacheAnalysisTask());
     if (startupPreimport.succeeded && !startupPreimport.hadRunningJobsAfterCompletion)
     {
         if (startupPreimport.importedAssetCount > 0u)
@@ -191,6 +167,7 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
 
     m_editor = std::make_unique<Editor>(m_context);
     logStartupStep("EditorConstruction");
+    auto [startupEngineAssetsWatcher, startupProjectAssetsWatcher] = m_context.TakeStartupAssetWatchers();
     m_editor->AdoptStartupAssetWatchers(
         std::move(startupEngineAssetsWatcher),
         std::move(startupProjectAssetsWatcher));
@@ -378,6 +355,7 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
     NLS_LOG_INFO("[Startup] CompleteStartupProgress begin");
     m_context.CompleteStartupProgress();
     m_editorWindowShown = true;
+    m_context.MarkEditorWindowShown();
     NLS_LOG_INFO("[Startup] CompleteStartupProgress end");
     logStartupStep("CompleteStartupProgress");
 }
@@ -476,6 +454,9 @@ bool Editor::Core::Application::WaitForStartupSceneRendererResources()
 
     if (result.status == StartupSceneRendererResourceWaitStatus::Timeout)
     {
+        // Keep scene resource resolution alive for progressive completion, but
+        // do not let a fail-open startup gate block independent editor work.
+        NLS::Editor::Core::MarkSceneLoadRendererResourceResolutionDegradedOpen();
         NLS_LOG_WARNING(FormatStartupSceneRendererResourceDegradedOpenDiagnostic(result));
         return true;
     }
@@ -493,6 +474,7 @@ void Editor::Core::Application::Run()
     {
         const uint32_t warmupFrames = diagnostics.editorCameraPerformanceWarmupFrames;
         const uint32_t measuredFrames = diagnostics.editorCameraPerformanceFrames;
+        const uint32_t settleFrames = diagnostics.editorCameraPerformanceSettleFrames;
         const uint32_t requestedFrames = warmupFrames + measuredFrames;
 
         while (IsRunning())
@@ -504,24 +486,34 @@ void Editor::Core::Application::Run()
                     *m_context.driver);
                 m_cameraPerformanceTelemetryBefore = CaptureCameraPerformanceTelemetry();
                 m_cameraPerformanceTelemetryBeforeCaptured = true;
+                ResetEditorCameraPerformanceStageTotals();
+                SetEditorCameraPerformanceStageTimingEnabled(true);
+                if (m_context.uiManager != nullptr)
+                    m_context.uiManager->ResetRenderStageCumulativeTotals();
             }
             const auto frameStart = std::chrono::steady_clock::now();
             TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true);
             const auto frameEnd = std::chrono::steady_clock::now();
             const auto completedAfter = m_editor->GetValidationCameraForwardCompletedFrames();
 
-            if (completedAfter <= completedBefore)
-                continue;
-
-            if (completedAfter > warmupFrames)
+            const double frameMs = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+            if (completedAfter > completedBefore && completedAfter > warmupFrames)
             {
-                const double frameMs = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
                 m_cameraPerformanceFrameMs.push_back(frameMs);
                 if (m_editor->WasLastSceneViewThreadedFramePublished())
                     ++m_cameraPerformancePublishedCameraStepCount;
             }
 
-            if (completedAfter >= requestedFrames)
+            if (completedAfter < requestedFrames)
+                continue;
+
+            if (completedBefore < requestedFrames && settleFrames != 0u)
+                continue;
+
+            if (m_cameraPerformanceSettleFrameMs.size() < settleFrames)
+                m_cameraPerformanceSettleFrameMs.push_back(frameMs);
+
+            if (m_cameraPerformanceSettleFrameMs.size() == settleFrames)
             {
                 m_runSucceeded = FinalizeCameraPerformanceBenchmark();
                 if (m_context.window != nullptr)
@@ -530,14 +522,19 @@ void Editor::Core::Application::Run()
             }
         }
 
-        if (m_cameraPerformanceFrameMs.size() != measuredFrames)
+        if (m_cameraPerformanceFrameMs.size() != measuredFrames ||
+            m_cameraPerformanceSettleFrameMs.size() != settleFrames)
         {
             m_runSucceeded = false;
             NLS_LOG_ERROR(
-                "Editor camera performance benchmark ended before all samples were collected: collected=" +
+                "Editor camera performance benchmark ended before all samples were collected: movementCollected=" +
                 std::to_string(m_cameraPerformanceFrameMs.size()) +
-                " requested=" +
-                std::to_string(measuredFrames));
+                " movementRequested=" +
+                std::to_string(measuredFrames) +
+                " settleCollected=" +
+                std::to_string(m_cameraPerformanceSettleFrameMs.size()) +
+                " settleRequested=" +
+                std::to_string(settleFrames));
         }
         return;
     }
@@ -609,6 +606,7 @@ Editor::Core::Application::CaptureCameraPerformanceTelemetry() const
         result.opaqueSortTokenHitCount = frameInfo.opaqueSortTokenHitCount;
         result.opaqueSortTokenRebuildCount = frameInfo.opaqueSortTokenRebuildCount;
         result.objectDataOverflowCount = frameInfo.objectDataOverflowDroppedObjectCount;
+        result.largeScene = frameInfo.largeScene;
     }
     return result;
 }
@@ -616,6 +614,43 @@ Editor::Core::Application::CaptureCameraPerformanceTelemetry() const
 bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
 {
     const auto& diagnostics = m_context.GetDiagnosticsSettings();
+    SetEditorCameraPerformanceStageTimingEnabled(false);
+    {
+        const auto stageTotals = GetEditorCameraPerformanceStageTotals();
+        for (size_t stageIndex = 0; stageIndex < EditorCameraPerformanceStageTotals::kStageCount; ++stageIndex)
+        {
+            const auto samples = stageTotals.sampleCount[stageIndex];
+            const double meanMs = samples > 0u
+                ? static_cast<double>(stageTotals.totalNs[stageIndex]) / static_cast<double>(samples) / 1.0e6
+                : 0.0;
+            NLS_LOG_INFO(
+                "Editor camera benchmark stage " +
+                std::string(ToString(static_cast<EditorCameraPerformanceStage>(stageIndex))) +
+                " meanMs=" + std::to_string(meanMs) +
+                " maxMs=" + std::to_string(static_cast<double>(stageTotals.maxNs[stageIndex]) / 1.0e6) +
+                " samples=" + std::to_string(samples));
+        }
+    }
+    if (m_context.uiManager != nullptr)
+    {
+        const auto& uiTotals = m_context.uiManager->GetRenderStageCumulativeTotals();
+        const auto logUiStage =
+            [&uiTotals](const char* stage, const uint64_t totalNs, const uint64_t maxNs)
+            {
+                const double meanMs = uiTotals.sampleCount > 0u
+                    ? static_cast<double>(totalNs) / static_cast<double>(uiTotals.sampleCount) / 1.0e6
+                    : 0.0;
+                NLS_LOG_INFO(
+                    "Editor camera benchmark ui stage " + std::string(stage) +
+                    " meanMs=" + std::to_string(meanMs) +
+                    " maxMs=" + std::to_string(static_cast<double>(maxNs) / 1.0e6) +
+                    " samples=" + std::to_string(uiTotals.sampleCount));
+            };
+        logUiStage("BeginFrame", uiTotals.beginFrameNs, uiTotals.maxBeginFrameNs);
+        logUiStage("DrawCanvas", uiTotals.drawCanvasNs, uiTotals.maxDrawCanvasNs);
+        logUiStage("ImGuiRender", uiTotals.imguiRenderNs, uiTotals.maxImguiRenderNs);
+        logUiStage("PublishSnapshot", uiTotals.publishSnapshotNs, uiTotals.maxPublishSnapshotNs);
+    }
     const auto telemetryAfter = CaptureCameraPerformanceTelemetry();
     const auto [viewportWidth, viewportHeight] = m_editor->GetSceneViewSafeSize();
 
@@ -631,6 +666,7 @@ bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
     metadata.vsync = m_context.projectSettings.GetOrDefault<bool>("vsync", true);
     metadata.warmupFrameCount = diagnostics.editorCameraPerformanceWarmupFrames;
     metadata.requestedFrameCount = diagnostics.editorCameraPerformanceFrames;
+    metadata.requestedSettleFrameCount = diagnostics.editorCameraPerformanceSettleFrames;
     metadata.projectPath = m_context.projectFilePath;
     metadata.scenePath = m_context.sceneManager.GetCurrentSceneSourcePath();
     metadata.viewportWidth = viewportWidth;
@@ -642,7 +678,8 @@ bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
         m_cameraPerformanceFrameMs,
         m_cameraPerformanceTelemetryBefore,
         telemetryAfter,
-        m_cameraPerformancePublishedCameraStepCount);
+        m_cameraPerformancePublishedCameraStepCount,
+        m_cameraPerformanceSettleFrameMs);
     std::string error;
     if (!WriteEditorCameraPerformanceSummaryJson(
         diagnostics.editorCameraPerformanceOutput,
@@ -657,7 +694,9 @@ bool Editor::Core::Application::FinalizeCameraPerformanceBenchmark()
         "Editor camera performance benchmark finished: " +
         diagnostics.editorCameraPerformanceOutput +
         " measuredFrames=" +
-        std::to_string(summary.measuredFrameMs.size()));
+        std::to_string(summary.measuredFrameMs.size()) +
+        " settleFrames=" +
+        std::to_string(summary.settleFrameMs.size()));
     return true;
 }
 
@@ -679,6 +718,7 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
         const ScopedBoolFlag pollingScope(m_isPollingEvents);
         {
             NLS_PROFILE_NAMED_SCOPE("Application::EditorPreUpdate");
+            const EditorCameraPerformanceStageScope stageScope(EditorCameraPerformanceStage::PreUpdate);
             m_editor->PreUpdate();
         }
     }

@@ -350,6 +350,62 @@ namespace NLS::Core::ResourceManagement
 	}
 
 	template<typename T>
+	inline ResourceHandle<T> AResourceManager<T>::AcquireRegisteredResourceHandle(
+		ResourceLifetimeRegistry& p_registry,
+		const ResourceLifetimeAcquireRequest& p_request)
+	{
+		if (p_request.path.empty())
+			return {};
+
+		{
+			std::lock_guard lock(m_resourcesMutex);
+			if (m_resources.find(p_request.path) == m_resources.end())
+				return {};
+		}
+
+		const auto resourceId = p_registry.Acquire(p_request);
+		if (resourceId.normalizedPath.empty())
+			return {};
+
+		// The manager can be concurrently unloaded between the first probe and
+		// lease construction. Drop the registry lease instead of exposing a
+		// handle whose resolver would immediately return null.
+		{
+			std::lock_guard lock(m_resourcesMutex);
+			if (m_resources.find(p_request.path) == m_resources.end())
+			{
+				p_registry.Release(resourceId, p_request.ownerToken);
+				return {};
+			}
+			m_lifetimeManagedResources.insert(ResourceLifetimeRegistry::NormalizeResourcePath(p_request.path));
+		}
+
+		return ResourceHandle<T>(
+			p_registry,
+			resourceId,
+			p_request.ownerToken,
+			[this, resourcePath = p_request.path](const ResourceId&) -> T*
+			{
+				return GetResource(resourcePath, false);
+			});
+	}
+
+	template<typename T>
+	inline bool AResourceManager<T>::TryGetResource(
+		const std::string& p_path,
+		T*& p_resource)
+	{
+		p_resource = nullptr;
+		std::unique_lock lock(m_resourcesMutex, std::try_to_lock);
+		if (!lock.owns_lock())
+			return false;
+
+		if (const auto resource = m_resources.find(p_path); resource != m_resources.end())
+			p_resource = resource->second;
+		return true;
+	}
+
+	template<typename T>
 	inline T* AResourceManager<T>::operator[](const std::string & p_path)
 	{
 		return GetResource(p_path);

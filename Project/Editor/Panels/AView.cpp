@@ -1,6 +1,7 @@
 ﻿#include "Panels/AView.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Core/EditorActions.h"
+#include "Core/EditorCameraPerformanceBenchmark.h"
 #include "Debug/Logger.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -298,6 +299,8 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_height)
 {
 	NLS_PROFILE_NAMED_SCOPE(name.c_str());
+    const Core::EditorCameraPerformanceStageScope cameraPerformanceStageScope(
+        Core::EditorCameraPerformanceStage::SceneRender);
     m_lastRenderFramePublished = false;
     if (!IsSceneRendererAvailable())
     {
@@ -431,6 +434,8 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
         bool rendererFrameActive = false;
         {
             NLS_PROFILE_NAMED_SCOPE("AView::RendererBeginFrame");
+            const Core::EditorCameraPerformanceStageScope stageScope(
+                Core::EditorCameraPerformanceStage::SceneRenderBeginFrame);
             m_renderer->SetLargeSceneSettings(Editor::Settings::EditorSettings::BuildLargeSceneSettings());
 		    m_renderer->BeginFrame(frameDescriptor);
             rendererFrameActive = m_renderer->IsFrameActive();
@@ -441,11 +446,15 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
         submittedOverlayMatrices.projection = camera->GetProjectionMatrix();
 		{
 			NLS_PROFILE_NAMED_SCOPE("AView::DrawFrame");
+			const Core::EditorCameraPerformanceStageScope stageScope(
+			    Core::EditorCameraPerformanceStage::SceneRenderDrawFrame);
 			DrawFrame();
 		}
         logStartupRenderStage("DrawFrame");
         {
             NLS_PROFILE_NAMED_SCOPE("AView::RendererEndFrame");
+		    const Core::EditorCameraPerformanceStageScope stageScope(
+		        Core::EditorCameraPerformanceStage::SceneRenderEndFrame);
 		    m_renderer->EndFrame();
         }
         logStartupRenderStage("RendererEndFrame");
@@ -471,6 +480,8 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
                 // Texture-only consumers can present the latest available texture without a CPU drain.
                 {
                     NLS_PROFILE_NAMED_SCOPE("AView::DrainThreadedRendering");
+	                const Core::EditorCameraPerformanceStageScope stageScope(
+	                    Core::EditorCameraPerformanceStage::SceneRenderDrain);
                     if (Render::Context::DriverRendererAccess::TryDrainThreadedRendering(*driver))
                     {
                         postRenderDrainTelemetry = TryGetAvailableThreadedFrameTelemetry(driver);

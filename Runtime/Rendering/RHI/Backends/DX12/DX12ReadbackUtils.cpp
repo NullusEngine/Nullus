@@ -1,11 +1,13 @@
 #include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 
 #if defined(_WIN32)
+#include <array>
 #include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include <Windows.h>
@@ -179,7 +181,9 @@ namespace NLS::Render::RHI::DX12
         };
     }
 
-    struct DX12ReadbackContext::Impl
+    constexpr size_t kDX12ReadbackSlotCount = 3u;
+
+    struct DX12ReadbackSlot
     {
         Microsoft::WRL::ComPtr<ID3D12Resource> readbackResource;
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
@@ -189,10 +193,10 @@ namespace NLS::Render::RHI::DX12
         uint64_t readbackCapacity = 0u;
         uint64_t nextFenceValue = 0u;
         bool readbackQuarantined = false;
-        std::mutex beginMutex;
-        std::shared_ptr<std::atomic_bool> readbackInFlight = std::make_shared<std::atomic_bool>(false);
+        std::shared_ptr<std::atomic_bool> readbackInFlight =
+            std::make_shared<std::atomic_bool>(false);
 
-        ~Impl()
+        ~DX12ReadbackSlot()
         {
             if (fenceEvent != nullptr)
             {
@@ -200,6 +204,12 @@ namespace NLS::Render::RHI::DX12
                 fenceEvent = nullptr;
             }
         }
+    };
+
+    struct DX12ReadbackContext::Impl
+    {
+        std::array<DX12ReadbackSlot, kDX12ReadbackSlotCount> slots;
+        std::mutex beginMutex;
     };
 
     namespace
@@ -863,15 +873,21 @@ namespace NLS::Render::RHI::DX12
         if (m_impl == nullptr)
             m_impl = std::make_shared<Impl>();
         std::unique_lock<std::mutex> beginLock(m_impl->beginMutex);
-        if (m_impl->readbackQuarantined)
+        DX12ReadbackSlot* slot = nullptr;
+        std::optional<DX12ReadbackInFlightClaim> inFlightClaim;
+        for (auto& candidate : m_impl->slots)
         {
-            return {
-                DX12ReadbackStatusCode::BackendFailure,
-                "ReadPixels context is quarantined after a submitted readback failed to signal its fence"
-            };
+            if (candidate.readbackQuarantined)
+                continue;
+            inFlightClaim.emplace(candidate.readbackInFlight);
+            if (inFlightClaim->Claimed())
+            {
+                slot = &candidate;
+                break;
+            }
+            inFlightClaim.reset();
         }
-        DX12ReadbackInFlightClaim inFlightClaim(m_impl->readbackInFlight);
-        if (!inFlightClaim.Claimed())
+        if (slot == nullptr || !inFlightClaim.has_value())
         {
             return {
                 DX12ReadbackStatusCode::BackendFailure,
@@ -880,9 +896,9 @@ namespace NLS::Render::RHI::DX12
         }
 
         const auto scratchPlan = BuildDX12ReadbackScratchResourcePlan(
-            m_impl->readbackCapacity,
+            slot->readbackCapacity,
             readbackLayout.readbackSize);
-        if (scratchPlan.needsNewResource || m_impl->readbackResource == nullptr)
+        if (scratchPlan.needsNewResource || slot->readbackResource == nullptr)
         {
             D3D12_HEAP_PROPERTIES heapProperties{};
             heapProperties.Type = D3D12_HEAP_TYPE_READBACK;
@@ -906,42 +922,42 @@ namespace NLS::Render::RHI::DX12
                 &bufferDesc,
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,
-                IID_PPV_ARGS(m_impl->readbackResource.ReleaseAndGetAddressOf()));
+                IID_PPV_ARGS(slot->readbackResource.ReleaseAndGetAddressOf()));
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "ReadPixels failed to create readback resource" };
-            m_impl->readbackCapacity = scratchPlan.committedCapacity;
+            slot->readbackCapacity = scratchPlan.committedCapacity;
         }
 
         HRESULT hr = S_OK;
-        if (m_impl->commandAllocator == nullptr)
+        if (slot->commandAllocator == nullptr)
         {
             hr = device->CreateCommandAllocator(
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
-                IID_PPV_ARGS(m_impl->commandAllocator.GetAddressOf()));
+                IID_PPV_ARGS(slot->commandAllocator.GetAddressOf()));
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "ReadPixels failed to create command allocator" };
         }
         else
         {
-            hr = m_impl->commandAllocator->Reset();
+            hr = slot->commandAllocator->Reset();
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "ReadPixels failed to reset command allocator" };
         }
 
-        if (m_impl->commandList == nullptr)
+        if (slot->commandList == nullptr)
         {
             hr = device->CreateCommandList(
                 0,
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
-                m_impl->commandAllocator.Get(),
+                slot->commandAllocator.Get(),
                 nullptr,
-                IID_PPV_ARGS(m_impl->commandList.GetAddressOf()));
+                IID_PPV_ARGS(slot->commandList.GetAddressOf()));
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "ReadPixels failed to create command list" };
         }
         else
         {
-            hr = m_impl->commandList->Reset(m_impl->commandAllocator.Get(), nullptr);
+            hr = slot->commandList->Reset(slot->commandAllocator.Get(), nullptr);
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "ReadPixels failed to reset command list" };
         }
@@ -955,7 +971,7 @@ namespace NLS::Render::RHI::DX12
         toCopySourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         toCopySourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         if (toCopySourceBarrier.Transition.StateBefore != toCopySourceBarrier.Transition.StateAfter)
-            m_impl->commandList->ResourceBarrier(1, &toCopySourceBarrier);
+            slot->commandList->ResourceBarrier(1, &toCopySourceBarrier);
 
         D3D12_TEXTURE_COPY_LOCATION srcLocation{};
         srcLocation.pResource = srcResource;
@@ -963,7 +979,7 @@ namespace NLS::Render::RHI::DX12
         srcLocation.SubresourceIndex = 0;
 
         D3D12_TEXTURE_COPY_LOCATION dstLocation{};
-        dstLocation.pResource = m_impl->readbackResource.Get();
+        dstLocation.pResource = slot->readbackResource.Get();
         dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         dstLocation.PlacedFootprint.Offset = 0;
         dstLocation.PlacedFootprint.Footprint.Format = srcDesc.Format;
@@ -980,7 +996,7 @@ namespace NLS::Render::RHI::DX12
         sourceBox.bottom = y + height;
         sourceBox.back = 1;
 
-        m_impl->commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, &sourceBox);
+        slot->commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, &sourceBox);
 
         D3D12_RESOURCE_BARRIER toCommonBarrier{};
         toCommonBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -990,47 +1006,47 @@ namespace NLS::Render::RHI::DX12
             NLS::Render::Backend::NativeDX12CommandBuffer::ToD3D12ResourceState(sourceBarrierStates.afterCopy);
         toCommonBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         if (toCommonBarrier.Transition.StateBefore != toCommonBarrier.Transition.StateAfter)
-            m_impl->commandList->ResourceBarrier(1, &toCommonBarrier);
+            slot->commandList->ResourceBarrier(1, &toCommonBarrier);
 
-        hr = m_impl->commandList->Close();
+        hr = slot->commandList->Close();
         if (FAILED(hr))
             return { DX12ReadbackStatusCode::BackendFailure, "ReadPixels failed to close command list" };
 
-        if (m_impl->fence == nullptr)
+        if (slot->fence == nullptr)
         {
-            hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(m_impl->fence.GetAddressOf()));
+            hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(slot->fence.GetAddressOf()));
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "ReadPixels failed to create fence" };
         }
 
-        if (m_impl->fenceEvent == nullptr)
+        if (slot->fenceEvent == nullptr)
         {
-            m_impl->fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-            if (m_impl->fenceEvent == nullptr)
+            slot->fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+            if (slot->fenceEvent == nullptr)
                 return { DX12ReadbackStatusCode::BackendFailure, "ReadPixels failed to create fence event" };
         }
 
-        const UINT64 fenceValue = ++m_impl->nextFenceValue;
+        const UINT64 fenceValue = ++slot->nextFenceValue;
         HRESULT executeDeviceStatus = S_OK;
         {
             ScopedDX12QueueLock queueLock(graphicsQueue);
-            ID3D12CommandList* commandLists[] = { m_impl->commandList.Get() };
+            ID3D12CommandList* commandLists[] = { slot->commandList.Get() };
             graphicsQueue->ExecuteCommandLists(1, commandLists);
-            hr = graphicsQueue->Signal(m_impl->fence.Get(), fenceValue);
+            hr = graphicsQueue->Signal(slot->fence.Get(), fenceValue);
             if (FAILED(hr))
             {
                 QuarantineDX12ReadbackSubmissionAfterExecute(
                     device,
                     texture,
                     nullptr,
-                    m_impl->readbackResource,
-                    m_impl->commandAllocator,
-                    m_impl->commandList,
-                    m_impl->fence,
+                    slot->readbackResource,
+                    slot->commandAllocator,
+                    slot->commandList,
+                    slot->fence,
                     hr);
-                m_impl->readbackQuarantined = true;
-                if (m_impl->readbackInFlight != nullptr)
-                    m_impl->readbackInFlight->store(true);
+                slot->readbackQuarantined = true;
+                if (slot->readbackInFlight != nullptr)
+                    slot->readbackInFlight->store(true);
 
                 const HRESULT signalDeviceStatus = device->GetDeviceRemovedReason();
                 if (FAILED(signalDeviceStatus))
@@ -1053,11 +1069,11 @@ namespace NLS::Render::RHI::DX12
         DX12ReadbackPendingCopy pendingCopy;
         pendingCopy.device = device;
         pendingCopy.sourceTexture = texture;
-        pendingCopy.readbackResource = m_impl->readbackResource;
-        pendingCopy.commandAllocator = m_impl->commandAllocator;
-        pendingCopy.commandList = m_impl->commandList;
-        pendingCopy.fence = m_impl->fence;
-        pendingCopy.inFlightFlag = m_impl->readbackInFlight;
+        pendingCopy.readbackResource = slot->readbackResource;
+        pendingCopy.commandAllocator = slot->commandAllocator;
+        pendingCopy.commandList = slot->commandList;
+        pendingCopy.fence = slot->fence;
+        pendingCopy.inFlightFlag = slot->readbackInFlight;
         pendingCopy.fenceValue = fenceValue;
         pendingCopy.layout = readbackLayout;
         pendingCopy.validation = validation;
@@ -1065,7 +1081,7 @@ namespace NLS::Render::RHI::DX12
         pendingCopy.width = width;
         pendingCopy.height = height;
         pendingCopy.data = data;
-        inFlightClaim.ReleaseToCompletionToken();
+        inFlightClaim->ReleaseToCompletionToken();
 
         auto completion = std::make_shared<DX12ReadbackCompletionToken>(std::move(pendingCopy));
         if (FAILED(executeDeviceStatus))
@@ -1118,15 +1134,21 @@ namespace NLS::Render::RHI::DX12
         if (m_impl == nullptr)
             m_impl = std::make_shared<Impl>();
         std::unique_lock<std::mutex> beginLock(m_impl->beginMutex);
-        if (m_impl->readbackQuarantined)
+        DX12ReadbackSlot* slot = nullptr;
+        std::optional<DX12ReadbackInFlightClaim> inFlightClaim;
+        for (auto& candidate : m_impl->slots)
         {
-            return {
-                DX12ReadbackStatusCode::BackendFailure,
-                "BeginReadBuffer context is quarantined after a submitted readback failed to signal its fence"
-            };
+            if (candidate.readbackQuarantined)
+                continue;
+            inFlightClaim.emplace(candidate.readbackInFlight);
+            if (inFlightClaim->Claimed())
+            {
+                slot = &candidate;
+                break;
+            }
+            inFlightClaim.reset();
         }
-        DX12ReadbackInFlightClaim inFlightClaim(m_impl->readbackInFlight);
-        if (!inFlightClaim.Claimed())
+        if (slot == nullptr || !inFlightClaim.has_value())
         {
             return {
                 DX12ReadbackStatusCode::BackendFailure,
@@ -1134,8 +1156,8 @@ namespace NLS::Render::RHI::DX12
             };
         }
 
-        const auto scratchPlan = BuildDX12ReadbackScratchResourcePlan(m_impl->readbackCapacity, desc.size);
-        if (scratchPlan.needsNewResource || m_impl->readbackResource == nullptr)
+        const auto scratchPlan = BuildDX12ReadbackScratchResourcePlan(slot->readbackCapacity, desc.size);
+        if (scratchPlan.needsNewResource || slot->readbackResource == nullptr)
         {
             D3D12_HEAP_PROPERTIES heapProperties{};
             heapProperties.Type = D3D12_HEAP_TYPE_READBACK;
@@ -1159,42 +1181,42 @@ namespace NLS::Render::RHI::DX12
                 &bufferDesc,
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,
-                IID_PPV_ARGS(m_impl->readbackResource.ReleaseAndGetAddressOf()));
+                IID_PPV_ARGS(slot->readbackResource.ReleaseAndGetAddressOf()));
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create readback resource" };
-            m_impl->readbackCapacity = scratchPlan.committedCapacity;
+            slot->readbackCapacity = scratchPlan.committedCapacity;
         }
 
         HRESULT hr = S_OK;
-        if (m_impl->commandAllocator == nullptr)
+        if (slot->commandAllocator == nullptr)
         {
             hr = device->CreateCommandAllocator(
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
-                IID_PPV_ARGS(m_impl->commandAllocator.GetAddressOf()));
+                IID_PPV_ARGS(slot->commandAllocator.GetAddressOf()));
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create command allocator" };
         }
         else
         {
-            hr = m_impl->commandAllocator->Reset();
+            hr = slot->commandAllocator->Reset();
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to reset command allocator" };
         }
 
-        if (m_impl->commandList == nullptr)
+        if (slot->commandList == nullptr)
         {
             hr = device->CreateCommandList(
                 0,
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
-                m_impl->commandAllocator.Get(),
+                slot->commandAllocator.Get(),
                 nullptr,
-                IID_PPV_ARGS(m_impl->commandList.GetAddressOf()));
+                IID_PPV_ARGS(slot->commandList.GetAddressOf()));
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create command list" };
         }
         else
         {
-            hr = m_impl->commandList->Reset(m_impl->commandAllocator.Get(), nullptr);
+            hr = slot->commandList->Reset(slot->commandAllocator.Get(), nullptr);
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to reset command list" };
         }
@@ -1212,11 +1234,11 @@ namespace NLS::Render::RHI::DX12
             toCopySourceBarrier.Transition.StateBefore = sourceBefore;
             toCopySourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
             toCopySourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            m_impl->commandList->ResourceBarrier(1, &toCopySourceBarrier);
+            slot->commandList->ResourceBarrier(1, &toCopySourceBarrier);
         }
 
-        m_impl->commandList->CopyBufferRegion(
-            m_impl->readbackResource.Get(),
+        slot->commandList->CopyBufferRegion(
+            slot->readbackResource.Get(),
             0u,
             srcResource,
             desc.sourceOffset,
@@ -1230,28 +1252,28 @@ namespace NLS::Render::RHI::DX12
             restoreSourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
             restoreSourceBarrier.Transition.StateAfter = sourceBefore;
             restoreSourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            m_impl->commandList->ResourceBarrier(1, &restoreSourceBarrier);
+            slot->commandList->ResourceBarrier(1, &restoreSourceBarrier);
         }
 
-        hr = m_impl->commandList->Close();
+        hr = slot->commandList->Close();
         if (FAILED(hr))
             return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to close command list" };
 
-        if (m_impl->fence == nullptr)
+        if (slot->fence == nullptr)
         {
-            hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(m_impl->fence.GetAddressOf()));
+            hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(slot->fence.GetAddressOf()));
             if (FAILED(hr))
                 return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create fence" };
         }
 
-        if (m_impl->fenceEvent == nullptr)
+        if (slot->fenceEvent == nullptr)
         {
-            m_impl->fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-            if (m_impl->fenceEvent == nullptr)
+            slot->fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+            if (slot->fenceEvent == nullptr)
                 return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create fence event" };
         }
 
-        const UINT64 fenceValue = ++m_impl->nextFenceValue;
+        const UINT64 fenceValue = ++slot->nextFenceValue;
         HRESULT executeDeviceStatus = S_OK;
         {
             ScopedDX12QueueLock queueLock(graphicsQueue);
@@ -1274,23 +1296,23 @@ namespace NLS::Render::RHI::DX12
                 }
             }
 
-            ID3D12CommandList* commandLists[] = { m_impl->commandList.Get() };
+            ID3D12CommandList* commandLists[] = { slot->commandList.Get() };
             graphicsQueue->ExecuteCommandLists(1, commandLists);
-            hr = graphicsQueue->Signal(m_impl->fence.Get(), fenceValue);
+            hr = graphicsQueue->Signal(slot->fence.Get(), fenceValue);
             if (FAILED(hr))
             {
                 QuarantineDX12ReadbackSubmissionAfterExecute(
                     device,
                     nullptr,
                     desc.source,
-                    m_impl->readbackResource,
-                    m_impl->commandAllocator,
-                    m_impl->commandList,
-                    m_impl->fence,
+                    slot->readbackResource,
+                    slot->commandAllocator,
+                    slot->commandList,
+                    slot->fence,
                     hr);
-                m_impl->readbackQuarantined = true;
-                if (m_impl->readbackInFlight != nullptr)
-                    m_impl->readbackInFlight->store(true);
+                slot->readbackQuarantined = true;
+                if (slot->readbackInFlight != nullptr)
+                    slot->readbackInFlight->store(true);
 
                 const HRESULT signalDeviceStatus = device->GetDeviceRemovedReason();
                 if (FAILED(signalDeviceStatus))
@@ -1313,15 +1335,15 @@ namespace NLS::Render::RHI::DX12
         DX12BufferReadbackPendingCopy pendingCopy;
         pendingCopy.device = device;
         pendingCopy.sourceBuffer = desc.source;
-        pendingCopy.readbackResource = m_impl->readbackResource;
-        pendingCopy.commandAllocator = m_impl->commandAllocator;
-        pendingCopy.commandList = m_impl->commandList;
-        pendingCopy.fence = m_impl->fence;
-        pendingCopy.inFlightFlag = m_impl->readbackInFlight;
+        pendingCopy.readbackResource = slot->readbackResource;
+        pendingCopy.commandAllocator = slot->commandAllocator;
+        pendingCopy.commandList = slot->commandList;
+        pendingCopy.fence = slot->fence;
+        pendingCopy.inFlightFlag = slot->readbackInFlight;
         pendingCopy.fenceValue = fenceValue;
         pendingCopy.readbackSize = desc.size;
         pendingCopy.data = desc.data;
-        inFlightClaim.ReleaseToCompletionToken();
+        inFlightClaim->ReleaseToCompletionToken();
 
         auto completion = std::make_shared<DX12BufferReadbackCompletionToken>(std::move(pendingCopy));
         if (FAILED(executeDeviceStatus))

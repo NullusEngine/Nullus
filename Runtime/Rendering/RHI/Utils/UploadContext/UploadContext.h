@@ -42,6 +42,7 @@ namespace NLS::Render::RHI
         uint32_t slicePitch = 0;
         RHIExtent3D extent{};
         std::string debugName;
+        RHIOffset3D textureOffset{};
     };
 
     struct NLS_RENDER_API UploadSubmission

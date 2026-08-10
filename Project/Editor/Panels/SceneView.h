@@ -86,6 +86,7 @@ namespace NLS::Editor::Panels
         void EnsureRenderer() override;
         void ApplyValidationCameraForwardStep(float step);
         void SetValidationCameraMotionActive(bool active);
+        bool IsCameraNavigationActive() const;
 
         Editor::Core::EGizmoOperation GetCurrentGizmoOperation() const;
         void SetCurrentGizmoOperation(Editor::Core::EGizmoOperation p_operation);

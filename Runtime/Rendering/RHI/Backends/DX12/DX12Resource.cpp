@@ -262,6 +262,13 @@ namespace NLS::Render::Backend
 				const std::string& debugName,
 				NLS::Render::RHI::ResourceState& outFinalState) const;
 
+			bool UploadTextureRegion(
+				ID3D12Resource* textureResource,
+				const NativeDX12Texture& nativeTexture,
+				const NLS::Render::RHI::RHITextureUpdateDesc& update,
+				const std::string& debugName,
+				NLS::Render::RHI::ResourceState& outFinalState) const;
+
 		private:
 			bool AcquireCommandObjects(
 				Microsoft::WRL::ComPtr<ID3D12CommandAllocator>& commandAllocator,
@@ -325,6 +332,187 @@ namespace NLS::Render::Backend
 				}
 				return true;
 			}
+
+	bool DX12InitialUploadContext::UploadTextureRegion(
+		ID3D12Resource* textureResource,
+		const NativeDX12Texture& nativeTexture,
+		const NLS::Render::RHI::RHITextureUpdateDesc& update,
+		const std::string& debugName,
+		NLS::Render::RHI::ResourceState& outFinalState) const
+	{
+		const auto& textureDesc = nativeTexture.GetDesc();
+		if (m_device == nullptr ||
+			m_graphicsQueue == nullptr ||
+			textureResource == nullptr ||
+			update.data == nullptr ||
+			update.dataSize == 0u ||
+			textureDesc.format != NLS::Render::RHI::TextureFormat::RGBA8 ||
+			update.mipLevel != 0u ||
+			update.arrayLayer != 0u ||
+			update.z != 0u ||
+			update.extent.width == 0u ||
+			update.extent.height == 0u ||
+			update.extent.depth != 1u ||
+			update.x + update.extent.width > textureDesc.extent.width ||
+			update.y + update.extent.height > textureDesc.extent.height)
+		{
+			return false;
+		}
+
+		const size_t sourceRowPitch = update.rowPitch != 0u
+			? update.rowPitch
+			: static_cast<size_t>(update.extent.width) * 4u;
+		const size_t sourceSlicePitch = update.slicePitch != 0u
+			? update.slicePitch
+			: sourceRowPitch * static_cast<size_t>(update.extent.height);
+		if (sourceRowPitch < static_cast<size_t>(update.extent.width) * 4u ||
+			sourceSlicePitch < sourceRowPitch * static_cast<size_t>(update.extent.height) ||
+			update.dataSize < sourceSlicePitch)
+		{
+			return false;
+		}
+
+		const UINT nativeRowPitch = static_cast<UINT>(AlignUp(
+			sourceRowPitch,
+			D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
+		const UINT64 uploadBufferSize = static_cast<UINT64>(nativeRowPitch) * update.extent.height;
+		D3D12_HEAP_PROPERTIES uploadHeapProperties{};
+		uploadHeapProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
+		uploadHeapProperties.CreationNodeMask = 1;
+		uploadHeapProperties.VisibleNodeMask = 1;
+		D3D12_RESOURCE_DESC uploadBufferDesc{};
+		uploadBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		uploadBufferDesc.Width = uploadBufferSize;
+		uploadBufferDesc.Height = 1;
+		uploadBufferDesc.DepthOrArraySize = 1;
+		uploadBufferDesc.MipLevels = 1;
+		uploadBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+		uploadBufferDesc.SampleDesc.Count = 1;
+		uploadBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
+		HRESULT hr = m_device->CreateCommittedResource(
+			&uploadHeapProperties,
+			D3D12_HEAP_FLAG_NONE,
+			&uploadBufferDesc,
+			D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr,
+			IID_PPV_ARGS(&uploadBuffer));
+		if (FAILED(hr))
+			return false;
+		SetDx12ObjectName(uploadBuffer.Get(), debugName + "RegionUploadBuffer");
+
+		uint8_t* uploadBase = nullptr;
+		D3D12_RANGE readRange{};
+		hr = uploadBuffer->Map(0, &readRange, reinterpret_cast<void**>(&uploadBase));
+		if (FAILED(hr) || uploadBase == nullptr)
+			return false;
+		const auto* sourceBytes = static_cast<const uint8_t*>(update.data);
+		for (uint32_t row = 0u; row < update.extent.height; ++row)
+		{
+			std::memcpy(
+				uploadBase + static_cast<size_t>(row) * nativeRowPitch,
+				sourceBytes + static_cast<size_t>(row) * sourceRowPitch,
+				static_cast<size_t>(update.extent.width) * 4u);
+		}
+		uploadBuffer->Unmap(0, nullptr);
+
+		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+		std::unique_lock<std::mutex> commandObjectsLock;
+		if (!AcquireCommandObjects(commandAllocator, commandList, commandObjectsLock))
+			return false;
+
+		const auto beforeState = nativeTexture.GetState();
+		const auto beforeDxState = beforeState == NLS::Render::RHI::ResourceState::Unknown
+			? D3D12_RESOURCE_STATE_COMMON
+			: NativeDX12CommandBuffer::ToD3D12ResourceState(beforeState);
+		if (beforeDxState != D3D12_RESOURCE_STATE_COPY_DEST)
+		{
+			D3D12_RESOURCE_BARRIER barrier{};
+			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Transition.pResource = textureResource;
+			barrier.Transition.StateBefore = beforeDxState;
+			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			barrier.Transition.Subresource = 0u;
+			commandList->ResourceBarrier(1u, &barrier);
+		}
+
+		D3D12_TEXTURE_COPY_LOCATION sourceLocation{};
+		sourceLocation.pResource = uploadBuffer.Get();
+		sourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+		sourceLocation.PlacedFootprint.Offset = 0u;
+		sourceLocation.PlacedFootprint.Footprint.Format =
+			NLS::Render::RHI::DX12::ToDXGIFormat(textureDesc.format);
+		sourceLocation.PlacedFootprint.Footprint.Width = update.extent.width;
+		sourceLocation.PlacedFootprint.Footprint.Height = update.extent.height;
+		sourceLocation.PlacedFootprint.Footprint.Depth = 1u;
+		sourceLocation.PlacedFootprint.Footprint.RowPitch = nativeRowPitch;
+		D3D12_TEXTURE_COPY_LOCATION destinationLocation{};
+		destinationLocation.pResource = textureResource;
+		destinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+		destinationLocation.SubresourceIndex = 0u;
+		D3D12_BOX sourceBox{};
+		sourceBox.left = 0u;
+		sourceBox.top = 0u;
+		sourceBox.front = 0u;
+		sourceBox.right = update.extent.width;
+		sourceBox.bottom = update.extent.height;
+		sourceBox.back = 1u;
+		commandList->CopyTextureRegion(
+			&destinationLocation,
+			update.x,
+			update.y,
+			0u,
+			&sourceLocation,
+			&sourceBox);
+
+		outFinalState = textureDesc.usage != NLS::Render::RHI::TextureUsageFlags::None
+			? ResolveUploadedTextureState(textureDesc)
+			: beforeState;
+		const auto finalDxState = outFinalState == NLS::Render::RHI::ResourceState::Unknown
+			? D3D12_RESOURCE_STATE_COMMON
+			: NativeDX12CommandBuffer::ToD3D12ResourceState(outFinalState);
+		if (finalDxState != D3D12_RESOURCE_STATE_COPY_DEST)
+		{
+			D3D12_RESOURCE_BARRIER barrier{};
+			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Transition.pResource = textureResource;
+			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+			barrier.Transition.StateAfter = finalDxState;
+			barrier.Transition.Subresource = 0u;
+			commandList->ResourceBarrier(1u, &barrier);
+		}
+		if (FAILED(commandList->Close()))
+		{
+			DiscardReusableCommandObjects();
+			return false;
+		}
+
+		Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+		if (FAILED(m_device->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+			return false;
+		{
+			NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_graphicsQueue);
+			ID3D12CommandList* commandLists[] = { commandList.Get() };
+			m_graphicsQueue->ExecuteCommandLists(1u, commandLists);
+			if (FAILED(m_graphicsQueue->Signal(fence.Get(), 1u)))
+			{
+				QuarantineDX12InitialUploadSubmissionAfterExecute(
+					m_device,
+					textureResource,
+					uploadBuffer,
+					commandAllocator,
+					commandList,
+					fence,
+					E_FAIL,
+					debugName);
+				DiscardReusableCommandObjects();
+				return false;
+			}
+		}
+		return WaitForDX12FenceValue(fence.Get(), 1u, "UploadTextureRegion \"" + debugName + "\"");
+	}
 
 		void DX12InitialUploadContext::DiscardReusableCommandObjects() const
 			{
@@ -1530,13 +1718,18 @@ namespace NLS::Render::Backend
 				"DX12 texture update requires a texture, data pointer, and non-zero data size"
 			};
 		}
-		if (desc.x != 0u || desc.y != 0u || desc.z != 0u || desc.mipLevel != 0u || desc.arrayLayer != 0u)
-		{
+		const auto& textureDesc = desc.texture->GetDesc();
+		const bool fullTextureUpdate =
+			desc.x == 0u && desc.y == 0u && desc.z == 0u &&
+			desc.mipLevel == 0u && desc.arrayLayer == 0u &&
+			desc.extent.width == textureDesc.extent.width &&
+			desc.extent.height == textureDesc.extent.height &&
+			(std::max)(desc.extent.depth, 1u) == (std::max)(textureDesc.extent.depth, 1u);
+		if (!fullTextureUpdate && textureDesc.format != NLS::Render::RHI::TextureFormat::RGBA8)
 			return {
 				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
-				"DX12 texture update currently supports only full texture mip 0 updates"
+				"DX12 texture region updates currently support RGBA8 only"
 			};
-		}
 
 		auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(desc.texture.get());
 		ID3D12Resource* resource = nativeTexture != nullptr ? nativeTexture->GetResource() : nullptr;
@@ -1548,22 +1741,37 @@ namespace NLS::Render::Backend
 			};
 		}
 
-		const auto& textureDesc = desc.texture->GetDesc();
-		if (desc.extent.width != textureDesc.extent.width ||
-			desc.extent.height != textureDesc.extent.height ||
-			(std::max)(desc.extent.depth, 1u) != (std::max)(textureDesc.extent.depth, 1u))
-		{
-			return {
-				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
-				"DX12 texture update extent must match the target texture extent"
-			};
-		}
 		if (NLS::Render::RHI::DX12::IsDepthStencilFormat(textureDesc.format))
 		{
 			return {
 				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
 				"DX12 texture update does not support depth/stencil textures"
 			};
+		}
+
+		if (!fullTextureUpdate)
+		{
+			NLS::Render::RHI::ResourceState finalState = textureDesc.usage != NLS::Render::RHI::TextureUsageFlags::None
+				? ResolveUploadedTextureState(textureDesc)
+				: nativeTexture->GetState();
+			DX12InitialUploadContext uploadContext(
+				device,
+				graphicsQueue,
+				initialUploadCommandObjects);
+			if (!uploadContext.UploadTextureRegion(
+				resource,
+				*nativeTexture,
+				desc,
+				desc.debugName.empty() ? std::string(desc.texture->GetDebugName()) : desc.debugName,
+				finalState))
+			{
+				return {
+					NLS::Render::RHI::RHIUpdateStatusCode::BackendFailure,
+					"DX12 texture region upload failed"
+				};
+			}
+			nativeTexture->SetState(finalState);
+			return { NLS::Render::RHI::RHIUpdateStatusCode::Success, {} };
 		}
 
 		const auto uploadRequest =

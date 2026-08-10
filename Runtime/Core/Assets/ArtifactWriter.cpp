@@ -306,16 +306,16 @@ std::vector<uint8_t> BuildStoredArtifactPayload(
     const ArtifactWriteRequest& request,
     const ArtifactPayload& artifact)
 {
-    std::vector<uint8_t> rawPayload = artifact.payload;
+    std::span<const uint8_t> rawPayload(artifact.payload.data(), artifact.payload.size());
     if (IsNativeArtifactContainer(artifact.payload))
     {
-        auto parsed = ReadNativeArtifactContainer(
+        const auto parsed = ReadNativeArtifactContainerView(
             artifact.payload,
             artifact.artifactType,
             SchemaVersionForArtifactType(artifact.artifactType));
         if (!parsed.has_value())
             return {};
-        rawPayload = std::move(parsed->payload);
+        rawPayload = std::span<const uint8_t>(parsed->payloadData, parsed->payloadSize);
     }
 
     auto metadata = BuildStoredArtifactMetadata(

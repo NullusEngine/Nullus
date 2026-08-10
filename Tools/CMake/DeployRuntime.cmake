@@ -52,7 +52,9 @@ foreach(relative_path IN LISTS previous_files)
        normalized_relative_path MATCHES "(^|/)\\.\\.(/|$)")
         message(FATAL_ERROR "Invalid runtime deployment manifest entry: ${relative_path}")
     endif()
-    if(NOT relative_path IN_LIST staged_files)
+    if(NOT relative_path IN_LIST staged_files AND
+       (NOT DEFINED PRESERVE_FILE OR
+        NOT relative_path STREQUAL "${PRESERVE_FILE}"))
         file(REMOVE "${DEST_DIR}/${relative_path}")
     endif()
 endforeach()

@@ -3674,13 +3674,23 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRevisionMetadataIsSlotLocalA
         NLS::Maths::Matrix4::Translation({ 2.0f, 0.0f, 0.0f });
     ASSERT_NE(prepareInSlot(0u, growthDescriptor), nullptr);
     const auto afterGrowth = provider.GetObjectDataWorkCountsForTesting();
+    const auto hitCountBeforePreservedDraw =
+        renderer.GetFrameInfo().objectDataRevisionReuseHitCount;
+    const auto fallbackCountBeforePreservedDraw =
+        renderer.GetFrameInfo().objectDataRevisionReuseFallbackCount;
     auto preservedBuffer = prepareInSlot(0u, descriptor);
     ASSERT_NE(preservedBuffer, nullptr);
-    const auto afterGrowthFallback = provider.GetObjectDataWorkCountsForTesting();
-    EXPECT_EQ(afterGrowthFallback.validityScanCount, afterGrowth.validityScanCount + 1u);
-    EXPECT_EQ(afterGrowthFallback.memcmpCount, afterGrowth.memcmpCount + 1u);
-    EXPECT_EQ(afterGrowthFallback.transposeCount, afterGrowth.transposeCount);
-    EXPECT_EQ(afterGrowthFallback.uploadCount, afterGrowth.uploadCount);
+    const auto afterGrowthReuse = provider.GetObjectDataWorkCountsForTesting();
+    EXPECT_EQ(afterGrowthReuse.validityScanCount, afterGrowth.validityScanCount);
+    EXPECT_EQ(afterGrowthReuse.memcmpCount, afterGrowth.memcmpCount);
+    EXPECT_EQ(afterGrowthReuse.transposeCount, afterGrowth.transposeCount);
+    EXPECT_EQ(afterGrowthReuse.uploadCount, afterGrowth.uploadCount);
+    EXPECT_EQ(
+        renderer.GetFrameInfo().objectDataRevisionReuseHitCount,
+        hitCountBeforePreservedDraw + 1u);
+    EXPECT_EQ(
+        renderer.GetFrameInfo().objectDataRevisionReuseFallbackCount,
+        fallbackCountBeforePreservedDraw);
 
     const auto hitCountBeforeRearmedDraw =
         renderer.GetFrameInfo().objectDataRevisionReuseHitCount;
@@ -3689,10 +3699,10 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRevisionMetadataIsSlotLocalA
     auto rearmedBuffer = prepareInSlot(0u, descriptor);
     ASSERT_EQ(rearmedBuffer, preservedBuffer);
     const auto afterRearmedHit = provider.GetObjectDataWorkCountsForTesting();
-    EXPECT_EQ(afterRearmedHit.validityScanCount, afterGrowthFallback.validityScanCount);
-    EXPECT_EQ(afterRearmedHit.memcmpCount, afterGrowthFallback.memcmpCount);
-    EXPECT_EQ(afterRearmedHit.transposeCount, afterGrowthFallback.transposeCount);
-    EXPECT_EQ(afterRearmedHit.uploadCount, afterGrowthFallback.uploadCount);
+    EXPECT_EQ(afterRearmedHit.validityScanCount, afterGrowthReuse.validityScanCount);
+    EXPECT_EQ(afterRearmedHit.memcmpCount, afterGrowthReuse.memcmpCount);
+    EXPECT_EQ(afterRearmedHit.transposeCount, afterGrowthReuse.transposeCount);
+    EXPECT_EQ(afterRearmedHit.uploadCount, afterGrowthReuse.uploadCount);
     EXPECT_EQ(
         renderer.GetFrameInfo().objectDataRevisionReuseHitCount,
         hitCountBeforeRearmedDraw + 1u);
@@ -3713,8 +3723,8 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRevisionMetadataIsSlotLocalA
     ASSERT_NE(deviceChangedBuffer, nullptr);
     EXPECT_NE(deviceChangedBuffer, preservedBuffer);
     const auto afterDeviceFallback = provider.GetObjectDataWorkCountsForTesting();
-    EXPECT_EQ(afterDeviceFallback.transposeCount, afterGrowthFallback.transposeCount + 1u);
-    EXPECT_EQ(afterDeviceFallback.uploadCount, afterGrowthFallback.uploadCount + 1u);
+    EXPECT_EQ(afterDeviceFallback.transposeCount, afterGrowthReuse.transposeCount + 1u);
+    EXPECT_EQ(afterDeviceFallback.uploadCount, afterGrowthReuse.uploadCount + 1u);
 
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }

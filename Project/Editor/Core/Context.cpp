@@ -1,9 +1,11 @@
 #include <filesystem>
 
 #include <fstream>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
 #include <atomic>
@@ -14,6 +16,7 @@
 
 #include <Core/ServiceLocator.h>
 #include "Assets/ArtifactDatabase.h"
+#include "Assets/AssetBrowserPresentation.h"
 #include <Debug/Logger.h>
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Assets/EditorAssetDatabase.h"
@@ -191,8 +194,17 @@ namespace
     }
 
     std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> LoadEditorRuntimeAssetDatabase(
-        const std::filesystem::path& projectRoot)
+        const std::filesystem::path& projectRoot,
+        const bool cacheRuntimeDependencies,
+        Editor::Core::EditorRuntimeAssetDatabaseLoadStats* stats = nullptr)
     {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        if (stats != nullptr)
+            *stats = {};
+#else
+        (void)cacheRuntimeDependencies;
+        (void)stats;
+#endif
         NLS::Core::Assets::ArtifactDatabase artifactDatabase;
         if (!artifactDatabase.Load(projectRoot / "Library" / "ArtifactDB"))
             return std::nullopt;
@@ -200,6 +212,12 @@ namespace
         NLS::Engine::Assets::RuntimeAssetManifest manifest;
         manifest.schemaVersion = 1u;
         manifest.targetPlatform = kEditorRuntimeAssetTargetPlatform;
+        struct SourceRuntimeAssets
+        {
+            std::optional<NLS::Core::Assets::ArtifactManifest> manifest;
+            std::vector<NLS::Engine::Assets::RuntimeAssetRef> dependencies;
+        };
+        std::unordered_map<NLS::Core::Assets::AssetId, SourceRuntimeAssets> sourceAssets;
 
         artifactDatabase.VisitRecords([&](const NLS::Core::Assets::ArtifactDatabaseRecord& record)
         {
@@ -210,11 +228,34 @@ namespace
                 return;
             }
 
-            const auto sourceManifest = artifactDatabase.BuildManifestForSource(
-                record.sourceAssetId,
-                record.targetPlatform);
-            if (!sourceManifest.has_value())
+            const auto [sourceIt, inserted] = sourceAssets.try_emplace(record.sourceAssetId);
+            if (inserted)
+            {
+                sourceIt->second.manifest = artifactDatabase.BuildManifestForSource(
+                    record.sourceAssetId,
+                    record.targetPlatform);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+                if (stats != nullptr)
+                    ++stats->sourceManifestBuildCount;
+#endif
+                if (cacheRuntimeDependencies && sourceIt->second.manifest.has_value())
+                {
+                    sourceIt->second.dependencies = BuildEditorRuntimeDependencies(*sourceIt->second.manifest);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+                    if (stats != nullptr)
+                        ++stats->runtimeDependencyBuildCount;
+#endif
+                }
+            }
+            if (!sourceIt->second.manifest.has_value())
                 return;
+            const auto& dependencies = cacheRuntimeDependencies
+                ? sourceIt->second.dependencies
+                : BuildEditorRuntimeDependencies(*sourceIt->second.manifest);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            if (!cacheRuntimeDependencies && stats != nullptr)
+                ++stats->runtimeDependencyBuildCount;
+#endif
 
             const auto entryAssetId = record.artifactSourceAssetId.IsValid()
                 ? record.artifactSourceAssetId
@@ -227,7 +268,7 @@ namespace
                 record.loaderId,
                 record.artifactPath,
                 record.contentHash,
-                BuildEditorRuntimeDependencies(*sourceManifest)
+                dependencies
             });
 
             if (record.primarySubAssetKey == record.subAssetKey)
@@ -391,6 +432,17 @@ namespace
 	}
 
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+std::optional<NLS::Engine::Assets::RuntimeAssetDatabase>
+Editor::Core::LoadEditorRuntimeAssetDatabaseForTesting(
+    const std::filesystem::path& projectRoot,
+    const bool cacheRuntimeDependencies,
+    EditorRuntimeAssetDatabaseLoadStats* stats)
+{
+    return LoadEditorRuntimeAssetDatabase(projectRoot, cacheRuntimeDependencies, stats);
+}
+#endif
 
 class Editor::Core::NativeProgressDialog final
 {
@@ -822,7 +874,34 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     m_diagnosticsOverride(std::move(p_diagnosticsOverride)),
     m_nativeProgressDialog(std::make_unique<NativeProgressDialog>())
 {
+    residentPrefabPreviewRegistry =
+        NLS::Editor::Assets::ResidentPrefabPreviewRegistry::Create();
     PresentStartupProgressFrame("Reading project settings", 0.02f);
+
+    std::error_code projectAssetFolderError;
+    std::filesystem::create_directories(projectAssetsPath, projectAssetFolderError);
+    if (projectAssetFolderError)
+    {
+        throw std::runtime_error(
+            "Failed to create project Assets folder before startup asset watching: " +
+            projectAssetFolderError.message());
+    }
+
+    PresentStartupProgressFrame("Watching project assets", 0.04f);
+    const auto engineWatcherStarted = m_startupEngineAssetsWatcher.Start(engineAssetsPath);
+    const auto projectWatcherStarted = m_startupProjectAssetsWatcher.Start(projectAssetsPath);
+    const auto watcherStartupReport = NLS::Editor::Assets::BuildAssetWatcherStartupReport(
+        engineAssetsPath,
+        engineWatcherStarted,
+        projectAssetsPath,
+        projectWatcherStarted);
+    for (const auto& diagnostic : watcherStartupReport.diagnostics)
+        NLS_LOG_WARNING(diagnostic.message);
+    if (!watcherStartupReport.succeeded)
+    {
+        throw std::runtime_error(
+            "Startup asset watcher failed; editor UI will not open because post-open asset changes could be missed.");
+    }
 
     MeshManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
@@ -859,6 +938,8 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     if (logDirectoryError)
         throw std::runtime_error("Failed to create editor log directory: " + logDirectory.string());
     NLS::Debug::FileHandler::SetLogFilePath(logDirectory.string());
+    m_startupAssetPreimportCacheAnalysisTask =
+        NLS::Editor::Assets::StartStartupAssetPreimportCacheAnalysis(std::filesystem::path(projectPath));
     /* Settings */
     NLS::Windowing::Settings::DeviceSettings deviceSettings;
     deviceSettings.contextMajorVersion = 4;
@@ -1094,10 +1175,28 @@ Editor::Core::Context::~Context()
     if (driver != nullptr)
         driver->SetSwapchainWillResizeCallback(nullptr);
     ShutdownThreadedRendering();
+
+    // Resident preview packages contain ResourceHandles whose destructors
+    // release leases through resourceLifetimeRegistry. Drop every Context
+    // owner while the registry and resource managers are still alive.
+    ClearSceneResidentPrefabPreviewLeases();
+    if (residentPrefabPreviewRegistry != nullptr)
+    {
+        residentPrefabPreviewRegistry->SetInactiveBudgetBytes(0u);
+        residentPrefabPreviewRegistry.reset();
+    }
+
     meshManager.UnloadResources();
     textureManager.UnloadResources();
     shaderManager.UnloadResources();
     materialManager.UnloadResources();
+
+    NLS::Core::ServiceLocator::Remove<NLS::Engine::Assets::RuntimeAssetDatabase>();
+    NLS::Core::ServiceLocator::Remove<MaterialManager>();
+    NLS::Core::ServiceLocator::Remove<ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<TextureManager>();
+    NLS::Core::ServiceLocator::Remove<MeshManager>();
+    NLS::Core::ServiceLocator::Remove<ResourceLifetimeRegistry>();
 }
 
 void Editor::Core::Context::ShutdownThreadedRendering()
@@ -1139,7 +1238,9 @@ void Editor::Core::Context::ApplyProjectSettings()
 
 bool Editor::Core::Context::RefreshRuntimeAssetDatabaseFromArtifactDB()
 {
-    runtimeAssetDatabase = LoadEditorRuntimeAssetDatabase(std::filesystem::path(projectPath));
+    runtimeAssetDatabase = LoadEditorRuntimeAssetDatabase(
+        std::filesystem::path(projectPath),
+        true);
     if (!runtimeAssetDatabase.has_value())
     {
         if (NLS::Core::ServiceLocator::Contains<NLS::Engine::Assets::RuntimeAssetDatabase>())
@@ -1152,6 +1253,21 @@ bool Editor::Core::Context::RefreshRuntimeAssetDatabaseFromArtifactDB()
         "Editor runtime asset database refreshed from ArtifactDB: entries=" +
         std::to_string(runtimeAssetDatabase->GetManifest().entries.size()));
     return true;
+}
+
+NLS::Editor::Assets::StartupAssetPreimportCacheAnalysisTask&
+Editor::Core::Context::GetStartupAssetPreimportCacheAnalysisTask()
+{
+    return m_startupAssetPreimportCacheAnalysisTask;
+}
+
+std::pair<NLS::Editor::Core::AssetFileWatcher, NLS::Editor::Core::AssetFileWatcher>
+Editor::Core::Context::TakeStartupAssetWatchers()
+{
+    return {
+        std::move(m_startupEngineAssetsWatcher),
+        std::move(m_startupProjectAssetsWatcher)
+    };
 }
 
 void Editor::Core::Context::PresentStartupProgressFrame(
@@ -1275,8 +1391,33 @@ void Editor::Core::Context::CompleteTaskProgress(const std::string& label)
     }
 }
 
+void Editor::Core::Context::ClearSceneResidentPrefabPreviewLeases()
+{
+    sceneResidentPrefabPreviewLeases.clear();
+}
+
 const Render::Settings::EngineDiagnosticsSettings& Editor::Core::Context::GetDiagnosticsSettings() const
 {
     return m_diagnosticsSettings;
+}
+
+NLS::Editor::Assets::AssetThumbnailFeatureConfig
+Editor::Core::Context::GetAssetThumbnailFeatureConfig() const
+{
+    const auto& settings = m_diagnosticsSettings;
+    NLS::Editor::Assets::AssetThumbnailFeatureConfig config;
+    config.residentPrefabPreview = settings.editorThumbnailResidentPrefabPreview;
+    config.previewProxyPool = settings.editorThumbnailPreviewProxyPool;
+    config.atlas = settings.editorThumbnailAtlas;
+    config.readbackRing = settings.editorThumbnailReadbackRing;
+    config.adaptiveBudget = settings.editorThumbnailAdaptiveBudget;
+    config.explicitLanes = settings.editorThumbnailExplicitLanes;
+    if (!settings.editorThumbnailCacheRoot.empty())
+    {
+        config.cacheRoot = std::filesystem::path(settings.editorThumbnailCacheRoot);
+        if (config.cacheRoot.is_relative())
+            config.cacheRoot = std::filesystem::path(projectPath) / config.cacheRoot;
+    }
+    return config;
 }
 } // namespace NLS

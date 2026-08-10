@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <numeric>
 #include <system_error>
+#include <type_traits>
 
 #include <Json/json.hpp>
 
@@ -27,6 +29,125 @@ namespace
             std::ceil(std::clamp(percentile, 0.0, 1.0) * static_cast<double>(sortedSamples.size())));
         const size_t index = std::clamp<size_t>(oneBasedRank == 0u ? 0u : oneBasedRank - 1u, 0u, sortedSamples.size() - 1u);
         return sortedSamples[index];
+    }
+
+    void CalculateFrameMetrics(
+        const std::vector<double>& samples,
+        double& meanFrameMs,
+        double& meanFps,
+        double& p95FrameMs,
+        double& p99FrameMs,
+        double& maxFrameMs)
+    {
+        if (samples.empty())
+            return;
+
+        const double totalMs = std::accumulate(samples.begin(), samples.end(), 0.0);
+        meanFrameMs = totalMs / static_cast<double>(samples.size());
+        meanFps = meanFrameMs > 0.0 ? 1000.0 / meanFrameMs : 0.0;
+        p95FrameMs = NearestRankPercentile(samples, 0.95);
+        p99FrameMs = NearestRankPercentile(samples, 0.99);
+        maxFrameMs = *std::max_element(samples.begin(), samples.end());
+    }
+
+    NLS::Render::Data::LargeSceneTelemetry CalculateLargeSceneTelemetryDelta(
+        const NLS::Render::Data::LargeSceneTelemetry& before,
+        const NLS::Render::Data::LargeSceneTelemetry& after)
+    {
+        using LargeSceneTelemetry = NLS::Render::Data::LargeSceneTelemetry;
+        constexpr size_t scalarCount =
+            NLS::Render::Data::kLargeSceneTelemetryScalarFieldCount +
+            NLS::Render::Data::kLargeSceneCullReasonCount +
+            NLS::Render::Data::kLargeSceneLodSelectionBucketCount;
+        using ScalarFields = std::array<uint64_t, scalarCount>;
+
+        static_assert(std::is_trivially_copyable_v<LargeSceneTelemetry>);
+        static_assert(sizeof(ScalarFields) == sizeof(LargeSceneTelemetry));
+
+        ScalarFields beforeFields {};
+        ScalarFields afterFields {};
+        ScalarFields deltaFields {};
+        std::memcpy(beforeFields.data(), &before, sizeof(before));
+        std::memcpy(afterFields.data(), &after, sizeof(after));
+        for (size_t fieldIndex = 0u; fieldIndex < scalarCount; ++fieldIndex)
+            deltaFields[fieldIndex] = SaturatingDelta(beforeFields[fieldIndex], afterFields[fieldIndex]);
+
+        LargeSceneTelemetry delta {};
+        std::memcpy(&delta, deltaFields.data(), sizeof(delta));
+
+        // These are gauges rather than cumulative counters in RendererStats.
+        delta.residencyTicketCount = after.residencyTicketCount;
+        delta.residentCpuBytes = after.residentCpuBytes;
+        delta.residentGpuBytes = after.residentGpuBytes;
+        delta.requestedCpuBytes = after.requestedCpuBytes;
+        delta.requestedGpuBytes = after.requestedGpuBytes;
+        return delta;
+    }
+
+    nlohmann::json SerializeLargeSceneTelemetry(const NLS::Render::Data::LargeSceneTelemetry& telemetry)
+    {
+        return {
+            { "registeredPrimitiveCount", telemetry.registeredPrimitiveCount },
+            { "staticPrimitiveCount", telemetry.staticPrimitiveCount },
+            { "dynamicPrimitiveCount", telemetry.dynamicPrimitiveCount },
+            { "unclassifiedPrimitiveCount", telemetry.unclassifiedPrimitiveCount },
+            { "spatialCandidateCount", telemetry.spatialCandidateCount },
+            { "fullScanCandidateCount", telemetry.fullScanCandidateCount },
+            { "visiblePrimitiveCount", telemetry.visiblePrimitiveCount },
+            { "visibleMeshCount", telemetry.visibleMeshCount },
+            { "culledByReason", telemetry.culledByReason },
+            { "lodSelectionCount", telemetry.lodSelectionCount },
+            { "activeHLODClusterCount", telemetry.activeHLODClusterCount },
+            { "occlusionTestCount", telemetry.occlusionTestCount },
+            { "occlusionCulledCount", telemetry.occlusionCulledCount },
+            { "streamingRequestCount", telemetry.streamingRequestCount },
+            { "streamingCommitCount", telemetry.streamingCommitCount },
+            { "streamingEvictCount", telemetry.streamingEvictCount },
+            { "streamingDependencyCount", telemetry.streamingDependencyCount },
+            { "residencyTicketCount", telemetry.residencyTicketCount },
+            { "residentCpuBytes", telemetry.residentCpuBytes },
+            { "residentGpuBytes", telemetry.residentGpuBytes },
+            { "requestedCpuBytes", telemetry.requestedCpuBytes },
+            { "requestedGpuBytes", telemetry.requestedGpuBytes },
+            { "primitiveRecordsTouched", telemetry.primitiveRecordsTouched },
+            { "allocatedPrimitiveSlotCount", telemetry.allocatedPrimitiveSlotCount },
+            { "tombstonedPrimitiveSlotCount", telemetry.tombstonedPrimitiveSlotCount },
+            { "syncSweepTouchedSlotCount", telemetry.syncSweepTouchedSlotCount },
+            { "syncTouchedPrimitiveCount", telemetry.syncTouchedPrimitiveCount },
+            { "syncFullSweepCount", telemetry.syncFullSweepCount },
+            { "sceneRenderContentRevisionFastPathCount", telemetry.sceneRenderContentRevisionFastPathCount },
+            { "boundsDirtyPrimitiveCount", telemetry.boundsDirtyPrimitiveCount },
+            { "primitiveSlotReuseCount", telemetry.primitiveSlotReuseCount },
+            { "visibilityTestedPrimitiveCount", telemetry.visibilityTestedPrimitiveCount },
+            { "visibilityBitsetWordCount", telemetry.visibilityBitsetWordCount },
+            { "finalizationTouchedPrimitiveCount", telemetry.finalizationTouchedPrimitiveCount },
+            { "finalizationTouchedCommandCount", telemetry.finalizationTouchedCommandCount },
+            { "commandOffsetRebuildCount", telemetry.commandOffsetRebuildCount },
+            { "rawVisibleDrawCount", telemetry.rawVisibleDrawCount },
+            { "submittedDrawCount", telemetry.submittedDrawCount },
+            { "dynamicInstanceGroupCount", telemetry.dynamicInstanceGroupCount },
+            { "dynamicCandidateCount", telemetry.dynamicCandidateCount },
+            { "dynamicRecordsTouched", telemetry.dynamicRecordsTouched },
+            { "staticIndexRefitCount", telemetry.staticIndexRefitCount },
+            { "staticIndexRebuildCount", telemetry.staticIndexRebuildCount },
+            { "staticIndexLastGoodQueryCount", telemetry.staticIndexLastGoodQueryCount },
+            { "staticIndexDirtyOverlayCount", telemetry.staticIndexDirtyOverlayCount },
+            { "spatialRebuildFallbackCount", telemetry.spatialRebuildFallbackCount },
+            { "dynamicIndexUpdateCount", telemetry.dynamicIndexUpdateCount },
+            { "syncTimeNs", telemetry.syncTimeNs },
+            { "serialVisibilityTimeNs", telemetry.serialVisibilityTimeNs },
+            { "parallelVisibilityTimeNs", telemetry.parallelVisibilityTimeNs },
+            { "queueFinalizationTimeNs", telemetry.queueFinalizationTimeNs },
+            { "visibleDrawableBuildTimeNs", telemetry.visibleDrawableBuildTimeNs },
+            { "opaqueQueueFinalizationTimeNs", telemetry.opaqueQueueFinalizationTimeNs },
+            { "visibleObjectIndexAssignmentTimeNs", telemetry.visibleObjectIndexAssignmentTimeNs },
+            { "hzbBuildTimeNs", telemetry.hzbBuildTimeNs },
+            { "hzbHistoryPruneTouchedHandleCount", telemetry.hzbHistoryPruneTouchedHandleCount },
+            { "hzbHistoryPruneRemovedHandleCount", telemetry.hzbHistoryPruneRemovedHandleCount },
+            { "hzbHistoryPruneRemovedKeyCount", telemetry.hzbHistoryPruneRemovedKeyCount },
+            { "hzbHistoryPruneTimeNs", telemetry.hzbHistoryPruneTimeNs },
+            { "streamingCommitTimeNs", telemetry.streamingCommitTimeNs }
+        };
     }
 
     nlohmann::json SerializeTelemetry(const EditorCameraPerformanceTelemetry& telemetry)
@@ -60,7 +181,8 @@ namespace
             { "descriptorAllocationFailureCount", telemetry.descriptorAllocationFailureCount },
             { "objectDataOverflowCount", telemetry.objectDataOverflowCount },
             { "deviceLostCount", telemetry.deviceLostCount },
-            { "unsafeGpuQuarantineCount", telemetry.unsafeGpuQuarantineCount }
+            { "unsafeGpuQuarantineCount", telemetry.unsafeGpuQuarantineCount },
+            { "largeScene", SerializeLargeSceneTelemetry(telemetry.largeScene) }
         };
     }
 }
@@ -139,6 +261,7 @@ EditorCameraPerformanceTelemetry CalculateEditorCameraPerformanceTelemetryDelta(
     delta.unsafeGpuQuarantineCount = SaturatingDelta(
         before.unsafeGpuQuarantineCount,
         after.unsafeGpuQuarantineCount);
+    delta.largeScene = CalculateLargeSceneTelemetryDelta(before.largeScene, after.largeScene);
     return delta;
 }
 
@@ -147,27 +270,37 @@ EditorCameraPerformanceSummary BuildEditorCameraPerformanceSummary(
     std::vector<double> measuredFrameMs,
     const EditorCameraPerformanceTelemetry& telemetryBefore,
     const EditorCameraPerformanceTelemetry& telemetryAfter,
-    const uint64_t publishedCameraStepCount)
+    const uint64_t publishedCameraStepCount,
+    std::vector<double> settleFrameMs)
 {
     EditorCameraPerformanceSummary summary;
     summary.metadata = std::move(metadata);
     summary.measuredFrameMs = std::move(measuredFrameMs);
+    summary.settleFrameMs = std::move(settleFrameMs);
     summary.telemetryDelta = CalculateEditorCameraPerformanceTelemetryDelta(telemetryBefore, telemetryAfter);
     summary.publishedCameraStepCount = publishedCameraStepCount;
     const auto measuredFrameCount = static_cast<uint64_t>(summary.measuredFrameMs.size());
     summary.telemetryDelta.blockedPublishCount = SaturatingDelta(publishedCameraStepCount, measuredFrameCount);
 
-    if (summary.measuredFrameMs.empty())
-        return summary;
-
-    const double totalMs = std::accumulate(summary.measuredFrameMs.begin(), summary.measuredFrameMs.end(), 0.0);
-    summary.meanFrameMs = totalMs / static_cast<double>(summary.measuredFrameMs.size());
-    summary.meanFps = summary.meanFrameMs > 0.0 ? 1000.0 / summary.meanFrameMs : 0.0;
-    summary.p95FrameMs = NearestRankPercentile(summary.measuredFrameMs, 0.95);
-    summary.p99FrameMs = NearestRankPercentile(summary.measuredFrameMs, 0.99);
-    summary.maxFrameMs = *std::max_element(summary.measuredFrameMs.begin(), summary.measuredFrameMs.end());
-    summary.publicationRatio = static_cast<double>(publishedCameraStepCount) /
-        static_cast<double>(summary.measuredFrameMs.size());
+    CalculateFrameMetrics(
+        summary.measuredFrameMs,
+        summary.meanFrameMs,
+        summary.meanFps,
+        summary.p95FrameMs,
+        summary.p99FrameMs,
+        summary.maxFrameMs);
+    CalculateFrameMetrics(
+        summary.settleFrameMs,
+        summary.settleMeanFrameMs,
+        summary.settleMeanFps,
+        summary.settleP95FrameMs,
+        summary.settleP99FrameMs,
+        summary.settleMaxFrameMs);
+    if (!summary.measuredFrameMs.empty())
+    {
+        summary.publicationRatio = static_cast<double>(publishedCameraStepCount) /
+            static_cast<double>(summary.measuredFrameMs.size());
+    }
     return summary;
 }
 
@@ -201,6 +334,7 @@ bool WriteEditorCameraPerformanceSummaryJson(
         { "vsync", summary.metadata.vsync },
         { "warmupFrameCount", summary.metadata.warmupFrameCount },
         { "requestedFrameCount", summary.metadata.requestedFrameCount },
+        { "requestedSettleFrameCount", summary.metadata.requestedSettleFrameCount },
         { "projectPath", summary.metadata.projectPath },
         { "scenePath", summary.metadata.scenePath },
         { "viewportWidth", summary.metadata.viewportWidth },
@@ -208,11 +342,18 @@ bool WriteEditorCameraPerformanceSummaryJson(
         { "cameraForwardStep", summary.metadata.cameraForwardStep },
         { "measuredFrameCount", static_cast<uint64_t>(summary.measuredFrameMs.size()) },
         { "measuredFrameMs", summary.measuredFrameMs },
+        { "settleFrameCount", static_cast<uint64_t>(summary.settleFrameMs.size()) },
+        { "settleFrameMs", summary.settleFrameMs },
         { "meanFrameMs", summary.meanFrameMs },
         { "meanFps", summary.meanFps },
         { "p95FrameMs", summary.p95FrameMs },
         { "p99FrameMs", summary.p99FrameMs },
         { "maxFrameMs", summary.maxFrameMs },
+        { "settleMeanFrameMs", summary.settleMeanFrameMs },
+        { "settleMeanFps", summary.settleMeanFps },
+        { "settleP95FrameMs", summary.settleP95FrameMs },
+        { "settleP99FrameMs", summary.settleP99FrameMs },
+        { "settleMaxFrameMs", summary.settleMaxFrameMs },
         { "publishedCameraStepCount", summary.publishedCameraStepCount },
         { "publicationRatio", summary.publicationRatio },
         { "telemetryDelta", SerializeTelemetry(summary.telemetryDelta) }
@@ -242,5 +383,62 @@ bool WriteEditorCameraPerformanceSummaryJson(
     if (error != nullptr)
         error->clear();
     return true;
+}
+
+namespace
+{
+    bool g_stageTimingEnabled = false;
+    EditorCameraPerformanceStageTotals g_stageTotals;
+}
+
+const char* ToString(const EditorCameraPerformanceStage stage)
+{
+    switch (stage)
+    {
+    case EditorCameraPerformanceStage::PreUpdate: return "PreUpdate";
+    case EditorCameraPerformanceStage::SceneViewUpdate: return "SceneViewUpdate";
+    case EditorCameraPerformanceStage::EditorPanels: return "EditorPanels";
+    case EditorCameraPerformanceStage::RenderUi: return "RenderUi";
+    case EditorCameraPerformanceStage::PresentSwapchain: return "PresentSwapchain";
+    case EditorCameraPerformanceStage::SceneRender: return "SceneRender";
+    case EditorCameraPerformanceStage::SceneRenderBeginFrame: return "SceneRenderBeginFrame";
+    case EditorCameraPerformanceStage::SceneRenderDrawFrame: return "SceneRenderDrawFrame";
+    case EditorCameraPerformanceStage::SceneRenderEndFrame: return "SceneRenderEndFrame";
+    case EditorCameraPerformanceStage::SceneRenderDrain: return "SceneRenderDrain";
+    default: return "Unknown";
+    }
+}
+
+void SetEditorCameraPerformanceStageTimingEnabled(const bool enabled)
+{
+    g_stageTimingEnabled = enabled;
+}
+
+bool IsEditorCameraPerformanceStageTimingEnabled()
+{
+    return g_stageTimingEnabled;
+}
+
+void ResetEditorCameraPerformanceStageTotals()
+{
+    g_stageTotals = {};
+}
+
+void AccumulateEditorCameraPerformanceStageNs(
+    const EditorCameraPerformanceStage stage,
+    const uint64_t durationNs)
+{
+    const auto index = static_cast<size_t>(stage);
+    if (index >= EditorCameraPerformanceStageTotals::kStageCount)
+        return;
+
+    g_stageTotals.totalNs[index] += durationNs;
+    g_stageTotals.maxNs[index] = std::max(g_stageTotals.maxNs[index], durationNs);
+    ++g_stageTotals.sampleCount[index];
+}
+
+EditorCameraPerformanceStageTotals GetEditorCameraPerformanceStageTotals()
+{
+    return g_stageTotals;
 }
 }

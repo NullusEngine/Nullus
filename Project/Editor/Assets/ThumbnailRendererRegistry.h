@@ -20,6 +20,14 @@ public:
     EditorThumbnailPreviewResourcePumpResult PumpResources(
         const AssetThumbnailRequest& request) override;
     EditorThumbnailPreviewResult Render(const AssetThumbnailRequest& request) override;
+    EditorThumbnailPreviewSubmitResult SubmitPreview(
+        const AssetThumbnailRequest& request) override;
+    EditorThumbnailPreviewSubmitResult SubmitPreparedPreview(
+        const AssetThumbnailRequest& request) override;
+    std::vector<EditorThumbnailPreviewCompletedReadback> PollCompletedReadbacks(
+        size_t maxCount) override;
+    bool OrphanReadback(
+        const EditorThumbnailPreviewReadbackTicket& ticket) override;
 
 private:
     [[nodiscard]] std::shared_ptr<IEditorThumbnailPreviewRenderer> Find(

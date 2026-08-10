@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -118,7 +120,8 @@ namespace NLS::Engine::Rendering
 		virtual BackgroundPreviewDrawPrewarmResult PrewarmBackgroundPreviewDraws(
 			const Render::Data::FrameDescriptor& frameDescriptor,
 			size_t firstDrawIndex,
-			size_t maxDraws);
+			size_t maxDraws,
+			std::chrono::microseconds timeBudget = std::chrono::milliseconds(1));
 
 		virtual void DrawModelWithSingleMaterial(
 			PipelineState p_pso,

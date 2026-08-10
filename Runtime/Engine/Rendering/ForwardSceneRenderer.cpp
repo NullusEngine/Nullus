@@ -85,7 +85,8 @@ namespace NLS::Engine::Rendering
 	ForwardSceneRenderer::PrewarmBackgroundPreviewDraws(
 		const NLS::Render::Data::FrameDescriptor& frameDescriptor,
 		const size_t firstDrawIndex,
-		const size_t maxDraws)
+		const size_t maxDraws,
+		const std::chrono::microseconds timeBudget)
 	{
 		BackgroundPreviewDrawPrewarmResult result;
 		result.supported = true;
@@ -102,7 +103,7 @@ namespace NLS::Engine::Rendering
 		const auto boundedFirstDrawIndex = (std::min)(firstDrawIndex, result.totalDrawCount);
 		const auto boundedMaxDraws = (std::max)(size_t {1u}, maxDraws);
 		const auto prewarmDeadline =
-			std::chrono::steady_clock::now() + std::chrono::microseconds(1000);
+			std::chrono::steady_clock::now() + timeBudget;
 		size_t drawIndex = 0u;
 		size_t processedDrawCount = 0u;
 		auto shouldProcessDraw = [&]()

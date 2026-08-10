@@ -21,15 +21,19 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -42,6 +46,11 @@ namespace
 constexpr const char* kProjectStandardPbrShaderPath = "Assets/Engine/Shaders/ShaderLab/StandardPBR.shader";
 constexpr const char* kStartupAssetPreimportStampVersion = "8";
 constexpr const char* kStartupAssetPreimportStampPath = "Library/Editor/StartupAssetPreimport.stamp";
+constexpr std::array<uint8_t, 8u> kStartupAssetPreimportBinaryMagic {
+    'N', 'L', 'S', 'S', 'P', 'I', 'D', 'X'};
+constexpr uint32_t kStartupAssetPreimportBinarySchemaVersion = 2u;
+constexpr uint64_t kMaxStartupAssetPreimportIndexEntryCount = 4u * 1024u * 1024u;
+constexpr uint32_t kMaxStartupAssetPreimportIndexStringSize = 16u * 1024u * 1024u;
 
 struct PreparedPrefabCachePreflightSummary
 {
@@ -93,6 +102,7 @@ struct StartupAssetPreimportIndex
     std::vector<StartupAssetPreimportDirectoryEntry> sourceDirectories;
     std::vector<StartupAssetPreimportDependencyEntry> dependencies;
     std::vector<StartupAssetPreimportArtifactEntry> artifacts;
+    bool loadedFromLegacyText = false;
 };
 
 struct StartupAssetPreimportCacheAnalysis
@@ -102,8 +112,11 @@ struct StartupAssetPreimportCacheAnalysis
     std::vector<std::filesystem::path> targetedRefreshSourceAssetPaths;
     std::vector<std::string> candidatePreimportAssetPaths;
     std::vector<std::filesystem::path> currentSourceAssetPaths;
+    std::vector<StartupAssetPreimportSourceEntry> currentSources;
     std::optional<StartupAssetPreimportIndex> loadedIndex;
     bool patchLoadedIndexOnCacheHit = false;
+    bool startupCacheValidatedArtifactPayloads = false;
+    bool startupCacheValidatedManifestFreshness = false;
     StartupAssetPreimportCacheValidationProfile profile;
 };
 
@@ -111,9 +124,29 @@ struct StartupFileMetadata
 {
     std::string stamp;
     std::string fingerprint;
+    std::string fastStamp;
+};
+
+enum class StartupArtifactCacheValidationFailure
+{
+    None,
+    MetadataUnavailable,
+    ContentMismatch
+};
+
+struct StartupArtifactCacheValidationResult
+{
+    StartupArtifactCacheValidationFailure failure = StartupArtifactCacheValidationFailure::None;
+    bool needsIndexPatch = false;
+    std::string stamp;
+    std::string fastStamp;
 };
 
 bool WriteStartupAssetPreimportIndex(
+    const std::filesystem::path& stampPath,
+    const StartupAssetPreimportIndex& index);
+
+bool WriteLegacyStartupAssetPreimportIndex(
     const std::filesystem::path& stampPath,
     const StartupAssetPreimportIndex& index);
 
@@ -129,13 +162,19 @@ size_t& StartupAssetPreimportSourceEnumerationCountForTestingStorage()
     return count;
 }
 
-size_t& StartupAssetPreimportContentHashReadCountForTestingStorage()
+std::atomic_size_t& StartupAssetPreimportContentHashReadCountForTestingStorage()
 {
-    static size_t count = 0u;
+    static std::atomic_size_t count {0u};
     return count;
 }
 
-size_t& StartupAssetPreimportFileMetadataQueryCountForTestingStorage()
+std::atomic_size_t& StartupAssetPreimportFileMetadataQueryCountForTestingStorage()
+{
+    static std::atomic_size_t count {0u};
+    return count;
+}
+
+size_t& StartupAssetPreimportFastFileMetadataQueryCountForTestingStorage()
 {
     static size_t count = 0u;
     return count;
@@ -163,6 +202,47 @@ size_t& StartupAssetPreimportImporterFingerprintComputeCountForTestingStorage()
 {
     static size_t count = 0u;
     return count;
+}
+
+template<typename Function>
+void ParallelForStartupCacheItems(const size_t itemCount, Function&& function)
+{
+    if (itemCount < 2u)
+    {
+        for (size_t index = 0u; index < itemCount; ++index)
+            function(index);
+        return;
+    }
+
+    constexpr size_t kMaxStartupCacheMetadataWorkers = 8u;
+    const auto hardwareConcurrency = static_cast<size_t>(std::thread::hardware_concurrency());
+    const auto maximumWorkerCount = hardwareConcurrency == 0u
+        ? kMaxStartupCacheMetadataWorkers
+        : std::clamp(hardwareConcurrency, size_t {1u}, kMaxStartupCacheMetadataWorkers);
+    const auto workerCount = std::min(itemCount, maximumWorkerCount);
+    if (workerCount == 1u)
+    {
+        function(0u);
+        return;
+    }
+    std::atomic<size_t> nextIndex {0u};
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    for (size_t workerIndex = 0u; workerIndex < workerCount; ++workerIndex)
+    {
+        workers.emplace_back([&]()
+        {
+            while (true)
+            {
+                const auto index = nextIndex.fetch_add(1u, std::memory_order_relaxed);
+                if (index >= itemCount)
+                    return;
+                function(index);
+            }
+        });
+    }
+    for (auto& worker : workers)
+        worker.join();
 }
 
 std::optional<StartupFileMetadata> FileMetadataForStartupCache(const std::filesystem::path& path)
@@ -198,15 +278,23 @@ std::optional<StartupFileMetadata> FileMetadataForStartupCache(const std::filesy
     if (!GetFileInformationByHandleEx(handle, FileIdInfo, &fileId, sizeof(fileId)))
     {
         CloseHandle(handle);
-        return StartupFileMetadata {
+        const auto stamp =
             std::to_string(fileSize.QuadPart) + ":" +
-                std::to_string(basicInfo.LastWriteTime.QuadPart) + ":" +
-                std::to_string(basicInfo.ChangeTime.QuadPart),
-            {}
+            std::to_string(basicInfo.LastWriteTime.QuadPart) + ":" +
+            std::to_string(basicInfo.ChangeTime.QuadPart);
+        return StartupFileMetadata {
+            stamp,
+            {},
+            "fast:" + stamp
         };
     }
 
     CloseHandle(handle);
+
+    const auto stamp =
+        std::to_string(fileSize.QuadPart) + ":" +
+        std::to_string(basicInfo.LastWriteTime.QuadPart) + ":" +
+        std::to_string(basicInfo.ChangeTime.QuadPart);
 
     std::ostringstream fingerprint;
     fingerprint << "win:"
@@ -221,10 +309,9 @@ std::optional<StartupFileMetadata> FileMetadataForStartupCache(const std::filesy
         << ':' << basicInfo.LastWriteTime.QuadPart
         << ':' << basicInfo.ChangeTime.QuadPart;
     return StartupFileMetadata {
-        std::to_string(fileSize.QuadPart) + ":" +
-            std::to_string(basicInfo.LastWriteTime.QuadPart) + ":" +
-            std::to_string(basicInfo.ChangeTime.QuadPart),
-        fingerprint.str()
+        stamp,
+        fingerprint.str(),
+        "fast:" + stamp
     };
 #else
     struct stat fileStat {};
@@ -259,7 +346,8 @@ std::optional<StartupFileMetadata> FileMetadataForStartupCache(const std::filesy
         << ':' << writeNanoseconds
         << ':' << changeSeconds
         << ':' << changeNanoseconds;
-    return StartupFileMetadata {stamp.str(), fingerprint.str()};
+    const auto stampText = stamp.str();
+    return StartupFileMetadata {stampText, fingerprint.str(), "fast:" + stampText};
 #endif
 }
 
@@ -394,6 +482,7 @@ std::optional<bool> FastFileMetadataStampMatchesStartupCache(
 
 std::string FastFileMetadataStampForStartupCache(const std::filesystem::path& path)
 {
+    ++StartupAssetPreimportFastFileMetadataQueryCountForTestingStorage();
 #if defined(_WIN32)
     const HANDLE handle = CreateFileW(
         path.c_str(),
@@ -482,29 +571,10 @@ bool ArtifactPayloadContentMatchesStartupCache(
     if (expectedContentHash.rfind(kSha256Prefix, 0u) != 0u)
         return false;
 
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream)
-        return false;
     ++StartupAssetPreimportContentHashReadCountForTestingStorage();
-
-    std::vector<uint8_t> bytes;
-    std::array<char, 64u * 1024u> buffer {};
-    while (stream)
-    {
-        stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        const auto byteCount = stream.gcount();
-        if (byteCount > 0)
-        {
-            const auto oldSize = bytes.size();
-            bytes.resize(oldSize + static_cast<size_t>(byteCount));
-            std::memcpy(bytes.data() + oldSize, buffer.data(), static_cast<size_t>(byteCount));
-        }
-    }
-    if (stream.bad())
-        return false;
-
-    return expectedContentHash == std::string(kSha256Prefix) +
-        NLS::Core::Assets::BuildArtifactStorageFileName(bytes.data(), bytes.size());
+    const auto storageFileName = NLS::Core::Assets::BuildArtifactStorageFileNameFromFile(path);
+    return !storageFileName.empty() &&
+        expectedContentHash == std::string(kSha256Prefix) + storageFileName;
 }
 
 std::string ResolveStartupContentHash(
@@ -1078,23 +1148,15 @@ void CollectStartupSourceEntriesForRoot(
         if (previousByKey)
         {
             const auto previous = previousByKey->find(StartupSourceEntryKey(mountPath, relativeEditorPath));
-            if (previous == previousByKey->end() || previous->second.stamp != metadata->stamp)
-            {
-                sources.push_back({
-                    mountPath,
-                    relativeEditorPath,
-                    metadata->stamp,
-                    {},
-                    metadata->fingerprint,
-                    path
-                });
-                continue;
-            }
             contentHash = ResolveStartupContentHash(
                 path,
                 metadata->fingerprint,
-                previous->second.fingerprint,
-                previous->second.contentHash);
+                previous != previousByKey->end() ? previous->second.fingerprint : std::string {},
+                previous != previousByKey->end() ? previous->second.contentHash : std::string {});
+            if (contentHash.empty())
+            {
+                continue;
+            }
         }
         else
         {
@@ -1182,91 +1244,106 @@ std::optional<StartupSourceCollection> TryCollectStartupSourceEntriesFromIndex(
     StartupSourceCollection collection;
     collection.sourceDirectories = index.sourceDirectories;
     collection.sources.reserve(index.sources.size());
-    for (const auto& previousSource : index.sources)
+    std::vector<std::filesystem::path> sourcePaths(index.sources.size());
+    for (size_t sourceIndex = 0u; sourceIndex < index.sources.size(); ++sourceIndex)
     {
+        const auto& previousSource = index.sources[sourceIndex];
         const auto rootMount = NormalizeEditorAssetPath(previousSource.rootMount);
         const auto relativePath = NormalizeEditorAssetPath(previousSource.relativePath);
         const auto absolutePath = ResolveStartupRootMountedPath(roots, rootMount, relativePath);
         if (absolutePath.empty())
             return std::nullopt;
+        sourcePaths[sourceIndex] = absolutePath;
+    }
 
-        const auto currentStamp = FileStampForStartupCache(absolutePath);
-        if (currentStamp.empty())
-            return std::nullopt;
-
-        std::string contentHash;
-        const auto previous = previousByKey.find(StartupSourceEntryKey(rootMount, relativePath));
-        if (previous != previousByKey.end() &&
-            previous->second.stamp == currentStamp &&
-            !previous->second.contentHash.empty())
+    std::vector<std::string> currentStamps(index.sources.size());
+    ParallelForStartupCacheItems(
+        index.sources.size(),
+        [&](const size_t sourceIndex)
         {
-            collection.sources.push_back({
-                rootMount,
-                relativePath,
-                previous->second.stamp,
-                previous->second.contentHash,
-                previous->second.fingerprint,
-                absolutePath
-            });
-            continue;
-        }
+            currentStamps[sourceIndex] = FileStampForStartupCache(sourcePaths[sourceIndex]);
+        });
 
-        const auto metadata = FileMetadataForStartupCache(absolutePath);
-        if (!metadata.has_value())
-            return std::nullopt;
-
-        if (previous == previousByKey.end() || previous->second.stamp != metadata->stamp)
+    std::vector<StartupAssetPreimportSourceEntry> currentSources(index.sources.size());
+    std::atomic<bool> sourceCollectionFailed {false};
+    ParallelForStartupCacheItems(
+        index.sources.size(),
+        [&](const size_t sourceIndex)
         {
-            if (previous != previousByKey.end() &&
-                ShouldIgnoreStartupSourceTimestampOnlyChange(rootMount, relativePath))
+            const auto& previousSource = index.sources[sourceIndex];
+            const auto rootMount = NormalizeEditorAssetPath(previousSource.rootMount);
+            const auto relativePath = NormalizeEditorAssetPath(previousSource.relativePath);
+            const auto& absolutePath = sourcePaths[sourceIndex];
+
+            const auto& currentStamp = currentStamps[sourceIndex];
+            if (currentStamp.empty())
             {
-                contentHash = ResolveStartupContentHash(
-                    absolutePath,
-                    metadata->fingerprint,
-                    previous->second.fingerprint,
-                    previous->second.contentHash);
-                if (contentHash.empty())
-                    return std::nullopt;
-                if (contentHash == previous->second.contentHash)
-                {
-                    collection.sources.push_back({
-                        rootMount,
-                        relativePath,
-                        previous->second.stamp,
-                        previous->second.contentHash,
-                        previous->second.fingerprint,
-                        absolutePath
-                    });
-                    continue;
-                }
+                sourceCollectionFailed.store(true, std::memory_order_relaxed);
+                return;
             }
-            collection.sources.push_back({
+
+            const auto previous = previousByKey.find(StartupSourceEntryKey(rootMount, relativePath));
+            if (previous != previousByKey.end() &&
+                previous->second.stamp == currentStamp &&
+                !previous->second.contentHash.empty())
+            {
+                currentSources[sourceIndex] = {
+                    rootMount,
+                    relativePath,
+                    previous->second.stamp,
+                    previous->second.contentHash,
+                    previous->second.fingerprint,
+                    absolutePath
+                };
+                return;
+            }
+
+            const auto metadata = FileMetadataForStartupCache(absolutePath);
+            if (!metadata.has_value())
+            {
+                sourceCollectionFailed.store(true, std::memory_order_relaxed);
+                return;
+            }
+
+            const auto contentHash = ResolveStartupContentHash(
+                absolutePath,
+                metadata->fingerprint,
+                previous != previousByKey.end() ? previous->second.fingerprint : std::string {},
+                previous != previousByKey.end() ? previous->second.contentHash : std::string {});
+            if (contentHash.empty())
+            {
+                sourceCollectionFailed.store(true, std::memory_order_relaxed);
+                return;
+            }
+
+            if (previous != previousByKey.end() &&
+                previous->second.stamp != metadata->stamp &&
+                ShouldIgnoreStartupSourceTimestampOnlyChange(rootMount, relativePath) &&
+                contentHash == previous->second.contentHash)
+            {
+                currentSources[sourceIndex] = {
+                    rootMount,
+                    relativePath,
+                    previous->second.stamp,
+                    previous->second.contentHash,
+                    previous->second.fingerprint,
+                    absolutePath
+                };
+                return;
+            }
+
+            currentSources[sourceIndex] = {
                 rootMount,
                 relativePath,
                 metadata->stamp,
-                {},
+                contentHash,
                 metadata->fingerprint,
                 absolutePath
-            });
-            continue;
-        }
-
-        contentHash = ResolveStartupContentHash(
-            absolutePath,
-            metadata->fingerprint,
-            previous->second.fingerprint,
-            previous->second.contentHash);
-        if (contentHash.empty())
-            return std::nullopt;
-        collection.sources.push_back({
-            rootMount,
-            relativePath,
-            metadata->stamp,
-            contentHash,
-            metadata->fingerprint,
-            absolutePath
+            };
         });
-    }
+    if (sourceCollectionFailed.load(std::memory_order_relaxed))
+        return std::nullopt;
+    collection.sources = std::move(currentSources);
 
     std::sort(
         collection.sources.begin(),
@@ -1375,6 +1452,16 @@ bool SourceEntryMetadataEqual(
         lhs.contentHash == rhs.contentHash;
 }
 
+bool SourceEntryContentEqual(
+    const StartupAssetPreimportSourceEntry& lhs,
+    const StartupAssetPreimportSourceEntry& rhs)
+{
+    return lhs.rootMount == rhs.rootMount &&
+        lhs.relativePath == rhs.relativePath &&
+        !lhs.contentHash.empty() &&
+        lhs.contentHash == rhs.contentHash;
+}
+
 void SortStartupArtifactEntries(std::vector<StartupAssetPreimportArtifactEntry>& artifacts)
 {
     std::sort(
@@ -1420,10 +1507,27 @@ std::vector<StartupAssetPreimportDependencyEntry> CollectStartupDependencyEntrie
 {
     std::vector<StartupAssetPreimportDependencyEntry> dependencies;
     dependencies.reserve(index.dependencies.size());
-    for (const auto& dependency : index.dependencies)
+    std::vector<std::filesystem::path> dependencyPaths(index.dependencies.size());
+    for (size_t dependencyIndex = 0u; dependencyIndex < index.dependencies.size(); ++dependencyIndex)
     {
-        const auto absolutePath = ResolveStartupDependencyPath(projectRoot, dependency.relativePath);
-        const auto currentStamp = FileStampForStartupCache(absolutePath);
+        dependencyPaths[dependencyIndex] = ResolveStartupDependencyPath(
+            projectRoot,
+            index.dependencies[dependencyIndex].relativePath);
+    }
+
+    std::vector<std::string> currentStamps(index.dependencies.size());
+    ParallelForStartupCacheItems(
+        index.dependencies.size(),
+        [&](const size_t dependencyIndex)
+        {
+            currentStamps[dependencyIndex] = FileStampForStartupCache(dependencyPaths[dependencyIndex]);
+        });
+
+    for (size_t dependencyIndex = 0u; dependencyIndex < index.dependencies.size(); ++dependencyIndex)
+    {
+        const auto& dependency = index.dependencies[dependencyIndex];
+        const auto& absolutePath = dependencyPaths[dependencyIndex];
+        const auto& currentStamp = currentStamps[dependencyIndex];
         if (currentStamp == dependency.stamp)
         {
             dependencies.push_back({
@@ -1470,8 +1574,15 @@ std::vector<StartupAssetPreimportDependencyEntry> CollectStartupDependencyEntrie
     return dependencies;
 }
 
-void AppendStartupDependencyEntries(
-    std::vector<StartupAssetPreimportDependencyEntry>& dependencies,
+struct StartupDependencyCandidate
+{
+    std::string ownerAssetPath;
+    std::string relativePath;
+    std::filesystem::path absolutePath;
+};
+
+void AppendStartupDependencyCandidates(
+    std::vector<StartupDependencyCandidate>& candidates,
     const std::filesystem::path& projectRoot,
     const std::string& ownerAssetPath,
     const NLS::Core::Assets::ArtifactManifest& manifest)
@@ -1486,17 +1597,10 @@ void AppendStartupDependencyEntries(
             continue;
 
         const auto absolutePath = ResolveStartupDependencyPath(projectRoot, relativePath);
-        const auto metadata = FileMetadataForStartupCache(absolutePath);
-        const auto contentHash = FileContentHashForStartupCache(absolutePath);
-        if (!metadata.has_value() || contentHash.empty())
-            continue;
-
-        dependencies.push_back({
+        candidates.push_back({
             NormalizeEditorAssetPath(ownerAssetPath),
             relativePath,
-            metadata->stamp,
-            contentHash,
-            metadata->fingerprint
+            absolutePath
         });
     }
 }
@@ -1533,6 +1637,14 @@ std::optional<StartupAssetPreimportIndex> BuildStartupAssetPreimportIndex(
     if (index.artifactDatabaseStamp.empty())
         return std::nullopt;
 
+    struct ArtifactMetadataCandidate
+    {
+        std::filesystem::path absolutePath;
+        std::string relativePath;
+        std::string contentHash;
+    };
+    std::vector<ArtifactMetadataCandidate> artifactCandidates;
+    std::vector<StartupDependencyCandidate> dependencyCandidates;
     for (const auto& source : index.sources)
     {
         const auto assetPath = ToStartupEditorAssetPath(source);
@@ -1544,28 +1656,80 @@ std::optional<StartupAssetPreimportIndex> BuildStartupAssetPreimportIndex(
         const auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
         if (!manifest.has_value())
             return std::nullopt;
-        AppendStartupDependencyEntries(index.dependencies, normalizedProjectRoot, assetPath, *manifest);
+        AppendStartupDependencyCandidates(
+            dependencyCandidates,
+            normalizedProjectRoot,
+            assetPath,
+            *manifest);
 
         for (const auto& artifact : manifest->subAssets)
         {
             const auto absoluteArtifactPath = database.ResolveArtifactPathAtPath(assetPath, artifact.subAssetKey);
-            const auto metadata = FileMetadataForStartupCache(absoluteArtifactPath);
-            const auto fastStamp = FastFileMetadataStampForStartupCache(absoluteArtifactPath);
             if (absoluteArtifactPath.empty() ||
-                !metadata.has_value() ||
-                fastStamp.empty() ||
                 artifact.contentHash.empty())
             {
                 return std::nullopt;
             }
 
-            index.artifacts.push_back({
+            artifactCandidates.push_back({
+                absoluteArtifactPath,
                 NLS::Core::Assets::NormalizeAssetPath(absoluteArtifactPath).generic_string(),
-                metadata->stamp,
-                artifact.contentHash,
-                fastStamp
+                artifact.contentHash
             });
         }
+    }
+
+    std::vector<std::optional<StartupFileMetadata>> dependencyMetadata(dependencyCandidates.size());
+    std::vector<std::string> dependencyContentHashes(dependencyCandidates.size());
+    ParallelForStartupCacheItems(
+        dependencyCandidates.size(),
+        [&](const size_t dependencyIndex)
+        {
+            const auto& candidate = dependencyCandidates[dependencyIndex];
+            dependencyMetadata[dependencyIndex] = FileMetadataForStartupCache(candidate.absolutePath);
+            dependencyContentHashes[dependencyIndex] = FileContentHashForStartupCache(candidate.absolutePath);
+        });
+    index.dependencies.reserve(dependencyCandidates.size());
+    for (size_t dependencyIndex = 0u; dependencyIndex < dependencyCandidates.size(); ++dependencyIndex)
+    {
+        const auto& metadata = dependencyMetadata[dependencyIndex];
+        const auto& contentHash = dependencyContentHashes[dependencyIndex];
+        if (!metadata.has_value() || contentHash.empty())
+            continue;
+
+        const auto& candidate = dependencyCandidates[dependencyIndex];
+        index.dependencies.push_back({
+            candidate.ownerAssetPath,
+            candidate.relativePath,
+            metadata->stamp,
+            contentHash,
+            metadata->fingerprint
+        });
+    }
+
+    std::vector<std::string> artifactFastStamps(artifactCandidates.size());
+    ParallelForStartupCacheItems(
+        artifactCandidates.size(),
+        [&](const size_t artifactIndex)
+        {
+            artifactFastStamps[artifactIndex] = FastFileMetadataStampForStartupCache(
+                artifactCandidates[artifactIndex].absolutePath);
+        });
+    index.artifacts.reserve(artifactCandidates.size());
+    for (size_t artifactIndex = 0u; artifactIndex < artifactCandidates.size(); ++artifactIndex)
+    {
+        const auto& candidate = artifactCandidates[artifactIndex];
+        const auto& fastStamp = artifactFastStamps[artifactIndex];
+        constexpr std::string_view kFastStampPrefix = "fast:";
+        if (fastStamp.rfind(kFastStampPrefix, 0u) != 0u)
+            return std::nullopt;
+
+        index.artifacts.push_back({
+            candidate.relativePath,
+            fastStamp.substr(kFastStampPrefix.size()),
+            candidate.contentHash,
+            fastStamp
+        });
     }
 
     SortStartupDependencyEntries(index.dependencies);
@@ -1676,6 +1840,68 @@ bool TryPatchStartupAssetPreimportIndexForEmptyPlan(
         return false;
     }
 
+    // Cache analysis has already checked source layout, source metadata/content,
+    // dependencies, ArtifactDB, and artifact payloads. Do not hash each changed
+    // source a second time merely to update its metadata in the index.
+    if (cacheAnalysis.profile.missReason == "source-mismatch")
+    {
+        if (cacheAnalysis.currentSources.empty())
+        {
+            LogStartupIndexPatchSkipped("no-validated-current-sources");
+            return false;
+        }
+        if (cacheAnalysis.currentSources.size() != cacheAnalysis.loadedIndex->sources.size())
+        {
+            LogStartupIndexPatchSkipped("validated-source-count-mismatch");
+            return false;
+        }
+
+        std::unordered_map<std::string, const StartupAssetPreimportSourceEntry*> previousByKey;
+        previousByKey.reserve(cacheAnalysis.loadedIndex->sources.size());
+        for (const auto& source : cacheAnalysis.loadedIndex->sources)
+            previousByKey.emplace(SourceEntryKey(source), &source);
+
+        for (const auto& currentSource : cacheAnalysis.currentSources)
+        {
+            const auto previous = previousByKey.find(SourceEntryKey(currentSource));
+            if (previous == previousByKey.end())
+            {
+                LogStartupIndexPatchSkipped("validated-source-not-indexed");
+                return false;
+            }
+            if (currentSource.contentHash.empty())
+            {
+                LogStartupIndexPatchSkipped("validated-source-content-unavailable");
+                return false;
+            }
+            if (!previous->second->contentHash.empty() &&
+                previous->second->contentHash != currentSource.contentHash)
+            {
+                LogStartupIndexPatchSkipped("validated-source-content-mismatch");
+                return false;
+            }
+        }
+
+        StartupAssetPreimportIndex patchedIndex = *cacheAnalysis.loadedIndex;
+        patchedIndex.sources = cacheAnalysis.currentSources;
+        std::sort(
+            patchedIndex.sources.begin(),
+            patchedIndex.sources.end(),
+            [](const auto& lhs, const auto& rhs)
+            {
+                return std::tie(lhs.rootMount, lhs.relativePath, lhs.stamp, lhs.contentHash) <
+                    std::tie(rhs.rootMount, rhs.relativePath, rhs.stamp, rhs.contentHash);
+            });
+        if (!WriteStartupAssetPreimportIndex(stampPath, patchedIndex))
+        {
+            LogStartupIndexPatchSkipped("write-failed");
+            return false;
+        }
+
+        ++StartupAssetPreimportPatchedIndexWriteCountForTestingStorage();
+        return true;
+    }
+
     const auto normalizedProjectRoot = NLS::Core::Assets::NormalizeAssetPath(projectRoot);
     if (normalizedProjectRoot.empty())
     {
@@ -1761,20 +1987,330 @@ bool TryPatchStartupAssetPreimportIndexForEmptyPlan(
     return true;
 }
 
-std::optional<StartupAssetPreimportIndex> LoadStartupAssetPreimportIndex(
+void AppendStartupIndexUInt32(std::vector<uint8_t>& bytes, const uint32_t value)
+{
+    for (size_t byteIndex = 0u; byteIndex < sizeof(value); ++byteIndex)
+        bytes.push_back(static_cast<uint8_t>((value >> (byteIndex * 8u)) & 0xffu));
+}
+
+void AppendStartupIndexUInt64(std::vector<uint8_t>& bytes, const uint64_t value)
+{
+    for (size_t byteIndex = 0u; byteIndex < sizeof(value); ++byteIndex)
+        bytes.push_back(static_cast<uint8_t>((value >> (byteIndex * 8u)) & 0xffu));
+}
+
+bool AppendStartupIndexString(std::vector<uint8_t>& bytes, const std::string_view value)
+{
+    if (value.size() > kMaxStartupAssetPreimportIndexStringSize)
+        return false;
+
+    AppendStartupIndexUInt32(bytes, static_cast<uint32_t>(value.size()));
+    bytes.insert(bytes.end(), value.begin(), value.end());
+    return true;
+}
+
+class StartupIndexBinaryReader final
+{
+public:
+    explicit StartupIndexBinaryReader(const std::vector<uint8_t>& bytes)
+        : m_bytes(bytes)
+    {
+    }
+
+    bool Skip(const size_t size)
+    {
+        if (size > m_bytes.size() - m_offset)
+            return false;
+        m_offset += size;
+        return true;
+    }
+
+    bool ReadUInt32(uint32_t& value)
+    {
+        if (sizeof(value) > m_bytes.size() - m_offset)
+            return false;
+
+        value = 0u;
+        for (size_t byteIndex = 0u; byteIndex < sizeof(value); ++byteIndex)
+            value |= static_cast<uint32_t>(m_bytes[m_offset + byteIndex]) << (byteIndex * 8u);
+        m_offset += sizeof(value);
+        return true;
+    }
+
+    bool ReadUInt64(uint64_t& value)
+    {
+        if (sizeof(value) > m_bytes.size() - m_offset)
+            return false;
+
+        value = 0u;
+        for (size_t byteIndex = 0u; byteIndex < sizeof(value); ++byteIndex)
+            value |= static_cast<uint64_t>(m_bytes[m_offset + byteIndex]) << (byteIndex * 8u);
+        m_offset += sizeof(value);
+        return true;
+    }
+
+    bool ReadString(std::string& value)
+    {
+        uint32_t size = 0u;
+        if (!ReadUInt32(size) ||
+            size > kMaxStartupAssetPreimportIndexStringSize ||
+            size > m_bytes.size() - m_offset)
+        {
+            return false;
+        }
+
+        value.assign(
+            reinterpret_cast<const char*>(m_bytes.data() + m_offset),
+            static_cast<size_t>(size));
+        m_offset += size;
+        return true;
+    }
+
+    bool IsAtEnd() const
+    {
+        return m_offset == m_bytes.size();
+    }
+
+private:
+    const std::vector<uint8_t>& m_bytes;
+    size_t m_offset = 0u;
+};
+
+bool IsStartupAssetPreimportBinaryIndex(const std::vector<uint8_t>& bytes)
+{
+    return bytes.size() >= kStartupAssetPreimportBinaryMagic.size() &&
+        std::equal(
+            kStartupAssetPreimportBinaryMagic.begin(),
+            kStartupAssetPreimportBinaryMagic.end(),
+            bytes.begin());
+}
+
+bool ReadStartupIndexEntryCount(StartupIndexBinaryReader& reader, size_t& count)
+{
+    uint64_t storedCount = 0u;
+    if (!reader.ReadUInt64(storedCount) ||
+        storedCount > kMaxStartupAssetPreimportIndexEntryCount ||
+        storedCount > std::numeric_limits<size_t>::max())
+    {
+        return false;
+    }
+
+    count = static_cast<size_t>(storedCount);
+    return true;
+}
+
+std::optional<std::vector<uint8_t>> SerializeStartupAssetPreimportIndex(
+    const StartupAssetPreimportIndex& index)
+{
+    if (index.sources.size() > kMaxStartupAssetPreimportIndexEntryCount ||
+        index.sourceDirectories.size() > kMaxStartupAssetPreimportIndexEntryCount ||
+        index.dependencies.size() > kMaxStartupAssetPreimportIndexEntryCount ||
+        index.artifacts.size() > kMaxStartupAssetPreimportIndexEntryCount)
+    {
+        return std::nullopt;
+    }
+
+    std::vector<uint8_t> bytes;
+    bytes.reserve(256u);
+    bytes.insert(
+        bytes.end(),
+        kStartupAssetPreimportBinaryMagic.begin(),
+        kStartupAssetPreimportBinaryMagic.end());
+    AppendStartupIndexUInt32(bytes, kStartupAssetPreimportBinarySchemaVersion);
+    if (!AppendStartupIndexString(bytes, kStartupAssetPreimportStampVersion) ||
+        !AppendStartupIndexString(bytes, index.projectRoot) ||
+        !AppendStartupIndexString(bytes, index.importerFingerprint) ||
+        !AppendStartupIndexString(bytes, index.artifactDatabaseStamp))
+    {
+        return std::nullopt;
+    }
+
+    AppendStartupIndexUInt64(bytes, index.sources.size());
+    AppendStartupIndexUInt64(bytes, index.sourceDirectories.size());
+    AppendStartupIndexUInt64(bytes, index.dependencies.size());
+    AppendStartupIndexUInt64(bytes, index.artifacts.size());
+    for (const auto& source : index.sources)
+    {
+        if (!AppendStartupIndexString(bytes, source.rootMount) ||
+            !AppendStartupIndexString(bytes, source.relativePath) ||
+            !AppendStartupIndexString(bytes, source.stamp) ||
+            !AppendStartupIndexString(bytes, source.contentHash) ||
+            !AppendStartupIndexString(bytes, source.fingerprint))
+        {
+            return std::nullopt;
+        }
+    }
+    for (const auto& directory : index.sourceDirectories)
+    {
+        if (!AppendStartupIndexString(bytes, directory.rootMount) ||
+            !AppendStartupIndexString(bytes, directory.relativePath) ||
+            !AppendStartupIndexString(bytes, directory.stamp))
+        {
+            return std::nullopt;
+        }
+    }
+    for (const auto& dependency : index.dependencies)
+    {
+        if (!AppendStartupIndexString(bytes, dependency.ownerAssetPath) ||
+            !AppendStartupIndexString(bytes, dependency.relativePath) ||
+            !AppendStartupIndexString(bytes, dependency.stamp) ||
+            !AppendStartupIndexString(bytes, dependency.contentHash) ||
+            !AppendStartupIndexString(bytes, dependency.fingerprint))
+        {
+            return std::nullopt;
+        }
+    }
+    for (const auto& artifact : index.artifacts)
+    {
+        if (!AppendStartupIndexString(bytes, artifact.relativePath) ||
+            !AppendStartupIndexString(bytes, artifact.stamp) ||
+            !AppendStartupIndexString(bytes, artifact.contentHash) ||
+            !AppendStartupIndexString(bytes, artifact.fingerprint))
+        {
+            return std::nullopt;
+        }
+    }
+    return bytes;
+}
+
+std::optional<StartupAssetPreimportIndex> LoadBinaryStartupAssetPreimportIndex(
+    const std::vector<uint8_t>& bytes,
+    const std::string* expectedProjectRoot,
+    const std::function<std::string()>& expectedImporterFingerprintProvider,
+    const std::function<std::string()>& expectedArtifactDatabaseStampProvider)
+{
+    if (!IsStartupAssetPreimportBinaryIndex(bytes))
+        return std::nullopt;
+
+    StartupIndexBinaryReader reader(bytes);
+    if (!reader.Skip(kStartupAssetPreimportBinaryMagic.size()))
+        return std::nullopt;
+
+    uint32_t schemaVersion = 0u;
+    std::string stampVersion;
+    StartupAssetPreimportIndex index;
+    if (!reader.ReadUInt32(schemaVersion) ||
+        schemaVersion != kStartupAssetPreimportBinarySchemaVersion ||
+        !reader.ReadString(stampVersion) ||
+        stampVersion != kStartupAssetPreimportStampVersion ||
+        !reader.ReadString(index.projectRoot) ||
+        !reader.ReadString(index.importerFingerprint) ||
+        !reader.ReadString(index.artifactDatabaseStamp))
+    {
+        return std::nullopt;
+    }
+
+    if (expectedProjectRoot != nullptr && index.projectRoot != *expectedProjectRoot)
+        return index;
+    if (expectedImporterFingerprintProvider &&
+        index.importerFingerprint != expectedImporterFingerprintProvider())
+    {
+        return index;
+    }
+    if (expectedArtifactDatabaseStampProvider &&
+        index.artifactDatabaseStamp != expectedArtifactDatabaseStampProvider())
+    {
+        return index;
+    }
+
+    size_t sourceCount = 0u;
+    size_t sourceDirectoryCount = 0u;
+    size_t dependencyCount = 0u;
+    size_t artifactCount = 0u;
+    if (!ReadStartupIndexEntryCount(reader, sourceCount) ||
+        !ReadStartupIndexEntryCount(reader, sourceDirectoryCount) ||
+        !ReadStartupIndexEntryCount(reader, dependencyCount) ||
+        !ReadStartupIndexEntryCount(reader, artifactCount))
+    {
+        return std::nullopt;
+    }
+
+    index.sources.reserve(sourceCount);
+    index.sourceDirectories.reserve(sourceDirectoryCount);
+    index.dependencies.reserve(dependencyCount);
+    index.artifacts.reserve(artifactCount);
+    for (size_t sourceIndex = 0u; sourceIndex < sourceCount; ++sourceIndex)
+    {
+        StartupAssetPreimportSourceEntry source;
+        if (!reader.ReadString(source.rootMount) ||
+            !reader.ReadString(source.relativePath) ||
+            !reader.ReadString(source.stamp) ||
+            !reader.ReadString(source.contentHash) ||
+            !reader.ReadString(source.fingerprint))
+        {
+            return std::nullopt;
+        }
+        index.sources.push_back(std::move(source));
+    }
+    for (size_t directoryIndex = 0u; directoryIndex < sourceDirectoryCount; ++directoryIndex)
+    {
+        StartupAssetPreimportDirectoryEntry directory;
+        if (!reader.ReadString(directory.rootMount) ||
+            !reader.ReadString(directory.relativePath) ||
+            !reader.ReadString(directory.stamp))
+        {
+            return std::nullopt;
+        }
+        index.sourceDirectories.push_back(std::move(directory));
+    }
+    for (size_t dependencyIndex = 0u; dependencyIndex < dependencyCount; ++dependencyIndex)
+    {
+        StartupAssetPreimportDependencyEntry dependency;
+        if (!reader.ReadString(dependency.ownerAssetPath) ||
+            !reader.ReadString(dependency.relativePath) ||
+            !reader.ReadString(dependency.stamp) ||
+            !reader.ReadString(dependency.contentHash) ||
+            !reader.ReadString(dependency.fingerprint))
+        {
+            return std::nullopt;
+        }
+        index.dependencies.push_back(std::move(dependency));
+    }
+    for (size_t artifactIndex = 0u; artifactIndex < artifactCount; ++artifactIndex)
+    {
+        StartupAssetPreimportArtifactEntry artifact;
+        if (!reader.ReadString(artifact.relativePath) ||
+            !reader.ReadString(artifact.stamp) ||
+            !reader.ReadString(artifact.contentHash) ||
+            !reader.ReadString(artifact.fingerprint))
+        {
+            return std::nullopt;
+        }
+        index.artifacts.push_back(std::move(artifact));
+    }
+    if (!reader.IsAtEnd() ||
+        index.projectRoot.empty() ||
+        index.importerFingerprint.empty() ||
+        index.artifactDatabaseStamp.empty())
+    {
+        return std::nullopt;
+    }
+
+    std::sort(
+        index.sourceDirectories.begin(),
+        index.sourceDirectories.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            return std::tie(lhs.rootMount, lhs.relativePath, lhs.stamp) <
+                std::tie(rhs.rootMount, rhs.relativePath, rhs.stamp);
+        });
+    SortStartupDependencyEntries(index.dependencies);
+    SortStartupArtifactEntries(index.artifacts);
+    return index;
+}
+
+std::optional<StartupAssetPreimportIndex> LoadLegacyStartupAssetPreimportIndex(
     const std::filesystem::path& stampPath,
     const std::string* expectedProjectRoot = nullptr,
     const std::function<std::string()>& expectedImporterFingerprintProvider = {},
     const std::function<std::string()>& expectedArtifactDatabaseStampProvider = {})
 {
-#if defined(NLS_ENABLE_TEST_HOOKS)
-    ++StartupAssetPreimportIndexLoadCountForTestingStorage();
-#endif
     std::ifstream input(stampPath, std::ios::binary);
     if (!input)
         return std::nullopt;
 
     StartupAssetPreimportIndex index;
+    index.loadedFromLegacyText = true;
     bool sawVersion = false;
     bool sawEnd = false;
     std::optional<size_t> expectedSourceCount;
@@ -1838,7 +2374,7 @@ std::optional<StartupAssetPreimportIndex> LoadStartupAssetPreimportIndex(
         {
             size_t count = 0u;
             stream >> count;
-            if (stream.fail())
+            if (stream.fail() || count > kMaxStartupAssetPreimportIndexEntryCount)
                 return std::nullopt;
             expectedSourceCount = count;
             index.sources.reserve(count);
@@ -1847,7 +2383,7 @@ std::optional<StartupAssetPreimportIndex> LoadStartupAssetPreimportIndex(
         {
             size_t count = 0u;
             stream >> count;
-            if (stream.fail())
+            if (stream.fail() || count > kMaxStartupAssetPreimportIndexEntryCount)
                 return std::nullopt;
             expectedDependencyCount = count;
             index.dependencies.reserve(count);
@@ -1856,7 +2392,7 @@ std::optional<StartupAssetPreimportIndex> LoadStartupAssetPreimportIndex(
         {
             size_t count = 0u;
             stream >> count;
-            if (stream.fail())
+            if (stream.fail() || count > kMaxStartupAssetPreimportIndexEntryCount)
                 return std::nullopt;
             expectedSourceDirectoryCount = count;
             index.sourceDirectories.reserve(count);
@@ -1865,7 +2401,7 @@ std::optional<StartupAssetPreimportIndex> LoadStartupAssetPreimportIndex(
         {
             size_t count = 0u;
             stream >> count;
-            if (stream.fail())
+            if (stream.fail() || count > kMaxStartupAssetPreimportIndexEntryCount)
                 return std::nullopt;
             expectedArtifactCount = count;
             index.artifacts.reserve(count);
@@ -1957,7 +2493,7 @@ std::optional<StartupAssetPreimportIndex> LoadStartupAssetPreimportIndex(
     return index;
 }
 
-bool WriteStartupAssetPreimportIndex(
+bool WriteLegacyStartupAssetPreimportIndex(
     const std::filesystem::path& stampPath,
     const StartupAssetPreimportIndex& index)
 {
@@ -2054,14 +2590,113 @@ bool WriteStartupAssetPreimportIndex(
     return true;
 }
 
+std::optional<StartupAssetPreimportIndex> LoadStartupAssetPreimportIndex(
+    const std::filesystem::path& stampPath,
+    const std::string* expectedProjectRoot = nullptr,
+    const std::function<std::string()>& expectedImporterFingerprintProvider = {},
+    const std::function<std::string()>& expectedArtifactDatabaseStampProvider = {})
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++StartupAssetPreimportIndexLoadCountForTestingStorage();
+#endif
+    std::ifstream input(stampPath, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    std::array<uint8_t, kStartupAssetPreimportBinaryMagic.size()> prefix {};
+    input.read(reinterpret_cast<char*>(prefix.data()), static_cast<std::streamsize>(prefix.size()));
+    const bool isBinary = input.gcount() == static_cast<std::streamsize>(prefix.size()) &&
+        std::equal(prefix.begin(), prefix.end(), kStartupAssetPreimportBinaryMagic.begin());
+    if (!isBinary)
+    {
+        return LoadLegacyStartupAssetPreimportIndex(
+            stampPath,
+            expectedProjectRoot,
+            expectedImporterFingerprintProvider,
+            expectedArtifactDatabaseStampProvider);
+    }
+
+    input.clear();
+    input.seekg(0, std::ios::beg);
+    std::vector<uint8_t> bytes {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    return LoadBinaryStartupAssetPreimportIndex(
+        bytes,
+        expectedProjectRoot,
+        expectedImporterFingerprintProvider,
+        expectedArtifactDatabaseStampProvider);
+}
+
+bool WriteStartupAssetPreimportIndex(
+    const std::filesystem::path& stampPath,
+    const StartupAssetPreimportIndex& index)
+{
+    const auto serialized = SerializeStartupAssetPreimportIndex(index);
+    if (!serialized.has_value() ||
+        serialized->size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max()))
+    {
+        return false;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(stampPath.parent_path(), error);
+    if (error)
+        return false;
+
+    {
+        std::ifstream existing(stampPath, std::ios::binary);
+        if (existing)
+        {
+            const std::vector<uint8_t> existingBytes {
+                std::istreambuf_iterator<char>(existing),
+                std::istreambuf_iterator<char>()};
+            if (existingBytes == *serialized)
+                return true;
+        }
+    }
+
+    auto tempPath = stampPath;
+    tempPath += ".tmp";
+    std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+    if (!output)
+        return false;
+    output.write(
+        reinterpret_cast<const char*>(serialized->data()),
+        static_cast<std::streamsize>(serialized->size()));
+    output.close();
+    if (!output)
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+
+    error.clear();
+    std::filesystem::rename(tempPath, stampPath, error);
+    if (error)
+    {
+        error.clear();
+        std::filesystem::remove(stampPath, error);
+        error.clear();
+        std::filesystem::rename(tempPath, stampPath, error);
+    }
+    if (error)
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+    ++StartupAssetPreimportShardWriteCountForTestingStorage();
+    return true;
+}
+
 StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
     const std::filesystem::path& projectRoot,
     const std::filesystem::path& stampPath)
 {
     StartupAssetPreimportCacheAnalysis analysis;
     const auto checkBegin = std::chrono::steady_clock::now();
-    const auto metadataQueriesAtBegin = StartupAssetPreimportFileMetadataQueryCountForTestingStorage();
-    const auto contentHashReadsAtBegin = StartupAssetPreimportContentHashReadCountForTestingStorage();
+    const auto metadataQueriesAtBegin = StartupAssetPreimportFileMetadataQueryCountForTestingStorage().load();
+    const auto contentHashReadsAtBegin = StartupAssetPreimportContentHashReadCountForTestingStorage().load();
     const auto importerFingerprintComputesAtBegin =
         StartupAssetPreimportImporterFingerprintComputeCountForTestingStorage();
     const auto finishAnalysis =
@@ -2081,9 +2716,9 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - checkBegin).count());
             analysis.profile.fileMetadataQueryCount =
-                StartupAssetPreimportFileMetadataQueryCountForTestingStorage() - metadataQueriesAtBegin;
+                StartupAssetPreimportFileMetadataQueryCountForTestingStorage().load() - metadataQueriesAtBegin;
             analysis.profile.contentHashReadCount =
-                StartupAssetPreimportContentHashReadCountForTestingStorage() - contentHashReadsAtBegin;
+                StartupAssetPreimportContentHashReadCountForTestingStorage().load() - contentHashReadsAtBegin;
             analysis.profile.importerFingerprintComputeCount =
                 StartupAssetPreimportImporterFingerprintComputeCountForTestingStorage() -
                     importerFingerprintComputesAtBegin;
@@ -2139,6 +2774,7 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
         return finishMiss("index-unavailable");
     }
     analysis.loadedIndex = *index;
+    analysis.patchLoadedIndexOnCacheHit = index->loadedFromLegacyText;
     if (index->projectRoot != normalizedProjectRootString)
     {
         return finishMiss("project-root-mismatch");
@@ -2166,6 +2802,7 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
             if (fullIndex.has_value())
             {
                 analysis.loadedIndex = *fullIndex;
+                analysis.patchLoadedIndexOnCacheHit = fullIndex->loadedFromLegacyText;
                 index = fullIndex;
             }
         }
@@ -2211,52 +2848,77 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
         return finishMiss("dependency-mismatch");
     }
 
+    std::vector<StartupArtifactCacheValidationResult> artifactValidationResults(index->artifacts.size());
+    ParallelForStartupCacheItems(
+        index->artifacts.size(),
+        [&](const size_t artifactIndex)
+        {
+            const auto& artifact = index->artifacts[artifactIndex];
+            const auto absolutePath = ResolveStartupArtifactPath(normalizedProjectRoot, artifact.relativePath);
+            auto& validationResult = artifactValidationResults[artifactIndex];
+            if (artifact.fingerprint.rfind("fast:", 0u) == 0u)
+            {
+                const auto stampMatches = FastFileMetadataStampMatchesStartupCache(absolutePath, artifact.fingerprint);
+                if (!stampMatches.has_value())
+                {
+                    validationResult.failure = StartupArtifactCacheValidationFailure::MetadataUnavailable;
+                    return;
+                }
+                if (stampMatches.value())
+                    return;
+
+                const auto metadata = FileMetadataForStartupCache(absolutePath);
+                if (!metadata.has_value() || metadata->stamp.empty() || metadata->fastStamp.empty())
+                {
+                    validationResult.failure = StartupArtifactCacheValidationFailure::MetadataUnavailable;
+                    return;
+                }
+                if (!ArtifactPayloadContentMatchesStartupCache(absolutePath, artifact.contentHash))
+                {
+                    validationResult.failure = StartupArtifactCacheValidationFailure::ContentMismatch;
+                    return;
+                }
+                validationResult.needsIndexPatch = true;
+                validationResult.stamp = metadata->stamp;
+                validationResult.fastStamp = metadata->fastStamp;
+                return;
+            }
+
+            const auto metadata = FileMetadataForStartupCache(absolutePath);
+            if (!metadata.has_value() || metadata->stamp.empty() || metadata->fastStamp.empty())
+            {
+                validationResult.failure = StartupArtifactCacheValidationFailure::MetadataUnavailable;
+                return;
+            }
+            if (metadata->stamp != artifact.stamp &&
+                !ArtifactPayloadContentMatchesStartupCache(absolutePath, artifact.contentHash))
+            {
+                validationResult.failure = StartupArtifactCacheValidationFailure::ContentMismatch;
+                return;
+            }
+            validationResult.needsIndexPatch = true;
+            validationResult.stamp = metadata->stamp;
+            validationResult.fastStamp = metadata->fastStamp;
+        });
+
     bool needsFastArtifactStampPatch = false;
     StartupAssetPreimportIndex patchedFastArtifactIndex = *index;
     for (size_t artifactIndex = 0u; artifactIndex < index->artifacts.size(); ++artifactIndex)
     {
-        const auto& artifact = index->artifacts[artifactIndex];
-        const auto absolutePath = ResolveStartupArtifactPath(normalizedProjectRoot, artifact.relativePath);
-        if (artifact.fingerprint.rfind("fast:", 0u) == 0u)
+        const auto& validationResult = artifactValidationResults[artifactIndex];
+        switch (validationResult.failure)
         {
-            const auto stampMatches = FastFileMetadataStampMatchesStartupCache(absolutePath, artifact.fingerprint);
-            if (!stampMatches.has_value())
-            {
-                return finishMiss("artifact-metadata-unavailable");
-            }
-            if (!stampMatches.value())
-            {
-                const auto currentStamp = FileStampForStartupCache(absolutePath);
-                const auto fastStamp = FastFileMetadataStampForStartupCache(absolutePath);
-                if (currentStamp.empty() || fastStamp.empty())
-                    return finishMiss("artifact-metadata-unavailable");
-                if (!ArtifactPayloadContentMatchesStartupCache(absolutePath, artifact.contentHash))
-                    return finishMiss("artifact-content-mismatch");
-                patchedFastArtifactIndex.artifacts[artifactIndex].stamp = currentStamp;
-                patchedFastArtifactIndex.artifacts[artifactIndex].fingerprint = fastStamp;
-                needsFastArtifactStampPatch = true;
-            }
-            continue;
-        }
-
-        const auto currentStamp = FileStampForStartupCache(absolutePath);
-        if (currentStamp.empty())
-        {
+        case StartupArtifactCacheValidationFailure::MetadataUnavailable:
             return finishMiss("artifact-metadata-unavailable");
+        case StartupArtifactCacheValidationFailure::ContentMismatch:
+            return finishMiss("artifact-content-mismatch");
+        case StartupArtifactCacheValidationFailure::None:
+            break;
         }
-        const auto fastStamp = FastFileMetadataStampForStartupCache(absolutePath);
-        if (fastStamp.empty())
-            return finishMiss("artifact-metadata-unavailable");
-        if (currentStamp != artifact.stamp)
-        {
-            if (!ArtifactPayloadContentMatchesStartupCache(absolutePath, artifact.contentHash))
-                return finishMiss("artifact-content-mismatch");
-            patchedFastArtifactIndex.artifacts[artifactIndex].stamp = currentStamp;
-            patchedFastArtifactIndex.artifacts[artifactIndex].fingerprint = fastStamp;
-            needsFastArtifactStampPatch = true;
+        if (!validationResult.needsIndexPatch)
             continue;
-        }
-        patchedFastArtifactIndex.artifacts[artifactIndex].fingerprint = fastStamp;
+        patchedFastArtifactIndex.artifacts[artifactIndex].stamp = validationResult.stamp;
+        patchedFastArtifactIndex.artifacts[artifactIndex].fingerprint = validationResult.fastStamp;
         needsFastArtifactStampPatch = true;
     }
     logValidationStage(
@@ -2271,6 +2933,7 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
     }
 
     analysis.currentSourceAssetPaths.reserve(currentSources.size());
+    analysis.currentSources = currentSources;
     for (const auto& source : currentSources)
     {
         if (!source.absolutePath.empty() && !NLS::Core::Assets::IsMetaFilePath(source.absolutePath))
@@ -2283,6 +2946,9 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
     std::vector<std::filesystem::path> sourceChangedEditorPaths;
     std::vector<std::filesystem::path> manifestAffectedAbsoluteSourcePaths;
     std::vector<std::filesystem::path> sourceChangedAbsoluteSourcePaths;
+    bool sourceContentChanged = false;
+    size_t metadataOnlySourceChangeCount = 0u;
+    size_t contentChangedSourceCount = 0u;
     if (manifestFreshnessMismatch &&
         manifestFreshnessAffectedTypes.has_value() &&
         !manifestFreshnessAffectedTypes->empty())
@@ -2309,6 +2975,8 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
             const auto previous = previousSourcesByKey.find(key);
             if (previous == previousSourcesByKey.end())
             {
+                sourceContentChanged = true;
+                ++contentChangedSourceCount;
                 const auto editorAssetPath = ToStartupEditorAssetPath(source);
                 changedPaths.push_back(editorAssetPath);
                 sourceChangedEditorPaths.push_back(editorAssetPath);
@@ -2319,6 +2987,15 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
 
             if (!SourceEntryMetadataEqual(source, previous->second))
             {
+                if (!SourceEntryContentEqual(source, previous->second))
+                {
+                    sourceContentChanged = true;
+                    ++contentChangedSourceCount;
+                }
+                else
+                {
+                    ++metadataOnlySourceChangeCount;
+                }
                 const auto editorAssetPath = ToStartupEditorAssetPath(source);
                 changedPaths.push_back(editorAssetPath);
                 sourceChangedEditorPaths.push_back(editorAssetPath);
@@ -2330,6 +3007,8 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
 
         for (const auto& [_, removedSource] : previousSourcesByKey)
         {
+            sourceContentChanged = true;
+            ++contentChangedSourceCount;
             const auto editorAssetPath = ToStartupEditorAssetPath(removedSource);
             changedPaths.push_back(editorAssetPath);
             sourceChangedEditorPaths.push_back(editorAssetPath);
@@ -2412,12 +3091,24 @@ StartupAssetPreimportCacheAnalysis AnalyzeStartupAssetPreimportCache(
             "Cache validation stage BuildTargetedRefreshPaths",
             analysis.targetedRefreshSourceAssetPaths.size());
         analysis.changedSourcePaths = std::move(changedPaths);
+        analysis.startupCacheValidatedArtifactPayloads =
+            (manifestFreshnessMismatch && !sourceEntriesChanged) ||
+            (sourceEntriesChanged && !sourceContentChanged);
+        analysis.startupCacheValidatedManifestFreshness =
+            sourceEntriesChanged && !sourceContentChanged && !manifestFreshnessMismatch;
         NLS_LOG_INFO(
             "[StartupAssetPreimport] Targeted startup miss paths: changed=" +
             std::to_string(analysis.changedSourcePaths->size()) +
             " refresh=" + std::to_string(resolvedRefreshSourcePathCount) +
             " candidates=" + std::to_string(analysis.candidatePreimportAssetPaths.size()) +
             " sourceEntriesChanged=" + std::string(sourceEntriesChanged ? "true" : "false") +
+            " sourceContentChanged=" + std::string(sourceContentChanged ? "true" : "false") +
+            " metadataOnlySources=" + std::to_string(metadataOnlySourceChangeCount) +
+            " contentChangedSources=" + std::to_string(contentChangedSourceCount) +
+            " cacheValidatedArtifacts=" +
+                std::string(analysis.startupCacheValidatedArtifactPayloads ? "true" : "false") +
+            " cacheValidatedManifestFreshness=" +
+                std::string(analysis.startupCacheValidatedManifestFreshness ? "true" : "false") +
             " sourceChangedAbs=" + std::to_string(sourceChangedAbsoluteSourcePathCount) +
             " manifestAffectedAbs=" + std::to_string(manifestAffectedAbsoluteSourcePathCount));
         if (!analysis.candidatePreimportAssetPaths.empty())
@@ -2592,9 +3283,30 @@ std::string FormatStartupAssetPreimportProgressLabel(const ImportProgressEvent& 
     return event.message + ": " + fileName + " (" + event.sourcePath + ")";
 }
 
+struct StartupAssetPreimportCacheAnalysisTask::State
+{
+    std::future<StartupAssetPreimportCacheAnalysis> future;
+};
+
+StartupAssetPreimportCacheAnalysisTask StartStartupAssetPreimportCacheAnalysis(
+    const std::filesystem::path& projectRoot)
+{
+    StartupAssetPreimportCacheAnalysisTask task;
+    task.m_state = std::make_shared<StartupAssetPreimportCacheAnalysisTask::State>();
+    const auto stampPath = GetStartupAssetPreimportStampPath(projectRoot);
+    task.m_state->future = std::async(
+        std::launch::async,
+        [projectRoot, stampPath]
+        {
+            return AnalyzeStartupAssetPreimportCache(projectRoot, stampPath);
+        });
+    return task;
+}
+
 StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
     const StartupAssetPreimportOptions& options,
-    StartupAssetPreimportProgressSink progressSink)
+    StartupAssetPreimportProgressSink progressSink,
+    StartupAssetPreimportCacheAnalysisTask* cacheAnalysisTask)
 {
     StartupAssetPreimportResult result;
     if (options.projectRoot.empty())
@@ -2608,7 +3320,31 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         "Checking startup asset cache",
         "Assets");
     const auto cacheCheckBegin = std::chrono::steady_clock::now();
-    const auto cacheAnalysis = AnalyzeStartupAssetPreimportCache(options.projectRoot, startupStampPath);
+    StartupAssetPreimportCacheAnalysis cacheAnalysis;
+    bool usedOverlappedCacheAnalysis = false;
+    if (cacheAnalysisTask != nullptr &&
+        cacheAnalysisTask->m_state != nullptr &&
+        cacheAnalysisTask->m_state->future.valid())
+    {
+        try
+        {
+            cacheAnalysis = cacheAnalysisTask->m_state->future.get();
+            usedOverlappedCacheAnalysis = true;
+        }
+        catch (const std::exception& exception)
+        {
+            NLS_LOG_WARNING(
+                "[StartupAssetPreimport] Overlapped cache analysis failed; retrying synchronously: " +
+                std::string(exception.what()));
+        }
+        catch (...)
+        {
+            NLS_LOG_WARNING(
+                "[StartupAssetPreimport] Overlapped cache analysis failed; retrying synchronously.");
+        }
+    }
+    if (!usedOverlappedCacheAnalysis)
+        cacheAnalysis = AnalyzeStartupAssetPreimportCache(options.projectRoot, startupStampPath);
     result.cacheValidationProfile = cacheAnalysis.profile;
     LogStartupCacheValidationProfile(result.cacheValidationProfile);
     if (cacheAnalysis.cacheHit)
@@ -2640,6 +3376,7 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
     LogStartupTiming("Startup asset cache miss analysis", cacheCheckBegin);
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(options.projectRoot));
+    database.SetResidentPrefabPreviewRegistry(options.residentPrefabPreviewRegistry);
     ImportProgressTracker tracker;
     tracker.Subscribe([progressSink](const ImportProgressEvent& event)
     {
@@ -2704,7 +3441,10 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
             "Importing built-in shader dependency",
             kProjectStandardPbrShaderPath);
         const auto beforeInternalImportCount = database.GetCompletedImportCount();
-        if (!database.ImportAsset(kProjectStandardPbrShaderPath))
+        if (!database.ImportAssetFromCurrentDatabase(
+                kProjectStandardPbrShaderPath,
+                tracker,
+                1u))
         {
             NLS_LOG_WARNING(
                 "[StartupAssetPreimport] Built-in StandardPBR ShaderLab artifact import failed; "
@@ -2714,18 +3454,6 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         {
             internalImportCount = database.GetCompletedImportCount() - beforeInternalImportCount;
             standardPbrDependencyReady = true;
-            const auto normalizedProjectRoot =
-                NLS::Core::Assets::NormalizeAssetPath(options.projectRoot);
-            const auto standardPbrRefreshPaths =
-                ResolveStartupChangedSourceAssetPaths(normalizedProjectRoot, {kProjectStandardPbrShaderPath});
-            const bool refreshedStandardPbrSource = !standardPbrRefreshPaths.empty() &&
-                database.RefreshKnownSourceAssets(standardPbrRefreshPaths);
-            if (!refreshedStandardPbrSource)
-            {
-                result.diagnostics = database.GetDiagnostics();
-                result.hadRunningJobsAfterCompletion = tracker.HasRunningJobs();
-                return result;
-            }
         }
     }
 
@@ -2736,15 +3464,17 @@ StartupAssetPreimportResult RunBlockingStartupAssetPreimport(
         "Planning startup asset imports",
         "Assets");
     const auto planBegin = std::chrono::steady_clock::now();
-    const auto plan = cacheAnalysis.changedSourcePaths.has_value() && !cacheAnalysis.changedSourcePaths->empty()
-        ? scheduler.BuildPlan(
-            database,
-            {
-                AssetPreimportReason::EditorStartup,
-                *cacheAnalysis.changedSourcePaths,
-                cacheAnalysis.candidatePreimportAssetPaths
-            })
-        : scheduler.BuildPlan(database, AssetPreimportReason::EditorStartup);
+    AssetPreimportRequest planRequest;
+    if (cacheAnalysis.changedSourcePaths.has_value() && !cacheAnalysis.changedSourcePaths->empty())
+    {
+        planRequest.reason = AssetPreimportReason::EditorStartup;
+        planRequest.changedPaths = *cacheAnalysis.changedSourcePaths;
+        planRequest.candidateAssetPaths = cacheAnalysis.candidatePreimportAssetPaths;
+        planRequest.startupCacheValidatedArtifactPayloads = cacheAnalysis.startupCacheValidatedArtifactPayloads;
+        planRequest.startupCacheValidatedManifestFreshness =
+            cacheAnalysis.startupCacheValidatedManifestFreshness;
+    }
+    const auto plan = scheduler.BuildPlan(database, planRequest);
     result.plannedAssetCount = plan.assetPaths.size();
     LogStartupTiming("Startup asset import planning", planBegin, result.plannedAssetCount);
     PublishStartupAssetPreimportProgress(
@@ -2843,22 +3573,32 @@ size_t GetStartupAssetPreimportSourceEnumerationCountForTesting()
 
 void ResetStartupAssetPreimportContentHashReadCountForTesting()
 {
-    StartupAssetPreimportContentHashReadCountForTestingStorage() = 0u;
+    StartupAssetPreimportContentHashReadCountForTestingStorage().store(0u);
 }
 
 size_t GetStartupAssetPreimportContentHashReadCountForTesting()
 {
-    return StartupAssetPreimportContentHashReadCountForTestingStorage();
+    return StartupAssetPreimportContentHashReadCountForTestingStorage().load();
 }
 
 void ResetStartupAssetPreimportFileMetadataQueryCountForTesting()
 {
-    StartupAssetPreimportFileMetadataQueryCountForTestingStorage() = 0u;
+    StartupAssetPreimportFileMetadataQueryCountForTestingStorage().store(0u);
 }
 
 size_t GetStartupAssetPreimportFileMetadataQueryCountForTesting()
 {
-    return StartupAssetPreimportFileMetadataQueryCountForTestingStorage();
+    return StartupAssetPreimportFileMetadataQueryCountForTestingStorage().load();
+}
+
+void ResetStartupAssetPreimportFastFileMetadataQueryCountForTesting()
+{
+    StartupAssetPreimportFastFileMetadataQueryCountForTestingStorage() = 0u;
+}
+
+size_t GetStartupAssetPreimportFastFileMetadataQueryCountForTesting()
+{
+    return StartupAssetPreimportFastFileMetadataQueryCountForTestingStorage();
 }
 
 void ResetStartupAssetPreimportShardWriteCountForTesting()
@@ -2911,6 +3651,30 @@ bool RewriteStartupAssetPreimportIndexForTesting(const std::filesystem::path& pr
     if (!startupIndex.has_value())
         return false;
     return WriteStartupAssetPreimportIndex(GetStartupAssetPreimportStampPath(projectRoot), *startupIndex);
+}
+
+bool RewriteStartupAssetPreimportIndexAsLegacyTextForTesting(const std::filesystem::path& projectRoot)
+{
+    AssetDatabaseFacade database(MakeProjectEditorAssetRoots(projectRoot));
+    if (!database.Refresh())
+        return false;
+
+    const auto startupIndex = BuildStartupAssetPreimportIndex(projectRoot, database);
+    if (!startupIndex.has_value())
+        return false;
+    return WriteLegacyStartupAssetPreimportIndex(GetStartupAssetPreimportStampPath(projectRoot), *startupIndex);
+}
+
+bool IsStartupAssetPreimportIndexBinaryForTesting(const std::filesystem::path& stampPath)
+{
+    std::ifstream input(stampPath, std::ios::binary);
+    if (!input)
+        return false;
+
+    std::array<uint8_t, kStartupAssetPreimportBinaryMagic.size()> prefix {};
+    input.read(reinterpret_cast<char*>(prefix.data()), static_cast<std::streamsize>(prefix.size()));
+    return input.gcount() == static_cast<std::streamsize>(prefix.size()) &&
+        std::equal(prefix.begin(), prefix.end(), kStartupAssetPreimportBinaryMagic.begin());
 }
 #endif
 }

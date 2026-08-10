@@ -618,7 +618,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         set(_meta_parser_launcher "${CMAKE_CURRENT_BINARY_DIR}/${_target_name}_run_metaparser_$<CONFIG>.cmd")
         file(GENERATE
             OUTPUT "${_meta_parser_launcher}"
-            CONTENT "@echo off\nsetlocal\nset \"PATH=${_meta_parser_path_prefix};%PATH%\"\nif not exist \"${_meta_parser_libclang_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_libclang_native} & exit /b 5\nif not exist \"${_meta_parser_clangsharp_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_clangsharp_native} & exit /b 5\n\"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" \"%~1\"\nexit /b %ERRORLEVEL%\n"
+            CONTENT "@echo off\nsetlocal\nset \"Path=${_meta_parser_path_prefix};%Path%\"\nif not exist \"${_meta_parser_libclang_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_libclang_native} & exit /b 5\nif not exist \"${_meta_parser_clangsharp_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_clangsharp_native} & exit /b 5\n\"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" \"%~1\"\nexit /b %ERRORLEVEL%\n"
         )
         set(_meta_parser_command "${_meta_parser_launcher}")
     elseif(APPLE)
@@ -684,7 +684,10 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     endif()
 
     add_custom_command(
-        OUTPUT "${_gen_stamp}"
+        OUTPUT
+            "${_gen_stamp}"
+            "${_gen_cpp}"
+            "${_gen_h}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen_dir}"
         COMMAND ${CMAKE_COMMAND} -E env ${_meta_parser_env_args} "${_meta_parser_command}" "${_params_file}"
         COMMAND ${CMAKE_COMMAND} -E touch "${_gen_stamp}"
@@ -695,7 +698,6 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
             "${_params_template}"
             ${_meta_parser_tool_sources}
             ${_meta_parser_template_files}
-        BYPRODUCTS "${_gen_cpp}" "${_gen_h}"
         VERBATIM
         COMMENT "Generating reflection bindings for ${_target_name}"
     )

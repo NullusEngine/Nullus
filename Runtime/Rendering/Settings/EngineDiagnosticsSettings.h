@@ -47,11 +47,25 @@ namespace NLS::Render::Settings
         std::string editorCameraPerformanceOutput;
         uint32_t editorCameraPerformanceWarmupFrames = 30u;
         uint32_t editorCameraPerformanceFrames = 300u;
+		uint32_t editorCameraPerformanceSettleFrames = 0u;
 	        std::string editorValidationCreateAsset;
 	        std::string editorValidationAssetBrowserFolder;
 	        std::string editorValidationSceneReadbackOutput;
         std::string editorValidationSceneReadbackSummary;
         std::string editorValidationPrefabDragProxySummaryOutput;
         std::string editorThumbnailTelemetrySummaryOutput;
+        // Asset Browser thumbnail feature switches. These are diagnostic
+        // overrides and do not participate in visual cache identity.
+        bool editorThumbnailResidentPrefabPreview = true;
+        bool editorThumbnailPreviewProxyPool = false;
+        bool editorThumbnailAtlas = false;
+        bool editorThumbnailReadbackRing = false;
+        bool editorThumbnailAdaptiveBudget = true;
+        // Explicit lanes remain available through the diagnostic flag, but the
+        // matched Release A/B currently shows a visible 90%-fill regression;
+        // keep the legacy selector as the production default until that tail
+        // is resolved.
+        bool editorThumbnailExplicitLanes = false;
+        std::string editorThumbnailCacheRoot;
     };
 }

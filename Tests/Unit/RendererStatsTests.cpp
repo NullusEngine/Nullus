@@ -916,6 +916,7 @@ TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerF
     first.streamingEvictCount = 12u;
     first.syncTouchedPrimitiveCount = 12u;
     first.syncFullSweepCount = 1u;
+    first.sceneRenderContentRevisionFastPathCount = 11u;
     first.boundsDirtyPrimitiveCount = 4u;
     first.primitiveSlotReuseCount = 2u;
     first.primitiveRecordsTouched = 125u;
@@ -947,6 +948,9 @@ TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerF
     first.syncTimeNs = 300u;
     first.serialVisibilityTimeNs = 400u;
     first.queueFinalizationTimeNs = 500u;
+    first.visibleDrawableBuildTimeNs = 510u;
+    first.opaqueQueueFinalizationTimeNs = 520u;
+    first.visibleObjectIndexAssignmentTimeNs = 530u;
     first.hzbBuildTimeNs = 600u;
     first.hzbHistoryPruneTouchedHandleCount = 7u;
     first.hzbHistoryPruneRemovedHandleCount = 3u;
@@ -972,6 +976,7 @@ TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerF
     second.streamingCommitCount = 9u;
     second.streamingEvictCount = 10u;
     second.syncTouchedPrimitiveCount = 2u;
+    second.sceneRenderContentRevisionFastPathCount = 4u;
     second.boundsDirtyPrimitiveCount = 1u;
     second.primitiveSlotReuseCount = 3u;
     second.primitiveRecordsTouched = 35u;
@@ -1002,6 +1007,9 @@ TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerF
     second.syncTimeNs = 50u;
     second.parallelVisibilityTimeNs = 60u;
     second.queueFinalizationTimeNs = 70u;
+    second.visibleDrawableBuildTimeNs = 80u;
+    second.opaqueQueueFinalizationTimeNs = 90u;
+    second.visibleObjectIndexAssignmentTimeNs = 100u;
     second.hzbBuildTimeNs = 80u;
     second.hzbHistoryPruneTouchedHandleCount = 2u;
     second.hzbHistoryPruneRemovedHandleCount = 1u;
@@ -1035,6 +1043,7 @@ TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerF
     EXPECT_EQ(frameInfo.largeScene.streamingEvictCount, 22u);
     EXPECT_EQ(frameInfo.largeScene.syncTouchedPrimitiveCount, 14u);
     EXPECT_EQ(frameInfo.largeScene.syncFullSweepCount, 1u);
+    EXPECT_EQ(frameInfo.largeScene.sceneRenderContentRevisionFastPathCount, 15u);
     EXPECT_EQ(frameInfo.largeScene.boundsDirtyPrimitiveCount, 5u);
     EXPECT_EQ(frameInfo.largeScene.primitiveSlotReuseCount, 5u);
     EXPECT_EQ(frameInfo.largeScene.primitiveRecordsTouched, 160u);
@@ -1067,12 +1076,21 @@ TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerF
     EXPECT_EQ(frameInfo.largeScene.serialVisibilityTimeNs, 400u);
     EXPECT_EQ(frameInfo.largeScene.parallelVisibilityTimeNs, 60u);
     EXPECT_EQ(frameInfo.largeScene.queueFinalizationTimeNs, 570u);
+    EXPECT_EQ(frameInfo.largeScene.visibleDrawableBuildTimeNs, 590u);
+    EXPECT_EQ(frameInfo.largeScene.opaqueQueueFinalizationTimeNs, 610u);
+    EXPECT_EQ(frameInfo.largeScene.visibleObjectIndexAssignmentTimeNs, 630u);
     EXPECT_EQ(frameInfo.largeScene.hzbBuildTimeNs, 680u);
     EXPECT_EQ(frameInfo.largeScene.hzbHistoryPruneTouchedHandleCount, 9u);
     EXPECT_EQ(frameInfo.largeScene.hzbHistoryPruneRemovedHandleCount, 4u);
     EXPECT_EQ(frameInfo.largeScene.hzbHistoryPruneRemovedKeyCount, 9u);
     EXPECT_EQ(frameInfo.largeScene.hzbHistoryPruneTimeNs, 46u);
     EXPECT_EQ(frameInfo.largeScene.streamingCommitTimeNs, 790u);
+
+    const auto& cumulativeFrameInfo = stats.GetCumulativeFrameInfo();
+    EXPECT_EQ(cumulativeFrameInfo.largeScene.sceneRenderContentRevisionFastPathCount, 15u);
+    EXPECT_EQ(cumulativeFrameInfo.largeScene.syncTimeNs, 350u);
+    EXPECT_EQ(cumulativeFrameInfo.largeScene.parallelVisibilityTimeNs, 60u);
+    EXPECT_EQ(cumulativeFrameInfo.largeScene.residentGpuBytes, second.residentGpuBytes);
 
     stats.BeginFrame();
     stats.EndFrame();
@@ -1085,6 +1103,7 @@ TEST(RendererStatsTests, RendererStatsAggregatesLargeSceneTelemetryAndResetsPerF
     EXPECT_EQ(resetFrameInfo.largeScene.primitiveRecordsTouched, 0u);
     EXPECT_EQ(resetFrameInfo.largeScene.allocatedPrimitiveSlotCount, 0u);
     EXPECT_EQ(resetFrameInfo.largeScene.syncSweepTouchedSlotCount, 0u);
+    EXPECT_EQ(resetFrameInfo.largeScene.sceneRenderContentRevisionFastPathCount, 0u);
     EXPECT_EQ(resetFrameInfo.largeScene.boundsDirtyPrimitiveCount, 0u);
     EXPECT_EQ(resetFrameInfo.largeScene.rawVisibleDrawCount, 0u);
     EXPECT_EQ(resetFrameInfo.largeScene.residentCpuBytes, 0u);

@@ -155,6 +155,23 @@ public:
      * @note Should be called once per frame
      */
     void Render();
+
+    // Cumulative per-stage timings inside Render(), for low-overhead diagnostics.
+    struct RenderStageCumulativeTotals
+    {
+        uint64_t sampleCount = 0u;
+        uint64_t beginFrameNs = 0u;
+        uint64_t drawCanvasNs = 0u;
+        uint64_t imguiRenderNs = 0u;
+        uint64_t publishSnapshotNs = 0u;
+        uint64_t maxBeginFrameNs = 0u;
+        uint64_t maxDrawCanvasNs = 0u;
+        uint64_t maxImguiRenderNs = 0u;
+        uint64_t maxPublishSnapshotNs = 0u;
+    };
+    const RenderStageCumulativeTotals& GetRenderStageCumulativeTotals() const { return m_renderStageTotals; }
+    void ResetRenderStageCumulativeTotals() { m_renderStageTotals = {}; }
+
     NLS::Render::RHI::NativeHandle ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void* ResolveTextureId(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void NotifySwapchainWillResize();
@@ -239,5 +256,6 @@ private:
     InfiniteDragCursorLease m_infiniteDragCursorLease;
     bool m_forcedNoMouseCursorChange = false;
     uint32_t m_customCursorControlDepth = 0;
+    RenderStageCumulativeTotals m_renderStageTotals;
 };
 } // namespace NLS::UI

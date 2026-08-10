@@ -1446,6 +1446,59 @@ TEST(RenderFrameworkContractTests, UiRgba8TextureUploadReportsFailedCompletion)
     EXPECT_EQ(completed->second.diagnostic, "upload fence failed");
 }
 
+TEST(RenderFrameworkContractTests, UiThumbnailTextureUploadPreservesNativeFormatAndBlockPitch)
+{
+    using namespace NLS::Render;
+
+    Context::DriverImpl impl;
+    impl.explicitDevice = std::make_shared<ContractDevice>();
+
+    Context::DriverImpl::PendingUiRgba8TextureUpload pending;
+    pending.requestId = 31u;
+    pending.width = 2u;
+    pending.height = 1u;
+    pending.format = RHI::TextureFormat::RGBA16F;
+    pending.rowPitch = RHI::CalculateTextureRowPitch(pending.format, pending.width);
+    pending.slicePitch = RHI::CalculateTextureSlicePitch(
+        pending.format,
+        pending.width,
+        pending.height,
+        1u);
+    pending.rgbaPixels.resize(pending.slicePitch, 0u);
+    pending.debugName = "ContractHdrThumbnailUpload";
+    impl.pendingUiRgba8TextureUploads.push_back(std::move(pending));
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto uploadContext = std::make_shared<ContractUploadContext>();
+    auto completion = std::make_shared<ContractCompletionToken>(RHI::RHICompletionStatus{
+        RHI::RHICompletionStatusCode::Success,
+        {}
+    });
+    uploadContext->nextBatchSubmission.accepted = true;
+    uploadContext->nextBatchSubmission.acceptedTextureUploads = 1u;
+    uploadContext->nextBatchSubmission.completion = completion;
+
+    RHI::RHIFrameContext frameContext;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.uploadContext = uploadContext;
+    frameContext.frameFence = std::make_shared<ContractFence>();
+
+    EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(
+        impl,
+        frameContext,
+        *commandBuffer), 1u);
+    ASSERT_EQ(uploadContext->submitBatchCalls, 1u);
+    ASSERT_NE(uploadContext->lastTextureDestination, nullptr);
+    EXPECT_EQ(
+        uploadContext->lastTextureDestination->GetDesc().format,
+        RHI::TextureFormat::RGBA16F);
+    EXPECT_EQ(uploadContext->lastTextureExtent.width, 2u);
+    EXPECT_EQ(uploadContext->lastTextureExtent.height, 1u);
+    EXPECT_EQ(uploadContext->lastTextureRowPitch, 256u);
+    EXPECT_EQ(uploadContext->lastTextureSlicePitch, 256u);
+    EXPECT_TRUE(impl.completedUiRgba8TextureUploads.empty());
+}
+
 TEST(RenderFrameworkContractTests, UiRgba8TextureUploadDoesNotSubmitWhenTextureViewCreationFails)
 {
     using namespace NLS::Render;
@@ -1521,6 +1574,37 @@ TEST(RenderFrameworkContractTests, MeshRuntimeUploadPublishesOnlyAfterRhiPump)
     ASSERT_NE(completed.mesh, nullptr);
     EXPECT_EQ(completed.mesh->GetVertexCount(), 3u);
     EXPECT_EQ(completed.mesh->GetIndexCount(), 3u);
+}
+
+TEST(RenderFrameworkContractTests, MeshRuntimeUploadRhiPumpDefersGpuMeshMaterialization)
+{
+    using namespace NLS::Render;
+
+    Context::Driver driver(MakeContractDriverSettings());
+    ScopedLocatedDriver locatedDriver(driver);
+    auto* impl = Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+    impl->explicitDevice = std::make_shared<ContractDevice>();
+
+    Context::MeshRuntimeUploadRequest request;
+    request.vertices.resize(3u);
+    request.indices = { 0u, 1u, 2u };
+    request.boundingSphere.radius = 1.0f;
+    request.debugName = "ContractDeferredMeshRuntimeUpload";
+
+    const uint64_t requestId = Context::DriverResourceAccess::RequestMeshRuntimeUpload(
+        driver,
+        std::move(request));
+    ASSERT_NE(requestId, 0u);
+
+    EXPECT_EQ(Context::Detail::RecordPendingMeshRuntimeUploads(*impl, false), 1u);
+    auto completed = Context::DriverResourceAccess::ConsumeMeshRuntimeUploadResult(driver, requestId);
+    ASSERT_TRUE(completed.ready);
+    ASSERT_TRUE(completed.success) << completed.diagnostic;
+    EXPECT_EQ(completed.mesh, nullptr);
+    ASSERT_TRUE(completed.uploadRequest.has_value());
+    EXPECT_EQ(completed.uploadRequest->vertices.size(), 3u);
+    EXPECT_EQ(completed.uploadRequest->indices.size(), 3u);
 }
 
 TEST(RenderFrameworkContractTests, MeshRuntimeUploadUsesFrameByteBudgetForMultipleSmallMeshes)
@@ -1692,6 +1776,76 @@ TEST(RenderFrameworkContractTests, UiRgba8TextureUploadCancelDuringSubmitKeepsRe
 	EXPECT_EQ(Context::Detail::RecordPendingUiRgba8TextureUploads(*impl, frameContext, *commandBuffer), 0u);
     EXPECT_TRUE(impl->recordedUiRgba8TextureUploads.empty());
     EXPECT_TRUE(impl->completedUiRgba8TextureUploads.empty());
+}
+
+TEST(RenderFrameworkContractTests, UiRgba8TextureUploadsBecomeRetryableOnDeviceReplacement)
+{
+    using namespace NLS::Render;
+
+    Context::Driver driver(MakeContractDriverSettings());
+    auto oldDevice = std::make_shared<ContractDevice>();
+    Context::DriverTestAccess::SetExplicitDevice(driver, oldDevice);
+    auto* impl = Context::DriverTestAccess::GetImplForTesting(driver);
+    ASSERT_NE(impl, nullptr);
+
+    constexpr uint64_t kCompletedRequestId = 501u;
+    constexpr uint64_t kRecordedRequestId = 502u;
+    constexpr uint64_t kPendingRequestId = 503u;
+    impl->completedUiRgba8TextureUploads[kCompletedRequestId] = {
+        true,
+        nullptr,
+        nullptr,
+        1u,
+        1u,
+        {}
+    };
+    impl->recordedUiRgba8TextureUploads.push_back({
+        kRecordedRequestId,
+        nullptr,
+        nullptr,
+        nullptr,
+        1u,
+        1u,
+        4u,
+        "RecordedThumbnailUpload"
+    });
+    impl->pendingUiRgba8TextureUploads.push_back({
+        kPendingRequestId,
+        1u,
+        1u,
+        { 255u, 0u, 0u, 255u },
+        "PendingThumbnailUpload"
+    });
+    impl->uiRgba8TextureAtlasPages.emplace(
+        "thumbnail-atlas",
+        Context::DriverImpl::UiRgba8TextureAtlasPage {
+            nullptr,
+            nullptr,
+            2048u,
+            oldDevice->GetCacheIdentity()
+        });
+
+    auto replacement = std::make_shared<ContractDevice>();
+    Context::DriverTestAccess::SetExplicitDevice(driver, replacement);
+
+    ASSERT_TRUE(impl->recordedUiRgba8TextureUploads.empty());
+    EXPECT_TRUE(impl->uiRgba8TextureAtlasPages.empty());
+    EXPECT_EQ(impl->pendingUiRgba8TextureUploads.size(), 1u)
+        << "CPU pixel requests can be replayed after the replacement device is installed.";
+
+    const auto completed = Context::DriverUIAccess::ConsumeUiRgba8TextureUploadResult(
+        driver,
+        kCompletedRequestId);
+    ASSERT_TRUE(completed.ready);
+    EXPECT_FALSE(completed.success);
+    EXPECT_NE(completed.diagnostic.find("device replacement"), std::string::npos);
+
+    const auto recorded = Context::DriverUIAccess::ConsumeUiRgba8TextureUploadResult(
+        driver,
+        kRecordedRequestId);
+    ASSERT_TRUE(recorded.ready);
+    EXPECT_FALSE(recorded.success);
+    EXPECT_NE(recorded.diagnostic.find("device replacement"), std::string::npos);
 }
 #endif
 

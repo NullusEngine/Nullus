@@ -1,13 +1,17 @@
 #pragma once
 
 #include "Assets/ArtifactManifest.h"
+#include "Assets/ArtifactWriter.h"
 #include "Assets/AssetDiagnostics.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/ImportProgressTracker.h"
+#include "Assets/ModelTextureResolutionReport.h"
+#include "Assets/PreviewRenderableSnapshot.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -35,6 +39,9 @@ struct ExternalModelImportRequest
     std::function<std::optional<NLS::Core::Assets::ArtifactManifest>(
         NLS::Core::Assets::AssetId,
         const std::string&)> loadArtifactManifest;
+    // Background preparation must never create texture metadata or artifacts.
+    bool allowAutoImportMissingTextureFiles = true;
+    bool prepareOnly = false;
 };
 
 struct ExternalModelAutoImportedDependency
@@ -49,10 +56,23 @@ struct ExternalModelAutoImportedDependency
 struct ExternalModelImportResult
 {
     bool imported = false;
+    bool prepared = false;
+    bool requiresSerialImport = false;
     NLS::Core::Assets::ArtifactManifest manifest;
     std::vector<ExternalModelAutoImportedDependency> autoImportedDependencies;
     NLS::Core::Assets::AssetDiagnostics diagnostics;
+    std::optional<NLS::Core::Assets::ArtifactWriteRequest> preparedWriteRequest;
+    std::optional<ModelTextureResolutionReport> preparedTextureResolutionReport;
+    // Complete Prefab topology retained from import preparation so a
+    // post-commit thumbnail does not deserialize the Prefab artifact again.
+    std::shared_ptr<const PreviewRenderableSnapshot> preparedPrefabPreviewSnapshot;
+    // Serialized mesh output retained only until the import thumbnail has
+    // handed each dependency to MeshManager. Nothing here is persisted.
+    std::vector<PreparedPrefabPreviewMeshPayload> preparedPrefabPreviewMeshPayloads;
 };
 
 ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequest& request);
+ExternalModelImportResult CommitPreparedExternalModelAsset(
+    const ExternalModelImportRequest& request,
+    ExternalModelImportResult preparedResult);
 }

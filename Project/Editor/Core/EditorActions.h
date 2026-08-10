@@ -66,6 +66,7 @@ namespace NLS::Editor::Core
         bool allowProgressiveRevealBeforeAllResourcesReady = false;
         bool shareSceneLoadFrameBudget = false;
         bool shareMeshArtifactLoads = false;
+        bool prioritizeMeshArtifactLoadsUntilSaturated = false;
         std::shared_ptr<const std::vector<NLS::Editor::Assets::ImportedPrefabRendererDependencyTemplate>>
             rendererDependencyTemplates;
         std::string progressTargetPlatform = kRendererResourceResolutionTargetPlatform;
@@ -73,7 +74,8 @@ namespace NLS::Editor::Core
             GetSceneLoadPrefabRendererResourceStreamingBudget();
     };
 
-    PrefabInstanceAssetResolutionOptions BuildSceneLoadPrefabResourceResolutionOptions();
+    PrefabInstanceAssetResolutionOptions BuildSceneLoadPrefabResourceResolutionOptions(
+        bool prioritizeMeshArtifactLoadsUntilSaturated = false);
     bool ShouldRevealRendererResourceResolutionObjectBeforeAllReady(
         bool rootRenderingSuppressedUntilRendererResourcesReady,
         bool allowProgressiveRevealBeforeAllResourcesReady);
@@ -81,12 +83,18 @@ namespace NLS::Editor::Core
     struct SceneLoadRendererResourceReadinessSnapshot
     {
         size_t activeStateCount = 0u;
+        size_t blockingStateCount = 0u;
         size_t pendingTaskCount = 0u;
         size_t pendingTextureLoadCount = 0u;
 
         bool HasPendingResources() const
         {
             return pendingTaskCount != 0u || pendingTextureLoadCount != 0u;
+        }
+
+        bool HasBlockingResources() const
+        {
+            return blockingStateCount != 0u;
         }
     };
 
@@ -97,6 +105,8 @@ namespace NLS::Editor::Core
     size_t GetPendingSceneLoadRendererResourceResolutionTextureLoadCount();
     size_t GetVisibleSceneLoadRendererResourceResolutionObjectCount();
     bool HasActiveSceneLoadRendererResourceResolution();
+    bool HasBlockingSceneLoadRendererResourceResolution();
+    void MarkSceneLoadRendererResourceResolutionDegradedOpen();
     void CancelSceneLoadRendererResourceResolution();
     bool BindCachedRendererResourceMaterialTexture(
         NLS::Render::Resources::Material& material,
@@ -434,7 +444,8 @@ namespace NLS::Editor::Core
 		*/
 		void LoadSceneFromDisk(const std::string& p_path, bool p_absolute = false);
 
-		bool RestorePrefabInstancesForCurrentSceneFromDisk();
+        bool RestorePrefabInstancesForCurrentSceneFromDisk(
+            bool prioritizeMeshArtifactLoadsUntilSaturated = false);
 
 		/**
 		* Returns true if the current scene has been loaded from disk

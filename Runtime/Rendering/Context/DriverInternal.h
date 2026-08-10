@@ -49,7 +49,26 @@ namespace NLS::Render::Context
             uint32_t width = 0u;
             uint32_t height = 0u;
             std::vector<uint8_t> rgbaPixels;
+            // Keep debugName before newly added atlas fields so existing
+            // aggregate initializers retain standalone-upload semantics.
             std::string debugName;
+            Render::RHI::TextureColorSpace colorSpace = Render::RHI::TextureColorSpace::Linear;
+            Render::RHI::TextureFormat format = Render::RHI::TextureFormat::RGBA8;
+            uint32_t rowPitch = 0u;
+            uint32_t slicePitch = 0u;
+            std::string atlasPageKey;
+            uint32_t atlasPageSize = 0u;
+            uint32_t atlasX = 0u;
+            uint32_t atlasY = 0u;
+        };
+
+        struct UiRgba8TextureAtlasPage
+        {
+            std::shared_ptr<Render::RHI::RHITexture> texture;
+            std::shared_ptr<Render::RHI::RHITextureView> textureView;
+            uint32_t pageSize = 0u;
+            uint64_t deviceIdentity = 0u;
+            Render::RHI::TextureColorSpace colorSpace = Render::RHI::TextureColorSpace::Linear;
         };
 
         struct CompletedUiRgba8TextureUpload
@@ -84,6 +103,7 @@ namespace NLS::Render::Context
         {
             bool success = false;
             std::unique_ptr<Render::Resources::Mesh> mesh;
+            std::optional<MeshRuntimeUploadRequest> uploadRequest;
             std::string diagnostic;
         };
 
@@ -134,11 +154,28 @@ namespace NLS::Render::Context
         std::vector<RecordedUiRgba8TextureUpload> recordedUiRgba8TextureUploads;
         std::unordered_map<uint64_t, CompletedUiRgba8TextureUpload> completedUiRgba8TextureUploads;
         std::unordered_set<uint64_t> canceledUiRgba8TextureUploadRequestIds;
+        std::unordered_map<std::string, UiRgba8TextureAtlasPage> uiRgba8TextureAtlasPages;
         mutable std::mutex pendingMeshRuntimeUploadMutex;
         uint64_t nextMeshRuntimeUploadRequestId = 1u;
         std::vector<PendingMeshRuntimeUpload> pendingMeshRuntimeUploads;
         std::unordered_map<uint64_t, CompletedMeshRuntimeUpload> completedMeshRuntimeUploads;
         std::unordered_set<uint64_t> canceledMeshRuntimeUploadRequestIds;
+        std::atomic_uint64_t meshRuntimeUploadRequestedCount{ 0u };
+        std::atomic_uint64_t meshRuntimeUploadRecordTickCount{ 0u };
+        std::atomic_uint64_t meshRuntimeUploadRhiIdleTickCount{ 0u };
+        std::atomic_uint64_t meshRuntimeUploadRecordedCount{ 0u };
+        std::atomic_uint64_t meshRuntimeUploadConsumedCount{ 0u };
+        std::atomic_uint64_t meshRuntimeUploadFailedCount{ 0u };
+        std::atomic_uint64_t meshRuntimeUploadCanceledCount{ 0u };
+        // These values are protected by pendingMeshRuntimeUploadMutex. They
+        // make request/record/consume lifetime mismatches diagnosable without
+        // logging the mesh payload or taking the upload path out of budget.
+        uint64_t meshRuntimeUploadLastRequestedId = 0u;
+        uint64_t meshRuntimeUploadLastSwappedBatchCount = 0u;
+        uint64_t meshRuntimeUploadEmptyRecordTickCount = 0u;
+        uint64_t meshRuntimeUploadLastRecordedId = 0u;
+        uint64_t meshRuntimeUploadLastConsumedId = 0u;
+        uint64_t meshRuntimeUploadLastCanceledId = 0u;
         std::function<void()> swapchainWillResizeCallback;
         std::unique_ptr<ThreadedRenderingLifecycle> threadedLifecycle;
         bool threadedWorkersRunning = false;
@@ -289,7 +326,9 @@ namespace NLS::Render::Context
             DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,
             Render::RHI::RHICommandBuffer& commandBuffer);
-        NLS_RENDER_API size_t RecordPendingMeshRuntimeUploads(DriverImpl& impl);
+        NLS_RENDER_API size_t RecordPendingMeshRuntimeUploads(
+            DriverImpl& impl,
+            bool createGpuResources = true);
         NLS_RENDER_API std::vector<ParallelCommandWorkUnit> BuildParallelCommandWorkUnits(
             const RenderScenePackage& renderScenePackage,
             bool parallelRecordingReady,

@@ -60,9 +60,17 @@ public:
         return {};
     }
 
+    NLS::Editor::Assets::EditorThumbnailPreviewSubmitResult SubmitPreparedPreview(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        ++preparedSubmitCount;
+        return {};
+    }
+
     NLS::Editor::Assets::AssetThumbnailKind kind;
     size_t pumpCount = 0u;
     size_t renderCount = 0u;
+    size_t preparedSubmitCount = 0u;
 };
 }
 
@@ -208,10 +216,13 @@ TEST(ThumbnailRendererRegistryTests, DispatchesOnlyToRendererRegisteredForAssetK
     EXPECT_TRUE(registry.Supports(modelRequest));
     EXPECT_TRUE(registry.PumpResources(modelRequest).supported);
     (void)registry.Render(modelRequest);
+    (void)registry.SubmitPreparedPreview(modelRequest);
     EXPECT_EQ(modelRenderer->pumpCount, 1u);
     EXPECT_EQ(modelRenderer->renderCount, 1u);
+    EXPECT_EQ(modelRenderer->preparedSubmitCount, 1u);
     EXPECT_EQ(materialRenderer->pumpCount, 0u);
     EXPECT_EQ(materialRenderer->renderCount, 0u);
+    EXPECT_EQ(materialRenderer->preparedSubmitCount, 0u);
 
     AssetThumbnailRequest prefabRequest;
     prefabRequest.kind = AssetThumbnailKind::PrefabPreview;

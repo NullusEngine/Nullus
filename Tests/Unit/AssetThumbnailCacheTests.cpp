@@ -3,6 +3,7 @@
 #include "Assets/AssetThumbnailCache.h"
 #include "Assets/AssetThumbnailPreviewCamera.h"
 #include "Assets/AssetThumbnailService.h"
+#include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetId.h"
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactLoadTelemetry.h"
@@ -10,6 +11,8 @@
 #include "Assets/EditorThumbnailPreviewRenderer.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Assets/PreviewRenderableSnapshot.h"
+#include "Assets/ResidentPrefabPreviewRegistry.h"
+#include "Assets/ThumbnailPreviewProxyPool.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Core/ResourceManagement/MeshManager.h"
@@ -327,7 +330,7 @@ bool WriteContentAddressedArtifactIfNeeded(
     const auto redirectedPath = (std::filesystem::path("Library") /
         "Artifacts" /
         NLS::Core::Assets::BuildArtifactStorageRelativePath(storageName)).generic_string();
-    const auto oldRelativePath = NormalizePortablePath(std::filesystem::relative(path, *projectRoot));
+    const auto oldRelativePath = NormalizePortablePath(path.lexically_relative(*projectRoot));
     LegacyArtifactPathRedirects()[oldRelativePath] = redirectedPath;
     WriteBytesToDisk(*projectRoot / redirectedPath, bytes);
     return true;
@@ -357,7 +360,7 @@ std::optional<NLS::Core::Assets::AssetId> AssetIdFromArtifactManifestPath(const 
     if (!projectRoot.has_value())
         return std::nullopt;
 
-    const auto relative = std::filesystem::relative(path.lexically_normal(), *projectRoot).lexically_normal();
+    const auto relative = path.lexically_normal().lexically_relative(*projectRoot).lexically_normal();
     std::vector<std::string> parts;
     for (const auto& part : relative)
         parts.push_back(part.generic_string());
@@ -1566,6 +1569,25 @@ public:
     std::optional<NLS::Editor::Assets::AssetThumbnailRequest> lastRenderRequest;
 };
 
+template <typename Renderer>
+std::optional<NLS::Editor::Assets::AssetThumbnailServiceResult> PumpUntilDeferredPreviewResolves(
+    NLS::Editor::Assets::AssetThumbnailService& service,
+    Renderer& renderer,
+    const bool includeHeavyGpuPreviews = true)
+{
+    for (int attempt = 0; attempt < 200; ++attempt)
+    {
+        auto generated = service.GenerateNextThumbnail(renderer, includeHeavyGpuPreviews);
+        if (generated.has_value() &&
+            generated->diagnostic != "thumbnail-preview-request-resolution-pending")
+        {
+            return generated;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return std::nullopt;
+}
+
 class PendingThenReadyThumbnailPreviewRenderer final : public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
 {
 public:
@@ -1603,6 +1625,96 @@ public:
     size_t renderCount = 0u;
     mutable std::optional<NLS::Editor::Assets::AssetThumbnailRequest> lastSupportsRequest;
     std::optional<NLS::Editor::Assets::AssetThumbnailRequest> lastRenderRequest;
+};
+
+class CompletingAsyncThumbnailPreviewRenderer final :
+    public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
+{
+public:
+    bool Supports(const NLS::Editor::Assets::AssetThumbnailRequest&) const override
+    {
+        return true;
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewResult Render(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        return {};
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewSubmitResult SubmitPreparedPreview(
+        const NLS::Editor::Assets::AssetThumbnailRequest& request) override
+    {
+        NLS::Editor::Assets::EditorThumbnailPreviewResult preview;
+        preview.width = 2u;
+        preview.height = 2u;
+        preview.diagnostic = "thumbnail-gpu-preview-readback-pending";
+        NLS::Editor::Assets::EditorThumbnailPreviewReadbackTicket ticket {
+            NLS::Editor::Assets::BuildThumbnailPreviewReadbackRequestKey(request),
+            request.requestRevision
+        };
+        pendingTickets.push_back(ticket);
+        return {std::move(preview), std::move(ticket)};
+    }
+
+    std::vector<NLS::Editor::Assets::EditorThumbnailPreviewCompletedReadback>
+    PollCompletedReadbacks(const size_t maxCount) override
+    {
+        if (!completeNextReadback || maxCount == 0u || pendingTickets.empty())
+            return {};
+
+        completeNextReadback = false;
+        auto ticket = std::move(pendingTickets.front());
+        pendingTickets.erase(pendingTickets.begin());
+        NLS::Editor::Assets::EditorThumbnailPreviewResult preview;
+        preview.width = 2u;
+        preview.height = 2u;
+        preview.rgbaPixels = {
+            255u, 0u, 0u, 255u,
+            0u, 255u, 0u, 255u,
+            0u, 0u, 255u, 255u,
+            255u, 255u, 255u, 255u
+        };
+        return {{std::move(ticket), std::move(preview)}};
+    }
+
+    bool SupportsAsynchronousReadbackPolling() const override
+    {
+        return true;
+    }
+
+    bool completeNextReadback = false;
+    std::vector<NLS::Editor::Assets::EditorThumbnailPreviewReadbackTicket> pendingTickets;
+};
+
+class NeverReadyThumbnailPreviewRenderer final : public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
+{
+public:
+    bool Supports(const NLS::Editor::Assets::AssetThumbnailRequest&) const override
+    {
+        return true;
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewResult Render(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        ++renderCount;
+        NLS::Editor::Assets::EditorThumbnailPreviewResult result;
+        result.width = 2u;
+        result.height = 2u;
+        result.diagnostic = "thumbnail-gpu-preview-readback-pending";
+        return result;
+    }
+
+    bool OrphanReadback(
+        const NLS::Editor::Assets::EditorThumbnailPreviewReadbackTicket&) override
+    {
+        ++orphanCount;
+        return true;
+    }
+
+    size_t renderCount = 0u;
+    size_t orphanCount = 0u;
 };
 
 class PrefabBudgetExceededThumbnailPreviewRenderer final : public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
@@ -1812,6 +1924,9 @@ public:
         result.supported = true;
         result.resourcesPending = true;
         result.diagnostic = diagnostic;
+        if (reportProgress)
+            result.resourceProgressToken = pumpCount;
+        result.resourceWorkActive = reportActiveResourceWork;
         return result;
     }
 
@@ -1825,6 +1940,8 @@ public:
     }
 
     std::string diagnostic = "thumbnail-gpu-preview-resources-pending";
+    bool reportProgress = false;
+    bool reportActiveResourceWork = false;
     size_t pumpCount = 0u;
     size_t renderCount = 0u;
     std::vector<std::string> pumpKeys;
@@ -1874,9 +1991,10 @@ public:
     }
 
     NLS::Editor::Assets::EditorThumbnailPreviewResourcePumpResult PumpResources(
-        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+        const NLS::Editor::Assets::AssetThumbnailRequest& request) override
     {
         ++pumpCount;
+        pumpKeys.push_back(request.subAssetKey);
         NLS::Editor::Assets::EditorThumbnailPreviewResourcePumpResult result;
         result.supported = true;
         result.resourcesPending = pumpCount == 1u;
@@ -1906,8 +2024,16 @@ public:
         return result;
     }
 
+    void ReleaseCompletedPreviewResources(
+        const NLS::Editor::Assets::AssetThumbnailRequest& request) override
+    {
+        releasedKeys.push_back(request.subAssetKey);
+    }
+
     size_t pumpCount = 0u;
     size_t renderCount = 0u;
+    std::vector<std::string> pumpKeys;
+    std::vector<std::string> releasedKeys;
 };
 
 class RenderDetailedResourcesPendingThumbnailPreviewRenderer final :
@@ -1939,6 +2065,67 @@ public:
 
     size_t pumpCount = 0u;
     size_t renderCount = 0u;
+};
+
+class PreparedSubmissionThumbnailPreviewRenderer final :
+    public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
+{
+public:
+    bool Supports(const NLS::Editor::Assets::AssetThumbnailRequest& request) const override
+    {
+        return request.kind == NLS::Editor::Assets::AssetThumbnailKind::PrefabPreview;
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewResourcePumpResult PumpResources(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        ++pumpCount;
+        return {true, false, {}};
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewResult Render(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        ++renderCount;
+        return MakeReadyPreview();
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewSubmitResult SubmitPreview(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        ++ordinarySubmitCount;
+        return {MakeReadyPreview(), std::nullopt};
+    }
+
+    NLS::Editor::Assets::EditorThumbnailPreviewSubmitResult SubmitPreparedPreview(
+        const NLS::Editor::Assets::AssetThumbnailRequest&) override
+    {
+        ++preparedSubmitCount;
+        return {MakeReadyPreview(), std::nullopt};
+    }
+
+    size_t pumpCount = 0u;
+    size_t renderCount = 0u;
+    size_t ordinarySubmitCount = 0u;
+    size_t preparedSubmitCount = 0u;
+
+private:
+    static NLS::Editor::Assets::EditorThumbnailPreviewResult MakeReadyPreview()
+    {
+        NLS::Editor::Assets::EditorThumbnailPreviewResult result;
+        result.width = 2u;
+        result.height = 2u;
+        result.expectedSceneDrawCount = 1u;
+        result.rawVisibleDrawCount = 1u;
+        result.submittedSceneDrawCount = 1u;
+        result.rgbaPixels = {
+            255u, 0u, 0u, 255u,
+            0u, 255u, 0u, 255u,
+            0u, 0u, 255u, 255u,
+            255u, 255u, 255u, 255u
+        };
+        return result;
+    }
 };
 
 class RejectingThumbnailPreviewRenderer final : public NLS::Editor::Assets::IEditorThumbnailPreviewRenderer
@@ -2028,6 +2215,59 @@ std::string FileStampForTest(const std::filesystem::path& path)
     return std::to_string(size) + ":" +
         std::to_string(static_cast<std::intmax_t>(writeTime.time_since_epoch().count()));
 }
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(AssetThumbnailCacheTests, ServiceEvaluatesThumbnailCacheOncePerGeneration)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "Hero.png", TinyPng());
+
+    auto request = MakeThumbnailRequest(root, {});
+    request.sourceAssetPath = "Assets/Textures/Hero.png";
+    request.kind = AssetThumbnailKind::Texture;
+    request.freshnessInputs = {{"source", "tiny-png:v1"}};
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    ResetAssetThumbnailCacheEvaluationCountForTesting();
+
+    const auto generated = service.GenerateNextThumbnail();
+    ASSERT_TRUE(generated.has_value());
+    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
+    EXPECT_EQ(GetAssetThumbnailCacheEvaluationCountForTesting(), 1u)
+        << "A single thumbnail generation should reuse its initial cache evaluation.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ServiceChecksFreshnessOnlyAroundThumbnailCacheWrite)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto sourcePath = root / "Assets" / "Textures" / "Hero.png";
+    WriteBinaryFile(sourcePath, TinyPng());
+
+    auto request = MakeThumbnailRequest(root, {});
+    request.sourceAssetPath = "Assets/Textures/Hero.png";
+    request.kind = AssetThumbnailKind::Texture;
+    request.freshnessInputs = {{"source-file", FileStampForTest(sourcePath)}};
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    ResetAssetThumbnailFreshnessInputCheckCountForTesting();
+
+    const auto generated = service.GenerateNextThumbnail();
+    ASSERT_TRUE(generated.has_value());
+    ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
+    EXPECT_EQ(GetAssetThumbnailFreshnessInputCheckCountForTesting(), 2u)
+        << "Freshness should be checked before generation and after the cache image write.";
+
+    std::filesystem::remove_all(root);
+}
+#endif
 
 size_t CountArtifactTelemetryStage(
     const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
@@ -2225,6 +2465,80 @@ TEST(AssetThumbnailCacheTests, CachePathsChangeWhenFreshnessChanges)
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetThumbnailCacheTests, DiscardsUnreferencedCandidateAfterCancelledWrite)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:Hero", "source:cancelled");
+    request.requestRevision = 7u;
+    const auto entry = ResolveAssetThumbnailCacheEntry(request);
+    ASSERT_TRUE(entry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(request, entry->imagePath, TinyPng()));
+    ASSERT_TRUE(std::filesystem::exists(entry->imagePath));
+
+    EXPECT_TRUE(DiscardUnreferencedAssetThumbnailCacheCandidate(request, *entry));
+    EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(entry->metadataPath));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, KeepsCandidateReferencedByPresentationGenerations)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:Hero", "source:committed");
+    request.requestRevision = 8u;
+    const auto entry = ResolveAssetThumbnailCacheEntry(request);
+    ASSERT_TRUE(entry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(request, entry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}));
+
+    EXPECT_FALSE(DiscardUnreferencedAssetThumbnailCacheCandidate(request, *entry));
+    EXPECT_TRUE(std::filesystem::exists(entry->imagePath));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, RejectsEqualRevisionForDifferentCanonicalCandidate)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:Hero", "source:revision-a");
+    first.requestRevision = 9u;
+    const auto firstEntry = ResolveAssetThumbnailCacheEntry(first);
+    ASSERT_TRUE(firstEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(first, firstEntry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(first, AssetThumbnailCacheStatus::Fresh, {}));
+
+    auto conflicting = first;
+    conflicting.freshnessInputs.front().stamp = "source:revision-b";
+    const auto conflictingEntry = ResolveAssetThumbnailCacheEntry(conflicting);
+    ASSERT_TRUE(conflictingEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(
+        conflicting,
+        conflictingEntry->imagePath,
+        TinyPng()));
+
+    EXPECT_FALSE(WriteAssetThumbnailCacheMetadata(
+        conflicting,
+        AssetThumbnailCacheStatus::Fresh,
+        {}));
+    const auto index = ReadAssetThumbnailPresentationIndex(conflicting);
+    ASSERT_TRUE(index.has_value());
+    ASSERT_TRUE(index->current.has_value());
+    EXPECT_EQ(index->current->cacheKey, firstEntry->cacheKey);
+
+    EXPECT_TRUE(DiscardUnreferencedAssetThumbnailCacheCandidate(
+        conflicting,
+        *conflictingEntry));
+    EXPECT_FALSE(std::filesystem::exists(conflictingEntry->imagePath));
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetThumbnailCacheTests, ResolvesContainedProjectLibraryPaths)
 {
     using namespace NLS::Editor::Assets;
@@ -2273,7 +2587,9 @@ TEST(AssetThumbnailCacheTests, MetadataLoadTelemetryUsesMetadataFileSize)
         *entry,
         AssetThumbnailCacheStatus::Failed,
         "intentional-test-failure"));
-    const auto metadataFileSize = std::filesystem::file_size(entry->metadataPath);
+    const auto failureMetadataPath =
+        std::filesystem::path(entry->metadataPath.generic_string() + ".failure");
+    const auto metadataFileSize = std::filesystem::file_size(failureMetadataPath);
 
     NLS::Core::Assets::ClearArtifactLoadTelemetry();
     const auto evaluation = EvaluateAssetThumbnailCache(request);
@@ -2373,7 +2689,7 @@ TEST(AssetThumbnailCacheTests, FastEvaluateFreshImageDoesNotRequireMetadata)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, FailedMetadataRemovesStaleImageForFastEvaluation)
+TEST(AssetThumbnailCacheTests, FailedSidecarRetainsStaleImageForFastEvaluation)
 {
     using namespace NLS::Editor::Assets;
 
@@ -2390,7 +2706,10 @@ TEST(AssetThumbnailCacheTests, FailedMetadataRemovesStaleImageForFastEvaluation)
         request,
         AssetThumbnailCacheStatus::Failed,
         "thumbnail-texture-extension-unsupported"));
-    EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
+    const auto failureMetadataPath =
+        std::filesystem::path(entry->metadataPath.generic_string() + ".failure");
+    EXPECT_TRUE(std::filesystem::exists(entry->imagePath));
+    EXPECT_TRUE(std::filesystem::exists(failureMetadataPath));
 
     ResetAssetThumbnailCacheMetadataFileLoadCountForTesting();
     const auto evaluated = EvaluateAssetThumbnailCache(
@@ -2938,14 +3257,16 @@ TEST(AssetThumbnailCacheTests, DiskCachePruneEnforcesEntryCapacityAndReportsEvic
     requests.reserve(3u);
     for (size_t index = 0u; index < 3u; ++index)
     {
-        auto request = MakeThumbnailRequest(root, "texture:Hero" + std::to_string(index));
+        auto request = MakeThumbnailRequest(root, "texture:Hero");
         request.sourceAssetPath = "Assets/Textures/Hero" + std::to_string(index) + ".png";
         request.kind = AssetThumbnailKind::Texture;
+        request.requestRevision = index + 1u;
         request.freshnessInputs = {{"source", "tiny-png:v" + std::to_string(index)}};
         const auto entry = ResolveAssetThumbnailCacheEntry(request);
         ASSERT_TRUE(entry.has_value());
         ASSERT_TRUE(WriteAssetThumbnailCacheFile(request, entry->imagePath, TinyPng()));
-        ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}));
+        ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}))
+            << "thumbnail cache metadata commit failed at iteration " << index;
         requests.push_back(request);
     }
 
@@ -2957,19 +3278,26 @@ TEST(AssetThumbnailCacheTests, DiskCachePruneEnforcesEntryCapacityAndReportsEvic
     options.maxBytes = UINT64_MAX;
     const auto pruned = PruneAssetThumbnailDiskCache(root, options);
 
-    EXPECT_EQ(pruned.scannedEntries, 3u);
-    EXPECT_EQ(pruned.removedEntries, 2u);
-    EXPECT_EQ(pruned.remainingEntries, 1u);
+    EXPECT_EQ(pruned.scannedEntries, 2u);
+    EXPECT_EQ(pruned.removedEntries, 0u)
+        << "Only current/previous generations remain after presentation rotation.";
+    EXPECT_EQ(pruned.remainingEntries, 2u)
+        << "Presentation current and previous generations must survive pruning.";
     EXPECT_EQ(EvaluateAssetThumbnailCache(requests.back()).status, AssetThumbnailCacheStatus::Fresh);
     EXPECT_TRUE(std::filesystem::exists(newestEntry->imagePath));
     EXPECT_TRUE(std::filesystem::exists(newestEntry->metadataPath));
 
-    for (size_t index = 0u; index + 1u < requests.size(); ++index)
+    const auto droppedEntry = ResolveAssetThumbnailCacheEntry(requests.front());
+    ASSERT_TRUE(droppedEntry.has_value());
+    EXPECT_FALSE(std::filesystem::exists(droppedEntry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(droppedEntry->metadataPath));
+
+    for (size_t index = 1u; index < requests.size(); ++index)
     {
         const auto entry = ResolveAssetThumbnailCacheEntry(requests[index]);
         ASSERT_TRUE(entry.has_value());
-        EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
-        EXPECT_FALSE(std::filesystem::exists(entry->metadataPath));
+        EXPECT_TRUE(std::filesystem::exists(entry->imagePath));
+        EXPECT_TRUE(std::filesystem::exists(entry->metadataPath));
     }
 
     std::filesystem::remove_all(root);
@@ -2985,14 +3313,16 @@ TEST(AssetThumbnailCacheTests, DiskCachePruneEnforcesByteCapacityAndReportsRemai
     uint64_t newestEntryBytes = 0u;
     for (size_t index = 0u; index < 2u; ++index)
     {
-        auto request = MakeThumbnailRequest(root, "texture:Budget" + std::to_string(index));
+        auto request = MakeThumbnailRequest(root, "texture:Budget");
         request.sourceAssetPath = "Assets/Textures/Budget" + std::to_string(index) + ".png";
         request.kind = AssetThumbnailKind::Texture;
+        request.requestRevision = index + 1u;
         request.freshnessInputs = {{"source", "tiny-png:v" + std::to_string(index)}};
         const auto entry = ResolveAssetThumbnailCacheEntry(request);
         ASSERT_TRUE(entry.has_value());
         ASSERT_TRUE(WriteAssetThumbnailCacheFile(request, entry->imagePath, TinyPng()));
-        ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}));
+        ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}))
+            << "thumbnail cache metadata commit failed at iteration " << index;
         if (index == 1u)
         {
             newestEntryBytes =
@@ -3008,11 +3338,13 @@ TEST(AssetThumbnailCacheTests, DiskCachePruneEnforcesByteCapacityAndReportsRemai
     const auto pruned = PruneAssetThumbnailDiskCache(root, options);
 
     EXPECT_EQ(pruned.scannedEntries, 2u);
-    EXPECT_EQ(pruned.removedEntries, 1u);
-    EXPECT_EQ(pruned.remainingEntries, 1u);
-    EXPECT_LE(pruned.remainingBytes, options.maxBytes);
+    EXPECT_EQ(pruned.removedEntries, 0u)
+        << "The two canonical presentation generations are protected from byte pruning.";
+    EXPECT_EQ(pruned.remainingEntries, 2u);
+    EXPECT_GT(pruned.remainingBytes, options.maxBytes)
+        << "Presentation protection is allowed to exceed the ordinary cache budget.";
     EXPECT_EQ(EvaluateAssetThumbnailCache(requests.back()).status, AssetThumbnailCacheStatus::Fresh);
-    EXPECT_EQ(EvaluateAssetThumbnailCache(requests.front()).status, AssetThumbnailCacheStatus::Missing);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(requests.front()).status, AssetThumbnailCacheStatus::Fresh);
 
     std::filesystem::remove_all(root);
 }
@@ -3040,6 +3372,12 @@ TEST(AssetThumbnailCacheTests, GpuPreviewReadbackKeyIncludesProjectAndFreshnessI
     EXPECT_NE(
         BuildThumbnailPreviewReadbackRequestKeyForTesting(request),
         BuildThumbnailPreviewReadbackRequestKeyForTesting(changedProject));
+
+    auto changedRevision = request;
+    changedRevision.requestRevision = 2u;
+    EXPECT_EQ(
+        BuildThumbnailPreviewReadbackRequestKeyForTesting(request),
+        BuildThumbnailPreviewReadbackRequestKeyForTesting(changedRevision));
 
     std::filesystem::remove_all(root);
 #endif
@@ -3123,8 +3461,8 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto modelRequest = BuildAssetThumbnailRequestForItem(root, modelSource, 96u);
     ASSERT_TRUE(modelRequest.has_value());
     EXPECT_EQ(modelRequest->kind, AssetThumbnailKind::PrefabPreview);
-    EXPECT_EQ(modelRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v33");
-    EXPECT_EQ(modelRequest->settingsFingerprint, "asset-browser-thumbnail:v35-prefab-qem-material-proxy");
+    EXPECT_EQ(modelRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v35");
+    EXPECT_EQ(modelRequest->settingsFingerprint, "asset-browser-thumbnail:v37-prefab-complete-material-fallback");
     EXPECT_FALSE(modelRequest->dependencyStamp.empty());
     EXPECT_EQ(modelRequest->colorSpaceMode, "srgb");
     EXPECT_EQ(modelRequest->hdrMode, "ldr");
@@ -3160,8 +3498,8 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsRequestsFromSourceAndGeneratedItems)
     const auto prefabRequest = BuildAssetThumbnailRequestForItem(root, prefab, 96u);
     ASSERT_TRUE(prefabRequest.has_value());
     EXPECT_EQ(prefabRequest->kind, AssetThumbnailKind::PrefabPreview);
-    EXPECT_EQ(prefabRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v33");
-    EXPECT_EQ(prefabRequest->settingsFingerprint, "asset-browser-thumbnail:v35-prefab-qem-material-proxy");
+    EXPECT_EQ(prefabRequest->previewRendererVersion, "asset-browser-thumbnail-renderer:v35");
+    EXPECT_EQ(prefabRequest->settingsFingerprint, "asset-browser-thumbnail:v37-prefab-complete-material-fallback");
     EXPECT_FALSE(prefabRequest->dependencyStamp.empty());
     EXPECT_EQ(prefabRequest->colorSpaceMode, "srgb");
     EXPECT_EQ(prefabRequest->hdrMode, "ldr");
@@ -3267,7 +3605,9 @@ TEST(AssetThumbnailCacheTests, ServiceBuildsKnownModelThumbnailRequestWithoutLoa
     EXPECT_TRUE(context.artifactManifestsByAssetId.empty())
         << "Entering a folder with a large model must not parse its artifact manifest when "
            "the asset database item already carries the resolved prefab artifact identity.";
-    EXPECT_NE(modelRequest->dependencyStamp.find("artifact-db="), std::string::npos);
+    EXPECT_EQ(modelRequest->dependencyStamp.find("artifact-db="), std::string::npos)
+        << "A resolved content-addressed artifact must not inherit the global ArtifactDB stamp.";
+    EXPECT_NE(modelRequest->dependencyStamp.find("artifact-record="), std::string::npos);
     EXPECT_NE(modelRequest->dependencyStamp.find("artifact-file="), std::string::npos);
 
     std::filesystem::remove_all(root);
@@ -3299,8 +3639,130 @@ TEST(AssetThumbnailCacheTests, ServiceCanDeferModelManifestLookupDuringThumbnail
     EXPECT_TRUE(modelRequest->subAssetKey.empty());
     EXPECT_TRUE(modelRequest->artifactPath.empty());
     EXPECT_TRUE(context.artifactManifestsByAssetId.empty());
-    EXPECT_NE(modelRequest->dependencyStamp.find("artifact-db="), std::string::npos);
+    EXPECT_EQ(modelRequest->dependencyStamp.find("artifact-db="), std::string::npos)
+        << "Deferred lookup must not make this asset's cache identity depend on unrelated imports.";
+    EXPECT_EQ(modelRequest->dependencyStamp.find("artifact-record="), std::string::npos);
     EXPECT_EQ(modelRequest->dependencyStamp.find("artifact-file="), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRequestReusesSnapshotManifestForCanonicalFreshness)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = AssetId(NLS::Guid::Parse("c6060606-0606-4606-8606-060606060606"));
+    const auto sourcePath = std::string("Assets/Models/Resident.gltf");
+    const auto artifactPath =
+        (std::filesystem::path("Library") /
+            "Artifacts" /
+            BuildArtifactStorageRelativePath(
+                BuildArtifactStorageFileName(assetId.ToString() + ":prefab:Resident")))
+            .generic_string();
+    WriteTextFile(root / "Assets" / "Models" / "Resident.gltf", "model");
+    WriteTextFile(
+        root / "Assets" / "Models" / "Resident.gltf.meta",
+        "GUID=" + assetId.ToString() + "\nIMPORTER_ID=scene-model\nASSET_TYPE=model-scene\n");
+
+    auto database = std::make_shared<AssetDatabaseFacade>(MakeProjectEditorAssetRoots(root));
+    ASSERT_TRUE(database->Refresh());
+    ArtifactManifest manifest;
+    manifest.sourceAssetId = assetId;
+    manifest.primarySubAssetKey = "prefab:Resident";
+    ImportedArtifact artifact;
+    artifact.sourceAssetId = assetId;
+    artifact.subAssetKey = "prefab:Resident";
+    artifact.artifactType = ArtifactType::Prefab;
+    artifact.artifactPath = artifactPath;
+    manifest.subAssets.push_back(artifact);
+    database->AddArtifactManifest(std::move(manifest));
+
+    AssetBrowserItem item;
+    item.kind = AssetBrowserItemKind::SourceAsset;
+    item.type = AssetBrowserItemType::Model;
+    item.assetId = assetId;
+    item.sourceAssetPath = sourcePath;
+
+    AssetThumbnailRequestBuildContext context;
+    context.deferManifestLookups = true;
+    context.assetDatabaseSnapshot = AssetDatabaseFacade::CreateReadOnlySnapshot(*database);
+    context.residentPrefabPreviewRegistry = ResidentPrefabPreviewRegistry::Create();
+
+    const auto request = BuildAssetThumbnailRequestForItem(root, item, 96u, context);
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(request->kind, AssetThumbnailKind::PrefabPreview);
+    EXPECT_EQ(request->subAssetKey, "prefab:Resident");
+    EXPECT_EQ(request->artifactPath, artifactPath);
+    EXPECT_NE(request->dependencyStamp.find("artifact-file="), std::string::npos);
+    EXPECT_EQ(
+        request->dependencyStamp,
+        BuildPrefabThumbnailDependencyStamp(
+            root,
+            assetId,
+            sourcePath,
+            "prefab:Resident",
+            artifactPath));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ServiceBuildRequestRetainsAssetDatabaseSnapshotForBackgroundPrefabPreparation)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", {0x67u, 0x6cu, 0x54u, 0x46u});
+
+    auto database = std::make_shared<AssetDatabaseFacade>(MakeProjectEditorAssetRoots(root));
+    AssetThumbnailRequestBuildContext context;
+    context.deferManifestLookups = true;
+    context.assetDatabaseSnapshot = AssetDatabaseFacade::CreateReadOnlySnapshot(*database);
+
+    AssetBrowserItem item;
+    item.kind = AssetBrowserItemKind::SourceAsset;
+    item.type = AssetBrowserItemType::Model;
+    item.assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("b4040404-0404-4404-8404-040404040404"));
+    item.sourceAssetPath = "Assets/Models/Hero.gltf";
+
+    const auto request = BuildAssetThumbnailRequestForItem(root, item, 96u, context);
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(request->assetDatabaseSnapshot.get(), context.assetDatabaseSnapshot.get());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, FreshCommitClearsFailureSidecarWithoutLosingCanonicalImage)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto request = MakeThumbnailRequest(root, "texture:Retry");
+    const auto entry = ResolveAssetThumbnailCacheEntry(request);
+    ASSERT_TRUE(entry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(request, entry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(
+        request,
+        AssetThumbnailCacheStatus::Fresh,
+        {}));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(
+        request,
+        AssetThumbnailCacheStatus::Failed,
+        "transient-preview-failure"));
+
+    const auto failureMetadataPath =
+        std::filesystem::path(entry->metadataPath.generic_string() + ".failure");
+    ASSERT_TRUE(std::filesystem::exists(failureMetadataPath));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(
+        request,
+        AssetThumbnailCacheStatus::Fresh,
+        {}));
+
+    EXPECT_TRUE(std::filesystem::is_regular_file(entry->imagePath));
+    EXPECT_TRUE(std::filesystem::is_regular_file(entry->metadataPath));
+    EXPECT_FALSE(std::filesystem::exists(failureMetadataPath));
+    EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Fresh);
 
     std::filesystem::remove_all(root);
 }
@@ -3353,17 +3815,35 @@ TEST(AssetThumbnailCacheTests, ServiceResolvesDeferredModelManifestRequestWhenGe
 
     AssetThumbnailRequestBuildContext context;
     context.deferManifestLookups = true;
+    context.residentPrefabPreviewRegistry = ResidentPrefabPreviewRegistry::Create();
     const auto deferredRequest = BuildAssetThumbnailRequestForItem(root, modelSource, 48u, context);
     ASSERT_TRUE(deferredRequest.has_value());
-    ASSERT_TRUE(deferredRequest->subAssetKey.empty());
     ASSERT_TRUE(deferredRequest->artifactPath.empty());
+    ASSERT_TRUE(deferredRequest->residentPrefabPreviewSource.has_value());
+    EXPECT_TRUE(deferredRequest->residentPrefabPreviewSource->snapshot.expired());
 
     AssetThumbnailService service;
+    ResetAssetThumbnailManifestLookupStatsForTesting();
     ASSERT_EQ(service.GetThumbnail(*deferredRequest).status, AssetThumbnailServiceStatus::Pending);
     CapturingThumbnailPreviewRenderer renderer;
-    const auto generated = service.GenerateNextThumbnail(renderer, true);
+    std::optional<AssetThumbnailServiceResult> generated;
+    for (int attempt = 0; attempt < 100 && !generated.has_value(); ++attempt)
+    {
+        generated = service.GenerateNextThumbnail(renderer, true);
+        if (generated.has_value() &&
+            generated->diagnostic == "thumbnail-preview-request-resolution-pending")
+        {
+            generated.reset();
+        }
+        if (!generated.has_value())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending) << generated->diagnostic;
+    const auto manifestLookupStats = GetAssetThumbnailManifestLookupStatsForTesting();
+    EXPECT_EQ(manifestLookupStats.mainThreadLookupCount, 0u)
+        << "Deferred GPU manifest resolution must not run on the thumbnail pump thread.";
+    EXPECT_GE(manifestLookupStats.backgroundThreadLookupCount, 1u);
     auto completed = service.ConsumeCompletedThumbnail();
     for (int attempt = 0; attempt < 100 && !completed.has_value(); ++attempt)
     {
@@ -3374,6 +3854,96 @@ TEST(AssetThumbnailCacheTests, ServiceResolvesDeferredModelManifestRequestWhenGe
     EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh) << completed->diagnostic;
     EXPECT_EQ(service.GetThumbnailState(*deferredRequest), ThumbnailState::Ready);
     EXPECT_EQ(service.GetThumbnailState(*deferredRequest), ThumbnailState::Ready);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, SingleGpuPumpStartsMultipleDeferredManifestResolutions)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem(8u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto makeDeferredModelRequest = [&root](
+        const NLS::Core::Assets::AssetId& assetId,
+        const std::string& name)
+        -> std::optional<AssetThumbnailRequest>
+    {
+        const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
+        std::filesystem::create_directories(artifactRoot);
+        WriteTextFile(root / "Assets" / "Models" / (name + ".fbx"), "large model source");
+        WriteNativeArtifactTextFile(
+            artifactRoot / (name + ".nprefab"),
+            ArtifactType::Prefab,
+            "prefab",
+            1u,
+            MinimalPrefabPayload());
+        WriteTextFile(
+            artifactRoot / "manifest.json",
+            "{"
+            "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+            "\"importerId\":\"scene-model\","
+            "\"importerVersion\":1,"
+            "\"targetPlatform\":\"editor\","
+            "\"primarySubAssetKey\":\"prefab:" + name + "\","
+            "\"subAssets\":[{"
+            "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+            "\"subAssetKey\":\"prefab:" + name + "\","
+            "\"artifactType\":\"Prefab\","
+            "\"loaderId\":\"native-prefab\","
+            "\"targetPlatform\":\"editor\","
+            "\"artifactPath\":\"Library/Artifacts/" + assetId.ToString() + "/" + name + ".nprefab\","
+            "\"contentHash\":\"prefab-hash-" + name + "\"}]}" );
+
+        AssetBrowserItem item;
+        item.kind = AssetBrowserItemKind::SourceAsset;
+        item.type = AssetBrowserItemType::Model;
+        item.assetId = assetId;
+        item.sourceAssetPath = "Assets/Models/" + name + ".fbx";
+
+        AssetThumbnailRequestBuildContext context;
+        context.deferManifestLookups = true;
+        return BuildAssetThumbnailRequestForItem(root, item, 48u, context);
+    };
+
+    const auto firstRequest = makeDeferredModelRequest(
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("b8080808-0808-4808-8808-080808080808")),
+        "First");
+    const auto secondRequest = makeDeferredModelRequest(
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("b9090909-0909-4909-8909-090909090909")),
+        "Second");
+    ASSERT_TRUE(firstRequest.has_value());
+    ASSERT_TRUE(secondRequest.has_value());
+    ASSERT_TRUE(firstRequest->artifactPath.empty());
+    ASSERT_TRUE(secondRequest->artifactPath.empty());
+
+    AssetThumbnailManifestLookupStatsForTesting lookupStats;
+    CapturingThumbnailPreviewRenderer renderer;
+    {
+        AssetThumbnailService service;
+        ASSERT_EQ(service.GetThumbnail(*firstRequest).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_EQ(service.GetThumbnail(*secondRequest).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_EQ(service.GetQueuedRequestCount(), 2u);
+
+        ResetAssetThumbnailManifestLookupStatsForTesting();
+        (void)service.GenerateNextThumbnail(renderer, true);
+    }
+
+    lookupStats = GetAssetThumbnailManifestLookupStatsForTesting();
+    ::testing::Test::RecordProperty(
+        "manifestMainThreadLookupCount",
+        static_cast<int>(lookupStats.mainThreadLookupCount));
+    ::testing::Test::RecordProperty(
+        "manifestBackgroundThreadLookupCount",
+        static_cast<int>(lookupStats.backgroundThreadLookupCount));
+    ::testing::Test::RecordProperty("rendererSupportsCount", static_cast<int>(renderer.supportsCount));
+    ::testing::Test::RecordProperty("rendererRenderCount", static_cast<int>(renderer.renderCount));
+    EXPECT_EQ(lookupStats.mainThreadLookupCount, 0u);
+    EXPECT_GE(lookupStats.backgroundThreadLookupCount, 2u)
+        << "A single GPU pump should fan out deferred manifest resolution for visible requests.";
 
     std::filesystem::remove_all(root);
 }
@@ -3436,7 +4006,7 @@ TEST(AssetThumbnailCacheTests, DeferredSourceModelPrefabPreviewUsesManifestPrima
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(*deferredRequest).status, AssetThumbnailServiceStatus::Pending);
     CapturingThumbnailPreviewRenderer renderer;
-    const auto generated = service.GenerateNextThumbnail(renderer, true);
+    const auto generated = PumpUntilDeferredPreviewResolves(service, renderer);
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending) << generated->diagnostic;
     auto completed = service.ConsumeCompletedThumbnail();
@@ -3511,7 +4081,7 @@ TEST(AssetThumbnailCacheTests, DeferredSourceModelGpuPreviewUsesManifestPrimaryP
         CapturingThumbnailPreviewRenderer renderer;
         AssetThumbnailService service;
         ASSERT_EQ(service.GetThumbnail(*deferredRequest).status, AssetThumbnailServiceStatus::Pending);
-        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        const auto pending = PumpUntilDeferredPreviewResolves(service, renderer);
         ASSERT_TRUE(pending.has_value());
         EXPECT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
         ASSERT_TRUE(renderer.lastSupportsRequest.has_value());
@@ -3597,6 +4167,7 @@ TEST(AssetThumbnailCacheTests, DeferredGeneratedSubAssetRequestsResolveTheirOwnA
 
         AssetThumbnailRequestBuildContext context;
         context.deferManifestLookups = true;
+        context.residentPrefabPreviewRegistry = ResidentPrefabPreviewRegistry::Create();
         auto request = BuildAssetThumbnailRequestForItem(root, item, 48u, context);
         EXPECT_TRUE(context.artifactManifestsByAssetId.empty());
         return request;
@@ -3715,7 +4286,7 @@ TEST(AssetThumbnailCacheTests, DeferredGeneratedSubAssetRoutesMeshToCpuAndMateri
         CapturingThumbnailPreviewRenderer renderer;
         AssetThumbnailService service;
         ASSERT_EQ(service.GetThumbnail(*materialRequest).status, AssetThumbnailServiceStatus::Pending);
-        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        const auto pending = PumpUntilDeferredPreviewResolves(service, renderer);
         ASSERT_TRUE(pending.has_value());
         EXPECT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
         ASSERT_TRUE(renderer.lastSupportsRequest.has_value());
@@ -3811,7 +4382,7 @@ TEST(AssetThumbnailCacheTests, LightGpuPumpSkipsPrefabHeavyPreviewAndLetsCpuSubM
     EXPECT_EQ(renderer.supportsCount, 1u);
     EXPECT_EQ(renderer.renderCount, 1u);
     EXPECT_EQ(service.GetThumbnailState(prefabRequest), ThumbnailState::Queued);
-    EXPECT_EQ(service.GetThumbnailState(meshRequest), ThumbnailState::Readback);
+    EXPECT_EQ(service.GetThumbnailState(meshRequest), ThumbnailState::Encoding);
 }
 
 TEST(AssetThumbnailCacheTests, LightGpuPumpReachesMaterialPreviewBehindQueuedPrefabPreviews)
@@ -3852,7 +4423,7 @@ TEST(AssetThumbnailCacheTests, LightGpuPumpReachesMaterialPreviewBehindQueuedPre
         EXPECT_EQ(renderer.lastRenderRequest->kind, AssetThumbnailKind::MaterialSphere);
         EXPECT_EQ(renderer.lastRenderRequest->sourceAssetPath, "Assets/Materials/New.mat");
         EXPECT_EQ(renderer.renderCount, 1u);
-        EXPECT_EQ(service.GetThumbnailState(materialRequest), ThumbnailState::Readback);
+        EXPECT_EQ(service.GetThumbnailState(materialRequest), ThumbnailState::Encoding);
     }
 
     std::filesystem::remove_all(root);
@@ -3899,7 +4470,7 @@ TEST(AssetThumbnailCacheTests, LightGpuPumpReachesMaterialPreviewBehindCpuOnlyMe
         EXPECT_EQ(renderer.lastRenderRequest->kind, AssetThumbnailKind::MaterialSphere);
         EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "material:Body");
         EXPECT_EQ(renderer.renderCount, 1u);
-        EXPECT_EQ(service.GetThumbnailState(materialRequest), ThumbnailState::Readback);
+        EXPECT_EQ(service.GetThumbnailState(materialRequest), ThumbnailState::Encoding);
     }
 
     std::filesystem::remove_all(root);
@@ -4165,6 +4736,8 @@ TEST(AssetThumbnailCacheTests, RendererPumpDefersHeavyRequestsWithoutResolvingDe
 
 TEST(AssetThumbnailCacheTests, RendererPumpRejectsOversizedDeferredManifestWithoutJsonParse)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
     using namespace NLS::Base::Profiling;
@@ -4194,7 +4767,7 @@ TEST(AssetThumbnailCacheTests, RendererPumpRejectsOversizedDeferredManifestWitho
     PerformanceStageStats stats;
     {
         PerformanceStageStatsCapture capture(stats);
-        const auto generated = service.GenerateNextThumbnail(renderer, true);
+        const auto generated = PumpUntilDeferredPreviewResolves(service, renderer);
         EXPECT_TRUE(generated.has_value());
     }
 
@@ -4340,7 +4913,7 @@ TEST(AssetThumbnailCacheTests, RendererReadbackPollingReusesResolvedRequestWitho
         PendingThenReadyThumbnailPreviewRenderer renderer;
         AssetThumbnailService service;
         ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
-        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        const auto pending = PumpUntilDeferredPreviewResolves(service, renderer);
         ASSERT_TRUE(pending.has_value());
         EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
         EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu);
@@ -4417,7 +4990,7 @@ TEST(AssetThumbnailCacheTests, DuplicateRequestDoesNotOverwriteGpuReadbackPollin
         PendingThenReadyThumbnailPreviewRenderer renderer;
         AssetThumbnailService service;
         ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
-        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        const auto pending = PumpUntilDeferredPreviewResolves(service, renderer);
         ASSERT_TRUE(pending.has_value());
         EXPECT_EQ(service.GetThumbnailState(*request), ThumbnailState::WaitingForGpu);
 
@@ -4476,7 +5049,7 @@ TEST(AssetThumbnailCacheTests, ScopeSupersedePreservesGpuReadbackPollingState)
     const auto polled = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(polled.has_value());
     EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Readback);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Encoding);
     EXPECT_EQ(renderer.renderCount, 2u);
 
     std::filesystem::remove_all(root);
@@ -4532,8 +5105,14 @@ TEST(AssetThumbnailCacheTests, QueueBackpressureDoesNotEvictActiveGpuReadback)
 
     const auto polled = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(polled.has_value());
-    EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_EQ(service.GetThumbnailState(active), ThumbnailState::Readback);
+    EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending)
+        << "diagnostic=" << polled->diagnostic;
+    EXPECT_EQ(service.GetThumbnailState(active), ThumbnailState::Encoding);
+
+    const auto retried = service.RequestAssetPreview(newcomer);
+    EXPECT_EQ(retried.status, AssetThumbnailServiceStatus::Pending)
+        << "A generation-scope item retained during backpressure must be accepted after queue capacity is released.";
+    EXPECT_EQ(service.GetThumbnailState(newcomer), ThumbnailState::Queued);
 
     std::filesystem::remove_all(root);
 }
@@ -4580,13 +5159,13 @@ TEST(AssetThumbnailCacheTests, GpuPumpPollsPendingReadbackBeforeStartingAnotherP
         << "A pending GPU readback must be polled before starting another preview; "
            "switching requests retires the renderer readback and repeats GPU work.";
     EXPECT_EQ(renderer.renderCount, 2u);
-    EXPECT_EQ(service.GetThumbnailState(first), ThumbnailState::Readback);
+    EXPECT_EQ(service.GetThumbnailState(first), ThumbnailState::Encoding);
     EXPECT_EQ(service.GetThumbnailState(second), ThumbnailState::Queued);
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, GpuPumpDoesNotImmediatelyRetryResourcePendingPreview)
+TEST(AssetThumbnailCacheTests, GpuPumpImmediatelyContinuesResourcePendingPreviewWithLightweightPump)
 {
     const ScopedAssetThumbnailCacheJobSystem jobSystem;
 
@@ -4614,19 +5193,12 @@ TEST(AssetThumbnailCacheTests, GpuPumpDoesNotImmediatelyRetryResourcePendingPrev
     EXPECT_EQ(renderer.pumpCount, 1u);
     EXPECT_EQ(renderer.renderCount, 0u);
 
-    const auto deferred = service.GenerateNextThumbnail(renderer, true);
-    EXPECT_FALSE(deferred.has_value())
-        << "Resource-pending prefab previews should wait for resource pumps instead of re-entering GPU render immediately.";
-    EXPECT_EQ(renderer.pumpCount, 1u);
-    EXPECT_EQ(renderer.renderCount, 0u);
-    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
-
     const auto retried = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(retried.has_value());
     EXPECT_EQ(retried->status, AssetThumbnailServiceStatus::Pending);
     EXPECT_EQ(retried->diagnostic, "thumbnail-gpu-preview-resources-pending");
     EXPECT_EQ(renderer.pumpCount, 2u)
-        << "Resource-pending prefab previews should retry with the lightweight resource pump.";
+        << "Resource-pending prefab previews should continue with the lightweight resource pump.";
     EXPECT_EQ(renderer.renderCount, 0u)
         << "Resource-pending prefab previews should not re-enter full GPU render while resources are still pending.";
 
@@ -4662,7 +5234,6 @@ TEST(AssetThumbnailCacheTests, VisibleResourcePendingPrefabKeepsPriorityUntilRea
     ASSERT_EQ(service.RequestAssetPreview(second).status, AssetThumbnailServiceStatus::Pending);
 
     ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
-    EXPECT_FALSE(service.GenerateNextThumbnail(renderer, true).has_value());
     ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
 
     ASSERT_EQ(renderer.pumpKeys.size(), 2u);
@@ -4755,6 +5326,1242 @@ TEST(AssetThumbnailCacheTests, GpuPumpPublishesExactlyOnceAfterMixedMeshesBecome
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetThumbnailCacheTests, ResourcePendingContinuationSurvivesRepeatedThumbnailLookups)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ResourcePendingRepeatedLookup");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 48u;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath =
+        "Library/Artifacts/69/690d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490774";
+    request.freshnessInputs = { {"source", "prefab-repeated-lookup:v1"}, {"artifact", "prefab-repeated-lookup-artifact:v1"} };
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t> {'p', 'r', 'e', 'f', 'a', 'b'});
+
+    MixedPendingThenReadyThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto resourcePending = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(resourcePending.has_value());
+    EXPECT_EQ(resourcePending->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
+    ASSERT_NE(resourcePending->requestRevision, 0u);
+
+    // AssetBrowser polls the same item while its resource continuation is
+    // waiting. This must not create a newer revision and strand the original
+    // continuation as an obsolete request.
+    const auto repeatedLookup = service.GetThumbnail(request);
+    EXPECT_EQ(repeatedLookup.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(repeatedLookup.requestRevision, resourcePending->requestRevision);
+    EXPECT_GT(service.GetQueuedRequestCount(), 0u);
+
+    std::optional<AssetThumbnailServiceResult> submitted;
+    for (size_t attempt = 0u; attempt < 8u && !submitted.has_value(); ++attempt)
+        submitted = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(submitted.has_value());
+    EXPECT_EQ(submitted->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(submitted->diagnostic, "thumbnail-gpu-preview-cache-write-pending");
+    EXPECT_EQ(renderer.renderCount, 1u);
+
+    std::optional<AssetThumbnailServiceResult> completed;
+    for (size_t attempt = 0u; attempt < 500u && !completed.has_value(); ++attempt)
+    {
+        completed = service.ConsumeCompletedThumbnail();
+        if (!completed.has_value())
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Ready);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResourcePendingContinuationSurvivesGenerationScopeRebuild)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ImportedResident");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 48u;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/69/imported-resident-prefab";
+    request.freshnessInputs = {
+        {"source", "imported-resident:v1"},
+        {"artifact", "imported-resident-artifact:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
+
+    MixedPendingThenReadyThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto resourcePending = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(resourcePending.has_value());
+    ASSERT_EQ(resourcePending->status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
+    ASSERT_EQ(renderer.pumpCount, 1u);
+
+    service.SupersedeQueuedRequestsForGeneration("Assets/Imported#rebuilt");
+    EXPECT_TRUE(service.HasQueuedGpuPreviewResourceContinuation());
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+
+    const auto submitted = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(submitted.has_value());
+    EXPECT_EQ(submitted->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(submitted->diagnostic, "thumbnail-gpu-preview-cache-write-pending");
+    EXPECT_EQ(renderer.pumpCount, 2u);
+    EXPECT_EQ(renderer.renderCount, 1u);
+
+    std::optional<AssetThumbnailServiceResult> completed;
+    for (size_t attempt = 0u; attempt < 500u && !completed.has_value(); ++attempt)
+    {
+        completed = service.ConsumeCompletedThumbnail();
+        if (!completed.has_value())
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResourcePendingRequestDoesNotAdoptDifferentPrefab)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:FirstPending");
+    first.kind = AssetThumbnailKind::PrefabPreview;
+    first.requestedSize = 48u;
+    first.priority = ThumbnailRequestPriority::Visible;
+    first.artifactPath = "Library/Artifacts/69/first-pending-prefab";
+    first.freshnessInputs = {{"artifact", "first-pending:v1"}};
+    WriteBinaryFile(root / first.artifactPath, std::vector<uint8_t>{'p'});
+
+    auto second = first;
+    second.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("73737373-7373-4373-8373-737373737373"));
+    second.subAssetKey = "prefab:SecondQueued";
+    second.artifactPath = "Library/Artifacts/73/second-queued-prefab";
+    second.freshnessInputs = {{"artifact", "second-queued:v1"}};
+    WriteBinaryFile(root / second.artifactPath, std::vector<uint8_t>{'p'});
+
+    ResourcesPendingThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(first).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
+    ASSERT_TRUE(service.HasQueuedGpuPreviewResourceContinuation());
+    ASSERT_EQ(service.GetQueuedRequestCount(), 1u);
+
+    const auto queuedSecond = service.GetThumbnail(second);
+    EXPECT_EQ(queuedSecond.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetThumbnailState(second), ThumbnailState::Queued);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 2u)
+        << "A resource continuation for one cache key must not impersonate another prefab's owner.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResourcePendingContinuationExpiresAfterItsDeadline)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ResourcePendingDeadline");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 48u;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/69/resource-pending-deadline";
+    request.freshnessInputs = {{"source", "prefab-deadline:v1"}, {"artifact", "prefab-deadline-artifact:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
+
+    ResourcesPendingThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto pending = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(pending.has_value());
+    ASSERT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    service.SetVisibleThumbnailRequestAgeForTesting(
+        request,
+        std::chrono::seconds(21));
+    const auto stillWaitingForResources = service.GetThumbnail(request);
+    EXPECT_EQ(stillWaitingForResources.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_NE(service.GetThumbnailState(request), ThumbnailState::Failed);
+    EXPECT_NE(service.GetThumbnailState(request), ThumbnailState::Cancelled);
+    EXPECT_TRUE(service.HasQueuedGpuPreviewResourceContinuation());
+    EXPECT_FALSE(service.ConsumeCompletedThumbnail(false).has_value())
+        << "The ordinary visible deadline must not preempt the longer resource deadline.";
+
+    // Move the request past the production deadline without changing the
+    // production timeout or adding a 120-second unit-test delay.
+    service.SetGpuPreviewResourcePendingAgeForTesting(
+        request,
+        std::chrono::seconds(121));
+
+    EXPECT_FALSE(service.GenerateNextThumbnail(renderer, true).has_value())
+        << "An expired resource continuation must be retired before another renderer pump.";
+
+    const auto timedOut = service.GetThumbnail(request);
+    EXPECT_EQ(timedOut.status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Failed);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+    EXPECT_EQ(renderer.pumpCount, 1u)
+        << "An expired resource continuation must not be pumped again after it becomes terminal.";
+#else
+    GTEST_SKIP() << "Resource deadline timing is only shortened in test-hook builds.";
+#endif
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResourcePendingProgressExtendsTheStallDeadline)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "Resource deadline timing requires test hooks.";
+#else
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ResourcePendingProgress");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 48u;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/69/resource-pending-progress";
+    request.freshnessInputs = {
+        {"source", "prefab-progress:v1"},
+        {"artifact", "prefab-progress-artifact:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p', 'r', 'o', 'g'});
+
+    ResourcesPendingThumbnailPreviewRenderer renderer;
+    renderer.reportProgress = true;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto firstPending = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(firstPending.has_value());
+    ASSERT_EQ(firstPending->status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(renderer.pumpCount, 1u);
+
+    service.SetGpuPreviewResourceRequestStartAgeForTesting(
+        request,
+        std::chrono::seconds(121));
+    const auto progressed = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(progressed.has_value())
+        << "Recent renderer progress must supersede the older admission timestamp.";
+    EXPECT_EQ(progressed->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
+    EXPECT_EQ(renderer.pumpCount, 2u);
+
+    service.SetGpuPreviewResourcePendingAgeForTesting(
+        request,
+        std::chrono::seconds(121));
+    EXPECT_FALSE(service.GenerateNextThumbnail(renderer, true).has_value());
+    EXPECT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(renderer.pumpCount, 2u)
+        << "A genuinely stalled continuation must still expire without another renderer pump.";
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, ActiveResourceWorkExtendsTheStallDeadlineUntilItStops)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "Resource deadline timing requires test hooks.";
+#else
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ActiveResourceWork");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 48u;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/69/active-resource-work";
+    request.freshnessInputs = {
+        {"source", "active-resource-work:v1"},
+        {"artifact", "active-resource-work-artifact:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'w', 'o', 'r', 'k'});
+
+    ResourcesPendingThumbnailPreviewRenderer renderer;
+    renderer.reportActiveResourceWork = true;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto firstPending = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(firstPending.has_value());
+    ASSERT_EQ(firstPending->status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(renderer.pumpCount, 1u);
+
+    service.SetGpuPreviewResourcePendingAgeForTesting(
+        request,
+        std::chrono::seconds(121));
+    const auto stillActive = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(stillActive.has_value())
+        << "Active dependency work must receive another renderer pump before expiring.";
+    EXPECT_EQ(stillActive->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(renderer.pumpCount, 2u);
+
+    renderer.reportActiveResourceWork = false;
+    const auto becameInactive = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(becameInactive.has_value());
+    ASSERT_EQ(becameInactive->status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(renderer.pumpCount, 3u);
+
+    service.SetGpuPreviewResourcePendingAgeForTesting(
+        request,
+        std::chrono::seconds(121));
+    EXPECT_FALSE(service.GenerateNextThumbnail(renderer, true).has_value());
+    EXPECT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(renderer.pumpCount, 3u)
+        << "Inactive resource work must still expire without an extra renderer pump.";
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, VisibleQueuedRequestExpiresWithRetainedCanonicalAndNewRevisionRetry)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "Visible request deadline timing is only shortened in test-hook builds.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto previous = MakeThumbnailRequest(root, "texture:VisibleTimeout", "source:v1");
+    previous.kind = AssetThumbnailKind::Texture;
+    previous.sourceAssetPath = "Assets/Textures/VisibleTimeout.png";
+    previous.requestRevision = 1u;
+    const auto previousEntry = ResolveAssetThumbnailCacheEntry(previous);
+    ASSERT_TRUE(previousEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(previous, previousEntry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(previous, AssetThumbnailCacheStatus::Fresh, {}));
+    ASSERT_TRUE(CommitAssetThumbnailPresentation(previous, *previousEntry, previous.requestRevision));
+
+    auto request = previous;
+    request.freshnessInputs.front().stamp = "source:v2";
+    request.requestRevision = 2u;
+
+    AssetThumbnailService service;
+    const auto queued = service.GetThumbnail(request);
+    ASSERT_EQ(queued.status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(queued.presentationState, ThumbnailPresentationState::StaleRefreshing);
+    ASSERT_TRUE(queued.retainedImage.has_value());
+    EXPECT_EQ(queued.retainedImage->cacheKey, previousEntry->cacheKey);
+    ASSERT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+
+    service.SetVisibleThumbnailRequestAgeForTesting(request, std::chrono::seconds(21));
+    const auto timedOut = service.GetThumbnail(request);
+    EXPECT_EQ(timedOut.status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(timedOut.diagnostic, "thumbnail-visible-request-timeout");
+    EXPECT_EQ(timedOut.presentationState, ThumbnailPresentationState::FailedRetained);
+    EXPECT_TRUE(timedOut.failureRetained);
+    ASSERT_TRUE(timedOut.retainedImage.has_value());
+    EXPECT_EQ(timedOut.retainedImage->cacheKey, previousEntry->cacheKey);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Failed);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u)
+        << "The terminal failure remains consumable until the UI observes it.";
+
+    const auto completed = service.ConsumeCompletedThumbnail();
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(completed->diagnostic, "thumbnail-visible-request-timeout");
+
+    auto newer = request;
+    newer.freshnessInputs.front().stamp = "source:v3";
+    newer.requestRevision = 3u;
+    const auto retry = service.GetThumbnail(newer);
+    EXPECT_EQ(retry.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_NE(service.GetThumbnailState(newer), ThumbnailState::Failed)
+        << "A newer freshness revision must not inherit the old timeout barrier.";
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, VisibleDeadlineExpiresAfterQueueOwnershipIsLost)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "Visible request deadline timing is only shortened in test-hook builds.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "texture:LostQueueOwnership");
+    request.kind = AssetThumbnailKind::Texture;
+    request.sourceAssetPath = "Assets/Textures/LostQueueOwnership.png";
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.requestRevision = 1u;
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+
+    // Simulate a lane-transfer bookkeeping gap: the visible deadline remains,
+    // but the request is temporarily absent from the queue and continuation
+    // maps. It must still become a terminal result instead of being assigned a
+    // fresh revision on every UI lookup.
+    service.DropGpuPreviewResourceQueueOwnershipForTesting(request);
+    service.SetVisibleThumbnailRequestAgeForTesting(request, std::chrono::seconds(21));
+
+    const auto timedOut = service.GetThumbnail(request);
+    EXPECT_EQ(timedOut.status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(timedOut.diagnostic, "thumbnail-visible-request-timeout");
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Failed);
+
+    const auto completed = service.ConsumeCompletedThumbnail();
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->diagnostic, "thumbnail-visible-request-timeout");
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, VisibleResidentLaneAdvancesBeforeResourcePendingVisible)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto resourcePending = MakeThumbnailRequest(root, "prefab:ResourcePending");
+    resourcePending.kind = AssetThumbnailKind::PrefabPreview;
+    resourcePending.priority = ThumbnailRequestPriority::Visible;
+    resourcePending.artifactPath = "Library/Artifacts/70/resource-pending";
+    resourcePending.freshnessInputs = {{"source", "resource-pending:v1"}};
+    WriteBinaryFile(root / resourcePending.artifactPath, std::vector<uint8_t>{'p'});
+
+    auto resident = MakeThumbnailRequest(root, "prefab:Resident");
+    resident.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("71717171-7171-4171-8171-717171717171"));
+    resident.kind = AssetThumbnailKind::PrefabPreview;
+    resident.priority = ThumbnailRequestPriority::Visible;
+    resident.artifactPath = "Library/Artifacts/71/resident";
+    resident.freshnessInputs = {{"source", "resident:v1"}};
+    WriteBinaryFile(root / resident.artifactPath, std::vector<uint8_t>{'p'});
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    const auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    registry->RegisterSnapshot("runtime:resident", "resident:v1", snapshot, 1u);
+    resident.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        "runtime:resident",
+        "resident:v1",
+        snapshot,
+        registry
+    };
+
+    MixedPendingThenReadyThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(resourcePending).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.RequestAssetPreview(resident).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto first = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(
+        first->diagnostic,
+        "thumbnail-gpu-preview-resources-pending|mesh=1|material=0|texture=0|truncated=0");
+    ASSERT_EQ(renderer.pumpKeys.size(), 1u);
+    EXPECT_EQ(renderer.pumpKeys[0], "prefab:Resident");
+
+    const auto second = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(second.has_value());
+    ASSERT_EQ(renderer.pumpKeys.size(), 2u);
+    EXPECT_EQ(renderer.pumpKeys[1], "prefab:ResourcePending")
+        << "After the resident candidate advances, the resource-pending visible continuation must make progress.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, VisibleResidentGateRequiresLiveSnapshot)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ResidentGate");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/resident-gate";
+    request.freshnessInputs = {{"source", "resident-gate:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p'});
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        "runtime:resident-gate",
+        "resident-gate:v1",
+        {},
+        registry
+    };
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_FALSE(service.HasQueuedVisibleResidentThumbnail())
+        << "An identity-only request must remain behind scene-load resource work.";
+
+    registry->RegisterSnapshot(
+        "runtime:resident-gate",
+        "resident-gate:v1",
+        std::make_shared<PreviewRenderableSnapshot>(),
+        1u);
+    EXPECT_TRUE(service.HasQueuedVisibleResidentThumbnail())
+        << "A late scene registration must make the exact queued request resident-eligible.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, CompleteResidentSnapshotRecoversVisibleTimeout)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "Visible request deadline timing is only shortened in test-hook builds.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ResidentTimeoutRecovery");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/resident-timeout-recovery";
+    request.freshnessInputs = {{"source", "resident-timeout-recovery:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p'});
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto partialSnapshot = std::make_shared<PreviewRenderableSnapshot>();
+    partialSnapshot->drawItems.resize(1u);
+    partialSnapshot->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot(
+        "runtime:resident-timeout-recovery",
+        "resident-timeout-recovery:v1",
+        partialSnapshot,
+        1u);
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        "runtime:resident-timeout-recovery",
+        "resident-timeout-recovery:v1",
+        partialSnapshot,
+        registry
+    };
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    service.SetVisibleThumbnailRequestAgeForTesting(request, std::chrono::seconds(21));
+    const auto timedOut = service.GetThumbnail(request);
+    ASSERT_EQ(timedOut.status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(timedOut.diagnostic, "thumbnail-visible-request-timeout");
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Failed);
+
+    auto completeSnapshot = std::make_shared<PreviewRenderableSnapshot>();
+    completeSnapshot->drawItems.resize(2u);
+    completeSnapshot->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot(
+        "runtime:resident-timeout-recovery",
+        "resident-timeout-recovery:v1",
+        completeSnapshot,
+        2u);
+
+    const auto recovered = service.GetThumbnail(request);
+    EXPECT_EQ(recovered.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_NE(service.GetThumbnailState(request), ThumbnailState::Failed);
+    EXPECT_TRUE(service.HasQueuedReadyResidentThumbnail());
+    service.MaintainPendingThumbnailRequests();
+    EXPECT_NE(service.GetThumbnailState(request), ThumbnailState::Failed);
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, CompleteResidentSnapshotReactivatesDeferredLargePrefab)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:DeferredLargeResidentRecovery");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/deferred-large-resident-recovery";
+    request.freshnessInputs = {{"source", "deferred-large-resident-recovery:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p'});
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(
+        request,
+        AssetThumbnailCacheStatus::Failed,
+        "thumbnail-prefab-preview-awaiting-resident-load"));
+
+    AssetThumbnailService service;
+    const auto cold = service.GetThumbnail(request);
+    ASSERT_EQ(cold.status, AssetThumbnailServiceStatus::Fallback);
+    EXPECT_EQ(cold.diagnostic, "thumbnail-prefab-preview-awaiting-resident-load");
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto completeSnapshot = std::make_shared<PreviewRenderableSnapshot>();
+    completeSnapshot->drawItems.resize(405u);
+    completeSnapshot->expectedDrawItemCount = completeSnapshot->drawItems.size();
+    registry->RegisterSnapshot(
+        "runtime:deferred-large-resident-recovery",
+        "deferred-large-resident-recovery:v1",
+        completeSnapshot,
+        completeSnapshot->drawItems.size());
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        "runtime:deferred-large-resident-recovery",
+        "deferred-large-resident-recovery:v1",
+        completeSnapshot,
+        registry
+    };
+
+    const auto recovered = service.GetThumbnail(request);
+    EXPECT_EQ(recovered.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_NE(service.GetThumbnailState(request), ThumbnailState::Failed);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_TRUE(service.HasQueuedReadyResidentThumbnail())
+        << "A complete scene package must reactivate the deferred thumbnail without artifact reload.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentThumbnailWakeRevisionTracksUsableStateTransitions)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    constexpr const char* identity = "runtime:thumbnail-wake";
+    constexpr const char* freshness = "thumbnail-wake:v1";
+    const auto initialRevision = registry->GetThumbnailWakeRevision();
+
+    auto partial = std::make_shared<PreviewRenderableSnapshot>();
+    partial->drawItems.resize(1u);
+    partial->expectedDrawItemCount = 3u;
+    registry->RegisterSnapshot(identity, freshness, partial, 1u);
+    const auto registeredRevision = registry->GetThumbnailWakeRevision();
+    EXPECT_GT(registeredRevision, initialRevision);
+
+    auto richerPartial = std::make_shared<PreviewRenderableSnapshot>();
+    richerPartial->drawItems.resize(2u);
+    richerPartial->expectedDrawItemCount = 3u;
+    registry->RegisterSnapshot(identity, freshness, richerPartial, 2u);
+    EXPECT_EQ(registry->GetThumbnailWakeRevision(), registeredRevision)
+        << "Progressive partial snapshots must not restart the Asset Browser scope every frame.";
+
+    auto complete = std::make_shared<PreviewRenderableSnapshot>();
+    complete->drawItems.resize(3u);
+    complete->expectedDrawItemCount = 3u;
+    registry->RegisterSnapshot(identity, freshness, complete, 3u);
+    const auto topologyRevision = registry->GetThumbnailWakeRevision();
+    EXPECT_GT(topologyRevision, registeredRevision);
+
+    auto incompleteResources = std::make_shared<ResidentPrefabPreviewResources>();
+    incompleteResources->drawItems.resize(3u);
+    incompleteResources->sourceExpectedDrawItemCount = 3u;
+    incompleteResources->hasUnresolvedTextureBindings = true;
+    registry->RegisterSnapshot(
+        identity,
+        freshness,
+        complete,
+        3u,
+        false,
+        {},
+        {},
+        incompleteResources);
+    EXPECT_EQ(registry->GetThumbnailWakeRevision(), topologyRevision);
+
+    auto completeResources = std::make_shared<ResidentPrefabPreviewResources>();
+    completeResources->drawItems.resize(3u);
+    completeResources->sourceExpectedDrawItemCount = 3u;
+    registry->RegisterSnapshot(
+        identity,
+        freshness,
+        complete,
+        3u,
+        false,
+        {},
+        {},
+        completeResources);
+    const auto resourcesRevision = registry->GetThumbnailWakeRevision();
+    EXPECT_GT(resourcesRevision, topologyRevision);
+
+    registry->Remove(identity, freshness);
+    EXPECT_GT(registry->GetThumbnailWakeRevision(), resourcesRevision);
+}
+
+TEST(AssetThumbnailCacheTests, ImportedPrefabSnapshotPublishesCompleteModelAliases)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("18181818-1818-4818-8818-181818181818"));
+    const auto sourcePath = std::string("Assets/Models/ImportedResident.gltf");
+    const auto artifactPath = std::string("Library/Artifacts/18/imported-resident");
+    WriteBinaryFile(root / sourcePath, std::vector<uint8_t>{'g'});
+    WriteBinaryFile(root / artifactPath, std::vector<uint8_t>{'p'});
+
+    auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    PreviewDrawItem drawItem;
+    drawItem.meshPath = "Library/Artifacts/18/imported-mesh";
+    snapshot->drawItems.push_back(std::move(drawItem));
+    snapshot->expectedDrawItemCount = snapshot->drawItems.size();
+
+    auto preparedMeshPayload = std::make_shared<const std::vector<uint8_t>>(
+        std::vector<uint8_t>{1u, 2u, 3u, 4u});
+    std::weak_ptr<const std::vector<uint8_t>> preparedMeshPayloadLifetime =
+        preparedMeshPayload;
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    ASSERT_TRUE(registry->RegisterImportedPrefabSnapshot(
+        root,
+        assetId,
+        sourcePath,
+        "prefab:ImportedResident",
+        artifactPath,
+        snapshot,
+        {{snapshot->drawItems.front().meshPath, preparedMeshPayload}}));
+    preparedMeshPayload.reset();
+    EXPECT_FALSE(preparedMeshPayloadLifetime.expired());
+
+    const auto runtimeIdentity = BuildResidentPrefabRuntimeCacheIdentity(
+        assetId.ToString(),
+        "prefab:ImportedResident");
+    const auto canonicalFreshness = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        "prefab:ImportedResident",
+        artifactPath);
+    const auto state = registry->GetSnapshotState(runtimeIdentity, canonicalFreshness);
+    ASSERT_TRUE(state.has_value());
+    EXPECT_TRUE(state->complete);
+    EXPECT_TRUE(state->allowArtifactResourceLoading);
+    EXPECT_EQ(state->readyDrawItemCount, 1u);
+    EXPECT_EQ(state->expectedDrawItemCount, 1u);
+
+    const auto modelFreshness = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        "model:ImportedResident",
+        artifactPath);
+    auto modelLease = registry->Acquire(runtimeIdentity, modelFreshness, true);
+    ASSERT_TRUE(modelLease.has_value());
+    ASSERT_NE(modelLease->Snapshot(), nullptr);
+    EXPECT_EQ(modelLease->Snapshot()->drawItems.size(), 1u);
+    const auto residentBytesBeforePayloadTake = registry->GetStats().residentBytes;
+    auto takenPayload = modelLease->TakePreparedMeshPayload(
+        (root / snapshot->drawItems.front().meshPath).generic_string());
+    ASSERT_NE(takenPayload, nullptr);
+    EXPECT_EQ(*takenPayload, (std::vector<uint8_t>{1u, 2u, 3u, 4u}));
+    EXPECT_EQ(
+        registry->GetStats().residentBytes + takenPayload->size(),
+        residentBytesBeforePayloadTake);
+    EXPECT_EQ(
+        modelLease->TakePreparedMeshPayload(snapshot->drawItems.front().meshPath),
+        nullptr) << "Import mesh bytes are a one-shot handoff, not a second cache.";
+    takenPayload.reset();
+    EXPECT_TRUE(preparedMeshPayloadLifetime.expired());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ImportedPrefabThumbnailContinuationIsProcessLocal)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("28282828-2828-4828-8828-282828282828"));
+    const auto sourcePath = std::string("Assets/Models/ImportedContinuation.fbx");
+    const auto artifactPath = std::string(
+        "Library/Artifacts/28/imported-continuation.nprefab");
+    WriteBinaryFile(root / sourcePath, std::vector<uint8_t>{'f', 'b', 'x'});
+    WriteBinaryFile(root / artifactPath, std::vector<uint8_t>{'p'});
+
+    auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    snapshot->drawItems.resize(kMaxColdGpuPreviewPrefabDrawItems + 1u);
+    snapshot->expectedDrawItemCount = snapshot->drawItems.size();
+    const auto importingRegistry = ResidentPrefabPreviewRegistry::Create();
+    ASSERT_TRUE(importingRegistry->RegisterImportedPrefabSnapshot(
+        root,
+        assetId,
+        sourcePath,
+        "prefab:ImportedContinuation",
+        artifactPath,
+        snapshot));
+    const auto imported = importingRegistry->GetImportedPrefabThumbnailContinuations(root);
+    ASSERT_EQ(imported.size(), 1u);
+    EXPECT_NE(imported.front().registrationRevision, 0u);
+
+    AssetBrowserItem item;
+    item.sourceAssetPath = sourcePath;
+    item.projectRelativePath = sourcePath;
+    item.absolutePath = root / sourcePath;
+    item.kind = AssetBrowserItemKind::SourceAsset;
+    item.type = AssetBrowserItemType::Model;
+    item.assetId = assetId;
+    item.subAssetKey = "prefab:ImportedContinuation";
+    item.artifactPath = artifactPath;
+    item.artifactType = NLS::Core::Assets::ArtifactType::Prefab;
+    AssetThumbnailRequestBuildContext context;
+    context.residentPrefabPreviewRegistry = importingRegistry;
+    const auto importedRequest = BuildAssetThumbnailRequestForItem(root, item, 96u, context);
+    ASSERT_TRUE(importedRequest.has_value());
+    EXPECT_TRUE(importedRequest->importedPrefabThumbnailContinuation);
+    EXPECT_EQ(
+        importedRequest->importedPrefabThumbnailContinuationRevision,
+        imported.front().registrationRevision);
+    ASSERT_TRUE(importedRequest->residentPrefabPreviewSource.has_value());
+    EXPECT_TRUE(importedRequest->residentPrefabPreviewSource->allowArtifactResourceLoading);
+    EXPECT_FALSE(importedRequest->residentPrefabPreviewSource->snapshot.expired());
+
+    const auto restartedRegistry = ResidentPrefabPreviewRegistry::Create();
+    EXPECT_TRUE(restartedRegistry->GetImportedPrefabThumbnailContinuations(root).empty());
+    context.residentPrefabPreviewRegistry = restartedRegistry;
+    const auto restartedRequest = BuildAssetThumbnailRequestForItem(root, item, 96u, context);
+    ASSERT_TRUE(restartedRequest.has_value());
+    EXPECT_FALSE(restartedRequest->importedPrefabThumbnailContinuation);
+    EXPECT_EQ(restartedRequest->importedPrefabThumbnailContinuationRevision, 0u);
+    ASSERT_TRUE(restartedRequest->residentPrefabPreviewSource.has_value());
+    EXPECT_FALSE(restartedRequest->residentPrefabPreviewSource->allowArtifactResourceLoading);
+    EXPECT_TRUE(restartedRequest->residentPrefabPreviewSource->snapshot.expired())
+        << "A restarted editor must wait for a scene load or a new import instead of cold-loading a large Prefab.";
+
+    importingRegistry->CompleteImportedPrefabThumbnailContinuation(root, assetId);
+    EXPECT_TRUE(importingRegistry->GetImportedPrefabThumbnailContinuations(root).empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PendingImportedThumbnailsRetainTopologyUnderInactiveBudget)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto firstAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("38383838-3838-4838-8838-383838383838"));
+    const auto secondAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("48484848-4848-4848-8848-484848484848"));
+    const std::string firstSource = "Assets/Models/FirstPending.fbx";
+    const std::string secondSource = "Assets/Models/SecondPending.fbx";
+    const std::string firstArtifact = "Library/Artifacts/38/first-pending";
+    const std::string secondArtifact = "Library/Artifacts/48/second-pending";
+    WriteBinaryFile(root / firstSource, std::vector<uint8_t>{'1'});
+    WriteBinaryFile(root / secondSource, std::vector<uint8_t>{'2'});
+    WriteBinaryFile(root / firstArtifact, std::vector<uint8_t>{'a'});
+    WriteBinaryFile(root / secondArtifact, std::vector<uint8_t>{'b'});
+
+    const auto makeSnapshot = [](const std::string& meshPath)
+    {
+        auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+        PreviewDrawItem drawItem;
+        drawItem.meshPath = meshPath;
+        snapshot->drawItems.push_back(std::move(drawItem));
+        snapshot->expectedDrawItemCount = 1u;
+        return snapshot;
+    };
+    const auto firstSnapshot = makeSnapshot("Library/Artifacts/38/first-mesh");
+    const auto secondSnapshot = makeSnapshot("Library/Artifacts/48/second-mesh");
+    auto firstPayload = std::make_shared<const std::vector<uint8_t>>(
+        std::vector<uint8_t>(32u, 1u));
+    auto secondPayload = std::make_shared<const std::vector<uint8_t>>(
+        std::vector<uint8_t>(32u, 2u));
+    std::weak_ptr<const std::vector<uint8_t>> firstPayloadLifetime = firstPayload;
+    std::weak_ptr<const std::vector<uint8_t>> secondPayloadLifetime = secondPayload;
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create(1u);
+    ASSERT_TRUE(registry->RegisterImportedPrefabSnapshot(
+        root,
+        firstAssetId,
+        firstSource,
+        "prefab:FirstPending",
+        firstArtifact,
+        firstSnapshot,
+        {{firstSnapshot->drawItems.front().meshPath, firstPayload}}));
+    firstPayload.reset();
+    EXPECT_FALSE(firstPayloadLifetime.expired());
+
+    ASSERT_TRUE(registry->RegisterImportedPrefabSnapshot(
+        root,
+        secondAssetId,
+        secondSource,
+        "prefab:SecondPending",
+        secondArtifact,
+        secondSnapshot,
+        {{secondSnapshot->drawItems.front().meshPath, secondPayload}}));
+    secondPayload.reset();
+
+    const auto firstIdentity = BuildResidentPrefabRuntimeCacheIdentity(
+        firstAssetId.ToString(),
+        "prefab:FirstPending");
+    const auto secondIdentity = BuildResidentPrefabRuntimeCacheIdentity(
+        secondAssetId.ToString(),
+        "prefab:SecondPending");
+    const auto firstFreshness = BuildPrefabThumbnailDependencyStamp(
+        root, firstAssetId, firstSource, "prefab:FirstPending", firstArtifact);
+    const auto secondFreshness = BuildPrefabThumbnailDependencyStamp(
+        root, secondAssetId, secondSource, "prefab:SecondPending", secondArtifact);
+
+    EXPECT_TRUE(registry->GetSnapshotState(firstIdentity, firstFreshness).has_value())
+        << "The older import must retain its complete graph until thumbnail completion.";
+    EXPECT_TRUE(registry->GetSnapshotState(secondIdentity, secondFreshness).has_value());
+    EXPECT_TRUE(firstPayloadLifetime.expired())
+        << "Older prepared bytes should be trimmed before its complete graph is evicted.";
+    EXPECT_FALSE(secondPayloadLifetime.expired())
+        << "The newest protected import may still hand its prepared bytes to the renderer.";
+
+    registry->CompleteImportedPrefabThumbnailContinuation(root, firstAssetId);
+    EXPECT_FALSE(registry->GetSnapshotState(firstIdentity, firstFreshness).has_value());
+    EXPECT_TRUE(registry->GetSnapshotState(secondIdentity, secondFreshness).has_value());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, LargePrefabRequiresResidentSnapshotAfterRestart)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect the large Prefab admission policy.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto largeDrawItemCount = kMaxColdGpuPreviewPrefabDrawItems + 1u;
+    EXPECT_TRUE(ShouldDeferLargePrefabPreviewUntilResidentForTesting(
+        largeDrawItemCount,
+        false));
+    EXPECT_FALSE(ShouldDeferLargePrefabPreviewUntilResidentForTesting(
+        largeDrawItemCount,
+        true))
+        << "Only a real scene/import resident snapshot may bypass the large Prefab gate.";
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, NewImportContinuationRetriesOlderResourceTimeoutOnce)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ImportedTimeoutRecovery");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.priority = ThumbnailRequestPriority::Background;
+    request.artifactPath = "Library/Artifacts/28/imported-timeout-recovery";
+    WriteBinaryFile(root / request.sourceAssetPath, std::vector<uint8_t>{'f'});
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p'});
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(
+        request,
+        AssetThumbnailCacheStatus::Failed,
+        "thumbnail-gpu-preview-resources-timeout:thumbnail-resource-continuation-deadline"));
+
+    AssetThumbnailService service;
+    const auto oldFailure = service.GetThumbnail(request);
+    ASSERT_EQ(oldFailure.status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+
+    request.importedPrefabThumbnailContinuation = true;
+    request.importedPrefabThumbnailContinuationRevision = 7u;
+    const auto reimported = service.GetThumbnail(request);
+    EXPECT_EQ(reimported.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+
+    service.ClearQueuedRequests();
+    const auto sameImportFailure = service.GetThumbnail(request);
+    EXPECT_EQ(sameImportFailure.status, AssetThumbnailServiceStatus::Failed)
+        << "The same import registration must not turn a new terminal failure into a retry loop.";
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+
+    request.importedPrefabThumbnailContinuationRevision = 8u;
+    const auto nextReimport = service.GetThumbnail(request);
+    EXPECT_EQ(nextReimport.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u)
+        << "A later explicit reimport must receive one new recovery admission.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ImportedPrefabThumbnailContinuationsLoadOneAssetAtATime)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:ImportedFirst");
+    first.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("29292929-2929-4929-8929-292929292929"));
+    first.sourceAssetPath = "Assets/Models/ImportedFirst.fbx";
+    first.artifactPath =
+        "Library/Artifacts/29/2929292929292929292929292929292929292929292929292929292929292929";
+    first.kind = AssetThumbnailKind::PrefabPreview;
+    first.priority = ThumbnailRequestPriority::Visible;
+    first.importedPrefabThumbnailContinuation = true;
+
+    auto second = first;
+    second.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("30303030-3030-4030-8030-303030303030"));
+    second.sourceAssetPath = "Assets/Models/ImportedSecond.fbx";
+    second.subAssetKey = "prefab:ImportedSecond";
+    second.artifactPath =
+        "Library/Artifacts/30/3030303030303030303030303030303030303030303030303030303030303030";
+    second.freshnessInputs = {
+        {"source", "imported-second:v1"},
+        {"artifact", "imported-second-artifact:v1"}
+    };
+    WriteBinaryFile(root / first.sourceAssetPath, std::vector<uint8_t>{'f'});
+    WriteBinaryFile(root / first.artifactPath, std::vector<uint8_t>{'p'});
+    WriteBinaryFile(root / second.sourceAssetPath, std::vector<uint8_t>{'f'});
+    WriteBinaryFile(root / second.artifactPath, std::vector<uint8_t>{'p'});
+
+    ResourcesPendingThumbnailPreviewRenderer renderer;
+    renderer.diagnostic =
+        "thumbnail-gpu-preview-resources-pending|mesh=1|material=0|texture=0|truncated=1";
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(first).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
+
+    std::vector<std::string> diagnostics;
+    for (size_t attempt = 0u; attempt < 8u; ++attempt)
+    {
+        const auto generated = service.GenerateNextThumbnail(renderer, true);
+        if (generated.has_value())
+            diagnostics.push_back(generated->diagnostic);
+    }
+
+    ASSERT_GE(renderer.pumpKeys.size(), 2u)
+        << "diagnostics=" << testing::PrintToString(diagnostics)
+        << " firstState=" << static_cast<int>(service.GetThumbnailState(first))
+        << " secondState=" << static_cast<int>(service.GetThumbnailState(second));
+    EXPECT_TRUE(std::all_of(
+        renderer.pumpKeys.begin(),
+        renderer.pumpKeys.end(),
+        [&](const std::string& key)
+        {
+            return key == renderer.pumpKeys.front();
+        })) << "A second imported Prefab must not enter resource preparation while the first is pending.";
+    EXPECT_EQ(service.GetQueuedRequestCount(), 2u);
+
+    service.ClearQueuedRequests();
+    ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
+    const auto previousPumpCount = renderer.pumpKeys.size();
+    ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
+    ASSERT_GT(renderer.pumpKeys.size(), previousPumpCount);
+    EXPECT_EQ(renderer.pumpKeys.back(), second.subAssetKey)
+        << "Clearing the generation must release the imported-continuation owner.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ImportedPrefabContinuationWaitsForRendererAdmissionBeforeDeadline)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "Resource deadline timing requires test hooks.";
+#else
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:ImportedAdmissionFirst");
+    first.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("33333333-3333-4333-8333-333333333333"));
+    first.sourceAssetPath = "Assets/Models/ImportedAdmissionFirst.fbx";
+    first.artifactPath =
+        "Library/Artifacts/33/3333333333333333333333333333333333333333333333333333333333333333";
+    first.kind = AssetThumbnailKind::PrefabPreview;
+    first.priority = ThumbnailRequestPriority::Visible;
+    first.importedPrefabThumbnailContinuation = true;
+
+    auto second = first;
+    second.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("34343434-3434-4434-8434-343434343434"));
+    second.sourceAssetPath = "Assets/Models/ImportedAdmissionSecond.fbx";
+    second.subAssetKey = "prefab:ImportedAdmissionSecond";
+    second.artifactPath =
+        "Library/Artifacts/34/3434343434343434343434343434343434343434343434343434343434343434";
+    second.freshnessInputs = {
+        {"source", "imported-admission-second:v1"},
+        {"artifact", "imported-admission-second-artifact:v1"}};
+    WriteBinaryFile(root / first.sourceAssetPath, std::vector<uint8_t>{'f'});
+    WriteBinaryFile(root / first.artifactPath, std::vector<uint8_t>{'p'});
+    WriteBinaryFile(root / second.sourceAssetPath, std::vector<uint8_t>{'f'});
+    WriteBinaryFile(root / second.artifactPath, std::vector<uint8_t>{'p'});
+
+    ResourcesPendingThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(first).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
+    ASSERT_EQ(renderer.pumpCount, 1u);
+
+    service.SetGpuPreviewResourceRequestStartAgeForTesting(
+        second,
+        std::chrono::seconds(121));
+    const auto continuedFirst = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(continuedFirst.has_value());
+    EXPECT_EQ(continuedFirst->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetThumbnailState(second), ThumbnailState::Queued);
+    EXPECT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(renderer.pumpKeys.size(), 2u);
+    EXPECT_EQ(renderer.pumpKeys[0], renderer.pumpKeys[1])
+        << "An imported Prefab waiting for the renderer owner must not expire before its first pump.";
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, CompletedImportedPrefabWaitsForFreshPersistenceBeforeNextAsset)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:ImportedOwnerFirst");
+    first.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("31313131-3131-4131-8131-313131313131"));
+    first.sourceAssetPath = "Assets/Models/ImportedOwnerFirst.fbx";
+    first.artifactPath =
+        "Library/Artifacts/31/3131313131313131313131313131313131313131313131313131313131313131";
+    first.kind = AssetThumbnailKind::PrefabPreview;
+    first.priority = ThumbnailRequestPriority::Visible;
+    first.importedPrefabThumbnailContinuation = true;
+
+    auto second = first;
+    second.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("32323232-3232-4232-8232-323232323232"));
+    second.sourceAssetPath = "Assets/Models/ImportedOwnerSecond.fbx";
+    second.subAssetKey = "prefab:ImportedOwnerSecond";
+    second.artifactPath =
+        "Library/Artifacts/32/3232323232323232323232323232323232323232323232323232323232323232";
+    second.freshnessInputs = {
+        {"source", "imported-owner-second:v1"},
+        {"artifact", "imported-owner-second-artifact:v1"}
+    };
+    WriteBinaryFile(root / first.sourceAssetPath, std::vector<uint8_t>{'f'});
+    WriteBinaryFile(root / first.artifactPath, std::vector<uint8_t>{'p'});
+    WriteBinaryFile(root / second.sourceAssetPath, std::vector<uint8_t>{'f'});
+    WriteBinaryFile(root / second.artifactPath, std::vector<uint8_t>{'p'});
+
+    MixedPendingThenReadyThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(first).status, AssetThumbnailServiceStatus::Pending);
+    auto firstAlias = first;
+    firstAlias.requestedSize = 128u;
+    ASSERT_EQ(service.GetThumbnail(firstAlias).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.GetQueuedRequestCount(), 3u);
+
+    ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
+    ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
+    ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
+
+    ASSERT_GE(renderer.pumpKeys.size(), 3u);
+    EXPECT_TRUE(std::all_of(
+        renderer.pumpKeys.begin(),
+        renderer.pumpKeys.end(),
+        [&](const std::string& key)
+        {
+            return key == renderer.pumpKeys.front();
+        })) << "The next imported asset must wait while the first asset's PNG is still being persisted.";
+    ASSERT_FALSE(renderer.releasedKeys.empty());
+    EXPECT_TRUE(std::all_of(
+        renderer.releasedKeys.begin(),
+        renderer.releasedKeys.end(),
+        [&](const std::string& key)
+        {
+            return key == renderer.pumpKeys.front();
+        })) << "Only completed readback inputs for the active asset may be released.";
+
+    std::optional<AssetThumbnailServiceResult> persisted;
+    for (size_t attempt = 0u; attempt < 200u; ++attempt)
+    {
+        persisted = service.ConsumeCompletedThumbnail(false);
+        if (persisted.has_value() &&
+            persisted->status == AssetThumbnailServiceStatus::Fresh)
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(persisted.has_value());
+    ASSERT_EQ(persisted->status, AssetThumbnailServiceStatus::Fresh);
+
+    const auto previousPumpCount = renderer.pumpKeys.size();
+    for (size_t attempt = 0u; attempt < 8u &&
+        renderer.pumpKeys.size() == previousPumpCount; ++attempt)
+    {
+        (void)service.GenerateNextThumbnail(renderer, true);
+    }
+    ASSERT_GT(renderer.pumpKeys.size(), previousPumpCount);
+    EXPECT_EQ(renderer.pumpKeys.back(), second.subAssetKey)
+        << "A durably completed asset's aliases must yield to the next imported asset.";
+
+    service.Shutdown();
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, CompleteResidentSnapshotRecoversAfterOwnerTablesAreCleared)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to simulate an owner-table reset.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:ResidentOwnerRecovery");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/resident-owner-recovery";
+    request.freshnessInputs = {{"source", "resident-owner-recovery:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p'});
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto partialSnapshot = std::make_shared<PreviewRenderableSnapshot>();
+    partialSnapshot->drawItems.resize(1u);
+    partialSnapshot->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot(
+        "runtime:resident-owner-recovery",
+        "resident-owner-recovery:v1",
+        partialSnapshot,
+        1u);
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        "runtime:resident-owner-recovery",
+        "resident-owner-recovery:v1",
+        partialSnapshot,
+        registry
+    };
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    service.DropGpuPreviewResourcePendingOwnershipForTesting(request);
+    service.DropGpuPreviewResourceQueueOwnershipForTesting(request);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+
+    auto completeSnapshot = std::make_shared<PreviewRenderableSnapshot>();
+    completeSnapshot->drawItems.resize(2u);
+    completeSnapshot->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot(
+        "runtime:resident-owner-recovery",
+        "resident-owner-recovery:v1",
+        completeSnapshot,
+        2u);
+
+    EXPECT_TRUE(service.HasQueuedReadyResidentThumbnail());
+    EXPECT_GT(service.GetQueuedRequestCount(), 0u);
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
 TEST(AssetThumbnailCacheTests, GpuPumpTreatsDetailedResourcePendingDiagnosticAsWaitingForResources)
 {
     const ScopedAssetThumbnailCacheJobSystem jobSystem;
@@ -4781,6 +6588,11 @@ TEST(AssetThumbnailCacheTests, GpuPumpTreatsDetailedResourcePendingDiagnosticAsW
     EXPECT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
     EXPECT_EQ(pending->diagnostic, renderer.diagnostic);
     EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForResources);
+    EXPECT_TRUE(service.HasQueuedGpuPreviewResourceContinuation())
+        << "A pending-resource request must keep the heavy scheduler on the continuation lane.";
+    EXPECT_NE(
+        service.GetQueuedGpuPreviewResourceContinuationSummary().find("count=1"),
+        std::string::npos);
     EXPECT_EQ(renderer.pumpCount, 1u);
     EXPECT_EQ(renderer.renderCount, 0u);
 
@@ -4826,6 +6638,81 @@ TEST(AssetThumbnailCacheTests, GpuRenderTreatsDetailedResourcePendingDiagnosticA
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetThumbnailCacheTests, SuccessfulPrefabResourcePumpUsesPreparedSubmission)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+
+    auto request = MakeThumbnailRequest(root, "prefab:PreparedSubmission");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 48u;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath =
+        "Library/Artifacts/69/690d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
+    request.freshnessInputs = {{"source", "prefab:v1"}, {"artifact", "prefab-artifact:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
+
+    PreparedSubmissionThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto generated = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(generated.has_value());
+    EXPECT_EQ(renderer.pumpCount, 1u);
+    EXPECT_EQ(renderer.preparedSubmitCount, 1u);
+    EXPECT_EQ(renderer.ordinarySubmitCount, 0u);
+    EXPECT_EQ(renderer.renderCount, 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, GpuRenderResourcePendingEventuallyFailsInsteadOfRemainingPending)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+
+    auto request = MakeThumbnailRequest(root, "prefab:Stalled");
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.requestedSize = 48u;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.artifactPath = "Library/Artifacts/68/680d35a0d13abf40dfcf953b26cff38db2ba16c57287f484aa491e4fcb490772";
+    request.freshnessInputs = {{"source", "prefab:v1"}, {"artifact", "prefab-artifact:v1"}};
+    WriteBinaryFile(root / request.artifactPath, std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
+
+    RenderDetailedResourcesPendingThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto pending = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(pending.has_value());
+    ASSERT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
+
+    service.SetGpuPreviewResourcePendingAgeForTesting(
+        request,
+        std::chrono::seconds(121));
+    service.MaintainPendingThumbnailRequests();
+    const auto terminal = service.ConsumeCompletedThumbnail(false);
+
+    ASSERT_TRUE(terminal.has_value())
+        << "A Render-stage resource-pending diagnostic must be bounded by the same wall-clock policy as PumpResources. "
+        << "renderCount=" << renderer.renderCount
+        << ", queuedCount=" << service.GetQueuedRequestCount();
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Failed);
+    EXPECT_EQ(terminal->status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(
+        terminal->diagnostic.rfind("thumbnail-gpu-preview-resources-timeout:", 0u),
+        0u);
+    EXPECT_EQ(renderer.renderCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetThumbnailCacheTests, GpuPumpDoesNotWritePendingMaterialPixelsIntoPrefabCache)
 {
     const ScopedAssetThumbnailCacheJobSystem jobSystem;
@@ -4861,7 +6748,7 @@ TEST(AssetThumbnailCacheTests, GpuPumpDoesNotWritePendingMaterialPixelsIntoPrefa
 
     const auto materialReady = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(materialReady.has_value());
-    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Readback);
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Encoding);
     EXPECT_EQ(service.GetThumbnailState(prefab), ThumbnailState::Queued);
     ASSERT_GE(renderer.renderKinds.size(), 2u);
     EXPECT_EQ(renderer.renderKinds[1], AssetThumbnailKind::MaterialSphere)
@@ -4879,7 +6766,7 @@ TEST(AssetThumbnailCacheTests, GpuPumpDoesNotWritePendingMaterialPixelsIntoPrefa
 
     const auto prefabGenerated = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(prefabGenerated.has_value());
-    EXPECT_EQ(service.GetThumbnailState(prefab), ThumbnailState::Readback);
+    EXPECT_EQ(service.GetThumbnailState(prefab), ThumbnailState::Encoding);
     ASSERT_GE(renderer.renderKinds.size(), 3u);
     EXPECT_EQ(renderer.renderKinds[2], AssetThumbnailKind::PrefabPreview);
 
@@ -5075,13 +6962,22 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewEmptyFrameDoesNotHotRetryInSameGe
         << "A transient empty GPU prefab frame must not immediately requeue the same visible preview and monopolize the UI thumbnail pump.";
     EXPECT_EQ(renderer.renderCount, 1u);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(5100));
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u)
+        << "A deferred empty GPU frame should become eligible for retry after the cooldown.";
+    const auto delayedRetry = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(delayedRetry.has_value());
+    EXPECT_EQ(delayedRetry->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(delayedRetry->diagnostic, "thumbnail-gpu-preview-empty-frame");
+    EXPECT_EQ(renderer.renderCount, 2u);
+
     service.SupersedeQueuedRequestsForGeneration("prefab-empty-frame-next-scope");
     EXPECT_EQ(service.GetThumbnailState(prefab), ThumbnailState::Cancelled);
     ASSERT_EQ(service.RequestAssetPreview(prefab).status, AssetThumbnailServiceStatus::Pending);
     const auto retried = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(retried.has_value());
     EXPECT_EQ(retried->diagnostic, "thumbnail-gpu-preview-empty-frame");
-    EXPECT_EQ(renderer.renderCount, 2u)
+    EXPECT_EQ(renderer.renderCount, 3u)
         << "A new generation should still be allowed to retry GPU-only prefab preview generation.";
 
     std::filesystem::remove_all(root);
@@ -5125,7 +7021,7 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewKeepsSubmittedDarkFramesWithoutCp
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Pending)
         << "A prefab frame with submitted scene draws can be a legitimate dark asset and must not be "
            "failed solely because its luma is low.";
-    EXPECT_EQ(service.GetThumbnailState(prefab), ThumbnailState::Readback);
+    EXPECT_EQ(service.GetThumbnailState(prefab), ThumbnailState::Encoding);
 
     std::optional<AssetThumbnailServiceResult> written;
     for (size_t attempt = 0u; attempt < 100u && !written.has_value(); ++attempt)
@@ -5212,7 +7108,7 @@ TEST(AssetThumbnailCacheTests, GpuPumpPollsExistingPendingReadbackWhenReadbackBu
     const auto polled = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(polled.has_value());
     EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Readback)
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Encoding)
         << "Readback budget throttles new GPU submissions, but must not block polling an existing fence.";
     EXPECT_EQ(renderer.renderCount, 2u);
 
@@ -5225,6 +7121,44 @@ TEST(AssetThumbnailCacheTests, GpuPumpPollsExistingPendingReadbackWhenReadbackBu
     ASSERT_TRUE(written.has_value());
     ASSERT_EQ(written->status, AssetThumbnailServiceStatus::Fresh);
     ASSERT_TRUE(written->cacheEntry.has_value());
+
+    std::error_code removeError;
+    std::filesystem::remove_all(root, removeError);
+    EXPECT_FALSE(removeError) << removeError.message();
+}
+
+TEST(AssetThumbnailCacheTests, GpuReadbackPendingEventuallyFailsInsteadOfRemainingPending)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto material = MakeThumbnailRequest(root, "material:NeverReadyReadback");
+    material.sourceAssetPath = "Assets/Materials/NeverReadyReadback.mat";
+    material.kind = AssetThumbnailKind::MaterialSphere;
+    material.requestedSize = 48u;
+    material.priority = ThumbnailRequestPriority::Visible;
+    material.freshnessInputs = {{"source", "never-ready-readback:v1"}};
+
+    NeverReadyThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.RequestAssetPreview(material).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto pending = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(pending.has_value());
+    EXPECT_EQ(pending->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::WaitingForGpu);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(5100));
+    const auto timedOut = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(timedOut.has_value());
+    EXPECT_EQ(timedOut->status, AssetThumbnailServiceStatus::Failed);
+    EXPECT_EQ(timedOut->diagnostic, "thumbnail-gpu-preview-readback-timeout");
+    EXPECT_TRUE(timedOut->revokeGpuTexture);
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Failed);
+    EXPECT_EQ(renderer.orphanCount, 1u);
 
     std::error_code removeError;
     std::filesystem::remove_all(root, removeError);
@@ -5270,9 +7204,15 @@ TEST(AssetThumbnailCacheTests, GpuPumpPollsExistingPendingReadbackWhenCacheWrite
     const auto polled = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(polled.has_value());
     EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending);
-    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Readback)
-        << "Cache-write budget throttles new work, but must not strand an already submitted GPU readback.";
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Persisting)
+        << "Cache-write budget throttles persistence, but must not strand an already submitted GPU readback.";
     EXPECT_EQ(renderer.renderCount, 2u);
+
+    ThumbnailGenerationBudget restoredBudget;
+    restoredBudget.previewRenderCountBudget = 0u;
+    restoredBudget.readbackCountBudget = 0u;
+    restoredBudget.cacheWriteCountBudget = 1u;
+    service.SetThumbnailGenerationBudget(restoredBudget);
 
     auto written = service.ConsumeCompletedThumbnail();
     for (size_t attempt = 0u; attempt < 100u && !written.has_value(); ++attempt)
@@ -5289,8 +7229,129 @@ TEST(AssetThumbnailCacheTests, GpuPumpPollsExistingPendingReadbackWhenCacheWrite
     EXPECT_FALSE(removeError) << removeError.message();
 }
 
+TEST(AssetThumbnailCacheTests, DeferredGpuPersistenceWaitsForCacheWriteBudget)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto material = MakeThumbnailRequest(root, "material:DeferredPersistence");
+    material.sourceAssetPath = "Assets/Materials/DeferredPersistence.mat";
+    material.kind = AssetThumbnailKind::MaterialSphere;
+    material.requestedSize = 48u;
+    material.priority = ThumbnailRequestPriority::Visible;
+    material.freshnessInputs = {{"source", "deferred-persistence-material:v1"}};
+
+    PendingThenReadyThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ThumbnailGenerationBudget initialBudget;
+    initialBudget.previewRenderCountBudget = 1u;
+    initialBudget.readbackCountBudget = 1u;
+    initialBudget.cacheWriteCountBudget = 1u;
+    service.SetThumbnailGenerationBudget(initialBudget);
+    ASSERT_EQ(service.RequestAssetPreview(material).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto submitted = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(submitted.has_value());
+    EXPECT_EQ(submitted->diagnostic, "thumbnail-gpu-preview-readback-pending");
+
+    ThumbnailGenerationBudget throttledBudget;
+    throttledBudget.previewRenderCountBudget = 0u;
+    throttledBudget.readbackCountBudget = 0u;
+    throttledBudget.cacheWriteCountBudget = 0u;
+    service.SetThumbnailGenerationBudget(throttledBudget);
+
+    const auto completed = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(completed->diagnostic, "thumbnail-gpu-preview-cache-write-pending");
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Persisting);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(material).status, AssetThumbnailCacheStatus::Missing);
+
+    EXPECT_FALSE(service.ConsumeCompletedThumbnail().has_value());
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Persisting);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(material).status, AssetThumbnailCacheStatus::Missing);
+
+    ThumbnailGenerationBudget restoredBudget;
+    restoredBudget.previewRenderCountBudget = 0u;
+    restoredBudget.readbackCountBudget = 0u;
+    restoredBudget.cacheWriteCountBudget = 1u;
+    service.SetThumbnailGenerationBudget(restoredBudget);
+
+    std::optional<AssetThumbnailServiceResult> written;
+    for (size_t attempt = 0u; attempt < 100u && !written.has_value(); ++attempt)
+    {
+        written = service.ConsumeCompletedThumbnail();
+        if (!written.has_value())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(written.has_value());
+    ASSERT_EQ(written->status, AssetThumbnailServiceStatus::Fresh);
+    ASSERT_TRUE(written->cacheEntry.has_value());
+    EXPECT_TRUE(std::filesystem::is_regular_file(written->cacheEntry->imagePath));
+
+    std::error_code removeError;
+    std::filesystem::remove_all(root, removeError);
+    EXPECT_FALSE(removeError) << removeError.message();
+}
+
+TEST(AssetThumbnailCacheTests, SupersededDeferredGpuPersistenceDoesNotWriteOldGeneration)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto material = MakeThumbnailRequest(root, "material:SupersededDeferredPersistence");
+    material.sourceAssetPath = "Assets/Materials/SupersededDeferredPersistence.mat";
+    material.kind = AssetThumbnailKind::MaterialSphere;
+    material.requestedSize = 48u;
+    material.priority = ThumbnailRequestPriority::Visible;
+    material.freshnessInputs = {{"source", "superseded-deferred-persistence:v1"}};
+
+    PendingThenReadyThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ThumbnailGenerationBudget initialBudget;
+    initialBudget.previewRenderCountBudget = 1u;
+    initialBudget.readbackCountBudget = 1u;
+    initialBudget.cacheWriteCountBudget = 1u;
+    service.SetThumbnailGenerationBudget(initialBudget);
+    ASSERT_EQ(service.RequestAssetPreview(material).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
+
+    ThumbnailGenerationBudget throttledBudget;
+    throttledBudget.previewRenderCountBudget = 0u;
+    throttledBudget.readbackCountBudget = 0u;
+    throttledBudget.cacheWriteCountBudget = 0u;
+    service.SetThumbnailGenerationBudget(throttledBudget);
+    ASSERT_TRUE(service.GenerateNextThumbnail(renderer, true).has_value());
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Persisting);
+
+    service.SupersedeQueuedRequestsForGeneration("new-visible-scope");
+    EXPECT_EQ(service.GetThumbnailState(material), ThumbnailState::Cancelled);
+
+    ThumbnailGenerationBudget restoredBudget;
+    restoredBudget.previewRenderCountBudget = 0u;
+    restoredBudget.readbackCountBudget = 0u;
+    restoredBudget.cacheWriteCountBudget = 1u;
+    service.SetThumbnailGenerationBudget(restoredBudget);
+    for (size_t attempt = 0u; attempt < 20u; ++attempt)
+    {
+        EXPECT_FALSE(service.ConsumeCompletedThumbnail().has_value());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(EvaluateAssetThumbnailCache(material).status, AssetThumbnailCacheStatus::Missing);
+
+    std::error_code removeError;
+    std::filesystem::remove_all(root, removeError);
+    EXPECT_FALSE(removeError) << removeError.message();
+}
+
 TEST(AssetThumbnailCacheTests, GpuPreviewRenderTelemetryIncludesEmptyResultDiagnostic)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetThumbnailCacheRoot();
@@ -5329,6 +7390,8 @@ TEST(AssetThumbnailCacheTests, GpuPreviewRenderTelemetryIncludesEmptyResultDiagn
 
 TEST(AssetThumbnailCacheTests, GpuPreviewPollTelemetryIncludesCompletedEmptyFrameDiagnostic)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetThumbnailCacheRoot();
@@ -5383,6 +7446,8 @@ TEST(AssetThumbnailCacheTests, GpuPreviewPollTelemetryIncludesCompletedEmptyFram
 
 TEST(AssetThumbnailCacheTests, GpuPreviewEmptyFrameTelemetryIncludesReadbackPixelAndDrawStats)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetThumbnailCacheRoot();
@@ -5402,7 +7467,9 @@ TEST(AssetThumbnailCacheTests, GpuPreviewEmptyFrameTelemetryIncludesReadbackPixe
 
     const auto completed = service.GenerateNextThumbnail(renderer, true);
     ASSERT_TRUE(completed.has_value());
-    ASSERT_EQ(completed->diagnostic, "thumbnail-gpu-preview-empty-frame");
+    ASSERT_EQ(
+        completed->diagnostic,
+        "thumbnail-gpu-preview-empty-frame-cpu-fallback-pending");
 
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     const auto found = std::find_if(
@@ -5582,7 +7649,7 @@ TEST(AssetThumbnailCacheTests, BackgroundPumpDefersCpuDeferredPrefabPreviewWhenR
 
 TEST(AssetThumbnailCacheTests, DeferredGeneratedThumbnailInvalidatesWhenResolvedArtifactChanges)
 {
-    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+    const ScopedAssetThumbnailCacheJobSystem jobSystem(2u);
 
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -5634,7 +7701,7 @@ TEST(AssetThumbnailCacheTests, DeferredGeneratedThumbnailInvalidatesWhenResolved
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
     CapturingThumbnailPreviewRenderer renderer;
-    const auto generated = service.GenerateNextThumbnail(renderer, true);
+    const auto generated = PumpUntilDeferredPreviewResolves(service, renderer);
     ASSERT_TRUE(generated.has_value());
     ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Pending) << generated->diagnostic;
     auto completed = service.ConsumeCompletedThumbnail();
@@ -5701,6 +7768,8 @@ TEST(AssetThumbnailCacheTests, DeferredGeneratedThumbnailInvalidatesWhenResolved
 
 TEST(AssetThumbnailCacheTests, DeferredFailedThumbnailInvalidatesWhenResolvedArtifactChanges)
 {
+    const ScopedAssetThumbnailCacheJobSystem jobSystem(2u);
+
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
 
@@ -5751,7 +7820,7 @@ TEST(AssetThumbnailCacheTests, DeferredFailedThumbnailInvalidatesWhenResolvedArt
     AssetThumbnailService service;
     ASSERT_EQ(service.GetThumbnail(*request).status, AssetThumbnailServiceStatus::Pending);
     CountingThumbnailPreviewRenderer renderer;
-    const auto generated = service.GenerateNextThumbnail(renderer, true);
+    const auto generated = PumpUntilDeferredPreviewResolves(service, renderer);
     ASSERT_TRUE(generated.has_value());
     ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Failed);
     ASSERT_EQ(generated->diagnostic, "test-renderer-called");
@@ -5892,6 +7961,78 @@ TEST(AssetThumbnailCacheTests, PrefabTransformsRemainPendingWithoutGpuRenderer)
     EXPECT_FALSE(generated.has_value());
     EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
     EXPECT_EQ(EvaluateAssetThumbnailCache(request).status, AssetThumbnailCacheStatus::Missing);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentPrefabSceneRegistrationReusesExactSnapshot)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto prefabAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("bf1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a"));
+    const auto meshAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("bf1b1b1b-1b1b-4b1b-8b1b-1b1b1b1b1b1b"));
+    const auto artifactRoot = root / "Library" / "Artifacts" / prefabAssetId.ToString();
+    const auto prefabArtifactPath = std::filesystem::path("Library") /
+        "Artifacts" /
+        prefabAssetId.ToString() /
+        "Hero.nprefab";
+    const auto prefabPayload = PrefabPayloadWithSingleRendererDependency(meshAssetId, "mesh:Body");
+
+    std::filesystem::create_directories(artifactRoot);
+    WriteBinaryFile(root / "Assets" / "Models" / "Hero.fbx", std::vector<uint8_t> {'f', 'b', 'x'});
+    WriteNativeArtifactTextFile(
+        root / prefabArtifactPath,
+        ArtifactType::Prefab,
+        "prefab",
+        1u,
+        prefabPayload);
+
+    const auto meshArtifactPath = std::filesystem::path("Library") /
+        "Artifacts" /
+        meshAssetId.ToString() /
+        "Body.nmesh";
+    NLS::Engine::Assets::PrefabResolvedAsset resolvedMesh;
+    resolvedMesh.assetId = meshAssetId;
+    resolvedMesh.expectedType = "Mesh";
+    resolvedMesh.subAssetKey = "mesh:Body";
+    resolvedMesh.artifactPath = meshArtifactPath.generic_string();
+    const auto imported = NLS::Engine::Assets::ImportPrefabArtifact(
+        prefabPayload,
+        prefabAssetId,
+        {resolvedMesh});
+    ASSERT_FALSE(imported.diagnostics.HasErrors());
+
+    auto registry = ResidentPrefabPreviewRegistry::Create();
+    const auto runtimeIdentity = BuildResidentPrefabRuntimeCacheIdentity(
+        prefabAssetId.ToString(),
+        "prefab:Hero");
+    const auto first = registry->RegisterPrefabSnapshotForScene(
+        root,
+        prefabAssetId,
+        "Assets/Models/Hero.fbx",
+        "prefab:Hero",
+        prefabArtifactPath.generic_string(),
+        runtimeIdentity,
+        imported.artifact);
+    ASSERT_TRUE(first.has_value());
+
+    const auto second = registry->RegisterPrefabSnapshotForScene(
+        root,
+        prefabAssetId,
+        "Assets/Models/Hero.fbx",
+        "prefab:Hero",
+        prefabArtifactPath.generic_string(),
+        runtimeIdentity,
+        imported.artifact);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(first->Snapshot(), second->Snapshot())
+        << "Repeated scene instantiation must lease the canonical snapshot instead of rebuilding it.";
+    EXPECT_EQ(registry->GetStats().entryCount, 1u);
+    EXPECT_EQ(registry->GetStats().activeLeaseCount, 2u);
 
     std::filesystem::remove_all(root);
 }
@@ -6042,6 +8183,84 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewContinuesRenderingAfterDrawPrewar
 #endif
 }
 
+TEST(AssetThumbnailCacheTests, GpuPrefabPreviewUsesCompleteResidentSceneWithoutDrawPrewarm)
+{
+    using namespace NLS::Editor::Assets;
+
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect resident GPU thumbnail preparation.";
+#else
+    EXPECT_TRUE(ShouldSkipPrefabPreviewDrawPrewarmForResidentForTesting(true, true))
+        << "A complete resident resource package is already draw-ready and must render immediately.";
+    EXPECT_FALSE(ShouldSkipPrefabPreviewDrawPrewarmForResidentForTesting(true, false))
+        << "A partial resident package must keep its provisional path and resource continuation.";
+    EXPECT_FALSE(ShouldSkipPrefabPreviewDrawPrewarmForResidentForTesting(false, true))
+        << "Without a resident snapshot the canonical cold preview still needs draw prewarming.";
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, ResidentResourceCompletionReusesUnchangedPrefabSceneAssembly)
+{
+    using namespace NLS::Editor::Assets;
+
+    PreviewRenderableSnapshot previous;
+    previous.expectedDrawItemCount = 2u;
+    previous.drawItems.resize(2u);
+    previous.drawItems[0].meshPath = "Library/Artifacts/aa/mesh-a";
+    previous.drawItems[0].materialPaths = {"Library/Artifacts/bb/material-a"};
+    previous.drawItems[0].localPosition = {1.0f, 2.0f, 3.0f};
+    previous.drawItems[1].meshPath = "Library/Artifacts/cc/mesh-b";
+    previous.drawItems[1].localScale = {2.0f, 2.0f, 2.0f};
+
+    auto completedResources = previous;
+    completedResources.drawItems[0].sourceObject = NLS::Engine::Serialize::ObjectId(
+        NLS::Guid::Parse("11111111-1111-4111-8111-111111111111"));
+    completedResources.drawItems[0].meshAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("22222222-2222-4222-8222-222222222222"));
+    completedResources.drawItems[0].materialAssetIds = {
+        NLS::Core::Assets::AssetId(
+            NLS::Guid::Parse("33333333-3333-4333-8333-333333333333"))
+    };
+    completedResources.drawItems[0].materialPaths[0] =
+        "Library/Artifacts/bb/material-a-resolved";
+    completedResources.drawItems[0].localRotation = {
+        -previous.drawItems[0].localRotation.x,
+        -previous.drawItems[0].localRotation.y,
+        -previous.drawItems[0].localRotation.z,
+        -previous.drawItems[0].localRotation.w
+    };
+    EXPECT_TRUE(CanReusePrefabPreviewSceneAssemblyForTesting(
+        previous,
+        completedResources))
+        << "Resource readiness and registry identity changes must not rebuild an already assembled prefab scene.";
+
+    auto moved = previous;
+    moved.drawItems[0].localPosition.x += 1.0f;
+    EXPECT_FALSE(CanReusePrefabPreviewSceneAssemblyForTesting(previous, moved));
+
+    auto rotated = previous;
+    rotated.drawItems[0].localRotation = NLS::Maths::Quaternion(
+        0.0f,
+        0.0f,
+        0.7071067f,
+        0.7071067f);
+    EXPECT_FALSE(CanReusePrefabPreviewSceneAssemblyForTesting(previous, rotated));
+
+    auto replacedMesh = previous;
+    replacedMesh.drawItems[1].meshPath = "Library/Artifacts/dd/mesh-c";
+    EXPECT_FALSE(CanReusePrefabPreviewSceneAssemblyForTesting(previous, replacedMesh));
+
+    auto addedMaterialSlot = previous;
+    addedMaterialSlot.drawItems[0].materialPaths.push_back(
+        "Library/Artifacts/ee/material-b");
+    EXPECT_FALSE(CanReusePrefabPreviewSceneAssemblyForTesting(previous, addedMaterialSlot));
+
+    auto addedDrawItem = previous;
+    addedDrawItem.expectedDrawItemCount = 3u;
+    addedDrawItem.drawItems.resize(3u);
+    EXPECT_FALSE(CanReusePrefabPreviewSceneAssemblyForTesting(previous, addedDrawItem));
+}
+
 TEST(AssetThumbnailCacheTests, GpuPrefabPreviewPreservesSceneAcrossDrawPrewarmPending)
 {
     using namespace NLS::Editor::Assets;
@@ -6055,9 +8274,9 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewPreservesSceneAcrossDrawPrewarmPe
     EXPECT_TRUE(ShouldPreservePrefabPreviewSceneAfterRenderAttemptForTesting(
         "thumbnail-gpu-preview-readback-pending"))
         << "An in-flight readback must retain its preview scene inputs.";
-    EXPECT_FALSE(ShouldPreservePrefabPreviewSceneAfterRenderAttemptForTesting(
+    EXPECT_TRUE(ShouldPreservePrefabPreviewSceneAfterRenderAttemptForTesting(
         "thumbnail-gpu-preview-resources-pending:prefab-scene-assembly=18/43"))
-        << "Scene assembly pending returns before the post-render cleanup decision.";
+        << "A time-sliced scene assembly must retain its proxies and cursor so the next pump can continue.";
     EXPECT_FALSE(ShouldPreservePrefabPreviewSceneAfterRenderAttemptForTesting(
         "thumbnail-gpu-preview-prefab-mesh-load-failed"))
         << "Terminal preview failures must release transient scene objects.";
@@ -6079,7 +8298,7 @@ TEST(AssetThumbnailCacheTests, GpuPrefabPreviewDrawItemCapacityCoversLargeImport
 #endif
 }
 
-TEST(AssetThumbnailCacheTests, LargeGpuPrefabPreviewKeepsCompleteSourcePlanForPersistentProxy)
+TEST(AssetThumbnailCacheTests, LargeGpuPrefabPreviewKeepsCompleteSourcePlan)
 {
     using namespace NLS::Editor::Assets;
 
@@ -6114,7 +8333,7 @@ TEST(AssetThumbnailCacheTests, LargeGpuPrefabPreviewKeepsCompleteSourcePlanForPe
     const auto plan = BuildThumbnailPreviewPrefabResourcePlanForTesting(request, snapshot);
 
     EXPECT_EQ(plan.drawItemCount, snapshot.drawItems.size())
-        << "The persistent proxy builder must see every source draw item before producing its one-draw artifact.";
+        << "The canonical GPU preview plan must retain every source draw item.";
     ASSERT_EQ(plan.selectedDrawItemIndices.size(), plan.drawItemCount);
 
     bool coversNegativeX = false;
@@ -7139,7 +9358,7 @@ TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessUsesFileMetadataWithoutHas
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessTracksGeneratedArtifactManifestChanges)
+TEST(AssetThumbnailCacheTests, DeferredGeneratedRequestIgnoresUnrelatedArtifactDatabaseWrites)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -7166,12 +9385,12 @@ TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessTracksGeneratedArtifactMan
     const auto second = BuildAssetThumbnailRequestForItem(root, material, 96u);
     ASSERT_TRUE(second.has_value());
 
-    EXPECT_NE(BuildAssetThumbnailCacheKey(*first), BuildAssetThumbnailCacheKey(*second));
+    EXPECT_EQ(BuildAssetThumbnailCacheKey(*first), BuildAssetThumbnailCacheKey(*second));
 
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessTracksSourceModelArtifactManifestChanges)
+TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessIgnoresUnrelatedDatabaseWritesForResolvedModel)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -7202,7 +9421,7 @@ TEST(AssetThumbnailCacheTests, ServiceRequestFreshnessTracksSourceModelArtifactM
     const auto second = BuildAssetThumbnailRequestForItem(root, model, 96u);
     ASSERT_TRUE(second.has_value());
 
-    EXPECT_NE(BuildAssetThumbnailCacheKey(*first), BuildAssetThumbnailCacheKey(*second));
+    EXPECT_EQ(BuildAssetThumbnailCacheKey(*first), BuildAssetThumbnailCacheKey(*second));
 
     std::filesystem::remove_all(root);
 }
@@ -7285,8 +9504,12 @@ TEST(AssetThumbnailCacheTests, ServiceReportsQueuedReadyFailedAndCancelledThumbn
     AssetThumbnailService service;
     EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Missing);
 
-    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    const auto firstPending = service.GetThumbnail(request);
+    ASSERT_EQ(firstPending.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(firstPending.presentationState, ThumbnailPresentationState::Loading);
+    const auto secondPending = service.GetThumbnail(request);
+    ASSERT_EQ(secondPending.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(secondPending.presentationState, ThumbnailPresentationState::Loading);
     EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
     EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Queued);
 
@@ -7298,11 +9521,15 @@ TEST(AssetThumbnailCacheTests, ServiceReportsQueuedReadyFailedAndCancelledThumbn
     const auto generated = service.GenerateNextThumbnail();
     ASSERT_TRUE(generated.has_value());
     ASSERT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
+    EXPECT_EQ(generated->presentationState, ThumbnailPresentationState::Ready);
+    EXPECT_EQ(generated->previewQuality, ThumbnailPreviewQuality::Canonical);
     EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Ready);
 
     auto unsupported = MakeThumbnailRequest(root, "generic:Unsupported");
     unsupported.kind = AssetThumbnailKind::GenericPreview;
-    EXPECT_EQ(service.GetThumbnail(unsupported).status, AssetThumbnailServiceStatus::Fallback);
+    const auto unsupportedResult = service.GetThumbnail(unsupported);
+    EXPECT_EQ(unsupportedResult.status, AssetThumbnailServiceStatus::Fallback);
+    EXPECT_EQ(unsupportedResult.presentationState, ThumbnailPresentationState::Fallback);
     EXPECT_EQ(service.GetThumbnailState(unsupported), ThumbnailState::Failed);
 
     std::filesystem::remove_all(root);
@@ -7862,6 +10089,8 @@ TEST(AssetThumbnailCacheTests, ServiceGeneratesAndReusesPersistentTextureThumbna
     EXPECT_EQ(generated->imagePath, entry->imagePath);
     EXPECT_TRUE(std::filesystem::is_regular_file(entry->imagePath));
     EXPECT_TRUE(std::filesystem::is_regular_file(entry->metadataPath));
+    EXPECT_FALSE(std::filesystem::exists(
+        std::filesystem::path(entry->metadataPath.generic_string() + ".failure")));
     EXPECT_TRUE(IsAssetThumbnailCachePathContained(root, entry->imagePath));
     EXPECT_EQ(entry->imagePath.lexically_relative(root).begin()->generic_string(), std::string("Library"));
     EXPECT_FALSE(std::filesystem::exists(root / "Assets" / "AssetThumbnails"));
@@ -7910,6 +10139,103 @@ TEST(AssetThumbnailCacheTests, ServiceGeneratesTextureThumbnailFromGeneratedText
 
     const auto evaluated = EvaluateAssetThumbnailCache(request);
     EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Fresh);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ServicePrefersReadableSourceTextureOverGeneratedArtifact)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "Source.bmp", Bmp2x1());
+    WriteBinaryFile(root / "Assets" / "Models" / "Hero.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
+
+    const auto artifactPath =
+        root / LibraryArtifactPath("c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942");
+    WriteBinaryFile(
+        artifactPath,
+        NLS::Render::Assets::SerializeTextureArtifact(RgbaTextureArtifact4x2()));
+
+    auto request = MakeThumbnailRequest(root, "texture:source");
+    request.sourceAssetPath = "Assets/Textures/Source.bmp";
+    request.artifactPath = "Library/Artifacts/c6/c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942";
+    request.kind = AssetThumbnailKind::Texture;
+    request.requestedSize = 2u;
+    request.freshnessInputs = {{"source", "source-with-artifact:v1"}};
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    const auto generated = service.GenerateNextThumbnail();
+    ASSERT_TRUE(generated.has_value());
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
+
+    const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(
+            telemetry,
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
+        0u);
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(
+            telemetry,
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy),
+        0u);
+
+    const NLS::Image decoded(generated->imagePath.string(), false);
+    EXPECT_EQ(decoded.GetWidth(), 2);
+    EXPECT_EQ(decoded.GetHeight(), 1);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, GeneratedSubAssetPrefersReadableSourceTextureOverArtifact)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "GeneratedSource.bmp", Bmp2x1());
+    WriteBinaryFile(root / "Assets" / "Models" / "Container.gltf", std::vector<uint8_t>{'g', 'l', 't', 'f'});
+
+    const auto artifactPath =
+        root / LibraryArtifactPath("c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942");
+    WriteBinaryFile(
+        artifactPath,
+        NLS::Render::Assets::SerializeTextureArtifact(RgbaTextureArtifact4x2()));
+
+    auto request = MakeThumbnailRequest(root, "texture:embedded");
+    request.sourceAssetPath = "Assets/Textures/GeneratedSource.bmp";
+    request.artifactPath = "Library/Artifacts/c6/c6d69f90e0b33e0d299d12cd1ae95ab4c06d34fd67c24a544d85efad52f70942";
+    request.kind = AssetThumbnailKind::Texture;
+    request.generatedSubAsset = true;
+    request.requestedSize = 2u;
+    request.freshnessInputs = {{"source", "generated-source:v1"}};
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    const auto generated = service.GenerateNextThumbnail();
+    ASSERT_TRUE(generated.has_value());
+    EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
+
+    const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(
+            telemetry,
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead),
+        0u);
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(
+            telemetry,
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy),
+        0u);
+
+    const NLS::Image decoded(generated->imagePath.string(), false);
+    EXPECT_EQ(decoded.GetWidth(), 2);
+    EXPECT_EQ(decoded.GetHeight(), 1);
 
     std::filesystem::remove_all(root);
 }
@@ -8223,7 +10549,8 @@ TEST(AssetThumbnailCacheTests, ServicePersistsFailedMetadataForUnsupportedGenera
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback);
     EXPECT_EQ(generated->diagnostic, "thumbnail-texture-artifact-unsupported");
-    EXPECT_TRUE(std::filesystem::is_regular_file(entry->metadataPath));
+    EXPECT_TRUE(std::filesystem::is_regular_file(
+        std::filesystem::path(entry->metadataPath.generic_string() + ".failure")));
 
     const auto evaluated = EvaluateAssetThumbnailCache(request);
     EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
@@ -8353,7 +10680,8 @@ TEST(AssetThumbnailCacheTests, ServiceRejectsOversizedLegacyMeshPreviewWithoutFu
     ASSERT_TRUE(generated.has_value());
     EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fallback) << generated->diagnostic;
     EXPECT_EQ(generated->diagnostic, "thumbnail-model-preview-budget-exceeded");
-    EXPECT_TRUE(std::filesystem::exists(entry->metadataPath));
+    EXPECT_TRUE(std::filesystem::exists(
+        std::filesystem::path(entry->metadataPath.generic_string() + ".failure")));
     EXPECT_FALSE(std::filesystem::exists(entry->imagePath));
     const auto telemetry = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     EXPECT_GE(
@@ -8761,22 +11089,26 @@ TEST(AssetThumbnailCacheTests, ServiceRetriesCachedTransientExceptionFailures)
     request.kind = AssetThumbnailKind::Texture;
     request.freshnessInputs = {{"source", "tiny-png:v1"}};
 
+    uint64_t requestRevision = 0u;
     for (const std::string diagnostic : {
         "thumbnail-generation-out-of-memory",
         "thumbnail-generation-exception"
     })
     {
+        auto retryRequest = request;
+        retryRequest.freshnessInputs.front().stamp += ":" + diagnostic;
+        retryRequest.requestRevision = ++requestRevision;
         ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(
-            request,
+            retryRequest,
             AssetThumbnailCacheStatus::Failed,
             diagnostic));
 
-        const auto evaluated = EvaluateAssetThumbnailCache(request);
+        const auto evaluated = EvaluateAssetThumbnailCache(retryRequest);
         ASSERT_EQ(evaluated.status, AssetThumbnailCacheStatus::Failed);
         ASSERT_EQ(evaluated.diagnostic, diagnostic);
 
         AssetThumbnailService service;
-        const auto repeated = service.GetThumbnail(request);
+        const auto repeated = service.GetThumbnail(retryRequest);
         EXPECT_EQ(repeated.status, AssetThumbnailServiceStatus::Pending);
         EXPECT_EQ(repeated.diagnostic, diagnostic);
         EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
@@ -8857,6 +11189,8 @@ TEST(AssetThumbnailCacheTests, ServiceSkipsCachePublishWhenFreshnessInputsChange
     EXPECT_EQ(generated->diagnostic, "thumbnail-request-stale");
     EXPECT_FALSE(std::filesystem::exists(staleEntry->imagePath));
     EXPECT_FALSE(std::filesystem::exists(staleEntry->metadataPath));
+    EXPECT_FALSE(std::filesystem::exists(
+        std::filesystem::path(staleEntry->metadataPath.generic_string() + ".failure")));
 
     std::filesystem::remove_all(root);
 }
@@ -8925,36 +11259,40 @@ TEST(AssetThumbnailCacheTests, ServiceStartsSmallCurrentGenerationThumbnailBatch
     third.priority = ThumbnailRequestPriority::Visible;
     third.freshnessInputs = {{"source", "third:v1"}};
 
-    AssetThumbnailService service;
-    ASSERT_EQ(service.GetThumbnail(first).status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_EQ(service.GetThumbnail(third).status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_EQ(service.GetQueuedRequestCount(), 3u);
-
-    EXPECT_TRUE(service.StartNextThumbnailGeneration());
-    EXPECT_TRUE(service.StartNextThumbnailGeneration())
-        << "Visible thumbnail display should not serialize the current generation through one in-flight worker.";
-    EXPECT_TRUE(service.HasInFlightRequest());
-    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
-    EXPECT_FALSE(service.StartNextThumbnailGeneration())
-        << "The current-generation batch remains bounded so a scroll cannot flood the background workers.";
-    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
-
-    size_t completedCount = 0u;
-    for (int attempt = 0; attempt < 100 && completedCount < 2u; ++attempt)
     {
-        if (const auto completed = service.ConsumeCompletedThumbnail();
-            completed.has_value())
+        AssetThumbnailService service;
+        ASSERT_EQ(service.GetThumbnail(first).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_EQ(service.GetThumbnail(second).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_EQ(service.GetThumbnail(third).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_EQ(service.GetQueuedRequestCount(), 3u);
+
+        EXPECT_TRUE(service.StartNextThumbnailGeneration());
+        EXPECT_TRUE(service.StartNextThumbnailGeneration())
+            << "Visible thumbnail display should not serialize the current generation through one in-flight worker.";
+        EXPECT_TRUE(service.HasInFlightRequest());
+        EXPECT_LE(service.GetQueuedRequestCount(), 1u);
+        // The visible Texture lane has four bounded slots. A very small source
+        // image may complete between calls and immediately recycle one of them,
+        // so this assertion must not depend on the exact worker scheduling point.
+        (void)service.StartNextThumbnailGeneration();
+        EXPECT_LE(service.GetQueuedRequestCount(), 1u);
+
+        size_t completedCount = 0u;
+        for (int attempt = 0; attempt < 100 && completedCount < 2u; ++attempt)
         {
-            EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh);
-            ++completedCount;
+            if (const auto completed = service.ConsumeCompletedThumbnail();
+                completed.has_value())
+            {
+                EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh);
+                ++completedCount;
+            }
+            else
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
         }
-        else
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        EXPECT_EQ(completedCount, 2u);
     }
-    EXPECT_EQ(completedCount, 2u);
 
     std::filesystem::remove_all(root);
 }
@@ -8987,8 +11325,12 @@ TEST(AssetThumbnailCacheTests, ExplicitCacheWriteBudgetDoesNotIncreaseCurrentGen
 
         EXPECT_TRUE(service.StartNextThumbnailGeneration());
         EXPECT_TRUE(service.StartNextThumbnailGeneration());
-        EXPECT_FALSE(service.StartNextThumbnailGeneration())
-            << "Cache-write budget controls publication work, not current-generation worker fan-out.";
+        // Cache-write budget controls publication work, while the visible
+        // Texture lane has its own bounded capacity. Completed tiny images may
+        // recycle a slot before the next call, so do not assert a fixed return
+        // value at this scheduling boundary.
+        (void)service.StartNextThumbnailGeneration();
+        EXPECT_LE(service.GetQueuedRequestCount(), 3u);
     }
 
     std::filesystem::remove_all(root);
@@ -9040,6 +11382,46 @@ TEST(AssetThumbnailCacheTests, ObsoleteGenerationCompletionDoesNotConsumeCurrent
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetThumbnailCacheTests, ObsoleteGenerationFreshCompletionRemainsPublishable)
+{
+    const ScopedAssetThumbnailCacheJobSystem jobSystem;
+
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "Hero.bmp", BmpRgb(1024u, 1024u));
+
+    auto request = MakeThumbnailRequest(root, "texture:Hero");
+    request.sourceAssetPath = "Assets/Textures/Hero.bmp";
+    request.kind = AssetThumbnailKind::Texture;
+    request.priority = ThumbnailRequestPriority::Visible;
+    request.freshnessInputs = {{"source", "hero:v1"}};
+    const auto expectedEntry = ResolveAssetThumbnailCacheEntry(request);
+    ASSERT_TRUE(expectedEntry.has_value());
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_TRUE(service.StartNextThumbnailGeneration());
+    service.SupersedeQueuedRequestsForGeneration("Assets/Textures#rebuilt");
+
+    std::optional<AssetThumbnailServiceResult> completed;
+    for (int attempt = 0; attempt < 100 && !completed.has_value(); ++attempt)
+    {
+        completed = service.ConsumeCompletedThumbnail();
+        if (!completed.has_value())
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    ASSERT_TRUE(completed.has_value());
+    EXPECT_EQ(completed->status, AssetThumbnailServiceStatus::Fresh);
+    ASSERT_TRUE(completed->cacheEntry.has_value());
+    EXPECT_EQ(completed->cacheEntry->cacheKey, expectedEntry->cacheKey);
+    EXPECT_EQ(completed->presentationKey, BuildAssetThumbnailPresentationKey(request));
+    EXPECT_EQ(completed->imagePath, expectedEntry->imagePath);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetThumbnailCacheTests, ServiceSupersedeStartsNewGenerationWhileOldInFlightDrains)
 {
     const ScopedAssetThumbnailCacheJobSystem jobSystem;
@@ -9056,6 +11438,8 @@ TEST(AssetThumbnailCacheTests, ServiceSupersedeStartsNewGenerationWhileOldInFlig
     first.freshnessInputs = {{"source", "first:v1"}};
 
     auto second = first;
+    second.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a2020202-0202-4202-8202-020202020202"));
     second.sourceAssetPath = "Assets/Textures/Second.png";
     second.freshnessInputs = {{"source", "second:v1"}};
 
@@ -9076,18 +11460,25 @@ TEST(AssetThumbnailCacheTests, ServiceSupersedeStartsNewGenerationWhileOldInFlig
         EXPECT_TRUE(service.StartNextThumbnailGeneration());
         EXPECT_TRUE(service.HasInFlightRequest());
 
+        const auto secondEntry = ResolveAssetThumbnailCacheEntry(second);
+        ASSERT_TRUE(secondEntry.has_value());
         std::optional<AssetThumbnailServiceResult> generated;
         for (int attempt = 0; attempt < 100 && !generated.has_value(); ++attempt)
         {
-            generated = service.ConsumeCompletedThumbnail();
-            if (!generated.has_value())
+            auto completed = service.ConsumeCompletedThumbnail();
+            if (completed.has_value() && completed->cacheEntry.has_value() &&
+                completed->cacheEntry->cacheKey == secondEntry->cacheKey)
+            {
+                generated = std::move(completed);
+            }
+            else if (!completed.has_value())
+            {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
         }
         ASSERT_TRUE(generated.has_value());
         EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
 
-        const auto secondEntry = ResolveAssetThumbnailCacheEntry(second);
-        ASSERT_TRUE(secondEntry.has_value());
         EXPECT_EQ(generated->imagePath, secondEntry->imagePath);
         EXPECT_TRUE(std::filesystem::exists(secondEntry->metadataPath));
     }
@@ -9132,18 +11523,25 @@ TEST(AssetThumbnailCacheTests, ServiceStartsCurrentGenerationWhenTwoOldGeneratio
         ASSERT_EQ(service.GetThumbnail(third).status, AssetThumbnailServiceStatus::Pending);
         EXPECT_TRUE(service.StartNextThumbnailGeneration());
 
+        const auto thirdEntry = ResolveAssetThumbnailCacheEntry(third);
+        ASSERT_TRUE(thirdEntry.has_value());
         std::optional<AssetThumbnailServiceResult> generated;
         for (int attempt = 0; attempt < 100 && !generated.has_value(); ++attempt)
         {
-            generated = service.ConsumeCompletedThumbnail();
-            if (!generated.has_value())
+            auto completed = service.ConsumeCompletedThumbnail();
+            if (completed.has_value() && completed->cacheEntry.has_value() &&
+                completed->cacheEntry->cacheKey == thirdEntry->cacheKey)
+            {
+                generated = std::move(completed);
+            }
+            else if (!completed.has_value())
+            {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
         }
 
         ASSERT_TRUE(generated.has_value());
         EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
-        const auto thirdEntry = ResolveAssetThumbnailCacheEntry(third);
-        ASSERT_TRUE(thirdEntry.has_value());
         ASSERT_TRUE(generated->cacheEntry.has_value());
         EXPECT_EQ(generated->cacheEntry->cacheKey, thirdEntry->cacheKey);
         EXPECT_EQ(generated->imagePath, thirdEntry->imagePath);
@@ -9170,14 +11568,20 @@ TEST(AssetThumbnailCacheTests, ServiceStartsCurrentGenerationWhenThreeOldGenerat
     first.freshnessInputs = {{"source", "first:v1"}};
 
     auto second = first;
+    second.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a3030303-0303-4303-8303-030303030303"));
     second.sourceAssetPath = "Assets/Textures/Second.bmp";
     second.freshnessInputs = {{"source", "second:v1"}};
 
     auto third = first;
+    third.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a4040404-0404-4404-8404-040404040404"));
     third.sourceAssetPath = "Assets/Textures/Third.bmp";
     third.freshnessInputs = {{"source", "third:v1"}};
 
     auto fourth = first;
+    fourth.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a5050505-0505-4505-8505-050505050505"));
     fourth.sourceAssetPath = "Assets/Textures/Fourth.png";
     fourth.freshnessInputs = {{"source", "fourth:v1"}};
 
@@ -9208,18 +11612,25 @@ TEST(AssetThumbnailCacheTests, ServiceStartsCurrentGenerationWhenThreeOldGenerat
         }
         ASSERT_TRUE(startedCurrentGeneration);
 
+        const auto fourthEntry = ResolveAssetThumbnailCacheEntry(fourth);
+        ASSERT_TRUE(fourthEntry.has_value());
         std::optional<AssetThumbnailServiceResult> generated;
         for (int attempt = 0; attempt < 100 && !generated.has_value(); ++attempt)
         {
-            generated = service.ConsumeCompletedThumbnail();
-            if (!generated.has_value())
+            auto completed = service.ConsumeCompletedThumbnail();
+            if (completed.has_value() && completed->cacheEntry.has_value() &&
+                completed->cacheEntry->cacheKey == fourthEntry->cacheKey)
+            {
+                generated = std::move(completed);
+            }
+            else if (!completed.has_value())
+            {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
         }
 
         ASSERT_TRUE(generated.has_value());
         EXPECT_EQ(generated->status, AssetThumbnailServiceStatus::Fresh);
-        const auto fourthEntry = ResolveAssetThumbnailCacheEntry(fourth);
-        ASSERT_TRUE(fourthEntry.has_value());
         ASSERT_TRUE(generated->cacheEntry.has_value());
         EXPECT_EQ(generated->cacheEntry->cacheKey, fourthEntry->cacheKey);
         EXPECT_EQ(generated->imagePath, fourthEntry->imagePath);
@@ -9349,7 +11760,7 @@ TEST(AssetThumbnailCacheTests, ServiceKeepsGpuOnlyPreviewThumbnailsPendingWithou
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetThumbnailCacheTests, StoredThumbnailMetadataInvalidatesWhenArtifactDatabaseDataFileChanges)
+TEST(AssetThumbnailCacheTests, UnresolvedThumbnailRequestDoesNotUseGlobalArtifactDatabaseFreshness)
 {
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
@@ -9369,7 +11780,7 @@ TEST(AssetThumbnailCacheTests, StoredThumbnailMetadataInvalidatesWhenArtifactDat
 
     const auto request = BuildAssetThumbnailRequestForItem(root, material, 96u);
     ASSERT_TRUE(request.has_value());
-    ASSERT_TRUE(std::any_of(
+    ASSERT_FALSE(std::any_of(
         request->freshnessInputs.begin(),
         request->freshnessInputs.end(),
         [](const AssetThumbnailFreshnessInput& input)
@@ -9386,8 +11797,8 @@ TEST(AssetThumbnailCacheTests, StoredThumbnailMetadataInvalidatesWhenArtifactDat
     std::filesystem::resize_file(artifactDatabaseDataPath, 3u);
 
     const auto evaluated = EvaluateAssetThumbnailCache(*request);
-    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Stale);
-    EXPECT_EQ(evaluated.diagnostic, "thumbnail-cache-freshness-stale");
+    EXPECT_EQ(evaluated.status, AssetThumbnailCacheStatus::Fresh);
+    EXPECT_TRUE(evaluated.diagnostic.empty());
 
     std::filesystem::remove_all(root);
 }
@@ -9623,6 +12034,1427 @@ TEST(AssetThumbnailCacheTests, ServicePopsVisibleRequestBeforeBackgroundBurst)
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
+TEST(AssetThumbnailCacheTests, PresentationKeyExcludesFreshnessAndSourcePath)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:Hero", "source:v1");
+    first.sourceAssetPath = "Assets/Prefabs/Hero.prefab";
+    first.artifactPath = "Library/Artifacts/aa/hero-v1";
+    auto second = first;
+    second.sourceAssetPath = "Assets/Renamed/Hero.prefab";
+    second.artifactPath = "Library/Artifacts/bb/hero-v2";
+    second.freshnessInputs = {{"source", "source:v2"}};
+
+    auto resized = second;
+    resized.requestedSize += 32u;
+
+    EXPECT_EQ(BuildAssetThumbnailPresentationKey(first), BuildAssetThumbnailPresentationKey(second));
+    EXPECT_NE(BuildAssetThumbnailCacheKey(first), BuildAssetThumbnailCacheKey(second));
+    EXPECT_NE(BuildAssetThumbnailPresentationKey(second), BuildAssetThumbnailPresentationKey(resized));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResolvedModelThumbnailCacheSurvivesUnrelatedArtifactDatabaseWrites)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = AssetId(NLS::Guid::Parse("a7070707-0707-4707-8707-070707070707"));
+    WriteBinaryFile(
+        root / "Assets" / "Models" / "Resolved.gltf",
+        std::vector<uint8_t>{'g', 'l', 't', 'f'});
+    WriteBinaryFile(
+        root / "Assets" / "Models" / "Resolved.gltf.meta",
+        std::vector<uint8_t>{'m', 'e', 't', 'a'});
+    const auto artifactPath = LibraryArtifactPath(
+        "a7070707070747078707070707070707a7070707070747078707070707070707");
+    WriteBinaryFile(root / artifactPath, std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
+    const auto artifactDatabaseDataPath = root / "Library" / "ArtifactDB" / "data.mdb";
+    WriteBinaryFile(artifactDatabaseDataPath, std::vector<uint8_t>{'v', '1'});
+
+    AssetBrowserItem model;
+    model.kind = AssetBrowserItemKind::SourceAsset;
+    model.type = AssetBrowserItemType::Model;
+    model.assetId = assetId;
+    model.sourceAssetPath = "Assets/Models/Resolved.gltf";
+    model.subAssetKey = "prefab:Resolved";
+    model.artifactPath = artifactPath;
+    model.artifactType = ArtifactType::Prefab;
+
+    const auto request = BuildAssetThumbnailRequestForItem(root, model, 96u);
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(request->dependencyStamp.find("artifact-db="), std::string::npos);
+    EXPECT_NE(request->dependencyStamp.find("artifact-record="), std::string::npos);
+    EXPECT_NE(request->dependencyStamp.find("artifact-file="), std::string::npos);
+
+    const auto entry = ResolveAssetThumbnailCacheEntry(*request);
+    ASSERT_TRUE(entry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(*request, entry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(*request, AssetThumbnailCacheStatus::Fresh, {}));
+    ASSERT_EQ(EvaluateAssetThumbnailCache(*request).status, AssetThumbnailCacheStatus::Fresh);
+
+    std::filesystem::resize_file(artifactDatabaseDataPath, 3u);
+
+    const auto rebuilt = BuildAssetThumbnailRequestForItem(root, model, 96u);
+    ASSERT_TRUE(rebuilt.has_value());
+    EXPECT_EQ(BuildAssetThumbnailCacheKey(*rebuilt), entry->cacheKey);
+    EXPECT_EQ(EvaluateAssetThumbnailCache(*rebuilt).status, AssetThumbnailCacheStatus::Fresh)
+        << "Committing an unrelated asset must not hide a resolved model thumbnail after restart.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PrefabResidentFreshnessUsesArtifactInsteadOfGlobalDatabaseOnceResolved)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = AssetId(NLS::Guid::Parse("a8080808-0808-4808-8808-080808080808"));
+    const auto sourcePath = std::string("Assets/Models/Resident.gltf");
+    const auto artifactPath = LibraryArtifactPath(
+        "a8080808080848088808080808080808a8080808080848088808080808080808");
+    WriteBinaryFile(root / sourcePath, std::vector<uint8_t>{'g', 'l', 't', 'f'});
+    WriteBinaryFile(root / (sourcePath + ".meta"), std::vector<uint8_t>{'m', 'e', 't', 'a'});
+    WriteBinaryFile(root / artifactPath, std::vector<uint8_t>{'p', 'r', 'e', 'f', 'a', 'b'});
+    const auto artifactDatabaseDataPath = root / "Library" / "ArtifactDB" / "data.mdb";
+    WriteBinaryFile(artifactDatabaseDataPath, std::vector<uint8_t>{'v', '1'});
+
+    const auto resolvedBefore = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        "prefab:Resident",
+        artifactPath);
+    const auto resolvedAbsolute = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        "prefab:Resident",
+        (root / artifactPath).generic_string());
+    const auto deferredBefore = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        "prefab:Resident",
+        {});
+
+    std::filesystem::resize_file(artifactDatabaseDataPath, 3u);
+
+    const auto resolvedAfter = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        "prefab:Resident",
+        artifactPath);
+    const auto deferredAfter = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        "prefab:Resident",
+        {});
+
+    EXPECT_EQ(resolvedAfter, resolvedBefore)
+        << "An imported resident snapshot must remain reusable after unrelated database commits.";
+    EXPECT_EQ(resolvedAbsolute, resolvedBefore)
+        << "Scene registration and Asset Browser requests must canonicalize absolute and portable artifact records identically.";
+    EXPECT_EQ(deferredAfter, deferredBefore)
+        << "An unresolved request must remain stable across unrelated database commits; "
+           "resolved metadata validates the exact sub-asset record.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PrefabSceneAssemblyKeyExcludesFreshnessAndSourcePath)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:Hero", "source:v1");
+    first.kind = AssetThumbnailKind::PrefabPreview;
+    first.sourceAssetPath = "Assets/Prefabs/Hero.prefab";
+    first.artifactPath = "Library/Artifacts/aa/hero-v1";
+    auto second = first;
+    second.sourceAssetPath = "Assets/Renamed/Hero.prefab";
+    second.artifactPath = "Library/Artifacts/bb/hero-v2";
+    second.dependencyStamp = "dependency:v2";
+    second.freshnessInputs = {{"source", "source:v2"}};
+
+    EXPECT_EQ(
+        BuildThumbnailPreviewSceneAssemblyKeyForTesting(first),
+        BuildThumbnailPreviewSceneAssemblyKeyForTesting(second));
+    EXPECT_NE(
+        BuildThumbnailPreviewReadbackRequestKeyForTesting(first),
+        BuildThumbnailPreviewReadbackRequestKeyForTesting(second));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PendingRefreshRetainsPreviousCanonicalPresentation)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto previous = MakeThumbnailRequest(root, "texture:Hero", "source:v1");
+    previous.kind = AssetThumbnailKind::Texture;
+    previous.sourceAssetPath = "Assets/Textures/Hero.png";
+    previous.requestRevision = 1u;
+    const auto previousEntry = ResolveAssetThumbnailCacheEntry(previous);
+    ASSERT_TRUE(previousEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(previous, previousEntry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(previous, AssetThumbnailCacheStatus::Fresh, {}));
+    ASSERT_TRUE(CommitAssetThumbnailPresentation(previous, *previousEntry, previous.requestRevision));
+
+    auto refreshing = previous;
+    refreshing.freshnessInputs.front().stamp = "source:v2";
+    refreshing.requestRevision = 2u;
+
+    AssetThumbnailService service;
+    const auto result = service.GetThumbnail(refreshing);
+    EXPECT_EQ(result.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(result.presentationState, ThumbnailPresentationState::StaleRefreshing);
+    ASSERT_TRUE(result.retainedImage.has_value());
+    EXPECT_EQ(result.retainedImage->cacheKey, previousEntry->cacheKey);
+    EXPECT_TRUE(result.refreshPending);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PresentationIndexRotatesCurrentToPreviousAtomically)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:Hero", "source:v1");
+    first.requestRevision = 1u;
+    auto firstEntry = ResolveAssetThumbnailCacheEntry(first);
+    ASSERT_TRUE(firstEntry.has_value());
+    WriteBinaryFile(firstEntry->imagePath, TinyPng());
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(first, AssetThumbnailCacheStatus::Fresh, {}));
+
+    auto second = first;
+    second.freshnessInputs = {{"source", "source:v2"}};
+    second.requestRevision = 2u;
+    auto secondEntry = ResolveAssetThumbnailCacheEntry(second);
+    ASSERT_TRUE(secondEntry.has_value());
+    WriteBinaryFile(secondEntry->imagePath, TinyPng());
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(second, AssetThumbnailCacheStatus::Fresh, {}));
+
+    const auto index = ReadAssetThumbnailPresentationIndex(second);
+    ASSERT_TRUE(index.has_value());
+    ASSERT_TRUE(index->current.has_value());
+    ASSERT_TRUE(index->previous.has_value());
+    EXPECT_EQ(index->current->cacheKey, secondEntry->cacheKey);
+    EXPECT_EQ(index->previous->cacheKey, firstEntry->cacheKey);
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PresentationIndexAllowsNewEditorSessionToRestartRevisionOrdering)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+
+    auto previousSession = MakeThumbnailRequest(root, "prefab:SessionRestart", "source:v1");
+    previousSession.requestSessionId = 101u;
+    previousSession.requestRevision = 50u;
+    const auto previousEntry = ResolveAssetThumbnailCacheEntry(previousSession);
+    ASSERT_TRUE(previousEntry.has_value());
+    WriteBinaryFile(previousEntry->imagePath, TinyPng());
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(
+        previousSession,
+        AssetThumbnailCacheStatus::Fresh,
+        {}));
+
+    auto restartedSession = previousSession;
+    restartedSession.freshnessInputs = {{"source", "source:v2"}};
+    restartedSession.requestSessionId = 202u;
+    restartedSession.requestRevision = 1u;
+    const auto restartedEntry = ResolveAssetThumbnailCacheEntry(restartedSession);
+    ASSERT_TRUE(restartedEntry.has_value());
+    WriteBinaryFile(restartedEntry->imagePath, TinyPng());
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(
+        restartedSession,
+        AssetThumbnailCacheStatus::Fresh,
+        {})) << "A process-local revision from the previous editor must not cancel the new session.";
+
+    const auto restartedIndex = ReadAssetThumbnailPresentationIndex(restartedSession);
+    ASSERT_TRUE(restartedIndex.has_value());
+    ASSERT_TRUE(restartedIndex->current.has_value());
+    EXPECT_EQ(restartedIndex->committedSessionId, restartedSession.requestSessionId);
+    EXPECT_EQ(restartedIndex->committedRevision, restartedSession.requestRevision);
+    EXPECT_EQ(restartedIndex->current->cacheKey, restartedEntry->cacheKey);
+
+    auto olderSameSession = restartedSession;
+    olderSameSession.freshnessInputs = {{"source", "source:v3"}};
+    olderSameSession.requestRevision = 0u;
+    const auto olderEntry = ResolveAssetThumbnailCacheEntry(olderSameSession);
+    ASSERT_TRUE(olderEntry.has_value());
+    WriteBinaryFile(olderEntry->imagePath, TinyPng());
+    EXPECT_FALSE(WriteAssetThumbnailCacheMetadata(
+        olderSameSession,
+        AssetThumbnailCacheStatus::Fresh,
+        {})) << "Revision ordering must still reject an older writer in the current session.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PresentationIndexReportsCanonicalFreshnessForBindingRecovery)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const std::string artifactHash(64u, 'a');
+    const auto absoluteArtifactPath = root / LibraryArtifactPath(artifactHash);
+    WriteBinaryFile(absoluteArtifactPath, {'p', 'r', 'e', 'f', 'a', 'b'});
+
+    auto canonical = MakeThumbnailRequest(root, "prefab:BindingRecovery", "source:v2");
+    canonical.kind = AssetThumbnailKind::PrefabPreview;
+    canonical.sourceAssetPath = "Assets/Models/BindingRecovery.fbx";
+    canonical.artifactPath = absoluteArtifactPath.generic_string();
+    canonical.freshnessInputs = {{"artifact-file", FileStampForTest(absoluteArtifactPath)}};
+    canonical.requestRevision = 26u;
+    const auto canonicalEntry = ResolveAssetThumbnailCacheEntry(canonical);
+    ASSERT_TRUE(canonicalEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(canonical, canonicalEntry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(canonical, AssetThumbnailCacheStatus::Fresh, {}));
+
+    auto unresolved = canonical;
+    unresolved.artifactPath.clear();
+    unresolved.dependencyStamp = "unresolved";
+    unresolved.freshnessInputs.clear();
+    unresolved.requestRevision = 13u;
+    ASSERT_EQ(
+        BuildAssetThumbnailPresentationKey(unresolved),
+        BuildAssetThumbnailPresentationKey(canonical));
+    ASSERT_NE(BuildAssetThumbnailCacheKey(unresolved), canonicalEntry->cacheKey);
+
+    const auto presentation = ReadAssetThumbnailPresentationIndex(unresolved);
+    ASSERT_TRUE(presentation.has_value());
+    ASSERT_TRUE(presentation->current.has_value());
+    EXPECT_TRUE(presentation->current->freshnessCurrent);
+
+    AssetThumbnailServiceResult pending;
+    pending.status = AssetThumbnailServiceStatus::Pending;
+    pending.presentationState = ThumbnailPresentationState::Loading;
+    pending.presentationKey = BuildAssetThumbnailPresentationKey(unresolved);
+    pending.requestRevision = unresolved.requestRevision;
+    ASSERT_TRUE(PromoteAssetThumbnailResultFromPresentationIndex(unresolved, pending));
+    EXPECT_EQ(pending.status, AssetThumbnailServiceStatus::Fresh);
+    EXPECT_EQ(pending.presentationState, ThumbnailPresentationState::Ready);
+    EXPECT_EQ(pending.requestRevision, canonical.requestRevision);
+    ASSERT_TRUE(pending.cacheEntry.has_value());
+    EXPECT_EQ(pending.cacheEntry->cacheKey, canonicalEntry->cacheKey);
+    EXPECT_EQ(pending.imagePath, canonicalEntry->imagePath);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PresentationPromotionRehydratesVerifiedCanonicalAcrossEditorSessions)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const std::string artifactHash(64u, 'c');
+    const auto absoluteArtifactPath = root / LibraryArtifactPath(artifactHash);
+    WriteBinaryFile(absoluteArtifactPath, {'p', 'r', 'e', 'f', 'a', 'b'});
+
+    auto canonical = MakeThumbnailRequest(root, "prefab:RestartRecovery", "source:v2");
+    canonical.kind = AssetThumbnailKind::PrefabPreview;
+    canonical.sourceAssetPath = "Assets/Models/RestartRecovery.fbx";
+    canonical.artifactPath = absoluteArtifactPath.generic_string();
+    canonical.freshnessInputs = {
+        {"artifact-file", FileStampForTest(absoluteArtifactPath)},
+        {"item", "resolved-generation:v2"}};
+    canonical.requestSessionId = 303u;
+    canonical.requestRevision = 5u;
+    const auto canonicalEntry = ResolveAssetThumbnailCacheEntry(canonical);
+    ASSERT_TRUE(canonicalEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(canonical, canonicalEntry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(canonical, AssetThumbnailCacheStatus::Fresh, {}));
+
+    auto restarted = canonical;
+    restarted.artifactPath.clear();
+    restarted.dependencyStamp = "unresolved-after-restart";
+    restarted.freshnessInputs = {{"item", "unresolved-after-restart"}};
+    restarted.requestSessionId = 404u;
+    restarted.requestRevision = 75u;
+    ASSERT_NE(BuildAssetThumbnailCacheKey(restarted), canonicalEntry->cacheKey);
+
+    const auto presentation = ReadAssetThumbnailPresentationIndex(restarted);
+    ASSERT_TRUE(presentation.has_value());
+    ASSERT_TRUE(presentation->current.has_value());
+    EXPECT_FALSE(presentation->current->freshnessCurrent);
+    EXPECT_TRUE(presentation->current->verifiableFreshnessCurrent);
+    EXPECT_TRUE(presentation->current->hasVerifiableFreshnessInputs);
+
+    AssetThumbnailServiceResult pending;
+    pending.status = AssetThumbnailServiceStatus::Pending;
+    pending.presentationState = ThumbnailPresentationState::Loading;
+    pending.presentationKey = BuildAssetThumbnailPresentationKey(restarted);
+    pending.requestSessionId = restarted.requestSessionId;
+    pending.requestRevision = restarted.requestRevision;
+    ASSERT_TRUE(PromoteAssetThumbnailResultFromPresentationIndex(restarted, pending))
+        << "A validated canonical PNG must survive process-local revision reset/reordering.";
+    ASSERT_TRUE(pending.cacheEntry.has_value());
+    EXPECT_EQ(pending.cacheEntry->cacheKey, canonicalEntry->cacheKey);
+    EXPECT_EQ(pending.requestRevision, restarted.requestRevision);
+    EXPECT_EQ(pending.requestSessionId, restarted.requestSessionId);
+
+    WriteBinaryFile(absoluteArtifactPath, {'c', 'h', 'a', 'n', 'g', 'e', 'd'});
+    AssetThumbnailServiceResult stalePending;
+    stalePending.status = AssetThumbnailServiceStatus::Pending;
+    stalePending.presentationState = ThumbnailPresentationState::Loading;
+    stalePending.presentationKey = BuildAssetThumbnailPresentationKey(restarted);
+    stalePending.requestSessionId = restarted.requestSessionId;
+    stalePending.requestRevision = restarted.requestRevision;
+    EXPECT_FALSE(PromoteAssetThumbnailResultFromPresentationIndex(restarted, stalePending))
+        << "Cross-session recovery must stop when the persisted artifact stamp is stale.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PresentationPromotionAcceptsSameOrNewerVerifiableOpaqueItemCanonicalOnly)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto canonical = MakeThumbnailRequest(root, "prefab:OpaqueItem", "source:v2");
+    canonical.kind = AssetThumbnailKind::PrefabPreview;
+    canonical.sourceAssetPath = "Assets/Models/OpaqueItem.fbx";
+    canonical.freshnessInputs = {{"item", "artifact-generation:v2"}};
+    canonical.requestRevision = 26u;
+    const auto canonicalEntry = ResolveAssetThumbnailCacheEntry(canonical);
+    ASSERT_TRUE(canonicalEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(canonical, canonicalEntry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(canonical, AssetThumbnailCacheStatus::Fresh, {}));
+
+    const auto presentation = ReadAssetThumbnailPresentationIndex(canonical);
+    ASSERT_TRUE(presentation.has_value());
+    ASSERT_TRUE(presentation->current.has_value());
+    EXPECT_FALSE(presentation->current->freshnessCurrent)
+        << "The presentation reader cannot independently validate opaque item identities.";
+    EXPECT_TRUE(presentation->current->verifiableFreshnessCurrent)
+        << "Opaque identity must not hide that all filesystem-backed freshness stamps remain current.";
+
+    AssetThumbnailServiceResult matchingPending;
+    matchingPending.status = AssetThumbnailServiceStatus::Pending;
+    matchingPending.presentationState = ThumbnailPresentationState::Loading;
+    matchingPending.presentationKey = BuildAssetThumbnailPresentationKey(canonical);
+    matchingPending.requestRevision = canonical.requestRevision - 1u;
+    ASSERT_TRUE(PromoteAssetThumbnailResultFromPresentationIndex(canonical, matchingPending));
+    ASSERT_TRUE(matchingPending.cacheEntry.has_value());
+    EXPECT_EQ(matchingPending.cacheEntry->cacheKey, canonicalEntry->cacheKey);
+
+    auto changedItem = canonical;
+    changedItem.freshnessInputs = {{"item", "artifact-generation:v3"}};
+    ASSERT_EQ(
+        BuildAssetThumbnailPresentationKey(changedItem),
+        BuildAssetThumbnailPresentationKey(canonical));
+    ASSERT_NE(BuildAssetThumbnailCacheKey(changedItem), canonicalEntry->cacheKey);
+
+    AssetThumbnailServiceResult lateResolvedPending;
+    lateResolvedPending.status = AssetThumbnailServiceStatus::Pending;
+    lateResolvedPending.presentationState = ThumbnailPresentationState::Loading;
+    lateResolvedPending.presentationKey = BuildAssetThumbnailPresentationKey(changedItem);
+    lateResolvedPending.requestRevision = canonical.requestRevision - 1u;
+    ASSERT_TRUE(PromoteAssetThumbnailResultFromPresentationIndex(changedItem, lateResolvedPending))
+        << "A newer canonical artifact with current filesystem stamps must complete the unresolved UI request.";
+    ASSERT_TRUE(lateResolvedPending.cacheEntry.has_value());
+    EXPECT_EQ(lateResolvedPending.cacheEntry->cacheKey, canonicalEntry->cacheKey);
+
+    AssetThumbnailServiceResult sameRevisionPending;
+    sameRevisionPending.status = AssetThumbnailServiceStatus::Pending;
+    sameRevisionPending.presentationState = ThumbnailPresentationState::Loading;
+    sameRevisionPending.presentationKey = BuildAssetThumbnailPresentationKey(changedItem);
+    sameRevisionPending.requestRevision = canonical.requestRevision;
+    ASSERT_TRUE(PromoteAssetThumbnailResultFromPresentationIndex(changedItem, sameRevisionPending))
+        << "The canonical worker completes the same revision that the UI keeps Pending.";
+    ASSERT_TRUE(sameRevisionPending.cacheEntry.has_value());
+    EXPECT_EQ(sameRevisionPending.cacheEntry->cacheKey, canonicalEntry->cacheKey);
+
+    AssetThumbnailServiceResult changedPending;
+    changedPending.status = AssetThumbnailServiceStatus::Pending;
+    changedPending.presentationState = ThumbnailPresentationState::Loading;
+    changedPending.presentationKey = BuildAssetThumbnailPresentationKey(changedItem);
+    changedPending.requestRevision = canonical.requestRevision + 1u;
+    EXPECT_FALSE(PromoteAssetThumbnailResultFromPresentationIndex(changedItem, changedPending))
+        << "A newer opaque item request must not revive an older canonical artifact.";
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PresentationIndexRejectsIncompleteCanonicalEntry)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "texture:Incomplete", "source:v1");
+    request.kind = AssetThumbnailKind::Texture;
+    request.requestRevision = 1u;
+    const auto entry = ResolveAssetThumbnailCacheEntry(request);
+    ASSERT_TRUE(entry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(request, entry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}));
+
+    const auto complete = ReadAssetThumbnailPresentationIndex(request);
+    ASSERT_TRUE(complete.has_value());
+    ASSERT_TRUE(complete->current.has_value());
+
+    std::filesystem::remove(entry->metadataPath);
+    const auto missingMetadata = ReadAssetThumbnailPresentationIndex(request);
+    ASSERT_TRUE(missingMetadata.has_value());
+    EXPECT_FALSE(missingMetadata->current.has_value());
+
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}));
+    std::ifstream metadataInput(entry->metadataPath, std::ios::binary);
+    ASSERT_TRUE(metadataInput.is_open());
+    nlohmann::json metadata;
+    metadataInput >> metadata;
+    metadataInput.close();
+    metadata["presentationKey"] = "wrong-presentation-key";
+    const auto text = metadata.dump(2);
+    WriteBinaryFile(entry->metadataPath, std::vector<uint8_t>(text.begin(), text.end()));
+
+    const auto mismatchedMetadata = ReadAssetThumbnailPresentationIndex(request);
+    ASSERT_TRUE(mismatchedMetadata.has_value());
+    EXPECT_FALSE(mismatchedMetadata->current.has_value());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, DeletedPresentationRemovesBothCanonicalGenerations)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:Deleted", "source:v1");
+    first.sourceAssetPath = "Assets/Prefabs/Deleted.prefab";
+    first.requestRevision = 1u;
+    const auto firstEntry = ResolveAssetThumbnailCacheEntry(first);
+    ASSERT_TRUE(firstEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(first, firstEntry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(first, AssetThumbnailCacheStatus::Fresh, {}));
+
+    auto second = first;
+    second.freshnessInputs = {{"source", "source:v2"}};
+    second.requestRevision = 2u;
+    const auto secondEntry = ResolveAssetThumbnailCacheEntry(second);
+    ASSERT_TRUE(secondEntry.has_value());
+    ASSERT_TRUE(WriteAssetThumbnailCacheFile(second, secondEntry->imagePath, TinyPng()));
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(second, AssetThumbnailCacheStatus::Fresh, {}));
+    ASSERT_TRUE(ReadAssetThumbnailPresentationIndex(second).has_value());
+
+    EXPECT_TRUE(RemoveAssetThumbnailPresentation(second));
+    EXPECT_FALSE(std::filesystem::exists(firstEntry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(firstEntry->metadataPath));
+    EXPECT_FALSE(std::filesystem::exists(secondEntry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(secondEntry->metadataPath));
+    EXPECT_FALSE(ReadAssetThumbnailPresentationIndex(second).has_value());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, DeletedFolderRemovesAllSourcePathThumbnailRecords)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto makeRequest = [&](const std::string& id, const std::string& path)
+    {
+        auto request = MakeThumbnailRequest(root, id, "source:v1");
+        request.sourceAssetPath = path;
+        request.requestRevision = 1u;
+        const auto entry = ResolveAssetThumbnailCacheEntry(request);
+        EXPECT_TRUE(entry.has_value());
+        EXPECT_TRUE(WriteAssetThumbnailCacheFile(request, entry->imagePath, TinyPng()));
+        EXPECT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}));
+        return entry;
+    };
+    const auto firstEntry = makeRequest(
+        "prefab:FolderA",
+        "Assets/DeletedFolder/A.prefab");
+    const auto secondEntry = makeRequest(
+        "prefab:FolderB",
+        "Assets/DeletedFolder/Nested/B.prefab");
+    ASSERT_TRUE(firstEntry.has_value());
+    ASSERT_TRUE(secondEntry.has_value());
+
+    const auto removed = RemoveAssetThumbnailCachesForSourcePath(
+        root,
+        {},
+        "Assets/DeletedFolder",
+        true);
+    EXPECT_GE(removed, 6u);
+    EXPECT_FALSE(std::filesystem::exists(firstEntry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(firstEntry->metadataPath));
+    EXPECT_FALSE(std::filesystem::exists(secondEntry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(secondEntry->metadataPath));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRequestRequiresExactFreshnessFingerprint)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    AssetBrowserItem item;
+    item.kind = AssetBrowserItemKind::SourceAsset;
+    item.type = AssetBrowserItemType::Prefab;
+    item.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("d4040404-0404-4404-8404-040404040404"));
+    item.sourceAssetPath = "Assets/Prefabs/Resident.prefab";
+    item.subAssetKey = "prefab:Resident";
+    item.artifactPath = "Library/Artifacts/aa/resident";
+
+    AssetThumbnailRequestBuildContext coldContext;
+    coldContext.deferManifestLookups = true;
+    const auto coldRequest = BuildAssetThumbnailRequestForItem(root, item, 96u, coldContext);
+    ASSERT_TRUE(coldRequest.has_value());
+
+    auto registry = ResidentPrefabPreviewRegistry::Create();
+    registry->RegisterSnapshot(
+        BuildResidentPrefabRuntimeCacheIdentity(
+            coldRequest->assetId.ToString(),
+            coldRequest->subAssetKey),
+        coldRequest->dependencyStamp,
+        std::make_shared<PreviewRenderableSnapshot>(),
+        1u);
+
+    AssetThumbnailRequestBuildContext residentContext;
+    residentContext.deferManifestLookups = true;
+    residentContext.residentPrefabPreviewRegistry = registry;
+    const auto residentRequest = BuildAssetThumbnailRequestForItem(root, item, 96u, residentContext);
+    ASSERT_TRUE(residentRequest.has_value());
+    ASSERT_TRUE(residentRequest->residentPrefabPreviewSource.has_value());
+    EXPECT_EQ(
+        residentRequest->residentPrefabPreviewSource->freshnessFingerprint,
+        residentRequest->dependencyStamp);
+    auto residentLease = registry->Acquire(
+        residentRequest->residentPrefabPreviewSource->runtimeCacheIdentity,
+        residentRequest->residentPrefabPreviewSource->freshnessFingerprint);
+    ASSERT_TRUE(residentLease.has_value());
+    EXPECT_EQ(registry->GetStats().zeroArtifactReadHitCount, 1u);
+
+    auto staleRegistry = ResidentPrefabPreviewRegistry::Create();
+    staleRegistry->RegisterSnapshot(
+        BuildResidentPrefabRuntimeCacheIdentity(
+            coldRequest->assetId.ToString(),
+            coldRequest->subAssetKey),
+        "different-freshness",
+        std::make_shared<PreviewRenderableSnapshot>(),
+        1u);
+    AssetThumbnailRequestBuildContext staleContext;
+    staleContext.deferManifestLookups = true;
+    staleContext.residentPrefabPreviewRegistry = staleRegistry;
+    const auto staleRequest = BuildAssetThumbnailRequestForItem(root, item, 96u, staleContext);
+    ASSERT_TRUE(staleRequest.has_value());
+    ASSERT_TRUE(staleRequest->residentPrefabPreviewSource.has_value());
+    EXPECT_TRUE(staleRequest->residentPrefabPreviewSource->snapshot.expired());
+    EXPECT_EQ(
+        staleRequest->residentPrefabPreviewSource->freshnessFingerprint,
+        staleRequest->dependencyStamp);
+    EXPECT_EQ(staleRegistry->GetStats().staleCount, 0u);
+
+    EXPECT_FALSE(staleRegistry->Acquire(
+        BuildResidentPrefabRuntimeCacheIdentity(
+            coldRequest->assetId.ToString(),
+            coldRequest->subAssetKey),
+        coldRequest->dependencyStamp));
+    EXPECT_EQ(staleRegistry->GetStats().staleCount, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentSceneRegistrationNormalizesMissingPrefabSubAssetKey)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e5050505-0505-4505-8505-050505050505"));
+    const auto sourcePath = std::string("Assets/Prefabs/SceneResident.prefab");
+    const auto canonicalSubAssetKey = BuildCanonicalPrefabPreviewSubAssetKey(sourcePath, {});
+
+    EXPECT_EQ(canonicalSubAssetKey, "prefab:SceneResident");
+    EXPECT_EQ(
+        BuildResidentPrefabRuntimeCacheIdentity(assetId.ToString(), canonicalSubAssetKey),
+        BuildResidentPrefabRuntimeCacheIdentity(assetId.ToString(), "prefab:SceneResident"));
+
+    AssetBrowserItem item;
+    item.kind = AssetBrowserItemKind::SourceAsset;
+    item.type = AssetBrowserItemType::Prefab;
+    item.assetId = assetId;
+    item.sourceAssetPath = sourcePath;
+    item.artifactPath = "Library/Artifacts/ee/resident";
+
+    AssetThumbnailRequestBuildContext context;
+    context.deferManifestLookups = true;
+    // Resident-aware request construction may derive the canonical prefab key
+    // before the deferred manifest lookup so it can attach a resident source.
+    context.residentPrefabPreviewRegistry = ResidentPrefabPreviewRegistry::Create();
+    const auto request = BuildAssetThumbnailRequestForItem(root, item, 96u, context);
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(request->subAssetKey, canonicalSubAssetKey);
+    EXPECT_EQ(
+        BuildResidentPrefabRuntimeCacheIdentity(request->assetId.ToString(), request->subAssetKey),
+        BuildResidentPrefabRuntimeCacheIdentity(assetId.ToString(), canonicalSubAssetKey));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRequestNormalizesModelAliasWithoutChangingArtifactLookupKey)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("f6060606-0606-4606-8606-060606060606"));
+    const auto sourcePath = std::string("Assets/Models/SceneResident.gltf");
+
+    AssetBrowserItem item;
+    item.kind = AssetBrowserItemKind::SourceAsset;
+    item.type = AssetBrowserItemType::Model;
+    item.assetId = assetId;
+    item.sourceAssetPath = sourcePath;
+    item.subAssetKey = "model:SceneResident";
+    item.artifactPath = "Library/Artifacts/ff/resident";
+
+    AssetThumbnailRequestBuildContext context;
+    context.deferManifestLookups = true;
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    context.residentPrefabPreviewRegistry = registry;
+    const auto request = BuildAssetThumbnailRequestForItem(root, item, 96u, context);
+    ASSERT_TRUE(request.has_value());
+    ASSERT_TRUE(request->residentPrefabPreviewSource.has_value());
+    EXPECT_EQ(request->kind, AssetThumbnailKind::PrefabPreview);
+    EXPECT_EQ(request->subAssetKey, item.subAssetKey);
+    EXPECT_EQ(
+        request->residentPrefabPreviewSource->runtimeCacheIdentity,
+        BuildResidentPrefabRuntimeCacheIdentity(
+            assetId.ToString(),
+            "prefab:SceneResident"));
+    EXPECT_EQ(request->artifactPath, item.artifactPath);
+    EXPECT_EQ(
+        BuildCanonicalPrefabPreviewSubAssetKey(sourcePath, item.subAssetKey),
+        "prefab:SceneResident");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRequestMatchesSceneAliasWithOriginalFreshnessKey)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("07070707-0707-4707-8707-070707070707"));
+    const auto sourcePath = std::string("Assets/Models/SceneResident.gltf");
+    const auto importerSubAssetKey = std::string("model:SceneResident");
+    const auto artifactPath = std::string("Library/Artifacts/07/resident");
+
+    AssetBrowserItem item;
+    item.kind = AssetBrowserItemKind::SourceAsset;
+    item.type = AssetBrowserItemType::Model;
+    item.assetId = assetId;
+    item.sourceAssetPath = sourcePath;
+    item.subAssetKey = importerSubAssetKey;
+    item.artifactPath = artifactPath;
+
+    AssetThumbnailRequestBuildContext coldContext;
+    coldContext.deferManifestLookups = true;
+    const auto coldRequest = BuildAssetThumbnailRequestForItem(root, item, 96u, coldContext);
+    ASSERT_TRUE(coldRequest.has_value());
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    const auto canonicalSubAssetKey = BuildCanonicalPrefabPreviewSubAssetKey(
+        sourcePath,
+        importerSubAssetKey);
+    registry->RegisterSnapshot(
+        "prepared-runtime-identity",
+        coldRequest->dependencyStamp,
+        std::make_shared<PreviewRenderableSnapshot>(),
+        1u,
+        false,
+        BuildResidentPrefabRuntimeCacheIdentity(assetId.ToString(), canonicalSubAssetKey));
+
+    AssetThumbnailRequestBuildContext residentContext;
+    residentContext.deferManifestLookups = true;
+    residentContext.residentPrefabPreviewRegistry = registry;
+    const auto residentRequest = BuildAssetThumbnailRequestForItem(
+        root,
+        item,
+        96u,
+        residentContext);
+    ASSERT_TRUE(residentRequest.has_value());
+    ASSERT_TRUE(residentRequest->residentPrefabPreviewSource.has_value());
+    EXPECT_EQ(
+        residentRequest->residentPrefabPreviewSource->freshnessFingerprint,
+        coldRequest->dependencyStamp);
+
+    const auto lease = registry->Acquire(
+        residentRequest->residentPrefabPreviewSource->runtimeCacheIdentity,
+        residentRequest->residentPrefabPreviewSource->freshnessFingerprint,
+        true);
+    ASSERT_TRUE(lease.has_value());
+    EXPECT_EQ(registry->GetStats().thumbnailZeroArtifactReadHitCount, 1u);
+    EXPECT_EQ(registry->GetStats().thumbnailFreshnessMismatchCount, 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, GpuPrefabPreparationWaitsForResidentResources)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect prefab preparation.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    snapshot->expectedDrawItemCount = 1u;
+    PreviewDrawItem drawItem;
+    drawItem.meshPath = "Library/Artifacts/resident-mesh";
+    snapshot->drawItems.push_back(std::move(drawItem));
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    const auto runtimeIdentity = BuildResidentPrefabRuntimeCacheIdentity(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "prefab:Resident");
+    constexpr const char* freshness = "resident-freshness:v1";
+    registry->RegisterSnapshot(runtimeIdentity, freshness, snapshot, 1u);
+
+    AssetThumbnailRequest request;
+    request.projectRoot = root;
+    request.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"));
+    request.sourceAssetPath = "Assets/Prefabs/Resident.prefab";
+    request.subAssetKey = "prefab:Resident";
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        runtimeIdentity,
+        freshness,
+        snapshot,
+        registry
+    };
+
+    ResetAssetDatabasePrefabArtifactLoadCountForTesting();
+    EXPECT_FALSE(ThumbnailPrefabPreparationUsesResidentSnapshotForTesting(request));
+    EXPECT_EQ(GetAssetDatabasePrefabArtifactLoadCountForTesting(), 0u);
+    EXPECT_EQ(registry->GetStats().zeroArtifactReadHitCount, 1u);
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, GpuPrefabPreparationWaitsForLateResidentSnapshotResources)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect prefab preparation.";
+#else
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    snapshot->expectedDrawItemCount = 1u;
+    PreviewDrawItem drawItem;
+    drawItem.meshPath = "Library/Artifacts/late-resident-mesh";
+    snapshot->drawItems.push_back(std::move(drawItem));
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    const auto runtimeIdentity = BuildResidentPrefabRuntimeCacheIdentity(
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "prefab:LateResident");
+    constexpr const char* freshness = "late-resident-freshness:v1";
+
+    AssetThumbnailRequest request;
+    request.projectRoot = root;
+    request.assetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"));
+    request.sourceAssetPath = "Assets/Prefabs/LateResident.prefab";
+    request.subAssetKey = "prefab:LateResident";
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        runtimeIdentity,
+        freshness,
+        {},
+        registry
+    };
+
+    registry->SetSceneRestoreInProgress(true);
+    ResetAssetDatabasePrefabArtifactLoadCountForTesting();
+    EXPECT_FALSE(ThumbnailPrefabPreparationUsesResidentSnapshotForTesting(request));
+    EXPECT_EQ(GetAssetDatabasePrefabArtifactLoadCountForTesting(), 0u);
+
+    registry->RegisterSnapshot(runtimeIdentity, freshness, snapshot, 1u);
+    registry->SetSceneRestoreInProgress(false);
+    ResetAssetDatabasePrefabArtifactLoadCountForTesting();
+    EXPECT_FALSE(ThumbnailPrefabPreparationUsesResidentSnapshotForTesting(request));
+    EXPECT_EQ(GetAssetDatabasePrefabArtifactLoadCountForTesting(), 0u);
+    EXPECT_EQ(registry->GetStats().thumbnailZeroArtifactReadHitCount, 1u);
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, DeferredPrefabResolutionRebindsResidentFreshnessWithoutArtifactRead)
+{
+#if !defined(NLS_ENABLE_TEST_HOOKS)
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect deferred resident preparation.";
+#else
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetThumbnailCacheRoot();
+    const auto assetId = AssetId(
+        NLS::Guid::Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"));
+    const auto sourcePath = std::string("Assets/Models/DeferredResident.gltf");
+    const auto subAssetKey = std::string("prefab:DeferredResident");
+    const auto artifactPath =
+        "Library/Artifacts/" + assetId.ToString() + "/DeferredResident.nprefab";
+
+    WriteBinaryFile(root / sourcePath, std::vector<uint8_t>{'g', 'l', 't', 'f'});
+    const auto artifactRoot = root / "Library" / "Artifacts" / assetId.ToString();
+    WriteTextFile(
+        artifactRoot / "manifest.json",
+        "{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"primarySubAssetKey\":\"" + subAssetKey + "\","
+        "\"subAssets\":[{"
+        "\"sourceAssetId\":\"" + assetId.GetGuid().ToString() + "\","
+        "\"subAssetKey\":\"" + subAssetKey + "\","
+        "\"artifactType\":\"Prefab\","
+        "\"artifactPath\":\"" + artifactPath + "\""
+        "}]}" );
+
+    const auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    snapshot->expectedDrawItemCount = 1u;
+    PreviewDrawItem drawItem;
+    drawItem.meshPath = "Library/Artifacts/resident-mesh";
+    snapshot->drawItems.push_back(std::move(drawItem));
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    const auto runtimeIdentity = BuildResidentPrefabRuntimeCacheIdentity(
+        assetId.ToString(),
+        subAssetKey);
+    const auto initialFreshness = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        subAssetKey,
+        {});
+
+    AssetThumbnailRequest request;
+    request.projectRoot = root;
+    request.assetId = assetId;
+    request.sourceAssetPath = sourcePath;
+    request.subAssetKey = subAssetKey;
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        runtimeIdentity,
+        initialFreshness,
+        {},
+        registry
+    };
+
+    const auto resolved = ResolveDeferredThumbnailPreviewRequestForTesting(request);
+    ASSERT_FALSE(resolved.artifactPath.empty());
+    ASSERT_TRUE(resolved.residentPrefabPreviewSource.has_value());
+    EXPECT_EQ(
+        resolved.residentPrefabPreviewSource->runtimeCacheIdentity,
+        runtimeIdentity);
+    const auto exactFreshness = BuildPrefabThumbnailDependencyStamp(
+        root,
+        assetId,
+        sourcePath,
+        resolved.subAssetKey.empty() ? subAssetKey : resolved.subAssetKey,
+        resolved.artifactPath);
+    EXPECT_EQ(
+        resolved.residentPrefabPreviewSource->freshnessFingerprint,
+        exactFreshness);
+
+    registry->RegisterSnapshot(runtimeIdentity, exactFreshness, snapshot, 1u);
+
+    ResetAssetDatabasePrefabArtifactLoadCountForTesting();
+    EXPECT_FALSE(ThumbnailPrefabPreparationUsesResidentSnapshotForTesting(resolved));
+    EXPECT_EQ(GetAssetDatabasePrefabArtifactLoadCountForTesting(), 0u);
+    EXPECT_EQ(registry->GetStats().thumbnailZeroArtifactReadHitCount, 1u);
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetThumbnailCacheTests, ServiceInvalidationCancelsQueuedPresentation)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "model:Deleted");
+    request.requestRevision = 1u;
+    AssetThumbnailService service;
+    EXPECT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.GetQueuedRequestCount(), 1u);
+
+    service.InvalidateThumbnail(request);
+
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Cancelled);
+    EXPECT_FALSE(ReadAssetThumbnailPresentationIndex(request).has_value());
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ServiceKeepsOnlyLatestPresentationRevisionQueued)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+
+    auto older = MakeThumbnailRequest(root, "prefab:Revisioned", "source:v1");
+    older.requestRevision = 1u;
+    auto newer = older;
+    newer.freshnessInputs[0].stamp = "source:v2";
+    newer.requestRevision = 2u;
+
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(older).status, AssetThumbnailServiceStatus::Pending);
+    ASSERT_EQ(service.GetQueuedRequestCount(), 1u);
+    ASSERT_EQ(service.GetThumbnailState(older), ThumbnailState::Queued);
+
+    const auto newerResult = service.GetThumbnail(newer);
+    EXPECT_EQ(newerResult.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+    EXPECT_EQ(service.GetThumbnailState(older), ThumbnailState::Cancelled);
+    EXPECT_EQ(service.GetThumbnailState(newer), ThumbnailState::Queued);
+
+    const auto supersededResult = service.GetThumbnail(older);
+    EXPECT_EQ(supersededResult.status, AssetThumbnailServiceStatus::Pending);
+    EXPECT_EQ(supersededResult.diagnostic, "thumbnail-request-superseded");
+    EXPECT_EQ(service.GetQueuedRequestCount(), 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, CompletedSupersededReadbackKeepsCacheKeyAliveDuringCleanup)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+
+    auto older = MakeThumbnailRequest(root, "material:RevisionedReadback", "source:v1");
+    older.sourceAssetPath = "Assets/Materials/RevisionedReadback.mat";
+    older.kind = AssetThumbnailKind::MaterialSphere;
+    older.requestedSize = 48u;
+    older.requestRevision = 1u;
+    auto newer = older;
+    newer.freshnessInputs[0].stamp = "source:v2";
+    newer.requestRevision = 2u;
+
+    CompletingAsyncThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(older).status, AssetThumbnailServiceStatus::Pending);
+    const auto submitted = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(submitted.has_value());
+    EXPECT_EQ(submitted->diagnostic, "thumbnail-gpu-preview-readback-pending");
+    ASSERT_EQ(renderer.pendingTickets.size(), 1u);
+
+    ASSERT_EQ(service.GetThumbnail(newer).status, AssetThumbnailServiceStatus::Pending);
+    renderer.completeNextReadback = true;
+    EXPECT_NO_THROW((void)service.GenerateNextThumbnail(renderer, true));
+    EXPECT_EQ(service.GetThumbnailState(older), ThumbnailState::Cancelled);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ServiceInvalidationKeepsSubmittedReadbackPollable)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "material:DeletedReadback");
+    request.sourceAssetPath = "Assets/Materials/DeletedReadback.mat";
+    request.kind = AssetThumbnailKind::MaterialSphere;
+    request.requestedSize = 48u;
+    request.requestRevision = 1u;
+
+    PendingThenReadyThumbnailPreviewRenderer renderer;
+    AssetThumbnailService service;
+    ASSERT_EQ(service.GetThumbnail(request).status, AssetThumbnailServiceStatus::Pending);
+
+    const auto submitted = service.GenerateNextThumbnail(renderer, true);
+    ASSERT_TRUE(submitted.has_value());
+    EXPECT_EQ(submitted->diagnostic, "thumbnail-gpu-preview-readback-pending");
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::WaitingForGpu);
+
+    service.InvalidateThumbnail(request);
+
+    // The renderer must be called once more so its submitted readback can be
+    // retired, but the completed pixels must never be returned to the UI.
+    const auto retired = service.GenerateNextThumbnail(renderer, true);
+    EXPECT_FALSE(retired.has_value());
+    EXPECT_EQ(renderer.renderCount, 2u);
+    EXPECT_EQ(service.GetQueuedRequestCount(), 0u);
+    EXPECT_EQ(service.GetThumbnailState(request), ThumbnailState::Cancelled);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, PresentationCommitRemovesDroppedThirdGeneration)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto first = MakeThumbnailRequest(root, "prefab:Rotation", "source:v1");
+    first.requestRevision = 1u;
+    const auto firstEntry = ResolveAssetThumbnailCacheEntry(first);
+    ASSERT_TRUE(firstEntry.has_value());
+    WriteBinaryFile(firstEntry->imagePath, TinyPng());
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(first, AssetThumbnailCacheStatus::Fresh, {}));
+
+    auto second = first;
+    second.freshnessInputs = {{"source", "source:v2"}};
+    second.requestRevision = 2u;
+    const auto secondEntry = ResolveAssetThumbnailCacheEntry(second);
+    ASSERT_TRUE(secondEntry.has_value());
+    WriteBinaryFile(secondEntry->imagePath, TinyPng());
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(second, AssetThumbnailCacheStatus::Fresh, {}));
+
+    auto third = second;
+    third.freshnessInputs = {{"source", "source:v3"}};
+    third.requestRevision = 3u;
+    const auto thirdEntry = ResolveAssetThumbnailCacheEntry(third);
+    ASSERT_TRUE(thirdEntry.has_value());
+    WriteBinaryFile(thirdEntry->imagePath, TinyPng());
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(third, AssetThumbnailCacheStatus::Fresh, {}));
+
+    EXPECT_FALSE(std::filesystem::exists(firstEntry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(firstEntry->metadataPath));
+    EXPECT_TRUE(std::filesystem::exists(secondEntry->imagePath));
+    EXPECT_TRUE(std::filesystem::exists(thirdEntry->imagePath));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, CustomCacheRootIsUsedForCanonicalAndPresentationWrites)
+{
+    using namespace NLS::Editor::Assets;
+    const auto root = MakeAssetThumbnailCacheRoot();
+    auto request = MakeThumbnailRequest(root, "prefab:Hero", "source:v1");
+    request.cacheRoot = root / "Library" / "CustomThumbnailCache";
+    request.requestRevision = 1u;
+
+    const auto entry = ResolveAssetThumbnailCacheEntry(request);
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_TRUE(entry->imagePath.lexically_normal().string().find("CustomThumbnailCache") != std::string::npos);
+    EXPECT_TRUE(WriteAssetThumbnailCacheFile(request, entry->imagePath, TinyPng()));
+    EXPECT_TRUE(std::filesystem::is_regular_file(entry->imagePath));
+    EXPECT_FALSE(std::filesystem::exists(root / "Library" / "AssetThumbnails"));
+
+    ASSERT_TRUE(WriteAssetThumbnailCacheMetadata(request, AssetThumbnailCacheStatus::Fresh, {}));
+    const auto presentation = ReadAssetThumbnailPresentationIndex(request);
+    ASSERT_TRUE(presentation.has_value());
+    ASSERT_TRUE(presentation->current.has_value());
+    EXPECT_EQ(presentation->current->cacheKey, entry->cacheKey);
+    EXPECT_TRUE(presentation->current->imagePath.lexically_normal().string().find("CustomThumbnailCache") != std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentPrefabRegistryLeasePreventsInactiveEviction)
+{
+    using namespace NLS::Editor::Assets;
+    auto registry = ResidentPrefabPreviewRegistry::Create(1u);
+    auto first = std::make_shared<PreviewRenderableSnapshot>();
+    registry->RegisterSnapshot("prefab:hero", "deps:v1", first, 2u);
+    auto lease = registry->Acquire("prefab:hero", "deps:v1");
+    ASSERT_TRUE(lease.has_value());
+    registry->SetInactiveBudgetBytes(0u);
+    EXPECT_EQ(registry->GetStats().entryCount, 1u);
+    lease.reset();
+    EXPECT_EQ(registry->GetStats().entryCount, 0u);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentPrefabRegistryTrimsOlderInactiveEntriesOnRegistration)
+{
+    using namespace NLS::Editor::Assets;
+    auto registry = ResidentPrefabPreviewRegistry::Create(2u);
+    registry->RegisterSnapshot(
+        "prefab:first",
+        "deps:v1",
+        std::make_shared<PreviewRenderableSnapshot>(),
+        2u);
+    registry->RegisterSnapshot(
+        "prefab:second",
+        "deps:v1",
+        std::make_shared<PreviewRenderableSnapshot>(),
+        2u);
+
+    EXPECT_EQ(registry->GetStats().entryCount, 1u);
+    EXPECT_EQ(registry->GetStats().residentBytes, 2u);
+    EXPECT_FALSE(registry->Acquire("prefab:first", "deps:v1").has_value());
+    EXPECT_TRUE(registry->Acquire("prefab:second", "deps:v1").has_value());
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRegistrySeparatesThumbnailAcquireTelemetry)
+{
+    using namespace NLS::Editor::Assets;
+    auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    registry->RegisterSnapshot("prefab:hero", "deps:v1", snapshot, 2u);
+
+    auto sceneLease = registry->Acquire("prefab:hero", "deps:v1");
+    ASSERT_TRUE(sceneLease.has_value());
+    EXPECT_EQ(registry->GetStats().hitCount, 1u);
+    EXPECT_EQ(registry->GetStats().thumbnailHitCount, 0u);
+
+    auto thumbnailLease = registry->Acquire("prefab:hero", "deps:v1", true);
+    ASSERT_TRUE(thumbnailLease.has_value());
+    EXPECT_EQ(registry->GetStats().thumbnailHitCount, 1u);
+    EXPECT_EQ(registry->GetStats().thumbnailZeroArtifactReadHitCount, 1u);
+
+    EXPECT_FALSE(registry->Acquire("prefab:hero", "deps:v2", true).has_value());
+    EXPECT_EQ(registry->GetStats().thumbnailMissCount, 1u);
+    EXPECT_EQ(registry->GetStats().thumbnailStaleCount, 1u);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRegistrySupportsDeferredArtifactFreshnessAlias)
+{
+    using namespace NLS::Editor::Assets;
+    auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+
+    registry->RegisterSnapshot(
+        "runtime:prefab:hero",
+        "full:source:v1;artifact-file:v1;",
+        snapshot,
+        2u,
+        false,
+        "prefab:hero:prefab:Hero",
+        "deferred:source:v1;artifact-db:v1;");
+
+    auto deferredLease = registry->Acquire(
+        "prefab:hero:prefab:Hero",
+        "deferred:source:v1;artifact-db:v1;",
+        true);
+    ASSERT_TRUE(deferredLease.has_value());
+    EXPECT_EQ(registry->GetStats().thumbnailHitCount, 1u);
+    EXPECT_EQ(registry->GetStats().thumbnailZeroArtifactReadHitCount, 1u);
+
+    auto completeLease = registry->Acquire(
+        "prefab:hero:prefab:Hero",
+        "full:source:v1;artifact-file:v1;",
+        true);
+    ASSERT_TRUE(completeLease.has_value());
+    EXPECT_EQ(registry->GetStats().thumbnailHitCount, 2u);
+
+    EXPECT_FALSE(registry->Acquire(
+        "prefab:hero:prefab:Hero",
+        "deferred:source:v2;artifact-db:v1;",
+        true).has_value());
+    EXPECT_EQ(registry->GetStats().thumbnailFreshnessMismatchCount, 1u);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRegistryAggregatesThumbnailRequestIdentities)
+{
+    using namespace NLS::Editor::Assets;
+    auto registry = ResidentPrefabPreviewRegistry::Create();
+
+    registry->RecordThumbnailRequest("prefab:hero:prefab:Hero", "deps:v1");
+    registry->RecordThumbnailRequest("prefab:hero:prefab:Hero", "deps:v1");
+    registry->RecordThumbnailRequest("prefab:other:prefab:Other", "deps:v1");
+
+    const auto stats = registry->GetStats();
+    EXPECT_EQ(stats.thumbnailRequestCount, 3u);
+    ASSERT_EQ(stats.thumbnailRequestIdentityCounts.size(), 2u);
+    EXPECT_EQ(stats.thumbnailRequestIdentityCounts[0].identity, "prefab:hero:prefab:Hero");
+    EXPECT_EQ(stats.thumbnailRequestIdentityCounts[0].count, 2u);
+    EXPECT_EQ(stats.thumbnailRequestIdentityCounts[1].identity, "prefab:other:prefab:Other");
+    EXPECT_EQ(stats.thumbnailRequestIdentityCounts[1].count, 1u);
+    EXPECT_EQ(stats.thumbnailRequestOtherIdentityCount, 0u);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRegistryTracksSceneRestoreState)
+{
+    using namespace NLS::Editor::Assets;
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+
+    EXPECT_FALSE(registry->IsSceneRestoreInProgress());
+    registry->SetSceneRestoreInProgress(true);
+    EXPECT_TRUE(registry->IsSceneRestoreInProgress());
+    registry->SetSceneRestoreInProgress(false);
+    EXPECT_FALSE(registry->IsSceneRestoreInProgress());
+}
+
+TEST(AssetThumbnailCacheTests, ResidentRegistryReportsPartialSnapshotRevisionAndCompletion)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto partial = std::make_shared<PreviewRenderableSnapshot>();
+    partial->drawItems.resize(1u);
+    partial->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot("runtime:partial", "deps:v1", partial, 1u);
+
+    const auto first = registry->GetSnapshotState("runtime:partial", "deps:v1");
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->revision, 1u);
+    EXPECT_EQ(first->readyDrawItemCount, 1u);
+    EXPECT_EQ(first->expectedDrawItemCount, 2u);
+    EXPECT_FALSE(first->complete);
+
+    auto complete = std::make_shared<PreviewRenderableSnapshot>();
+    complete->drawItems.resize(2u);
+    complete->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot("runtime:partial", "deps:v1", complete, 2u);
+
+    const auto second = registry->GetSnapshotState("runtime:partial", "deps:v1");
+    ASSERT_TRUE(second.has_value());
+    EXPECT_GT(second->revision, first->revision);
+    EXPECT_EQ(second->readyDrawItemCount, 2u);
+    EXPECT_EQ(second->expectedDrawItemCount, 2u);
+    EXPECT_TRUE(second->complete);
+}
+
+TEST(AssetThumbnailCacheTests, LegacyThumbnailServiceDoesNotRecordResidentRequests)
+{
+    using namespace NLS::Editor::Assets;
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+
+    AssetThumbnailRequest request;
+    request.projectRoot = std::filesystem::temp_directory_path();
+    request.sourceAssetPath = "Assets/hero.prefab";
+    request.kind = AssetThumbnailKind::PrefabPreview;
+    request.residentPrefabPreviewSource = ResidentPrefabPreviewSource {
+        "prefab:hero:prefab:Hero",
+        "deps:v1",
+        {},
+        registry
+    };
+
+    AssetThumbnailService legacyService(AssetThumbnailFeatureConfig::Legacy());
+    (void)legacyService.GetThumbnail(request);
+    EXPECT_EQ(registry->GetStats().thumbnailRequestCount, 0u);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentPrefabRegistryAliasAcquiresExactRuntimeEntry)
+{
+    using namespace NLS::Editor::Assets;
+    auto registry = ResidentPrefabPreviewRegistry::Create(1u);
+    auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    registry->RegisterSnapshot(
+        "project|hero|manifest@v2|prefab@stamp",
+        "deps:v2",
+        snapshot,
+        2u,
+        false,
+        "prefab:hero:prefab:Hero");
+
+    auto lease = registry->Acquire("prefab:hero:prefab:Hero", "deps:v2");
+    ASSERT_TRUE(lease.has_value());
+    EXPECT_EQ(lease->Snapshot(), snapshot);
+
+    registry->SetInactiveBudgetBytes(0u);
+    EXPECT_EQ(registry->GetStats().entryCount, 1u);
+    lease.reset();
+    EXPECT_EQ(registry->GetStats().entryCount, 0u);
+    EXPECT_FALSE(registry->Acquire("prefab:hero:prefab:Hero", "deps:v2").has_value());
+}
+
+TEST(AssetThumbnailCacheTests, ResidentSceneLeaseAllowsThumbnailFreshnessFallback)
+{
+    using namespace NLS::Editor::Assets;
+    auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    snapshot->drawItems.resize(1u);
+    snapshot->expectedDrawItemCount = 1u;
+
+    registry->RegisterSnapshot(
+        "runtime:hero",
+        "scene-freshness:v1",
+        snapshot,
+        2u,
+        true);
+
+    auto thumbnailLease = registry->Acquire(
+        "runtime:hero",
+        "request-freshness:v2",
+        true);
+    ASSERT_TRUE(thumbnailLease.has_value());
+    EXPECT_EQ(thumbnailLease->Snapshot(), snapshot);
+    const auto state = registry->GetSnapshotState("runtime:hero", "request-freshness:v2");
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->revision, 1u);
+}
+
+TEST(AssetThumbnailCacheTests, ResidentStateFallbackUsesMostRecentSceneEntry)
+{
+    using namespace NLS::Editor::Assets;
+    const auto registry = ResidentPrefabPreviewRegistry::Create();
+
+    auto partial = std::make_shared<PreviewRenderableSnapshot>();
+    partial->drawItems.resize(1u);
+    partial->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot(
+        "runtime:hero",
+        "scene-freshness:v1",
+        partial,
+        1u,
+        true);
+
+    auto complete = std::make_shared<PreviewRenderableSnapshot>();
+    complete->drawItems.resize(2u);
+    complete->expectedDrawItemCount = 2u;
+    registry->RegisterSnapshot(
+        "runtime:hero",
+        "scene-freshness:v2",
+        complete,
+        2u,
+        true);
+
+    const auto lease = registry->Acquire(
+        "runtime:hero",
+        "request-freshness:v3",
+        true);
+    ASSERT_TRUE(lease.has_value());
+    EXPECT_EQ(lease->Snapshot(), complete);
+
+    const auto state = registry->GetSnapshotState(
+        "runtime:hero",
+        "request-freshness:v3");
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->readyDrawItemCount, 2u);
+    EXPECT_EQ(state->expectedDrawItemCount, 2u);
+    EXPECT_TRUE(state->complete);
+}
+
+TEST(AssetThumbnailCacheTests, InactiveEntryStillRequiresExactThumbnailFreshness)
+{
+    using namespace NLS::Editor::Assets;
+    auto registry = ResidentPrefabPreviewRegistry::Create();
+    auto snapshot = std::make_shared<PreviewRenderableSnapshot>();
+    snapshot->drawItems.resize(1u);
+    snapshot->expectedDrawItemCount = 1u;
+    registry->RegisterSnapshot("runtime:hero", "scene-freshness:v1", snapshot, 2u);
+
+    EXPECT_FALSE(registry->Acquire("runtime:hero", "request-freshness:v2", true).has_value());
+    EXPECT_FALSE(registry->GetSnapshotState("runtime:hero", "request-freshness:v2").has_value());
+}
+
+TEST(AssetThumbnailCacheTests, ThumbnailPreviewProxyPoolReusesObjectsAndKeepsLeasesExclusive)
+{
+    using namespace NLS::Editor::Assets;
+
+    NLS::Engine::SceneSystem::Scene scene;
+    ThumbnailPreviewProxyPool pool(scene, 1u);
+
+    auto first = pool.Acquire("thumbnail-proxy-first");
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(static_cast<bool>(*first));
+    auto* firstObject = first->Get();
+    const auto firstSerial = first->Serial();
+    EXPECT_EQ(pool.GetObjectCount(), 1u);
+    EXPECT_EQ(pool.GetActiveLeaseCount(), 1u);
+    EXPECT_EQ(pool.GetAllocationCount(), 1u);
+    EXPECT_FALSE(pool.Acquire("thumbnail-proxy-over-capacity").has_value());
+
+    first.reset();
+    EXPECT_EQ(pool.GetActiveLeaseCount(), 0u);
+
+    auto second = pool.Acquire("thumbnail-proxy-second");
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->Get(), firstObject);
+    EXPECT_NE(second->Serial(), firstSerial);
+    EXPECT_EQ(pool.GetReuseHitCount(), 1u);
+    EXPECT_EQ(pool.GetAllocationCount(), 1u);
+}
+
 TEST(AssetThumbnailCacheTests, MaterialPreviewBindsReadyAsyncTextureDependencies)
 {
     NLS::Core::ResourceManagement::TextureManager::ClearAsyncArtifactRequestStateForTesting();

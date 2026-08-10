@@ -1060,7 +1060,8 @@ BaseSceneRenderer::BackgroundPreviewDrawPrewarmResult
 BaseSceneRenderer::PrewarmBackgroundPreviewDraws(
 	const Render::Data::FrameDescriptor&,
 	const size_t,
-	const size_t)
+	const size_t,
+	const std::chrono::microseconds)
 {
 	return {0u, 0u, false, true};
 }

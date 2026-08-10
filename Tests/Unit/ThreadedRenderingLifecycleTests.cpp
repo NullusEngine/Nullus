@@ -20,6 +20,7 @@
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Assets/EditorThumbnailPreviewRenderer.h"
+#include "Assets/PreviewRenderableSnapshot.h"
 #include "Guid.h"
 #include "Jobs/JobSystem.h"
 #include "Profiling/PerformanceStageStats.h"
@@ -2295,6 +2296,9 @@ TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackPollPublishesReady
     auto textureView = std::make_shared<TestTextureView>(texture, viewDesc);
     auto renderTargetLease = std::make_shared<int>(1);
     state.gpuTexture = {texture, textureView, renderTargetLease, 1u, 1u};
+    auto preparedSnapshot = std::make_shared<NLS::Editor::Assets::PreviewRenderableSnapshot>();
+    preparedSnapshot->expectedDrawItemCount = 1u;
+    state.previewSnapshot = preparedSnapshot;
 
     const auto polled = NLS::Editor::Assets::PollEditorThumbnailPreviewReadback(
         state,
@@ -2308,6 +2312,7 @@ TEST(ThreadedRenderingLifecycleTests, ThumbnailPreviewReadbackPollPublishesReady
     EXPECT_EQ(polled.preview.gpuTexture.textureView, textureView);
     EXPECT_EQ(polled.preview.gpuTexture.renderTargetLease, renderTargetLease);
     EXPECT_TRUE(polled.preview.gpuTexture.IsValid());
+    EXPECT_EQ(polled.preview.previewSnapshot, preparedSnapshot);
     EXPECT_EQ(completion->waitCalls, 0u);
     EXPECT_FALSE(state.active);
 }
@@ -5634,6 +5639,31 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiOverlayPassRecordsSnapshotDrawsT
     EXPECT_EQ(submittedCommandBuffer->lastRenderPassDesc.colorAttachments[0].loadOp, NLS::Render::RHI::LoadOp::Load);
     EXPECT_EQ(submittedCommandBuffer->lastRenderPassDesc.renderArea.width, 128u);
     EXPECT_EQ(submittedCommandBuffer->lastRenderPassDesc.renderArea.height, 72u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, SnapshotPackageCarriesPostSubmitTextureReadbackState)
+{
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 912u;
+
+    auto state = std::make_shared<NLS::Render::Context::PostSubmitTextureReadbackState>();
+    NLS::Render::Context::PostSubmitTextureReadbackRequest request;
+    request.state = state;
+    snapshot.postSubmitTextureReadbacks.push_back(std::move(request));
+
+    {
+        std::lock_guard lock(state->mutex);
+        EXPECT_FALSE(state->carriedIntoRenderScenePackage);
+        EXPECT_EQ(state->renderScenePackageFrameId, 0u);
+    }
+
+    const auto package = NLS::Render::Context::BuildSnapshotOwnedRenderScenePackage(snapshot);
+    ASSERT_EQ(package.postSubmitTextureReadbacks.size(), 1u);
+    {
+        std::lock_guard lock(state->mutex);
+        EXPECT_TRUE(state->carriedIntoRenderScenePackage);
+        EXPECT_EQ(state->renderScenePackageFrameId, snapshot.frameId);
+    }
 }
 
 TEST(ThreadedRenderingLifecycleTests, ThreadedVisibleFrameRecordsPreparedDrawBindingsAndMeshByDefault)
@@ -17400,4 +17430,39 @@ TEST(ThreadedRenderingLifecycleTests, PostSubmitBufferReadbackRejectsUnsafeGpuQu
     EXPECT_NE(preReadbackBody.find("post-submit buffer readback rejected because RHI device is lost or GPU work is quarantined"), std::string::npos);
     EXPECT_NE(preReadbackBody.find("request.state->beginAttempted = true"), std::string::npos);
     EXPECT_NE(preReadbackBody.find("request.state->beginSucceeded = false"), std::string::npos);
+}
+
+TEST(ThreadedRenderingLifecycleTests, PostSubmitTextureReadbackTerminatesOnThreadedFrameEarlyExit)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RhiThreadCoordinator.cpp";
+    std::ifstream input(sourcePath);
+    const std::string source{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(source.empty());
+    const auto failHelper = source.find("void FailPostSubmitTextureReadbacks");
+    const auto submitFrame = source.find("RhiSubmissionFrame Detail::SubmitThreadedRhiFrame");
+    ASSERT_NE(failHelper, std::string::npos);
+    ASSERT_NE(submitFrame, std::string::npos);
+
+    const auto helperBody = source.substr(failHelper, submitFrame - failHelper);
+    EXPECT_NE(helperBody.find("request.state->beginAttempted = true"), std::string::npos);
+    EXPECT_NE(helperBody.find("request.state->beginInProgress = false"), std::string::npos);
+    EXPECT_NE(helperBody.find("request.state->beginSucceeded = false"), std::string::npos);
+    EXPECT_NE(helperBody.find("RHIReadbackStatusCode::BackendFailure"), std::string::npos);
+    EXPECT_NE(helperBody.find("request.state->completion.reset()"), std::string::npos);
+
+    const auto submitBody = source.substr(submitFrame);
+    size_t callOffset = 0u;
+    size_t callCount = 0u;
+    while ((callOffset = submitBody.find("FailPostSubmitTextureReadbacks(", callOffset)) != std::string::npos)
+    {
+        ++callCount;
+        callOffset += std::strlen("FailPostSubmitTextureReadbacks(");
+    }
+    EXPECT_EQ(callCount, 3u)
+        << "Begin-frame, command-recording, and telemetry early exits must all terminate texture readbacks.";
 }

@@ -69,6 +69,9 @@ NLS_CORE_API std::string ComputeNativeArtifactPayloadHash(const uint8_t* payload
 NLS_CORE_API std::string ComputeNativeArtifactDependencyHash(const std::vector<AssetDependencyRecord>& dependencies);
 NLS_CORE_API std::vector<uint8_t> WriteNativeArtifactContainer(
     NativeArtifactMetadata metadata,
+    std::span<const uint8_t> payload);
+NLS_CORE_API std::vector<uint8_t> WriteNativeArtifactContainer(
+    NativeArtifactMetadata metadata,
     const std::vector<uint8_t>& payload);
 NLS_CORE_API std::optional<NativeArtifactContainer> ReadNativeArtifactContainer(
     const std::vector<uint8_t>& bytes,

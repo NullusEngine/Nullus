@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,10 @@ struct NLS_RENDER_API MeshRuntimeUploadResult
     bool ready = false;
     bool success = false;
     std::unique_ptr<NLS::Render::Resources::Mesh> mesh;
+    // Threaded RHI recording transfers the CPU-resolved payload instead of
+    // constructing a Mesh there. The owning resource manager materializes the
+    // GPU-backed Mesh after consuming this result on its normal thread.
+    std::optional<MeshRuntimeUploadRequest> uploadRequest;
     std::string diagnostic;
 };
 }

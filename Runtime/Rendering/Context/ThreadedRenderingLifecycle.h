@@ -324,6 +324,11 @@ namespace NLS::Render::Context
         std::shared_ptr<RHI::RHICompletionToken> completion;
         RHI::RHIReadbackStatusCode resultCode = RHI::RHIReadbackStatusCode::InvalidArgument;
         std::string resultMessage;
+        // Set while the immutable frame snapshot is converted into the
+        // render-thread package. This distinguishes a request that was never
+        // carried into the submitted frame from one waiting for the GPU fence.
+        bool carriedIntoRenderScenePackage = false;
+        uint64_t renderScenePackageFrameId = 0u;
         bool beginAttempted = false;
         bool beginInProgress = false;
         bool beginSucceeded = false;

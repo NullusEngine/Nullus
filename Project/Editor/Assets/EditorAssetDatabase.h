@@ -176,6 +176,10 @@ struct AssetPreimportRequest
     AssetPreimportReason reason = AssetPreimportReason::EditorStartup;
     std::vector<std::filesystem::path> changedPaths;
     std::vector<std::string> candidateAssetPaths;
+    // The startup cache has already verified every referenced artifact payload.
+    bool startupCacheValidatedArtifactPayloads = false;
+    // Source contents, dependencies, and manifest freshness were verified by the startup cache.
+    bool startupCacheValidatedManifestFreshness = false;
 };
 
 class AssetPreimportScheduler

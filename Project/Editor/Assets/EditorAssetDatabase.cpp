@@ -394,9 +394,10 @@ std::vector<std::string> CollectPreimportableAssets(AssetDatabaseFacade& databas
 
 bool IsWarmPreimportableAsset(
     AssetDatabaseFacade& database,
-    const std::string& assetPath)
+    const std::string& assetPath,
+    const bool artifactManifestCurrent)
 {
-    if (!database.IsArtifactManifestCurrentForAssetPath(assetPath))
+    if (!artifactManifestCurrent)
         return false;
 
     const auto assetType = NLS::Core::Assets::InferAssetType(assetPath);
@@ -611,14 +612,25 @@ AssetPreimportPlan AssetPreimportScheduler::BuildPlan(
             continue;
         }
 
-        auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
-        if (!AssetMatchesChangedPaths(database, assetPath, request.changedPaths) &&
-            (!manifest.has_value() || !ManifestMatchesChangedPaths(database, assetPath, *manifest, request.changedPaths)))
-        {
+        if (request.startupCacheValidatedManifestFreshness)
             continue;
+
+        if (!AssetMatchesChangedPaths(database, assetPath, request.changedPaths))
+        {
+            const auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
+            if (!manifest.has_value() ||
+                !ManifestMatchesChangedPaths(database, assetPath, *manifest, request.changedPaths))
+            {
+                continue;
+            }
         }
 
-        if (IsWarmPreimportableAsset(database, assetPath))
+        const bool artifactManifestCurrent = database.IsArtifactManifestCurrentForAssetPath(
+            assetPath,
+            request.startupCacheValidatedArtifactPayloads);
+        if (request.startupCacheValidatedArtifactPayloads && artifactManifestCurrent)
+            continue;
+        if (IsWarmPreimportableAsset(database, assetPath, artifactManifestCurrent))
         {
             continue;
         }
@@ -674,7 +686,11 @@ bool AssetPreimportScheduler::RunAlreadyPlanned(
         {
             continue;
         }
-        if (forcePreimport && IsWarmPreimportableAsset(database, assetPath))
+        if (forcePreimport &&
+            IsWarmPreimportableAsset(
+                database,
+                assetPath,
+                database.IsArtifactManifestCurrentForAssetPath(assetPath)))
             continue;
         pendingAssetPaths.push_back(assetPath);
     }
@@ -685,13 +701,24 @@ bool AssetPreimportScheduler::RunAlreadyPlanned(
         database.BeginArtifactDatabaseFlushBatch();
 
     bool allSucceeded = true;
-    for (const auto& assetPath : pendingAssetPaths)
+    if (pendingAssetPaths.size() > 1u)
     {
-        const auto imported = forcePreimport
-            ? database.ReimportAssetFromCurrentDatabase(assetPath, progressTracker, batchTotalAssets)
-            : database.ImportAssetFromCurrentDatabase(assetPath, progressTracker, batchTotalAssets);
-        if (!imported)
-            allSucceeded = false;
+        allSucceeded = database.ImportAssetsWithParallelModelPreparation(
+            std::span<const std::string>(pendingAssetPaths.data(), pendingAssetPaths.size()),
+            progressTracker,
+            forcePreimport,
+            batchTotalAssets);
+    }
+    else
+    {
+        for (const auto& assetPath : pendingAssetPaths)
+        {
+            const auto imported = forcePreimport
+                ? database.ReimportAssetFromCurrentDatabase(assetPath, progressTracker, batchTotalAssets)
+                : database.ImportAssetFromCurrentDatabase(assetPath, progressTracker, batchTotalAssets);
+            if (!imported)
+                allSucceeded = false;
+        }
     }
 
     if (batchArtifactDatabaseFlush && !database.EndArtifactDatabaseFlushBatch())

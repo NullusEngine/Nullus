@@ -18,9 +18,12 @@
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDatabase.h"
+#include "Assets/EditorThumbnailPreviewRenderer.h"
 #include "Assets/ExternalAssetImporter.h"
 #include "Assets/ModelTextureReferenceResolver.h"
 #include "Assets/PrefabEditorWorkflow.h"
+#include "Assets/ResidentPrefabPreviewRegistry.h"
+#include "Assets/AssetThumbnailService.h"
 #include "Core/ServiceLocator.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
@@ -1427,10 +1430,21 @@ TEST(AssetDatabaseFacadeTests, ImportModelSceneWritesInternalArtifactsAndGenerat
             ]
         })");
 
+    const auto residentPreviewRegistry = ResidentPrefabPreviewRegistry::Create();
     AssetDatabaseFacade database({root});
+    database.SetResidentPrefabPreviewRegistry(residentPreviewRegistry);
     ASSERT_TRUE(database.Refresh());
     RegisterStandardPbrFreshnessOnlyDependency(database, root);
     ASSERT_TRUE(database.ImportAsset("Assets/Models/Hero.gltf"));
+
+    const auto importedModelAssetId = ParseAssetId(
+        database.AssetPathToGUID("Assets/Models/Hero.gltf"));
+    EXPECT_GT(residentPreviewRegistry->GetThumbnailWakeRevision(), 0u);
+    EXPECT_TRUE(residentPreviewRegistry->HasSnapshotForRuntimeCacheIdentity(
+        BuildResidentPrefabRuntimeCacheIdentity(
+            importedModelAssetId.ToString(),
+            "prefab:Hero")));
+    EXPECT_EQ(residentPreviewRegistry->GetStats().entryCount, 1u);
 
     const auto allAssets = database.LoadAllAssetsAtPath("Assets/Models/Hero.gltf");
     ASSERT_EQ(allAssets.size(), 3u);
@@ -1454,6 +1468,29 @@ TEST(AssetDatabaseFacadeTests, ImportModelSceneWritesInternalArtifactsAndGenerat
     ASSERT_TRUE(mainAsset.has_value());
     EXPECT_EQ(mainAsset->subAssetKey, "prefab:Hero");
     EXPECT_EQ(mainAsset->artifactType, ArtifactType::Prefab);
+
+    AssetBrowserItem thumbnailItem;
+    thumbnailItem.kind = AssetBrowserItemKind::SourceAsset;
+    thumbnailItem.type = AssetBrowserItemType::Model;
+    thumbnailItem.assetId = importedModelAssetId;
+    thumbnailItem.projectRelativePath = "Assets/Models/Hero.gltf";
+    thumbnailItem.sourceAssetPath = thumbnailItem.projectRelativePath;
+    thumbnailItem.subAssetKey = "model:Hero";
+    AssetThumbnailRequestBuildContext thumbnailContext;
+    thumbnailContext.assetDatabaseSnapshot = AssetDatabaseFacade::CreateReadOnlySnapshot(database);
+    thumbnailContext.residentPrefabPreviewRegistry = residentPreviewRegistry;
+    const auto thumbnailRequest = BuildAssetThumbnailRequestForItem(
+        root,
+        thumbnailItem,
+        96u,
+        thumbnailContext);
+    ASSERT_TRUE(thumbnailRequest.has_value());
+    ASSERT_TRUE(thumbnailRequest->residentPrefabPreviewSource.has_value());
+    EXPECT_TRUE(thumbnailRequest->residentPrefabPreviewSource->allowArtifactResourceLoading);
+    ResetAssetDatabasePrefabArtifactLoadCountForTesting();
+    EXPECT_TRUE(ThumbnailPrefabPreparationUsesResidentSnapshotForTesting(*thumbnailRequest));
+    EXPECT_EQ(GetAssetDatabasePrefabArtifactLoadCountForTesting(), 0u)
+        << "Import-time preview topology must avoid reopening the committed Prefab graph.";
 
     const auto prefabRecord = database.LoadSubAssetAtPath("Assets/Models/Hero.gltf", "prefab:Hero");
     ASSERT_TRUE(prefabRecord.has_value());

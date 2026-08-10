@@ -9,6 +9,8 @@
 #include "CoreDef.h"
 #include "Resources/Material.h"
 
+#include <functional>
+#include <optional>
 #include <unordered_set>
 
 namespace NLS::Core::ResourceManagement
@@ -52,7 +54,39 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
         virtual Material* LoadArtifactWithoutTextures(const std::string& p_path);
         virtual Material* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
         virtual Material* RequestAsyncArtifactForPreview(const std::string& p_path, bool p_cancelableInterest = false);
+        struct AsyncPreviewRequestResult
+        {
+            Material* resource = nullptr;
+            bool pending = false;
+            bool failed = false;
+        };
+
+        // Thumbnail pumps must not wait for scene/import transactions or the
+        // shared async request table. nullopt means the request should be
+        // retried on a later pump.
+        virtual std::optional<AsyncPreviewRequestResult> TryRequestAsyncArtifactForPreview(
+            const std::string& p_path,
+            bool p_cancelableInterest = false,
+            bool p_waitForResourceTable = false);
+
+        enum class AsyncArtifactLoadProbeResult
+        {
+            Pending,
+            Failed,
+            Missing,
+            Busy
+        };
+
+        virtual AsyncArtifactLoadProbeResult TryProbeAsyncArtifactLoad(
+            const std::string& p_path) const;
         virtual Material* FindRegisteredMaterialByEquivalentArtifactPath(const std::string& p_path);
+        // Looks up the already-resolved artifact identity without resolving
+        // the source path or touching the filesystem again.
+        Material* FindRegisteredMaterialByResolvedArtifactPath(const std::string& p_realPath) const;
+        // Returns nullopt when the material index is busy. An engaged optional
+        // containing nullptr is a completed miss.
+        std::optional<Material*> TryFindRegisteredMaterialByResolvedArtifactPath(
+            const std::string& p_realPath) const;
         ResourceHandle<Material> AcquireMaterialHandle(
             ResourceLifetimeRegistry& registry,
             const std::string& ownerToken,
@@ -61,6 +95,23 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
             size_t estimatedBytes = 0u)
         {
             return AcquireResourceHandle(
+                registry,
+                ResourceLifetimeAcquireRequest {
+                    ownerToken,
+                ResourceLifetimeResourceType::Material,
+                    path,
+                    estimatedBytes,
+                    ownerKind });
+        }
+
+        ResourceHandle<Material> AcquireRegisteredMaterialHandle(
+            ResourceLifetimeRegistry& registry,
+            const std::string& ownerToken,
+            const std::string& path,
+            ResourceLifetimeOwnerKind ownerKind = ResourceLifetimeOwnerKind::SceneInstance,
+            size_t estimatedBytes = 0u)
+        {
+            return AcquireRegisteredResourceHandle(
                 registry,
                 ResourceLifetimeAcquireRequest {
                     ownerToken,
@@ -84,7 +135,11 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
         bool IsAsyncArtifactLoadPending(const std::string& p_path) const;
         bool IsAsyncArtifactLoadFailed(const std::string& p_path) const;
         void PumpAsyncLoads(size_t p_maxCompletions = 1u);
-        void PumpAsyncLoadsForPaths(const std::unordered_set<std::string>& p_paths, size_t p_maxCompletions = 1u);
+        void PumpAsyncLoadsForPaths(
+            const std::unordered_set<std::string>& p_paths,
+            size_t p_maxCompletions = 1u,
+            const std::function<bool()>& p_shouldStop = {},
+            bool p_allowReadyCompletionAfterStop = false);
         static AsyncArtifactRequestDiagnostics GetAsyncArtifactRequestDiagnostics();
 #if defined(NLS_ENABLE_TEST_HOOKS)
         static void ClearAsyncArtifactRequestStateForTesting();
@@ -103,6 +158,10 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
         void OnAllResourcesUnregistered() override;
 
     private:
+        Material* RequestAsyncArtifactInternal(
+            const std::string& p_path,
+            bool p_cancelableInterest,
+            bool p_previewPriority);
         void IndexMaterialPath(const std::string& p_path, Material* p_resource);
         void RemoveMaterialPathIndexEntries(const std::string& p_path, Material* p_resource);
         void RebuildMaterialPathIndex();

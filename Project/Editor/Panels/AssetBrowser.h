@@ -20,13 +20,16 @@
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Layout/TreeNode.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
+#include <Rendering/RHI/RHITypes.h>
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetThumbnailAtlas.h"
 #include "Assets/AssetThumbnailPool.h"
 #include "Assets/AssetThumbnailRenderScheduler.h"
 #include "Assets/AssetThumbnailService.h"
 #include "Assets/ThumbnailRendererRegistry.h"
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/EditorStartupAssetPreimport.h"
+#include "Assets/ResidentPrefabPreviewRegistry.h"
 struct ImVec2;
 namespace NLS::Render::Resources
 {
@@ -34,6 +37,7 @@ class Texture2D;
 }
 namespace NLS::Render::RHI
 {
+class RHITexture;
 class RHITextureView;
 }
 namespace NLS::Engine
@@ -69,16 +73,48 @@ struct AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot
     size_t fallbackDrawCount = 0u;
     size_t typeFallbackDrawCount = 0u;
     size_t droppedPathCount = 0u;
+    std::vector<AssetBrowserThumbnailDrawOutcomePathTotal> requestBuildFailurePathTotals;
     std::vector<AssetBrowserThumbnailDrawOutcomePathTotal> pathTotals;
+    size_t initialVisibleThumbnailCount = 0u;
+    // Explicit fallback presentations are excluded from canonical fill metrics.
+    size_t initialVisibleCanonicalEligibleCount = 0u;
+    size_t canonicalVisibleThumbnailCount = 0u;
+    size_t initialVisibleLoadingCount = 0u;
+    size_t initialVisibleReadyCount = 0u;
+    size_t initialVisibleFailedCount = 0u;
+    size_t initialVisibleFallbackCount = 0u;
+    size_t initialVisiblePendingAfter30SecondsCount = 0u;
+    bool initialVisibleAllTerminal = false;
+    bool initialVisibleTimedOut = false;
+    uint64_t initialVisibleSetFingerprint = 0u;
+    std::optional<double> firstCanonicalDrawMs;
+    std::optional<double> canonical90PercentFillMs;
+    std::vector<std::string> initialVisiblePresentationDetails;
 };
 
 void RecordAssetBrowserThumbnailDrawOutcomeTelemetry(
     std::string_view assetPath,
     AssetBrowserThumbnailDrawOutcome outcome);
+void RecordAssetBrowserThumbnailRequestBuildFailureTelemetry(std::string_view itemIdentity);
 AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot SnapshotAssetBrowserThumbnailDrawOutcomeTelemetry();
+void BeginAssetBrowserThumbnailVisibleSetTelemetry(size_t thumbnailCount);
+    void BeginAssetBrowserThumbnailVisibleSetTelemetry(
+        size_t thumbnailCount,
+        const std::vector<std::string>& itemKeys);
+    void BeginAssetBrowserThumbnailVisibleSetTelemetry(
+        size_t thumbnailCount,
+        const std::vector<std::string>& itemKeys,
+        uint64_t visibleSetFingerprint);
+void RecordAssetBrowserThumbnailCanonicalDrawTelemetry(std::string_view itemIdentity);
+    void RecordAssetBrowserThumbnailPresentationStateTelemetry(
+        std::string_view itemIdentity,
+        NLS::Editor::Assets::ThumbnailPresentationState presentationState,
+        const NLS::Editor::Assets::AssetThumbnailServiceResult* result = nullptr);
+    void RecordAssetBrowserThumbnailTypeFallbackTelemetry(std::string_view itemIdentity);
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
 void ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesting();
+void ExpireAssetBrowserThumbnailVisibleSetTelemetryForTesting();
 #endif
 
 /**
@@ -102,7 +138,8 @@ public:
         const UI::PanelWindowSettings& p_windowSettings,
         const std::string& p_engineAssetFolder = "",
         const std::string& p_projectAssetFolder = "",
-        const std::string& p_projectScriptFolder = "");
+        const std::string& p_projectScriptFolder = "",
+        NLS::Editor::Assets::AssetThumbnailFeatureConfig thumbnailFeatureConfig = {});
     ~AssetBrowser();
 
     /**
@@ -236,12 +273,11 @@ public:
         bool hovered,
         bool compact = false);
     void DrawProjectGridItemDragSource(const NLS::Editor::Assets::AssetBrowserItem& item);
-    void SchedulePrefabHotCachePreloadForHoveredItem(
+    bool IsResidentPrefabPreviewAvailableForItem(
+        const NLS::Editor::Assets::AssetBrowserItem& item) const;
+    [[nodiscard]] bool ShouldHoldResidentPrefabThumbnailFallback(
         const NLS::Editor::Assets::AssetBrowserItem& item,
-        bool hovered);
-    void SchedulePrefabHotCachePreloadForVisibleItems(
-        const std::vector<NLS::Editor::Assets::AssetBrowserItem>& visibleItems);
-    void FlushPendingVisiblePrefabHotCachePreload();
+        const NLS::Editor::Assets::AssetThumbnailServiceResult* result) const;
     void PumpStandardPbrShaderPassPrewarm();
     void PumpThumbnailPreviewRenderWarmup();
     void SchedulePrefabHotCachePreloadForDragPayload(
@@ -281,7 +317,8 @@ public:
     struct ThumbnailTextureHandle;
     ThumbnailTextureHandle ResolveCachedThumbnailTextureHandle(
         const std::filesystem::path& imagePath,
-        bool queueIfMissing = true);
+        bool queueIfMissing,
+        NLS::Render::RHI::TextureColorSpace colorSpace);
     void* ResolveAssetBrowserTextureHandle(
         NLS::Render::Resources::Texture2D* texture,
         const std::string& debugName);
@@ -290,16 +327,24 @@ public:
     void MarkCachedThumbnailTextureUploadRetryableFailure(const std::string& normalizedPath);
     void ApplyThumbnailServiceResult(
         const NLS::Editor::Assets::AssetThumbnailServiceResult& generated);
+	void PumpImportedPrefabThumbnailContinuations();
+	[[nodiscard]] size_t RecoverVisiblePendingThumbnailPresentations(double nowSeconds);
 	void PumpThumbnailGeneration(
 		bool allowGpuPreviewStart,
 		bool allowHeavyGpuPreview,
-		bool allowPreviewRenderWarmup);
+		bool allowPreviewRenderWarmup,
+		bool sceneViewCameraNavigationActive);
 	bool EnsureThumbnailPreviewRenderer();
+	void ShutdownThumbnailPipeline();
 	bool IsEditorWindowClosing() const;
 	bool IsEditorSceneReadbackValidationActive() const;
 	bool IsStandardPbrShaderPassPrewarmPending() const;
-    static ThumbnailTextureDecodeResult DecodeCachedThumbnailTexture(std::string normalizedPath);
-    void QueueCachedThumbnailTextureLoad(const std::filesystem::path& imagePath);
+    static ThumbnailTextureDecodeResult DecodeCachedThumbnailTexture(
+        std::string normalizedPath,
+        NLS::Render::RHI::TextureColorSpace colorSpace);
+    void QueueCachedThumbnailTextureLoad(
+        const std::filesystem::path& imagePath,
+        NLS::Render::RHI::TextureColorSpace colorSpace);
     void PumpQueuedCachedThumbnailTextureLoads(size_t maxDecodeStartsPerFrame);
     void StartQueuedCachedThumbnailTextureDecodes(size_t maxDecodeStartsPerFrame);
     void ConsumeCompletedCachedThumbnailTextureDecodes();
@@ -327,6 +372,7 @@ public:
     void StartNextObjectReferencePickerEntriesRefresh();
     void InvalidateObjectReferencePickerEntriesRefresh();
     void ReleaseAssetBrowserTextureHandleCache(bool force);
+    void EnsureThumbnailTextureDeviceIdentity();
     void DestroyCachedThumbnailTextures(bool force);
     void ReleaseCachedThumbnailTexture(const std::string& normalizedPath);
     void PruneCachedThumbnailTextures();
@@ -353,18 +399,22 @@ private:
     std::shared_ptr<const NLS::Editor::Assets::EditorAssetSnapshotIndex> m_projectAssetSubAssetSnapshotIndex;
     std::vector<NLS::Editor::Assets::AssetBrowserDisplayItem> m_projectDisplayItems;
     std::vector<NLS::Editor::Assets::AssetBrowserBreadcrumbSegment> m_currentBreadcrumb;
-	    NLS::Editor::Assets::AssetThumbnailService m_thumbnailService;
+    NLS::Editor::Assets::AssetThumbnailFeatureConfig m_thumbnailFeatureConfig;
+    NLS::Editor::Assets::AssetThumbnailService m_thumbnailService;
+	    std::shared_ptr<NLS::Editor::Assets::ResidentPrefabPreviewRegistry> m_residentPrefabPreviewRegistry;
+	    uint64_t m_lastResidentPrefabThumbnailWakeRevision = 0u;
 	    NLS::Editor::Assets::AssetThumbnailRenderScheduler m_thumbnailRenderScheduler;
 	    std::shared_ptr<NLS::Editor::Assets::AssetThumbnailPool> m_assetThumbnailPool;
 	    std::unordered_map<std::string, NLS::Editor::Assets::AssetThumbnail> m_assetThumbnailsByCacheKey;
 	    std::shared_ptr<NLS::Editor::Assets::EditorThumbnailPreviewRenderer> m_thumbnailPreviewRenderer;
-	    std::shared_ptr<NLS::Editor::Assets::ThumbnailRendererRegistry> m_thumbnailRendererRegistry;
+    std::shared_ptr<NLS::Editor::Assets::ThumbnailRendererRegistry> m_thumbnailRendererRegistry;
+    bool m_thumbnailPipelineShutdown = false;
     double m_heavyGpuThumbnailGenerationDeferredUntil = 0.0;
+    double m_sceneLoadThumbnailGateStartedAt = 0.0;
     double m_assetBrowserInteractiveUntil = 0.0;
     std::optional<int> m_assetBrowserUiFeedbackPriorityThroughFrame;
     std::vector<NLS::Editor::Assets::AssetBrowserItem> m_visibleThumbnailItems;
     bool m_visibleThumbnailItemsKnown = false;
-    bool m_visiblePrefabHotCachePreloadPending = false;
     std::string m_visibleThumbnailScopeKey;
     uint64_t m_visibleThumbnailFingerprint = 0u;
     size_t m_visibleThumbnailCount = 0u;
@@ -375,7 +425,12 @@ private:
     bool m_thumbnailScopeBuildInProgress = false;
     bool m_projectDisplayItemsDirty = true;
     std::unordered_map<std::string, NLS::Editor::Assets::AssetThumbnailServiceResult> m_thumbnailResultsByItemKey;
-    std::unordered_map<std::string, std::vector<std::string>> m_thumbnailItemKeyByCacheKey;
+	std::unordered_map<std::string, std::vector<std::string>> m_thumbnailItemKeyByCacheKey;
+	std::unordered_map<std::string, std::vector<std::string>> m_thumbnailItemKeyByPresentationKey;
+	size_t m_importedPrefabThumbnailContinuationOffset = 0u;
+	uint64_t m_lastImportedPrefabThumbnailContinuationPumpRevision = 0u;
+	std::unordered_map<std::string, uint64_t>
+		m_importedPrefabThumbnailContinuationSubmittedRevisions;
     struct ThumbnailTextureCacheEntry
     {
         NLS::Render::Resources::Texture2D* texture = nullptr;
@@ -384,12 +439,24 @@ private:
         uint32_t width = 0u;
         uint32_t height = 0u;
         uint64_t lastUsedFrame = 0u;
+        bool atlas = false;
+        std::string atlasPageKey;
+        uint32_t atlasPageGeneration = 0u;
+        NLS::Editor::Assets::AssetThumbnailAtlas::UvRect uv;
+    };
+    enum class ThumbnailTextureSource
+    {
+        Standalone,
+        Atlas
     };
     struct ThumbnailTextureHandle
     {
         void* textureHandle = nullptr;
         uint32_t width = 0u;
         uint32_t height = 0u;
+        ThumbnailTextureSource source = ThumbnailTextureSource::Standalone;
+        NLS::Editor::Assets::AssetThumbnailAtlas::UvRect uv;
+        uint32_t pageGeneration = 0u;
     };
     struct ThumbnailTextureDecodeResult
     {
@@ -397,12 +464,23 @@ private:
         std::vector<uint8_t> rgbaPixels;
         uint32_t width = 0u;
         uint32_t height = 0u;
+        NLS::Render::RHI::TextureColorSpace colorSpace =
+            NLS::Render::RHI::TextureColorSpace::Linear;
     };
     struct PendingThumbnailTextureUpload
     {
         uint64_t requestId = 0u;
         uint32_t width = 0u;
         uint32_t height = 0u;
+        std::optional<NLS::Editor::Assets::AssetThumbnailAtlas::Allocation> atlasAllocation;
+    };
+    struct ThumbnailAtlasPageHandle
+    {
+        std::shared_ptr<NLS::Render::RHI::RHITexture> texture;
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> textureView;
+        void* textureId = nullptr;
+        uint32_t pageSize = 0u;
+        uint32_t pageGeneration = 0u;
     };
     struct AssetBrowserTextureHandleCacheEntry
     {
@@ -412,6 +490,8 @@ private:
     struct InFlightThumbnailTextureDecode
     {
         std::string normalizedPath;
+        NLS::Render::RHI::TextureColorSpace colorSpace =
+            NLS::Render::RHI::TextureColorSpace::Linear;
         std::future<ThumbnailTextureDecodeResult> future;
     };
     struct ObjectReferencePickerRefreshKey
@@ -495,36 +575,9 @@ private:
         Core::AssetFileWatcher projectAssetsWatcher;
         NLS::Core::Assets::AssetDiagnostics diagnostics;
     };
-    struct HoveredPrefabHotCachePreloadIdentity
-    {
-        std::string dragResourcePath;
-        NLS::Core::Assets::AssetId assetId;
-        std::string subAssetKey;
-        NLS::Editor::Assets::AssetBrowserItemKind kind = NLS::Editor::Assets::AssetBrowserItemKind::Folder;
-        NLS::Editor::Assets::AssetBrowserItemType type = NLS::Editor::Assets::AssetBrowserItemType::Other;
-        NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
-
-        bool Matches(const NLS::Editor::Assets::AssetBrowserItem& item) const
-        {
-            return item.dragResourcePath == dragResourcePath &&
-                item.assetId == assetId &&
-                item.subAssetKey == subAssetKey &&
-                item.kind == kind &&
-                item.type == type &&
-                item.artifactType == artifactType;
-        }
-
-        void Store(const NLS::Editor::Assets::AssetBrowserItem& item)
-        {
-            dragResourcePath = item.dragResourcePath;
-            assetId = item.assetId;
-            subAssetKey = item.subAssetKey;
-            kind = item.kind;
-            type = item.type;
-            artifactType = item.artifactType;
-        }
-    };
     std::unordered_map<std::string, ThumbnailTextureCacheEntry> m_thumbnailTexturesByPath;
+    NLS::Editor::Assets::AssetThumbnailAtlas m_thumbnailAtlas;
+    std::unordered_map<std::string, ThumbnailAtlasPageHandle> m_thumbnailAtlasPagesByKey;
     std::unordered_map<std::string, PendingThumbnailTextureUpload> m_pendingThumbnailTextureUploadsByPath;
     std::string m_nextPendingThumbnailTextureUploadPollPath;
     std::unordered_map<std::string, uint64_t> m_thumbnailTextureRetryAfterFrameByPath;
@@ -532,10 +585,13 @@ private:
     std::unordered_set<std::string> m_thumbnailTexturesUsedThisFrame;
     std::unordered_set<std::string> m_thumbnailTexturesPendingRelease;
     std::vector<std::string> m_thumbnailTextureLoadQueue;
+    std::unordered_map<std::string, NLS::Render::RHI::TextureColorSpace>
+        m_thumbnailTextureColorSpacesByPath;
     std::unordered_set<std::string> m_thumbnailTexturesQueuedForLoad;
     std::unordered_set<std::string> m_thumbnailTexturesFailedToLoad;
     std::vector<InFlightThumbnailTextureDecode> m_thumbnailTextureDecodes;
     std::unordered_set<std::string> m_thumbnailTexturesDecoding;
+    std::unordered_set<std::string> m_thumbnailTexturesRetryAfterDecode;
     std::unordered_map<
         NLS::Render::Resources::Texture2D*,
         AssetBrowserTextureHandleCacheEntry> m_assetBrowserTextureHandleCache;
@@ -544,7 +600,10 @@ private:
     bool m_standardPbrShaderPassPrewarmCompleted = false;
     bool m_thumbnailPreviewRenderWarmupCompleted = false;
     double m_lightGpuThumbnailGenerationDeferredUntil = 0.0;
+	double m_visiblePendingPresentationRecoveryAfter = 0.0;
+	size_t m_visiblePendingPresentationRecoveryOffset = 0u;
     uint64_t m_thumbnailTextureFrameSerial = 0u;
+    uint64_t m_thumbnailTextureDeviceIdentity = 0u;
     std::optional<ObjectReferencePickerRefresh> m_objectReferencePickerRefresh;
     std::optional<ObjectReferencePickerRefreshRequest> m_pendingObjectReferencePickerRefresh;
     NLS::Editor::Assets::AssetBrowserLatestRequestCoordinator<ObjectReferencePickerRefreshKey>
@@ -555,8 +614,6 @@ private:
     uint32_t m_lastThumbnailRequestSize = 0u;
     std::string m_lastThumbnailGenerationScopeKey;
     bool m_lastThumbnailGenerationScopeInteractive = false;
-    HoveredPrefabHotCachePreloadIdentity m_lastHoveredPrefabHotCachePreloadIdentity;
-    double m_lastHoveredPrefabHotCachePreloadTime = 0.0;
     bool m_thumbnailGenerationScopeDirty = true;
     std::unique_ptr<NLS::Editor::Assets::AssetDatabaseFacade> m_projectAssetDatabase;
     std::shared_ptr<const NLS::Editor::Assets::AssetDatabaseFacade> m_projectAssetDatabaseSnapshot;

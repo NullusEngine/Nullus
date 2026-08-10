@@ -256,6 +256,8 @@ TEST(EditorLaunchArgsTests, ParsesEditorCameraPerformanceBenchmark)
         "30",
         "--editor-camera-performance-frames",
         "300",
+        "--editor-camera-performance-settle-frames",
+        "120",
         "TestProject.nullus"
     }, storage);
 
@@ -266,6 +268,7 @@ TEST(EditorLaunchArgsTests, ParsesEditorCameraPerformanceBenchmark)
     EXPECT_EQ(parsed.diagnosticsSettings.editorCameraPerformanceOutput, "D:/perf/debug.json");
     EXPECT_EQ(parsed.diagnosticsSettings.editorCameraPerformanceWarmupFrames, 30u);
     EXPECT_EQ(parsed.diagnosticsSettings.editorCameraPerformanceFrames, 300u);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorCameraPerformanceSettleFrames, 120u);
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationCameraForwardFrames, 330u);
     EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
 }
@@ -326,6 +329,23 @@ TEST(EditorLaunchArgsTests, RejectsEditorCameraPerformanceFrameCountOverflow)
         "4294967295",
         "--editor-camera-performance-frames",
         "1",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_TRUE(parsed.hasError);
+}
+
+TEST(EditorLaunchArgsTests, RejectsEditorCameraPerformanceSettleFrameCountOverflow)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-camera-performance-output",
+        "D:/perf/debug.json",
+        "--editor-camera-performance-settle-frames",
+        "4294967296",
         "TestProject.nullus"
     }, storage);
 
@@ -691,7 +711,7 @@ TEST(EditorLaunchArgsTests, RendererResourceTailReplacesStaleTextureWithDeclared
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
 }
 
-TEST(EditorLaunchArgsTests, RendererResourceTailReplacesSamePathNonManagerTexture)
+TEST(EditorLaunchArgsTests, RendererResourceTailReusesValidSceneTextureWithoutManagerOwnership)
 {
     NLS::Core::ResourceManagement::TextureManager textureManager;
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
@@ -719,7 +739,7 @@ TEST(EditorLaunchArgsTests, RendererResourceTailReplacesSamePathNonManagerTextur
         material, "_NormalMap", declaredPath, textureManager));
     const auto* parameter = material.GetParameterBlock().TryGet("_NormalMap");
     ASSERT_NE(parameter, nullptr);
-    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter), expectedTexture);
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter), oldTexture.get());
 
     textureManager.UnloadResources();
     NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
@@ -989,6 +1009,55 @@ TEST(EditorLaunchArgsTests, EditorWritesThumbnailTelemetrySummaryOnShutdownWhenC
     EXPECT_NE(source.find("WriteThumbnailTelemetrySummaryIfRequested"), std::string::npos)
         << "Asset Browser thumbnail telemetry needs an editor-visible summary export path so "
            "performance work can use real capture data instead of guessing.";
+}
+
+TEST(EditorLaunchArgsTests, ContextReleasesResidentPreviewHandlesBeforeLifetimeRegistryDestruction)
+{
+    const auto contextHeader = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.h");
+    const auto contextSource = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.cpp");
+
+    const auto registryMember = contextHeader.find(
+        "ResourceLifetimeRegistry resourceLifetimeRegistry;");
+    const auto residentRegistryMember = contextHeader.find(
+        "ResidentPrefabPreviewRegistry> residentPrefabPreviewRegistry;");
+    const auto sceneLeaseMember = contextHeader.find(
+        "sceneResidentPrefabPreviewLeases;");
+    const auto meshManagerMember = contextHeader.find("MeshManager meshManager;");
+    ASSERT_NE(registryMember, std::string::npos);
+    ASSERT_NE(residentRegistryMember, std::string::npos);
+    ASSERT_NE(sceneLeaseMember, std::string::npos);
+    ASSERT_NE(meshManagerMember, std::string::npos);
+    EXPECT_LT(registryMember, residentRegistryMember);
+    EXPECT_LT(registryMember, sceneLeaseMember);
+    EXPECT_LT(registryMember, meshManagerMember)
+        << "ResourceLifetimeRegistry must be declared first so reverse member destruction keeps it alive.";
+
+    const auto destructor = contextSource.find("Editor::Core::Context::~Context()");
+    const auto clearSceneLeases = contextSource.find(
+        "ClearSceneResidentPrefabPreviewLeases();",
+        destructor);
+    const auto clearResidentEntries = contextSource.find(
+        "residentPrefabPreviewRegistry->SetInactiveBudgetBytes(0u);",
+        destructor);
+    const auto resetResidentRegistry = contextSource.find(
+        "residentPrefabPreviewRegistry.reset();",
+        destructor);
+    const auto unloadMeshes = contextSource.find("meshManager.UnloadResources();", destructor);
+    const auto removeRegistryService = contextSource.find(
+        "ServiceLocator::Remove<ResourceLifetimeRegistry>();",
+        destructor);
+    ASSERT_NE(destructor, std::string::npos);
+    ASSERT_NE(clearSceneLeases, std::string::npos);
+    ASSERT_NE(clearResidentEntries, std::string::npos);
+    ASSERT_NE(resetResidentRegistry, std::string::npos);
+    ASSERT_NE(unloadMeshes, std::string::npos);
+    ASSERT_NE(removeRegistryService, std::string::npos);
+    EXPECT_LT(clearSceneLeases, clearResidentEntries);
+    EXPECT_LT(clearResidentEntries, resetResidentRegistry);
+    EXPECT_LT(resetResidentRegistry, unloadMeshes);
+    EXPECT_LT(unloadMeshes, removeRegistryService);
 }
 
 TEST(EditorLaunchArgsTests, ValidationTraceFinishRefreshesThumbnailTelemetrySummaryBeforeClose)
@@ -2179,7 +2248,7 @@ TEST(EditorLaunchArgsTests, GeneratedModelDragDropResolutionOptionsDoNotRevealPa
 TEST(EditorLaunchArgsTests, SceneRestorePrefabSourceLookupFallsBackBeforeMarkingMissing)
 {
     const auto source = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
-    const auto restoreStart = source.find("bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk()");
+    const auto restoreStart = source.find("bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(");
     ASSERT_NE(restoreStart, std::string::npos);
     const auto restoreEnd = source.find("void Editor::Core::EditorActions::LoadSceneFromDisk", restoreStart);
     ASSERT_NE(restoreEnd, std::string::npos);
@@ -2259,7 +2328,7 @@ TEST(EditorLaunchArgsTests, SharedImportedPrefabDropPassesCachedRendererDependen
 TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabsAreNotMarkedMissingBeforeDeferredResolution)
 {
     const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
-    const auto restoreStart = actionsSource.find("bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk()");
+    const auto restoreStart = actionsSource.find("bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(");
     ASSERT_NE(restoreStart, std::string::npos);
     const auto restoreEnd = actionsSource.find("void Editor::Core::EditorActions::LoadSceneFromDisk", restoreStart);
     ASSERT_NE(restoreEnd, std::string::npos);
@@ -2290,10 +2359,38 @@ TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabsAreNotMarkedMissing
         << "Generated model scene-prefab restores must not be marked missing before deferred renderer resource resolution runs.";
 }
 
+TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabInstantiationDefersSynchronousPrewarm)
+{
+    const auto facadeSource = ReadTextFile("Project/Editor/Assets/PrefabUtilityFacade.cpp");
+    const auto instantiateStart = facadeSource.find("PrefabOperationResult InstantiateStrippedPrefabInstance(");
+    ASSERT_NE(instantiateStart, std::string::npos);
+    const auto instantiateEnd = facadeSource.find(
+        "PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(",
+        instantiateStart);
+    ASSERT_NE(instantiateEnd, std::string::npos);
+    const auto instantiateBody = facadeSource.substr(instantiateStart, instantiateEnd - instantiateStart);
+
+    EXPECT_NE(
+        instantiateBody.find(
+            "const bool deferGeneratedModelResources = sourcePrefab->generatedModelPrefab;"),
+        std::string::npos);
+    EXPECT_NE(
+        instantiateBody.find("request.deferAssetReferenceResolution = deferGeneratedModelResources;"),
+        std::string::npos);
+    EXPECT_NE(
+        instantiateBody.find("request.synchronousAssetReferencePrewarm = !deferGeneratedModelResources;"),
+        std::string::npos)
+        << "Generated scene prefabs must enter the existing deferred renderer-resource resolution path instead of "
+        << "blocking startup on synchronous GPU prewarm.";
+    EXPECT_NE(
+        instantiateBody.find("request.skipDeferredAssetReferenceCacheLookup = deferGeneratedModelResources;"),
+        std::string::npos);
+}
+
 TEST(EditorLaunchArgsTests, SceneRestoreCachesPrefabArtifactsAcrossInstanceConnections)
 {
     const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
-    const auto restoreStart = actionsSource.find("bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk()");
+    const auto restoreStart = actionsSource.find("bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(");
     ASSERT_NE(restoreStart, std::string::npos);
     const auto restoreEnd = actionsSource.find("void Editor::Core::EditorActions::LoadSceneFromDisk", restoreStart);
     ASSERT_NE(restoreEnd, std::string::npos);
@@ -2381,6 +2478,89 @@ TEST(EditorLaunchArgsTests, PrefabDragDropTelemetryRecordsPrewarmAndRendererReso
         << "Per-frame renderer resource binding needs telemetry to explain mouse-follow stutter.";
 }
 
+TEST(EditorLaunchArgsTests, SceneLoadTexturePrewarmWaitsForMeshTasksToDrain)
+{
+    const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    const auto stepStart = actionsSource.find("void RunRendererResourceResolutionStep");
+    ASSERT_NE(stepStart, std::string::npos);
+    const auto stepEnd = actionsSource.find(
+        "std::vector<NLS::Editor::Core::RendererResourceResolutionQueuePlanEntry>",
+        stepStart);
+    ASSERT_NE(stepEnd, std::string::npos);
+    const auto stepBody = actionsSource.substr(stepStart, stepEnd - stepStart);
+
+    const auto meshPendingState = stepBody.find(
+        "const bool hasPendingMeshTasks = HasPendingMeshRendererResourceTasks(*state);");
+    const auto meshDrainCheck = stepBody.find("if (!hasPendingMeshTasks)", meshPendingState);
+    const auto texturePrewarm = stepBody.find("PrewarmRendererResourceMaterialTextures(*state);");
+    ASSERT_NE(meshPendingState, std::string::npos);
+    ASSERT_NE(meshDrainCheck, std::string::npos);
+    ASSERT_NE(texturePrewarm, std::string::npos);
+    EXPECT_LT(meshDrainCheck, texturePrewarm)
+        << "Texture prewarm must not consume high-priority worker capacity before scene meshes are ready.";
+
+    const auto materialPump = stepBody.find("materialManager.PumpAsyncLoadsForPaths");
+    const auto texturePump = stepBody.find("textureManager.PumpAsyncLoadsForPaths");
+    ASSERT_NE(materialPump, std::string::npos);
+    ASSERT_NE(texturePump, std::string::npos);
+    const auto materialCall = stepBody.substr(materialPump, stepBody.find(");", materialPump) - materialPump);
+    const auto textureCall = stepBody.substr(texturePump, stepBody.find(");", texturePump) - texturePump);
+    EXPECT_NE(materialCall.find("frameBudgetExpired"), std::string::npos)
+        << "Material pumping must remain frame-budgeted.";
+    EXPECT_NE(textureCall.find("frameBudgetExpired"), std::string::npos)
+        << "Texture pumping must remain frame-budgeted.";
+    EXPECT_NE(materialCall.find("true"), std::string::npos)
+        << "Material pumping must still consume ready completions after the shared frame budget expires.";
+    EXPECT_NE(textureCall.find("true"), std::string::npos)
+        << "Texture pumping must still consume ready completions after the shared frame budget expires.";
+}
+
+TEST(EditorLaunchArgsTests, SceneLoadStartsMissingMaterialRequestsBeforePumpingTrackedPaths)
+{
+    const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    const auto stepStart = actionsSource.find("void RunRendererResourceResolutionStep");
+    ASSERT_NE(stepStart, std::string::npos);
+    const auto stepEnd = actionsSource.find(
+        "std::vector<NLS::Editor::Core::RendererResourceResolutionQueuePlanEntry>",
+        stepStart);
+    ASSERT_NE(stepEnd, std::string::npos);
+    const auto stepBody = actionsSource.substr(stepStart, stepEnd - stepStart);
+
+    const auto prewarm = stepBody.find("PrewarmRendererResourceMaterialArtifacts(*state);");
+    const auto materialPump = stepBody.find("materialManager.PumpAsyncLoadsForPaths");
+    ASSERT_NE(prewarm, std::string::npos);
+    ASSERT_NE(materialPump, std::string::npos);
+    EXPECT_LT(prewarm, materialPump)
+        << "Scene loading must start missing material requests before scanning the full tracked-path set.";
+
+    const auto prewarmFunction = actionsSource.find(
+        "void PrewarmRendererResourceMaterialArtifacts");
+    ASSERT_NE(prewarmFunction, std::string::npos);
+    EXPECT_NE(
+        actionsSource.find(
+            "!materialManager.IsAsyncArtifactLoadPending(materialPath)",
+            prewarmFunction),
+        std::string::npos)
+        << "A tracked handoff path without a manager request must remain retryable.";
+}
+
+TEST(EditorLaunchArgsTests, SceneLoadMeshArtifactFallsBackWhenOpportunisticQueueIsFull)
+{
+    const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
+    const auto start = actionsSource.find("bool StartMeshArtifactLoad");
+    ASSERT_NE(start, std::string::npos);
+    const auto end = actionsSource.find(
+        "std::optional<RendererResourceResolutionTask> PopNextRemainingTask",
+        start);
+    ASSERT_NE(end, std::string::npos);
+    const auto body = actionsSource.substr(start, end - start);
+
+    EXPECT_NE(body.find("TrackOpportunisticBackgroundTask(loadMeshArtifact)"), std::string::npos)
+        << "Scene-load mesh reads should use spare background capacity first.";
+    EXPECT_NE(body.find("TrackBackgroundTask(std::move(loadMeshArtifact))"), std::string::npos)
+        << "A full opportunistic queue must not strand required scene resources indefinitely.";
+}
+
 TEST(EditorLaunchArgsTests, AssetBrowserWatcherStartupSchedulingFailureDoesNotCrashOrSuppressRetry)
 {
     const auto source = ReadTextFile(
@@ -2449,7 +2629,7 @@ TEST(EditorLaunchArgsTests, RendererResourceResolutionDoesNotHeadOfLineBlockOnPe
         << "Pending material polls must not exhaust the mesh-load in-flight window.";
 }
 
-TEST(EditorLaunchArgsTests, SceneLoadRendererResolutionPrioritizesMeshBeforeFirstReveal)
+TEST(EditorLaunchArgsTests, SceneLoadRendererResolutionPrioritizesMeshBeforeFirstRevealOrForStartup)
 {
     const auto actionsSource = ReadTextFile("Project/Editor/Core/EditorActions.cpp");
     const auto stepStart = actionsSource.find("void RunRendererResourceResolutionStep");
@@ -2466,7 +2646,9 @@ TEST(EditorLaunchArgsTests, SceneLoadRendererResolutionPrioritizesMeshBeforeFirs
         << "Scene-load startup needs an explicit mesh-first queue mode for the blank-scene window.";
     EXPECT_NE(stepBody.find("state->shareSceneLoadFrameBudget"), std::string::npos);
     EXPECT_NE(stepBody.find("state->revealedObjectCount.load(std::memory_order_acquire) == 0u"), std::string::npos)
-        << "The mesh-first preference should apply only until the first renderer-resource object is visible.";
+        << "Interactive scene open uses mesh-first scheduling until the first renderer-resource object is visible.";
+    EXPECT_NE(stepBody.find("state->prioritizeMeshArtifactLoadsUntilSaturated"), std::string::npos)
+        << "Startup restoration must keep filling the mesh window after the first object appears so later mesh I/O overlaps material and texture work.";
     EXPECT_NE(stepBody.find("inFlightMeshTasks < state->streamingBudget.maxInflightMeshLoads"), std::string::npos)
         << "Mesh-first startup should still respect the scene-load mesh in-flight budget.";
     EXPECT_NE(stepBody.find("RendererResourceResolutionTaskPopPreference::Material"), std::string::npos)

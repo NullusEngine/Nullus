@@ -54,6 +54,26 @@ namespace NLS::Core::ResourceManagement
 
 		Texture2D* GetArtifactResource(const std::string& p_path, bool p_tryToLoadIfNotFound = true);
 		Texture2D* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
+		Texture2D* RequestAsyncArtifactForPreview(const std::string& p_path, bool p_cancelableInterest = false);
+		std::optional<Texture2D*> TryGetArtifactResource(const std::string& p_path);
+		struct AsyncPreviewRequestResult
+		{
+			Texture2D* resource = nullptr;
+			bool pending = false;
+			bool failed = false;
+		};
+		virtual std::optional<AsyncPreviewRequestResult> TryRequestAsyncArtifactForPreview(
+			const std::string& p_path,
+			bool p_cancelableInterest = false);
+		enum class AsyncArtifactLoadProbeResult
+		{
+			Pending,
+			Failed,
+			Missing,
+			Busy
+		};
+		virtual AsyncArtifactLoadProbeResult TryProbeAsyncArtifactLoad(
+			const std::string& p_path) const;
 		ResourceHandle<Texture2D> AcquireTextureHandle(
 			ResourceLifetimeRegistry& registry,
 			const std::string& ownerToken,
@@ -62,6 +82,23 @@ namespace NLS::Core::ResourceManagement
 			size_t estimatedBytes = 0u)
 		{
 			return AcquireResourceHandle(
+				registry,
+				ResourceLifetimeAcquireRequest {
+					ownerToken,
+					ResourceLifetimeResourceType::Texture,
+					path,
+					estimatedBytes,
+					ownerKind });
+		}
+
+		ResourceHandle<Texture2D> AcquireRegisteredTextureHandle(
+			ResourceLifetimeRegistry& registry,
+			const std::string& ownerToken,
+			const std::string& path,
+			ResourceLifetimeOwnerKind ownerKind = ResourceLifetimeOwnerKind::SceneInstance,
+			size_t estimatedBytes = 0u)
+		{
+			return AcquireRegisteredResourceHandle(
 				registry,
 				ResourceLifetimeAcquireRequest {
 					ownerToken,
@@ -92,7 +129,8 @@ namespace NLS::Core::ResourceManagement
 			void PumpAsyncLoadsForPaths(
 				const std::unordered_set<std::string>& p_paths,
 				size_t p_maxCompletions = 1u,
-				const std::function<bool()>& p_shouldStop = {});
+				const std::function<bool()>& p_shouldStop = {},
+				bool p_allowReadyCompletionAfterStop = false);
 		static AsyncArtifactRequestDiagnostics GetAsyncArtifactRequestDiagnostics();
 
         static std::string ResolveResourcePath(const std::string& p_path);
@@ -112,7 +150,13 @@ namespace NLS::Core::ResourceManagement
 #endif
 
 	private:
+		Texture2D* RequestAsyncArtifactInternal(
+			const std::string& p_path,
+			bool p_cancelableInterest,
+			bool p_previewPriority);
 		Texture2D* FindCachedArtifactResourceByResolvedPath(const std::string& p_realPath) const;
+		std::optional<Texture2D*> TryFindCachedArtifactResourceByResolvedPath(
+			const std::string& p_realPath) const;
 		void InvalidateArtifactLookupIndex() const;
 		void EnsureArtifactLookupIndex() const;
 		void IndexTextureArtifactPath(const std::string& p_path, Texture2D* p_texture) const;

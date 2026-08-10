@@ -8,7 +8,7 @@ namespace NLS::Render::Data
 {
 	static constexpr size_t kLargeSceneCullReasonCount = 16u;
 	static constexpr size_t kLargeSceneLodSelectionBucketCount = 8u;
-	static constexpr size_t kLargeSceneTelemetryScalarFieldCount = 54u;
+	static constexpr size_t kLargeSceneTelemetryScalarFieldCount = 58u;
 	static constexpr size_t kLargeSceneTelemetryExpectedSize =
 		(kLargeSceneTelemetryScalarFieldCount +
 			kLargeSceneCullReasonCount +
@@ -80,6 +80,7 @@ namespace NLS::Render::Data
 		uint64_t syncSweepTouchedSlotCount = 0;
 		uint64_t syncTouchedPrimitiveCount = 0;
 		uint64_t syncFullSweepCount = 0;
+		uint64_t sceneRenderContentRevisionFastPathCount = 0;
 		uint64_t boundsDirtyPrimitiveCount = 0;
 		uint64_t primitiveSlotReuseCount = 0;
 		uint64_t visibilityTestedPrimitiveCount = 0;
@@ -102,6 +103,9 @@ namespace NLS::Render::Data
 		uint64_t serialVisibilityTimeNs = 0;
 		uint64_t parallelVisibilityTimeNs = 0;
 		uint64_t queueFinalizationTimeNs = 0;
+		uint64_t visibleDrawableBuildTimeNs = 0;
+		uint64_t opaqueQueueFinalizationTimeNs = 0;
+		uint64_t visibleObjectIndexAssignmentTimeNs = 0;
 		uint64_t hzbBuildTimeNs = 0;
 		uint64_t hzbHistoryPruneTouchedHandleCount = 0;
 		uint64_t hzbHistoryPruneRemovedHandleCount = 0;

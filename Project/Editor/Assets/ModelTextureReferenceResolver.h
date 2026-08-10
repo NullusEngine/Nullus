@@ -81,6 +81,8 @@ struct ModelTextureExplicitRemap
 struct ModelTextureResolveRequest
 {
     ModelTextureResolutionSettings settings;
+    // A background preparation cannot create source metadata or imported artifacts.
+    bool requiresSerialAutoImport = false;
     std::vector<ModelTextureExplicitRemap> remaps;
     std::vector<ModelTextureAssetCandidate> pathCandidates;
     std::vector<ModelTextureAssetCandidate> nameCandidates;

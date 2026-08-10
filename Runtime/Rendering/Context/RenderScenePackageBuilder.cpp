@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "Rendering/UI/UiDrawDataSnapshot.h"
@@ -177,6 +178,15 @@ namespace NLS::Render::Context
         package.sceneGameObjectCount = snapshot.sceneGameObjectCount;
         package.recordedDrawCommands = snapshot.recordedDrawCommands;
         package.postSubmitTextureReadbacks = snapshot.postSubmitTextureReadbacks;
+        for (const auto& request : package.postSubmitTextureReadbacks)
+        {
+            if (request.state == nullptr)
+                continue;
+
+            std::lock_guard lock(request.state->mutex);
+            request.state->carriedIntoRenderScenePackage = true;
+            request.state->renderScenePackageFrameId = package.frameId;
+        }
         package.externalSceneOutputIdentity = snapshot.externalOutputIdentity;
         package.externalSceneOutputIdentities = snapshot.externalOutputIdentities;
         package.externalSceneOutputTextureCount = snapshot.externalOutputTextureCount;

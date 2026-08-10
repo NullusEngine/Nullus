@@ -1328,13 +1328,17 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 		else
 		{
 			for (size_t primitiveIndex = 0u; primitiveIndex < m_primitives.size(); ++primitiveIndex)
-				finalizePrimitive(primitiveIndex);
+			finalizePrimitive(primitiveIndex);
 		}
 	}
+	m_lastLargeSceneTelemetry.visibleDrawableBuildTimeNs = ElapsedNanoseconds(finalizationStart);
 
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::GatherVisibleCommands::FinalizeOpaqueQueue");
+		const auto opaqueQueueFinalizationStart = std::chrono::steady_clock::now();
 		FinalizeOpaqueQueue(output.opaques);
+		m_lastLargeSceneTelemetry.opaqueQueueFinalizationTimeNs =
+			ElapsedNanoseconds(opaqueQueueFinalizationStart);
 	}
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::GatherVisibleCommands::SortTransparentQueues");
@@ -1343,7 +1347,10 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 	}
 	{
 		NLS_PROFILE_NAMED_SCOPE("RenderScene::GatherVisibleCommands::AssignVisibleObjectIndices");
+		const auto visibleObjectIndexAssignmentStart = std::chrono::steady_clock::now();
 		AssignVisibleObjectIndices(output);
+		m_lastLargeSceneTelemetry.visibleObjectIndexAssignmentTimeNs =
+			ElapsedNanoseconds(visibleObjectIndexAssignmentStart);
 	}
 	m_lastVisiblePrimitiveHandles = visibility.visiblePrimitiveHandles;
 	m_lastRepresentationStreamingInterest = visibility.representationStreamingInterest;
@@ -3045,6 +3052,7 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
 	}
 	snapshot.spatialCandidateCount = candidates.candidateCount;
 	snapshot.fullScanCandidateCount = candidates.fullScanCandidateCount;
+	snapshot.usedParallelEvaluation = pipelineResult.usedParallelEvaluation;
 	snapshot.primitiveRecordsTouched =
 		candidates.primitiveRecordsTouched + pipelineResult.primitiveRecordsTouched;
 	snapshot.visibilityTestedPrimitiveCount = pipelineResult.visibilityTestedPrimitiveCount;
@@ -3242,6 +3250,8 @@ void RenderScene::RefreshSyncTelemetry(const RenderSceneSyncStats& stats)
 	m_lastLargeSceneTelemetry.syncSweepTouchedSlotCount = stats.syncSweepTouchedSlotCount;
 	m_lastLargeSceneTelemetry.syncTouchedPrimitiveCount = stats.syncTouchedPrimitiveCount;
 	m_lastLargeSceneTelemetry.syncFullSweepCount = stats.syncFullSweepCount;
+	m_lastLargeSceneTelemetry.sceneRenderContentRevisionFastPathCount =
+		stats.usedSceneRenderContentRevisionFastPath ? 1u : 0u;
 	m_lastLargeSceneTelemetry.boundsDirtyPrimitiveCount = stats.boundsDirtyPrimitiveCount;
 	m_lastLargeSceneTelemetry.primitiveSlotReuseCount = stats.primitiveSlotReuseCount;
 	m_lastLargeSceneTelemetry.commandOffsetRebuildCount = 0u;

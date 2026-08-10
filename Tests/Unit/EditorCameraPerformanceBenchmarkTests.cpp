@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Json/json.hpp>
@@ -29,13 +30,20 @@ namespace
             EditorCameraPerformanceMetadata { "Debug", "DX12", false, 30u, 5u },
             samples,
             EditorCameraPerformanceTelemetry {},
-            EditorCameraPerformanceTelemetry {});
+            EditorCameraPerformanceTelemetry {},
+            0u,
+            { 5.0, 10.0, 15.0, 20.0, 25.0 });
 
         EXPECT_DOUBLE_EQ(summary.meanFrameMs, 30.0);
         EXPECT_DOUBLE_EQ(summary.meanFps, 1000.0 / 30.0);
         EXPECT_DOUBLE_EQ(summary.p95FrameMs, 50.0);
         EXPECT_DOUBLE_EQ(summary.p99FrameMs, 50.0);
         EXPECT_DOUBLE_EQ(summary.maxFrameMs, 50.0);
+        EXPECT_DOUBLE_EQ(summary.settleMeanFrameMs, 15.0);
+        EXPECT_DOUBLE_EQ(summary.settleMeanFps, 1000.0 / 15.0);
+        EXPECT_DOUBLE_EQ(summary.settleP95FrameMs, 25.0);
+        EXPECT_DOUBLE_EQ(summary.settleP99FrameMs, 25.0);
+        EXPECT_DOUBLE_EQ(summary.settleMaxFrameMs, 25.0);
     }
 
     TEST(EditorCameraPerformanceBenchmarkTests, EmptySamplesProduceZeroSummary)
@@ -109,6 +117,17 @@ namespace
         before.deviceLostCount = integerBase;
         before.unsafeGpuQuarantineCount = integerBase;
         before.objectDataOverflowCount = integerBase;
+        before.largeScene.sceneRenderContentRevisionFastPathCount = integerBase;
+        before.largeScene.syncTimeNs = integerBase;
+        before.largeScene.serialVisibilityTimeNs = integerBase;
+        before.largeScene.parallelVisibilityTimeNs = integerBase;
+        before.largeScene.queueFinalizationTimeNs = integerBase;
+        before.largeScene.visibleDrawableBuildTimeNs = integerBase;
+        before.largeScene.opaqueQueueFinalizationTimeNs = integerBase;
+        before.largeScene.visibleObjectIndexAssignmentTimeNs = integerBase;
+        before.largeScene.visibilityTestedPrimitiveCount = integerBase;
+        before.largeScene.culledByReason[3] = integerBase;
+        before.largeScene.residentGpuBytes = integerBase;
 
         auto after = before;
         after.publishedFrameCount += 301u;
@@ -139,14 +158,28 @@ namespace
         after.deviceLostCount += 317u;
         after.unsafeGpuQuarantineCount += 318u;
         after.objectDataOverflowCount += 319u;
+        after.largeScene.sceneRenderContentRevisionFastPathCount += 329u;
+        after.largeScene.syncTimeNs += 330u;
+        after.largeScene.serialVisibilityTimeNs += 331u;
+        after.largeScene.parallelVisibilityTimeNs += 332u;
+        after.largeScene.queueFinalizationTimeNs += 333u;
+        after.largeScene.visibleDrawableBuildTimeNs += 337u;
+        after.largeScene.opaqueQueueFinalizationTimeNs += 338u;
+        after.largeScene.visibleObjectIndexAssignmentTimeNs += 339u;
+        after.largeScene.visibilityTestedPrimitiveCount += 334u;
+        after.largeScene.culledByReason[3] += 335u;
+        after.largeScene.residentGpuBytes = integerBase + 336u;
 
         std::vector<double> samples(300u, 10.0);
+        EditorCameraPerformanceMetadata metadata { "Release", "DX12", false, 30u, 300u };
+        metadata.requestedSettleFrameCount = 2u;
         const auto summary = BuildEditorCameraPerformanceSummary(
-            EditorCameraPerformanceMetadata { "Release", "DX12", false, 30u, 300u },
+            std::move(metadata),
             samples,
             before,
             after,
-            237u);
+            237u,
+            { 6.0, 12.0 });
         const auto outputPath = std::filesystem::temp_directory_path() /
             "nullus-editor-camera-performance-test.json";
 
@@ -165,6 +198,16 @@ namespace
         EXPECT_EQ(document.at("measuredFrameCount").get<uint64_t>(), 300u);
         ASSERT_TRUE(document.at("publishedCameraStepCount").is_number_unsigned());
         EXPECT_EQ(document.at("publishedCameraStepCount").get<uint64_t>(), 237u);
+        ASSERT_TRUE(document.at("requestedSettleFrameCount").is_number_unsigned());
+        EXPECT_EQ(document.at("requestedSettleFrameCount").get<uint64_t>(), 2u);
+        ASSERT_TRUE(document.at("settleFrameCount").is_number_unsigned());
+        EXPECT_EQ(document.at("settleFrameCount").get<uint64_t>(), 2u);
+        EXPECT_EQ(document.at("settleFrameMs").get<std::vector<double>>(), (std::vector<double> { 6.0, 12.0 }));
+        EXPECT_DOUBLE_EQ(document.at("settleMeanFrameMs").get<double>(), 9.0);
+        EXPECT_DOUBLE_EQ(document.at("settleMeanFps").get<double>(), 1000.0 / 9.0);
+        EXPECT_DOUBLE_EQ(document.at("settleP95FrameMs").get<double>(), 12.0);
+        EXPECT_DOUBLE_EQ(document.at("settleP99FrameMs").get<double>(), 12.0);
+        EXPECT_DOUBLE_EQ(document.at("settleMaxFrameMs").get<double>(), 12.0);
         ASSERT_TRUE(document.at("publicationRatio").is_number_float());
         EXPECT_DOUBLE_EQ(document.at("publicationRatio").get<double>(), 237.0 / 300.0);
 
@@ -203,6 +246,25 @@ namespace
         expectInteger("deviceLostCount", 317u);
         expectInteger("unsafeGpuQuarantineCount", 318u);
         expectInteger("objectDataOverflowCount", 319u);
+        const auto& largeScene = telemetry.at("largeScene");
+        const auto expectLargeSceneInteger = [&largeScene](const char* field, const uint64_t expected)
+        {
+            ASSERT_TRUE(largeScene.at(field).is_number_unsigned()) << field;
+            EXPECT_EQ(largeScene.at(field).get<uint64_t>(), expected) << field;
+        };
+        expectLargeSceneInteger("sceneRenderContentRevisionFastPathCount", 329u);
+        expectLargeSceneInteger("syncTimeNs", 330u);
+        expectLargeSceneInteger("serialVisibilityTimeNs", 331u);
+        expectLargeSceneInteger("parallelVisibilityTimeNs", 332u);
+        expectLargeSceneInteger("queueFinalizationTimeNs", 333u);
+        expectLargeSceneInteger("visibleDrawableBuildTimeNs", 337u);
+        expectLargeSceneInteger("opaqueQueueFinalizationTimeNs", 338u);
+        expectLargeSceneInteger("visibleObjectIndexAssignmentTimeNs", 339u);
+        expectLargeSceneInteger("visibilityTestedPrimitiveCount", 334u);
+        expectLargeSceneInteger("residentGpuBytes", integerBase + 336u);
+        ASSERT_TRUE(largeScene.at("culledByReason").is_array());
+        ASSERT_GE(largeScene.at("culledByReason").size(), 4u);
+        EXPECT_EQ(largeScene.at("culledByReason").at(3).get<uint64_t>(), 335u);
     }
 
     TEST(EditorCameraPerformanceBenchmarkTests, SerializesMeasurementWindowWaitMaximumWithoutHistoricalSubtraction)
@@ -269,6 +331,7 @@ namespace
         const auto tick = applicationSource.find("TickFrame(kEditorCameraPerformanceFixedDeltaSeconds, true)");
         const auto frameEnd = applicationSource.find("const auto frameEnd = std::chrono::steady_clock::now()");
         const auto addSample = applicationSource.find("m_cameraPerformanceFrameMs.push_back");
+        const auto addSettleSample = applicationSource.find("m_cameraPerformanceSettleFrameMs.push_back");
         const auto writeSummary = applicationSource.find("WriteEditorCameraPerformanceSummaryJson");
 
         ASSERT_NE(completedBefore, std::string::npos);
@@ -278,6 +341,7 @@ namespace
         ASSERT_NE(tick, std::string::npos);
         ASSERT_NE(frameEnd, std::string::npos);
         ASSERT_NE(addSample, std::string::npos);
+        ASSERT_NE(addSettleSample, std::string::npos);
         ASSERT_NE(writeSummary, std::string::npos);
         EXPECT_LT(completedBefore, frameStart);
         EXPECT_LT(completedBefore, resetWaitMaximum);
@@ -287,6 +351,7 @@ namespace
         EXPECT_LT(frameStart, tick);
         EXPECT_LT(tick, frameEnd);
         EXPECT_LT(frameEnd, addSample);
+        EXPECT_LT(addSample, addSettleSample);
         EXPECT_LT(addSample, writeSummary);
         EXPECT_NE(editorHeader.find("GetValidationCameraForwardCompletedFrames() const"), std::string::npos);
         EXPECT_NE(editorHeader.find("WasLastSceneViewThreadedFramePublished() const"), std::string::npos);
@@ -320,5 +385,6 @@ namespace
         EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceOutput"), std::string::npos);
         EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceWarmupFrames"), std::string::npos);
         EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceFrames"), std::string::npos);
+        EXPECT_NE(contextHeader.find("settings.editorCameraPerformanceSettleFrames"), std::string::npos);
     }
 }

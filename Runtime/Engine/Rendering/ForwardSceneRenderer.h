@@ -16,7 +16,8 @@ namespace NLS::Engine::Rendering
 		BackgroundPreviewDrawPrewarmResult PrewarmBackgroundPreviewDraws(
 			const NLS::Render::Data::FrameDescriptor& frameDescriptor,
 			size_t firstDrawIndex,
-			size_t maxDraws) override;
+			size_t maxDraws,
+			std::chrono::microseconds timeBudget = std::chrono::milliseconds(1)) override;
 		void DrawFrame() override;
 
 	protected:

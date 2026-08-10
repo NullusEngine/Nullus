@@ -128,6 +128,38 @@ NLS::Render::Resources::Mesh* CreateRuntimeMesh(const NLS::Render::Assets::MeshA
     return root.release();
 }
 
+NLS::Render::Resources::Mesh* CreateRuntimeMesh(
+    const NLS::Render::Context::MeshRuntimeUploadRequest& request)
+{
+    if (request.vertices.empty())
+        return nullptr;
+
+    auto root = std::make_unique<NLS::Render::Resources::Mesh>(
+        request.vertices,
+        request.indices,
+        request.materialIndex,
+        NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+        request.boundingSphere);
+    if (!request.lodResources.empty())
+    {
+        std::vector<std::unique_ptr<NLS::Render::Resources::Mesh>> lods;
+        std::vector<float> screenSizes {1.0f};
+        lods.reserve(request.lodResources.size());
+        for (const auto& lod : request.lodResources)
+        {
+            lods.push_back(std::make_unique<NLS::Render::Resources::Mesh>(
+                lod.vertices,
+                lod.indices,
+                lod.materialIndex,
+                NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+                lod.boundingSphere));
+            screenSizes.push_back(lod.screenSize);
+        }
+        root->SetLODResources(std::move(lods), std::move(screenSizes), request.minLOD);
+    }
+    return root.release();
+}
+
 std::filesystem::path NormalizeVirtualBuiltinPath(const std::string& path)
 {
     std::string relativePath = path;
@@ -307,7 +339,9 @@ struct AsyncMeshArtifactRequest
     std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
     size_t cancelableInterestCount = 0u;
     size_t sharedInterestCount = 0u;
+    bool previewPriority = false;
     bool retryCancelledCompletion = false;
+    std::shared_ptr<const std::vector<uint8_t>> preparedPayload;
     NLS::Base::Jobs::JobHandle jobHandle;
     std::future<std::optional<NLS::Render::Assets::MeshArtifactBundle>> future;
     uint64_t runtimeUploadRequestId = 0u;
@@ -349,7 +383,11 @@ std::atomic_size_t g_activeMeshArtifactWorkers {0u};
 std::atomic_size_t g_artifactResourcePathResolutionCount {0u};
 #endif
 constexpr size_t kMaxPendingAsyncMeshArtifactRequests = 16u;
+// Reserve a small, bounded active window for visible thumbnail previews so
+// scene/import traffic cannot occupy every artifact worker slot.
+constexpr size_t kMaxPreviewReservedAsyncMeshArtifactRequests = 4u;
 constexpr size_t kMaxQueuedAsyncMeshArtifactRequests = 256u;
+constexpr size_t kMaxTotalAsyncMeshArtifactRequests = 512u;
 
 struct TrackedMeshArtifactPaths
 {
@@ -377,20 +415,7 @@ MeshManager::Mesh* FindCachedMeshByEquivalentArtifactPath(
     MeshManager& manager,
     const std::string& realPath)
 {
-    const auto target = NormalizeResolvedArtifactPath(realPath);
-    if (target.empty())
-        return nullptr;
-
-    for (const auto& [resourcePath, mesh] : manager.GetResources())
-    {
-        if (mesh == nullptr)
-            continue;
-
-        if (NormalizeResolvedArtifactPath(MeshManager::ResolveArtifactResourcePath(resourcePath)) == target)
-            return mesh;
-    }
-
-    return nullptr;
+    return manager.FindRegisteredMeshByResolvedArtifactPath(realPath);
 }
 
 auto FindAsyncMeshRequestByEquivalentArtifactPath(
@@ -485,6 +510,7 @@ public:
 struct MeshArtifactJobPayload
 {
     std::string realPath;
+    std::shared_ptr<const std::vector<uint8_t>> preparedPayload;
     std::shared_ptr<std::atomic_bool> cancellationFlag;
     std::promise<std::optional<NLS::Render::Assets::MeshArtifactBundle>> promise;
 };
@@ -503,6 +529,23 @@ void RunMeshArtifactJob(void* userData)
     {
         if (payload->cancellationFlag && payload->cancellationFlag->load(std::memory_order_acquire))
             payload->promise.set_value(std::nullopt);
+        else if (payload->preparedPayload != nullptr)
+        {
+            auto artifact = NLS::Render::Assets::DeserializeMeshArtifactBundle(
+                *payload->preparedPayload);
+            if (!artifact.has_value())
+            {
+                if (auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(
+                        *payload->preparedPayload);
+                    mesh.has_value())
+                {
+                    NLS::Render::Assets::MeshArtifactBundle bundle;
+                    bundle.lodResources.push_back({std::move(*mesh), 1.0f});
+                    artifact = std::move(bundle);
+                }
+            }
+            payload->promise.set_value(std::move(artifact));
+        }
         else
             payload->promise.set_value(NLS::Render::Assets::LoadMeshArtifactBundle(payload->realPath));
     }
@@ -533,10 +576,11 @@ void CancelMeshArtifactJob(void* userData)
 }
 
 MeshArtifactLoadSubmission StartMeshArtifactLoad(
-    const AsyncMeshArtifactRequest& request)
+    AsyncMeshArtifactRequest& request)
 {
     auto payload = std::make_unique<MeshArtifactJobPayload>();
     payload->realPath = request.realPath;
+    payload->preparedPayload = std::move(request.preparedPayload);
     payload->cancellationFlag = request.cancelled;
     auto future = payload->promise.get_future();
 
@@ -545,11 +589,22 @@ MeshArtifactLoadSubmission StartMeshArtifactLoad(
     desc.userData = payload.get();
     desc.cancelFunction = CancelMeshArtifactJob;
     desc.cancelUserData = payload.get();
+    // Visible thumbnail resource continuations must make progress even while
+    // scene/import background work is parsing large prefab artifacts.  The
+    // request remains bounded by the preview reservation in the manager; this
+    // only gives an already-admitted preview load the scheduler priority it
+    // was promised by RequestAsyncArtifactForPreview.
+    desc.priority = request.previewPriority
+        ? NLS::Base::Jobs::JobPriority::High
+        : NLS::Base::Jobs::JobPriority::Normal;
     desc.debugName = "MeshManager::AsyncArtifactLoad";
 
     const auto handle = NLS::Base::Jobs::ScheduleBackgroundJob(desc);
     if (handle.id == 0u)
+    {
+        request.preparedPayload = std::move(payload->preparedPayload);
         return {};
+    }
 
     (void)payload.release();
     return {handle, std::move(future)};
@@ -570,7 +625,33 @@ size_t CountActiveMeshRequests()
                 return false;
             }
             return entry.second.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+         }));
+}
+
+size_t CountActiveMeshRequestsForOwner(const MeshManager& manager)
+{
+    return static_cast<size_t>(std::count_if(
+        g_asyncMeshRequests.begin(),
+        g_asyncMeshRequests.end(),
+        [&manager](const auto& entry)
+        {
+            if (entry.second.owner != &manager || !entry.second.future.valid())
+                return false;
+            if (entry.second.jobHandle.id != 0u &&
+                NLS::Base::Jobs::IsCompleted(entry.second.jobHandle))
+            {
+                return false;
+            }
+            return entry.second.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
         }));
+}
+
+bool HasMeshArtifactStartCapacity(const bool previewPriority)
+{
+    const auto activeCount = CountActiveMeshRequests();
+    const auto limit = kMaxPendingAsyncMeshArtifactRequests +
+        (previewPriority ? kMaxPreviewReservedAsyncMeshArtifactRequests : 0u);
+    return activeCount < limit;
 }
 
 size_t CountQueuedMeshRequestsForOwner(const MeshManager& manager)
@@ -590,7 +671,10 @@ void PromoteQueuedMeshArtifactLoads(
 {
     for (;;)
     {
-        if (CountActiveMeshRequests() >= kMaxPendingAsyncMeshArtifactRequests)
+        const auto activeCount = CountActiveMeshRequests();
+        const bool regularCapacity = activeCount < kMaxPendingAsyncMeshArtifactRequests;
+        if (activeCount >= kMaxPendingAsyncMeshArtifactRequests +
+            kMaxPreviewReservedAsyncMeshArtifactRequests)
             return;
 
         auto found = std::find_if(
@@ -602,8 +686,25 @@ void PromoteQueuedMeshArtifactLoads(
                     entry.second.future.valid() ||
                     entry.second.runtimeUploadRequestId != 0u)
                     return false;
-                return paths == nullptr || MeshRequestMatchesAnyTrackedPath(entry.second, *paths);
+                return entry.second.previewPriority &&
+                    (paths == nullptr || MeshRequestMatchesAnyTrackedPath(entry.second, *paths));
             });
+        if (found == g_asyncMeshRequests.end())
+        {
+            if (!regularCapacity)
+                return;
+            found = std::find_if(
+                g_asyncMeshRequests.begin(),
+                g_asyncMeshRequests.end(),
+                [&manager, paths](auto& entry)
+                {
+                    if (entry.second.owner != &manager ||
+                        entry.second.future.valid() ||
+                        entry.second.runtimeUploadRequestId != 0u)
+                        return false;
+                    return paths == nullptr || MeshRequestMatchesAnyTrackedPath(entry.second, *paths);
+                });
+        }
         if (found == g_asyncMeshRequests.end())
             return;
 
@@ -636,7 +737,9 @@ void PromoteQueuedMeshArtifactLoads(
 void PumpAsyncMeshArtifactLoads(
     MeshManager& manager,
     const size_t maxCompletions,
-    const TrackedMeshArtifactPaths* paths)
+    const TrackedMeshArtifactPaths* paths,
+    const std::function<bool()>& shouldStop = {},
+    const bool allowReadyCompletionAfterStop = false)
 {
     size_t completedCount = 0u;
 
@@ -648,8 +751,13 @@ void PumpAsyncMeshArtifactLoads(
         {
             if (request.owner != &manager || request.runtimeUploadRequestId == 0u)
                 continue;
-            if (paths != nullptr && !MeshRequestMatchesAnyTrackedPath(request, *paths))
-                continue;
+            // A runtime upload is already the completed second half of this
+            // manager's request.  It must be retired independently of the
+            // current artifact-path inspection window: the preview resource
+            // cursor can move to another dependency between the RHI record
+            // and completion.  Path filtering here otherwise leaves a ready
+            // upload stranded forever when that path is no longer in the
+            // current continuation set.
             runtimeUploads.emplace_back(key, request.runtimeUploadRequestId);
         }
     }
@@ -661,6 +769,19 @@ void PumpAsyncMeshArtifactLoads(
             if (completedCount >= maxCompletions)
                 break;
 
+            // Polling a ready upload is also the point at which the runtime
+            // mesh is materialized and registered. Keep that potentially large
+            // operation inside the caller's frame budget; the next pump can
+            // retire the same upload without losing it.
+            if (shouldStop && shouldStop() && !allowReadyCompletionAfterStop)
+                break;
+
+            // Completed RHI uploads are already past the expensive artifact
+            // inspection phase.  Retire them even when the ordinary resource
+            // pump deadline has elapsed; otherwise a ready result can remain
+            // in the driver forever and the thumbnail continuation never sees
+            // the registered mesh.  The completion count still bounds the
+            // main-thread materialization work.
             auto upload = NLS::Render::Context::DriverResourceAccess::ConsumeMeshRuntimeUploadResult(
                 *driver,
                 uploadRequestId);
@@ -680,12 +801,44 @@ void PumpAsyncMeshArtifactLoads(
                 g_asyncMeshRequests.erase(found);
             }
 
-            if (upload.success && upload.mesh != nullptr)
+            if (upload.success && (upload.mesh != nullptr || upload.uploadRequest.has_value()))
             {
-                if (FindCachedMeshByEquivalentArtifactPath(manager, request.realPath) == nullptr)
-                    manager.RegisterResource(request.path, upload.mesh.release());
-                std::lock_guard lock(g_asyncMeshMutex);
-                g_failedAsyncMeshArtifacts.erase({ request.owner, request.path });
+                MeshManager::Mesh* mesh = upload.mesh.release();
+                try
+                {
+                    if (mesh == nullptr)
+                        mesh = CreateRuntimeMesh(*upload.uploadRequest);
+                    if (mesh != nullptr &&
+                        FindCachedMeshByEquivalentArtifactPath(manager, request.realPath) == nullptr)
+                    {
+                        manager.RegisterResource(request.path, mesh);
+                        mesh = nullptr;
+                    }
+                    if (mesh != nullptr)
+                        manager.DestroyResource(mesh);
+                    std::lock_guard lock(g_asyncMeshMutex);
+                    g_failedAsyncMeshArtifacts.erase({ request.owner, request.path });
+                }
+                catch (const std::exception& exception)
+                {
+                    if (mesh != nullptr)
+                        manager.DestroyResource(mesh);
+                    NLS_LOG_ERROR(
+                        "Async mesh runtime materialization failed: " + request.realPath +
+                        " error=" + exception.what());
+                    std::lock_guard lock(g_asyncMeshMutex);
+                    g_failedAsyncMeshArtifacts[{ request.owner, request.path }] =
+                        { request.owner, request.realPath, request.writeTime };
+                }
+                catch (...)
+                {
+                    if (mesh != nullptr)
+                        manager.DestroyResource(mesh);
+                    NLS_LOG_ERROR("Async mesh runtime materialization failed: " + request.realPath + " error=unknown");
+                    std::lock_guard lock(g_asyncMeshMutex);
+                    g_failedAsyncMeshArtifacts[{ request.owner, request.path }] =
+                        { request.owner, request.realPath, request.writeTime };
+                }
             }
             else
             {
@@ -698,6 +851,28 @@ void PumpAsyncMeshArtifactLoads(
             }
             ++completedCount;
         }
+    }
+
+    // An empty path window is used by preview continuations solely to retire
+    // runtime uploads whose artifact path has already left the inspection
+    // cursor.  Do not fall through into the ordinary path-filtered scan:
+    // every candidate would normalize its artifact path even though an empty
+    // filter can never match it.  On large prefabs this turns a bounded upload
+    // poll into an O(request-count) filesystem/path-normalization stall.
+    if (paths != nullptr && paths->sourcePaths.empty() && paths->normalizedRealPaths.empty())
+        return;
+
+    // Starting a queued artifact job is scheduler bookkeeping, not a bounded
+    // main-thread completion.  A thumbnail resource pump may have exhausted
+    // its inspection budget before reaching this function; honoring the stop
+    // predicate before promoting the matching queued request would leave a
+    // request permanently queued even though the worker and preview slots are
+    // idle.  Promote it before the completion loop so the next pump can retire
+    // the future without allowing this frame to perform synchronous work.
+    if (completedCount < maxCompletions)
+    {
+        std::lock_guard lock(g_asyncMeshMutex);
+        PromoteQueuedMeshArtifactLoads(manager, paths);
     }
 
     while (completedCount < maxCompletions)
@@ -721,6 +896,17 @@ void PumpAsyncMeshArtifactLoads(
             if (found == g_asyncMeshRequests.end())
                 return;
 
+            if (shouldStop && shouldStop() && !allowReadyCompletionAfterStop)
+                return;
+
+            // A ready future is already past the background loading phase.
+            // Preview continuations are allowed to retire it even when the
+            // caller's inspection deadline has elapsed: scanning a large
+            // prefab can consume the whole budget and otherwise leave ready
+            // preview requests stranded indefinitely.  Ordinary resource
+            // requests still honor shouldStop above. Completion work remains
+            // bounded by maxCompletions, and the path filter still prevents
+            // unrelated resources from being materialized in this pump.
             request = std::move(found->second);
             g_asyncMeshRequests.erase(found);
         }
@@ -944,6 +1130,93 @@ const std::string& MeshManager::ProjectAssetsRoot()
     return GetProjectAssetsPath();
 }
 
+MeshManager::Mesh* MeshManager::FindRegisteredMeshByResolvedArtifactPath(
+    const std::string& realPath) const
+{
+    const auto registeredPath = FindRegisteredMeshPathByResolvedArtifactPath(realPath);
+    if (!registeredPath.has_value())
+        return nullptr;
+
+    std::lock_guard lock(m_meshPathIndexMutex);
+    const auto found = m_meshPathIndex.find(NormalizeResolvedArtifactPath(realPath));
+    return found != m_meshPathIndex.end() ? found->second.resource : nullptr;
+}
+
+std::optional<std::string> MeshManager::FindRegisteredMeshPathByResolvedArtifactPath(
+    const std::string& realPath) const
+{
+    const auto normalizedPath = NormalizeResolvedArtifactPath(realPath);
+    if (normalizedPath.empty())
+        return std::nullopt;
+
+    std::lock_guard lock(m_meshPathIndexMutex);
+    const auto found = m_meshPathIndex.find(normalizedPath);
+    if (found == m_meshPathIndex.end() || found->second.resource == nullptr)
+        return std::nullopt;
+    return found->second.registeredPath;
+}
+
+void MeshManager::IndexMeshPath(const std::string& path, Mesh* resource)
+{
+    if (resource == nullptr)
+        return;
+
+    // Exact absolute artifact requests already carry their canonical path. Do
+    // not resolve them again while indexing a completed async load; besides
+    // being redundant, this kept the thumbnail pump on the path-resolution
+    // counter for every completion.
+    const auto normalizedPath = NormalizeResolvedArtifactPath(
+        std::filesystem::path(path).is_absolute() ? path : ResolveArtifactResourcePath(path));
+    if (normalizedPath.empty())
+        return;
+
+    m_meshPathIndex[normalizedPath] = { path, resource };
+}
+
+void MeshManager::RemoveMeshPathIndexEntry(const std::string& path, Mesh* resource)
+{
+    const auto normalizedPath = NormalizeResolvedArtifactPath(
+        std::filesystem::path(path).is_absolute() ? path : ResolveArtifactResourcePath(path));
+    if (normalizedPath.empty())
+        return;
+
+    const auto found = m_meshPathIndex.find(normalizedPath);
+    if (found != m_meshPathIndex.end() &&
+        found->second.registeredPath == path &&
+        found->second.resource == resource)
+    {
+        m_meshPathIndex.erase(found);
+    }
+}
+
+void MeshManager::OnResourceRegistered(const std::string& path, Mesh* resource)
+{
+    std::lock_guard lock(m_meshPathIndexMutex);
+    IndexMeshPath(path, resource);
+}
+
+void MeshManager::OnResourceUnregistered(const std::string& path, Mesh* resource)
+{
+    std::lock_guard lock(m_meshPathIndexMutex);
+    RemoveMeshPathIndexEntry(path, resource);
+}
+
+void MeshManager::OnResourceMoved(
+    const std::string& previousPath,
+    const std::string& newPath,
+    Mesh* resource)
+{
+    std::lock_guard lock(m_meshPathIndexMutex);
+    RemoveMeshPathIndexEntry(previousPath, resource);
+    IndexMeshPath(newPath, resource);
+}
+
+void MeshManager::OnAllResourcesUnregistered()
+{
+    std::lock_guard lock(m_meshPathIndexMutex);
+    m_meshPathIndex.clear();
+}
+
 MeshManager::~MeshManager()
 {
     ClearAsyncMeshArtifactStateForOwner(*this);
@@ -1014,22 +1287,54 @@ MeshManager::Mesh* MeshManager::PrewarmArtifact(const std::string& path)
     return prewarmed;
 }
 
-MeshManager::Mesh* MeshManager::RequestAsyncArtifact(const std::string& path, const bool cancelableInterest)
+MeshManager::Mesh* MeshManager::RequestAsyncArtifact(
+    const std::string& path,
+    const bool cancelableInterest)
+{
+    return RequestAsyncArtifactInternal(path, cancelableInterest, false, {});
+}
+
+MeshManager::Mesh* MeshManager::RequestAsyncArtifactForPreview(
+    const std::string& path,
+    const bool cancelableInterest)
+{
+    return RequestAsyncArtifactInternal(path, cancelableInterest, true, {});
+}
+
+MeshManager::Mesh* MeshManager::RequestAsyncPreparedArtifactForPreview(
+    const std::string& path,
+    std::shared_ptr<const std::vector<uint8_t>> payload,
+    const bool cancelableInterest)
+{
+    return RequestAsyncArtifactInternal(
+        path,
+        cancelableInterest,
+        true,
+        std::move(payload));
+}
+
+MeshManager::Mesh* MeshManager::RequestAsyncArtifactInternal(
+    const std::string& path,
+    const bool cancelableInterest,
+    const bool previewPriority,
+    std::shared_ptr<const std::vector<uint8_t>> preparedPayload)
 {
     if (auto* cached = GetResource(path, false))
         return cached;
 
     const auto realPath = ResolveArtifactResourcePath(path);
-    if (!std::filesystem::path(path).is_absolute())
-    {
-        if (auto* cached = FindCachedMeshByEquivalentArtifactPath(*this, realPath))
-            return cached;
-    }
-    if (!IsMeshArtifactPath(realPath))
+    const bool hasPreparedPayload = preparedPayload != nullptr && !preparedPayload->empty();
+    // Preview requests may use an absolute artifact path while the scene
+    // registered the same mesh through its portable/source path. Resolve the
+    // artifact identity through the registration index before starting another
+    // async load, regardless of the spelling of the request path.
+    if (auto* cached = FindCachedMeshByEquivalentArtifactPath(*this, realPath))
+        return cached;
+    if (!hasPreparedPayload && !IsMeshArtifactPath(realPath))
         return nullptr;
 
     std::error_code error;
-    if (!std::filesystem::is_regular_file(realPath, error))
+    if (!hasPreparedPayload && !std::filesystem::is_regular_file(realPath, error))
         return nullptr;
 
     const auto writeTime = TryGetLastWriteTime(realPath);
@@ -1040,6 +1345,8 @@ MeshManager::Mesh* MeshManager::RequestAsyncArtifact(const std::string& path, co
     request.writeTime = writeTime;
     request.cancelableInterestCount = cancelableInterest ? 1u : 0u;
     request.sharedInterestCount = cancelableInterest ? 0u : 1u;
+    request.previewPriority = previewPriority;
+    request.preparedPayload = std::move(preparedPayload);
     {
         std::lock_guard lock(g_asyncMeshMutex);
         if (auto existing = FindAsyncMeshRequestByEquivalentArtifactPath(g_asyncMeshRequests, *this, path, realPath);
@@ -1056,13 +1363,22 @@ MeshManager::Mesh* MeshManager::RequestAsyncArtifact(const std::string& path, co
                 realPath);
             if (existing->second.cancelled)
                 existing->second.cancelled->store(false, std::memory_order_release);
+            existing->second.previewPriority = existing->second.previewPriority || previewPriority;
+            if (existing->second.preparedPayload == nullptr &&
+                request.preparedPayload != nullptr &&
+                !existing->second.future.valid() &&
+                existing->second.runtimeUploadRequestId == 0u)
+            {
+                existing->second.preparedPayload = std::move(request.preparedPayload);
+            }
             existing->second.retryCancelledCompletion = true;
             return nullptr;
         }
         auto failed = FindFailedMeshLoadByEquivalentArtifactPath(g_failedAsyncMeshArtifacts, *this, path, realPath);
         if (failed != g_failedAsyncMeshArtifacts.end())
         {
-            if (ArtifactPathMatchesResolvedPath(failed->second.realPath, realPath) &&
+            if (!hasPreparedPayload &&
+                ArtifactPathMatchesResolvedPath(failed->second.realPath, realPath) &&
                 failed->second.writeTime == writeTime)
             {
                 return nullptr;
@@ -1070,9 +1386,13 @@ MeshManager::Mesh* MeshManager::RequestAsyncArtifact(const std::string& path, co
             g_failedAsyncMeshArtifacts.erase(failed);
         }
         EraseCancelledMeshArtifactByEquivalentPath(g_cancelledAsyncMeshArtifacts, *this, path, realPath);
-        if (CountQueuedMeshRequestsForOwner(*this) >= kMaxQueuedAsyncMeshArtifactRequests)
+        const auto queuedRequestCount = CountQueuedMeshRequestsForOwner(*this);
+        const auto queuedRequestLimit = previewPriority
+            ? kMaxTotalAsyncMeshArtifactRequests
+            : kMaxQueuedAsyncMeshArtifactRequests;
+        if (queuedRequestCount >= queuedRequestLimit)
             return nullptr;
-        if (CountActiveMeshRequests() < kMaxPendingAsyncMeshArtifactRequests)
+        if (HasMeshArtifactStartCapacity(previewPriority))
         {
             try
             {
@@ -1199,6 +1519,79 @@ bool MeshManager::IsAsyncArtifactLoadFailedExactPath(const std::string& path) co
     return expectedWriteTime == TryGetLastWriteTime(realPath);
 }
 
+AsyncArtifactRequestDiagnostics MeshManager::GetAsyncArtifactRequestDiagnostics()
+{
+    std::lock_guard lock(g_asyncMeshMutex);
+    AsyncArtifactRequestDiagnostics diagnostics;
+    diagnostics.totalRequests = g_asyncMeshRequests.size();
+    diagnostics.activeRequests = CountActiveMeshRequests();
+    diagnostics.failedRequests = g_failedAsyncMeshArtifacts.size();
+    diagnostics.maxActiveRequests =
+        kMaxPendingAsyncMeshArtifactRequests + kMaxPreviewReservedAsyncMeshArtifactRequests;
+    for (const auto& [_, request] : g_asyncMeshRequests)
+    {
+        if (request.previewPriority)
+        {
+            ++diagnostics.previewRequests;
+            if (!request.future.valid())
+                ++diagnostics.previewQueuedRequests;
+            else if (request.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+                ++diagnostics.previewActiveRequests;
+        }
+        if (request.runtimeUploadRequestId != 0u)
+            ++diagnostics.runtimeUploadPendingRequests;
+        if (!request.future.valid())
+        {
+            ++diagnostics.queuedRequests;
+            continue;
+        }
+        if (request.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+            ++diagnostics.readyRequests;
+    }
+    return diagnostics;
+}
+
+AsyncArtifactRequestDiagnostics MeshManager::GetAsyncArtifactRequestDiagnosticsForOwner() const
+{
+    std::lock_guard lock(g_asyncMeshMutex);
+    AsyncArtifactRequestDiagnostics diagnostics;
+    diagnostics.maxActiveRequests =
+        kMaxPendingAsyncMeshArtifactRequests + kMaxPreviewReservedAsyncMeshArtifactRequests;
+    for (const auto& [_, request] : g_asyncMeshRequests)
+    {
+        if (request.owner != this)
+            continue;
+
+        ++diagnostics.totalRequests;
+        if (request.previewPriority)
+        {
+            ++diagnostics.previewRequests;
+            if (!request.future.valid())
+                ++diagnostics.previewQueuedRequests;
+            else if (request.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+                ++diagnostics.previewActiveRequests;
+        }
+        if (request.runtimeUploadRequestId != 0u)
+            ++diagnostics.runtimeUploadPendingRequests;
+        if (!request.future.valid())
+        {
+            ++diagnostics.queuedRequests;
+            continue;
+        }
+        if (request.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+            ++diagnostics.readyRequests;
+    }
+    diagnostics.activeRequests = CountActiveMeshRequestsForOwner(*this);
+    diagnostics.failedRequests = static_cast<size_t>(std::count_if(
+        g_failedAsyncMeshArtifacts.begin(),
+        g_failedAsyncMeshArtifacts.end(),
+        [this](const auto& entry)
+        {
+            return entry.second.owner == this;
+        }));
+    return diagnostics;
+}
+
 void MeshManager::PumpAsyncLoads(const size_t maxCompletions)
 {
     PumpAsyncMeshArtifactLoads(*this, maxCompletions, nullptr);
@@ -1206,24 +1599,33 @@ void MeshManager::PumpAsyncLoads(const size_t maxCompletions)
 
 void MeshManager::PumpAsyncLoadsForPaths(
     const std::unordered_set<std::string>& paths,
-    const size_t maxCompletions)
+    const size_t maxCompletions,
+    const std::function<bool()>& shouldStop,
+    const bool allowReadyCompletionAfterStop)
 {
-    if (paths.empty())
-        return;
     const auto trackedPaths = BuildTrackedMeshArtifactPaths(paths);
-    PumpAsyncMeshArtifactLoads(*this, maxCompletions, &trackedPaths);
+    PumpAsyncMeshArtifactLoads(
+        *this,
+        maxCompletions,
+        &trackedPaths,
+        shouldStop,
+        allowReadyCompletionAfterStop);
 }
 
 void MeshManager::PumpAsyncLoadsForExactPaths(
     const std::unordered_set<std::string>& paths,
-    const size_t maxCompletions)
+    const size_t maxCompletions,
+    const std::function<bool()>& shouldStop,
+    const bool allowReadyCompletionAfterStop)
 {
-    if (paths.empty())
-        return;
-
     TrackedMeshArtifactPaths trackedPaths;
     trackedPaths.sourcePaths = paths;
-    PumpAsyncMeshArtifactLoads(*this, maxCompletions, &trackedPaths);
+    PumpAsyncMeshArtifactLoads(
+        *this,
+        maxCompletions,
+        &trackedPaths,
+        shouldStop,
+        allowReadyCompletionAfterStop);
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -1262,13 +1664,30 @@ void MeshManager::ClearAsyncArtifactRequestStateForTesting()
 bool MeshManager::WaitForAsyncArtifactWorkersForTesting(const uint32_t timeoutMilliseconds)
 {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
-    while (g_activeMeshArtifactWorkers.load(std::memory_order_acquire) != 0u)
+    while (true)
     {
+        bool hasScheduledWork = false;
+        {
+            std::lock_guard lock(g_asyncMeshMutex);
+            hasScheduledWork = std::any_of(
+                g_asyncMeshRequests.begin(),
+                g_asyncMeshRequests.end(),
+                [](const auto& entry)
+                {
+                    return entry.second.future.valid() &&
+                        entry.second.future.wait_for(std::chrono::milliseconds(0)) !=
+                            std::future_status::ready;
+                });
+        }
+        if (!hasScheduledWork &&
+            g_activeMeshArtifactWorkers.load(std::memory_order_acquire) == 0u)
+        {
+            return true;
+        }
         if (std::chrono::steady_clock::now() >= deadline)
             return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    return true;
 }
 
 size_t MeshManager::GetMaxPendingAsyncArtifactRequestCountForTesting()

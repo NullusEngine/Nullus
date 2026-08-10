@@ -5620,6 +5620,9 @@ TEST(AssetThumbnailBehaviorTests, MeshArtifactPumpQueuesRuntimeUploadWithoutCrea
     using namespace NLS::Core::ResourceManagement;
 
     auto& driver = EnsureThumbnailPerformanceGpuTestDriver();
+    if (!NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(driver))
+        GTEST_SKIP() << "An explicit RHI is required to exercise deferred runtime mesh upload queuing.";
+
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
     const auto root = MakeThumbnailPerformanceRoot();

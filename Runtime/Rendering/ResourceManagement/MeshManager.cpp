@@ -1121,8 +1121,8 @@ std::string MeshManager::ResolveArtifactResourcePath(const std::string& path)
 #endif
     auto resolved = ResolveBuiltinMeshArtifactPath(path);
     if (!resolved.empty())
-        return resolved;
-    return ResolveResourcePath(path);
+        return NormalizeResolvedArtifactPath(std::move(resolved));
+    return NormalizeResolvedArtifactPath(ResolveResourcePath(path));
 }
 
 const std::string& MeshManager::ProjectAssetsRoot()

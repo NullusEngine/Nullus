@@ -1521,6 +1521,7 @@ PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(
         request.prefabAssetId = prefabAssetId;
         request.prefabSubAssetKey = prefabSubAssetKey;
         request.sceneAssetId = sceneAssetId;
+        request.synchronousAssetReferencePrewarm = true;
 
         auto connect = ConvertResult(
             PrefabEditorWorkflow().ConnectExistingPrefabInstance(request, *liveSceneRoot));

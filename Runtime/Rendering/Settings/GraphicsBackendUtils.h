@@ -258,7 +258,7 @@ namespace NLS::Render::Settings
 		EGraphicsBackend backend,
 		std::string_view consumer)
 	{
-		if (IsBackendSelectableForPhase1(backend))
+		if (IsPhase1RuntimeBackend(backend) || IsBackendSelectableForPhase1(backend))
 			return std::nullopt;
 
 		std::string message;

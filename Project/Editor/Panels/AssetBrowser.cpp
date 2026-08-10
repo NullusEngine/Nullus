@@ -928,6 +928,8 @@ constexpr double kAssetBrowserRefreshDebounceSeconds = 0.20;
 constexpr double kAssetBrowserInlineRenamePendingMaxSeconds = 1.0;
 constexpr size_t kAssetBrowserPrefabHotCachePreloadGateCapacity = 256u;
 constexpr auto kAssetBrowserPrefabHotCachePreloadGateTtl = std::chrono::seconds(3);
+constexpr double kAssetBrowserHoveredPrefabHotCachePreloadRepeatDelaySeconds =
+	static_cast<double>(kAssetBrowserPrefabHotCachePreloadGateTtl.count());
 constexpr auto kAssetBrowserThumbnailUiDrawTelemetryMinimum = std::chrono::microseconds(1000);
 constexpr ImVec2 kAssetBrowserImageUv0(0.0f, 1.0f);
 constexpr ImVec2 kAssetBrowserImageUv1(1.0f, 0.0f);
@@ -3442,6 +3444,7 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 			MarkProjectAssetDisplayItemsDirty();
 			m_visibleThumbnailItems.clear();
 			m_visibleThumbnailItemsKnown = false;
+			m_visiblePrefabHotCachePreloadPending = false;
 			m_thumbnailResultsByItemKey.clear();
 			m_thumbnailItemKeyByCacheKey.clear();
 			m_thumbnailItemKeyByPresentationKey.clear();
@@ -3746,6 +3749,7 @@ void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
 		visibleItems.size() == m_visibleThumbnailCount &&
 		nextRequestSize == m_visibleThumbnailRequestSize)
 	{
+		FlushPendingVisiblePrefabHotCachePreload();
 		RecordAssetBrowserArtifactTelemetryStage(
 			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHash,
 			hashElapsed,
@@ -3764,6 +3768,7 @@ void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
 		m_visibleThumbnailFingerprint = nextFingerprint;
 		m_visibleThumbnailCount = m_visibleThumbnailItems.size();
 		m_visibleThumbnailRequestSize = nextRequestSize;
+		m_visiblePrefabHotCachePreloadPending = true;
 		m_visiblePendingPresentationRecoveryAfter = 0.0;
 		m_visiblePendingPresentationRecoveryOffset = 0u;
 		m_thumbnailGenerationScopeDirty = true;
@@ -5069,8 +5074,9 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					cursor.x + childIndent + (cardSize.x - childIndent - visibleThumbnailSize) * 0.5f,
 					cursor.y + 4.0f + (thumbnailSize - visibleThumbnailSize) * 0.5f);
 				const ImVec2 iconMax(iconMin.x + visibleThumbnailSize, iconMin.y + visibleThumbnailSize);
-					ImGui::InvisibleButton("##assetCard", cardSize);
+				ImGui::InvisibleButton("##assetCard", cardSize);
 					const bool hovered = ImGui::IsItemHovered();
+					SchedulePrefabHotCachePreloadForHoveredItem(item, hovered);
 					const bool hasDisclosure =
 						NLS::Editor::Assets::ShouldShowAssetBrowserSubAssetDisclosure(displayItem);
 				const auto disclosureSourcePath = item.sourceAssetPath.empty()
@@ -6682,6 +6688,69 @@ void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForDragPayload(
 			std::chrono::steady_clock::now() - begin),
 		scheduled ? 1u : 0u,
 		path});
+}
+
+void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForHoveredItem(
+    const NLS::Editor::Assets::AssetBrowserItem& item,
+    const bool hovered)
+{
+    if (!hovered ||
+        (item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
+            item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab))
+    {
+        return;
+    }
+
+    if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
+        item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
+    {
+        return;
+    }
+
+    const double now = ImGui::GetTime();
+    if (m_lastHoveredPrefabHotCachePreloadIdentity.Matches(item) &&
+        now - m_lastHoveredPrefabHotCachePreloadTime < kAssetBrowserHoveredPrefabHotCachePreloadRepeatDelaySeconds)
+    {
+        return;
+    }
+    m_lastHoveredPrefabHotCachePreloadIdentity.Store(item);
+    m_lastHoveredPrefabHotCachePreloadTime = now;
+
+    auto payload = NLS::Editor::Assets::MakeAssetBrowserItemDragPayload(item, nullptr);
+    if (payload.has_value())
+        SchedulePrefabHotCachePreloadForDragPayload(*payload);
+}
+
+void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForVisibleItems(
+    const std::vector<NLS::Editor::Assets::AssetBrowserItem>& visibleItems)
+{
+    for (const auto& item : visibleItems)
+    {
+        if (item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
+            item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab)
+        {
+            continue;
+        }
+
+        if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
+            item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
+        {
+            continue;
+        }
+
+        auto payload = NLS::Editor::Assets::MakeAssetBrowserItemDragPayload(item, nullptr);
+        if (payload.has_value())
+            SchedulePrefabHotCachePreloadForDragPayload(*payload);
+    }
+}
+
+void Editor::Panels::AssetBrowser::FlushPendingVisiblePrefabHotCachePreload()
+{
+    if (!m_visiblePrefabHotCachePreloadPending || IsAssetBrowserInteractive())
+        return;
+
+    m_visiblePrefabHotCachePreloadPending = false;
+    SchedulePrefabHotCachePreloadForVisibleItems(m_visibleThumbnailItems);
 }
 
 bool Editor::Panels::AssetBrowser::IsResidentPrefabPreviewAvailableForItem(

@@ -273,6 +273,12 @@ public:
         bool hovered,
         bool compact = false);
     void DrawProjectGridItemDragSource(const NLS::Editor::Assets::AssetBrowserItem& item);
+    void SchedulePrefabHotCachePreloadForHoveredItem(
+        const NLS::Editor::Assets::AssetBrowserItem& item,
+        bool hovered);
+    void SchedulePrefabHotCachePreloadForVisibleItems(
+        const std::vector<NLS::Editor::Assets::AssetBrowserItem>& visibleItems);
+    void FlushPendingVisiblePrefabHotCachePreload();
     bool IsResidentPrefabPreviewAvailableForItem(
         const NLS::Editor::Assets::AssetBrowserItem& item) const;
     [[nodiscard]] bool ShouldHoldResidentPrefabThumbnailFallback(
@@ -415,6 +421,7 @@ private:
     std::optional<int> m_assetBrowserUiFeedbackPriorityThroughFrame;
     std::vector<NLS::Editor::Assets::AssetBrowserItem> m_visibleThumbnailItems;
     bool m_visibleThumbnailItemsKnown = false;
+    bool m_visiblePrefabHotCachePreloadPending = false;
     std::string m_visibleThumbnailScopeKey;
     uint64_t m_visibleThumbnailFingerprint = 0u;
     size_t m_visibleThumbnailCount = 0u;
@@ -569,6 +576,35 @@ private:
         std::string selectedFolder;
         std::future<NLS::Editor::Assets::AssetBrowserFolderNode> future;
     };
+    struct HoveredPrefabHotCachePreloadIdentity
+    {
+        std::string dragResourcePath;
+        NLS::Core::Assets::AssetId assetId;
+        std::string subAssetKey;
+        NLS::Editor::Assets::AssetBrowserItemKind kind = NLS::Editor::Assets::AssetBrowserItemKind::Folder;
+        NLS::Editor::Assets::AssetBrowserItemType type = NLS::Editor::Assets::AssetBrowserItemType::Other;
+        NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
+
+        bool Matches(const NLS::Editor::Assets::AssetBrowserItem& item) const
+        {
+            return item.dragResourcePath == dragResourcePath &&
+                item.assetId == assetId &&
+                item.subAssetKey == subAssetKey &&
+                item.kind == kind &&
+                item.type == type &&
+                item.artifactType == artifactType;
+        }
+
+        void Store(const NLS::Editor::Assets::AssetBrowserItem& item)
+        {
+            dragResourcePath = item.dragResourcePath;
+            assetId = item.assetId;
+            subAssetKey = item.subAssetKey;
+            kind = item.kind;
+            type = item.type;
+            artifactType = item.artifactType;
+        }
+    };
     struct WatcherStartupResult
     {
         Core::AssetFileWatcher engineAssetsWatcher;
@@ -614,6 +650,8 @@ private:
     uint32_t m_lastThumbnailRequestSize = 0u;
     std::string m_lastThumbnailGenerationScopeKey;
     bool m_lastThumbnailGenerationScopeInteractive = false;
+    HoveredPrefabHotCachePreloadIdentity m_lastHoveredPrefabHotCachePreloadIdentity;
+    double m_lastHoveredPrefabHotCachePreloadTime = 0.0;
     bool m_thumbnailGenerationScopeDirty = true;
     std::unique_ptr<NLS::Editor::Assets::AssetDatabaseFacade> m_projectAssetDatabase;
     std::shared_ptr<const NLS::Editor::Assets::AssetDatabaseFacade> m_projectAssetDatabaseSnapshot;

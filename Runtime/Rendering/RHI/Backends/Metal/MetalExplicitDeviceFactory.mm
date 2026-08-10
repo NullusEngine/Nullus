@@ -1639,7 +1639,11 @@ namespace NLS::Render::Backend
                     height:desc.extent.height
                     mipmapped:desc.mipLevels > 1u];
                 descriptor.usage = ToMetalTextureUsage(desc.usage);
-                descriptor.storageMode = MTLStorageModeShared;
+                descriptor.storageMode = NLS::Render::RHI::HasTextureUsage(
+                    desc.usage,
+                    NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment)
+                    ? MTLStorageModePrivate
+                    : MTLStorageModeShared;
                 id<MTLTexture> texture = [m_device newTextureWithDescriptor:descriptor];
                 if (texture == nil)
                     return nullptr;

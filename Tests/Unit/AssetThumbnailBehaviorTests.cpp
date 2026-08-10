@@ -37,6 +37,7 @@
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphDocument.h"
 #include "Serialize/ObjectGraphWriter.h"
@@ -4870,6 +4871,13 @@ TEST(AssetThumbnailBehaviorTests, GpuPrefabPreviewRendersReadyPrefabToVisiblePix
     ScopedThumbnailResourceManagerAssetPaths paths(root / "Assets", repositoryEngineAssetsRoot);
     const ScopedThumbnailPerformanceJobSystem jobSystem;
     ASSERT_TRUE(jobSystem.IsInitialized());
+    const auto shaderCompilerToolchain =
+        NLS::Render::ShaderCompiler::GetCurrentShaderCompilerToolchainIdentity();
+    if (shaderCompilerToolchain.compilerPath == "unavailable")
+    {
+        std::filesystem::remove_all(root);
+        GTEST_SKIP() << "Native DXC is unavailable for prefab thumbnail render verification.";
+    }
     auto& driver = EnsureThumbnailPerformanceGpuTestDriver();
     if (driver.GetActiveGraphicsBackend() == NLS::Render::Settings::EGraphicsBackend::NONE)
     {

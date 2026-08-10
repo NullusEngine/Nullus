@@ -97,7 +97,7 @@ namespace NLS::Editor::Launch
                 }
 
                 if (const auto restriction =
-                    Render::Settings::GetPhase1BackendRestrictionMessage(parsed.backendOverride.value(), "Editor CLI");
+                    Render::Settings::GetPhase1BackendSelectionRestrictionMessage(parsed.backendOverride.value(), "Editor CLI");
                     restriction.has_value())
                 {
                     std::fprintf(stderr, "[main] %s\n", restriction->c_str());

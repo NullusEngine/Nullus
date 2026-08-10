@@ -952,7 +952,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     windowSettings.focused = false;
     const auto graphicsBackend = ResolveEditorGraphicsBackend(projectSettings, m_backendOverride);
     if (const auto restriction =
-        Render::Settings::GetPhase1BackendRestrictionMessage(graphicsBackend, "Editor runtime");
+        Render::Settings::GetPhase1BackendSelectionRestrictionMessage(graphicsBackend, "Editor runtime");
         restriction.has_value())
     {
         throw std::runtime_error(*restriction);

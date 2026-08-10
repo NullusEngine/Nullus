@@ -5070,49 +5070,51 @@ TEST(AssetThumbnailCacheTests, QueueBackpressureDoesNotEvictActiveGpuReadback)
     active.priority = ThumbnailRequestPriority::Background;
     active.freshnessInputs = {{"source", "active-readback:v1"}};
 
-    PendingThenReadyThumbnailPreviewRenderer renderer;
-    AssetThumbnailService service;
-    ASSERT_EQ(service.RequestAssetPreview(active).status, AssetThumbnailServiceStatus::Pending);
-
-    const auto pending = service.GenerateNextThumbnail(renderer, true);
-    ASSERT_TRUE(pending.has_value());
-    EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
-    EXPECT_EQ(service.GetThumbnailState(active), ThumbnailState::WaitingForGpu);
-
-    for (size_t index = 0u; index < 511u; ++index)
     {
-        auto visible = MakeThumbnailRequest(root, "texture:Visible" + std::to_string(index));
-        visible.sourceAssetPath = "Assets/Textures/Visible" + std::to_string(index) + ".png";
-        visible.kind = AssetThumbnailKind::Texture;
-        visible.priority = ThumbnailRequestPriority::Visible;
-        visible.freshnessInputs = {{"source", "visible-fill:" + std::to_string(index)}};
-        ASSERT_EQ(service.RequestAssetPreview(visible).status, AssetThumbnailServiceStatus::Pending);
+        PendingThenReadyThumbnailPreviewRenderer renderer;
+        AssetThumbnailService service;
+        ASSERT_EQ(service.RequestAssetPreview(active).status, AssetThumbnailServiceStatus::Pending);
+
+        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        ASSERT_TRUE(pending.has_value());
+        EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
+        EXPECT_EQ(service.GetThumbnailState(active), ThumbnailState::WaitingForGpu);
+
+        for (size_t index = 0u; index < 511u; ++index)
+        {
+            auto visible = MakeThumbnailRequest(root, "texture:Visible" + std::to_string(index));
+            visible.sourceAssetPath = "Assets/Textures/Visible" + std::to_string(index) + ".png";
+            visible.kind = AssetThumbnailKind::Texture;
+            visible.priority = ThumbnailRequestPriority::Visible;
+            visible.freshnessInputs = {{"source", "visible-fill:" + std::to_string(index)}};
+            ASSERT_EQ(service.RequestAssetPreview(visible).status, AssetThumbnailServiceStatus::Pending);
+        }
+        ASSERT_EQ(service.GetQueuedRequestCount(), 512u);
+
+        auto newcomer = MakeThumbnailRequest(root, "texture:NewVisible");
+        newcomer.sourceAssetPath = "Assets/Textures/NewVisible.png";
+        newcomer.kind = AssetThumbnailKind::Texture;
+        newcomer.priority = ThumbnailRequestPriority::Visible;
+        newcomer.freshnessInputs = {{"source", "new-visible:v1"}};
+
+        const auto rejected = service.RequestAssetPreview(newcomer);
+        EXPECT_EQ(rejected.status, AssetThumbnailServiceStatus::Fallback);
+        EXPECT_EQ(rejected.diagnostic, "thumbnail-generation-queue-full");
+        EXPECT_EQ(service.GetThumbnailState(active), ThumbnailState::WaitingForGpu)
+            << "Queue backpressure must not cancel a GPU readback that has already been submitted.";
+        EXPECT_EQ(service.GetQueuedRequestCount(), 512u);
+
+        const auto polled = service.GenerateNextThumbnail(renderer, true);
+        ASSERT_TRUE(polled.has_value());
+        EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending)
+            << "diagnostic=" << polled->diagnostic;
+        EXPECT_EQ(service.GetThumbnailState(active), ThumbnailState::Encoding);
+
+        const auto retried = service.RequestAssetPreview(newcomer);
+        EXPECT_EQ(retried.status, AssetThumbnailServiceStatus::Pending)
+            << "A generation-scope item retained during backpressure must be accepted after queue capacity is released.";
+        EXPECT_EQ(service.GetThumbnailState(newcomer), ThumbnailState::Queued);
     }
-    ASSERT_EQ(service.GetQueuedRequestCount(), 512u);
-
-    auto newcomer = MakeThumbnailRequest(root, "texture:NewVisible");
-    newcomer.sourceAssetPath = "Assets/Textures/NewVisible.png";
-    newcomer.kind = AssetThumbnailKind::Texture;
-    newcomer.priority = ThumbnailRequestPriority::Visible;
-    newcomer.freshnessInputs = {{"source", "new-visible:v1"}};
-
-    const auto rejected = service.RequestAssetPreview(newcomer);
-    EXPECT_EQ(rejected.status, AssetThumbnailServiceStatus::Fallback);
-    EXPECT_EQ(rejected.diagnostic, "thumbnail-generation-queue-full");
-    EXPECT_EQ(service.GetThumbnailState(active), ThumbnailState::WaitingForGpu)
-        << "Queue backpressure must not cancel a GPU readback that has already been submitted.";
-    EXPECT_EQ(service.GetQueuedRequestCount(), 512u);
-
-    const auto polled = service.GenerateNextThumbnail(renderer, true);
-    ASSERT_TRUE(polled.has_value());
-    EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending)
-        << "diagnostic=" << polled->diagnostic;
-    EXPECT_EQ(service.GetThumbnailState(active), ThumbnailState::Encoding);
-
-    const auto retried = service.RequestAssetPreview(newcomer);
-    EXPECT_EQ(retried.status, AssetThumbnailServiceStatus::Pending)
-        << "A generation-scope item retained during backpressure must be accepted after queue capacity is released.";
-    EXPECT_EQ(service.GetThumbnailState(newcomer), ThumbnailState::Queued);
 
     std::filesystem::remove_all(root);
 }

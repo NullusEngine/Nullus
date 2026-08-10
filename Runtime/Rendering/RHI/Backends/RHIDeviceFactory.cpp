@@ -30,7 +30,7 @@ namespace NLS::Render::Backend
 
 		if (!Render::Settings::IsBackendEnabledForCurrentBuild(settings.graphicsBackend))
 		{
-			const auto restriction = Render::Settings::GetPhase1BackendRestrictionMessage(
+			const auto restriction = Render::Settings::GetPhase1BackendSelectionRestrictionMessage(
 				settings.graphicsBackend,
 				"CreateRhiDevice");
 			NLS_LOG_ERROR(

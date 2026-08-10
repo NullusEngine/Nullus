@@ -2359,7 +2359,7 @@ TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabsAreNotMarkedMissing
         << "Generated model scene-prefab restores must not be marked missing before deferred renderer resource resolution runs.";
 }
 
-TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabInstantiationDefersSynchronousPrewarm)
+TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabInstantiationPrewarmsRuntimeResources)
 {
     const auto facadeSource = ReadTextFile("Project/Editor/Assets/PrefabUtilityFacade.cpp");
     const auto instantiateStart = facadeSource.find("PrefabOperationResult InstantiateStrippedPrefabInstance(");
@@ -2378,10 +2378,9 @@ TEST(EditorLaunchArgsTests, SceneRestoreGeneratedModelPrefabInstantiationDefersS
         instantiateBody.find("request.deferAssetReferenceResolution = deferGeneratedModelResources;"),
         std::string::npos);
     EXPECT_NE(
-        instantiateBody.find("request.synchronousAssetReferencePrewarm = !deferGeneratedModelResources;"),
+        instantiateBody.find("request.synchronousAssetReferencePrewarm = true;"),
         std::string::npos)
-        << "Generated scene prefabs must enter the existing deferred renderer-resource resolution path instead of "
-        << "blocking startup on synchronous GPU prewarm.";
+        << "Generated scene prefabs must prewarm renderer resources before the restored scene is published.";
     EXPECT_NE(
         instantiateBody.find("request.skipDeferredAssetReferenceCacheLookup = deferGeneratedModelResources;"),
         std::string::npos);

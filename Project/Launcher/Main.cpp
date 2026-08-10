@@ -101,7 +101,7 @@ int main(int argc, char** argv)
             }
 
             if (const auto restriction =
-                Render::Settings::GetPhase1BackendRestrictionMessage(backendOverride.value(), "Launcher CLI");
+                Render::Settings::GetPhase1BackendSelectionRestrictionMessage(backendOverride.value(), "Launcher CLI");
                 restriction.has_value())
             {
                 std::fprintf(stderr, "[Launcher] %s\n", restriction->c_str());

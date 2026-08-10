@@ -1359,7 +1359,8 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     request.sceneAssetId = sceneAssetId;
     const bool deferGeneratedModelResources = sourcePrefab->generatedModelPrefab;
     request.deferAssetReferenceResolution = deferGeneratedModelResources;
-    request.synchronousAssetReferencePrewarm = !deferGeneratedModelResources;
+    // Scene restoration must make generated-model resources available before the loaded scene is published.
+    request.synchronousAssetReferencePrewarm = true;
     request.skipDeferredAssetReferenceCacheLookup = deferGeneratedModelResources;
 
     auto instantiate = ConvertResult(PrefabEditorWorkflow().InstantiatePrefab({

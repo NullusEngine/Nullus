@@ -281,6 +281,22 @@ namespace NLS::Render::Settings
 		return message;
 	}
 
+	inline std::optional<std::string> GetPhase1BackendSelectionRestrictionMessage(
+		EGraphicsBackend backend,
+		std::string_view consumer)
+	{
+		if (IsBackendSelectableForPhase1(backend))
+			return std::nullopt;
+
+		if (const auto restriction = GetPhase1BackendRestrictionMessage(backend, consumer);
+			restriction.has_value())
+		{
+			return restriction;
+		}
+
+		return GetPhase1BackendRestrictionMessage(EGraphicsBackend::NONE, consumer);
+	}
+
 	inline bool IsBackendEnabledForCurrentBuild(EGraphicsBackend backend)
 	{
 		return IsBackendSelectableForPhase1(backend);
@@ -548,7 +564,7 @@ namespace NLS::Render::Settings
 		report.requestedBackend = requestedBackend;
 		report.consumer = consumer;
 
-		if (const auto restriction = GetPhase1BackendRestrictionMessage(
+		if (const auto restriction = GetPhase1BackendSelectionRestrictionMessage(
 				requestedBackend,
 				consumer == RuntimeConsumer::Editor ? "Editor runtime" : "Game runtime");
 			restriction.has_value())
@@ -637,7 +653,7 @@ namespace NLS::Render::Settings
 		const EGraphicsBackend requestedBackend,
 		const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		if (const auto restriction = GetPhase1BackendRestrictionMessage(requestedBackend, "Editor runtime");
+		if (const auto restriction = GetPhase1BackendSelectionRestrictionMessage(requestedBackend, "Editor runtime");
 			restriction.has_value())
 		{
 			RuntimeBackendReadinessDecision decision;
@@ -698,7 +714,7 @@ namespace NLS::Render::Settings
 		const EGraphicsBackend requestedBackend,
 		const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		if (const auto restriction = GetPhase1BackendRestrictionMessage(requestedBackend, "Game runtime");
+		if (const auto restriction = GetPhase1BackendSelectionRestrictionMessage(requestedBackend, "Game runtime");
 			restriction.has_value())
 		{
 			RuntimeBackendReadinessDecision decision;

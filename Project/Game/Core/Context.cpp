@@ -243,7 +243,7 @@ Game::Context::Context(
 		NLS_LOG_INFO("Using command-line backend override: " + std::string(NLS::Render::Settings::ToString(graphicsBackend)));
 	}
 	if (const auto restriction =
-		NLS::Render::Settings::GetPhase1BackendRestrictionMessage(graphicsBackend, "Game runtime");
+		NLS::Render::Settings::GetPhase1BackendSelectionRestrictionMessage(graphicsBackend, "Game runtime");
 		restriction.has_value())
 	{
 		throw std::runtime_error(*restriction);

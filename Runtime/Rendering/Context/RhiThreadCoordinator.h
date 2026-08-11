@@ -31,6 +31,9 @@ namespace NLS::Render::Context
             Driver& driver,
             RhiSubmissionAttribution attribution,
             bool applyPendingSwapchainResize = true);
+        // Processes resource uploads even when no render-scene submission is queued.
+        // Thumbnail preparation can enqueue runtime meshes between regular frames.
+        static bool TryProcessPendingMeshRuntimeUploads(Driver& driver);
         static bool DrainPendingThreadedSubmissions(
             Driver& driver,
             RhiSubmissionAttribution attribution,

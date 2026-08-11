@@ -211,10 +211,16 @@ const char* ArtifactLoadTelemetryStageName(const ArtifactLoadTelemetryStage stag
         return "ThumbnailGpuPreviewPumpDependencies";
     case ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMeshDependencies:
         return "ThumbnailGpuPreviewPumpMeshDependencies";
+    case ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMeshInspection:
+        return "ThumbnailGpuPreviewPumpMeshInspection";
     case ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialDependencies:
         return "ThumbnailGpuPreviewPumpMaterialDependencies";
+    case ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialInspection:
+        return "ThumbnailGpuPreviewPumpMaterialInspection";
     case ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpTextureDependencies:
         return "ThumbnailGpuPreviewPumpTextureDependencies";
+    case ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpTextureBinding:
+        return "ThumbnailGpuPreviewPumpTextureBinding";
     case ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialPathBuild:
         return "ThumbnailGpuPreviewPumpMaterialPathBuild";
     case ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialPromote:
@@ -265,6 +271,8 @@ const char* ArtifactLoadTelemetryStageName(const ArtifactLoadTelemetryStage stag
         return "ThumbnailTextureUploadResolveUiId";
     case ArtifactLoadTelemetryStage::ThumbnailUiDraw:
         return "ThumbnailUiDraw";
+    case ArtifactLoadTelemetryStage::ThumbnailEditorFrame:
+        return "ThumbnailEditorFrame";
     case ArtifactLoadTelemetryStage::ThumbnailUiDrawGridVisibleRows:
         return "ThumbnailUiDrawGridVisibleRows";
     case ArtifactLoadTelemetryStage::ThumbnailUiDrawGridItemInteractions:

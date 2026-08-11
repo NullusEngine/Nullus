@@ -248,7 +248,22 @@ namespace NLS::Render::Context
             uint32_t width = 0u;
             uint32_t height = 0u;
             std::vector<uint8_t> rgbaPixels;
+            // Preserve the original aggregate-initializer order for
+            // standalone uploads; atlas fields are optional extensions.
             std::string debugName;
+            RHI::TextureColorSpace colorSpace = RHI::TextureColorSpace::Linear;
+            // The historical request name is retained for source compatibility.
+            // Non-RGBA8 reduced artifacts use their native format and pitches;
+            // atlas uploads remain RGBA8-only.
+            RHI::TextureFormat format = RHI::TextureFormat::RGBA8;
+            uint32_t rowPitch = 0u;
+            uint32_t slicePitch = 0u;
+            // Non-empty page keys route the upload into an existing atlas page
+            // owned by the render thread. Empty keys retain standalone behavior.
+            std::string atlasPageKey;
+            uint32_t atlasPageSize = 0u;
+            uint32_t atlasX = 0u;
+            uint32_t atlasY = 0u;
         };
 
         struct Rgba8TextureUploadResult
@@ -328,6 +343,7 @@ namespace NLS::Render::Context
         static uint64_t RequestUiRgba8TextureUpload(
             Driver& driver,
             Rgba8TextureUploadRequest request);
+        static bool SupportsUiRgba8TextureAtlasRegionUploads(const Driver& driver);
         static Rgba8TextureUploadResult ConsumeUiRgba8TextureUploadResult(
             Driver& driver,
             uint64_t requestId);
@@ -347,6 +363,26 @@ namespace NLS::Render::Context
 
     struct NLS_RENDER_API DriverResourceAccess final
     {
+        struct MeshRuntimeUploadDiagnostics
+        {
+            size_t pendingRequestCount = 0u;
+            size_t completedResultCount = 0u;
+            uint64_t requestedCount = 0u;
+            uint64_t recordTickCount = 0u;
+            uint64_t rhiIdleTickCount = 0u;
+            uint64_t recordedCount = 0u;
+            uint64_t consumedCount = 0u;
+            uint64_t failedCount = 0u;
+            uint64_t canceledCount = 0u;
+            uint64_t driverInstanceIdentity = 0u;
+            uint64_t lastRequestedRequestId = 0u;
+            uint64_t lastSwappedBatchCount = 0u;
+            uint64_t emptyRecordTickCount = 0u;
+            uint64_t lastRecordedRequestId = 0u;
+            uint64_t lastConsumedRequestId = 0u;
+            uint64_t lastCanceledRequestId = 0u;
+        };
+
         static uint64_t RequestMeshRuntimeUpload(
             Driver& driver,
             MeshRuntimeUploadRequest request);
@@ -356,6 +392,8 @@ namespace NLS::Render::Context
         static void CancelMeshRuntimeUpload(
             Driver& driver,
             uint64_t requestId);
+        static MeshRuntimeUploadDiagnostics GetMeshRuntimeUploadDiagnostics(
+            const Driver& driver);
     };
 
     struct NLS_RENDER_API DriverTestAccess final

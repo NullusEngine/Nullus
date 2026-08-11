@@ -227,6 +227,11 @@ bool MeshFilter::HasResolvedTransientMesh() const
     return m_transientMesh != nullptr;
 }
 
+std::shared_ptr<MeshFilter::Mesh> MeshFilter::GetResolvedTransientMesh() const
+{
+    return m_transientMesh;
+}
+
 Render::Resources::Mesh* MeshFilter::ResolveMesh()
 {
     if (m_transientMesh)

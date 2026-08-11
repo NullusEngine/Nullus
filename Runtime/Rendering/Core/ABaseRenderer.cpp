@@ -654,7 +654,6 @@ std::optional<NLS::Render::Context::FrameSnapshot> ABaseRenderer::BuildFrameSnap
 void ABaseRenderer::SetNextFramePostSubmitTextureReadback(
     Context::PostSubmitTextureReadbackRequest request)
 {
-    m_nextFramePostSubmitTextureReadbacks.clear();
     m_nextFramePostSubmitTextureReadbacks.push_back(std::move(request));
 }
 

@@ -202,6 +202,9 @@ struct InstantiatePrefabRequest
     const NLS::Engine::Assets::PrefabArtifact* constPrefab = nullptr;
     bool synchronousAssetReferencePrewarm = false;
     bool skipDeferredAssetReferenceCacheLookup = false;
+    // Optional canonical source path used to publish a scene-resident preview
+    // snapshot after drag/drop instantiation.
+    std::string prefabAssetPath;
 };
 
 struct PrefabEditorOperationResult

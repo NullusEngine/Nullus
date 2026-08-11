@@ -1917,6 +1917,60 @@ std::string BuildAssetBrowserThumbnailItemKey(
     return key;
 }
 
+std::vector<std::filesystem::path> BuildAssetBrowserThumbnailImageCandidates(
+    const std::filesystem::path& canonicalImagePath,
+    const std::filesystem::path& retainedImagePath,
+    const std::filesystem::path& pendingCacheImagePath)
+{
+    std::vector<std::filesystem::path> candidates;
+    candidates.reserve(3u);
+    const auto addCandidate = [&candidates](const std::filesystem::path& path)
+    {
+        if (path.empty() || std::find(candidates.begin(), candidates.end(), path) != candidates.end())
+            return;
+        candidates.push_back(path);
+    };
+    addCandidate(canonicalImagePath);
+    addCandidate(retainedImagePath);
+    addCandidate(pendingCacheImagePath);
+    return candidates;
+}
+
+bool AssetBrowserThumbnailItemMatchesResultIdentity(
+    const AssetBrowserItem& item,
+    const std::string& sourceAssetPath,
+    const std::string& subAssetKey,
+    const AssetThumbnailKind requestKind)
+{
+    if (item.sourceAssetPath != sourceAssetPath)
+        return false;
+
+    const bool exactSubAssetMatch = item.subAssetKey == subAssetKey;
+    const bool textureSourceAssetBackfill =
+        requestKind == AssetThumbnailKind::Texture &&
+        !subAssetKey.empty() &&
+        item.kind == AssetBrowserItemKind::SourceAsset &&
+        item.subAssetKey.empty();
+    if (!exactSubAssetMatch && !textureSourceAssetBackfill)
+        return false;
+
+    switch (requestKind)
+    {
+    case AssetThumbnailKind::Texture:
+        return item.type == AssetBrowserItemType::Texture;
+    case AssetThumbnailKind::MaterialSphere:
+        return item.type == AssetBrowserItemType::Material;
+    case AssetThumbnailKind::ModelPreview:
+        return item.type == AssetBrowserItemType::Model ||
+            item.type == AssetBrowserItemType::Mesh;
+    case AssetThumbnailKind::PrefabPreview:
+        return item.type == AssetBrowserItemType::Model ||
+            item.type == AssetBrowserItemType::Prefab;
+    default:
+        return false;
+    }
+}
+
 AssetBrowserThumbnailGenerationScopeDecision EvaluateAssetBrowserThumbnailGenerationScope(
     const std::string& previousScopeKey,
     const uint32_t previousRequestedSize,
@@ -1944,7 +1998,8 @@ AssetBrowserPostDrawThumbnailPumpPermissions PlanAssetBrowserPostDrawThumbnailPu
         return {};
     return {
         input.nowSeconds >= input.lightDeferredUntilSeconds,
-        input.nowSeconds >= input.heavyDeferredUntilSeconds
+        !input.sceneViewCameraNavigationActive &&
+            input.nowSeconds >= input.heavyDeferredUntilSeconds
     };
 }
 
@@ -1960,6 +2015,23 @@ AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
         return decision;
     }
 
+    // A resident package that has just reached a complete revision is already
+    // backed by the scene's loaded resources. Its canonical thumbnail must not
+    // inherit the interactive/camera or heavy cooldown gates that intentionally
+    // protect new artifact-backed previews; otherwise the light lane skips the
+    // ready marker and the request can remain provisional indefinitely.
+    if (input.hasQueuedReadyResidentPreview)
+    {
+        decision.shouldPump =
+            input.hasQueuedWork &&
+            input.hasPreviewRenderer;
+        return decision;
+    }
+
+    if (input.interactive ||
+        input.sceneViewCameraNavigationActive)
+        return decision;
+
     if (input.hasQueuedResourceContinuation)
     {
         decision.shouldPump =
@@ -1969,11 +2041,32 @@ AssetBrowserHeavyGpuThumbnailPumpDecision PlanAssetBrowserHeavyGpuThumbnailPump(
         return decision;
     }
 
+    // A visible resident request must reach the renderer while scene restore
+    // is active: it may already have all shared resources and can render
+    // immediately. If it does not, the renderer's resident path runs in
+    // join-only mode and never starts a duplicate resource request.
+    if (input.hasQueuedVisibleResidentPreview)
+    {
+        decision.shouldPump =
+            input.hasQueuedWork &&
+            input.hasPreviewRenderer &&
+            input.nowSeconds >= input.nextAllowedSeconds;
+        return decision;
+    }
+
+    // Scene-load renderer resolution owns the shared resource budget for new
+    // non-resident heavy previews. Keep that gate for ordinary requests.
+    const bool sceneLoadBlocksNewHeavyWork =
+        input.sceneLoadRendererResourcesPending &&
+        !input.sceneLoadThumbnailEscapeHatchActive;
+    if (sceneLoadBlocksNewHeavyWork)
+        return decision;
+
     if (!input.allowHeavyGpuPreview ||
         input.interactive ||
         !input.hasQueuedWork ||
         !input.hasPreviewRenderer ||
-        input.sceneLoadRendererResourcesPending)
+        sceneLoadBlocksNewHeavyWork)
     {
         return decision;
     }
@@ -2000,7 +2093,8 @@ double PlanAssetBrowserHeavyGpuThumbnailContinuationDelay(
     {
         return 0.0;
     }
-    if (diagnostic.rfind("thumbnail-gpu-preview-resources-pending", 0u) == 0u)
+    if (diagnostic.rfind("thumbnail-gpu-preview-resident-partial", 0u) == 0u ||
+        diagnostic.rfind("thumbnail-gpu-preview-resources-pending", 0u) == 0u)
         return resourcePendingDelaySeconds;
     return defaultDelaySeconds;
 }
@@ -2012,6 +2106,7 @@ AssetBrowserLightGpuThumbnailPumpDecision PlanAssetBrowserLightGpuThumbnailPump(
     if (!input.allowGpuPreviewStart ||
         input.interactive ||
         !input.hasQueuedWork ||
+        input.hasExclusivePreviewContinuation ||
         !input.hasPreviewRenderer ||
         input.standardPbrShaderPassPrewarmPending)
     {
@@ -2085,6 +2180,12 @@ bool ShouldContinueAssetBrowserThumbnailRequests(
     if (input.maxElapsedMicroseconds > 0u && input.elapsedMicroseconds >= input.maxElapsedMicroseconds)
         return false;
     return true;
+}
+
+bool ShouldRetryAssetBrowserThumbnailRequestAfterBackpressure(
+    const std::string_view diagnostic)
+{
+    return diagnostic == "thumbnail-generation-queue-full";
 }
 
 AssetBrowserFolderNode BuildProjectAssetFolderTree(const std::filesystem::path& projectRootOrAssetsRoot)
@@ -2293,6 +2394,22 @@ std::vector<std::string> SelectAssetBrowserThumbnailTextureDecodeCandidates(
     const std::unordered_set<std::string>& decodingKeys,
     const size_t maxDecodes)
 {
+    return SelectAssetBrowserThumbnailTextureDecodeCandidates(
+        queuedKeys,
+        [&residentKeys](const std::string& key)
+        {
+            return residentKeys.find(key) != residentKeys.end();
+        },
+        decodingKeys,
+        maxDecodes);
+}
+
+std::vector<std::string> SelectAssetBrowserThumbnailTextureDecodeCandidates(
+    const std::vector<std::string>& queuedKeys,
+    const std::function<bool(const std::string&)>& isResidentKey,
+    const std::unordered_set<std::string>& decodingKeys,
+    const size_t maxDecodes)
+{
     std::vector<std::string> candidates;
     if (maxDecodes == 0u)
         return candidates;
@@ -2301,7 +2418,7 @@ std::vector<std::string> SelectAssetBrowserThumbnailTextureDecodeCandidates(
     for (const auto& key : queuedKeys)
     {
         if (key.empty() ||
-            residentKeys.find(key) != residentKeys.end() ||
+            isResidentKey(key) ||
             decodingKeys.find(key) != decodingKeys.end() ||
             selected.find(key) != selected.end())
         {
@@ -2384,9 +2501,9 @@ std::vector<AssetBrowserItem> SelectAssetBrowserThumbnailGenerationItems(
     std::unordered_set<std::string> selectedKeys;
     auto addItem = [&items, &selectedKeys](const AssetBrowserItem& item)
     {
-        if (item.kind == AssetBrowserItemKind::Folder || item.projectRelativePath.empty())
+        if (!CanGenerateAssetBrowserThumbnail(item))
             return;
-        if (selectedKeys.insert(item.projectRelativePath).second)
+        if (selectedKeys.insert(BuildAssetBrowserThumbnailItemKey(item, 0u)).second)
             items.push_back(item);
     };
 
@@ -2399,6 +2516,24 @@ std::vector<AssetBrowserItem> SelectAssetBrowserThumbnailGenerationItems(
         addItem(item);
     }
     return items;
+}
+
+bool CanGenerateAssetBrowserThumbnail(const AssetBrowserItem& item)
+{
+    if (item.kind == AssetBrowserItemKind::Folder || item.projectRelativePath.empty())
+        return false;
+
+    switch (item.type)
+    {
+    case AssetBrowserItemType::Texture:
+    case AssetBrowserItemType::Material:
+    case AssetBrowserItemType::Model:
+    case AssetBrowserItemType::Mesh:
+    case AssetBrowserItemType::Prefab:
+        return true;
+    default:
+        return false;
+    }
 }
 
 std::vector<AssetBrowserBreadcrumbSegment> BuildAssetBrowserBreadcrumb(const std::string& selectedFolder)

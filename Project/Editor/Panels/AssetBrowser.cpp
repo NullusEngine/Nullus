@@ -109,12 +109,52 @@ namespace
 {
 constexpr size_t kMaxAssetBrowserThumbnailDrawOutcomePaths = 64u;
 constexpr int kAssetBrowserThumbnailDrawOutcomeSamplePeriodFrames = 15;
+constexpr size_t kAssetBrowserThumbnailVisibleSetStableFrames = 3u;
+constexpr auto kAssetBrowserThumbnailInitialVisibleTimeout = std::chrono::seconds(30);
+constexpr double kAssetBrowserSceneLoadThumbnailEscapeSeconds = 2.0;
+constexpr double kAssetBrowserVisiblePendingPresentationRecoveryIntervalSeconds = 0.25;
+constexpr size_t kMaxAssetBrowserVisiblePendingPresentationProbesPerPump = 2u;
+
+NLS::Render::RHI::TextureColorSpace CachedThumbnailTextureColorSpace(
+	const NLS::Editor::Assets::AssetThumbnailKind kind)
+{
+	return kind == NLS::Editor::Assets::AssetThumbnailKind::Texture
+		? NLS::Render::RHI::TextureColorSpace::Linear
+		: NLS::Render::RHI::TextureColorSpace::SRGB;
+}
+
+NLS::Render::RHI::TextureColorSpace CachedThumbnailTextureColorSpace(
+	const NLS::Editor::Assets::AssetThumbnailServiceResult& result)
+{
+	return CachedThumbnailTextureColorSpace(
+		static_cast<NLS::Editor::Assets::AssetThumbnailKind>(result.requestKind));
+}
 
 struct AssetBrowserThumbnailDrawOutcomeTelemetryState
 {
     std::array<size_t, 3u> counts {};
     size_t droppedPathCount = 0u;
     std::unordered_map<std::string, size_t> pathCounts;
+    std::unordered_map<std::string, size_t> requestBuildFailurePathCounts;
+    bool initialVisibleSetStarted = false;
+    bool initialVisibleMeasurementClosed = false;
+    size_t initialVisibleThumbnailCount = 0u;
+    size_t initialVisiblePendingAfter30SecondsCount = 0u;
+    bool initialVisibleTimedOut = false;
+    std::chrono::steady_clock::time_point initialVisibleSetStartedAt {};
+    uint64_t initialVisibleSetFingerprint = 0u;
+    uint64_t candidateVisibleSetFingerprint = 0u;
+    size_t candidateVisibleSetStableFrameCount = 0u;
+    std::vector<std::string> candidateVisibleItemKeys;
+    std::unordered_set<std::string> initialVisibleItemKeys;
+    std::unordered_set<std::string> explicitTypeFallbackItemKeys;
+    std::unordered_set<std::string> canonicalVisiblePaths;
+    std::unordered_map<
+        std::string,
+        NLS::Editor::Assets::ThumbnailPresentationState> initialVisiblePresentationStates;
+    std::unordered_map<std::string, std::string> initialVisiblePresentationDetails;
+    std::optional<double> firstCanonicalDrawMs;
+    std::optional<double> canonical90PercentFillMs;
     std::mutex mutex;
 };
 
@@ -124,10 +164,48 @@ AssetBrowserThumbnailDrawOutcomeTelemetryState& ThumbnailDrawOutcomeTelemetrySta
     return state;
 }
 
+size_t CountInitialVisibleLoadingItems(
+    const AssetBrowserThumbnailDrawOutcomeTelemetryState& state)
+{
+    using NLS::Editor::Assets::ThumbnailPresentationState;
+    size_t loadingCount = 0u;
+    for (const auto& [_, presentationState] : state.initialVisiblePresentationStates)
+    {
+        if (presentationState == ThumbnailPresentationState::Loading ||
+            presentationState == ThumbnailPresentationState::StaleRefreshing)
+        {
+            ++loadingCount;
+        }
+    }
+
+    if (state.initialVisiblePresentationStates.empty() &&
+        state.initialVisibleThumbnailCount > state.canonicalVisiblePaths.size())
+    {
+        loadingCount = state.initialVisibleThumbnailCount - state.canonicalVisiblePaths.size();
+    }
+    return loadingCount;
+}
+
+void CloseInitialVisibleMeasurementIfExpired(
+    AssetBrowserThumbnailDrawOutcomeTelemetryState& state,
+    const std::chrono::steady_clock::time_point now)
+{
+    if (!state.initialVisibleSetStarted || state.initialVisibleMeasurementClosed ||
+        now - state.initialVisibleSetStartedAt < kAssetBrowserThumbnailInitialVisibleTimeout)
+    {
+        return;
+    }
+
+    state.initialVisibleMeasurementClosed = true;
+    state.initialVisiblePendingAfter30SecondsCount = CountInitialVisibleLoadingItems(state);
+    state.initialVisibleTimedOut = state.initialVisiblePendingAfter30SecondsCount != 0u;
+}
+
 size_t ThumbnailDrawOutcomeIndex(const NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcome outcome)
 {
     return static_cast<size_t>(outcome);
 }
+
 }
 
 void NLS::Editor::Panels::RecordAssetBrowserThumbnailDrawOutcomeTelemetry(
@@ -177,16 +255,318 @@ NLS::Editor::Panels::SnapshotAssetBrowserThumbnailDrawOutcomeTelemetry()
 {
     auto& state = ThumbnailDrawOutcomeTelemetryState();
     std::lock_guard lock(state.mutex);
+    CloseInitialVisibleMeasurementIfExpired(state, std::chrono::steady_clock::now());
 
     AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot snapshot;
     snapshot.thumbnailDrawCount = state.counts[ThumbnailDrawOutcomeIndex(AssetBrowserThumbnailDrawOutcome::Thumbnail)];
     snapshot.fallbackDrawCount = state.counts[ThumbnailDrawOutcomeIndex(AssetBrowserThumbnailDrawOutcome::Fallback)];
     snapshot.typeFallbackDrawCount = state.counts[ThumbnailDrawOutcomeIndex(AssetBrowserThumbnailDrawOutcome::TypeFallback)];
     snapshot.droppedPathCount = state.droppedPathCount;
+    snapshot.requestBuildFailurePathTotals.reserve(state.requestBuildFailurePathCounts.size());
+    for (const auto& [path, count] : state.requestBuildFailurePathCounts)
+        snapshot.requestBuildFailurePathTotals.push_back({ path, count });
+    snapshot.initialVisibleThumbnailCount = state.initialVisibleThumbnailCount;
+    snapshot.canonicalVisibleThumbnailCount = state.canonicalVisiblePaths.size();
+    snapshot.initialVisibleSetFingerprint = state.initialVisibleSetFingerprint;
+    for (const auto& [_, presentationState] : state.initialVisiblePresentationStates)
+    {
+        using NLS::Editor::Assets::ThumbnailPresentationState;
+        switch (presentationState)
+        {
+        case ThumbnailPresentationState::Loading:
+        case ThumbnailPresentationState::StaleRefreshing:
+            ++snapshot.initialVisibleLoadingCount;
+            break;
+        case ThumbnailPresentationState::Ready:
+            ++snapshot.initialVisibleReadyCount;
+            break;
+        case ThumbnailPresentationState::FailedRetained:
+            ++snapshot.initialVisibleFailedCount;
+            break;
+        case ThumbnailPresentationState::Fallback:
+            ++snapshot.initialVisibleFallbackCount;
+            break;
+        }
+    }
+    snapshot.initialVisibleAllTerminal =
+        !state.initialVisiblePresentationStates.empty() &&
+        snapshot.initialVisibleLoadingCount == 0u;
+    snapshot.initialVisibleTimedOut = state.initialVisibleTimedOut;
+    snapshot.initialVisiblePendingAfter30SecondsCount =
+        state.initialVisiblePendingAfter30SecondsCount;
+    snapshot.firstCanonicalDrawMs = state.firstCanonicalDrawMs;
+    snapshot.canonical90PercentFillMs = state.canonical90PercentFillMs;
+    snapshot.initialVisiblePresentationDetails.reserve(
+        state.initialVisiblePresentationDetails.size());
+    for (const auto& [_, detail] : state.initialVisiblePresentationDetails)
+        snapshot.initialVisiblePresentationDetails.push_back(detail);
+    std::sort(
+        snapshot.initialVisiblePresentationDetails.begin(),
+        snapshot.initialVisiblePresentationDetails.end());
     snapshot.pathTotals.reserve(state.pathCounts.size());
+    snapshot.initialVisibleCanonicalEligibleCount = 0u;
+    for (const auto& entry : state.initialVisiblePresentationStates)
+    {
+        const auto& itemKey = entry.first;
+        if (state.explicitTypeFallbackItemKeys.find(itemKey) ==
+            state.explicitTypeFallbackItemKeys.end())
+            ++snapshot.initialVisibleCanonicalEligibleCount;
+    }
+    if (state.initialVisiblePresentationStates.empty())
+        snapshot.initialVisibleCanonicalEligibleCount = state.initialVisibleThumbnailCount;
     for (const auto& [path, count] : state.pathCounts)
         snapshot.pathTotals.push_back({ path, count });
     return snapshot;
+}
+
+void NLS::Editor::Panels::RecordAssetBrowserThumbnailRequestBuildFailureTelemetry(
+    const std::string_view itemIdentity)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled() || itemIdentity.empty())
+        return;
+
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    if (!state.initialVisibleSetStarted ||
+        state.initialVisibleItemKeys.find(std::string(itemIdentity)) == state.initialVisibleItemKeys.end())
+    {
+        return;
+    }
+    auto found = state.requestBuildFailurePathCounts.find(std::string(itemIdentity));
+    if (found != state.requestBuildFailurePathCounts.end())
+    {
+        ++found->second;
+        return;
+    }
+    if (state.requestBuildFailurePathCounts.size() >= kMaxAssetBrowserThumbnailDrawOutcomePaths)
+        return;
+    state.requestBuildFailurePathCounts.emplace(std::string(itemIdentity), 1u);
+}
+
+void NLS::Editor::Panels::BeginAssetBrowserThumbnailVisibleSetTelemetry(const size_t thumbnailCount)
+{
+    BeginAssetBrowserThumbnailVisibleSetTelemetry(
+        thumbnailCount,
+        {});
+}
+
+void NLS::Editor::Panels::BeginAssetBrowserThumbnailVisibleSetTelemetry(
+    const size_t thumbnailCount,
+    const std::vector<std::string>& itemKeys)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled() || thumbnailCount == 0u)
+        return;
+
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    if (state.initialVisibleSetStarted)
+        return;
+
+    state.initialVisibleSetStarted = true;
+    state.initialVisibleMeasurementClosed = false;
+    state.initialVisibleThumbnailCount = thumbnailCount;
+    state.initialVisiblePendingAfter30SecondsCount = 0u;
+    state.initialVisibleTimedOut = false;
+    state.initialVisibleItemKeys.clear();
+    state.initialVisibleItemKeys.insert(itemKeys.begin(), itemKeys.end());
+    state.initialVisiblePresentationStates.clear();
+    state.initialVisiblePresentationDetails.clear();
+    for (const auto& itemKey : itemKeys)
+    {
+        if (!itemKey.empty())
+        {
+            state.initialVisiblePresentationStates.emplace(
+                itemKey,
+                NLS::Editor::Assets::ThumbnailPresentationState::Loading);
+        }
+    }
+    state.initialVisibleSetStartedAt = std::chrono::steady_clock::now();
+}
+
+void NLS::Editor::Panels::BeginAssetBrowserThumbnailVisibleSetTelemetry(
+    const size_t thumbnailCount,
+    const std::vector<std::string>& itemKeys,
+    const uint64_t visibleSetFingerprint)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled() || thumbnailCount == 0u)
+        return;
+
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    if (state.initialVisibleSetStarted)
+        return;
+
+    // Folder enumeration and generated-subasset disclosure arrive asynchronously.
+    // Freeze only after the same visible collection has survived several UI frames,
+    // otherwise matched editor trials can measure different initial sets.
+    if (state.candidateVisibleSetFingerprint == visibleSetFingerprint &&
+        state.candidateVisibleItemKeys == itemKeys)
+    {
+        ++state.candidateVisibleSetStableFrameCount;
+    }
+    else
+    {
+        state.candidateVisibleSetFingerprint = visibleSetFingerprint;
+        state.candidateVisibleItemKeys = itemKeys;
+        state.candidateVisibleSetStableFrameCount = 1u;
+    }
+    if (state.candidateVisibleSetStableFrameCount < kAssetBrowserThumbnailVisibleSetStableFrames)
+        return;
+
+    state.initialVisibleSetStarted = true;
+    state.initialVisibleMeasurementClosed = false;
+    state.initialVisibleThumbnailCount = thumbnailCount;
+    state.initialVisibleSetFingerprint = visibleSetFingerprint;
+    state.initialVisiblePendingAfter30SecondsCount = 0u;
+    state.initialVisibleTimedOut = false;
+    state.initialVisibleItemKeys.clear();
+    state.initialVisibleItemKeys.insert(itemKeys.begin(), itemKeys.end());
+    state.initialVisiblePresentationStates.clear();
+    state.initialVisiblePresentationDetails.clear();
+    for (const auto& itemKey : itemKeys)
+    {
+        if (!itemKey.empty())
+        {
+            state.initialVisiblePresentationStates.emplace(
+                itemKey,
+                NLS::Editor::Assets::ThumbnailPresentationState::Loading);
+        }
+    }
+    state.initialVisibleSetStartedAt = std::chrono::steady_clock::now();
+}
+
+void NLS::Editor::Panels::RecordAssetBrowserThumbnailCanonicalDrawTelemetry(const std::string_view itemIdentity)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+        return;
+
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    CloseInitialVisibleMeasurementIfExpired(state, std::chrono::steady_clock::now());
+    if (!state.initialVisibleSetStarted)
+        return;
+
+    std::string path(itemIdentity);
+    if (path.empty())
+        path = "<anonymous-thumbnail>";
+    if (!state.initialVisibleItemKeys.empty() &&
+        state.initialVisibleItemKeys.find(path) == state.initialVisibleItemKeys.end())
+    {
+        return;
+    }
+    if (!state.canonicalVisiblePaths.insert(std::move(path)).second)
+        return;
+
+    if (state.initialVisibleMeasurementClosed)
+        return;
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - state.initialVisibleSetStartedAt);
+    const double elapsedMs = static_cast<double>(elapsed.count()) / 1000.0;
+    if (!state.firstCanonicalDrawMs.has_value())
+        state.firstCanonicalDrawMs = elapsedMs;
+
+    size_t canonicalEligibleCount = 0u;
+    for (const auto& [itemKey, _] : state.initialVisiblePresentationStates)
+    {
+        if (state.explicitTypeFallbackItemKeys.find(itemKey) ==
+            state.explicitTypeFallbackItemKeys.end())
+            ++canonicalEligibleCount;
+    }
+    if (canonicalEligibleCount == 0u)
+        canonicalEligibleCount = state.initialVisibleThumbnailCount;
+    const size_t targetCount = (std::max<size_t>)(
+        1u,
+        static_cast<size_t>(std::ceil(
+            static_cast<double>(canonicalEligibleCount) * 0.9)));
+    if (!state.canonical90PercentFillMs.has_value() &&
+        state.canonicalVisiblePaths.size() >= targetCount)
+    {
+        state.canonical90PercentFillMs = elapsedMs;
+    }
+}
+
+void NLS::Editor::Panels::RecordAssetBrowserThumbnailPresentationStateTelemetry(
+    const std::string_view itemIdentity,
+    const NLS::Editor::Assets::ThumbnailPresentationState presentationState,
+    const NLS::Editor::Assets::AssetThumbnailServiceResult* result)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled() || itemIdentity.empty())
+        return;
+
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    CloseInitialVisibleMeasurementIfExpired(state, std::chrono::steady_clock::now());
+    if (!state.initialVisibleSetStarted ||
+        state.initialVisibleItemKeys.find(std::string(itemIdentity)) == state.initialVisibleItemKeys.end())
+    {
+        return;
+    }
+    const std::string itemKey(itemIdentity);
+    state.initialVisiblePresentationStates[itemKey] = presentationState;
+    if (result != nullptr)
+    {
+        std::string detail = itemKey;
+        detail += "|status=" + std::to_string(static_cast<unsigned int>(result->status));
+        detail += "|presentation=" +
+            std::to_string(static_cast<unsigned int>(result->presentationState));
+        detail += "|quality=" +
+            std::to_string(static_cast<unsigned int>(result->previewQuality));
+        detail += "|presentationKey=" + result->presentationKey;
+        detail += "|revision=" + std::to_string(result->requestRevision);
+        detail += "|refresh=" + std::to_string(result->refreshPending ? 1u : 0u);
+        detail += "|image=" + std::to_string(result->imagePath.empty() ? 0u : 1u);
+        detail += "|retained=" + std::to_string(result->retainedImage.has_value() ? 1u : 0u);
+        detail += "|gpu=" + std::to_string(result->gpuTexture.IsValid() ? 1u : 0u);
+        detail += "|cacheKey=";
+        if (result->cacheEntry.has_value())
+            detail += result->cacheEntry->cacheKey;
+        if (!result->diagnostic.empty())
+            detail += "|diagnostic=" + result->diagnostic;
+        state.initialVisiblePresentationDetails.insert_or_assign(itemKey, std::move(detail));
+    }
+    if (state.initialVisibleMeasurementClosed)
+        return;
+
+    if (!state.canonical90PercentFillMs.has_value())
+    {
+        size_t canonicalEligibleCount = 0u;
+        for (const auto& [itemKey, _] : state.initialVisiblePresentationStates)
+        {
+            if (state.explicitTypeFallbackItemKeys.find(itemKey) ==
+                state.explicitTypeFallbackItemKeys.end())
+                ++canonicalEligibleCount;
+        }
+        if (canonicalEligibleCount == 0u)
+            canonicalEligibleCount = state.initialVisibleThumbnailCount;
+        const size_t targetCount = (std::max<size_t>)(
+            1u,
+            static_cast<size_t>(std::ceil(
+                static_cast<double>(canonicalEligibleCount) * 0.9)));
+        if (state.canonicalVisiblePaths.size() >= targetCount)
+        {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - state.initialVisibleSetStartedAt);
+            state.canonical90PercentFillMs =
+                static_cast<double>(elapsed.count()) / 1000.0;
+        }
+    }
+}
+
+void NLS::Editor::Panels::RecordAssetBrowserThumbnailTypeFallbackTelemetry(
+    const std::string_view itemIdentity)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled() || itemIdentity.empty())
+        return;
+
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    if (!state.initialVisibleSetStarted ||
+        state.initialVisibleItemKeys.find(std::string(itemIdentity)) == state.initialVisibleItemKeys.end())
+    {
+        return;
+    }
+    state.explicitTypeFallbackItemKeys.emplace(itemIdentity);
 }
 
 #if defined(NLS_ENABLE_TEST_HOOKS)
@@ -197,6 +577,35 @@ void NLS::Editor::Panels::ClearAssetBrowserThumbnailDrawOutcomeTelemetryForTesti
     state.counts = {};
     state.droppedPathCount = 0u;
     state.pathCounts.clear();
+    state.requestBuildFailurePathCounts.clear();
+    state.initialVisibleSetStarted = false;
+    state.initialVisibleMeasurementClosed = false;
+    state.initialVisibleThumbnailCount = 0u;
+    state.initialVisiblePendingAfter30SecondsCount = 0u;
+    state.initialVisibleTimedOut = false;
+    state.initialVisibleSetStartedAt = {};
+    state.initialVisibleSetFingerprint = 0u;
+    state.candidateVisibleSetFingerprint = 0u;
+    state.candidateVisibleSetStableFrameCount = 0u;
+    state.candidateVisibleItemKeys.clear();
+    state.initialVisibleItemKeys.clear();
+    state.explicitTypeFallbackItemKeys.clear();
+    state.canonicalVisiblePaths.clear();
+    state.initialVisiblePresentationStates.clear();
+    state.initialVisiblePresentationDetails.clear();
+    state.firstCanonicalDrawMs.reset();
+    state.canonical90PercentFillMs.reset();
+}
+
+void NLS::Editor::Panels::ExpireAssetBrowserThumbnailVisibleSetTelemetryForTesting()
+{
+    auto& state = ThumbnailDrawOutcomeTelemetryState();
+    std::lock_guard lock(state.mutex);
+    if (state.initialVisibleSetStarted)
+    {
+        state.initialVisibleSetStartedAt =
+            std::chrono::steady_clock::now() - kAssetBrowserThumbnailInitialVisibleTimeout;
+    }
 }
 #endif
 
@@ -354,14 +763,6 @@ std::string NormalizeProjectBrowserPath(const std::filesystem::path& path)
 		{ reinterpret_cast<const char*>(text.data()), text.size() });
 }
 
-void InvalidateAssetThumbnailMetadataForImagePath(const std::string& normalizedImagePath)
-{
-	auto metadataPath = std::filesystem::path(normalizedImagePath);
-	metadataPath.replace_extension(".json");
-	std::error_code error;
-	std::filesystem::remove(metadataPath, error);
-}
-
 bool IsProjectBrowserAncestorOf(
 	const std::string& ancestor,
 	const std::string& descendant)
@@ -497,8 +898,8 @@ std::string EllipsizeAssetBrowserLabel(
 constexpr size_t kMaxResidentAssetBrowserThumbnailTextures = 256u;
 constexpr size_t kMaxAssetBrowserThumbnailTextureLoadsPerFrame = 4u;
 constexpr size_t kMaxAssetBrowserThumbnailTextureDecodesInFlight = 4u;
-constexpr size_t kMaxAssetBrowserThumbnailTextureUploadsPerFrame = 1u;
-constexpr size_t kMaxAssetBrowserInteractiveThumbnailTextureUploadsPerFrame = 1u;
+constexpr size_t kMaxAssetBrowserThumbnailTextureUploadsPerFrame = 4u;
+constexpr size_t kMaxAssetBrowserInteractiveThumbnailTextureUploadsPerFrame = 2u;
 constexpr size_t kMaxAssetBrowserThumbnailTextureUploadPollsPerFrame = 128u;
 constexpr size_t kMaxAssetBrowserInteractiveThumbnailTextureUploadPollsPerFrame = 32u;
 constexpr uint64_t kAssetBrowserThumbnailTextureRetryDelayFrames = 30u;
@@ -516,6 +917,10 @@ constexpr uint32_t kAssetBrowserLargeGeneratedThumbnailCacheSize = 128u;
 constexpr uint32_t kAssetBrowserGeneratedThumbnailCacheSize = 160u;
 constexpr double kAssetBrowserGpuThumbnailIntervalSeconds = 0.08;
 constexpr double kAssetBrowserHeavyGpuThumbnailIntervalSeconds = 0.25;
+// Resource readiness checks can synchronously inspect renderer dependencies.
+// Resource continuations are already limited to one scheduler slot per frame;
+// keep their retry cadence short so a large prefab can advance through many
+// small dependency stages without waiting behind the normal heavy-preview gate.
 constexpr double kAssetBrowserHeavyGpuThumbnailResourcePendingIntervalSeconds = 0.05;
 constexpr double kAssetBrowserHeavyGpuThumbnailIdleDelaySeconds = 0.25;
 constexpr double kAssetBrowserScrollIdleDelaySeconds = 0.75;
@@ -585,10 +990,43 @@ void RecordAssetBrowserArtifactTelemetryStage(
 	});
 }
 
-NLS::Editor::Assets::AssetThumbnailRequestBuildContext MakeAssetBrowserThumbnailRequestBuildContext()
+void RecordAssetBrowserThumbnailResultTelemetry(
+    const NLS::Editor::Assets::AssetThumbnailServiceResult& result,
+    const NLS::Core::Assets::ArtifactLoadTelemetryStage stage =
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiPostDrawPumpConsumeCompleted)
+{
+    if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+        return;
+
+    std::string path = "thumbnail-result|source=" + result.sourceAssetPath;
+    path += "|sub=" + result.subAssetKey;
+    path += "|artifact=" + result.artifactPath;
+    path += "|kind=" + std::to_string(static_cast<unsigned int>(result.requestKind));
+    path += "|status=" + std::to_string(static_cast<unsigned int>(result.status));
+    path += "|presentation=" +
+        std::to_string(static_cast<unsigned int>(result.presentationState));
+    path += "|quality=" +
+        std::to_string(static_cast<unsigned int>(result.previewQuality));
+    path += "|refresh=" + std::to_string(result.refreshPending ? 1u : 0u);
+    path += "|retained=" + std::to_string(result.retainedImage.has_value() ? 1u : 0u);
+    path += "|gpu=" + std::to_string(result.gpuTexture.IsValid() ? 1u : 0u);
+    if (!result.diagnostic.empty())
+        path += "|diagnostic=" + result.diagnostic;
+
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        stage,
+        {},
+        result.imagePath.empty() ? 0u : 1u,
+        std::move(path)
+    });
+}
+
+NLS::Editor::Assets::AssetThumbnailRequestBuildContext MakeAssetBrowserThumbnailRequestBuildContext(
+	const NLS::Editor::Assets::AssetThumbnailFeatureConfig& featureConfig = {})
 {
 	NLS::Editor::Assets::AssetThumbnailRequestBuildContext context;
 	context.deferManifestLookups = true;
+	context.featureConfig = featureConfig;
 	return context;
 }
 
@@ -1221,10 +1659,16 @@ void ReimportProjectAssetAsync(const std::string& projectAssetsFolder, const std
 	}
 
 	auto& tracker = EDITOR_CONTEXT(importProgressTracker);
-	const auto queued = EDITOR_EXEC(TrackBackgroundTask([projectRoot, assetPath = assetPath.generic_string(), &tracker]
+	auto residentPrefabPreviewRegistry = EDITOR_CONTEXT(residentPrefabPreviewRegistry);
+	const auto queued = EDITOR_EXEC(TrackBackgroundTask([
+		projectRoot,
+		assetPath = assetPath.generic_string(),
+		residentPrefabPreviewRegistry = std::move(residentPrefabPreviewRegistry),
+		&tracker]
 	{
 		NLS::Editor::Assets::AssetImporterFacade importer(
 			NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+		importer.SetResidentPrefabPreviewRegistry(residentPrefabPreviewRegistry);
 		const auto imported = importer.SaveAndReimport(assetPath, tracker);
 		EDITOR_EXEC(DelayAction([assetPath, imported]
 		{
@@ -2297,12 +2741,29 @@ Editor::Panels::AssetBrowser::AssetBrowser
 	const UI::PanelWindowSettings& p_windowSettings,
 	const std::string& p_engineAssetFolder,
 	const std::string& p_projectAssetFolder,
-	const std::string& p_projectScriptFolder
+	const std::string& p_projectScriptFolder,
+	NLS::Editor::Assets::AssetThumbnailFeatureConfig thumbnailFeatureConfig
 ) :
 	PanelWindow(p_title, p_opened, p_windowSettings),
 	m_engineAssetFolder(p_engineAssetFolder),
-	m_projectAssetFolder(p_projectAssetFolder)
+	m_projectAssetFolder(p_projectAssetFolder),
+	m_thumbnailFeatureConfig(std::move(thumbnailFeatureConfig)),
+	m_thumbnailService(m_thumbnailFeatureConfig)
 {
+	m_thumbnailRenderScheduler.SetAdaptiveBudgetEnabled(
+		m_thumbnailFeatureConfig.adaptiveBudget);
+	if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>() &&
+		EDITOR_CONTEXT(residentPrefabPreviewRegistry) != nullptr)
+	{
+		m_residentPrefabPreviewRegistry = EDITOR_CONTEXT(residentPrefabPreviewRegistry);
+	}
+	else
+	{
+		m_residentPrefabPreviewRegistry =
+			NLS::Editor::Assets::ResidentPrefabPreviewRegistry::Create();
+	}
+	m_lastResidentPrefabThumbnailWakeRevision =
+		m_residentPrefabPreviewRegistry->GetThumbnailWakeRevision();
 	NLS::Editor::Assets::SetObjectReferencePickerAssetRoots(
 		NLS::Editor::Assets::MakeProjectEditorAssetRoots(ProjectRootFromAssetsFolder(m_projectAssetFolder)));
 	NLS::Editor::Assets::SetObjectReferencePickerEntriesProvider([this]()
@@ -2360,6 +2821,7 @@ Editor::Panels::AssetBrowser::AssetBrowser
 
 Editor::Panels::AssetBrowser::~AssetBrowser()
 {
+	ShutdownThumbnailPipeline();
 	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
 	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_currentFolderItemsRefreshState);
 	NLS::Editor::Assets::CloseAssetBrowserAsyncRefresh(m_objectReferencePickerRefreshState);
@@ -2399,10 +2861,6 @@ Editor::Panels::AssetBrowser::~AssetBrowser()
 
 	NLS::Editor::Assets::SetObjectReferencePickerEntriesProvider({});
 	NLS::Editor::Assets::SetObjectReferencePickerEntries({});
-	if (m_assetThumbnailPool != nullptr)
-		m_assetThumbnailPool->Clear(true);
-	ReleaseAssetBrowserTextureHandleCache(true);
-	DestroyCachedThumbnailTextures(true);
 }
 
 void Editor::Panels::AssetBrowser::Fill()
@@ -2419,6 +2877,7 @@ void Editor::Panels::AssetBrowser::Clear()
 	DestroyCachedThumbnailTextures(false);
 	m_thumbnailResultsByItemKey.clear();
 	m_thumbnailItemKeyByCacheKey.clear();
+	m_thumbnailItemKeyByPresentationKey.clear();
 	m_assetThumbnailsByCacheKey.clear();
 	m_lastThumbnailRequestSize = 0u;
 	m_lastThumbnailGenerationScopeKey.clear();
@@ -2426,7 +2885,8 @@ void Editor::Panels::AssetBrowser::Clear()
 	m_thumbnailGenerationScopeDirty = true;
 	m_pendingThumbnailScopeItems.clear();
 	m_pendingThumbnailScopeOffset = 0u;
-	m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
+	m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+	m_pendingThumbnailRequestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
 	m_thumbnailScopeBuildInProgress = false;
 	m_thumbnailService.ClearQueuedRequests();
 }
@@ -2439,6 +2899,22 @@ void Editor::Panels::AssetBrowser::Refresh()
 void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::OnBeforeDrawWidgets");
+	EnsureThumbnailTextureDeviceIdentity();
+	if (m_residentPrefabPreviewRegistry != nullptr)
+	{
+		const auto wakeRevision =
+			m_residentPrefabPreviewRegistry->GetThumbnailWakeRevision();
+		if (wakeRevision != m_lastResidentPrefabThumbnailWakeRevision)
+		{
+			m_lastResidentPrefabThumbnailWakeRevision = wakeRevision;
+			// A completed import or live scene attachment is a new admission
+			// opportunity for every outstanding continuation. The service
+			// coalesces active work, while terminal/fallback attempts must be
+			// allowed to acquire the newly resident snapshot.
+			m_importedPrefabThumbnailContinuationSubmittedRevisions.clear();
+			m_thumbnailGenerationScopeDirty = true;
+		}
+	}
 	const double now = ImGui::GetTime();
 	const bool deleteActionInputsReleased =
 		!ImGui::IsKeyDown(ImGuiKey_Delete) &&
@@ -2468,6 +2944,11 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 	const bool interactive = IsAssetBrowserInteractive();
 	const bool editorWindowClosing = IsEditorWindowClosing();
 	const bool sceneReadbackValidationActive = IsEditorSceneReadbackValidationActive();
+	if (editorWindowClosing)
+	{
+		ShutdownThumbnailPipeline();
+		return;
+	}
 	PumpStandardPbrShaderPassPrewarm();
 	if (!editorWindowClosing &&
 		!sceneReadbackValidationActive &&
@@ -2549,6 +3030,16 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 				m_projectAssetDatabase = std::move(result.database);
 				m_projectAssetDatabaseSnapshot = std::move(result.snapshot);
 				m_projectAssetDatabaseReady = true;
+				// Thumbnail requests may have been built from the filesystem
+				// fallback while the database refresh was in flight.  A database
+				// snapshot changes the request's artifact identity and freshness,
+				// so force the current scope to be rebuilt instead of allowing the
+				// old no-artifact requests to remain queued under the same scope key.
+				m_pendingThumbnailRequestContext.assetDatabaseSnapshot = m_projectAssetDatabaseSnapshot;
+				m_importedPrefabThumbnailContinuationSubmittedRevisions.clear();
+				m_lastImportedPrefabThumbnailContinuationPumpRevision = 0u;
+				m_thumbnailGenerationScopeDirty = true;
+				m_lastThumbnailGenerationScopeKey.clear();
 				NLS::Editor::Assets::CompleteAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
 				RefreshProjectAssetSubAssetSnapshotCache();
 				RequestObjectReferencePickerEntriesRefresh();
@@ -2582,9 +3073,12 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 		!editorWindowClosing &&
 		!sceneReadbackValidationActive)
 	{
+		const bool sceneViewCameraNavigationActive =
+			EDITOR_PANEL(NLS::Editor::Panels::SceneView, "Scene View").IsCameraNavigationActive();
 		const auto thumbnailPumpPermissions =
 			NLS::Editor::Assets::PlanAssetBrowserPostDrawThumbnailPump({
 				interactive,
+				sceneViewCameraNavigationActive,
 				now,
 				m_lightGpuThumbnailGenerationDeferredUntil,
 				m_heavyGpuThumbnailGenerationDeferredUntil
@@ -2592,7 +3086,8 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 		PumpThumbnailGeneration(
 			thumbnailPumpPermissions.allowGpuPreviewStart,
 			thumbnailPumpPermissions.allowHeavyGpuPreview,
-			true);
+			true,
+			sceneViewCameraNavigationActive);
 	}
 
 	if (!m_watchersStartupQueued)
@@ -2701,6 +3196,7 @@ NLS::Editor::Assets::StartupWatcherPreimportResult Editor::Panels::AssetBrowser:
 		}
 
 		AssetDatabaseFacade database(MakeProjectEditorAssetRoots(projectRoot));
+		database.SetResidentPrefabPreviewRegistry(m_residentPrefabPreviewRegistry);
 		ImportProgressTracker tracker;
 		if (progressSink)
 			tracker.Subscribe(progressSink);
@@ -2808,9 +3304,14 @@ void Editor::Panels::AssetBrowser::ScheduleProjectAssetPreimport(
 	m_projectAssetPreimportRunning = true;
 
 	auto& tracker = EDITOR_CONTEXT(importProgressTracker);
-	const auto queued = EDITOR_EXEC(TrackBackgroundTask([projectRoot, request = std::move(request), &tracker]
+	const auto queued = EDITOR_EXEC(TrackBackgroundTask([
+		projectRoot,
+		request = std::move(request),
+		residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry,
+		&tracker]
 	{
 		AssetDatabaseFacade database(MakeProjectEditorAssetRoots(projectRoot));
+		database.SetResidentPrefabPreviewRegistry(residentPrefabPreviewRegistry);
 		NLS::Core::Assets::AssetDiagnostics diagnostics;
 		AssetPreimportScheduler preimportScheduler;
 		const auto imported = preimportScheduler.Run(database, tracker, request);
@@ -2946,6 +3447,7 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 			m_visiblePrefabHotCachePreloadPending = false;
 			m_thumbnailResultsByItemKey.clear();
 			m_thumbnailItemKeyByCacheKey.clear();
+			m_thumbnailItemKeyByPresentationKey.clear();
 			m_assetThumbnailsByCacheKey.clear();
 			m_thumbnailService.ClearQueuedRequests();
 			NLS::Editor::Assets::BeginAssetBrowserAsyncRefresh(m_projectAssetDatabaseRefreshState);
@@ -2955,7 +3457,8 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 					projectRoot.lexically_normal(),
 					ScheduleAssetBrowserJobFuture(
 						"AssetBrowser.ProjectAssetDatabaseRefresh",
-						[projectRoot = projectRoot.lexically_normal()]() -> AssetDatabaseRefreshResult
+						[projectRoot = projectRoot.lexically_normal(),
+						 residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry]() -> AssetDatabaseRefreshResult
 						{
 							AssetDatabaseRefreshResult result;
 							const auto context = std::string("Asset Browser database refresh failed for project root \"") +
@@ -2964,6 +3467,8 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetPresentation(
 							{
 								result.database = std::make_unique<NLS::Editor::Assets::AssetDatabaseFacade>(
 									NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+								result.database->SetResidentPrefabPreviewRegistry(
+									residentPrefabPreviewRegistry);
 								if (!result.database->Refresh())
 								{
 									result.database.reset();
@@ -3101,7 +3606,8 @@ void Editor::Panels::AssetBrowser::MarkProjectAssetDisplayItemsDirty()
 	m_thumbnailGenerationScopeDirty = true;
 	m_pendingThumbnailScopeItems.clear();
 	m_pendingThumbnailScopeOffset = 0u;
-	m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
+	m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+	m_pendingThumbnailRequestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
 	m_thumbnailScopeBuildInProgress = false;
 	m_heavyGpuThumbnailGenerationDeferredUntil = (std::max)(
 		m_heavyGpuThumbnailGenerationDeferredUntil,
@@ -3199,11 +3705,17 @@ void Editor::Panels::AssetBrowser::RebuildProjectAssetDisplayItemsIfNeeded()
 void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
 	std::vector<NLS::Editor::Assets::AssetBrowserItem> visibleItems)
 {
+	const size_t visibleThumbnailCount = static_cast<size_t>(std::count_if(
+		visibleItems.begin(),
+		visibleItems.end(),
+		[](const NLS::Editor::Assets::AssetBrowserItem& item)
+		{
+			return NLS::Editor::Assets::CanGenerateAssetBrowserThumbnail(item);
+		}));
 	const std::string visibleSetTelemetryPath = m_selectedProjectFolder + "|visible-set";
 	const size_t visibleSetTelemetryItemCount = visibleItems.size();
 	std::chrono::microseconds hashElapsed {};
 	std::chrono::microseconds applyElapsed {};
-	std::chrono::microseconds flushElapsed {};
 	const auto nextRequestSize = AssetBrowserThumbnailRequestSize(m_thumbnailSize);
 	uint64_t nextFingerprint = 0u;
 	{
@@ -3215,26 +3727,32 @@ void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
 			nextRequestSize,
 			m_selectedProjectFolder);
 	}
+	if (NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+	{
+		std::vector<std::string> initialVisibleThumbnailItemKeys;
+		initialVisibleThumbnailItemKeys.reserve(visibleThumbnailCount);
+		for (const auto& item : visibleItems)
+		{
+			if (NLS::Editor::Assets::CanGenerateAssetBrowserThumbnail(item))
+			{
+				initialVisibleThumbnailItemKeys.push_back(
+					NLS::Editor::Assets::BuildAssetBrowserThumbnailItemKey(item, nextRequestSize));
+			}
+		}
+		BeginAssetBrowserThumbnailVisibleSetTelemetry(
+			visibleThumbnailCount,
+			initialVisibleThumbnailItemKeys,
+			nextFingerprint);
+	}
 	if (m_visibleThumbnailItemsKnown &&
 		nextFingerprint == m_visibleThumbnailFingerprint &&
 		visibleItems.size() == m_visibleThumbnailCount &&
 		nextRequestSize == m_visibleThumbnailRequestSize)
 	{
-		{
-			AssetBrowserArtifactTelemetryAccumulatorScope flushTelemetry {
-				flushElapsed
-			};
-			FlushPendingVisiblePrefabHotCachePreload();
-		}
+		FlushPendingVisiblePrefabHotCachePreload();
 		RecordAssetBrowserArtifactTelemetryStage(
 			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHash,
 			hashElapsed,
-			visibleSetTelemetryPath,
-			visibleSetTelemetryItemCount,
-			kAssetBrowserThumbnailUiDrawTelemetryMinimum);
-		RecordAssetBrowserArtifactTelemetryStage(
-			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHotCacheFlush,
-			flushElapsed,
 			visibleSetTelemetryPath,
 			visibleSetTelemetryItemCount,
 			kAssetBrowserThumbnailUiDrawTelemetryMinimum);
@@ -3250,14 +3768,10 @@ void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
 		m_visibleThumbnailFingerprint = nextFingerprint;
 		m_visibleThumbnailCount = m_visibleThumbnailItems.size();
 		m_visibleThumbnailRequestSize = nextRequestSize;
-		m_thumbnailGenerationScopeDirty = true;
 		m_visiblePrefabHotCachePreloadPending = true;
-	}
-	{
-		AssetBrowserArtifactTelemetryAccumulatorScope flushTelemetry {
-			flushElapsed
-		};
-		FlushPendingVisiblePrefabHotCachePreload();
+		m_visiblePendingPresentationRecoveryAfter = 0.0;
+		m_visiblePendingPresentationRecoveryOffset = 0u;
+		m_thumbnailGenerationScopeDirty = true;
 	}
 	RecordAssetBrowserArtifactTelemetryStage(
 		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHash,
@@ -3268,12 +3782,6 @@ void Editor::Panels::AssetBrowser::SetVisibleThumbnailItems(
 	RecordAssetBrowserArtifactTelemetryStage(
 		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetApply,
 		applyElapsed,
-		visibleSetTelemetryPath,
-		visibleSetTelemetryItemCount,
-		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
-	RecordAssetBrowserArtifactTelemetryStage(
-		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawVisibleSetHotCacheFlush,
-		flushElapsed,
 		visibleSetTelemetryPath,
 		visibleSetTelemetryItemCount,
 		kAssetBrowserThumbnailUiDrawTelemetryMinimum);
@@ -4120,10 +4628,49 @@ bool Editor::Panels::AssetBrowser::DeleteProjectItem(
 	if (message.GetUserAction() != MessageBox::EUserAction::YES)
 		return false;
 
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	std::vector<std::filesystem::path> thumbnailPathsToRelease;
+	std::optional<NLS::Editor::Assets::AssetThumbnailRequest> deletedThumbnailRequest;
+	if (!isFolder && item.assetId.IsValid())
+	{
+		auto requestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+		requestContext.assetDatabaseSnapshot = m_projectAssetDatabaseSnapshot;
+		requestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
+		deletedThumbnailRequest = NLS::Editor::Assets::BuildAssetThumbnailRequestForItem(
+			projectRoot,
+			item,
+			AssetBrowserThumbnailRequestSize(m_thumbnailSize),
+			requestContext);
+		if (deletedThumbnailRequest.has_value())
+		{
+			if (const auto presentation = NLS::Editor::Assets::ReadAssetThumbnailPresentationIndex(
+					*deletedThumbnailRequest);
+				presentation.has_value())
+			{
+				if (presentation->current.has_value())
+					thumbnailPathsToRelease.push_back(presentation->current->imagePath);
+				if (presentation->previous.has_value())
+					thumbnailPathsToRelease.push_back(presentation->previous->imagePath);
+			}
+			if (const auto currentEntry = NLS::Editor::Assets::ResolveAssetThumbnailCacheEntry(
+					*deletedThumbnailRequest);
+				currentEntry.has_value())
+			{
+				thumbnailPathsToRelease.push_back(currentEntry->imagePath);
+			}
+		}
+	}
+
 	if (isFolder)
 	{
 		EDITOR_EXEC(PropagateFolderDestruction(item.absolutePath.string()));
 		std::filesystem::remove_all(item.absolutePath);
+		m_thumbnailService.ClearQueuedRequests();
+		(void)NLS::Editor::Assets::RemoveAssetThumbnailCachesForSourcePath(
+			projectRoot,
+			m_thumbnailFeatureConfig.cacheRoot,
+			item.projectRelativePath,
+			true);
 		if (IsProjectBrowserAncestorOf(item.projectRelativePath, m_selectedProjectFolder))
 			m_selectedProjectFolder = "Assets";
 	}
@@ -4131,8 +4678,22 @@ bool Editor::Panels::AssetBrowser::DeleteProjectItem(
 	{
 		RemoveAsset(item.absolutePath.string());
 		EDITOR_EXEC(PropagateFileRename(item.absolutePath.string(), "?"));
+		if (deletedThumbnailRequest.has_value())
+		{
+			m_thumbnailService.InvalidateThumbnail(*deletedThumbnailRequest);
+			(void)NLS::Editor::Assets::RemoveAssetThumbnailCachesForSourcePath(
+				projectRoot,
+				m_thumbnailFeatureConfig.cacheRoot,
+				item.sourceAssetPath.empty() ? item.projectRelativePath : item.sourceAssetPath,
+				false);
+		}
 		if (EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath() == item.absolutePath.string())
 			EDITOR_CONTEXT(sceneManager).ForgetCurrentSceneSourcePath();
+	}
+	for (const auto& path : thumbnailPathsToRelease)
+	{
+		if (!path.empty())
+			ReleaseCachedThumbnailTexture(path.lexically_normal().generic_string());
 	}
 
 	if (m_selectedProjectItem.has_value() &&
@@ -4513,7 +5074,7 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderGrid()
 					cursor.x + childIndent + (cardSize.x - childIndent - visibleThumbnailSize) * 0.5f,
 					cursor.y + 4.0f + (thumbnailSize - visibleThumbnailSize) * 0.5f);
 				const ImVec2 iconMax(iconMin.x + visibleThumbnailSize, iconMin.y + visibleThumbnailSize);
-					ImGui::InvisibleButton("##assetCard", cardSize);
+				ImGui::InvisibleButton("##assetCard", cardSize);
 					const bool hovered = ImGui::IsItemHovered();
 					SchedulePrefabHotCachePreloadForHoveredItem(item, hovered);
 					const bool hasDisclosure =
@@ -5111,7 +5672,8 @@ void Editor::Panels::AssetBrowser::DrawCurrentFolderList(
 
 Editor::Panels::AssetBrowser::ThumbnailTextureHandle Editor::Panels::AssetBrowser::ResolveCachedThumbnailTextureHandle(
 	const std::filesystem::path& imagePath,
-	const bool queueIfMissing)
+	const bool queueIfMissing,
+	const NLS::Render::RHI::TextureColorSpace colorSpace)
 {
 	if (imagePath.empty())
 		return {};
@@ -5121,66 +5683,312 @@ Editor::Panels::AssetBrowser::ThumbnailTextureHandle Editor::Panels::AssetBrowse
 	{
 		m_thumbnailTexturesUsedThisFrame.insert(normalizedPath);
 		found->second.lastUsedFrame = m_thumbnailTextureFrameSerial;
+		if (found->second.atlas)
+		{
+			m_thumbnailAtlas.Touch(normalizedPath, m_thumbnailTextureFrameSerial);
+            if (const auto page = m_thumbnailAtlasPagesByKey.find(found->second.atlasPageKey);
+                page != m_thumbnailAtlasPagesByKey.end() &&
+                page->second.textureId != nullptr &&
+                page->second.pageGeneration == found->second.atlasPageGeneration)
+            {
+                ThumbnailTextureHandle handle;
+                handle.textureHandle = page->second.textureId;
+                handle.width = found->second.width;
+                handle.height = found->second.height;
+                handle.source = ThumbnailTextureSource::Atlas;
+                handle.uv = found->second.uv;
+                handle.pageGeneration = page->second.pageGeneration;
+                return handle;
+            }
+			ReleaseCachedThumbnailTexture(normalizedPath);
+			return {};
+		}
 			if (found->second.textureView != nullptr &&
 				found->second.textureId != nullptr)
 				{
-					return {
-						found->second.textureId,
-						found->second.width,
-						found->second.height
-					};
+                    ThumbnailTextureHandle handle;
+                    handle.textureHandle = found->second.textureId;
+                    handle.width = found->second.width;
+                    handle.height = found->second.height;
+                    handle.source = ThumbnailTextureSource::Standalone;
+                    return handle;
 				}
 		ReleaseCachedThumbnailTexture(normalizedPath);
 		return {};
 	}
 
 	if (queueIfMissing)
-		QueueCachedThumbnailTextureLoad(imagePath);
+		QueueCachedThumbnailTextureLoad(imagePath, colorSpace);
 	return {};
+}
+
+void Editor::Panels::AssetBrowser::EnsureThumbnailTextureDeviceIdentity()
+{
+	auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+	uint64_t deviceIdentity = 0u;
+	if (driver != nullptr)
+	{
+		const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+		if (device != nullptr)
+			deviceIdentity = device->GetCacheIdentity();
+	}
+
+	if (deviceIdentity == m_thumbnailTextureDeviceIdentity)
+		return;
+
+	if (m_thumbnailTextureDeviceIdentity != 0u || deviceIdentity != 0u)
+		ReleaseAssetBrowserTextureHandleCache(true);
+	m_thumbnailTextureDeviceIdentity = deviceIdentity;
 }
 
 void Editor::Panels::AssetBrowser::ApplyThumbnailServiceResult(
 	const NLS::Editor::Assets::AssetThumbnailServiceResult& generated)
 {
-	if (generated.cacheEntry.has_value() && generated.gpuTexture.IsValid() &&
+	auto recovered = generated;
+	if (recovered.status != NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
+		!recovered.presentationKey.empty() &&
+		!recovered.sourceAssetPath.empty())
+	{
+		auto requestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+		requestContext.assetDatabaseSnapshot = m_projectAssetDatabaseSnapshot;
+		requestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
+		const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+		for (const auto& item : m_currentFolderItems)
+		{
+			if (!NLS::Editor::Assets::AssetBrowserThumbnailItemMatchesResultIdentity(
+					item,
+					recovered.sourceAssetPath,
+					recovered.subAssetKey,
+					static_cast<NLS::Editor::Assets::AssetThumbnailKind>(recovered.requestKind)))
+			{
+				continue;
+			}
+			const auto request = NLS::Editor::Assets::BuildAssetThumbnailRequestForItem(
+				projectRoot,
+				item,
+				AssetBrowserThumbnailRequestSize(m_thumbnailSize),
+				requestContext);
+			if (request.has_value() &&
+				NLS::Editor::Assets::BuildAssetThumbnailPresentationKey(*request) ==
+					recovered.presentationKey &&
+				NLS::Editor::Assets::PromoteAssetThumbnailResultFromPresentationIndex(
+					*request,
+					recovered))
+			{
+				break;
+			}
+		}
+	}
+	const auto& effective = recovered;
+	RecordAssetBrowserThumbnailResultTelemetry(effective);
+	if (effective.revokeGpuTexture && effective.cacheEntry.has_value() &&
+		m_assetThumbnailPool != nullptr)
+	{
+		const auto& cacheKey = effective.cacheEntry->cacheKey;
+		const bool matchesReadyPoolGeneration =
+			m_assetThumbnailPool->GetStatus(cacheKey, effective.gpuTextureGeneration) ==
+			NLS::Editor::Assets::ThumbnailRenderStatus::Ready;
+		const auto hasRetainedPresentation = [&]()
+		{
+			const auto hasDisplayImage = [this](const std::vector<std::string>& itemKeys)
+			{
+				return std::any_of(
+					itemKeys.begin(),
+					itemKeys.end(),
+					[this](const std::string& itemKey)
+					{
+						const auto found = m_thumbnailResultsByItemKey.find(itemKey);
+						return found != m_thumbnailResultsByItemKey.end() &&
+							NLS::Editor::Assets::AssetBrowserThumbnailResultHasDisplayImage(found->second);
+					});
+			};
+			if (const auto found = m_thumbnailItemKeyByCacheKey.find(cacheKey);
+				found != m_thumbnailItemKeyByCacheKey.end() && hasDisplayImage(found->second))
+			{
+				return true;
+			}
+			if (!effective.presentationKey.empty())
+			{
+				if (const auto found = m_thumbnailItemKeyByPresentationKey.find(effective.presentationKey);
+					found != m_thumbnailItemKeyByPresentationKey.end() && hasDisplayImage(found->second))
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+		// A late failure must not revoke a newer generation, nor the image that
+		// the presentation map deliberately retained while refreshing.
+		if (matchesReadyPoolGeneration && !hasRetainedPresentation())
+		{
+			m_assetThumbnailPool->Remove(cacheKey);
+			m_assetThumbnailsByCacheKey.erase(cacheKey);
+		}
+	}
+	if (effective.cacheEntry.has_value() && effective.gpuTexture.IsValid() &&
 		m_assetThumbnailPool != nullptr)
 	{
 		if (m_assetThumbnailPool->Publish(
-			generated.cacheEntry->cacheKey,
-			generated.gpuTextureGeneration,
-			generated.gpuTexture))
+			effective.cacheEntry->cacheKey,
+			effective.gpuTextureGeneration,
+			effective.gpuTexture))
 		{
 			m_assetThumbnailsByCacheKey.insert_or_assign(
-				generated.cacheEntry->cacheKey,
+				effective.cacheEntry->cacheKey,
 				m_assetThumbnailPool->MakeThumbnail(
-					generated.cacheEntry->cacheKey,
-					generated.gpuTextureGeneration));
+					effective.cacheEntry->cacheKey,
+					effective.gpuTextureGeneration));
 		}
 	}
-	if (generated.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
-		!generated.imagePath.empty())
+	if (effective.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
+		!effective.imagePath.empty())
 	{
-		const auto key = generated.imagePath.lexically_normal().generic_string();
-		ReleaseCachedThumbnailTexture(key);
+		const auto key = effective.imagePath.lexically_normal().generic_string();
 		m_thumbnailTexturesFailedToLoad.erase(key);
-		m_thumbnailTexturesQueuedForLoad.erase(key);
-		m_thumbnailTextureLoadQueue.erase(
-			std::remove(m_thumbnailTextureLoadQueue.begin(), m_thumbnailTextureLoadQueue.end(), key),
-			m_thumbnailTextureLoadQueue.end());
-		QueueCachedThumbnailTextureLoad(generated.imagePath);
+		if (m_thumbnailTexturesDecoding.find(key) != m_thumbnailTexturesDecoding.end())
+			m_thumbnailTexturesRetryAfterDecode.insert(key);
+		QueueCachedThumbnailTextureLoad(
+			effective.imagePath,
+			CachedThumbnailTextureColorSpace(effective));
 	}
-	if (generated.cacheEntry.has_value())
+	if (effective.cacheEntry.has_value())
 	{
 		NLS::Editor::Assets::ApplyAssetBrowserThumbnailCacheKeyResult(
 			m_thumbnailItemKeyByCacheKey,
 			m_thumbnailResultsByItemKey,
-			generated.cacheEntry->cacheKey,
-			generated);
+			effective.cacheEntry->cacheKey,
+			effective);
 	}
+
+	// Deferred prefab resolution can complete after the cache-key binding was
+	// registered.  The presentation key is stable across that transition, so
+	// use it as a second commit route instead of leaving the result stranded.
+	if (!effective.presentationKey.empty())
+	{
+		NLS::Editor::Assets::ApplyAssetBrowserThumbnailPresentationKeyResult(
+			m_thumbnailItemKeyByPresentationKey,
+			m_thumbnailResultsByItemKey,
+			effective.presentationKey,
+			effective);
+	}
+
+	// The cache-key and presentation-key bindings are populated while the
+	// current scope is being built. A resolved manifest can nevertheless finish
+	// after that binding window. Rebind the result to the live folder item by
+	// stable source/sub-asset identity so a valid PNG or GPU result is not left
+	// stranded on a fallback tile.
+	if (!effective.sourceAssetPath.empty())
+	{
+		for (const auto& item : m_currentFolderItems)
+		{
+			if (!NLS::Editor::Assets::AssetBrowserThumbnailItemMatchesResultIdentity(
+				item,
+				effective.sourceAssetPath,
+				effective.subAssetKey,
+				static_cast<NLS::Editor::Assets::AssetThumbnailKind>(effective.requestKind)))
+			{
+				continue;
+			}
+
+			const auto itemKey = NLS::Editor::Assets::BuildAssetBrowserThumbnailItemKey(
+				item,
+				AssetBrowserThumbnailRequestSize(m_thumbnailSize));
+			NLS::Editor::Assets::ApplyAssetBrowserThumbnailResultToItemKeys(
+				std::vector<std::string> {itemKey},
+				m_thumbnailResultsByItemKey,
+				effective);
+			if (effective.cacheEntry.has_value())
+			{
+				NLS::Editor::Assets::RegisterAssetBrowserThumbnailCacheKeyBinding(
+					m_thumbnailItemKeyByCacheKey,
+					effective.cacheEntry->cacheKey,
+					itemKey);
+			}
+		}
+	}
+}
+
+size_t Editor::Panels::AssetBrowser::RecoverVisiblePendingThumbnailPresentations(
+	const double nowSeconds)
+{
+	if (!m_visibleThumbnailItemsKnown || m_visibleThumbnailItems.empty() ||
+		nowSeconds < m_visiblePendingPresentationRecoveryAfter)
+	{
+		return 0u;
+	}
+
+	m_visiblePendingPresentationRecoveryAfter =
+		nowSeconds + kAssetBrowserVisiblePendingPresentationRecoveryIntervalSeconds;
+	const auto requestSize = AssetBrowserThumbnailRequestSize(m_thumbnailSize);
+	auto requestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+	requestContext.assetDatabaseSnapshot = m_projectAssetDatabaseSnapshot;
+	requestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	const size_t itemCount = m_visibleThumbnailItems.size();
+	size_t visited = 0u;
+	size_t probed = 0u;
+	size_t promoted = 0u;
+
+	while (visited < itemCount &&
+		probed < kMaxAssetBrowserVisiblePendingPresentationProbesPerPump)
+	{
+		const size_t itemIndex = m_visiblePendingPresentationRecoveryOffset % itemCount;
+		m_visiblePendingPresentationRecoveryOffset = (itemIndex + 1u) % itemCount;
+		++visited;
+		const auto& item = m_visibleThumbnailItems[itemIndex];
+		if (!NLS::Editor::Assets::CanGenerateAssetBrowserThumbnail(item))
+			continue;
+
+		const auto itemKey = NLS::Editor::Assets::BuildAssetBrowserThumbnailItemKey(
+			item,
+			requestSize);
+		const auto found = m_thumbnailResultsByItemKey.find(itemKey);
+		if (found == m_thumbnailResultsByItemKey.end() ||
+			!NLS::Editor::Assets::AssetBrowserThumbnailResultNeedsCanonicalRecovery(found->second) ||
+			found->second.presentationKey.empty() ||
+			found->second.sourceAssetPath.empty())
+		{
+			continue;
+		}
+
+		auto request = NLS::Editor::Assets::BuildAssetThumbnailRequestForItem(
+			projectRoot,
+			item,
+			requestSize,
+			requestContext);
+		if (!request.has_value())
+			continue;
+		request->priority = NLS::Editor::Assets::ThumbnailRequestPriority::Visible;
+		const auto rebuiltPresentationKey =
+			NLS::Editor::Assets::BuildAssetThumbnailPresentationKey(*request);
+		if (rebuiltPresentationKey != found->second.presentationKey)
+			continue;
+
+		++probed;
+		// A Pending tile can outlive every service owner after an asynchronous
+		// database/scope rebuild. Presentation-index probing alone can only find
+		// an already-written PNG; it cannot restart work that was cancelled before
+		// persistence. Re-submit this bounded rotating set as Visible so the service
+		// either coalesces with a live owner or recreates the missing queue entry.
+		auto recovered = m_thumbnailService.RequestAssetPreview(*request);
+		const bool promotedFromPresentation =
+			NLS::Editor::Assets::PromoteAssetThumbnailResultFromPresentationIndex(
+				*request,
+				recovered);
+		ApplyThumbnailServiceResult(recovered);
+		if (promotedFromPresentation)
+		{
+			++promoted;
+		}
+	}
+
+	return promoted;
 }
 
 bool Editor::Panels::AssetBrowser::EnsureThumbnailPreviewRenderer()
 {
+	if (m_thumbnailPipelineShutdown)
+		return false;
 	if (m_thumbnailPreviewRenderer != nullptr)
 		return true;
 	if (IsEditorWindowClosing())
@@ -5218,6 +6026,24 @@ bool Editor::Panels::AssetBrowser::EnsureThumbnailPreviewRenderer()
 		NLS::Editor::Assets::AssetThumbnailKind::PrefabPreview,
 		m_thumbnailPreviewRenderer);
 	return true;
+}
+
+void Editor::Panels::AssetBrowser::ShutdownThumbnailPipeline()
+{
+	if (m_thumbnailPipelineShutdown)
+		return;
+	m_thumbnailPipelineShutdown = true;
+
+	m_thumbnailService.Shutdown();
+	if (m_thumbnailRendererRegistry != nullptr)
+		m_thumbnailRendererRegistry->Clear();
+	m_thumbnailRendererRegistry.reset();
+	m_thumbnailPreviewRenderer.reset();
+
+	if (m_assetThumbnailPool != nullptr)
+		m_assetThumbnailPool->Clear(true);
+	ReleaseAssetBrowserTextureHandleCache(true);
+	DestroyCachedThumbnailTextures(true);
 }
 
 bool Editor::Panels::AssetBrowser::IsEditorWindowClosing() const
@@ -5342,16 +6168,141 @@ void Editor::Panels::AssetBrowser::PumpThumbnailPreviewRenderWarmup()
 	}
 }
 
+void Editor::Panels::AssetBrowser::PumpImportedPrefabThumbnailContinuations()
+{
+	if (m_residentPrefabPreviewRegistry == nullptr)
+		return;
+
+	const auto wakeRevision =
+		m_residentPrefabPreviewRegistry->GetThumbnailWakeRevision();
+	if (wakeRevision == m_lastImportedPrefabThumbnailContinuationPumpRevision)
+		return;
+
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	const auto continuations =
+		m_residentPrefabPreviewRegistry->GetImportedPrefabThumbnailContinuations(projectRoot);
+	if (continuations.empty())
+	{
+		m_importedPrefabThumbnailContinuationOffset = 0u;
+		m_importedPrefabThumbnailContinuationSubmittedRevisions.clear();
+		m_lastImportedPrefabThumbnailContinuationPumpRevision = wakeRevision;
+		return;
+	}
+
+	const NLS::Editor::Assets::ImportedPrefabThumbnailContinuation* pending = nullptr;
+	for (size_t visited = 0u; visited < continuations.size(); ++visited)
+	{
+		const auto& candidate = continuations[
+			m_importedPrefabThumbnailContinuationOffset % continuations.size()];
+		++m_importedPrefabThumbnailContinuationOffset;
+		const auto submitted =
+			m_importedPrefabThumbnailContinuationSubmittedRevisions.find(
+				candidate.assetId.ToString());
+		if (submitted == m_importedPrefabThumbnailContinuationSubmittedRevisions.end() ||
+			submitted->second != candidate.registrationRevision)
+		{
+			pending = &candidate;
+			break;
+		}
+	}
+	if (pending == nullptr)
+	{
+		m_lastImportedPrefabThumbnailContinuationPumpRevision = wakeRevision;
+		return;
+	}
+
+	const auto& continuation = *pending;
+	const auto continuationAssetId = continuation.assetId.ToString();
+	m_importedPrefabThumbnailContinuationSubmittedRevisions.insert_or_assign(
+		continuationAssetId,
+		continuation.registrationRevision);
+	const auto sourceAbsolutePath =
+		(projectRoot / continuation.sourceAssetPath).lexically_normal();
+	const auto artifactAbsolutePath =
+		(projectRoot / continuation.artifactPath).lexically_normal();
+	std::error_code sourceError;
+	std::error_code artifactError;
+	const auto sourceMeta = NLS::Core::Assets::AssetMeta::Load(
+		NLS::Core::Assets::GetAssetMetaPath(sourceAbsolutePath));
+	if (!std::filesystem::is_regular_file(sourceAbsolutePath, sourceError) || sourceError ||
+		!std::filesystem::is_regular_file(artifactAbsolutePath, artifactError) || artifactError ||
+		!sourceMeta.has_value() || sourceMeta->id != continuation.assetId)
+	{
+		m_residentPrefabPreviewRegistry->CompleteImportedPrefabThumbnailContinuation(
+			projectRoot,
+			continuation.assetId);
+		return;
+	}
+
+	NLS::Editor::Assets::AssetBrowserItem item;
+	item.displayName = std::filesystem::path(continuation.sourceAssetPath)
+		.filename()
+		.generic_string();
+	item.projectRelativePath = continuation.sourceAssetPath;
+	item.sourceAssetPath = continuation.sourceAssetPath;
+	item.absolutePath = sourceAbsolutePath;
+	item.artifactPath = continuation.artifactPath;
+	item.kind = NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset;
+	item.type = NLS::Editor::Assets::AssetBrowserItemType::Model;
+	item.assetId = continuation.assetId;
+	item.subAssetKey = continuation.prefabSubAssetKey;
+	item.artifactType = NLS::Core::Assets::ArtifactType::Prefab;
+	item.hasGeneratedSubAssets = true;
+
+	auto context = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+	context.assetDatabaseSnapshot = m_projectAssetDatabaseSnapshot;
+	context.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
+	auto request = NLS::Editor::Assets::BuildAssetThumbnailRequestForItem(
+		projectRoot,
+		item,
+		AssetBrowserThumbnailRequestSize(m_thumbnailSize),
+		context);
+	if (!request.has_value() || !request->importedPrefabThumbnailContinuation)
+		return;
+
+	request->priority = NLS::Editor::Assets::ThumbnailRequestPriority::Background;
+	const auto result = m_thumbnailService.RequestAssetPreview(*request);
+	if (NLS::Editor::Assets::ShouldRetryAssetBrowserThumbnailRequestAfterBackpressure(
+			result.diagnostic))
+	{
+		m_importedPrefabThumbnailContinuationSubmittedRevisions.erase(
+			continuationAssetId);
+	}
+	if (result.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh)
+		ApplyThumbnailServiceResult(result);
+}
+
 void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 		const bool allowGpuPreviewStart,
 		const bool allowHeavyGpuPreview,
-		const bool allowPreviewRenderWarmup)
+		const bool allowPreviewRenderWarmup,
+		const bool sceneViewCameraNavigationActive)
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration");
 	const bool thumbnailInteractive = IsAssetBrowserInteractive();
+	constexpr uint64_t kAssetBrowserTargetFrameMicroseconds = 16667u;
+	const auto previousFrameElapsedMicroseconds = ImGui::GetIO().DeltaTime > 0.0f
+		? static_cast<uint64_t>(ImGui::GetIO().DeltaTime * 1000000.0f)
+		: 0u;
+	const auto previousFrameHeadroomMicroseconds = previousFrameElapsedMicroseconds > 0u &&
+		previousFrameElapsedMicroseconds < kAssetBrowserTargetFrameMicroseconds
+		? kAssetBrowserTargetFrameMicroseconds - previousFrameElapsedMicroseconds
+		: 0u;
 	m_thumbnailRenderScheduler.BeginFrame(
 		static_cast<uint64_t>(ImGui::GetFrameCount()),
-		thumbnailInteractive);
+		thumbnailInteractive,
+		previousFrameHeadroomMicroseconds,
+		previousFrameElapsedMicroseconds > kAssetBrowserTargetFrameMicroseconds);
+	const auto thumbnailFrameBudget = m_thumbnailRenderScheduler.GetFrameStats().budgetMicroseconds;
+	m_thumbnailService.SetThumbnailPreviewResourcePumpBudgetMicroseconds(
+		m_thumbnailFeatureConfig.adaptiveBudget
+			? static_cast<uint32_t>(thumbnailFrameBudget)
+			: 1000u);
+	PumpImportedPrefabThumbnailContinuations();
+	// Deadline and cancellation maintenance is lifecycle work, not a render
+	// submission. Run it before scheduler admission so a rejected frame cannot
+	// strand a visible thumbnail in a terminally pending state.
+	m_thumbnailService.MaintainPendingThumbnailRequests();
 	const std::string pumpTelemetryPath = m_selectedProjectFolder + "|post-draw-pump";
 	const size_t pumpTelemetryItemCount = m_thumbnailService.GetQueuedRequestCount();
 	AssetBrowserArtifactTelemetryScope pumpTelemetry {
@@ -5376,7 +6327,10 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 			m_thumbnailRenderScheduler.TryBeginCompletedResult())
 		{
 			const auto consumeBegin = std::chrono::steady_clock::now();
-			const auto generated = m_thumbnailService.ConsumeCompletedThumbnail();
+			// Global request maintenance already ran once above. Completion
+			// consumption must not repeat the full queue/deadline scan for every
+			// result admitted in this frame.
+			const auto generated = m_thumbnailService.ConsumeCompletedThumbnail(false);
 			if (generated.has_value())
 			{
 				completedThumbnailQueuedTextureLoad =
@@ -5408,9 +6362,52 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 		return;
 
 	const double now = ImGui::GetTime();
+	if (RecoverVisiblePendingThumbnailPresentations(now) > 0u)
+	{
+		StartQueuedCachedThumbnailTextureDecodes(
+			thumbnailInteractive
+				? kMaxAssetBrowserInteractiveCachedThumbnailTexturePumpsPerFrame
+				: kMaxAssetBrowserThumbnailTextureLoadsPerFrame);
+	}
 	const bool hasPreviewRenderer =
 		m_thumbnailPreviewRenderer != nullptr ||
 		NLS::Render::Context::TryGetLocatedDriver() != nullptr;
+
+	// Visible source textures do not need the GPU preview path, but they do
+	// need a worker start before a heavy prefab continuation can consume the
+	// frame budget. Admit a bounded texture burst first; the actual decode and
+	// PNG write remain on the thumbnail worker queue.
+	if (m_thumbnailService.HasQueuedVisibleTextureThumbnailWork())
+	{
+		size_t visibleTextureStartsThisFrame = 0u;
+		const size_t maxVisibleTextureStartsThisFrame = thumbnailInteractive
+			? kMaxAssetBrowserInteractiveThumbnailStartsPerFrame
+			: kMaxAssetBrowserThumbnailTextureUploadsPerFrame;
+		while (visibleTextureStartsThisFrame < maxVisibleTextureStartsThisFrame &&
+			m_thumbnailService.HasQueuedVisibleTextureThumbnailWork())
+		{
+			const NLS::Editor::Assets::AssetBrowserThumbnailPumpInput pumpInput {
+				thumbnailInteractive,
+				true,
+				m_thumbnailService.HasInFlightRequest(),
+				visibleTextureStartsThisFrame,
+				kMaxAssetBrowserInteractiveThumbnailStartsPerFrame
+			};
+			if (!m_thumbnailRenderScheduler.TryBeginBackgroundGeneration(pumpInput))
+				break;
+
+			const auto workBegin = std::chrono::steady_clock::now();
+			const bool started = m_thumbnailService.StartNextThumbnailGeneration();
+			m_thumbnailRenderScheduler.FinishWork(
+				NLS::Editor::Assets::AssetThumbnailRenderWorkKind::BackgroundGenerationStart,
+				static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - workBegin).count()),
+				started);
+			if (!started)
+				break;
+			++visibleTextureStartsThisFrame;
+		}
+	}
 
 	if (allowPreviewRenderWarmup &&
 		allowGpuPreviewStart &&
@@ -5432,8 +6429,14 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 			return;
 	}
 
+	const bool hasReadyResidentThumbnail =
+		m_thumbnailService.HasQueuedReadyResidentThumbnail();
+	const bool hasSceneAssemblyContinuation =
+		m_thumbnailService.HasQueuedGpuPreviewSceneAssemblyContinuation();
 	if (m_thumbnailService.GetQueuedRequestCount() == 0u &&
-		!m_thumbnailService.HasInFlightRequest())
+		!m_thumbnailService.HasInFlightRequest() &&
+		!hasReadyResidentThumbnail &&
+		!m_thumbnailService.HasQueuedGpuPreviewResourceContinuation())
 	{
 		return;
 	}
@@ -5443,6 +6446,11 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 	lightGpuPumpInput.interactive = thumbnailInteractive;
 	lightGpuPumpInput.hasQueuedWork = m_thumbnailService.GetQueuedRequestCount() > 0u;
 	lightGpuPumpInput.hasInFlightWork = m_thumbnailService.HasInFlightRequest();
+	// A complete resident prefab may need several assembly slices while keeping
+	// its proxy objects alive. Another GPU preview would reuse the same preview
+	// scene and reset that cursor, so let the resident continuation finish first.
+	lightGpuPumpInput.hasExclusivePreviewContinuation =
+		hasReadyResidentThumbnail || hasSceneAssemblyContinuation;
 	lightGpuPumpInput.hasPreviewRenderer = hasPreviewRenderer;
 	lightGpuPumpInput.standardPbrShaderPassPrewarmPending = IsStandardPbrShaderPassPrewarmPending();
 	lightGpuPumpInput.nowSeconds = now;
@@ -5464,8 +6472,8 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 			generated = m_thumbnailService.GenerateNextThumbnail(
 				*m_thumbnailRendererRegistry,
 				false);
-			if (generated.has_value())
-				ApplyThumbnailServiceResult(*generated);
+		if (generated.has_value())
+			ApplyThumbnailServiceResult(*generated);
 		}
 		m_thumbnailRenderScheduler.FinishWork(
 			NLS::Editor::Assets::AssetThumbnailRenderWorkKind::LightGpuPreview,
@@ -5476,21 +6484,52 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 			generated.has_value(),
 			now,
 			kAssetBrowserGpuThumbnailIntervalSeconds);
-		if (generated.has_value())
+		if (generated.has_value() &&
+			!m_thumbnailService.HasQueuedNonGpuThumbnailWork() &&
+			!m_thumbnailService.HasQueuedReadyResidentThumbnail() &&
+			!m_thumbnailService.HasQueuedGpuPreviewResourceContinuation())
 			return;
 	}
 
 	NLS::Editor::Assets::AssetBrowserHeavyGpuThumbnailPumpInput heavyGpuPumpInput;
 	heavyGpuPumpInput.allowHeavyGpuPreview = allowHeavyGpuPreview;
 	heavyGpuPumpInput.interactive = thumbnailInteractive;
+	heavyGpuPumpInput.sceneViewCameraNavigationActive = sceneViewCameraNavigationActive;
 	heavyGpuPumpInput.hasQueuedWork = m_thumbnailService.GetQueuedRequestCount() > 0u;
+	heavyGpuPumpInput.hasQueuedNonGpuWork = m_thumbnailService.HasQueuedNonGpuThumbnailWork();
 	heavyGpuPumpInput.hasInFlightWork = m_thumbnailService.HasInFlightRequest();
 	heavyGpuPumpInput.hasQueuedReadback = m_thumbnailService.HasQueuedGpuPreviewReadback();
 	heavyGpuPumpInput.hasQueuedResourceContinuation =
 		m_thumbnailService.HasQueuedGpuPreviewResourceContinuation();
 	heavyGpuPumpInput.hasPreviewRenderer = hasPreviewRenderer;
-	heavyGpuPumpInput.sceneLoadRendererResourcesPending =
-		NLS::Editor::Core::HasActiveSceneLoadRendererResourceResolution();
+	const bool sceneLoadRendererResourcesPending =
+		NLS::Editor::Core::HasBlockingSceneLoadRendererResourceResolution();
+	if (sceneLoadRendererResourcesPending)
+	{
+		if (m_sceneLoadThumbnailGateStartedAt == 0.0)
+			m_sceneLoadThumbnailGateStartedAt = now;
+	}
+	else
+	{
+		m_sceneLoadThumbnailGateStartedAt = 0.0;
+	}
+    const bool sceneLoadThumbnailEscapeHatchActive =
+        sceneLoadRendererResourcesPending &&
+        m_sceneLoadThumbnailGateStartedAt != 0.0 &&
+		now - m_sceneLoadThumbnailGateStartedAt >=
+			kAssetBrowserSceneLoadThumbnailEscapeSeconds;
+	// Scene loading gets the first opportunity to use the renderer budget, but
+	// it must not hold visible thumbnails in a non-terminal state indefinitely.
+    // Once the gate has exceeded its grace period, the scheduler's normal budget
+    // and previous-frame headroom rules control the bounded thumbnail progress.
+    heavyGpuPumpInput.sceneLoadRendererResourcesPending =
+        sceneLoadRendererResourcesPending;
+    heavyGpuPumpInput.sceneLoadThumbnailEscapeHatchActive =
+        sceneLoadThumbnailEscapeHatchActive;
+	heavyGpuPumpInput.hasQueuedVisibleResidentPreview =
+		m_thumbnailService.HasQueuedVisibleResidentThumbnail();
+	const bool readyResidentInput = m_thumbnailService.HasQueuedReadyResidentThumbnail();
+	heavyGpuPumpInput.hasQueuedReadyResidentPreview = readyResidentInput;
 	heavyGpuPumpInput.nowSeconds = now;
 	heavyGpuPumpInput.deferredUntilSeconds = m_heavyGpuThumbnailGenerationDeferredUntil;
 	if (m_thumbnailRenderScheduler.TryBeginHeavyGpuPreview(heavyGpuPumpInput))
@@ -5528,21 +6567,35 @@ void Editor::Panels::AssetBrowser::PumpThumbnailGeneration(
 			kAssetBrowserHeavyGpuThumbnailResourcePendingIntervalSeconds,
 			kAssetBrowserHeavyGpuThumbnailIntervalSeconds);
 		if (generated.has_value())
-			return;
+		{
+			const bool hasQueuedNonGpuWork = m_thumbnailService.HasQueuedNonGpuThumbnailWork();
+			// A GPU result, including a readback-pending result, is not a reason to
+			// stop the CPU/texture lane. Continue to the bounded background turn
+			// whenever other work is queued; otherwise a large prefab can starve
+			// visible textures behind its readback cadence. Resource continuations
+			// remain represented in their own lane for the next pump.
+			if (!hasQueuedNonGpuWork)
+				return;
+		}
 	}
 
 	size_t thumbnailStartsThisFrame = 0u;
 	while (true)
 	{
+		const bool hasQueuedNonGpuWork = m_thumbnailService.HasQueuedNonGpuThumbnailWork();
+		if (!hasQueuedNonGpuWork)
+			break;
 		const NLS::Editor::Assets::AssetBrowserThumbnailPumpInput pumpInput {
 			thumbnailInteractive,
-			m_thumbnailService.GetQueuedRequestCount() > 0u,
+			hasQueuedNonGpuWork,
 			m_thumbnailService.HasInFlightRequest(),
 			thumbnailStartsThisFrame,
 			kMaxAssetBrowserInteractiveThumbnailStartsPerFrame
 		};
 		if (!m_thumbnailRenderScheduler.TryBeginBackgroundGeneration(pumpInput))
+		{
 			break;
+		}
 
 		const auto workBegin = std::chrono::steady_clock::now();
 		NLS_PROFILE_NAMED_SCOPE("AssetBrowser::PumpThumbnailGeneration.StartBackground");
@@ -5638,78 +6691,162 @@ void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForDragPayload(
 }
 
 void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForHoveredItem(
-	const NLS::Editor::Assets::AssetBrowserItem& item,
-	const bool hovered)
+    const NLS::Editor::Assets::AssetBrowserItem& item,
+    const bool hovered)
 {
-	if (!hovered ||
-		(item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
-		 item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab))
-	{
-		return;
-	}
+    if (!hovered ||
+        (item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
+            item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab))
+    {
+        return;
+    }
 
-	if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
-		item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
-	{
-		return;
-	}
+    if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
+        item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
+    {
+        return;
+    }
 
-	const double now = ImGui::GetTime();
-	if (m_lastHoveredPrefabHotCachePreloadIdentity.Matches(item) &&
-		now - m_lastHoveredPrefabHotCachePreloadTime < kAssetBrowserHoveredPrefabHotCachePreloadRepeatDelaySeconds)
-	{
-		return;
-	}
-	m_lastHoveredPrefabHotCachePreloadIdentity.Store(item);
-	m_lastHoveredPrefabHotCachePreloadTime = now;
+    const double now = ImGui::GetTime();
+    if (m_lastHoveredPrefabHotCachePreloadIdentity.Matches(item) &&
+        now - m_lastHoveredPrefabHotCachePreloadTime < kAssetBrowserHoveredPrefabHotCachePreloadRepeatDelaySeconds)
+    {
+        return;
+    }
+    m_lastHoveredPrefabHotCachePreloadIdentity.Store(item);
+    m_lastHoveredPrefabHotCachePreloadTime = now;
 
-	auto payload = NLS::Editor::Assets::MakeAssetBrowserItemDragPayload(
-		item,
-		nullptr);
-	if (payload.has_value())
-		SchedulePrefabHotCachePreloadForDragPayload(*payload);
+    auto payload = NLS::Editor::Assets::MakeAssetBrowserItemDragPayload(item, nullptr);
+    if (payload.has_value())
+        SchedulePrefabHotCachePreloadForDragPayload(*payload);
 }
 
 void Editor::Panels::AssetBrowser::SchedulePrefabHotCachePreloadForVisibleItems(
-	const std::vector<NLS::Editor::Assets::AssetBrowserItem>& visibleItems)
+    const std::vector<NLS::Editor::Assets::AssetBrowserItem>& visibleItems)
 {
-	for (const auto& item : visibleItems)
-	{
-		if (item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
-			item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab)
-		{
-			continue;
-		}
+    for (const auto& item : visibleItems)
+    {
+        if (item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
+            item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab)
+        {
+            continue;
+        }
 
-		if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
-			item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
-		{
-			continue;
-		}
+        if (item.kind != NLS::Editor::Assets::AssetBrowserItemKind::SourceAsset &&
+            item.kind != NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset)
+        {
+            continue;
+        }
 
-		auto payload = NLS::Editor::Assets::MakeAssetBrowserItemDragPayload(
-			item,
-			nullptr);
-		if (payload.has_value())
-		{
-			SchedulePrefabHotCachePreloadForDragPayload(*payload);
-		}
-	}
+        auto payload = NLS::Editor::Assets::MakeAssetBrowserItemDragPayload(item, nullptr);
+        if (payload.has_value())
+            SchedulePrefabHotCachePreloadForDragPayload(*payload);
+    }
 }
 
 void Editor::Panels::AssetBrowser::FlushPendingVisiblePrefabHotCachePreload()
 {
-	if (!m_visiblePrefabHotCachePreloadPending || IsAssetBrowserInteractive())
-		return;
+    if (!m_visiblePrefabHotCachePreloadPending || IsAssetBrowserInteractive())
+        return;
 
-	m_visiblePrefabHotCachePreloadPending = false;
-	SchedulePrefabHotCachePreloadForVisibleItems(m_visibleThumbnailItems);
+    m_visiblePrefabHotCachePreloadPending = false;
+    SchedulePrefabHotCachePreloadForVisibleItems(m_visibleThumbnailItems);
+}
+
+bool Editor::Panels::AssetBrowser::IsResidentPrefabPreviewAvailableForItem(
+    const NLS::Editor::Assets::AssetBrowserItem& item) const
+{
+    if (!m_thumbnailFeatureConfig.residentPrefabPreview ||
+        m_residentPrefabPreviewRegistry == nullptr ||
+        !item.assetId.IsValid() ||
+        (item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
+            item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab))
+    {
+        return false;
+    }
+
+    // Reuse the same manifest, canonical sub-asset and freshness construction
+    // as the real thumbnail request. A path-only or identity-only probe could
+    // incorrectly suppress the fallback after an importer change.
+    auto context = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+    context.assetDatabaseSnapshot = m_projectAssetDatabaseSnapshot;
+    context.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
+    const auto request = NLS::Editor::Assets::BuildAssetThumbnailRequestForItem(
+        ProjectRootFromAssetsFolder(m_projectAssetFolder),
+        item,
+        AssetBrowserThumbnailRequestSize(m_thumbnailSize),
+        context);
+    if (!request ||
+        request->kind != NLS::Editor::Assets::AssetThumbnailKind::PrefabPreview ||
+        !request->residentPrefabPreviewSource.has_value())
+    {
+        const auto canonicalSubAssetKey =
+            NLS::Editor::Assets::BuildCanonicalPrefabPreviewSubAssetKey(
+                item.sourceAssetPath,
+                item.subAssetKey);
+        if (canonicalSubAssetKey.empty())
+            return false;
+        return m_residentPrefabPreviewRegistry->HasSnapshotForRuntimeCacheIdentity(
+            NLS::Editor::Assets::BuildResidentPrefabRuntimeCacheIdentity(
+                item.assetId.ToString(),
+                canonicalSubAssetKey));
+    }
+
+    if (!request->residentPrefabPreviewSource->snapshot.expired())
+        return true;
+
+    // The first visible set can be built before the immutable database snapshot
+    // is published. Identity-only suppression is safe here because this helper
+    // only avoids redundant hot-cache work; generation still requires the exact
+    // freshness fingerprint and falls back on mismatch.
+    return m_residentPrefabPreviewRegistry->HasSnapshotForRuntimeCacheIdentity(
+        request->residentPrefabPreviewSource->runtimeCacheIdentity);
+}
+
+bool Editor::Panels::AssetBrowser::ShouldHoldResidentPrefabThumbnailFallback(
+    const NLS::Editor::Assets::AssetBrowserItem& item,
+    const NLS::Editor::Assets::AssetThumbnailServiceResult* result) const
+{
+    if (!m_thumbnailFeatureConfig.residentPrefabPreview ||
+        m_residentPrefabPreviewRegistry == nullptr ||
+        (item.type != NLS::Editor::Assets::AssetBrowserItemType::Model &&
+            item.type != NLS::Editor::Assets::AssetBrowserItemType::Prefab))
+    {
+        return false;
+    }
+
+    if (result != nullptr)
+    {
+        // A resident request is still provisional until it has a display image
+        // or reaches an explicit terminal failure/fallback state.
+        if (result->status != NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending ||
+            NLS::Editor::Assets::AssetBrowserThumbnailResultHasDisplayImage(*result))
+        {
+            return false;
+        }
+        return result->residentPreviewRequest ||
+            m_residentPrefabPreviewRegistry->IsSceneRestoreInProgress() ||
+            IsResidentPrefabPreviewAvailableForItem(item);
+    }
+
+    // The first grid draw happens before UpdateThumbnailGenerationScope queues
+    // the request. Keep a loaded scene object in a stable loading state during
+    // that one-frame gap instead of exposing the type icon.
+    if (m_residentPrefabPreviewRegistry->IsSceneRestoreInProgress())
+        return true;
+
+    return IsResidentPrefabPreviewAvailableForItem(item);
 }
 
 bool Editor::Panels::AssetBrowser::LoadCachedThumbnailTexture(
 			const std::string& normalizedPath)
 {
-	return LoadDecodedCachedThumbnailTexture(DecodeCachedThumbnailTexture(normalizedPath));
+	const auto foundColorSpace = m_thumbnailTextureColorSpacesByPath.find(normalizedPath);
+	const auto colorSpace = foundColorSpace != m_thumbnailTextureColorSpacesByPath.end()
+		? foundColorSpace->second
+		: NLS::Render::RHI::TextureColorSpace::Linear;
+	return LoadDecodedCachedThumbnailTexture(
+		DecodeCachedThumbnailTexture(normalizedPath, colorSpace));
 }
 
 void Editor::Panels::AssetBrowser::MarkCachedThumbnailTextureUploadRetryableFailure(
@@ -5739,10 +6876,39 @@ bool Editor::Panels::AssetBrowser::LoadDecodedCachedThumbnailTexture(
 	{
 		if (!normalizedPath.empty() && result.rgbaPixels.empty())
 		{
-			InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
 			m_thumbnailTexturesFailedToLoad.insert(normalizedPath);
 		}
 		return false;
+	}
+
+	auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+	std::optional<NLS::Editor::Assets::AssetThumbnailAtlas::Allocation> atlasAllocation;
+	const auto atlasSizeClass =
+		NLS::Editor::Assets::AssetThumbnailAtlas::SizeClassForDimensions(
+			result.width,
+			result.height);
+	if (m_thumbnailFeatureConfig.atlas &&
+		driver != nullptr &&
+		NLS::Render::Context::DriverUIAccess::SupportsUiRgba8TextureAtlasRegionUploads(*driver) &&
+		atlasSizeClass.has_value())
+	{
+		const auto bucketKey = std::string(
+			result.colorSpace == NLS::Render::RHI::TextureColorSpace::SRGB
+				? "srgb-rgba8-"
+				: "linear-rgba8-") +
+			std::to_string(*atlasSizeClass);
+		auto allocationResult = m_thumbnailAtlas.Allocate(
+			normalizedPath,
+			result.width,
+			result.height,
+			bucketKey,
+			m_thumbnailTextureFrameSerial);
+		for (const auto& evictedKey : allocationResult.evictedKeys)
+		{
+			if (evictedKey != normalizedPath)
+				ReleaseCachedThumbnailTexture(evictedKey);
+		}
+		atlasAllocation = std::move(allocationResult.allocation);
 	}
 
 		const size_t uploadByteCount = result.rgbaPixels.size();
@@ -5752,25 +6918,63 @@ bool Editor::Panels::AssetBrowser::LoadDecodedCachedThumbnailTexture(
 				&normalizedPath,
 				&uploadByteCount
 		};
-		auto* driver = NLS::Render::Context::TryGetLocatedDriver();
 		if (driver == nullptr)
 		{
-			InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
+			if (atlasAllocation.has_value())
+				m_thumbnailAtlas.Release(normalizedPath);
 			MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
 			return false;
 		}
 
+		NLS::Render::Context::DriverUIAccess::Rgba8TextureUploadRequest uploadRequest;
+		uploadRequest.width = result.width;
+		uploadRequest.height = result.height;
+		uploadRequest.rgbaPixels = std::move(result.rgbaPixels);
+		uploadRequest.debugName = normalizedPath;
+		uploadRequest.colorSpace = result.colorSpace;
+		if (atlasAllocation.has_value())
+		{
+			const uint32_t paddedWidth = result.width + NLS::Editor::Assets::AssetThumbnailAtlas::kGutter * 2u;
+			const uint32_t paddedHeight = result.height + NLS::Editor::Assets::AssetThumbnailAtlas::kGutter * 2u;
+			std::vector<uint8_t> paddedPixels(
+				static_cast<size_t>(paddedWidth) * static_cast<size_t>(paddedHeight) * 4u,
+				0u);
+			for (uint32_t y = 0u; y < paddedHeight; ++y)
+			{
+				const uint32_t sourceY = (std::min)(
+					result.height - 1u,
+					y < NLS::Editor::Assets::AssetThumbnailAtlas::kGutter
+						? 0u
+						: y - NLS::Editor::Assets::AssetThumbnailAtlas::kGutter);
+				for (uint32_t x = 0u; x < paddedWidth; ++x)
+				{
+					const uint32_t sourceX = (std::min)(
+						result.width - 1u,
+						x < NLS::Editor::Assets::AssetThumbnailAtlas::kGutter
+							? 0u
+							: x - NLS::Editor::Assets::AssetThumbnailAtlas::kGutter);
+					const auto sourceIndex =
+						(static_cast<size_t>(sourceY) * result.width + sourceX) * 4u;
+					const auto targetIndex =
+						(static_cast<size_t>(y) * paddedWidth + x) * 4u;
+					std::copy_n(uploadRequest.rgbaPixels.data() + sourceIndex, 4u, paddedPixels.data() + targetIndex);
+				}
+			}
+			uploadRequest.width = paddedWidth;
+			uploadRequest.height = paddedHeight;
+			uploadRequest.rgbaPixels = std::move(paddedPixels);
+			uploadRequest.atlasPageKey = atlasAllocation->pageKey;
+			uploadRequest.atlasPageSize = NLS::Editor::Assets::AssetThumbnailAtlas::kPageSize;
+			uploadRequest.atlasX = atlasAllocation->x - NLS::Editor::Assets::AssetThumbnailAtlas::kGutter;
+			uploadRequest.atlasY = atlasAllocation->y - NLS::Editor::Assets::AssetThumbnailAtlas::kGutter;
+		}
 		const uint64_t requestId = NLS::Render::Context::DriverUIAccess::RequestUiRgba8TextureUpload(
 			*driver,
-			{
-				result.width,
-				result.height,
-				std::move(result.rgbaPixels),
-				normalizedPath
-			});
+			std::move(uploadRequest));
 		if (requestId == 0u)
 		{
-			InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
+			if (atlasAllocation.has_value())
+				m_thumbnailAtlas.Release(normalizedPath);
 			MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
 			return false;
 		}
@@ -5779,17 +6983,20 @@ bool Editor::Panels::AssetBrowser::LoadDecodedCachedThumbnailTexture(
 		m_pendingThumbnailTextureUploadsByPath[normalizedPath] = {
 			requestId,
 			result.width,
-			result.height
+			result.height,
+			std::move(atlasAllocation)
 		};
 		return true;
 	}
 
 Editor::Panels::AssetBrowser::ThumbnailTextureDecodeResult
 Editor::Panels::AssetBrowser::DecodeCachedThumbnailTexture(
-	std::string normalizedPath)
+	std::string normalizedPath,
+	const NLS::Render::RHI::TextureColorSpace colorSpace)
 {
 	ThumbnailTextureDecodeResult result;
 	result.normalizedPath = std::move(normalizedPath);
+	result.colorSpace = colorSpace;
 	size_t decodeByteCount = 0u;
 	AssetBrowserArtifactTelemetryScope decodeTelemetry {
 		NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureDecode,
@@ -5802,7 +7009,9 @@ Editor::Panels::AssetBrowser::DecodeCachedThumbnailTexture(
 
 	try
 	{
-		NLS::Image image(result.normalizedPath, true);
+		// The async standalone and Atlas upload paths both use top-left UVs.
+		// Preserve PNG row order instead of applying the legacy TextureLoader flip.
+		NLS::Image image(result.normalizedPath, false);
 		const auto* source = image.GetData();
 		const auto width = image.GetWidth();
 		const auto height = image.GetHeight();
@@ -5875,12 +7084,15 @@ Editor::Panels::AssetBrowser::DecodeCachedThumbnailTexture(
 }
 
 void Editor::Panels::AssetBrowser::QueueCachedThumbnailTextureLoad(
-	const std::filesystem::path& imagePath)
+	const std::filesystem::path& imagePath,
+	const NLS::Render::RHI::TextureColorSpace colorSpace)
 {
 	if (imagePath.empty())
 		return;
 
 		const auto normalizedPath = imagePath.lexically_normal().generic_string();
+		if (!normalizedPath.empty())
+			m_thumbnailTextureColorSpacesByPath.insert_or_assign(normalizedPath, colorSpace);
 			if (normalizedPath.empty() ||
 				m_thumbnailTexturesByPath.find(normalizedPath) != m_thumbnailTexturesByPath.end() ||
 				m_pendingThumbnailTextureUploadsByPath.find(normalizedPath) != m_pendingThumbnailTextureUploadsByPath.end() ||
@@ -5909,6 +7121,9 @@ void Editor::Panels::AssetBrowser::PumpQueuedCachedThumbnailTextureLoads(const s
 
 void Editor::Panels::AssetBrowser::StartQueuedCachedThumbnailTextureDecodes(const size_t maxDecodeStartsPerFrame)
 {
+	if (m_thumbnailTextureLoadQueue.empty())
+		return;
+
 	const std::string telemetryPath = m_selectedProjectFolder + "|texture-pump-start-decodes";
 	const size_t telemetryItemCount = m_thumbnailTextureLoadQueue.size() + m_thumbnailTextureDecodes.size();
 	AssetBrowserArtifactTelemetryScope startTelemetry {
@@ -5924,22 +7139,6 @@ void Editor::Panels::AssetBrowser::StartQueuedCachedThumbnailTextureDecodes(cons
 	if (startBudget == 0u)
 		return;
 
-	std::unordered_set<std::string> residentKeys;
-	{
-		const std::string residentTelemetryPath = m_selectedProjectFolder + "|texture-pump-resident-set";
-		const size_t residentTelemetryItemCount = m_thumbnailTexturesByPath.size();
-		AssetBrowserArtifactTelemetryScope residentTelemetry {
-			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpBuildResidentSet,
-			std::chrono::steady_clock::now(),
-			&residentTelemetryPath,
-			&residentTelemetryItemCount,
-			kAssetBrowserThumbnailUiDrawTelemetryMinimum
-		};
-		residentKeys.reserve(m_thumbnailTexturesByPath.size());
-		for (const auto& [key, _] : m_thumbnailTexturesByPath)
-			residentKeys.insert(key);
-	}
-
 	std::vector<std::string> candidates;
 	{
 		const std::string selectTelemetryPath = m_selectedProjectFolder + "|texture-pump-select-decodes";
@@ -5953,7 +7152,10 @@ void Editor::Panels::AssetBrowser::StartQueuedCachedThumbnailTextureDecodes(cons
 		};
 		candidates = NLS::Editor::Assets::SelectAssetBrowserThumbnailTextureDecodeCandidates(
 				m_thumbnailTextureLoadQueue,
-				residentKeys,
+				[this](const std::string& key)
+				{
+					return m_thumbnailTexturesByPath.find(key) != m_thumbnailTexturesByPath.end();
+				},
 				m_thumbnailTexturesDecoding,
 				std::min({ kMaxAssetBrowserThumbnailTextureLoadsPerFrame, maxDecodeStartsPerFrame, startBudget }));
 	}
@@ -5970,15 +7172,20 @@ void Editor::Panels::AssetBrowser::StartQueuedCachedThumbnailTextureDecodes(cons
 		for (const auto& key : candidates)
 		{
 			m_thumbnailTexturesDecoding.insert(key);
+			const auto foundColorSpace = m_thumbnailTextureColorSpacesByPath.find(key);
+			const auto colorSpace = foundColorSpace != m_thumbnailTextureColorSpacesByPath.end()
+				? foundColorSpace->second
+				: NLS::Render::RHI::TextureColorSpace::Linear;
 			try
 			{
 				m_thumbnailTextureDecodes.push_back({
 					key,
+					colorSpace,
 					ScheduleAssetBrowserJobFuture(
 						"AssetBrowser.DecodeCachedThumbnailTexture",
-						[key]
+						[key, colorSpace]
 						{
-							return DecodeCachedThumbnailTexture(key);
+							return DecodeCachedThumbnailTexture(key, colorSpace);
 						})
 				});
 			}
@@ -6065,6 +7272,7 @@ void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes
 
 					const std::string normalizedPath = iterator->first;
 					const auto pendingUpload = iterator->second;
+					const bool atlasUpload = pendingUpload.atlasAllocation.has_value();
 					++pendingUploadsPolledThisFrame;
 					decltype(NLS::Render::Context::DriverUIAccess::ConsumeUiRgba8TextureUploadResult(
 						*driver,
@@ -6090,17 +7298,18 @@ void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes
 				if (!result.success || result.texture == nullptr || result.textureView == nullptr ||
 				!NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
 				{
-					InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
+					if (atlasUpload)
+						m_thumbnailAtlas.Release(normalizedPath);
 					MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
 					iterator = m_pendingThumbnailTextureUploadsByPath.erase(iterator);
 					continue;
 				}
 
 				const size_t uploadByteCount =
-					static_cast<size_t>(result.width) *
-					static_cast<size_t>(result.height) *
+					static_cast<size_t>(pendingUpload.width) *
+					static_cast<size_t>(pendingUpload.height) *
 					4u;
-					void* textureId = nullptr;
+				void* textureId = nullptr;
 					{
 						AssetBrowserArtifactTelemetryScope resolveUploadTelemetry {
 							NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTextureUploadResolveUiId,
@@ -6114,18 +7323,44 @@ void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes
 							&normalizedPath,
 							&uploadByteCount
 						};
-						textureId = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(result.textureView);
+						if (atlasUpload)
+						{
+							const auto& allocation = *pendingUpload.atlasAllocation;
+							auto& page = m_thumbnailAtlasPagesByKey[allocation.pageKey];
+							if (page.textureView == nullptr || page.textureView != result.textureView)
+							{
+								if (page.textureView != nullptr &&
+									NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+								{
+									NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(page.textureView);
+								}
+								page.texture = result.texture;
+								page.textureView = result.textureView;
+								page.textureId = nullptr;
+                            page.pageSize = NLS::Editor::Assets::AssetThumbnailAtlas::kPageSize;
+                            page.pageGeneration = allocation.pageGeneration;
+							}
+							if (page.textureView != nullptr && page.textureId == nullptr)
+								page.textureId = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(page.textureView);
+							textureId = page.textureId;
+						}
+						else
+						{
+							textureId = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureId(result.textureView);
+						}
 					}
-				if (textureId == nullptr)
+					if (textureId == nullptr)
 				{
+					if (atlasUpload)
+						m_thumbnailAtlas.Release(normalizedPath);
 					NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(result.textureView);
-					InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
 					MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
 					iterator = m_pendingThumbnailTextureUploadsByPath.erase(iterator);
 					continue;
 				}
 
 					std::unique_ptr<NLS::Render::Resources::Texture2D> texture;
+					if (!atlasUpload)
 					{
 						AssetBrowserArtifactTelemetryScope wrapTextureTelemetry {
 							NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadWrapTexture,
@@ -6136,20 +7371,23 @@ void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes
 						texture = NLS::Render::Resources::Texture2D::WrapExternal(
 							result.texture,
 							result.width,
-							result.height);
+						result.height);
 					}
-				if (texture == nullptr)
+				if (!atlasUpload && texture == nullptr)
 				{
+					m_thumbnailAtlas.Release(normalizedPath);
 					NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(result.textureView);
-					InvalidateAssetThumbnailMetadataForImagePath(normalizedPath);
 					MarkCachedThumbnailTextureUploadRetryableFailure(normalizedPath);
 					iterator = m_pendingThumbnailTextureUploadsByPath.erase(iterator);
 					continue;
 				}
 
-					texture->firstFilter = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
-					texture->secondFilter = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
-					texture->bitsPerPixel = 4u;
+					if (!atlasUpload)
+					{
+						texture->firstFilter = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
+						texture->secondFilter = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
+						texture->bitsPerPixel = 4u;
+					}
 					{
 						AssetBrowserArtifactTelemetryScope cachePublishTelemetry {
 							NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailTexturePumpPendingUploadCachePublish,
@@ -6157,14 +7395,21 @@ void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes
 							&normalizedPath,
 							&uploadByteCount
 						};
-						m_thumbnailTexturesByPath.emplace(normalizedPath, ThumbnailTextureCacheEntry {
-							texture.release(),
-							std::move(result.textureView),
-							textureId,
-							result.width,
-							result.height,
-							m_thumbnailTextureFrameSerial
-							});
+						ThumbnailTextureCacheEntry cacheEntry;
+						cacheEntry.texture = texture.release();
+						cacheEntry.textureView = atlasUpload ? nullptr : std::move(result.textureView);
+						cacheEntry.textureId = textureId;
+						cacheEntry.width = pendingUpload.width;
+						cacheEntry.height = pendingUpload.height;
+						cacheEntry.lastUsedFrame = m_thumbnailTextureFrameSerial;
+						cacheEntry.atlas = atlasUpload;
+                        if (atlasUpload)
+                        {
+                            cacheEntry.atlasPageKey = pendingUpload.atlasAllocation->pageKey;
+                            cacheEntry.atlasPageGeneration = pendingUpload.atlasAllocation->pageGeneration;
+                            cacheEntry.uv = pendingUpload.atlasAllocation->uv;
+                        }
+						m_thumbnailTexturesByPath.emplace(normalizedPath, std::move(cacheEntry));
 							m_thumbnailTextureLru.push_back(normalizedPath);
 							m_thumbnailTextureRetryAfterFrameByPath.erase(normalizedPath);
 							iterator = m_pendingThumbnailTextureUploadsByPath.erase(iterator);
@@ -6231,12 +7476,16 @@ void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes
 			catch (const std::bad_alloc&)
 			{
 				result.normalizedPath = iterator->normalizedPath;
+				result.colorSpace = iterator->colorSpace;
 			}
 			catch (...)
 			{
 				result.normalizedPath = iterator->normalizedPath;
+				result.colorSpace = iterator->colorSpace;
 			}
 			const auto normalizedPath = result.normalizedPath;
+			const auto colorSpace = result.colorSpace;
+			bool retryCommittedFreshImage = false;
 			{
 				const size_t loadByteCount = result.rgbaPixels.size();
 					AssetBrowserArtifactTelemetryScope loadTelemetry {
@@ -6246,11 +7495,33 @@ void Editor::Panels::AssetBrowser::ConsumeCompletedCachedThumbnailTextureDecodes
 						&loadByteCount,
 						kAssetBrowserThumbnailUiDrawTelemetryMinimum
 					};
-					if (LoadDecodedCachedThumbnailTexture(std::move(result)))
+					const bool loaded = LoadDecodedCachedThumbnailTexture(std::move(result));
+					if (loaded)
 						++queuedUploadsThisFrame;
+					if (loaded)
+					{
+						m_thumbnailTexturesRetryAfterDecode.erase(normalizedPath);
+					}
+					else if (m_thumbnailTexturesRetryAfterDecode.erase(normalizedPath) > 0u)
+					{
+						retryCommittedFreshImage = true;
+					}
 				}
 				m_thumbnailTexturesQueuedForLoad.erase(normalizedPath);
 				m_thumbnailTexturesDecoding.erase(normalizedPath);
+				if (retryCommittedFreshImage)
+				{
+					// A Fresh completion can race a decode that started before the
+					// atomic PNG commit. Retry that path once against the committed file.
+					m_thumbnailTexturesFailedToLoad.erase(normalizedPath);
+					m_thumbnailTextureLoadQueue.erase(
+						std::remove(
+							m_thumbnailTextureLoadQueue.begin(),
+							m_thumbnailTextureLoadQueue.end(),
+							normalizedPath),
+						m_thumbnailTextureLoadQueue.end());
+					QueueCachedThumbnailTextureLoad(normalizedPath, colorSpace);
+				}
 			iterator = m_thumbnailTextureDecodes.erase(iterator);
 		}
 	}
@@ -6422,7 +7693,8 @@ void Editor::Panels::AssetBrowser::PumpCurrentFolderItemsRefresh()
 		m_thumbnailGenerationScopeDirty = true;
 		m_pendingThumbnailScopeItems.clear();
 		m_pendingThumbnailScopeOffset = 0u;
-		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
+		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+		m_pendingThumbnailRequestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
 		m_thumbnailScopeBuildInProgress = false;
 	}
 	StartNextCurrentFolderItemsRefresh();
@@ -6931,6 +8203,12 @@ void Editor::Panels::AssetBrowser::DestroyCachedThumbnailTextures(const bool for
 			const auto found = m_thumbnailTexturesByPath.find(key);
 			if (found == m_thumbnailTexturesByPath.end())
 				continue;
+			if (found->second.atlas)
+			{
+				m_thumbnailAtlas.Release(key);
+				m_thumbnailTexturesByPath.erase(found);
+				continue;
+			}
 			if (found->second.textureView != nullptr &&
 				NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
 			{
@@ -6944,6 +8222,12 @@ void Editor::Panels::AssetBrowser::DestroyCachedThumbnailTextures(const bool for
 		const auto found = m_thumbnailTexturesByPath.find(key);
 		if (found == m_thumbnailTexturesByPath.end())
 			continue;
+		if (found->second.atlas)
+		{
+			m_thumbnailAtlas.Release(key);
+			m_thumbnailTexturesByPath.erase(found);
+			continue;
+		}
 		if (found->second.textureView != nullptr &&
 			NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
 		{
@@ -6960,12 +8244,15 @@ void Editor::Panels::AssetBrowser::DestroyCachedThumbnailTextures(const bool for
 	}
 		m_thumbnailTextureLoadQueue.clear();
 		m_thumbnailTexturesQueuedForLoad.clear();
+		m_thumbnailTextureColorSpacesByPath.clear();
 		if (!m_pendingThumbnailTextureUploadsByPath.empty())
 		{
 			if (auto* driver = NLS::Render::Context::TryGetLocatedDriver())
 			{
-				for (const auto& [_, pendingUpload] : m_pendingThumbnailTextureUploadsByPath)
+				for (const auto& [path, pendingUpload] : m_pendingThumbnailTextureUploadsByPath)
 				{
+					if (pendingUpload.atlasAllocation.has_value())
+						m_thumbnailAtlas.Release(path);
 					NLS::Render::Context::DriverUIAccess::CancelUiRgba8TextureUpload(
 						*driver,
 						pendingUpload.requestId);
@@ -6973,7 +8260,21 @@ void Editor::Panels::AssetBrowser::DestroyCachedThumbnailTextures(const bool for
 			}
 		}
 		m_pendingThumbnailTextureUploadsByPath.clear();
+		if (force)
+		{
+			for (auto& [_, page] : m_thumbnailAtlasPagesByKey)
+			{
+				if (page.textureView != nullptr &&
+					NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+				{
+					NLS_SERVICE(NLS::UI::UIManager).ReleaseTextureViewHandle(page.textureView);
+				}
+			}
+			m_thumbnailAtlasPagesByKey.clear();
+			m_thumbnailAtlas.Reset();
+		}
 		m_thumbnailTexturesFailedToLoad.clear();
+		m_thumbnailTexturesRetryAfterDecode.clear();
 		if (force)
 			m_thumbnailTexturesDecoding.clear();
 	}
@@ -7043,6 +8344,8 @@ void Editor::Panels::AssetBrowser::ReleaseCachedThumbnailTexture(
 				*driver,
 				pending->second.requestId);
 		}
+		if (pending->second.atlasAllocation.has_value())
+			m_thumbnailAtlas.Release(normalizedPath);
 		m_pendingThumbnailTextureUploadsByPath.erase(pending);
 	}
 	const auto found = m_thumbnailTexturesByPath.find(normalizedPath);
@@ -7051,6 +8354,15 @@ void Editor::Panels::AssetBrowser::ReleaseCachedThumbnailTexture(
 	if (m_thumbnailTexturesUsedThisFrame.find(normalizedPath) != m_thumbnailTexturesUsedThisFrame.end())
 	{
 		m_thumbnailTexturesPendingRelease.insert(normalizedPath);
+		return;
+	}
+	if (found->second.atlas)
+	{
+		m_thumbnailAtlas.Release(normalizedPath);
+		m_thumbnailTexturesByPath.erase(found);
+		m_thumbnailTextureLru.erase(
+			std::remove(m_thumbnailTextureLru.begin(), m_thumbnailTextureLru.end(), normalizedPath),
+			m_thumbnailTextureLru.end());
 		return;
 	}
 
@@ -7070,13 +8382,21 @@ void Editor::Panels::AssetBrowser::PruneCachedThumbnailTextures()
 {
 	if (IsAssetBrowserInteractive())
 		return;
-	if (m_thumbnailTexturesByPath.size() <= kMaxResidentAssetBrowserThumbnailTextures)
+	size_t standaloneCount = 0u;
+	for (const auto& [_, entry] : m_thumbnailTexturesByPath)
+	{
+		if (!entry.atlas)
+			++standaloneCount;
+	}
+	if (standaloneCount <= kMaxResidentAssetBrowserThumbnailTextures)
 		return;
 
 	std::vector<std::pair<std::string, uint64_t>> candidates;
 	candidates.reserve(m_thumbnailTexturesByPath.size());
 	for (const auto& [key, entry] : m_thumbnailTexturesByPath)
 	{
+		if (entry.atlas)
+			continue;
 		if (m_thumbnailTexturesUsedThisFrame.find(key) == m_thumbnailTexturesUsedThisFrame.end())
 			candidates.emplace_back(key, entry.lastUsedFrame);
 	}
@@ -7123,7 +8443,8 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 	{
 		m_pendingThumbnailScopeItems.clear();
 		m_pendingThumbnailScopeOffset = 0u;
-		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
+		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+		m_pendingThumbnailRequestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
 		m_thumbnailScopeBuildInProgress = false;
 	}
 	if (!m_thumbnailScopeBuildInProgress)
@@ -7144,10 +8465,14 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 			AssetBrowserArtifactTelemetryAccumulatorScope buildKeyTelemetry {
 				buildKeyElapsed
 			};
+			// The generation scope describes the stable contents of the current
+			// folder. The visible set is intentionally excluded here: scrolling
+			// must only reprioritize requests and allow the service's off-screen
+			// grace period to expire, rather than cancelling the whole generation.
 			nextScopeKey = NLS::Editor::Assets::BuildAssetBrowserThumbnailGenerationScopeKey(
 				nextFolder,
 				nextSize,
-				scopedThumbnailItems);
+				m_currentFolderItems);
 		}
 		const auto decision = NLS::Editor::Assets::EvaluateAssetBrowserThumbnailGenerationScope(
 			m_lastThumbnailGenerationScopeKey,
@@ -7165,15 +8490,32 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 			m_lastThumbnailGenerationScopeKey = nextScopeKey;
 			m_lastThumbnailGenerationScopeInteractive = interactive;
 		m_thumbnailGenerationScopeDirty = false;
-			m_pendingThumbnailScopeItems = std::move(scopedThumbnailItems);
-			m_pendingThumbnailScopeOffset = 0u;
-			m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
-			m_thumbnailScopeBuildInProgress = true;
+		m_pendingThumbnailScopeItems = std::move(scopedThumbnailItems);
+		m_pendingThumbnailScopeOffset = 0u;
+		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+		m_pendingThumbnailRequestContext.assetDatabaseSnapshot = m_projectAssetDatabaseSnapshot;
+		m_pendingThumbnailRequestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
+		m_thumbnailScopeBuildInProgress = true;
 		if (decision.scopeChanged)
+		{
+			// Cache keys may change when deferred artifact resolution completes,
+			// while presentationKey remains stable. Keep only bindings for the
+			// current folder generation so a late result cannot update an old tile.
+			m_thumbnailItemKeyByPresentationKey.clear();
 			m_thumbnailService.SupersedeQueuedRequestsForGeneration(nextScopeKey);
+		}
 	}
 
 	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	std::unordered_set<std::string> visibleThumbnailKeys;
+	visibleThumbnailKeys.reserve(m_visibleThumbnailItems.size());
+	for (const auto& visibleItem : m_visibleThumbnailItems)
+	{
+		visibleThumbnailKeys.insert(
+			NLS::Editor::Assets::BuildAssetBrowserThumbnailItemKey(
+				visibleItem,
+				nextSize));
+	}
 		const size_t requestBudget = IsAssetBrowserInteractive()
 			? kMaxAssetBrowserInteractiveThumbnailRequestsPerFrame
 			: kMaxAssetBrowserThumbnailRequestsPerFrame;
@@ -7217,7 +8559,9 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 			{
 				const auto key = foundThumbnail->second.imagePath.lexically_normal().generic_string();
 				m_thumbnailTexturesFailedToLoad.erase(key);
-				QueueCachedThumbnailTextureLoad(foundThumbnail->second.imagePath);
+				QueueCachedThumbnailTextureLoad(
+					foundThumbnail->second.imagePath,
+					CachedThumbnailTextureColorSpace(foundThumbnail->second));
 			}
 			std::optional<NLS::Editor::Assets::AssetThumbnailRequest> request;
 			{
@@ -7231,8 +8575,18 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 					m_pendingThumbnailRequestContext);
 			}
 				if (!request)
+				{
+					RecordAssetBrowserThumbnailRequestBuildFailureTelemetry(itemThumbnailKey);
 					continue;
+				}
 				const auto currentRequestCacheKey = NLS::Editor::Assets::BuildAssetThumbnailCacheKey(*request);
+				const auto currentPresentationKey = NLS::Editor::Assets::BuildAssetThumbnailPresentationKey(*request);
+				if (!currentPresentationKey.empty())
+				{
+					auto& itemKeys = m_thumbnailItemKeyByPresentationKey[currentPresentationKey];
+					if (std::find(itemKeys.begin(), itemKeys.end(), itemThumbnailKey) == itemKeys.end())
+						itemKeys.push_back(itemThumbnailKey);
+				}
 				const auto PromoteFreshThumbnailCache = [&](const NLS::Editor::Assets::AssetThumbnailCacheEvaluation& evaluation)
 				{
 					if (evaluation.status == NLS::Editor::Assets::AssetThumbnailCacheStatus::Fresh &&
@@ -7240,31 +8594,57 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 					{
 						NLS::Editor::Assets::AssetThumbnailServiceResult cached;
 						cached.status = NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh;
+						cached.presentationState = NLS::Editor::Assets::ThumbnailPresentationState::Ready;
+						cached.previewQuality = NLS::Editor::Assets::ThumbnailPreviewQuality::Canonical;
+						cached.presentationKey = NLS::Editor::Assets::BuildAssetThumbnailPresentationKey(*request);
+						cached.requestRevision = foundThumbnail != m_thumbnailResultsByItemKey.end()
+							? foundThumbnail->second.requestRevision
+							: request->requestRevision;
+						cached.refreshPending = false;
+						cached.failureRetained = false;
+						cached.requestKind = static_cast<uint8_t>(request->kind);
 						cached.cacheEntry = evaluation.entry;
 						cached.imagePath = evaluation.entry->imagePath;
-						m_thumbnailResultsByItemKey[itemThumbnailKey] = cached;
+						if (foundThumbnail != m_thumbnailResultsByItemKey.end())
+						{
+							cached = NLS::Editor::Assets::PreserveAssetBrowserThumbnailRetainedImage(
+								foundThumbnail->second,
+								cached);
+							foundThumbnail->second = cached;
+						}
+						else
+						{
+							m_thumbnailResultsByItemKey.emplace(itemThumbnailKey, cached);
+						}
 						if (!cached.imagePath.empty())
 						{
 							const auto key = cached.imagePath.lexically_normal().generic_string();
 							m_thumbnailTexturesFailedToLoad.erase(key);
-							QueueCachedThumbnailTextureLoad(cached.imagePath);
+							QueueCachedThumbnailTextureLoad(
+								cached.imagePath,
+								CachedThumbnailTextureColorSpace(request->kind));
 						}
 						return true;
 					}
 					return false;
 				};
-				if (foundThumbnail != m_thumbnailResultsByItemKey.end())
-				{
-					if (foundThumbnail->second.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
-						NLS::Editor::Assets::AssetBrowserThumbnailResultHasDisplayImage(foundThumbnail->second) &&
-						ThumbnailResultMatchesRequestCacheKey(foundThumbnail->second, currentRequestCacheKey))
+			if (foundThumbnail != m_thumbnailResultsByItemKey.end())
+			{
+				if (foundThumbnail->second.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
+					NLS::Editor::Assets::AssetBrowserThumbnailResultHasDisplayImage(foundThumbnail->second) &&
+					ThumbnailResultMatchesRequestCacheKey(foundThumbnail->second, currentRequestCacheKey))
 				{
 					continue;
-					}
-					if (foundThumbnail->second.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
-						ThumbnailResultMatchesRequestCacheKey(foundThumbnail->second, currentRequestCacheKey))
-					{
-						const auto evaluation = NLS::Editor::Assets::EvaluateAssetThumbnailCache(
+				}
+				if (NLS::Editor::Assets::AssetBrowserThumbnailResultNeedsCanonicalRecovery(
+						foundThumbnail->second) &&
+					// A completed writer can finish after deferred artifact
+					// resolution or a freshness revision changed the cache key.
+					// Re-evaluate the current request instead of requiring the old
+					// Pending result to carry the exact same key.
+					!currentRequestCacheKey.empty())
+				{
+					const auto evaluation = NLS::Editor::Assets::EvaluateAssetThumbnailCache(
 							*request,
 							NLS::Editor::Assets::AssetThumbnailCacheIntegrityMode::Fast);
 						if (PromoteFreshThumbnailCache(evaluation))
@@ -7273,7 +8653,9 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 				}
 				{
 					auto prioritizedRequest = *request;
-			prioritizedRequest.priority = NLS::Editor::Assets::ThumbnailRequestPriority::Visible;
+			prioritizedRequest.priority = visibleThumbnailKeys.find(itemThumbnailKey) != visibleThumbnailKeys.end()
+				? NLS::Editor::Assets::ThumbnailRequestPriority::Visible
+				: NLS::Editor::Assets::ThumbnailRequestPriority::Prefetch;
 					if (ShouldBypassAssetBrowserThumbnailService(prioritizedRequest.kind))
 					{
 						const auto evaluation = NLS::Editor::Assets::EvaluateAssetThumbnailCache(
@@ -7288,20 +8670,70 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 					requestPreviewElapsed
 				};
 				thumbnail = m_thumbnailService.RequestAssetPreview(prioritizedRequest);
+				(void)NLS::Editor::Assets::PromoteAssetThumbnailResultFromPresentationIndex(
+					prioritizedRequest,
+					thumbnail);
 			}
-			foundThumbnail = m_thumbnailResultsByItemKey.find(itemThumbnailKey);
-			if (foundThumbnail == m_thumbnailResultsByItemKey.end() ||
-				foundThumbnail->second.status != NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh ||
-				thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh)
+				RecordAssetBrowserThumbnailResultTelemetry(
+					thumbnail,
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeRequestPreview);
+				if (NLS::Editor::Assets::ShouldRetryAssetBrowserThumbnailRequestAfterBackpressure(
+					thumbnail.diagnostic))
+				{
+					// Queue capacity is transient. Keep this item at the head of the
+					// remaining scope so a later frame retries it after the service pump.
+					--m_pendingThumbnailScopeOffset;
+					break;
+				}
+				foundThumbnail = m_thumbnailResultsByItemKey.find(itemThumbnailKey);
+				bool replaceThumbnailResult = foundThumbnail == m_thumbnailResultsByItemKey.end();
+			if (!replaceThumbnailResult)
 			{
-				m_thumbnailResultsByItemKey[itemThumbnailKey] = thumbnail;
+				const auto& existing = foundThumbnail->second;
+				const bool existingHasDisplay =
+					NLS::Editor::Assets::AssetBrowserThumbnailResultHasDisplayImage(existing);
+				const bool incomingHasDisplay =
+					NLS::Editor::Assets::AssetBrowserThumbnailResultHasDisplayImage(thumbnail);
+				const bool existingCanonical =
+					existing.presentationState == NLS::Editor::Assets::ThumbnailPresentationState::Ready &&
+						existing.previewQuality == NLS::Editor::Assets::ThumbnailPreviewQuality::Canonical;
+				const bool incomingCanonical =
+					thumbnail.presentationState == NLS::Editor::Assets::ThumbnailPresentationState::Ready &&
+					thumbnail.previewQuality == NLS::Editor::Assets::ThumbnailPreviewQuality::Canonical;
+				const bool completesSamePresentation =
+					NLS::Editor::Assets::AssetBrowserThumbnailResultCompletesSamePresentation(
+						existing,
+						thumbnail);
+				replaceThumbnailResult =
+					!NLS::Editor::Assets::AssetBrowserThumbnailResultRegressesSamePresentation(
+						existing,
+						thumbnail) &&
+					(!NLS::Editor::Assets::AssetBrowserThumbnailResultIsOlder(existing, thumbnail) ||
+						completesSamePresentation) &&
+					(!existingHasDisplay || incomingHasDisplay || completesSamePresentation) &&
+					(!existingCanonical || incomingCanonical);
+			}
+			if (replaceThumbnailResult)
+			{
+				if (foundThumbnail != m_thumbnailResultsByItemKey.end())
+				{
+					foundThumbnail->second = NLS::Editor::Assets::PreserveAssetBrowserThumbnailRetainedImage(
+						foundThumbnail->second,
+						thumbnail);
+				}
+				else
+				{
+					m_thumbnailResultsByItemKey.emplace(itemThumbnailKey, thumbnail);
+				}
 			}
 			if (thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
 				!thumbnail.imagePath.empty())
 			{
 				const auto key = thumbnail.imagePath.lexically_normal().generic_string();
 				m_thumbnailTexturesFailedToLoad.erase(key);
-				QueueCachedThumbnailTextureLoad(thumbnail.imagePath);
+				QueueCachedThumbnailTextureLoad(
+					thumbnail.imagePath,
+					CachedThumbnailTextureColorSpace(thumbnail));
 			}
 			if (thumbnail.cacheEntry.has_value())
 			{
@@ -7316,7 +8748,8 @@ void Editor::Panels::AssetBrowser::UpdateThumbnailGenerationScope()
 	{
 		m_pendingThumbnailScopeItems.clear();
 		m_pendingThumbnailScopeOffset = 0u;
-		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext();
+		m_pendingThumbnailRequestContext = MakeAssetBrowserThumbnailRequestBuildContext(m_thumbnailFeatureConfig);
+		m_pendingThumbnailRequestContext.residentPrefabPreviewRegistry = m_residentPrefabPreviewRegistry;
 		m_thumbnailScopeBuildInProgress = false;
 	}
 	RecordAssetBrowserArtifactTelemetryStage(
@@ -7465,22 +8898,38 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 {
 	NLS_PROFILE_NAMED_SCOPE("AssetBrowser::DrawProjectGridItemThumbnail");
 	auto* drawList = ImGui::GetWindowDrawList();
-	auto recordDrawPath = [&](const char* drawKind, const AssetBrowserThumbnailDrawOutcome outcome)
+	auto recordDrawPath = [&, itemPath = item.projectRelativePath](
+		const char* drawKind,
+		const AssetBrowserThumbnailDrawOutcome outcome,
+		const bool canonical = false,
+		const std::string_view canonicalIdentity = {})
 	{
 		if (!NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
 			return;
+
+		const std::string telemetryPath = itemPath.empty()
+			? item.absolutePath.lexically_normal().generic_string()
+			: itemPath;
+		if (outcome == AssetBrowserThumbnailDrawOutcome::Thumbnail && canonical)
+			RecordAssetBrowserThumbnailCanonicalDrawTelemetry(
+				canonicalIdentity.empty() ? telemetryPath : canonicalIdentity);
+
 		const int frameCount = ImGui::GetFrameCount();
 		if (frameCount > 0 && frameCount % kAssetBrowserThumbnailDrawOutcomeSamplePeriodFrames != 0)
 			return;
 
-		std::string telemetryPath = item.projectRelativePath.empty()
-			? item.absolutePath.lexically_normal().generic_string()
-			: item.projectRelativePath;
 		(void)drawKind;
 		RecordAssetBrowserThumbnailDrawOutcomeTelemetry(telemetryPath, outcome);
 	};
 	auto drawFallbackBlock = [&]()
 	{
+		if (!NLS::Editor::Assets::CanGenerateAssetBrowserThumbnail(item))
+		{
+			NLS::Editor::Panels::RecordAssetBrowserThumbnailTypeFallbackTelemetry(
+				NLS::Editor::Assets::BuildAssetBrowserThumbnailItemKey(
+					item,
+					AssetBrowserThumbnailRequestSize(m_thumbnailSize)));
+		}
 		const char* iconId = NLS::Editor::Assets::AssetBrowserFallbackIconId(item.type);
 				if (void* textureHandle = ResolveAssetBrowserTextureHandle(
 						EDITOR_CONTEXT(editorResources)->GetTexture(iconId),
@@ -7496,6 +8945,16 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 		const auto color = AssetBrowserItemColor(item.type);
 		drawList->AddRectFilled(iconMin, iconMax, color, compact ? 2.0f : 6.0f);
 		recordDrawPath("|draw=type-fallback", AssetBrowserThumbnailDrawOutcome::TypeFallback);
+	};
+	auto drawResidentPendingBlock = [&]()
+	{
+		// Keep the tile visually stable while scene-owned resources become
+		// drawable. This deliberately emits no fallback telemetry.
+		drawList->AddRectFilled(
+			iconMin,
+			iconMax,
+			IM_COL32(42, 46, 50, compact ? 92 : 120),
+			compact ? 2.0f : 6.0f);
 	};
 
 	if (item.kind == NLS::Editor::Assets::AssetBrowserItemKind::Folder)
@@ -7517,88 +8976,142 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 		NLS::Editor::Assets::BuildAssetBrowserThumbnailItemKey(
 			item,
 			AssetBrowserThumbnailRequestSize(m_thumbnailSize));
+	if (NLS::Editor::Assets::CanGenerateAssetBrowserThumbnail(item))
+	{
+		const auto thumbnailIterator = m_thumbnailResultsByItemKey.find(itemThumbnailKey);
+		RecordAssetBrowserThumbnailPresentationStateTelemetry(
+			itemThumbnailKey,
+			thumbnailIterator == m_thumbnailResultsByItemKey.end()
+				? NLS::Editor::Assets::ThumbnailPresentationState::Loading
+				: thumbnailIterator->second.presentationState,
+			thumbnailIterator == m_thumbnailResultsByItemKey.end()
+				? nullptr
+				: &thumbnailIterator->second);
+	}
 	if (const auto thumbnailIterator = m_thumbnailResultsByItemKey.find(itemThumbnailKey);
 		thumbnailIterator != m_thumbnailResultsByItemKey.end())
 	{
 		const auto& thumbnail = thumbnailIterator->second;
-		if (thumbnail.cacheEntry.has_value() && m_assetThumbnailPool != nullptr)
+		const auto drawPooledThumbnail = [&](
+			const std::string& cacheKey,
+			const uint64_t textureGeneration,
+			const bool canonical,
+			const char* drawKind)
 		{
-			auto [pooledThumbnail, inserted] = m_assetThumbnailsByCacheKey.try_emplace(
-				thumbnail.cacheEntry->cacheKey);
+			if (m_assetThumbnailPool == nullptr || cacheKey.empty())
+				return false;
+			auto [pooledThumbnail, inserted] = m_assetThumbnailsByCacheKey.try_emplace(cacheKey);
 			if (inserted)
 			{
 				pooledThumbnail->second = m_assetThumbnailPool->MakeThumbnail(
-					thumbnail.cacheEntry->cacheKey,
-					thumbnail.gpuTextureGeneration);
+					cacheKey,
+					textureGeneration);
 			}
 			const auto pooledTexture = pooledThumbnail->second.Resolve(
 				m_thumbnailTextureFrameSerial);
-			if (pooledTexture.IsReady())
-			{
-				const auto thumbnailRect = NLS::Editor::Assets::ComputeAssetBrowserThumbnailRect(
-					MakeAssetBrowserRect(iconMin, iconMax),
-					pooledTexture.width,
-					pooledTexture.height);
-				drawList->PushClipRect(iconMin, iconMax, true);
-				const bool flipGpuThumbnailVertically =
-					NLS::Core::ServiceLocator::Contains<UI::UIManager>() &&
-					NLS_SERVICE(UI::UIManager).ShouldFlipPresentedRenderTargetVertically();
-				const ImVec2 gpuThumbnailUv0 = flipGpuThumbnailVertically
-					? kAssetBrowserThumbnailUv0
-					: ImVec2(0.0f, 0.0f);
-				const ImVec2 gpuThumbnailUv1 = flipGpuThumbnailVertically
-					? kAssetBrowserThumbnailUv1
-					: ImVec2(1.0f, 1.0f);
-				drawList->AddImage(
-					pooledTexture.textureId,
-					ToImVec2(thumbnailRect.min),
-					ToImVec2(thumbnailRect.max),
-					gpuThumbnailUv0,
-					gpuThumbnailUv1);
-				drawList->PopClipRect();
-				recordDrawPath("|draw=gpu-pool", AssetBrowserThumbnailDrawOutcome::Thumbnail);
-				return;
-			}
-		}
-		// Keep a previous PNG visible while a renderer-version or freshness change
-		// regenerates the GPU preview. This avoids replacing a usable thumbnail with
-		// a type icon during the asynchronous refresh window.
-		const bool canDisplayCachedThumbnail =
-			thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh ||
-			(thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
-				thumbnail.cacheEntry.has_value() &&
-				!thumbnail.cacheEntry->imagePath.empty());
-		if (canDisplayCachedThumbnail)
+			if (!pooledTexture.IsReady())
+				return false;
+
+			const auto thumbnailRect = NLS::Editor::Assets::ComputeAssetBrowserThumbnailRect(
+				MakeAssetBrowserRect(iconMin, iconMax),
+				pooledTexture.width,
+				pooledTexture.height);
+			drawList->PushClipRect(iconMin, iconMax, true);
+			const bool flipGpuThumbnailVertically =
+				NLS::Core::ServiceLocator::Contains<UI::UIManager>() &&
+				NLS_SERVICE(UI::UIManager).ShouldFlipPresentedRenderTargetVertically();
+			const ImVec2 gpuThumbnailUv0 = flipGpuThumbnailVertically
+				? kAssetBrowserThumbnailUv0
+				: ImVec2(0.0f, 0.0f);
+			const ImVec2 gpuThumbnailUv1 = flipGpuThumbnailVertically
+				? kAssetBrowserThumbnailUv1
+				: ImVec2(1.0f, 1.0f);
+			drawList->AddImage(
+				pooledTexture.textureId,
+				ToImVec2(thumbnailRect.min),
+				ToImVec2(thumbnailRect.max),
+				gpuThumbnailUv0,
+				gpuThumbnailUv1);
+			drawList->PopClipRect();
+			recordDrawPath(
+				drawKind,
+				AssetBrowserThumbnailDrawOutcome::Thumbnail,
+				canonical,
+				itemThumbnailKey);
+			return true;
+		};
+
+		if (thumbnail.cacheEntry.has_value() &&
+			drawPooledThumbnail(
+				thumbnail.cacheEntry->cacheKey,
+				thumbnail.gpuTextureGeneration,
+				thumbnail.presentationState == NLS::Editor::Assets::ThumbnailPresentationState::Ready &&
+					thumbnail.previewQuality == NLS::Editor::Assets::ThumbnailPreviewQuality::Canonical,
+				"|draw=gpu-pool"))
 		{
-			const auto& cachedImagePath =
-				thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh
-					? thumbnail.imagePath
-					: thumbnail.cacheEntry->imagePath;
-			if (const auto textureInfo = ResolveCachedThumbnailTextureHandle(
-					cachedImagePath,
-					true);
-				textureInfo.textureHandle != nullptr)
-			{
-				const auto thumbnailRect = NLS::Editor::Assets::ComputeAssetBrowserThumbnailRect(
-					MakeAssetBrowserRect(iconMin, iconMax),
-					textureInfo.width,
-					textureInfo.height);
-				drawList->PushClipRect(iconMin, iconMax, true);
-					drawList->AddImage(
-						textureInfo.textureHandle,
-						ToImVec2(thumbnailRect.min),
-						ToImVec2(thumbnailRect.max),
-						kAssetBrowserThumbnailUv0,
-						kAssetBrowserThumbnailUv1);
-					drawList->PopClipRect();
-					recordDrawPath(
-					thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh
-						? "|draw=thumbnail"
-						: "|draw=thumbnail-stale",
-					AssetBrowserThumbnailDrawOutcome::Thumbnail);
-					return;
-				}
-			}
+			return;
+		}
+		// A newly published PNG can spend several frames in decode/upload. Try the
+		// previous visible image before allowing the tile to fall back to its icon.
+		const auto cachedImageCandidates = NLS::Editor::Assets::BuildAssetBrowserThumbnailImageCandidates(
+			thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh
+				? thumbnail.imagePath
+				: std::filesystem::path {},
+			thumbnail.retainedImage.has_value()
+				? thumbnail.retainedImage->imagePath
+				: std::filesystem::path {},
+			thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Pending &&
+				thumbnail.cacheEntry.has_value()
+				? thumbnail.cacheEntry->imagePath
+				: std::filesystem::path {});
+		for (const auto& cachedImagePath : cachedImageCandidates)
+		{
+			const auto textureInfo = ResolveCachedThumbnailTextureHandle(
+				cachedImagePath,
+				true,
+				CachedThumbnailTextureColorSpace(thumbnail));
+			if (textureInfo.textureHandle == nullptr)
+				continue;
+
+			const bool isCanonicalCachedThumbnail =
+				thumbnail.status == NLS::Editor::Assets::AssetThumbnailServiceStatus::Fresh &&
+				cachedImagePath == thumbnail.imagePath;
+			const auto thumbnailRect = NLS::Editor::Assets::ComputeAssetBrowserThumbnailRect(
+				MakeAssetBrowserRect(iconMin, iconMax),
+				textureInfo.width,
+				textureInfo.height);
+			drawList->PushClipRect(iconMin, iconMax, true);
+			drawList->AddImage(
+				textureInfo.textureHandle,
+				ToImVec2(thumbnailRect.min),
+				ToImVec2(thumbnailRect.max),
+				ImVec2(textureInfo.uv.u0, textureInfo.uv.v0),
+				ImVec2(textureInfo.uv.u1, textureInfo.uv.v1));
+			drawList->PopClipRect();
+			recordDrawPath(
+				isCanonicalCachedThumbnail
+					? "|draw=thumbnail"
+					: "|draw=thumbnail-stale",
+				AssetBrowserThumbnailDrawOutcome::Thumbnail,
+				isCanonicalCachedThumbnail,
+				itemThumbnailKey);
+			return;
+		}
+		if (thumbnail.retainedGpuPresentation.has_value() &&
+			thumbnail.retainedGpuPresentation->IsValid() &&
+			drawPooledThumbnail(
+				thumbnail.retainedGpuPresentation->cacheKey,
+				thumbnail.retainedGpuPresentation->textureGeneration,
+				false,
+				"|draw=gpu-pool-retained"))
+		{
+			return;
+		}
+		if (ShouldHoldResidentPrefabThumbnailFallback(item, &thumbnail))
+		{
+			drawResidentPendingBlock();
+			return;
+		}
 
 		const auto fallbackIconId =
 			NLS::Editor::Assets::ResolveAssetBrowserDisplayFallbackIconId(
@@ -7623,6 +9136,11 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 					return;
 				}
 			}
+	}
+	else if (ShouldHoldResidentPrefabThumbnailFallback(item, nullptr))
+	{
+		drawResidentPendingBlock();
+		return;
 	}
 
 	drawFallbackBlock();

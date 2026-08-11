@@ -25,6 +25,8 @@ struct LargeSceneSettings;
 
 namespace NLS::Editor::Assets
 {
+class ResidentPrefabPreviewRegistry;
+
 struct ExternalObjectRemap
 {
     std::string sourceObjectKey;
@@ -130,6 +132,12 @@ public:
     explicit AssetImporterFacade(std::vector<std::filesystem::path> roots);
     explicit AssetImporterFacade(std::vector<EditorAssetRoot> roots);
 
+    void SetResidentPrefabPreviewRegistry(
+        std::shared_ptr<ResidentPrefabPreviewRegistry> registry)
+    {
+        m_residentPrefabPreviewRegistry = std::move(registry);
+    }
+
     bool Refresh();
     std::optional<ImporterRecord> GetAtPath(const std::string& assetPath) const;
     bool SetSerializedSetting(
@@ -185,6 +193,7 @@ private:
     std::map<std::string, NLS::Core::Assets::AssetId> m_idByEditorPath;
     std::vector<std::string> m_dirtyAssets;
     std::vector<std::string> m_queuedReimports;
+    std::shared_ptr<ResidentPrefabPreviewRegistry> m_residentPrefabPreviewRegistry;
     mutable std::mutex m_editorImportBudgetMutex;
     std::optional<EditorImportBudgetSnapshot> m_editorImportBudget;
 };

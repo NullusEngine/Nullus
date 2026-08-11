@@ -718,10 +718,23 @@ void UIManager::Render()
             startupStageBegin = now;
         };
 
+    const auto accumulateStageNs =
+        [](uint64_t& total, uint64_t& maxValue, const std::chrono::steady_clock::time_point stageBegin)
+        {
+            const auto durationNs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - stageBegin).count());
+            total += durationNs;
+            maxValue = std::max(maxValue, durationNs);
+        };
+
     m_isRenderingFrame = true;
+    ++m_renderStageTotals.sampleCount;
     {
         NLS_PROFILE_NAMED_SCOPE("UIManager::BeginFrame");
+        const auto stageBegin = std::chrono::steady_clock::now();
         BeginFrame();
+        accumulateStageNs(m_renderStageTotals.beginFrameNs, m_renderStageTotals.maxBeginFrameNs, stageBegin);
     }
     logStartupRenderStage("BeginFrame");
     if (!m_inFrame)
@@ -731,7 +744,9 @@ void UIManager::Render()
     }
     {
         NLS_PROFILE_NAMED_SCOPE("UIManager::DrawCanvas");
+        const auto stageBegin = std::chrono::steady_clock::now();
         m_currentCanvas->Draw();
+        accumulateStageNs(m_renderStageTotals.drawCanvasNs, m_renderStageTotals.maxDrawCanvasNs, stageBegin);
     }
     logStartupRenderStage("DrawCanvas");
     ReleaseUnrequestedInfiniteDragCursor();
@@ -739,14 +754,21 @@ void UIManager::Render()
 
     {
         NLS_PROFILE_NAMED_SCOPE("ImGui::Render");
+        const auto stageBegin = std::chrono::steady_clock::now();
         ImGui::Render();
+        accumulateStageNs(m_renderStageTotals.imguiRenderNs, m_renderStageTotals.maxImguiRenderNs, stageBegin);
     }
     logStartupRenderStage("ImGuiRender");
 
     if (ShouldPublishUiSnapshotToFrameGraph())
     {
         NLS_PROFILE_NAMED_SCOPE("UIManager::PublishUiDrawDataSnapshot");
+        const auto stageBegin = std::chrono::steady_clock::now();
         PublishCurrentUiSnapshotToFrameGraph();
+        accumulateStageNs(
+            m_renderStageTotals.publishSnapshotNs,
+            m_renderStageTotals.maxPublishSnapshotNs,
+            stageBegin);
         logStartupRenderStage("PublishUiDrawDataSnapshot");
     }
     else

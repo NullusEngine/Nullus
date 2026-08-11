@@ -45,7 +45,7 @@ namespace NLS::Game::Launch
 				}
 
 				if (const auto restriction =
-					Render::Settings::GetPhase1BackendRestrictionMessage(parsed.backendOverride.value(), "Game CLI");
+					Render::Settings::GetPhase1BackendSelectionRestrictionMessage(parsed.backendOverride.value(), "Game CLI");
 					restriction.has_value())
 				{
 					std::fprintf(stderr, "[Game main] %s\n", restriction->c_str());

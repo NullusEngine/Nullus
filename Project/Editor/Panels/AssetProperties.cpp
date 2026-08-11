@@ -1022,12 +1022,19 @@ void Editor::Panels::AssetProperties::Reimport()
 
     const auto projectRoot = ProjectRootFromAssetsPath(EDITOR_EXEC(GetContext()).projectAssetsPath);
     auto& tracker = EDITOR_EXEC(GetContext()).importProgressTracker;
+    auto residentPrefabPreviewRegistry = EDITOR_EXEC(GetContext()).residentPrefabPreviewRegistry;
     const auto resourcePath = m_resource;
 
-    const auto queued = EDITOR_EXEC(TrackBackgroundTask([projectRoot, assetPath, resourcePath, &tracker]
+    const auto queued = EDITOR_EXEC(TrackBackgroundTask([
+        projectRoot,
+        assetPath,
+        resourcePath,
+        residentPrefabPreviewRegistry = std::move(residentPrefabPreviewRegistry),
+        &tracker]
     {
         NLS::Editor::Assets::AssetImporterFacade importer(
             NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+        importer.SetResidentPrefabPreviewRegistry(residentPrefabPreviewRegistry);
         const auto imported = importer.SaveAndReimport(assetPath, tracker);
         EDITOR_EXEC(DelayAction([assetPath, resourcePath, imported]
         {

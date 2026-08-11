@@ -14,7 +14,8 @@ param(
     [string]$BuildDirectory = 'build-editor-camera-perf',
     [int]$Trials = 3,
     [int]$WarmupFrames = 30,
-    [int]$MeasuredFrames = 300
+    [int]$MeasuredFrames = 300,
+    [int]$SettleFrames = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,6 +23,7 @@ $ErrorActionPreference = 'Stop'
 if ($Trials -lt 1) { throw 'Trials must be greater than zero.' }
 if ($WarmupFrames -lt 1) { throw 'WarmupFrames must be greater than zero.' }
 if ($MeasuredFrames -lt 1) { throw 'MeasuredFrames must be greater than zero.' }
+if ($SettleFrames -lt 0) { throw 'SettleFrames cannot be negative.' }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $projectFullPath = (Resolve-Path -LiteralPath $ProjectPath).Path
@@ -52,6 +54,7 @@ for ($trial = 1; $trial -le $Trials; ++$trial) {
         '--editor-camera-performance-output', $outputPath,
         '--editor-camera-performance-warmup-frames', $WarmupFrames,
         '--editor-camera-performance-frames', $MeasuredFrames,
+        '--editor-camera-performance-settle-frames', $SettleFrames,
         $projectFullPath
     )
 
@@ -66,6 +69,9 @@ for ($trial = 1; $trial -le $Trials; ++$trial) {
     $summary = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json
     if ($summary.measuredFrameCount -ne $MeasuredFrames) {
         throw "Editor benchmark trial $trial measured $($summary.measuredFrameCount) frames; expected $MeasuredFrames."
+    }
+    if ($summary.settleFrameCount -ne $SettleFrames) {
+        throw "Editor benchmark trial $trial settled $($summary.settleFrameCount) frames; expected $SettleFrames."
     }
     if ($summary.backend -ne 'DX12' -and $summary.backend -ne 'dx12') {
         throw "Editor benchmark trial $trial used unexpected backend: $($summary.backend)"

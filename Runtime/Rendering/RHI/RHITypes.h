@@ -363,6 +363,7 @@ namespace NLS::Render::RHI
 		ConservativeOcclusion,
 		AsyncReadback,
 		UIOverlayFrameGraph,
+		UITextureAtlasRegionUpload,
 		Count
 	};
 

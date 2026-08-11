@@ -1794,6 +1794,11 @@ void Editor::Panels::SceneView::SetValidationCameraMotionActive(const bool activ
     m_validationCameraMotionActive = active;
 }
 
+bool Editor::Panels::SceneView::IsCameraNavigationActive() const
+{
+    return IsCameraControlActive();
+}
+
 bool Editor::Panels::SceneView::IsCameraControlActive() const
 {
     return m_validationCameraMotionActive || m_cameraController.IsCameraControlActive();

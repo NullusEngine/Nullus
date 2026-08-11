@@ -244,6 +244,7 @@ function(nls_copy_shared_runtime_to_target TARGET_NAME)
                 "-DSTAGE_DIR=${NLS_RUNTIME_OUTPUT_PATH}"
                 "-DDEST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>"
                 "-DCONFIG=$<CONFIG>"
+                "-DPRESERVE_FILE=$<TARGET_FILE_NAME:${TARGET_NAME}>"
                 "-DEXPECTED_MANIFEST=${CMAKE_BINARY_DIR}/runtime-manifests/${TARGET_NAME}-$<CONFIG>.txt"
                 -P "${NLS_ROOT_DIR}/Tools/CMake/DeployRuntime.cmake"
             VERBATIM

@@ -3,6 +3,7 @@
 #include "Assets/AssetDiagnostics.h"
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
+#include "Assets/ExternalAssetImporter.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/ImportProgressTracker.h"
 #include "Assets/SourceAssetDatabase.h"
@@ -22,6 +23,8 @@
 
 namespace NLS::Editor::Assets
 {
+class ResidentPrefabPreviewRegistry;
+
 struct AssetDatabaseRecord
 {
     NLS::Core::Assets::AssetId assetId;
@@ -131,6 +134,12 @@ public:
         AssetDatabaseAccessMode mode);
     static std::shared_ptr<const AssetDatabaseFacade> CreateReadOnlySnapshot(const AssetDatabaseFacade& other);
 
+    void SetResidentPrefabPreviewRegistry(
+        std::shared_ptr<ResidentPrefabPreviewRegistry> registry)
+    {
+        m_residentPrefabPreviewRegistry = std::move(registry);
+    }
+
     AssetDatabaseFacade(const AssetDatabaseFacade& other) = delete;
     AssetDatabaseFacade& operator=(const AssetDatabaseFacade& other) = delete;
     AssetDatabaseFacade(AssetDatabaseFacade&& other) = delete;
@@ -161,6 +170,11 @@ public:
     bool ImportAssetFromCurrentDatabase(
         const std::string& assetPath,
         ImportProgressTracker& progressTracker,
+        size_t batchTotalAssets);
+    bool ImportAssetsWithParallelModelPreparation(
+        std::span<const std::string> assetPaths,
+        ImportProgressTracker& progressTracker,
+        bool forceReimport,
         size_t batchTotalAssets);
     void BeginArtifactDatabaseFlushBatch();
     bool EndArtifactDatabaseFlushBatch();
@@ -195,7 +209,9 @@ public:
     void AddArtifactManifest(NLS::Core::Assets::ArtifactManifest manifest);
     std::optional<NLS::Core::Assets::ArtifactManifest> GetArtifactManifestForAssetPath(
         const std::string& assetPath) const;
-    bool IsArtifactManifestCurrentForAssetPath(const std::string& assetPath) const;
+    bool IsArtifactManifestCurrentForAssetPath(
+        const std::string& assetPath,
+        bool startupCacheValidatedArtifacts = false) const;
     bool IsReadOnlyAssetPath(const std::string& assetPath) const;
     bool IsArtifactManifestKnownCurrentForAssetPath(const std::string& assetPath) const;
     std::vector<std::string> GetKnownCurrentArtifactManifestAssetPaths() const;
@@ -247,6 +263,17 @@ public:
 private:
     using ArtifactManifestMap = EditorArtifactManifestMap;
 
+    struct PendingImportedPrefabPreviewRegistration
+    {
+        std::filesystem::path projectRoot;
+        NLS::Core::Assets::AssetId assetId;
+        std::string sourceAssetPath;
+        std::string prefabSubAssetKey;
+        std::string artifactPath;
+        std::shared_ptr<const PreviewRenderableSnapshot> snapshot;
+        std::vector<PreparedPrefabPreviewMeshPayload> meshPayloads;
+    };
+
     std::filesystem::path ResolveAssetPath(const std::string& assetPath) const;
     std::string ToEditorAssetPath(const std::filesystem::path& absolutePath) const;
     const NLS::Core::Assets::SourceAssetRecord* FindRecordByEditorAssetPath(const std::string& assetPath) const;
@@ -259,7 +286,16 @@ private:
         const std::string& assetPath,
         ImportProgressTracker* progressTracker = nullptr,
         ImportJobId existingJob = {},
-        bool refreshDatabase = true);
+        bool refreshDatabase = true,
+        ExternalModelImportResult* preparedModelImport = nullptr);
+    bool BuildExternalModelImportRequest(
+        const NLS::Core::Assets::SourceAssetRecord& record,
+        const NLS::Core::Assets::AssetMeta& meta,
+        const std::filesystem::path& absolutePath,
+        ImportProgressTracker* progressTracker,
+        ImportJobId& job,
+        std::optional<NLS::Core::Assets::ArtifactManifest>& previousManifest,
+        ExternalModelImportRequest& request);
     std::filesystem::path ResolveArtifactPathForRecord(
         const NLS::Core::Assets::SourceAssetRecord& record,
         const std::string& artifactPath) const;
@@ -274,7 +310,9 @@ private:
         const NLS::Core::Assets::SourceAssetRecord& record) const;
     void RefreshKnownCurrentArtifactManifestSnapshot();
     void UpdateKnownCurrentArtifactManifestForAssetPath(const std::string& assetPath);
-    bool IsArtifactManifestCurrentForAssetPathUncached(const std::string& assetPath) const;
+    bool IsArtifactManifestCurrentForAssetPathUncached(
+        const std::string& assetPath,
+        bool startupCacheValidatedArtifacts) const;
     std::optional<std::string> ComputeModelTextureMappingDependencyFingerprint(
         const std::string& dependencyValue,
         const std::string& targetPlatform) const;
@@ -347,6 +385,7 @@ private:
 
     std::vector<EditorAssetRoot> m_roots;
     AssetDatabaseAccessMode m_mode = AssetDatabaseAccessMode::Editor;
+    std::shared_ptr<ResidentPrefabPreviewRegistry> m_residentPrefabPreviewRegistry;
     NLS::Core::Assets::SourceAssetDatabase m_sourceDatabase;
     NLS::Core::Assets::AssetDiagnostics m_diagnostics;
     std::unordered_map<std::string, NLS::Core::Assets::AssetId> m_idByEditorPath;
@@ -362,6 +401,8 @@ private:
     mutable std::shared_ptr<const std::vector<ObjectReferencePickerAssetSnapshot>> m_objectReferencePickerAssetSnapshots;
     mutable std::mutex m_artifactDatabaseCacheMutex;
     std::vector<std::string> m_queuedImports;
+    std::vector<PendingImportedPrefabPreviewRegistration>
+        m_pendingImportedPrefabPreviewRegistrations;
     bool m_assetEditing = false;
     size_t m_artifactDatabaseFlushBatchDepth = 0u;
     bool m_knownCurrentArtifactManifestSnapshotDirty = false;
@@ -379,5 +420,7 @@ void ResetAssetDatabaseArtifactManifestCurrentCheckCountForTesting();
 size_t GetAssetDatabaseArtifactManifestCurrentCheckCountForTesting();
 void ResetAssetDatabaseSourceFileContentHashReadCountForTesting();
 size_t GetAssetDatabaseSourceFileContentHashReadCountForTesting();
+void ResetAssetDatabasePrefabArtifactLoadCountForTesting();
+size_t GetAssetDatabasePrefabArtifactLoadCountForTesting();
 #endif
 }

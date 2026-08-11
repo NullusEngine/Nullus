@@ -52,6 +52,8 @@
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetPathUtils.h"
 #include "Assets/ImportedPrefabRendererDependencyTemplates.h"
+#include "Assets/AssetThumbnailService.h"
+#include "Assets/PreviewRenderableSnapshot.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Assets/PrefabUtilityFacade.h"
 #include "Assets/SceneRestorePrefabArtifactLoader.h"
@@ -453,6 +455,8 @@ struct RendererResourceResolutionState
     std::unordered_map<std::string, std::shared_ptr<MeshArtifactLoadState>> meshLoadsByPath;
     std::unordered_set<std::string> materialLoadsByPath;
     std::unordered_set<std::string> textureLoadsByPath;
+    std::vector<std::string> materialPrewarmPaths;
+    size_t nextMaterialPrewarmPath = 0u;
     std::mutex asyncLoadsMutex;
     mutable std::mutex lifecycleMutex;
     std::atomic_bool cancelled = false;
@@ -464,19 +468,27 @@ struct RendererResourceResolutionState
     std::shared_ptr<struct RendererResourceResolutionStats> stats;
     size_t completedTasks = 0u;
     size_t totalTasks = 0u;
+    std::chrono::steady_clock::time_point lastResidentLiveResourcePublishAttempt;
     bool rootRenderingSuppressedUntilRendererResourcesReady = false;
     bool keepRootRenderingSuppressedOnFailure = false;
     bool allowProgressiveRevealBeforeAllResourcesReady = false;
     bool shareSceneLoadFrameBudget = false;
     bool shareMeshArtifactLoads = false;
+    bool prioritizeMeshArtifactLoadsUntilSaturated = false;
     NLS::Editor::Core::PrefabRendererResourceStreamingBudget streamingBudget =
         NLS::Editor::Core::GetSceneLoadPrefabRendererResourceStreamingBudget();
     bool renderContentChangedThisStep = false;
     std::atomic_bool completed = false;
     std::atomic_size_t revealedObjectCount = 0u;
+    // A startup fail-open leaves the resource resolver alive so it can finish
+    // in the background, but it must no longer block unrelated thumbnail work.
+    std::atomic_bool degradedOpen = false;
+    bool lastSceneLoadFrameBudgetExpiredAtEntry = false;
     std::chrono::steady_clock::time_point lastSceneLoadDiagnosticLogTime {};
     size_t lastSceneLoadDiagnosticCompletedTasks = 0u;
     size_t lastSceneLoadDiagnosticRevealedObjects = 0u;
+    std::string lastMeshBindPendingPath;
+    std::string lastMeshBindPendingReason;
 };
 
 struct RendererResourceResolutionDiagnosticSnapshot
@@ -492,9 +504,18 @@ struct RendererResourceResolutionDiagnosticSnapshot
     size_t meshLoadsRejected = 0u;
     size_t meshLoadsSkipped = 0u;
     size_t revealedObjectCount = 0u;
+    size_t trackedMaterialPathCount = 0u;
+    size_t trackedTexturePathCount = 0u;
     NLS::Core::ResourceManagement::AsyncArtifactRequestDiagnostics materialRequests;
     NLS::Core::ResourceManagement::AsyncArtifactRequestDiagnostics textureRequests;
+    std::string inFlightMeshStateSummary;
+    std::string lastMeshBindPendingPath;
+    std::string lastMeshBindPendingReason;
 };
+
+size_t CountTrackedRendererResourcePaths(
+    RendererResourceResolutionState& state,
+    bool textures);
 
 void AccumulateRendererResourceResolutionTaskDiagnostics(
     RendererResourceResolutionDiagnosticSnapshot& diagnostics,
@@ -521,10 +542,46 @@ RendererResourceResolutionDiagnosticSnapshot BuildRendererResourceResolutionDiag
 {
     RendererResourceResolutionDiagnosticSnapshot diagnostics;
     diagnostics.revealedObjectCount = state.revealedObjectCount.load(std::memory_order_acquire);
+    diagnostics.trackedMaterialPathCount = CountTrackedRendererResourcePaths(state, false);
+    diagnostics.trackedTexturePathCount = CountTrackedRendererResourcePaths(state, true);
     for (const auto& task : state.remainingTasks)
         AccumulateRendererResourceResolutionTaskDiagnostics(diagnostics, task, false);
     for (const auto& task : state.inFlightTasks)
         AccumulateRendererResourceResolutionTaskDiagnostics(diagnostics, task, true);
+
+    size_t summarizedMeshTasks = 0u;
+    std::ostringstream meshStates;
+    for (const auto& task : state.inFlightTasks)
+    {
+        if (task.kind != RendererResourceResolutionTaskKind::Mesh ||
+            summarizedMeshTasks >= 8u)
+        {
+            continue;
+        }
+        if (summarizedMeshTasks != 0u)
+            meshStates << ';';
+        meshStates << task.modelPath << "{";
+        if (!task.meshLoad)
+        {
+            meshStates << "load=null}";
+            ++summarizedMeshTasks;
+            continue;
+        }
+        std::lock_guard meshLoadLock(task.meshLoad->mutex);
+        meshStates
+            << "accepted=" << (task.meshLoad->accepted ? 1 : 0)
+            << ",completed=" << (task.meshLoad->completed ? 1 : 0)
+            << ",missing=" << (task.meshLoad->artifactMissing ? 1 : 0)
+            << ",failed=" << (task.meshLoad->failed ? 1 : 0)
+            << ",data=" << (task.meshLoad->data != nullptr ? 1 : 0)
+            << ",transient=" << (task.meshLoad->transientMesh != nullptr ? 1 : 0)
+            << ",retry=" << task.meshLoad->retryCount
+            << '}';
+        ++summarizedMeshTasks;
+    }
+    diagnostics.inFlightMeshStateSummary = meshStates.str();
+    diagnostics.lastMeshBindPendingPath = state.lastMeshBindPendingPath;
+    diagnostics.lastMeshBindPendingReason = state.lastMeshBindPendingReason;
 
     std::unique_lock loadsLock(state.asyncLoadsMutex, std::try_to_lock);
     if (!loadsLock.owns_lock())
@@ -577,6 +634,8 @@ RendererResourceResolutionDiagnosticSnapshot BuildRendererResourceResolutionProg
 {
     RendererResourceResolutionDiagnosticSnapshot diagnostics;
     diagnostics.revealedObjectCount = state.revealedObjectCount.load(std::memory_order_acquire);
+    diagnostics.trackedMaterialPathCount = CountTrackedRendererResourcePaths(state, false);
+    diagnostics.trackedTexturePathCount = CountTrackedRendererResourcePaths(state, true);
     for (const auto& task : state.remainingTasks)
         AccumulateRendererResourceResolutionTaskDiagnostics(diagnostics, task, false);
     for (const auto& task : state.inFlightTasks)
@@ -668,6 +727,20 @@ void LogSceneLoadRendererResourceResolutionDiagnostics(
             << " meshLoadsFailed=" << diagnostics.meshLoadsFailed
             << " meshLoadsRejected=" << diagnostics.meshLoadsRejected
             << " meshLoadsSkipped=" << diagnostics.meshLoadsSkipped;
+        if (!diagnostics.inFlightMeshStateSummary.empty())
+            message << " inFlightMeshStates=" << diagnostics.inFlightMeshStateSummary;
+        if (!diagnostics.lastMeshBindPendingReason.empty())
+        {
+            message << " lastMeshBindPending=" << diagnostics.lastMeshBindPendingReason;
+            if (!diagnostics.lastMeshBindPendingPath.empty())
+                message << "(" << diagnostics.lastMeshBindPendingPath << ")";
+        }
+        message << " budgetExpiredAtEntry="
+            << (state.lastSceneLoadFrameBudgetExpiredAtEntry ? 1 : 0);
+        message << " trackedMaterialPaths="
+            << diagnostics.trackedMaterialPathCount
+            << " trackedTexturePaths="
+            << diagnostics.trackedTexturePathCount;
         AppendAsyncArtifactRequestDiagnostics(message, "globalMaterial", diagnostics.materialRequests);
         AppendAsyncArtifactRequestDiagnostics(message, "globalTexture", diagnostics.textureRequests);
     }
@@ -708,6 +781,8 @@ struct RendererResourceResolutionStats
     size_t boundMaterialSlots = 0u;
     size_t unresolvedMaterialSlots = 0u;
     size_t failedMaterialSlots = 0u;
+    size_t prewarmedMaterialPaths = 0u;
+    size_t prewarmedTexturePaths = 0u;
 };
 
 struct RendererResourceResolutionTextureReadinessSnapshot
@@ -985,14 +1060,14 @@ void PromotePreviewResourceHandoffForCommit(
     {
         auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
         for (const auto& path : handoff.prewarm.materialLoadsByPath)
-            materialManager.RequestAsyncArtifact(path, false);
+            materialManager.RequestAsyncArtifactForPreview(path, false);
     }
 
     if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
     {
         auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
         for (const auto& path : handoff.prewarm.textureLoadsByPath)
-            textureManager.RequestAsyncArtifact(path, false);
+            textureManager.RequestAsyncArtifactForPreview(path, false);
     }
 }
 
@@ -1176,11 +1251,17 @@ bool ImportCopiedAssetThroughDatabase(
     auto& tracker = NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().GetContext().importProgressTracker;
     const auto normalizedAssetPath = ToGenericPath(assetPath);
     auto& actions = NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>();
+    auto residentPrefabPreviewRegistry = actions.GetContext().residentPrefabPreviewRegistry;
     const bool accepted = actions.TrackBackgroundTask(
-        [projectRoot, normalizedAssetPath, &tracker]
+        [
+            projectRoot,
+            normalizedAssetPath,
+            residentPrefabPreviewRegistry = std::move(residentPrefabPreviewRegistry),
+            &tracker]
         {
             NLS::Editor::Assets::AssetDatabaseFacade database(
                 NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+            database.SetResidentPrefabPreviewRegistry(residentPrefabPreviewRegistry);
             NLS::Editor::Assets::AssetPreimportScheduler scheduler;
             scheduler.Run(
                 database,
@@ -1482,10 +1563,20 @@ bool HasResolvedMaterialBindings(NLS::Engine::Components::MeshRenderer& meshRend
     if (paths.empty())
         return true;
 
+    const auto references = meshRenderer.GetMaterialReferences();
     for (size_t index = 0u; index < paths.size(); ++index)
     {
         if (paths[index].empty())
             continue;
+
+        if (index < references.size())
+        {
+            if (auto* referencedMaterial = references[index].Get();
+                referencedMaterial != nullptr && referencedMaterial->IsValid())
+            {
+                continue;
+            }
+        }
 
         const auto* material = meshRenderer.GetMaterialAtIndex(static_cast<uint32_t>(index));
         if (!material ||
@@ -1773,11 +1864,31 @@ bool MaterialTextureParameterMatchesResourcePath(
         return false;
     }
 
-    const auto* boundTexture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
+    auto* boundTexture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
+    // A scene-restored material can already own the exact texture pointer
+    // while the texture manager index is still catching up. Treat that
+    // pointer as authoritative for the live instance; the manager lookup is
+    // only the fallback for path-only material references.
+    if (boundTexture != nullptr && boundTexture->GetTextureHandle() != nullptr)
+    {
+        return true;
+    }
     const auto* currentTexture = FindCachedTextureByEquivalentPath(textureManager, texturePath);
     return currentTexture != nullptr &&
         currentTexture->GetTextureHandle() != nullptr &&
         boundTexture == currentTexture;
+}
+
+NLS::Render::Resources::Texture2D* FindBoundMaterialTexture(
+    const NLS::Render::Resources::Material& material,
+    const std::string& uniformName)
+{
+    const auto* parameter = material.GetParameterBlock().TryGet(uniformName);
+    if (parameter == nullptr ||
+        parameter->type() != typeid(NLS::Render::Resources::Texture2D*))
+        return nullptr;
+    auto* boundTexture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
+    return boundTexture;
 }
 
 size_t CountPendingTrackedRendererResourceTextureLoads(RendererResourceResolutionState& state)
@@ -2126,13 +2237,65 @@ void RestoreRendererResourceResolutionRootVisibility(RendererResourceResolutionS
     state.rootRenderingSuppressedUntilRendererResourcesReady = false;
 }
 
+void PublishResidentPrefabPreviewFromLiveInstance(
+    NLS::Editor::Core::EditorActions& actions,
+    const NLS::Editor::Assets::PrefabInstanceRecord& instance)
+{
+    auto& context = actions.GetContext();
+    const auto* sourcePrefab = instance.SharedSourcePrefab();
+    if (context.residentPrefabPreviewRegistry == nullptr ||
+        sourcePrefab == nullptr || instance.sourceByInstanceObject.empty())
+    {
+        return;
+    }
+
+    const auto loadedKey =
+        NLS::Editor::Assets::TryGetImportedPrefabLoadKeyForArtifact(*sourcePrefab);
+    const auto sourceAssetPath = loadedKey.has_value()
+        ? loadedKey->source.sourceAssetPath
+        : std::string {};
+    const auto artifactPath = loadedKey.has_value()
+        ? loadedKey->prefabArtifactPath
+        : std::string {};
+    const auto runtimeCacheIdentity = loadedKey.has_value()
+        ? loadedKey->runtimeCacheIdentity
+        : std::string {};
+
+    if (auto sceneLease = context.residentPrefabPreviewRegistry->EnsureLivePrefabSnapshotForScene(
+            std::filesystem::path(context.projectPath),
+            instance.prefabAssetId,
+            sourceAssetPath,
+            instance.prefabSubAssetKey,
+            artifactPath,
+            runtimeCacheIdentity,
+            *sourcePrefab,
+            instance.sourceByInstanceObject,
+            context.meshManager,
+            context.materialManager,
+            &context.textureManager,
+            context.resourceLifetimeRegistry);
+        sceneLease.has_value())
+    {
+        context.sceneResidentPrefabPreviewLeases.push_back(std::move(*sceneLease));
+    }
+}
+
 void MarkRendererResourceResolutionSucceeded(
     NLS::Editor::Core::EditorActions& actions,
     NLS::Engine::GameObject& instanceRoot,
     const NLS::Core::Assets::AssetId prefabAssetId)
 {
-    actions.GetContext().prefabInstanceRegistry.MarkInstanceResourceFailure(instanceRoot, false);
-    actions.GetContext().prefabInstanceRegistry.MarkInstancePendingResources(instanceRoot, false);
+    auto& context = actions.GetContext();
+    if (context.residentPrefabPreviewRegistry != nullptr)
+    {
+        if (const auto* instance = context.prefabInstanceRegistry.FindRootInstance(instanceRoot);
+            instance != nullptr && instance->SharedSourcePrefab() != nullptr)
+        {
+            PublishResidentPrefabPreviewFromLiveInstance(actions, *instance);
+        }
+    }
+    context.prefabInstanceRegistry.MarkInstanceResourceFailure(instanceRoot, false);
+    context.prefabInstanceRegistry.MarkInstancePendingResources(instanceRoot, false);
     RefreshPrefabPendingResourcePresentation(actions, prefabAssetId);
 }
 
@@ -2332,6 +2495,226 @@ bool TrackRendererResourceAsyncInterest(
     return shouldRequest;
 }
 
+// The preview handoff is a snapshot taken before the live instance starts
+// resolving its renderer dependencies.  Tasks can discover additional
+// material aliases after that handoff, so the manager pump must refresh its
+// tracked set from the current task queues instead of relying on the initial
+// snapshot forever.
+void RefreshTrackedRendererResourceMaterialPaths(
+    RendererResourceResolutionState& state)
+{
+    std::lock_guard lock(state.asyncLoadsMutex);
+    const auto collect = [&state](const std::deque<RendererResourceResolutionTask>& tasks)
+    {
+        for (const auto& task : tasks)
+        {
+            if (task.kind != RendererResourceResolutionTaskKind::Material)
+                continue;
+            for (const auto& path : task.materialPaths)
+            {
+                if (!path.empty())
+                    state.materialLoadsByPath.insert(path);
+            }
+        }
+    };
+    collect(state.remainingTasks);
+    collect(state.inFlightTasks);
+}
+
+size_t CountTrackedRendererResourcePaths(
+    RendererResourceResolutionState& state,
+    const bool textures)
+{
+    std::lock_guard lock(state.asyncLoadsMutex);
+    return textures
+        ? state.textureLoadsByPath.size()
+        : state.materialLoadsByPath.size();
+}
+
+bool HasPendingMeshRendererResourceTasks(const RendererResourceResolutionState& state)
+{
+    return std::any_of(
+               state.remainingTasks.begin(),
+               state.remainingTasks.end(),
+               [](const RendererResourceResolutionTask& task)
+               {
+                   return task.kind == RendererResourceResolutionTaskKind::Mesh;
+               }) ||
+        CountInFlightMeshRendererResourceTasks(state) != 0u;
+}
+
+void InitializeRendererResourceMaterialPrewarmPaths(
+    RendererResourceResolutionState& state,
+    const std::deque<RendererResourceResolutionTask>& tasks)
+{
+    std::unordered_set<std::string> uniquePaths;
+    for (const auto& task : tasks)
+    {
+        if (task.kind != RendererResourceResolutionTaskKind::Material)
+            continue;
+
+        for (const auto& materialPath : task.materialPaths)
+        {
+            if (!materialPath.empty() && uniquePaths.insert(materialPath).second)
+                state.materialPrewarmPaths.push_back(materialPath);
+        }
+    }
+}
+
+size_t CountPendingRendererResourceMaterialPrewarmPaths(
+    const RendererResourceResolutionState& state,
+    NLS::Core::ResourceManagement::MaterialManager& materialManager)
+{
+    return static_cast<size_t>(std::count_if(
+        state.materialLoadsByPath.begin(),
+        state.materialLoadsByPath.end(),
+        [&materialManager](const std::string& materialPath)
+        {
+            return !materialPath.empty() && materialManager.IsAsyncArtifactLoadPending(materialPath);
+        }));
+}
+
+void PrewarmRendererResourceMaterialArtifacts(RendererResourceResolutionState& state)
+{
+    if (!state.shareSceneLoadFrameBudget ||
+        state.materialPrewarmPaths.empty() ||
+        !NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
+    {
+        return;
+    }
+
+    const size_t maxPendingLoads = state.streamingBudget.materialPrewarmsPerFrame;
+    if (maxPendingLoads == 0u)
+        return;
+
+    auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
+    size_t remainingSlots = maxPendingLoads;
+    const auto pendingLoads = CountPendingRendererResourceMaterialPrewarmPaths(state, materialManager);
+    if (pendingLoads >= remainingSlots)
+        return;
+    remainingSlots -= pendingLoads;
+
+    while (state.nextMaterialPrewarmPath < state.materialPrewarmPaths.size() && remainingSlots > 0u)
+    {
+        const auto pathIndex = state.nextMaterialPrewarmPath++;
+        const auto& materialPath = state.materialPrewarmPaths[pathIndex];
+        if (FindCachedMaterialByEquivalentPath(materialManager, materialPath) != nullptr ||
+            materialManager.IsAsyncArtifactLoadFailed(materialPath))
+        {
+            continue;
+        }
+
+        std::optional<NLS::Core::ResourceManagement::MaterialManager::AsyncPreviewRequestResult>
+            requestResult;
+        const bool requested = TrackRendererResourceAsyncInterest(
+            state,
+            state.materialLoadsByPath,
+            materialPath,
+            !materialManager.IsAsyncArtifactLoadPending(materialPath),
+            [&state, &materialManager, &materialPath, &requestResult]
+            {
+                AcquireRendererResourceOwner(
+                    state.ownerToken,
+                    ResourceLifetimeResourceType::Material,
+                    materialPath);
+                requestResult = materialManager.TryRequestAsyncArtifactForPreview(materialPath, false);
+            });
+        if (materialManager.IsAsyncArtifactLoadPending(materialPath))
+        {
+            if (requested && state.stats)
+                ++state.stats->prewarmedMaterialPaths;
+            --remainingSlots;
+        }
+        else if (requestResult.has_value() &&
+            (requestResult->resource != nullptr || requestResult->failed))
+        {
+            // A completed cache hit or a terminal failure is not a queue
+            // admission failure. Advance past it so one malformed/obsolete
+            // path cannot strand all later material prewarms.
+            continue;
+        }
+        else if (requestResult.has_value())
+        {
+            // The manager returned an engaged non-pending miss. Leave the
+            // path retryable for task binding, but keep prewarming subsequent
+            // paths in this frame.
+            continue;
+        }
+        else
+        {
+            // nullopt means the manager could not acquire its non-blocking
+            // request/index lock. Retry this path on the next frame without
+            // preventing the task queue from making progress now.
+            state.nextMaterialPrewarmPath = pathIndex;
+            break;
+        }
+    }
+}
+
+void PrewarmRendererResourceMaterialTextures(RendererResourceResolutionState& state)
+{
+    if (!state.shareSceneLoadFrameBudget ||
+        state.materialLoadsByPath.empty() ||
+        !NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>() ||
+        !NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+    {
+        return;
+    }
+
+    const size_t maxPendingLoads = state.streamingBudget.textureCompletionsPerFrame;
+    if (maxPendingLoads == 0u)
+        return;
+
+    auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
+    const auto pendingLoads = CountPendingTrackedRendererResourceTextureLoads(state);
+    if (pendingLoads >= maxPendingLoads)
+        return;
+    size_t remainingSlots = maxPendingLoads - pendingLoads;
+
+    auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
+    for (const auto& materialPath : state.materialLoadsByPath)
+    {
+        if (remainingSlots == 0u)
+            return;
+
+        auto* material = FindCachedMaterialByEquivalentPath(materialManager, materialPath);
+        if (material == nullptr || !material->IsValid())
+            continue;
+
+        for (const auto& [_, texturePath] : material->GetTextureResourcePaths())
+        {
+            if (remainingSlots == 0u)
+                return;
+            if (texturePath.empty() ||
+                FindCachedTextureByEquivalentPath(textureManager, texturePath) != nullptr ||
+                textureManager.IsAsyncArtifactLoadFailed(texturePath))
+            {
+                continue;
+            }
+
+        const bool requested = TrackRendererResourceAsyncInterest(
+            state,
+            state.textureLoadsByPath,
+            texturePath,
+            !textureManager.IsAsyncArtifactLoadPending(texturePath),
+            [&state, &textureManager, &texturePath]
+            {
+                    AcquireRendererResourceOwner(
+                        state.ownerToken,
+                        ResourceLifetimeResourceType::Texture,
+                        texturePath);
+                    (void)textureManager.RequestAsyncArtifactForPreview(texturePath, false);
+                });
+            if (textureManager.IsAsyncArtifactLoadPending(texturePath))
+            {
+                if (requested && state.stats)
+                    ++state.stats->prewarmedTexturePaths;
+                --remainingSlots;
+            }
+        }
+    }
+}
+
 template<typename FrameBudgetExpired>
 bool BindDeferredMaterialTextures(
     NLS::Render::Resources::Material& material,
@@ -2358,21 +2741,26 @@ bool BindDeferredMaterialTextures(
         if (textureIndex++ < task.nextTextureSlot)
             continue;
 
-        auto* texture = FindCachedTextureByEquivalentPath(textureManager, texturePath);
+        auto* texture = FindBoundMaterialTexture(material, uniformName);
+        if (texture != nullptr && texture->GetTextureHandle() == nullptr)
+            texture = nullptr;
+        if (texture == nullptr)
+            texture = FindCachedTextureByEquivalentPath(textureManager, texturePath);
         if (!texture && requestMissingTextures)
         {
             TrackRendererResourceAsyncInterest(
                 state,
                 state.textureLoadsByPath,
                 texturePath,
-                textureManager.IsAsyncArtifactLoadFailed(texturePath),
+                !textureManager.IsAsyncArtifactLoadPending(texturePath) &&
+                    !textureManager.IsAsyncArtifactLoadFailed(texturePath),
                 [&textureManager, &texture, &texturePath, &state]
                 {
                     AcquireRendererResourceOwner(
                         state.ownerToken,
                         ResourceLifetimeResourceType::Texture,
                         texturePath);
-                    texture = textureManager.RequestAsyncArtifact(texturePath, false);
+                    texture = textureManager.RequestAsyncArtifactForPreview(texturePath, false);
                 });
         }
         if (!texture && blockOnPendingTextures && textureManager.IsAsyncArtifactLoadPending(texturePath))
@@ -2466,14 +2854,15 @@ bool BindTrackedRendererResourceTexturesFromLiveRoot(
                         state,
                         state.textureLoadsByPath,
                         texturePath,
-                        textureManager.IsAsyncArtifactLoadFailed(texturePath),
+                        !textureManager.IsAsyncArtifactLoadPending(texturePath) &&
+                            !textureManager.IsAsyncArtifactLoadFailed(texturePath),
                         [&state, &textureManager, &texturePath, &texture]
                         {
                             AcquireRendererResourceOwner(
                                 state.ownerToken,
                                 ResourceLifetimeResourceType::Texture,
                                 texturePath);
-                            texture = textureManager.RequestAsyncArtifact(texturePath, false);
+                            texture = textureManager.RequestAsyncArtifactForPreview(texturePath, false);
                         });
 
                     if (texture)
@@ -2550,8 +2939,7 @@ bool BindDeferredMaterialPaths(
         {
             if (auto* referencedMaterial = materialReferences[index].Get();
                 referencedMaterial != nullptr &&
-                referencedMaterial->IsValid() &&
-                ResolvedMaterialPathMatches(referencedMaterial->path, task.materialPaths[index]))
+                referencedMaterial->IsValid())
             {
                 material = referencedMaterial;
             }
@@ -2564,14 +2952,15 @@ bool BindDeferredMaterialPaths(
                 state,
                 state.materialLoadsByPath,
                 task.materialPaths[index],
-                materialManager.IsAsyncArtifactLoadFailed(task.materialPaths[index]),
+                !materialManager.IsAsyncArtifactLoadPending(task.materialPaths[index]) &&
+                    !materialManager.IsAsyncArtifactLoadFailed(task.materialPaths[index]),
                 [&materialManager, &material, &task, &state, index]
                 {
                     AcquireRendererResourceOwner(
                         state.ownerToken,
                         ResourceLifetimeResourceType::Material,
                         task.materialPaths[index]);
-                    material = materialManager.RequestAsyncArtifact(task.materialPaths[index], false);
+                    material = materialManager.RequestAsyncArtifactForPreview(task.materialPaths[index], false);
                 });
         }
         if ((!material || !material->IsValid()) &&
@@ -2653,9 +3042,15 @@ bool BindDeferredMaterialPaths(
 bool BindDeferredMeshPath(
     NLS::Engine::Components::MeshFilter& meshFilter,
     NLS::Engine::Components::MeshRenderer& meshRenderer,
-    RendererResourceResolutionTask& task)
+    RendererResourceResolutionTask& task,
+    std::string* pendingReason = nullptr)
 {
     NLS_PROFILE_NAMED_SCOPE("RendererResourceResolution::BindMeshPath");
+    const auto markPending = [pendingReason](const char* reason)
+    {
+        if (pendingReason != nullptr)
+            *pendingReason = reason;
+    };
     if (!meshFilter.gameobject() || !meshFilter.gameobject()->IsAlive())
     {
         return true;
@@ -2684,13 +3079,8 @@ bool BindDeferredMeshPath(
             meshRenderer.SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
             return true;
         }
+        markPending("mesh-load-null-and-cache-miss");
         return false;
-    }
-
-    {
-        std::lock_guard lock(task.meshLoad->mutex);
-        if (!task.meshLoad->completed)
-            return false;
     }
 
     {
@@ -2707,12 +3097,26 @@ bool BindDeferredMeshPath(
     std::shared_ptr<const NLS::Render::Assets::MeshArtifactData> data;
     bool loadAccepted = true;
     bool loadFailed = false;
+    bool loadCompleted = false;
+    bool artifactMissing = false;
     {
         std::lock_guard lock(task.meshLoad->mutex);
         transientMesh = task.meshLoad->transientMesh;
         data = task.meshLoad->data;
         loadAccepted = task.meshLoad->accepted;
         loadFailed = task.meshLoad->failed;
+        loadCompleted = task.meshLoad->completed;
+        artifactMissing = task.meshLoad->artifactMissing;
+    }
+
+    // The worker publishes data and completion under the same mutex, but a
+    // retry can reset completion while preserving an already decoded payload.
+    // A usable payload is sufficient to bind and must not be stranded behind
+    // the transient completion flag.
+    if (!loadCompleted && !transientMesh && !data)
+    {
+        markPending("mesh-load-incomplete");
+        return false;
     }
 
     if (loadFailed)
@@ -2724,11 +3128,14 @@ bool BindDeferredMeshPath(
     }
 
     if (!loadAccepted)
-        return false;
     {
-        std::lock_guard lock(task.meshLoad->mutex);
-        if (task.meshLoad->artifactMissing)
-            return false;
+        markPending("mesh-load-rejected");
+        return false;
+    }
+    if (artifactMissing && !transientMesh && !data)
+    {
+        markPending("mesh-artifact-missing");
+        return false;
     }
 
     if (transientMesh)
@@ -2825,8 +3232,7 @@ bool TryCollectCachedRuntimeMaterialBinding(
         {
             if (auto* referencedMaterial = materialReferences[index].Get();
                 referencedMaterial != nullptr &&
-                referencedMaterial->IsValid() &&
-                ResolvedMaterialPathMatches(referencedMaterial->path, materialPath))
+                referencedMaterial->IsValid())
             {
                 material = referencedMaterial;
             }
@@ -3078,7 +3484,17 @@ bool RunRendererResourceResolutionTask(
         if (!meshFilter || !meshRenderer)
             return true;
 
-        const bool completed = BindDeferredMeshPath(*meshFilter, *meshRenderer, task);
+        std::string pendingReason;
+        const bool completed = BindDeferredMeshPath(
+            *meshFilter,
+            *meshRenderer,
+            task,
+            &pendingReason);
+        if (!completed)
+        {
+            state.lastMeshBindPendingPath = task.modelPath;
+            state.lastMeshBindPendingReason = std::move(pendingReason);
+        }
         if (completed && stats)
         {
             if (MeshFilterHasBoundMeshWithoutResolving(*meshFilter))
@@ -3239,9 +3655,23 @@ bool StartMeshArtifactLoad(
             }
             state->completed = true;
         };
-    const bool accepted = resolutionState.shareSceneLoadFrameBudget
-        ? actions.TrackOpportunisticBackgroundTask(loadMeshArtifact)
-        : actions.TrackBackgroundTask(loadMeshArtifact);
+    bool accepted = false;
+    if (resolutionState.shareSceneLoadFrameBudget)
+    {
+        // Scene-load mesh artifacts are opportunistic while the editor has
+        // spare background capacity, but they are still required to finish
+        // renderer-resource resolution. Falling back to the required queue
+        // prevents a full opportunistic queue from stranding the task in
+        // in-flight retry forever, which also keeps resident thumbnails from
+        // remaining permanently partial.
+        accepted = actions.TrackOpportunisticBackgroundTask(loadMeshArtifact);
+        if (!accepted)
+            accepted = actions.TrackBackgroundTask(std::move(loadMeshArtifact));
+    }
+    else
+    {
+        accepted = actions.TrackBackgroundTask(std::move(loadMeshArtifact));
+    }
     if (!accepted)
     {
         {
@@ -3442,6 +3872,24 @@ void RunRendererResourceResolutionStep(
         return;
     }
 
+    auto publishResidentLiveResources = [&actions, &state, liveInstance]
+    {
+        auto& context = actions.GetContext();
+        if (context.residentPrefabPreviewRegistry == nullptr)
+            return;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (state->lastResidentLiveResourcePublishAttempt !=
+                std::chrono::steady_clock::time_point {} &&
+            now - state->lastResidentLiveResourcePublishAttempt < std::chrono::seconds(1))
+        {
+            return;
+        }
+        state->lastResidentLiveResourcePublishAttempt = now;
+        PublishResidentPrefabPreviewFromLiveInstance(actions, *liveInstance);
+    };
+    publishResidentLiveResources();
+
     auto reportTaskProgress = [&tracker, &state]
     {
         if (state->totalTasks == 0u)
@@ -3473,7 +3921,9 @@ void RunRendererResourceResolutionStep(
         return std::chrono::steady_clock::now() - frameStart >= state->streamingBudget.frameBudget;
     };
 
-    if (state->shareSceneLoadFrameBudget && frameBudgetExpired())
+    state->lastSceneLoadFrameBudgetExpiredAtEntry =
+        state->shareSceneLoadFrameBudget && frameBudgetExpired();
+    if (state->lastSceneLoadFrameBudgetExpiredAtEntry)
     {
         scheduleNextStep();
         return;
@@ -3481,34 +3931,156 @@ void RunRendererResourceResolutionStep(
 
     reportTaskProgress();
 
-    if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+    // Start missing requests before pumping the tracked set. A handoff can
+    // contain paths that were registered as interests without successfully
+    // creating a manager request; pumping such a set only scans strings and
+    // can consume the shared frame budget forever.
+    // Meshes are the critical path for a resident preview: material and
+    // texture pumping can consume the whole shared scene-load slice before a
+    // single deferred mesh gets scheduled. Defer those pumps until the mesh
+    // queue is drained so already-loaded geometry becomes drawable first.
+    const bool hasPendingMeshTasks = HasPendingMeshRendererResourceTasks(*state);
+    if (!hasPendingMeshTasks)
     {
-        auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
-        NLS_PROFILE_NAMED_SCOPE("RendererResourceResolution::PumpTextureLoads");
-        textureManager.PumpAsyncLoadsForPaths(
-            state->textureLoadsByPath,
-            state->streamingBudget.textureCompletionsPerFrame,
-            frameBudgetExpired);
-        if (frameBudgetExpired())
+        RefreshTrackedRendererResourceMaterialPaths(*state);
+        PrewarmRendererResourceMaterialArtifacts(*state);
+        PrewarmRendererResourceMaterialTextures(*state);
+
+        // Scene material objects can already be valid while their declared
+        // texture parameters are still path-only. Pump the tracked textures
+        // first so an unrelated ready material request cannot consume the
+        // shared slice and starve the final binding pass.
+        if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
         {
-            scheduleNextStep();
-            return;
+            auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
+            NLS_PROFILE_NAMED_SCOPE("RendererResourceResolution::PumpTextureLoads");
+            textureManager.PumpAsyncLoadsForPaths(
+                state->textureLoadsByPath,
+                state->streamingBudget.textureCompletionsPerFrame,
+                frameBudgetExpired,
+                true);
         }
-    }
-    if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
-    {
-        auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
-        materialManager.PumpAsyncLoadsForPaths(
-            state->materialLoadsByPath,
-            state->streamingBudget.materialPrewarmsPerFrame);
-        if (frameBudgetExpired())
+        if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
         {
-            scheduleNextStep();
-            return;
+            auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
+            materialManager.PumpAsyncLoadsForPaths(
+                state->materialLoadsByPath,
+                state->streamingBudget.materialPrewarmsPerFrame,
+                frameBudgetExpired,
+                true);
         }
     }
 
     const auto* liveObjectsBySourceId = EnsureRendererResourceLiveObjectIndex(*state, *liveInstance);
+
+    // The scene restore path may have attached every renderer resource
+    // directly to the live hierarchy while the serialized resolution tasks
+    // are still queued. Once the live root is fully ready, the queue is
+    // bookkeeping only: retain the live resources, refresh their owners, and
+    // finish the state in one step instead of rebinding hundreds of objects.
+    if (state->shareSceneLoadFrameBudget &&
+        (!state->remainingTasks.empty() || !state->inFlightTasks.empty()))
+    {
+        const auto liveResourceStats = CountResolvedRendererResources(*state->instanceRoot);
+        const auto liveTextureReadiness =
+            BuildLiveRendererResourceTextureReadinessSnapshot(state->instanceRoot);
+        const bool liveResourcesReady =
+            liveResourceStats.meshRenderers != 0u &&
+            liveResourceStats.boundMeshes == liveResourceStats.meshRenderers &&
+            liveResourceStats.boundMaterialSlotRenderers ==
+                liveResourceStats.materialSlotRenderers &&
+            liveTextureReadiness.loadedTextureSlots == liveTextureReadiness.textureSlots &&
+            liveTextureReadiness.loadedNormalTextureSlots == liveTextureReadiness.normalTextureSlots;
+        if (liveResourcesReady)
+        {
+            const bool hasPendingTextures = BindTrackedRendererResourceTexturesFromLiveRoot(*state) ||
+                HasPendingTrackedRendererResourceTextureLoads(*state);
+            if (!hasPendingTextures)
+            {
+                size_t pendingMeshTasks = 0u;
+                size_t pendingMaterialTasks = 0u;
+                const auto countPendingTasks = [&pendingMeshTasks, &pendingMaterialTasks](
+                    const std::deque<RendererResourceResolutionTask>& tasks)
+                {
+                    for (const auto& task : tasks)
+                    {
+                        if (task.kind == RendererResourceResolutionTaskKind::Mesh)
+                            ++pendingMeshTasks;
+                        else if (task.kind == RendererResourceResolutionTaskKind::Material)
+                            ++pendingMaterialTasks;
+                    }
+                };
+                countPendingTasks(state->inFlightTasks);
+                countPendingTasks(state->remainingTasks);
+                if (state->stats)
+                {
+                    state->stats->boundMeshTasks =
+                        (std::max)(state->stats->boundMeshTasks, liveResourceStats.boundMeshes);
+                    state->stats->completedMaterialTasks += pendingMaterialTasks;
+                }
+                state->completedTasks = state->totalTasks;
+                state->remainingTasks.clear();
+                state->inFlightTasks.clear();
+                RefreshPrefabInstanceRendererOwnersFromLiveRoot(
+                    state->ownerToken,
+                    *state->instanceRoot);
+                markRenderContentChanged();
+                publishResidentLiveResources();
+                NLS_LOG_INFO(
+                    "Fast-completed live renderer resource resolution: mesh=" +
+                    std::to_string(liveResourceStats.boundMeshes) + "/" +
+                    std::to_string(liveResourceStats.meshRenderers) +
+                    " pendingTasks=" +
+                    std::to_string(pendingMeshTasks + pendingMaterialTasks));
+            }
+        }
+    }
+
+    // Scene restore can finish decoding the shared mesh/material/texture
+    // requests after the resolution queue was created. Retry the existing
+    // all-cached binding path at that point so resident previews do not spend
+    // one editor turn per draw item once every dependency is already ready.
+    if (state->shareSceneLoadFrameBudget &&
+        (!state->remainingTasks.empty() || !state->inFlightTasks.empty()))
+    {
+        std::vector<RendererResourceResolutionTask> cachedMeshTasks;
+        std::vector<RendererResourceResolutionTask> cachedMaterialTasks;
+        cachedMeshTasks.reserve(state->remainingTasks.size() + state->inFlightTasks.size());
+        cachedMaterialTasks.reserve(state->remainingTasks.size() + state->inFlightTasks.size());
+        const auto collectCachedTasks = [&cachedMeshTasks, &cachedMaterialTasks](
+            const std::deque<RendererResourceResolutionTask>& tasks)
+        {
+            for (const auto& task : tasks)
+            {
+                if (task.kind == RendererResourceResolutionTaskKind::Mesh)
+                    cachedMeshTasks.push_back(task);
+                else if (task.kind == RendererResourceResolutionTaskKind::Material)
+                    cachedMaterialTasks.push_back(task);
+            }
+        };
+        collectCachedTasks(state->inFlightTasks);
+        collectCachedTasks(state->remainingTasks);
+        if (TryBindPrefabInstanceCachedRendererResources(
+                cachedMeshTasks,
+                cachedMaterialTasks,
+                state->liveObjects,
+                state->ownerToken))
+        {
+            for (const auto& task : cachedMeshTasks)
+            {
+                ++boundTasksThisFrame;
+                if (state->stats)
+                    ++state->stats->boundMeshTasks;
+            }
+            if (state->stats)
+                state->stats->completedMaterialTasks += cachedMaterialTasks.size();
+            state->completedTasks = state->totalTasks;
+            state->remainingTasks.clear();
+            state->inFlightTasks.clear();
+            markRenderContentChanged();
+            publishResidentLiveResources();
+        }
+    }
 
     for (size_t index = 0u;
         index < state->inFlightTasks.size() &&
@@ -3573,9 +4145,11 @@ void RunRendererResourceResolutionStep(
 	        const auto inFlightMeshTasks = CountInFlightMeshRendererResourceTasks(*state);
 	        RendererResourceResolutionTaskPopPreference popPreference =
 	            RendererResourceResolutionTaskPopPreference::Fifo;
-	        if (state->shareSceneLoadFrameBudget &&
-	            state->revealedObjectCount.load(std::memory_order_acquire) == 0u &&
-	            inFlightMeshTasks < state->streamingBudget.maxInflightMeshLoads)
+        const bool prioritizeMeshLoads = state->shareSceneLoadFrameBudget &&
+            (state->prioritizeMeshArtifactLoadsUntilSaturated ||
+                state->revealedObjectCount.load(std::memory_order_acquire) == 0u);
+        if (prioritizeMeshLoads &&
+            inFlightMeshTasks < state->streamingBudget.maxInflightMeshLoads)
 	        {
 	            popPreference = RendererResourceResolutionTaskPopPreference::Mesh;
 	        }
@@ -3711,6 +4285,10 @@ void RunRendererResourceResolutionStep(
             << textureReadiness.loadedNormalTextureSlots
             << "/"
             << textureReadiness.normalTextureSlots
+            << " prewarmedMaterials="
+            << state->stats->prewarmedMaterialPaths
+            << " prewarmedTextures="
+            << state->stats->prewarmedTexturePaths
             << " unresolvedMaterialSlots="
             << state->stats->unresolvedMaterialSlots
             << " failedMaterial="
@@ -3819,7 +4397,8 @@ NLS::Editor::Core::PlanRendererResourceResolutionQueue(
 }
 
 NLS::Editor::Core::PrefabInstanceAssetResolutionOptions
-NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions()
+NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions(
+    const bool prioritizeMeshArtifactLoadsUntilSaturated)
 {
     PrefabInstanceAssetResolutionOptions options;
     options.hideRootUntilRendererResourcesReady = true;
@@ -3828,6 +4407,7 @@ NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions()
     options.progressTargetPlatform = kSceneLoadRendererResourceResolutionTargetPlatform;
     options.shareSceneLoadFrameBudget = true;
     options.shareMeshArtifactLoads = true;
+    options.prioritizeMeshArtifactLoadsUntilSaturated = prioritizeMeshArtifactLoadsUntilSaturated;
     options.streamingBudget = GetSceneLoadPrefabRendererResourceStreamingBudget();
     return options;
 }
@@ -3865,6 +4445,8 @@ NLS::Editor::Core::GetSceneLoadRendererResourceReadinessSnapshot()
         }
 
         ++snapshot.activeStateCount;
+        if (!state->degradedOpen.load(std::memory_order_acquire))
+            ++snapshot.blockingStateCount;
         {
             std::lock_guard stateLock(state->lifecycleMutex);
             snapshot.pendingTaskCount += state->remainingTasks.size();
@@ -3915,6 +4497,37 @@ size_t NLS::Editor::Core::GetVisibleSceneLoadRendererResourceResolutionObjectCou
 bool NLS::Editor::Core::HasActiveSceneLoadRendererResourceResolution()
 {
     return GetSceneLoadRendererResourceReadinessSnapshot().activeStateCount != 0u;
+}
+
+bool NLS::Editor::Core::HasBlockingSceneLoadRendererResourceResolution()
+{
+    return GetSceneLoadRendererResourceReadinessSnapshot().HasBlockingResources();
+}
+
+void NLS::Editor::Core::MarkSceneLoadRendererResourceResolutionDegradedOpen()
+{
+    std::lock_guard statesLock(g_rendererResourceResolutionStatesMutex);
+    for (auto it = g_rendererResourceResolutionStates.begin();
+         it != g_rendererResourceResolutionStates.end();)
+    {
+        const auto state = it->lock();
+        if (!state)
+        {
+            it = g_rendererResourceResolutionStates.erase(it);
+            continue;
+        }
+
+        ++it;
+        if (!state->shareSceneLoadFrameBudget ||
+            state->completed.load(std::memory_order_acquire) ||
+            state->cancelled.load(std::memory_order_acquire) ||
+            state->failed)
+        {
+            continue;
+        }
+
+        state->degradedOpen.store(true, std::memory_order_release);
+    }
 }
 
 void NLS::Editor::Core::CancelSceneLoadRendererResourceResolution()
@@ -4004,6 +4617,7 @@ Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_
     m_sceneUnloadListener = m_context.sceneManager.SceneUnloadEvent += [this]
     {
         ++m_mainSceneGeneration;
+        m_context.ClearSceneResidentPrefabPreviewLeases();
         m_context.resourceLifetimeRegistry.ReleaseOwnersByKind(ResourceLifetimeOwnerKind::SceneInstance);
         ScheduleImportedResourceTrim();
     };
@@ -4097,9 +4711,30 @@ bool Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
     return false;
 }
 
-bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk()
+bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
+    const bool prioritizeMeshArtifactLoadsUntilSaturated)
 {
+    struct ResidentSceneRestoreScope
+    {
+        std::shared_ptr<NLS::Editor::Assets::ResidentPrefabPreviewRegistry> registry;
+
+        explicit ResidentSceneRestoreScope(
+            std::shared_ptr<NLS::Editor::Assets::ResidentPrefabPreviewRegistry> value)
+            : registry(std::move(value))
+        {
+            if (registry != nullptr)
+                registry->SetSceneRestoreInProgress(true);
+        }
+
+        ~ResidentSceneRestoreScope()
+        {
+            if (registry != nullptr)
+                registry->SetSceneRestoreInProgress(false);
+        }
+    } residentSceneRestoreScope(m_context.residentPrefabPreviewRegistry);
+
     const auto restoreBegin = std::chrono::steady_clock::now();
+    m_context.ClearSceneResidentPrefabPreviewLeases();
     m_context.prefabInstanceRegistry.Clear();
 
     const auto* document = m_context.sceneManager.GetLastLoadedSceneDocument();
@@ -4186,10 +4821,11 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                 &resolvePrefabSourcePath,
                 &prefabArtifactCache,
                 &sourceMissingPrefabSources,
-                &sourceUnresolvedPrefabSources,
-                &deferredGeneratedModelPrefabLoads,
-                projectRoot,
-                sceneOwnerScope](
+                 &sourceUnresolvedPrefabSources,
+                 &deferredGeneratedModelPrefabLoads,
+                 this,
+                 projectRoot,
+                 sceneOwnerScope](
                 NLS::Core::Assets::AssetId assetId,
                 const std::string& subAssetKey)
                 -> std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>
@@ -4229,6 +4865,7 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                     subAssetKey);
                 std::string artifactLoadDiagnosticCode;
                 std::string artifactLoadDiagnosticMessage;
+                NLS::Editor::Assets::UnifiedPrefabLoadKey loadedPrefabKey;
                 auto artifact = NLS::Editor::Assets::LoadSceneRestorePrefabArtifactReady(
                     prefabArtifactLoader,
                     projectRoot,
@@ -4240,7 +4877,8 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                     false,
                     false,
                     &artifactLoadDiagnosticCode,
-                    &artifactLoadDiagnosticMessage);
+                    &artifactLoadDiagnosticMessage,
+                    &loadedPrefabKey);
                 NLS_LOG_INFO(
                     "[Startup] RestorePrefabInstances prefab artifact load end elapsedMs=" +
                     std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -4255,6 +4893,25 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                     artifactLoadDiagnosticCode +
                     " diagnosticMessage=" +
                     artifactLoadDiagnosticMessage);
+
+                if (artifact &&
+                    !loadedPrefabKey.runtimeCacheIdentity.empty() &&
+                    !loadedPrefabKey.prefabArtifactPath.empty() &&
+                    m_context.residentPrefabPreviewRegistry != nullptr)
+                {
+                    if (auto sceneLease = m_context.residentPrefabPreviewRegistry->RegisterPrefabSnapshotForScene(
+                            projectRoot,
+                            assetId,
+                            assetPath,
+                            subAssetKey,
+                            loadedPrefabKey.prefabArtifactPath,
+                            loadedPrefabKey.runtimeCacheIdentity,
+                            *artifact);
+                        sceneLease.has_value())
+                    {
+                        m_context.sceneResidentPrefabPreviewLeases.push_back(std::move(*sceneLease));
+                    }
+                }
 
                 prefabArtifactCache.emplace(cacheKey, artifact);
                 return artifact;
@@ -4353,7 +5010,8 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                 ++skippedMissingGeneratedInstances;
                 return;
             }
-            const auto sceneLoadResolutionOptions = BuildSceneLoadPrefabResourceResolutionOptions();
+            const auto sceneLoadResolutionOptions = BuildSceneLoadPrefabResourceResolutionOptions(
+                prioritizeMeshArtifactLoadsUntilSaturated);
             QueuePrefabInstanceAssetResolution(
                 registeredInstance,
                 FindCachedRestoredPrefabArtifact(*registeredInstance),
@@ -5893,6 +6551,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
     state->meshLoadsByPath = std::move(adoptedPreviewMeshLoads);
     state->materialLoadsByPath = std::move(previewResourceHandoff.prewarm.materialLoadsByPath);
     state->textureLoadsByPath = std::move(previewResourceHandoff.prewarm.textureLoadsByPath);
+    InitializeRendererResourceMaterialPrewarmPaths(*state, state->remainingTasks);
     state->liveObjects = std::move(liveObjects);
     state->stats = std::move(stats);
     state->totalTasks = state->remainingTasks.size();
@@ -5902,6 +6561,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
         options.allowProgressiveRevealBeforeAllResourcesReady;
     state->shareSceneLoadFrameBudget = options.shareSceneLoadFrameBudget;
     state->shareMeshArtifactLoads = options.shareMeshArtifactLoads;
+    state->prioritizeMeshArtifactLoadsUntilSaturated = options.prioritizeMeshArtifactLoadsUntilSaturated;
     state->streamingBudget = options.streamingBudget;
     state->destroyedListener = TrackGameObjectDestroyedListener(
         [state](NLS::Engine::GameObject& destroyed)
@@ -5912,6 +6572,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
         m_context.prefabInstanceRegistry.MarkInstanceResourceFailure(*root, false);
     RegisterRendererResourceResolutionState(state);
     RefreshPrefabPendingResourcePresentation(*this, state->prefabAssetId);
+    PrewarmRendererResourceMaterialArtifacts(*state);
     previewHandoffGuard.Disarm();
     DelayAction(
         [this, state]

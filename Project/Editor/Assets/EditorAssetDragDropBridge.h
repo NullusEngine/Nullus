@@ -99,6 +99,7 @@ struct UnifiedPrefabLoadKey
     PrefabSourceIdentity source;
     UnifiedPrefabArtifactStamps stamps;
     std::string artifactIdentity;
+    std::string prefabArtifactPath;
     std::string runtimeCacheIdentity;
     std::string manifestStamp;
     std::string dependencyStamp;
@@ -295,6 +296,10 @@ std::string NormalizeGeneratedPrefabSubAssetKeyForAssetPath(
 #if defined(NLS_ENABLE_TEST_HOOKS)
 void ClearImportedPrefabHotCacheForTesting();
 size_t GetImportedPrefabHotCacheEntryCountForTesting();
+void ResetImportedPrefabInFlightLoadStatsForTesting();
+size_t GetImportedPrefabInFlightSharedSubscriberCountForTesting();
+void SetImportedPrefabInFlightLoadGateForTesting(bool paused);
+bool WaitForImportedPrefabInFlightLoadOwnerForTesting(uint32_t timeoutMilliseconds);
 bool ManifestDependenciesAreCurrentForTesting(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::AssetMeta& meta,

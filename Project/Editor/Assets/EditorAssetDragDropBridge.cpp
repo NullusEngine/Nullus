@@ -21,10 +21,13 @@
 #include "Serialize/ObjectGraphWriter.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <condition_variable>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <Json/json.hpp>
 #include <limits>
@@ -82,6 +85,29 @@ struct ImportedPrefabHotCache
     std::vector<ImportedPrefabHotCacheEntry> entries;
     size_t retainedBytes = 0u;
     uint64_t useCounter = 0u;
+};
+
+// The hot cache removes repeat work after the first load, but it cannot stop
+// two consumers that arrive during the first load from reading and importing
+// the same artifact concurrently. Keep only the immutable result future here;
+// scene ownership and resource interests remain outside this repository.
+struct ImportedPrefabInFlightLoad
+{
+    std::promise<FastImportedPrefabLoadResult> promise;
+    std::shared_future<FastImportedPrefabLoadResult> future;
+
+    ImportedPrefabInFlightLoad()
+        : future(promise.get_future().share())
+    {
+    }
+};
+
+struct ImportedPrefabInFlightLoadTestControl
+{
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool paused = false;
+    size_t activeProducers = 0u;
 };
 
 struct ModelTextureMappingDependencyFingerprintCacheEntry
@@ -1813,6 +1839,31 @@ std::mutex& ImportedPrefabHotCacheMutex()
     return mutex;
 }
 
+std::mutex& ImportedPrefabInFlightLoadMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::string, std::shared_ptr<ImportedPrefabInFlightLoad>>&
+ImportedPrefabInFlightLoads()
+{
+    static std::unordered_map<std::string, std::shared_ptr<ImportedPrefabInFlightLoad>> loads;
+    return loads;
+}
+
+std::atomic_size_t& ImportedPrefabInFlightSharedSubscriberCount()
+{
+    static std::atomic_size_t count {0u};
+    return count;
+}
+
+ImportedPrefabInFlightLoadTestControl& ImportedPrefabInFlightLoadTestControlState()
+{
+    static ImportedPrefabInFlightLoadTestControl control;
+    return control;
+}
+
 ImportedPrefabHotCache& ImportedPrefabHotCacheState()
 {
     static ImportedPrefabHotCache cache;
@@ -2944,6 +2995,7 @@ UnifiedPrefabLoadKey BuildUnifiedPrefabLoadKeyFromResolvedArtifacts(
     key.dependencyStamp = key.stamps.dependencyStamp;
     key.prefabArtifactStamp = key.stamps.prefabArtifactStamp;
     key.rendererArtifactStamp = key.stamps.rendererArtifactStamp;
+    key.prefabArtifactPath = prefabArtifact.artifactPath;
     key.prefabImporterVersion = key.source.importerVersion;
     key.reflectionSchemaVersion = kPreparedPrefabReflectionSchemaVersion;
     key.serializationFormatVersion = kPreparedPrefabSerializationFormatVersion;
@@ -3502,6 +3554,98 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     return result;
 }
 
+std::string BuildImportedPrefabInFlightKey(
+    const std::filesystem::path& projectRoot,
+    const PrefabSourceIdentity& source,
+    const UnifiedPrefabReadiness requiredReadiness)
+{
+    return projectRoot.lexically_normal().generic_string() + "\x1f" +
+        source.sourceAssetId.ToString() + "\x1f" +
+        source.sourceAssetPath + "\x1f" +
+        source.prefabSubAssetKey + "\x1f" +
+        std::to_string(static_cast<int>(source.assetType)) + "\x1f" +
+        std::to_string(static_cast<int>(requiredReadiness));
+}
+
+FastImportedPrefabLoadResult LoadImportedPrefabThroughInFlight(
+    const std::filesystem::path& projectRoot,
+    const PrefabSourceIdentity& source,
+    const UnifiedPrefabReadiness requiredReadiness,
+    bool* joinedExistingLoad)
+{
+    if (joinedExistingLoad != nullptr)
+        *joinedExistingLoad = false;
+
+    const auto key = BuildImportedPrefabInFlightKey(projectRoot, source, requiredReadiness);
+    std::shared_ptr<ImportedPrefabInFlightLoad> load;
+    bool producer = false;
+    {
+        std::lock_guard lock(ImportedPrefabInFlightLoadMutex());
+        auto& loads = ImportedPrefabInFlightLoads();
+        const auto found = loads.find(key);
+        if (found != loads.end())
+        {
+            load = found->second;
+            if (joinedExistingLoad != nullptr)
+                *joinedExistingLoad = true;
+            ++ImportedPrefabInFlightSharedSubscriberCount();
+        }
+        else
+        {
+            load = std::make_shared<ImportedPrefabInFlightLoad>();
+            loads.emplace(key, load);
+            producer = true;
+        }
+    }
+
+    if (!producer)
+        return load->future.get();
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    {
+        auto& control = ImportedPrefabInFlightLoadTestControlState();
+        std::unique_lock lock(control.mutex);
+        ++control.activeProducers;
+        control.condition.notify_all();
+        control.condition.wait(lock, [&control]
+        {
+            return !control.paused;
+        });
+        --control.activeProducers;
+    }
+#endif
+
+    try
+    {
+        const auto loadMode = requiredReadiness == UnifiedPrefabReadiness::MeshMaterialTextureReady
+            ? ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles
+            : ImportedPrefabArtifactLoadMode::PreviewGraphOnly;
+        auto result = LoadImportedPrefabFast(
+            projectRoot,
+            source.sourceAssetPath,
+            source.prefabSubAssetKey,
+            source.assetType,
+            loadMode);
+        load->promise.set_value(result);
+        {
+            std::lock_guard lock(ImportedPrefabInFlightLoadMutex());
+            const auto found = ImportedPrefabInFlightLoads().find(key);
+            if (found != ImportedPrefabInFlightLoads().end() && found->second == load)
+                ImportedPrefabInFlightLoads().erase(found);
+        }
+        return result;
+    }
+    catch (...)
+    {
+        load->promise.set_exception(std::current_exception());
+        std::lock_guard lock(ImportedPrefabInFlightLoadMutex());
+        const auto found = ImportedPrefabInFlightLoads().find(key);
+        if (found != ImportedPrefabInFlightLoads().end() && found->second == load)
+            ImportedPrefabInFlightLoads().erase(found);
+        throw;
+    }
+}
+
 EditorAssetDragDropBridgeResult MakePendingImportedPrefabResult(
     const FastImportedPrefabLoadResult& loadResult,
     const std::string& fallbackCode,
@@ -3789,6 +3933,40 @@ size_t GetImportedPrefabHotCacheEntryCountForTesting()
     return ImportedPrefabHotCacheState().entries.size();
 }
 
+void ResetImportedPrefabInFlightLoadStatsForTesting()
+{
+    ImportedPrefabInFlightSharedSubscriberCount().store(0u, std::memory_order_relaxed);
+}
+
+size_t GetImportedPrefabInFlightSharedSubscriberCountForTesting()
+{
+    return ImportedPrefabInFlightSharedSubscriberCount().load(std::memory_order_relaxed);
+}
+
+void SetImportedPrefabInFlightLoadGateForTesting(const bool paused)
+{
+    auto& control = ImportedPrefabInFlightLoadTestControlState();
+    {
+        std::lock_guard lock(control.mutex);
+        control.paused = paused;
+    }
+    if (!paused)
+        control.condition.notify_all();
+}
+
+bool WaitForImportedPrefabInFlightLoadOwnerForTesting(const uint32_t timeoutMilliseconds)
+{
+    auto& control = ImportedPrefabInFlightLoadTestControlState();
+    std::unique_lock lock(control.mutex);
+    return control.condition.wait_for(
+        lock,
+        std::chrono::milliseconds(timeoutMilliseconds),
+        [&control]
+        {
+            return control.activeProducers != 0u;
+        });
+}
+
 bool ManifestDependenciesAreCurrentForTesting(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::AssetMeta& meta,
@@ -4036,16 +4214,12 @@ UnifiedPrefabSharedLoadResult EditorAssetDragDropBridge::LoadUnifiedPrefabShared
         return result;
     }
 
-    auto loadMode = ImportedPrefabArtifactLoadMode::PreviewGraphOnly;
-    if (request.requiredReadiness == UnifiedPrefabReadiness::MeshMaterialTextureReady)
-        loadMode = ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles;
-
-    const auto fastLoad = LoadImportedPrefabFast(
+    bool joinedInFlightLoad = false;
+    const auto fastLoad = LoadImportedPrefabThroughInFlight(
         projectRoot,
-        source.sourceAssetPath,
-        source.prefabSubAssetKey,
-        source.assetType,
-        loadMode);
+        source,
+        request.requiredReadiness,
+        &joinedInFlightLoad);
     result.prefab = fastLoad.prefab;
     result.key = fastLoad.key;
     result.rendererDependencyMissing = fastLoad.rendererDependencyMissing;
@@ -4065,7 +4239,8 @@ UnifiedPrefabSharedLoadResult EditorAssetDragDropBridge::LoadUnifiedPrefabShared
         static_cast<size_t>(result.prefab != nullptr) +
             (static_cast<size_t>(result.pending) << 1u) +
             (static_cast<size_t>(result.rendererDependencyMissing) << 2u),
-        source.sourceAssetPath});
+        source.sourceAssetPath +
+            (joinedInFlightLoad ? "|inflight-shared" : "|inflight-owner")});
     NLS::Core::Assets::CheckArtifactLoadBudget(
         NLS::Core::Assets::ArtifactLoadBudgetKind::PrefabUnifiedSharedLoad,
         std::chrono::duration_cast<std::chrono::milliseconds>(elapsed),
@@ -4228,14 +4403,18 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::InstantiateImportedAs
 
     result.handled = true;
     (void)progressTracker;
-    (void)progressLabel;
+    // The drag/drop bridge already carries the canonical source path as its
+    // progress label. Preserve it in the payload so PrefabEditorWorkflow can
+    // publish the same artifact-backed resident snapshot that scene restore
+    // publishes. An empty path disables that registration path entirely.
+    const auto sourceAssetPath = NormalizeResourcePath(progressLabel);
 
     const auto payloadKind = assetType == NLS::Core::Assets::AssetType::ModelScene
         ? DragPayloadKind::GeneratedModelPrefabAsset
         : DragPayloadKind::PrefabAsset;
     const bool deferRendererResourceResolution = assetType == NLS::Core::Assets::AssetType::ModelScene;
     result.dragDrop = AssetDragDropWorkflow().Execute({
-        {payloadKind, prefab.assetId, prefabSubAssetKey, nullptr, nullptr, nullptr, {}, &prefab, std::move(sharedPrefab)},
+        {payloadKind, prefab.assetId, prefabSubAssetKey, nullptr, nullptr, nullptr, sourceAssetPath, &prefab, std::move(sharedPrefab)},
         {DropTargetKind::Hierarchy, &scene, parent, 0u, false},
         sceneAssetId,
         DragDropOperationKind::None,

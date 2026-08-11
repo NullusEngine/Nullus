@@ -446,6 +446,8 @@ inline bool IsEditorAssetPathWritable(
     const std::filesystem::path& absolutePath)
 {
     const auto* root = FindEditorAssetRootForAbsolutePath(roots, absolutePath);
-    return root && !root->readOnly && IsPhysicalPathInsideEditorAssetRoot(absolutePath, root->path);
+    return root &&
+        !root->readOnly &&
+        ExistingAncestorDepthInsideRoot(absolutePath, root->path).has_value();
 }
 }

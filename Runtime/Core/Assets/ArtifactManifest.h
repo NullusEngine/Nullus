@@ -85,6 +85,7 @@ NLS_CORE_API bool IsArtifactStorageFileName(const std::string& fileName);
 NLS_CORE_API std::filesystem::path BuildArtifactStorageRelativePath(std::string_view storageFileName);
 NLS_CORE_API std::string BuildArtifactStorageFileName(std::string_view storageKey);
 NLS_CORE_API std::string BuildArtifactStorageFileName(const uint8_t* bytes, size_t byteCount);
+NLS_CORE_API std::string BuildArtifactStorageFileNameFromFile(const std::filesystem::path& path);
 NLS_CORE_API void ClearRuntimeArtifactAuthorization();
 NLS_CORE_API void RegisterRuntimeAuthorizedArtifactPath(const std::string& artifactPath);
 NLS_CORE_API void SetRuntimeArtifactAuthorizationEnabled(bool enabled);

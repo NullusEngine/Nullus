@@ -1359,6 +1359,7 @@ PrefabOperationResult InstantiateStrippedPrefabInstance(
     request.sceneAssetId = sceneAssetId;
     const bool deferGeneratedModelResources = sourcePrefab->generatedModelPrefab;
     request.deferAssetReferenceResolution = deferGeneratedModelResources;
+    // Scene restoration must make generated-model resources available before the loaded scene is published.
     request.synchronousAssetReferencePrewarm = true;
     request.skipDeferredAssetReferenceCacheLookup = deferGeneratedModelResources;
 
@@ -1521,6 +1522,7 @@ PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(
         request.prefabAssetId = prefabAssetId;
         request.prefabSubAssetKey = prefabSubAssetKey;
         request.sceneAssetId = sceneAssetId;
+        request.synchronousAssetReferencePrewarm = true;
 
         auto connect = ConvertResult(
             PrefabEditorWorkflow().ConnectExistingPrefabInstance(request, *liveSceneRoot));

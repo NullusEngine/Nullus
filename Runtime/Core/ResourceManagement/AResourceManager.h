@@ -34,6 +34,10 @@ namespace NLS::Core::ResourceManagement
 		size_t readyRequests = 0u;
 		size_t queuedRequests = 0u;
 		size_t failedRequests = 0u;
+		size_t previewRequests = 0u;
+		size_t previewActiveRequests = 0u;
+		size_t previewQueuedRequests = 0u;
+		size_t runtimeUploadPendingRequests = 0u;
 		size_t maxActiveRequests = 0u;
 	};
 
@@ -126,6 +130,10 @@ namespace NLS::Core::ResourceManagement
 		*/
 		T* GetResource(const std::string& p_path, bool p_tryToLoadIfNotFound = true);
 
+		// Non-blocking lookup for editor pumps that must yield while another
+		// thread is registering or unloading resources.
+		bool TryGetResource(const std::string& p_path, T*& p_resource);
+
 		/**
 		* Operator overload to get an instance linked to the given path.
 		* @note See GetResource for more informations
@@ -148,6 +156,13 @@ namespace NLS::Core::ResourceManagement
 
 	protected:
 		ResourceHandle<T> AcquireResourceHandle(
+			ResourceLifetimeRegistry& p_registry,
+			const ResourceLifetimeAcquireRequest& p_request);
+		// Acquires a lifetime lease only when the exact registered path is
+		// already present. Unlike AcquireResourceHandle this method never falls
+		// through to LoadResource, which makes it suitable for resident preview
+		// publication and other no-I/O probes.
+		ResourceHandle<T> AcquireRegisteredResourceHandle(
 			ResourceLifetimeRegistry& p_registry,
 			const ResourceLifetimeAcquireRequest& p_request);
 		size_t TrimUnusedResources(

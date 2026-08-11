@@ -548,7 +548,6 @@ bool EngineFrameObjectBindingProvider::EnsureObjectDataBufferCapacity(
     slot.deviceIdentity = deviceIdentity;
     slot.capacity = newCapacity;
     slot.bindingSetDirty = true;
-    slot.objectDataRevisionMetadata = {};
     return true;
 }
 

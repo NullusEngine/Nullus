@@ -78,6 +78,7 @@ namespace NLS
 			bool m_cameraPerformanceTelemetryBeforeCaptured = false;
 			uint64_t m_cameraPerformancePublishedCameraStepCount = 0u;
 			std::vector<double> m_cameraPerformanceFrameMs;
+			std::vector<double> m_cameraPerformanceSettleFrameMs;
 			EditorCameraPerformanceTelemetry m_cameraPerformanceTelemetryBefore;
 			Context m_context;
 			std::unique_ptr<Editor> m_editor;

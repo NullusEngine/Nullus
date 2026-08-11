@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include "Assets/AssetDragDropWorkflow.h"
@@ -1052,6 +1054,7 @@ TEST(EditorAssetDragDropTests, FormalPrefabInstantiationStillBroadcastsNormalGam
 TEST(EditorAssetDragDropTests, SceneLoadGeneratedPrefabResolutionRevealsMeshReadyObjectsBeforeAllRendererResourcesReady)
 {
     const auto options = NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions();
+    const auto startupOptions = NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions(true);
 
     EXPECT_TRUE(options.hideRootUntilRendererResourcesReady)
         << "Scene-open generated/model prefab restoration starts suppressed so stale references do not flash before resource recovery begins.";
@@ -1065,6 +1068,10 @@ TEST(EditorAssetDragDropTests, SceneLoadGeneratedPrefabResolutionRevealsMeshRead
         << "Non-scene-load deferred drops can keep roots suppressed on failure, so they must not reveal objects early.";
     EXPECT_TRUE(options.shareSceneLoadFrameBudget)
         << "Scene-open prefab resolution uses a shared per-frame budget so many prefab instances cannot multiply the frame cost.";
+    EXPECT_FALSE(options.prioritizeMeshArtifactLoadsUntilSaturated)
+        << "Interactive scene open keeps the balanced mesh/material scheduling policy.";
+    EXPECT_TRUE(startupOptions.prioritizeMeshArtifactLoadsUntilSaturated)
+        << "Startup restoration keeps the mesh artifact queue saturated so later mesh reads overlap early material and texture work.";
     EXPECT_EQ(
         options.progressTargetPlatform,
         std::string(NLS::Editor::Core::kSceneLoadRendererResourceResolutionTargetPlatform));
@@ -2456,6 +2463,80 @@ TEST(EditorAssetDragDropTests, RepeatedGeneratedModelDropFastBindsThroughUnified
     EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::CacheMiss), 0u);
     EXPECT_EQ(CountArtifactTelemetryStage(repeatedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 0u);
     EXPECT_EQ(scene.GetGameObjects().size(), 2u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, ConcurrentUnifiedPrefabLoadsShareOneInFlightFuture)
+{
+    const auto root = MakeAssetDragDropRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "ConcurrentLoadHero.gltf",
+        TexturedSingleNodeGltf("ConcurrentLoadHeroRoot"));
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/ConcurrentLoadHero.gltf"));
+    const auto payload = MakeImportedGeneratedModelPayload(
+        database,
+        "Assets/Models/ConcurrentLoadHero.gltf",
+        "prefab:ConcurrentLoadHero");
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    auto makeRequest = [&]
+    {
+        NLS::Editor::Assets::UnifiedPrefabLoadRequest request;
+        request.source = NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+            root,
+            "Assets/Models/ConcurrentLoadHero.gltf",
+            "prefab:ConcurrentLoadHero",
+            NLS::Editor::Assets::GetEditorAssetDragPayloadAssetId(payload),
+            NLS::Core::Assets::AssetType::ModelScene);
+        request.loadMode = NLS::Editor::Assets::UnifiedPrefabLoadMode::Prewarm;
+        request.ownerKind = NLS::Editor::Assets::UnifiedPrefabOwnerKind::AsyncJob;
+        request.requiredReadiness = NLS::Editor::Assets::UnifiedPrefabReadiness::MeshMaterialTextureReady;
+        request.allowPending = false;
+        return request;
+    };
+
+    NLS::Editor::Assets::ClearImportedPrefabHotCacheForTesting();
+    NLS::Editor::Assets::ResetImportedPrefabInFlightLoadStatsForTesting();
+    NLS::Editor::Assets::SetImportedPrefabInFlightLoadGateForTesting(true);
+
+    auto first = std::async(
+        std::launch::async,
+        [&bridge, makeRequest]
+        {
+            return bridge.LoadUnifiedPrefabShared(makeRequest());
+        });
+    const bool ownerEntered =
+        NLS::Editor::Assets::WaitForImportedPrefabInFlightLoadOwnerForTesting(5000u);
+
+    auto second = std::async(
+        std::launch::async,
+        [&bridge, makeRequest]
+        {
+            return bridge.LoadUnifiedPrefabShared(makeRequest());
+        });
+
+    const auto subscriberDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (NLS::Editor::Assets::GetImportedPrefabInFlightSharedSubscriberCountForTesting() == 0u &&
+        std::chrono::steady_clock::now() < subscriberDeadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto sharedSubscriberCount =
+        NLS::Editor::Assets::GetImportedPrefabInFlightSharedSubscriberCountForTesting();
+    NLS::Editor::Assets::SetImportedPrefabInFlightLoadGateForTesting(false);
+
+    const auto firstResult = first.get();
+    const auto secondResult = second.get();
+    EXPECT_TRUE(ownerEntered);
+    EXPECT_EQ(sharedSubscriberCount, 1u);
+    ASSERT_NE(firstResult.prefab, nullptr) << firstResult.diagnosticCode;
+    ASSERT_NE(secondResult.prefab, nullptr) << secondResult.diagnosticCode;
+    EXPECT_EQ(firstResult.prefab.get(), secondResult.prefab.get());
 
     std::filesystem::remove_all(root);
 }

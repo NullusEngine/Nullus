@@ -301,6 +301,100 @@ TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncReadbackFinalizesAndAllowsNext
     EXPECT_TRUE(second.Succeeded()) << second.message;
 }
 
+TEST(DX12ReadbackUtilsTests, AllowsThreeConcurrentAsyncReadbacksBeforeApplyingBackpressure)
+{
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+    {
+        GTEST_SKIP() << "DX12 device unavailable on this test machine";
+    }
+
+    const std::array<uint8_t, 4> sourcePixel{ 16u, 32u, 48u, 255u };
+    NLS::Render::RHI::RHITextureDesc textureDesc{};
+    textureDesc.extent = { 1u, 1u, 1u };
+    textureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    textureDesc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+    textureDesc.debugName = "ConcurrentReadbackTexture";
+
+    NLS::Render::RHI::RHITextureUploadDesc uploadDesc{};
+    uploadDesc.data = sourcePixel.data();
+    uploadDesc.dataSize = sourcePixel.size();
+    uploadDesc.extent = textureDesc.extent;
+    uploadDesc.debugName = "ConcurrentReadbackTextureUpload";
+
+    auto texture = NLS::Render::Backend::CreateNativeDX12Texture(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        nullptr,
+        textureDesc,
+        uploadDesc);
+    ASSERT_NE(texture, nullptr);
+
+    NLS::Render::RHI::DX12::DX12ReadbackContext context;
+    std::array<std::array<uint8_t, 4>, 3> pixels{};
+    std::array<NLS::Render::RHI::DX12::DX12ReadbackResult, 3> readbacks{};
+    for (size_t index = 0u; index < readbacks.size(); ++index)
+    {
+        readbacks[index] = context.Begin(
+            resources.device.Get(),
+            resources.graphicsQueue.Get(),
+            texture,
+            0u,
+            0u,
+            1u,
+            1u,
+            NLS::Render::Settings::EPixelDataFormat::RGBA,
+            NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+            pixels[index].data());
+        ASSERT_TRUE(readbacks[index].Succeeded()) << readbacks[index].message;
+        ASSERT_NE(readbacks[index].completion, nullptr);
+    }
+
+    std::array<uint8_t, 4> fourthPixel{};
+    const auto fourth = context.Begin(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        texture,
+        0u,
+        0u,
+        1u,
+        1u,
+        NLS::Render::Settings::EPixelDataFormat::RGBA,
+        NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        fourthPixel.data());
+    EXPECT_FALSE(fourth.Succeeded());
+    EXPECT_NE(fourth.message.find("previous async readback"), std::string::npos);
+
+    for (auto& readback : readbacks)
+    {
+        NLS::Render::RHI::RHICompletionStatus status{};
+        for (int attempt = 0; attempt < 100; ++attempt)
+        {
+            status = readback.completion->GetStatus();
+            if (status.IsComplete())
+                break;
+            Sleep(1);
+        }
+        ASSERT_EQ(status.code, NLS::Render::RHI::RHICompletionStatusCode::Success) << status.message;
+    }
+    for (const auto& pixel : pixels)
+        EXPECT_EQ(pixel, sourcePixel);
+
+    std::array<uint8_t, 4> reusablePixel{};
+    const auto reusable = context.Begin(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        texture,
+        0u,
+        0u,
+        1u,
+        1u,
+        NLS::Render::Settings::EPixelDataFormat::RGBA,
+        NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        reusablePixel.data());
+    EXPECT_TRUE(reusable.Succeeded()) << reusable.message;
+}
+
 TEST(DX12ReadbackUtilsTests, DroppingAsyncReadbackCompletionKeepsResourcesUntilFenceRetires)
 {
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);

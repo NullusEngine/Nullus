@@ -42,6 +42,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -55,6 +56,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -72,6 +74,38 @@ constexpr const char* kExternalStaticMeshLODBuildPipelineDependencyName = "stati
 using ImportedSceneJson = nlohmann::json;
 
 constexpr int64_t kExternalModelImportTimingLogThresholdMilliseconds = 100;
+constexpr size_t kMaxExternalModelMeshSerializationWorkers = 4u;
+
+template<typename Function>
+void ParallelForModelImportItems(const size_t itemCount, Function&& function)
+{
+    if (itemCount < 2u)
+    {
+        for (size_t itemIndex = 0u; itemIndex < itemCount; ++itemIndex)
+            function(itemIndex);
+        return;
+    }
+
+    const auto workerCount = std::min(itemCount, kMaxExternalModelMeshSerializationWorkers);
+    std::atomic_size_t nextItemIndex {0u};
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    for (size_t workerIndex = 0u; workerIndex < workerCount; ++workerIndex)
+    {
+        workers.emplace_back([&]()
+        {
+            while (true)
+            {
+                const auto itemIndex = nextItemIndex.fetch_add(1u, std::memory_order_relaxed);
+                if (itemIndex >= itemCount)
+                    return;
+                function(itemIndex);
+            }
+        });
+    }
+    for (auto& worker : workers)
+        worker.join();
+}
 
 struct ExternalModelImportTimingStats
 {
@@ -2278,6 +2312,12 @@ bool EnsureProjectTextureMeta(
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
     std::vector<ModelTextureAutoImportSideEffect>* sideEffects);
 
+// Returns true only when the serial import path would create metadata or a
+// texture artifact for this project texture source.
+bool WouldAutoImportProjectTexturePath(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath);
+
 std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextureAsset(
     const ExternalModelImportRequest& request,
     const std::filesystem::path& editorPath,
@@ -3033,6 +3073,23 @@ ModelTextureResolveRequest BuildModelTextureResolveRequest(
                 " elapsedMs=" + std::to_string(MillisecondsSince(resolveBegin)));
     }
 
+    if (!request.allowAutoImportMissingTextureFiles &&
+        resolveRequest.settings.autoImportMissingTextureFiles)
+    {
+        for (const auto& path : pathQueries)
+        {
+            if (!WouldAutoImportProjectTexturePath(request, path))
+                continue;
+
+            resolveRequest.requiresSerialAutoImport = true;
+            return resolveRequest;
+        }
+
+        // The preflight established that every source-path candidate is current.
+        // Keep preparation read-only while resolving the same candidates below.
+        resolveRequest.settings.autoImportMissingTextureFiles = false;
+    }
+
     ReportProgress(
         request,
         ImportPhase::IntermediateConversion,
@@ -3148,6 +3205,39 @@ bool EnsureProjectTextureMeta(
         });
     }
     return true;
+}
+
+bool WouldAutoImportProjectTexturePath(
+    const ExternalModelImportRequest& request,
+    const std::filesystem::path& editorPath)
+{
+    const auto projectRelativePath = ToProjectRelativePath(request, editorPath);
+    if (!projectRelativePath.has_value())
+        return false;
+
+    const auto absolutePath = ResolveExistingPathCaseInsensitive(request.projectRoot, *projectRelativePath);
+    if (NLS::Core::Assets::InferAssetType(absolutePath) != NLS::Core::Assets::AssetType::Texture)
+        return false;
+
+    const auto meta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+    if (!meta.has_value())
+        return true;
+    if (meta->assetType != NLS::Core::Assets::AssetType::Texture)
+        return false;
+
+    const auto textureTargetPlatform = ResolveExternalTextureBuildTargetPlatform(request.targetPlatform);
+    const auto manifest = LoadArtifactManifestForSource(request, meta->id, textureTargetPlatform);
+    if (!manifest.has_value())
+        return true;
+
+    ModelTextureAssetCandidate candidate;
+    return !TryApplyTextureArtifactCandidate(
+        candidate,
+        *manifest,
+        textureTargetPlatform,
+        request.projectRoot,
+        request.projectRoot / "Library" / "Artifacts");
 }
 
 std::optional<NLS::Core::Assets::ArtifactManifest> AutoImportMissingProjectTextureAsset(
@@ -4338,6 +4428,133 @@ NLS::Core::Assets::ArtifactManifest MakeProvisionalManifest(
     return manifest;
 }
 
+std::shared_ptr<const PreviewRenderableSnapshot> FinalizePreparedPrefabPreviewSnapshot(
+    const std::shared_ptr<const PreviewRenderableSnapshot>& preparedSnapshot,
+    const NLS::Core::Assets::ArtifactWriteRequest& writeRequest,
+    const NLS::Core::Assets::ArtifactManifest& committedManifest,
+    const std::filesystem::path& committedRoot)
+{
+    if (preparedSnapshot == nullptr)
+        return {};
+
+    struct CommittedPreviewDependency
+    {
+        NLS::Core::Assets::AssetId assetId;
+        NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
+        std::string artifactPath;
+    };
+
+    std::unordered_map<std::string, CommittedPreviewDependency> dependenciesByPreparedPath;
+    dependenciesByPreparedPath.reserve(writeRequest.artifacts.size() * 2u);
+    const auto addPreparedPath = [&dependenciesByPreparedPath](
+        const std::filesystem::path& path,
+        const CommittedPreviewDependency& dependency)
+    {
+        if (path.empty())
+            return;
+        dependenciesByPreparedPath.insert_or_assign(
+            path.lexically_normal().generic_string(),
+            dependency);
+    };
+
+    for (const auto& payload : writeRequest.artifacts)
+    {
+        if (payload.artifactType != NLS::Core::Assets::ArtifactType::Mesh &&
+            payload.artifactType != NLS::Core::Assets::ArtifactType::Material)
+        {
+            continue;
+        }
+
+        const auto* committedArtifact = committedManifest.FindSubAsset(payload.subAssetKey);
+        if (committedArtifact == nullptr ||
+            committedArtifact->artifactType != payload.artifactType ||
+            committedArtifact->artifactPath.empty())
+        {
+            continue;
+        }
+
+        const CommittedPreviewDependency dependency {
+            committedArtifact->sourceAssetId,
+            committedArtifact->artifactType,
+            std::filesystem::path(committedArtifact->artifactPath)
+                .lexically_normal()
+                .generic_string()
+        };
+        addPreparedPath(payload.relativePath, dependency);
+        addPreparedPath(committedRoot / payload.relativePath, dependency);
+    }
+
+    auto finalizedSnapshot = std::make_shared<PreviewRenderableSnapshot>(*preparedSnapshot);
+    const auto remapDependency = [&dependenciesByPreparedPath](
+        std::string& path,
+        NLS::Core::Assets::AssetId& assetId,
+        const NLS::Core::Assets::ArtifactType expectedType)
+    {
+        if (path.empty())
+            return;
+        const auto key = std::filesystem::path(path).lexically_normal().generic_string();
+        const auto found = dependenciesByPreparedPath.find(key);
+        if (found == dependenciesByPreparedPath.end() ||
+            found->second.artifactType != expectedType)
+        {
+            return;
+        }
+        path = found->second.artifactPath;
+        assetId = found->second.assetId;
+    };
+
+    for (auto& drawItem : finalizedSnapshot->drawItems)
+    {
+        remapDependency(
+            drawItem.meshPath,
+            drawItem.meshAssetId,
+            NLS::Core::Assets::ArtifactType::Mesh);
+        const auto materialCount = (std::min)(
+            drawItem.materialPaths.size(),
+            drawItem.materialAssetIds.size());
+        for (size_t materialIndex = 0u; materialIndex < materialCount; ++materialIndex)
+        {
+            remapDependency(
+                drawItem.materialPaths[materialIndex],
+                drawItem.materialAssetIds[materialIndex],
+                NLS::Core::Assets::ArtifactType::Material);
+        }
+    }
+    return finalizedSnapshot;
+}
+
+std::vector<PreparedPrefabPreviewMeshPayload> TakePreparedPrefabPreviewMeshPayloads(
+    NLS::Core::Assets::ArtifactWriteRequest& writeRequest,
+    const NLS::Core::Assets::ArtifactManifest& committedManifest)
+{
+    std::vector<PreparedPrefabPreviewMeshPayload> preparedPayloads;
+    preparedPayloads.reserve(writeRequest.artifacts.size());
+    for (auto& payload : writeRequest.artifacts)
+    {
+        if (payload.artifactType != NLS::Core::Assets::ArtifactType::Mesh ||
+            payload.payload.empty())
+        {
+            continue;
+        }
+
+        const auto* committedArtifact = committedManifest.FindSubAsset(payload.subAssetKey);
+        if (committedArtifact == nullptr ||
+            committedArtifact->artifactType != NLS::Core::Assets::ArtifactType::Mesh ||
+            committedArtifact->artifactPath.empty())
+        {
+            continue;
+        }
+
+        preparedPayloads.push_back({
+            std::filesystem::path(committedArtifact->artifactPath)
+                .lexically_normal()
+                .generic_string(),
+            std::make_shared<const std::vector<uint8_t>>(std::move(payload.payload))
+        });
+    }
+    return preparedPayloads;
+}
+
 bool AttachPrefabValidationProofDependencies(
     std::vector<NLS::Core::Assets::ArtifactPayload>& payloads,
     const NLS::Core::Assets::ArtifactManifest& manifest,
@@ -5075,6 +5292,12 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             result.diagnostics,
             &autoImportSideEffects,
             textureEncoders);
+        if (request.prepareOnly && resolveRequest.requiresSerialAutoImport)
+        {
+            result.requiresSerialImport = true;
+            timingStats.status = "requires-serial-auto-import";
+            return result;
+        }
         ReportProgress(
             request,
             ImportPhase::IntermediateConversion,
@@ -5139,6 +5362,30 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             "Loaded texture payloads | " + FormatTexturePayloadLoadStats(texturePayloadStats));
     }
     const auto meshSerializationContext = BuildMeshSerializationContext(scene, sourceMeshes);
+    std::vector<size_t> meshSubAssetIndices;
+    meshSubAssetIndices.reserve(subAssets.size());
+    for (size_t subAssetIndex = 0u; subAssetIndex < subAssets.size(); ++subAssetIndex)
+    {
+        if (subAssets[subAssetIndex].type == NLS::Render::Assets::ImportedSceneSubAssetType::Mesh)
+            meshSubAssetIndices.push_back(subAssetIndex);
+    }
+    std::vector<std::vector<uint8_t>> serializedMeshPayloads(subAssets.size());
+    if (!meshSubAssetIndices.empty())
+    {
+        NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::SerializeMeshes");
+        ParallelForModelImportItems(
+            meshSubAssetIndices.size(),
+            [&](const size_t meshIndex)
+            {
+                const auto subAssetIndex = meshSubAssetIndices[meshIndex];
+                serializedMeshPayloads[subAssetIndex] = SerializeMeshSubAsset(
+                    scene,
+                    subAssets[subAssetIndex],
+                    sourceMeshes,
+                    meshSerializationContext,
+                    authoredLODContext);
+            });
+    }
     size_t processedSubAssets = 0u;
     const size_t convertibleSubAssetCount = static_cast<size_t>(std::count_if(
         subAssets.begin(),
@@ -5150,8 +5397,9 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         }));
     {
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::SerializeSubAssets");
-        for (const auto& subAsset : subAssets)
+        for (size_t subAssetIndex = 0u; subAssetIndex < subAssets.size(); ++subAssetIndex)
         {
+            const auto& subAsset = subAssets[subAssetIndex];
             if (subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Material ||
                 subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Prefab)
                 continue;
@@ -5173,12 +5421,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                 subAssetProgress,
                 "Converting " + subAsset.key);
             auto artifactPayload = subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Mesh
-                ? SerializeMeshSubAsset(
-                    scene,
-                    subAsset,
-                    sourceMeshes,
-                    meshSerializationContext,
-                    authoredLODContext)
+                ? std::move(serializedMeshPayloads[subAssetIndex])
                 : subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture
                     ? SerializeTextureSubAsset(
                         scene,
@@ -5442,53 +5685,36 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
             " totalMs=" + std::to_string(MillisecondsSince(validationProofBegin)));
     timingStats.dependencyCount = writeRequest.dependencies.size();
 
-    NLS::Core::Assets::ArtifactWriter writer(request.stagingRoot, request.committedRoot);
-    NLS::Core::Assets::ArtifactWriteResult writeResult;
-    std::optional<ImportCancellationTokenHandle> cancellationToken;
+    auto prefabPreviewSnapshot = std::make_shared<const PreviewRenderableSnapshot>(
+        BuildPreviewRenderableSnapshot(prefab.artifact));
+    if (prefabPreviewSnapshot->drawItems.empty() ||
+        prefabPreviewSnapshot->expectedDrawItemCount == 0u ||
+        prefabPreviewSnapshot->drawItems.size() < prefabPreviewSnapshot->expectedDrawItemCount)
     {
-        const auto writeBegin = std::chrono::steady_clock::now();
-        NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::WriteAndCommit");
-        writeResult = writer.WriteAndCommit(
-            writeRequest,
-            request.previousManifest,
-            GetImportCancellation(request, cancellationToken));
-        ReportProgress(
-            request,
-            ImportPhase::Commit,
-            0.95,
-            "Committed imported artifacts | writeAndCommitMs=" + std::to_string(MillisecondsSince(writeBegin)));
+        prefabPreviewSnapshot.reset();
     }
 
-    result.diagnostics.insert(
-        result.diagnostics.end(),
-        writeResult.diagnostics.begin(),
-        writeResult.diagnostics.end());
-
-    result.manifest = writeResult.manifest;
-    if (writeResult.committed && !HasErrors(result.diagnostics))
+    result.prepared = true;
+    result.preparedWriteRequest = std::move(writeRequest);
+    result.preparedTextureResolutionReport = BuildModelTextureResolutionReport(request, resolvedTextures);
+    result.preparedPrefabPreviewSnapshot = std::move(prefabPreviewSnapshot);
+    if (request.prepareOnly)
     {
-        const auto report = BuildModelTextureResolutionReport(request, resolvedTextures);
-        if (!WriteCommittedModelTextureResolutionReport(request.committedRoot, report))
-        {
-            AddError(
-                result.diagnostics,
-                request.meta.id,
-                request.sourcePath,
-                "external-model-importer-texture-report-write-failed",
-                "Model texture resolution report could not be written to the committed artifact directory.");
-        }
+        timingStats.diagnosticCount = result.diagnostics.size();
+        timingStats.status = "prepared";
+        return result;
     }
-    result.imported = writeResult.committed && !HasErrors(result.diagnostics);
-    if (result.imported)
+
+    auto committedResult = CommitPreparedExternalModelAsset(request, std::move(result));
+    if (committedResult.imported)
     {
-        RememberManifestSourceFileHashes(request.projectRoot, result.manifest);
-        result.autoImportedDependencies.reserve(autoImportSideEffects.size());
+        committedResult.autoImportedDependencies.reserve(autoImportSideEffects.size());
         for (auto& sideEffect : autoImportSideEffects)
         {
             if (sideEffect.committedArtifact &&
                 sideEffect.manifest.sourceAssetId.IsValid())
             {
-                result.autoImportedDependencies.push_back({
+                committedResult.autoImportedDependencies.push_back({
                     sideEffect.sourcePath,
                     sideEffect.metaPath,
                     sideEffect.createdMeta,
@@ -5499,8 +5725,81 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         }
         autoImportCleanupGuard.Release();
     }
-    timingStats.diagnosticCount = result.diagnostics.size();
-    timingStats.status = result.imported ? "imported" : "failed";
-    return result;
+    timingStats.diagnosticCount = committedResult.diagnostics.size();
+    timingStats.status = committedResult.imported ? "imported" : "failed";
+    return committedResult;
+}
+
+ExternalModelImportResult CommitPreparedExternalModelAsset(
+    const ExternalModelImportRequest& request,
+    ExternalModelImportResult preparedResult)
+{
+    if (!preparedResult.prepared ||
+        !preparedResult.preparedWriteRequest.has_value() ||
+        !preparedResult.preparedTextureResolutionReport.has_value())
+    {
+        AddError(
+            preparedResult.diagnostics,
+            request.meta.id,
+            request.sourcePath,
+            "external-model-importer-commit-without-preparation",
+            "External model import commit requires a successfully prepared import result.");
+        preparedResult.prepared = false;
+        return preparedResult;
+    }
+
+    NLS::Core::Assets::ArtifactWriter writer(request.stagingRoot, request.committedRoot);
+    std::optional<ImportCancellationTokenHandle> cancellationToken;
+    const auto writeBegin = std::chrono::steady_clock::now();
+    NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::WriteAndCommit");
+    const auto writeResult = writer.WriteAndCommit(
+        *preparedResult.preparedWriteRequest,
+        request.previousManifest,
+        GetImportCancellation(request, cancellationToken));
+    ReportProgress(
+        request,
+        ImportPhase::Commit,
+        0.95,
+        "Committed imported artifacts | writeAndCommitMs=" + std::to_string(MillisecondsSince(writeBegin)));
+
+    preparedResult.diagnostics.insert(
+        preparedResult.diagnostics.end(),
+        writeResult.diagnostics.begin(),
+        writeResult.diagnostics.end());
+    preparedResult.manifest = writeResult.manifest;
+    if (writeResult.committed && !HasErrors(preparedResult.diagnostics) &&
+        !WriteCommittedModelTextureResolutionReport(
+            request.committedRoot,
+            *preparedResult.preparedTextureResolutionReport))
+    {
+        AddError(
+            preparedResult.diagnostics,
+            request.meta.id,
+            request.sourcePath,
+            "external-model-importer-texture-report-write-failed",
+            "Model texture resolution report could not be written to the committed artifact directory.");
+    }
+
+    preparedResult.imported = writeResult.committed && !HasErrors(preparedResult.diagnostics);
+    if (preparedResult.imported)
+    {
+        preparedResult.preparedPrefabPreviewSnapshot = FinalizePreparedPrefabPreviewSnapshot(
+            preparedResult.preparedPrefabPreviewSnapshot,
+            *preparedResult.preparedWriteRequest,
+            preparedResult.manifest,
+            request.committedRoot);
+        if (preparedResult.preparedPrefabPreviewSnapshot != nullptr)
+        {
+            preparedResult.preparedPrefabPreviewMeshPayloads =
+                TakePreparedPrefabPreviewMeshPayloads(
+                    *preparedResult.preparedWriteRequest,
+                    preparedResult.manifest);
+        }
+        RememberManifestSourceFileHashes(request.projectRoot, preparedResult.manifest);
+    }
+    preparedResult.prepared = false;
+    preparedResult.preparedWriteRequest.reset();
+    preparedResult.preparedTextureResolutionReport.reset();
+    return preparedResult;
 }
 }

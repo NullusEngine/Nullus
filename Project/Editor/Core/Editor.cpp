@@ -29,6 +29,7 @@
 #include <imgui.h>
 
 #include "Core/Editor.h"
+#include "Core/EditorCameraPerformanceBenchmark.h"
 #include "Core/EditorJobSystemPolicy.h"
 #include "Core/ThumbnailTelemetrySummary.h"
 #include "UI/Settings/PanelWindowSettings.h"
@@ -215,6 +216,19 @@ std::string FormatTelemetryDurationMs(const std::chrono::microseconds elapsed)
     return stream.str();
 }
 
+std::string FormatTelemetryPercentileMs(
+    std::vector<std::chrono::microseconds> values,
+    const double percentile)
+{
+    if (values.empty())
+        return "n/a";
+
+    std::sort(values.begin(), values.end());
+    const auto rank = static_cast<size_t>(std::ceil(percentile * static_cast<double>(values.size()))) - 1u;
+    const auto index = (std::min)(rank, values.size() - 1u);
+    return FormatTelemetryDurationMs(values[index]);
+}
+
 struct ArtifactTelemetryReportSummaries
 {
     std::vector<NLS::Core::Assets::ArtifactLoadTelemetryStageSummary> pathSummaries;
@@ -264,7 +278,9 @@ ArtifactTelemetryReportSummaries BuildArtifactTelemetryReportSummaries(
 std::string FormatThumbnailTelemetrySummaryReport(
     const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
     const NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot& thumbnailDrawOutcomes,
-    const bool telemetryEnabled)
+    const bool telemetryEnabled,
+    const std::string_view runConfiguration,
+    const NLS::Editor::Core::ResidentPrefabPreviewTelemetrySnapshot& resident)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
     using NLS::Core::Assets::ArtifactLoadTelemetryStageName;
@@ -366,6 +382,39 @@ std::string FormatThumbnailTelemetrySummaryReport(
     std::ostringstream report;
     report << "Thumbnail telemetry summary\n";
     report << "telemetryEnabled=" << (telemetryEnabled ? "true" : "false") << '\n';
+    if (!runConfiguration.empty())
+        report << runConfiguration << '\n';
+    report << "Resident prefab preview\n";
+    report << "- residentEntryCount=" << resident.entryCount << '\n';
+    report << "- residentActiveLeaseCount=" << resident.activeLeaseCount << '\n';
+    report << "- residentBytes=" << resident.residentBytes << '\n';
+    report << "- residentHitCount=" << resident.hitCount << '\n';
+    report << "- residentMissCount=" << resident.missCount << '\n';
+    report << "- residentStaleCount=" << resident.staleCount << '\n';
+    report << "- residentZeroArtifactReadHitCount=" << resident.zeroArtifactReadHitCount << '\n';
+    report << "- residentEvictionCount=" << resident.evictionCount << '\n';
+    report << "- residentIdentityMissCount=" << resident.identityMissCount << '\n';
+    report << "- residentFreshnessMismatchCount=" << resident.freshnessMismatchCount << '\n';
+    report << "- residentThumbnailRequestCount=" << resident.thumbnailRequestCount << '\n';
+    report << "- residentThumbnailRequestOtherIdentityCount="
+        << resident.thumbnailRequestOtherIdentityCount << '\n';
+    for (const auto& identityCount : resident.thumbnailRequestIdentityCounts)
+    {
+        report << "- residentThumbnailRequestIdentity=" << identityCount.identity
+            << " count=" << identityCount.count << '\n';
+    }
+    report << "- residentLastRegisteredIdentity=" << resident.lastRegisteredIdentity << '\n';
+    report << "- residentLastRegisteredLookupIdentity=" << resident.lastRegisteredLookupIdentity << '\n';
+    report << "- residentLastRegisteredFreshness=" << resident.lastRegisteredFreshness << '\n';
+    report << "- residentLastRequestedIdentity=" << resident.lastRequestedIdentity << '\n';
+    report << "- residentLastRequestedFreshness=" << resident.lastRequestedFreshness << '\n';
+    report << "- residentLastKnownIdentity=" << resident.lastKnownIdentity << '\n';
+    report << "- residentLastKnownFreshness=" << resident.lastKnownFreshness << "\n\n";
+    report << "- residentLastMismatchIdentity=" << resident.lastMismatchIdentity << '\n';
+    report << "- residentLastMismatchRequestedFreshness="
+        << resident.lastMismatchRequestedFreshness << '\n';
+    report << "- residentLastMismatchKnownFreshness="
+        << resident.lastMismatchKnownFreshness << "\n\n";
     report << "thumbnailRecordCount=";
     size_t thumbnailRecordCount = 0u;
     for (const auto& aggregate : stageTotals)
@@ -378,6 +427,64 @@ std::string FormatThumbnailTelemetrySummaryReport(
     report << "- |draw=fallback records=" << thumbnailDrawOutcomes.fallbackDrawCount << '\n';
     report << "- |draw=type-fallback records=" << thumbnailDrawOutcomes.typeFallbackDrawCount << '\n';
     report << "- droppedPathRecords=" << thumbnailDrawOutcomes.droppedPathCount << "\n\n";
+    report << "- requestBuildFailurePaths=" << thumbnailDrawOutcomes.requestBuildFailurePathTotals.size() << '\n';
+    for (const auto& pathTotal : thumbnailDrawOutcomes.requestBuildFailurePathTotals)
+        report << "- request-build-failure " << pathTotal.path << " records=" << pathTotal.count << '\n';
+    report << '\n';
+
+    report << "Canonical thumbnail timing\n";
+    report << "- initialVisibleThumbnailCount=" << thumbnailDrawOutcomes.initialVisibleThumbnailCount << '\n';
+    report << "- initialVisibleCanonicalEligibleCount="
+        << thumbnailDrawOutcomes.initialVisibleCanonicalEligibleCount << '\n';
+    report << "- canonicalVisibleThumbnailCount=" << thumbnailDrawOutcomes.canonicalVisibleThumbnailCount << '\n';
+    report << "- initialVisibleLoadingCount=" << thumbnailDrawOutcomes.initialVisibleLoadingCount << '\n';
+    report << "- initialVisibleReadyCount=" << thumbnailDrawOutcomes.initialVisibleReadyCount << '\n';
+    report << "- initialVisibleFailedCount=" << thumbnailDrawOutcomes.initialVisibleFailedCount << '\n';
+    report << "- initialVisibleFallbackCount=" << thumbnailDrawOutcomes.initialVisibleFallbackCount << '\n';
+    report << "- initialVisiblePendingAfter30SecondsCount="
+        << thumbnailDrawOutcomes.initialVisiblePendingAfter30SecondsCount << '\n';
+    report << "- initialVisibleAllTerminal="
+        << (thumbnailDrawOutcomes.initialVisibleAllTerminal ? "true" : "false") << '\n';
+    report << "- initialVisibleTimedOut="
+        << (thumbnailDrawOutcomes.initialVisibleTimedOut ? "true" : "false") << '\n';
+    report << "- initialVisibleSetFingerprint="
+        << thumbnailDrawOutcomes.initialVisibleSetFingerprint << '\n';
+    report << "- firstCanonicalDrawMs=";
+    if (thumbnailDrawOutcomes.firstCanonicalDrawMs.has_value())
+        report << std::fixed << std::setprecision(3) << *thumbnailDrawOutcomes.firstCanonicalDrawMs;
+    else
+        report << "n/a";
+    report << '\n';
+    report << "- canonical90PercentFillMs=";
+    if (thumbnailDrawOutcomes.canonical90PercentFillMs.has_value())
+        report << std::fixed << std::setprecision(3) << *thumbnailDrawOutcomes.canonical90PercentFillMs;
+    else
+        report << "n/a";
+    report << "\n\n";
+
+    report << "Initial visible thumbnail presentation details\n";
+    for (const auto& detail : thumbnailDrawOutcomes.initialVisiblePresentationDetails)
+        report << "- " << detail << '\n';
+    report << '\n';
+
+    std::vector<std::chrono::microseconds> editorFrameDurations;
+    std::vector<std::chrono::microseconds> thumbnailUiDurations;
+    for (const auto& record : records)
+    {
+        if (record.stage == ArtifactLoadTelemetryStage::ThumbnailEditorFrame)
+            editorFrameDurations.push_back(record.elapsed);
+        else if (record.stage == ArtifactLoadTelemetryStage::ThumbnailUiDraw)
+            thumbnailUiDurations.push_back(record.elapsed);
+    }
+    report << "Frame timing\n";
+    report << "- editorFrame records=" << editorFrameDurations.size()
+        << " p50Ms=" << FormatTelemetryPercentileMs(editorFrameDurations, 0.50)
+        << " p95Ms=" << FormatTelemetryPercentileMs(editorFrameDurations, 0.95)
+        << " p99Ms=" << FormatTelemetryPercentileMs(editorFrameDurations, 0.99) << '\n';
+    report << "- thumbnailUiDraw records=" << thumbnailUiDurations.size()
+        << " p50Ms=" << FormatTelemetryPercentileMs(thumbnailUiDurations, 0.50)
+        << " p95Ms=" << FormatTelemetryPercentileMs(thumbnailUiDurations, 0.95)
+        << " p99Ms=" << FormatTelemetryPercentileMs(thumbnailUiDurations, 0.99) << "\n\n";
 
     report << "Thumbnail draw outcome paths\n";
     const size_t maxDrawOutcomePaths = std::min<size_t>(thumbnailDrawOutcomePathTotals.size(), 32u);
@@ -385,6 +492,34 @@ std::string FormatThumbnailTelemetrySummaryReport(
     {
         const auto& total = thumbnailDrawOutcomePathTotals[index];
         report << "- " << total.path << " records=" << total.count << '\n';
+    }
+    report << '\n';
+
+    std::vector<NLS::Core::Assets::ArtifactLoadTelemetryStageSummary> thumbnailRequestResultPaths;
+    for (const auto& summary : summaries)
+    {
+        if (summary.stage == ArtifactLoadTelemetryStage::ThumbnailUiDrawGenerationScopeRequestPreview &&
+            summary.path.rfind("thumbnail-result|", 0u) == 0u)
+        {
+            thumbnailRequestResultPaths.push_back(summary);
+        }
+    }
+    std::sort(
+        thumbnailRequestResultPaths.begin(),
+        thumbnailRequestResultPaths.end(),
+        [](const auto& left, const auto& right)
+        {
+            if (left.recordCount != right.recordCount)
+                return left.recordCount > right.recordCount;
+            return left.path < right.path;
+        });
+    report << "Thumbnail request result paths\n";
+    const size_t maxThumbnailRequestResultPaths =
+        std::min<size_t>(thumbnailRequestResultPaths.size(), 64u);
+    for (size_t index = 0u; index < maxThumbnailRequestResultPaths; ++index)
+    {
+        const auto& summary = thumbnailRequestResultPaths[index];
+        report << "- " << summary.path << " records=" << summary.recordCount << '\n';
     }
     report << '\n';
 
@@ -476,14 +611,78 @@ std::string FormatThumbnailTelemetrySummaryReport(
     return report.str();
 }
 
-std::string BuildThumbnailTelemetrySummaryReport()
+std::string BuildThumbnailTelemetryRunConfiguration(const NLS::Editor::Core::Context& context)
+{
+    const auto config = context.GetAssetThumbnailFeatureConfig();
+    const auto backend = context.driver != nullptr
+        ? NLS::Render::Settings::ToString(context.driver->GetActiveGraphicsBackend())
+        : "Unknown";
+#if defined(NDEBUG)
+    constexpr const char* buildConfiguration = "Release";
+#else
+    constexpr const char* buildConfiguration = "Debug";
+#endif
+
+    std::ostringstream output;
+    output << "buildConfiguration=" << buildConfiguration << '\n';
+    output << "backend=" << backend << '\n';
+    output << "thumbnailFeature.resident=" << (config.residentPrefabPreview ? 1 : 0) << '\n';
+    output << "thumbnailFeature.proxyPool=" << (config.previewProxyPool ? 1 : 0) << '\n';
+    output << "thumbnailFeature.atlas=" << (config.atlas ? 1 : 0) << '\n';
+    output << "thumbnailFeature.readbackRing=" << (config.readbackRing ? 1 : 0) << '\n';
+    output << "thumbnailFeature.adaptiveBudget=" << (config.adaptiveBudget ? 1 : 0) << '\n';
+    output << "thumbnailFeature.explicitLanes=" << (config.explicitLanes ? 1 : 0) << '\n';
+    output << "thumbnailCacheMode=" << (config.cacheRoot.empty() ? "project-local" : "custom") << '\n';
+    if (!config.cacheRoot.empty())
+        output << "thumbnailCacheRoot=" << config.cacheRoot.generic_string() << '\n';
+    return output.str();
+}
+
+std::string BuildThumbnailTelemetrySummaryReport(const NLS::Editor::Core::Context& context)
 {
     const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
     const auto drawOutcomes = NLS::Editor::Panels::SnapshotAssetBrowserThumbnailDrawOutcomeTelemetry();
+    NLS::Editor::Core::ResidentPrefabPreviewTelemetrySnapshot resident;
+    if (context.residentPrefabPreviewRegistry != nullptr)
+    {
+        const auto stats = context.residentPrefabPreviewRegistry->GetStats();
+        resident.entryCount = stats.entryCount;
+        resident.activeLeaseCount = stats.activeLeaseCount;
+        resident.residentBytes = stats.residentBytes;
+        resident.hitCount = stats.thumbnailHitCount;
+        resident.missCount = stats.thumbnailMissCount;
+        resident.staleCount = stats.thumbnailStaleCount;
+        resident.zeroArtifactReadHitCount = stats.thumbnailZeroArtifactReadHitCount;
+        resident.evictionCount = stats.evictionCount;
+        resident.identityMissCount = stats.thumbnailIdentityMissCount;
+        resident.freshnessMismatchCount = stats.thumbnailFreshnessMismatchCount;
+        resident.thumbnailRequestCount = stats.thumbnailRequestCount;
+        resident.thumbnailRequestOtherIdentityCount = stats.thumbnailRequestOtherIdentityCount;
+        resident.thumbnailRequestIdentityCounts.reserve(stats.thumbnailRequestIdentityCounts.size());
+        for (const auto& identityCount : stats.thumbnailRequestIdentityCounts)
+        {
+            resident.thumbnailRequestIdentityCounts.push_back({
+                identityCount.identity,
+                identityCount.count
+            });
+        }
+        resident.lastRegisteredIdentity = stats.lastRegisteredIdentity;
+        resident.lastRegisteredLookupIdentity = stats.lastRegisteredLookupIdentity;
+        resident.lastRegisteredFreshness = stats.lastRegisteredFreshness;
+        resident.lastRequestedIdentity = stats.lastThumbnailRequestedIdentity;
+        resident.lastRequestedFreshness = stats.lastThumbnailRequestedFreshness;
+        resident.lastKnownIdentity = stats.lastThumbnailKnownIdentity;
+        resident.lastKnownFreshness = stats.lastThumbnailKnownFreshness;
+        resident.lastMismatchIdentity = stats.lastThumbnailMismatchIdentity;
+        resident.lastMismatchRequestedFreshness = stats.lastThumbnailMismatchRequestedFreshness;
+        resident.lastMismatchKnownFreshness = stats.lastThumbnailMismatchKnownFreshness;
+    }
     return NLS::Editor::Core::BuildThumbnailTelemetrySummaryReport(
         records,
         drawOutcomes,
-        NLS::Core::Assets::IsArtifactLoadTelemetryEnabled());
+        NLS::Core::Assets::IsArtifactLoadTelemetryEnabled(),
+        BuildThumbnailTelemetryRunConfiguration(context),
+        resident);
 }
 
 void WriteThumbnailTelemetrySummaryIfRequested(
@@ -502,15 +701,34 @@ void WriteThumbnailTelemetrySummaryIfRequested(
     if (!outputPath.parent_path().empty())
         std::filesystem::create_directories(outputPath.parent_path(), error);
 
-    std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+    const auto temporaryPath = outputPath.string() + ".tmp";
+    std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
     if (!output.is_open())
     {
         NLS_LOG_ERROR("Failed to open thumbnail telemetry summary output: " + outputPath.generic_string());
         return;
     }
 
-    output << BuildThumbnailTelemetrySummaryReport();
+    output << BuildThumbnailTelemetrySummaryReport(context);
     output.close();
+    error.clear();
+    std::filesystem::remove(outputPath, error);
+    if (error)
+    {
+        NLS_LOG_ERROR(
+            "Failed to remove previous thumbnail telemetry summary output: " +
+            outputPath.generic_string() + " (" + error.message() + ")");
+        return;
+    }
+    error.clear();
+    std::filesystem::rename(temporaryPath, outputPath, error);
+    if (error)
+    {
+        NLS_LOG_ERROR(
+            "Failed to atomically replace thumbnail telemetry summary output: " +
+            outputPath.generic_string() + " (" + error.message() + ")");
+        return;
+    }
     if (logSuccess)
         NLS_LOG_INFO("Wrote thumbnail telemetry summary: " + outputPath.generic_string());
 }
@@ -672,9 +890,16 @@ namespace Editor::Core
 std::string BuildThumbnailTelemetrySummaryReport(
     const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
     const NLS::Editor::Panels::AssetBrowserThumbnailDrawOutcomeTelemetrySnapshot& drawOutcomes,
-    const bool telemetryEnabled)
+    const bool telemetryEnabled,
+    const std::string_view runConfiguration,
+    const ResidentPrefabPreviewTelemetrySnapshot& resident)
 {
-    return FormatThumbnailTelemetrySummaryReport(records, drawOutcomes, telemetryEnabled);
+    return FormatThumbnailTelemetrySummaryReport(
+        records,
+        drawOutcomes,
+        telemetryEnabled,
+        runConfiguration,
+        resident);
 }
 }
 
@@ -858,7 +1083,14 @@ void Editor::Core::Editor::SetupUI()
     logSetupStep("EditorTopBar");
     m_panelsManager.CreatePanel<Panels::EditorStatusBar>("Editor Status Bar");
     logSetupStep("EditorStatusBar");
-    m_panelsManager.CreatePanel<Panels::AssetBrowser>("Asset Browser", true, settings, m_context.engineAssetsPath, m_context.projectAssetsPath);
+    m_panelsManager.CreatePanel<Panels::AssetBrowser>(
+        "Asset Browser",
+        true,
+        settings,
+        m_context.engineAssetsPath,
+        m_context.projectAssetsPath,
+        "",
+        m_context.GetAssetThumbnailFeatureConfig());
     logSetupStep("AssetBrowser");
     m_panelsManager.CreatePanel<Panels::ProfilerPanel>("Profiler", false, settings);
     logSetupStep("Profiler");
@@ -1017,6 +1249,7 @@ void Editor::Core::Editor::UpdateThumbnailTelemetrySummaryExport()
 void Editor::Core::Editor::Update(float p_deltaTime)
 {
     NLS_PROFILE_SCOPE();
+    const auto editorFrameBegin = std::chrono::steady_clock::now();
 
     const bool logUpdateStages = m_logNextUpdateStages;
     m_logNextUpdateStages = false;
@@ -1076,10 +1309,14 @@ void Editor::Core::Editor::Update(float p_deltaTime)
     logUpdateStage("UpdateValidationSceneCameraMotion");
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UpdateEditorPanels");
+        const EditorCameraPerformanceStageScope stageScope(EditorCameraPerformanceStage::EditorPanels);
         UpdateEditorPanels(p_deltaTime);
     }
     logUpdateStage("UpdateEditorPanels");
-    RenderEditorUI(p_deltaTime);
+    {
+        const EditorCameraPerformanceStageScope stageScope(EditorCameraPerformanceStage::RenderUi);
+        RenderEditorUI(p_deltaTime);
+    }
     logUpdateStage("RenderEditorUI");
     {
         NLS_PROFILE_NAMED_SCOPE("EditorActions::ExecuteDelayedActions");
@@ -1096,6 +1333,23 @@ void Editor::Core::Editor::Update(float p_deltaTime)
         PublishReflectionDiagnosticsToLog();
     }
     logUpdateStage("PublishReflectionDiagnosticsToLog");
+
+    if (m_context.IsEditorWindowShown() && NLS::Core::Assets::IsArtifactLoadTelemetryEnabled())
+    {
+        // Keep frame timing representative while leaving telemetry capacity for
+        // the thumbnail stages that explain stalled GPU/resource requests.
+        const auto telemetryFrameSerial = m_thumbnailTelemetryFrameSerial++;
+        if ((telemetryFrameSerial % 8u) == 0u)
+        {
+            NLS::Core::Assets::RecordArtifactLoadTelemetry({
+                NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailEditorFrame,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - editorFrameBegin),
+                0u,
+                "editor-frame"
+            });
+        }
+    }
 }
 
 void Editor::Core::Editor::LogNextUpdateStages()
@@ -1482,13 +1736,32 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
 
 void Editor::Core::Editor::RestoreStartupScene()
 {
+    struct ResidentStartupSceneRestoreScope
+    {
+        std::shared_ptr<NLS::Editor::Assets::ResidentPrefabPreviewRegistry> registry;
+
+        explicit ResidentStartupSceneRestoreScope(
+            std::shared_ptr<NLS::Editor::Assets::ResidentPrefabPreviewRegistry> value)
+            : registry(std::move(value))
+        {
+            if (registry != nullptr)
+                registry->SetSceneRestoreInProgress(true);
+        }
+
+        ~ResidentStartupSceneRestoreScope()
+        {
+            if (registry != nullptr)
+                registry->SetSceneRestoreInProgress(false);
+        }
+    } residentStartupSceneRestoreScope(m_context.residentPrefabPreviewRegistry);
+
     const auto restoreStartupSceneBegin = std::chrono::steady_clock::now();
     const auto restoreLoadedScenePrefabs = [this]()
     {
         const auto prefabRestoreBegin = std::chrono::steady_clock::now();
         NLS_LOG_INFO("[Startup] RestoreStartupScene prefab restore begin");
         m_context.PresentStartupProgressFrame("Restoring startup scene prefab instances", 0.87f);
-        const bool prefabRestoreSucceeded = m_editorActions.RestorePrefabInstancesForCurrentSceneFromDisk();
+        const bool prefabRestoreSucceeded = m_editorActions.RestorePrefabInstancesForCurrentSceneFromDisk(true);
         NLS_LOG_INFO(
             "[Startup] RestoreStartupScene prefab restore end elapsedMs=" +
             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1901,6 +2174,7 @@ void Editor::Core::Editor::UpdateViews(float p_deltaTime)
     }
     {
         NLS_PROFILE_NAMED_SCOPE("SceneView::Update");
+        const EditorCameraPerformanceStageScope stageScope(EditorCameraPerformanceStage::SceneViewUpdate);
         sceneView.Update(p_deltaTime);
     }
 }
@@ -1929,6 +2203,7 @@ void Editor::Core::Editor::PostUpdate()
     if (m_context.driver->GetActiveGraphicsBackend() != Render::Settings::EGraphicsBackend::METAL)
     {
         NLS_PROFILE_NAMED_SCOPE("DriverUIAccess::PresentSwapchain");
+        const EditorCameraPerformanceStageScope stageScope(EditorCameraPerformanceStage::PresentSwapchain);
         Render::Context::DriverUIAccess::PresentSwapchain(*m_context.driver);
     }
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)

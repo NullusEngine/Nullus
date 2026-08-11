@@ -1105,7 +1105,7 @@ Render::Settings::EGraphicsBackend ResolveLauncherGraphicsBackend()
     const auto resolvedBackend = Render::Settings::GetPhase1RequiredRuntimeBackend();
 
     if (const auto restriction =
-        Render::Settings::GetPhase1BackendRestrictionMessage(resolvedBackend, "Launcher runtime");
+        Render::Settings::GetPhase1BackendSelectionRestrictionMessage(resolvedBackend, "Launcher runtime");
         restriction.has_value())
     {
         throw std::runtime_error(*restriction);
@@ -1197,7 +1197,7 @@ void Launcher::SetupContext()
     }
 
     if (const auto restriction =
-        Render::Settings::GetPhase1BackendRestrictionMessage(m_graphicsBackend, "Launcher runtime");
+        Render::Settings::GetPhase1BackendSelectionRestrictionMessage(m_graphicsBackend, "Launcher runtime");
         restriction.has_value())
     {
         throw std::runtime_error(*restriction);

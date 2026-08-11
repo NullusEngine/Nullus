@@ -6,6 +6,8 @@
 #include "Math/Vector3.h"
 #include "Serialize/ObjectId.h"
 
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -27,6 +29,15 @@ struct PreviewRenderableSnapshot
 {
     std::vector<PreviewDrawItem> drawItems;
     size_t expectedDrawItemCount = 0u;
+};
+
+// One-shot mesh bytes retained only across a successful same-process import.
+// They let thumbnail preparation reuse the importer output without creating a
+// persistent proxy or reopening every committed mesh artifact.
+struct PreparedPrefabPreviewMeshPayload
+{
+    std::string artifactPath;
+    std::shared_ptr<const std::vector<uint8_t>> bytes;
 };
 
 PreviewRenderableSnapshot BuildPreviewRenderableSnapshot(

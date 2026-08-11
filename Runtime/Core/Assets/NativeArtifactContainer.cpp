@@ -549,7 +549,7 @@ std::string ComputeNativeArtifactDependencyHash(const std::vector<AssetDependenc
 
 std::vector<uint8_t> WriteNativeArtifactContainer(
     NativeArtifactMetadata metadata,
-    const std::vector<uint8_t>& payload)
+    const std::span<const uint8_t> payload)
 {
     if (metadata.artifactType == ArtifactType::Unknown ||
         metadata.schemaName.empty() ||
@@ -558,7 +558,7 @@ std::vector<uint8_t> WriteNativeArtifactContainer(
         return {};
     }
 
-    metadata.payloadHash = ComputeNativeArtifactPayloadHash(payload);
+    metadata.payloadHash = ComputeNativeArtifactPayloadHash(payload.data(), payload.size());
     metadata.dependencyHash = ComputeNativeArtifactDependencyHash(metadata.dependencies);
     const auto metadataText = SerializeMetadata(metadata);
 
@@ -583,6 +583,15 @@ std::vector<uint8_t> WriteNativeArtifactContainer(
     bytes.insert(bytes.end(), metadataText.begin(), metadataText.end());
     bytes.insert(bytes.end(), payload.begin(), payload.end());
     return bytes;
+}
+
+std::vector<uint8_t> WriteNativeArtifactContainer(
+    NativeArtifactMetadata metadata,
+    const std::vector<uint8_t>& payload)
+{
+    return WriteNativeArtifactContainer(
+        std::move(metadata),
+        std::span<const uint8_t>(payload.data(), payload.size()));
 }
 
 std::optional<NativeArtifactContainer> ReadNativeArtifactContainer(

@@ -2,12 +2,28 @@
 
 #include <cstdio>
 #include <limits>
+#include <stdexcept>
 #include <string>
 
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 
 namespace NLS::Editor::Launch
 {
+    bool TryParseBooleanFlagValue(const std::string& value, bool& result)
+    {
+        if (value == "1" || value == "true" || value == "TRUE" || value == "on" || value == "ON")
+        {
+            result = true;
+            return true;
+        }
+        if (value == "0" || value == "false" || value == "FALSE" || value == "off" || value == "OFF")
+        {
+            result = false;
+            return true;
+        }
+        return false;
+    }
+
     void PrintUsage(const char* executableName)
     {
         std::printf("Usage: %s [options] [project_path]\n", executableName);
@@ -26,6 +42,7 @@ namespace NLS::Editor::Launch
         std::printf("  --editor-camera-performance-output <path>  Write low-overhead Scene View camera benchmark JSON\n");
         std::printf("  --editor-camera-performance-warmup-frames <N>  Set benchmark warm-up frames (default 30)\n");
         std::printf("  --editor-camera-performance-frames <N>  Set benchmark measured frames (default 300)\n");
+        std::printf("  --editor-camera-performance-settle-frames <N>  Capture N static frames after camera motion (default 0)\n");
 	        std::printf("  --editor-validation-create-asset <path>  Create an asset instance during startup validation\n");
 	        std::printf("  --editor-validation-asset-browser-folder <path>  Select an Asset Browser folder during startup validation\n");
 	        std::printf("  --editor-validation-disable-hzb-occlusion  Disable HZB occlusion for A/B validation\n");
@@ -34,6 +51,13 @@ namespace NLS::Editor::Launch
         std::printf("  --editor-validation-scene-readback-summary <path>  Write Scene View readback summary during validation\n");
         std::printf("  --editor-validation-prefab-drag-proxy-summary <path>  Write Scene View prefab drag proxy summary during validation\n");
         std::printf("  --editor-thumbnail-telemetry-summary <path>  Write thumbnail telemetry summary on editor shutdown\n");
+        std::printf("  --editor-thumbnail-resident <0|1>  Enable resident prefab thumbnail source\n");
+        std::printf("  --editor-thumbnail-proxy-pool <0|1>  Enable preview proxy pool\n");
+        std::printf("  --editor-thumbnail-atlas <0|1>  Enable decoded thumbnail atlas\n");
+        std::printf("  --editor-thumbnail-readback-ring <0|1>  Enable GPU readback ring\n");
+        std::printf("  --editor-thumbnail-adaptive-budget <0|1>  Enable adaptive thumbnail budget\n");
+        std::printf("  --editor-thumbnail-lanes <0|1>  Enable explicit thumbnail lanes\n");
+        std::printf("  --editor-thumbnail-cache-root <path>  Override thumbnail cache root\n");
         std::printf("  --editor-validation-scene-camera <pos;rot>  Force Scene View camera, e.g. 1,2,3;10,20,30\n");
         std::printf("  --editor-log-render-draw-path  Log renderer draw/package diagnostics\n");
         std::printf("  --editor-log-scene-camera-input  Log Scene View input and camera movement diagnostics\n");
@@ -73,7 +97,7 @@ namespace NLS::Editor::Launch
                 }
 
                 if (const auto restriction =
-                    Render::Settings::GetPhase1BackendRestrictionMessage(parsed.backendOverride.value(), "Editor CLI");
+                    Render::Settings::GetPhase1BackendSelectionRestrictionMessage(parsed.backendOverride.value(), "Editor CLI");
                     restriction.has_value())
                 {
                     std::fprintf(stderr, "[main] %s\n", restriction->c_str());
@@ -207,6 +231,25 @@ namespace NLS::Editor::Launch
                     return parsed;
                 }
             }
+
+            else if (arg == "--editor-camera-performance-settle-frames" && i + 1 < argc)
+            {
+                try
+                {
+                    const auto value = std::stoul(argv[++i]);
+                    if (value > std::numeric_limits<uint32_t>::max())
+                        throw std::out_of_range("uint32_t overflow");
+                    parsed.diagnosticsSettings.editorCameraPerformanceSettleFrames =
+                        static_cast<uint32_t>(value);
+                    parsed.hasDiagnosticsOverride = true;
+                }
+                catch (...)
+                {
+                    std::fprintf(stderr, "[main] Invalid value for --editor-camera-performance-settle-frames: %s\n", argv[i]);
+                    parsed.hasError = true;
+                    return parsed;
+                }
+            }
 	            else if (arg == "--editor-validation-create-asset" && i + 1 < argc)
 	            {
 	                parsed.diagnosticsSettings.editorValidationCreateAsset = argv[++i];
@@ -255,6 +298,41 @@ namespace NLS::Editor::Launch
             else if (arg == "--editor-thumbnail-telemetry-summary" && i + 1 < argc)
             {
                 parsed.diagnosticsSettings.editorThumbnailTelemetrySummaryOutput = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (
+                (arg == "--editor-thumbnail-resident" ||
+                 arg == "--editor-thumbnail-proxy-pool" ||
+                 arg == "--editor-thumbnail-atlas" ||
+                 arg == "--editor-thumbnail-readback-ring" ||
+                 arg == "--editor-thumbnail-adaptive-budget" ||
+                 arg == "--editor-thumbnail-lanes") &&
+                i + 1 < argc)
+            {
+                bool value = false;
+                if (!TryParseBooleanFlagValue(argv[++i], value))
+                {
+                    std::fprintf(stderr, "[main] Invalid boolean value for %s: %s\n", arg.c_str(), argv[i]);
+                    parsed.hasError = true;
+                    return parsed;
+                }
+                if (arg == "--editor-thumbnail-resident")
+                    parsed.diagnosticsSettings.editorThumbnailResidentPrefabPreview = value;
+                else if (arg == "--editor-thumbnail-proxy-pool")
+                    parsed.diagnosticsSettings.editorThumbnailPreviewProxyPool = value;
+                else if (arg == "--editor-thumbnail-atlas")
+                    parsed.diagnosticsSettings.editorThumbnailAtlas = value;
+                else if (arg == "--editor-thumbnail-readback-ring")
+                    parsed.diagnosticsSettings.editorThumbnailReadbackRing = value;
+                else if (arg == "--editor-thumbnail-adaptive-budget")
+                    parsed.diagnosticsSettings.editorThumbnailAdaptiveBudget = value;
+                else
+                    parsed.diagnosticsSettings.editorThumbnailExplicitLanes = value;
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-thumbnail-cache-root" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorThumbnailCacheRoot = argv[++i];
                 parsed.hasDiagnosticsOverride = true;
             }
             else if (arg == "--editor-log-scene-camera-input")

@@ -1,5 +1,8 @@
 #include "Assets/PrefabEditorWorkflow.h"
 
+#include "Assets/AssetThumbnailService.h"
+#include "Assets/EditorAssetDragDropBridge.h"
+#include "Assets/ResidentPrefabPreviewRegistry.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Engine/Assets/PrefabAsset.h"
@@ -10,6 +13,8 @@
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/ObjectGraphWriter.h"
+#include "Core/EditorActions.h"
+#include <ServiceLocator.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -64,6 +69,52 @@ void AddDiagnostic(
     std::string message)
 {
     result.diagnostics.push_back({std::move(code), std::move(message)});
+}
+
+void PublishResidentPreviewForLiveInstance(
+    const InstantiatePrefabRequest& request,
+    const PrefabArtifact& prefab,
+    const std::unordered_map<const GameObject*, ObjectId>& sourceByInstanceObject)
+{
+    if (sourceByInstanceObject.empty() ||
+        !NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
+    {
+        return;
+    }
+
+    auto& context = NLS::Core::ServiceLocator::Get<
+        NLS::Editor::Core::EditorActions>().GetContext();
+    if (context.residentPrefabPreviewRegistry == nullptr)
+        return;
+
+    const auto loadedKey = TryGetImportedPrefabLoadKeyForArtifact(prefab);
+    auto sourceAssetPath = request.prefabAssetPath;
+    if (sourceAssetPath.empty() && loadedKey.has_value())
+        sourceAssetPath = loadedKey->source.sourceAssetPath;
+    const auto artifactPath = loadedKey.has_value()
+        ? loadedKey->prefabArtifactPath
+        : std::string {};
+    const auto runtimeCacheIdentity = loadedKey.has_value()
+        ? loadedKey->runtimeCacheIdentity
+        : std::string {};
+
+    if (auto sceneLease = context.residentPrefabPreviewRegistry->EnsureLivePrefabSnapshotForScene(
+            std::filesystem::path(context.projectPath),
+            request.prefabAssetId,
+            sourceAssetPath,
+            request.prefabSubAssetKey,
+            artifactPath,
+            runtimeCacheIdentity,
+            prefab,
+            sourceByInstanceObject,
+            context.meshManager,
+            context.materialManager,
+            &context.textureManager,
+            context.resourceLifetimeRegistry);
+        sceneLease.has_value())
+    {
+        context.sceneResidentPrefabPreviewLeases.push_back(std::move(*sceneLease));
+    }
 }
 
 void AddDependencyRefreshRequest(
@@ -2279,6 +2330,11 @@ PrefabEditorOperationResult PrefabEditorWorkflow::InstantiatePrefab(
             MapInstanceHierarchy(*prefab, *rootRecord, *instance.instanceRoot, instance);
     }
 
+    PublishResidentPreviewForLiveInstance(
+        request,
+        *prefab,
+        instance.sourceByInstanceObject);
+
     result.instance = std::move(instance);
     if (request.sceneAssetId.IsValid())
     {
@@ -2348,6 +2404,11 @@ PrefabEditorOperationResult PrefabEditorWorkflow::ConnectExistingPrefabInstance(
         result.status = PrefabEditorOperationStatus::Failed;
         return result;
     }
+
+    PublishResidentPreviewForLiveInstance(
+        request,
+        *prefab,
+        instance.sourceByInstanceObject);
 
     result.instance = std::move(instance);
     if (request.sceneAssetId.IsValid())

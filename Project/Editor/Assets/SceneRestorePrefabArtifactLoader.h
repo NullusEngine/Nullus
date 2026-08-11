@@ -29,7 +29,8 @@ namespace NLS::Editor::Assets
         const bool allowRepairReimport = true,
         const bool requireRendererArtifacts = true,
         std::string* diagnosticCode = nullptr,
-        std::string* diagnosticMessage = nullptr)
+        std::string* diagnosticMessage = nullptr,
+        UnifiedPrefabLoadKey* loadedKey = nullptr)
     {
         auto loadRequest = MakeSceneRestoreUnifiedPrefabLoadRequest(
             NormalizePrefabSourceIdentity(
@@ -45,6 +46,13 @@ namespace NLS::Editor::Assets
         }
         auto unifiedLoad = prefabArtifactLoader.LoadUnifiedPrefabShared(loadRequest);
         auto artifact = std::move(unifiedLoad.prefab);
+        if (loadedKey != nullptr)
+        {
+            if (unifiedLoad.key.has_value())
+                *loadedKey = *unifiedLoad.key;
+            else
+                *loadedKey = {};
+        }
         if (diagnosticCode != nullptr)
             *diagnosticCode = unifiedLoad.diagnosticCode;
         if (diagnosticMessage != nullptr)
@@ -64,6 +72,13 @@ namespace NLS::Editor::Assets
             return artifact;
 
         unifiedLoad = prefabArtifactLoader.LoadUnifiedPrefabShared(loadRequest);
+        if (loadedKey != nullptr)
+        {
+            if (unifiedLoad.key.has_value())
+                *loadedKey = *unifiedLoad.key;
+            else
+                *loadedKey = {};
+        }
         if (diagnosticCode != nullptr)
             *diagnosticCode = unifiedLoad.diagnosticCode;
         if (diagnosticMessage != nullptr)

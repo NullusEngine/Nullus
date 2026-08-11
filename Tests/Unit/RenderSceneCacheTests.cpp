@@ -984,6 +984,9 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionSkipsStablePrimitiveScan)
     EXPECT_TRUE(second.usedSceneRenderContentRevisionFastPath);
     EXPECT_EQ(second.syncTouchedPrimitiveCount, 0u);
     EXPECT_EQ(second.reusedPrimitiveCount, 128u);
+    EXPECT_EQ(
+        renderScene.GetLastLargeSceneTelemetryForTesting().sceneRenderContentRevisionFastPathCount,
+        1u);
 
     fixture.scene.MarkRenderContentChanged();
     const auto invalidated = renderScene.Synchronize(fixture.scene, options);
@@ -3793,6 +3796,9 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
     EXPECT_EQ(serialQueues.transparents.size(), parallelQueues.transparents.size());
     EXPECT_FALSE(serialQueues.decals.empty());
     EXPECT_FALSE(serialQueues.transparents.empty());
+    EXPECT_GT(
+        renderScene.GetLastLargeSceneTelemetryForTesting().parallelVisibilityTimeNs,
+        0u);
     EXPECT_EQ(ExtractMeshes(serialQueues), ExtractMeshes(parallelQueues));
 }
 
@@ -5499,6 +5505,26 @@ TEST(RenderSceneCacheTests, MeshManagerLoadsBundleAndLegacyArtifactsAsRuntimeLOD
     ASSERT_NE(legacyMesh, nullptr);
     EXPECT_EQ(legacyMesh->GetLODCount(), 1u);
     EXPECT_EQ(legacyMesh->GetLODMesh(99u), legacyMesh);
+}
+
+TEST(RenderSceneCacheTests, MeshManagerAsyncArtifactReusesEquivalentAbsoluteArtifactPath)
+{
+    EnsureRenderSceneTestDriver();
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_runtime_mesh_equivalent_path_" + NLS::Guid::New().ToString()));
+    const auto canonicalPath = root.Path() / "mesh.nmesh";
+    const auto registeredAliasPath = root.Path() / "nested" / ".." / "mesh.nmesh";
+    WriteCubeMeshArtifact(canonicalPath);
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    auto* registeredMesh = meshManager.GetResource(registeredAliasPath.string(), true);
+    ASSERT_NE(registeredMesh, nullptr);
+
+    // The thumbnail path can be the normalized absolute artifact path while
+    // the scene registered the same resource through a different spelling.
+    EXPECT_EQ(meshManager.RequestAsyncArtifact(canonicalPath.string(), true), registeredMesh);
+    EXPECT_FALSE(meshManager.IsAsyncArtifactLoadPending(canonicalPath.string()));
 }
 
 TEST(RenderSceneCacheTests, MeshManagerReloadReplacesRuntimeLODResources)

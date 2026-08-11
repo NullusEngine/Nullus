@@ -482,6 +482,7 @@ bool AssetImporterFacade::SaveAndReimport(
     }
 
     AssetDatabaseFacade database(m_roots);
+    database.SetResidentPrefabPreviewRegistry(m_residentPrefabPreviewRegistry);
     const auto imported = progressTracker
         ? database.ReimportAsset(normalized, *progressTracker, job)
         : database.ReimportAsset(normalized);

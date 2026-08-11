@@ -488,6 +488,9 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
     const std::filesystem::path& path,
     const uint64_t maxMetadataBytes)
 {
+    // Legacy raw bundles do not have a native container header from which a
+    // bounded prefix can be read. Keep their established compatibility path;
+    // imported native bundles take the lightweight path below.
     {
         std::ifstream input(path, std::ios::binary);
         uint32_t magic = 0u;
@@ -525,18 +528,107 @@ std::optional<MeshArtifactHeaderPreview> ReadMeshArtifactHeaderPreview(
     if (ReadUInt32(payload, payloadMagicOffset, payloadMagic) &&
         payloadMagic == kMeshArtifactBundleMagic)
     {
-        const auto bundle = LoadMeshArtifactBundle(path);
-        if (!bundle.has_value() || bundle->lodResources.empty())
+        // LOD bundles contain a native mesh artifact for each LOD. The
+        // planning path only needs the first mesh header and bounds; loading
+        // the complete bundle here used to deserialize every vertex/index
+        // buffer once per prefab-plan inspection and made large prefabs stay
+        // pending even when their persistent proxy was already cached.
+        const auto bundlePrefixSize = static_cast<size_t>((std::min)(
+            prefix->payloadSize,
+            maxMetadataBytes));
+        if (bundlePrefixSize < prefix->bytes.size())
             return std::nullopt;
 
-        const auto& mesh = bundle->lodResources.front().mesh;
+        auto bundlePrefix = prefix;
+        if (bundlePrefixSize > bundlePrefix->bytes.size())
+        {
+            bundlePrefix = NLS::Core::Assets::ReadNativeArtifactPayloadPrefixFromFile(
+                path,
+                NLS::Core::Assets::ArtifactType::Mesh,
+                kMeshArtifactContainerSchemaVersion,
+                bundlePrefixSize,
+                maxMetadataBytes);
+        }
+        if (!bundlePrefix.has_value())
+            return std::nullopt;
+
+        ByteView bundlePayload {
+            bundlePrefix->bytes.data(),
+            bundlePrefix->bytes.size()};
+        size_t bundleOffset = 0u;
+        uint32_t bundleMagic = 0u;
+        uint32_t bundleVersion = 0u;
+        uint32_t lodCount = 0u;
+        uint32_t minLOD = 0u;
+        if (!ReadUInt32(bundlePayload, bundleOffset, bundleMagic) ||
+            !ReadUInt32(bundlePayload, bundleOffset, bundleVersion) ||
+            !ReadUInt32(bundlePayload, bundleOffset, lodCount) ||
+            bundleMagic != kMeshArtifactBundleMagic ||
+            (bundleVersion != 1u && bundleVersion != kMeshArtifactBundleVersion) ||
+            lodCount == 0u)
+        {
+            return std::nullopt;
+        }
+        if (bundleVersion >= 2u && !ReadUInt32(bundlePayload, bundleOffset, minLOD))
+            return std::nullopt;
+        if (minLOD >= lodCount)
+            return std::nullopt;
+
+        float screenSize = 0.0f;
+        uint32_t meshByteCount = 0u;
+        if (!ReadFloat(bundlePayload, bundleOffset, screenSize) ||
+            !ReadUInt32(bundlePayload, bundleOffset, meshByteCount) ||
+            meshByteCount < kNativeArtifactHeaderSize ||
+            meshByteCount > bundlePayload.size - bundleOffset)
+        {
+            return std::nullopt;
+        }
+
+        if (bundleOffset + kNativeArtifactHeaderSize > bundlePayload.size)
+            return std::nullopt;
+        std::array<uint8_t, kNativeArtifactHeaderSize> innerHeaderBytes {};
+        std::copy_n(
+            bundlePayload.data + bundleOffset,
+            innerHeaderBytes.size(),
+            innerHeaderBytes.data());
+        NativeArtifactHeaderPreview innerHeader;
+        if (!ReadNativeArtifactHeaderPreview(innerHeaderBytes, innerHeader) ||
+            innerHeader.artifactType != static_cast<uint32_t>(NLS::Core::Assets::ArtifactType::Mesh) ||
+            innerHeader.schemaVersion != kMeshArtifactContainerSchemaVersion ||
+            innerHeader.payloadOffset > meshByteCount ||
+            innerHeader.payloadSize > meshByteCount - innerHeader.payloadOffset ||
+            innerHeader.payloadOffset + innerHeader.payloadSize != meshByteCount)
+        {
+            return std::nullopt;
+        }
+
+        const auto innerPayloadOffset = bundleOffset + innerHeader.payloadOffset;
+        if (innerPayloadOffset > bundlePayload.size ||
+            innerHeader.payloadSize < sizeof(MeshArtifactHeader) ||
+            innerPayloadOffset + sizeof(MeshArtifactHeader) > bundlePayload.size)
+        {
+            return std::nullopt;
+        }
+
+        const ByteView innerPayload {
+            bundlePayload.data + innerPayloadOffset,
+            static_cast<size_t>(innerHeader.payloadSize)};
+        MeshArtifactHeader header;
+        if (!ReadHeader(innerPayload, header))
+            return std::nullopt;
+
         MeshArtifactHeaderPreview preview;
-        preview.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
-        preview.indexCount = static_cast<uint32_t>(mesh.indices.size());
-        preview.materialIndex = mesh.materialIndex;
-        preview.boundingSphere = mesh.boundingSphere;
-        preview.hasBoundingSphere = mesh.hasBoundingSphere;
+        preview.vertexCount = header.vertexCount;
+        preview.indexCount = header.indexCount;
+        preview.materialIndex = header.materialIndex;
         preview.isLODBundle = true;
+        if (header.version >= kMeshArtifactVersionWithBoundingSphere)
+        {
+            size_t offset = sizeof(MeshArtifactHeader);
+            if (!ReadBoundingSphere(innerPayload, offset, preview.boundingSphere))
+                return std::nullopt;
+            preview.hasBoundingSphere = true;
+        }
         return preview;
     }
 

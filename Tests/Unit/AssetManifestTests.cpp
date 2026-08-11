@@ -13,6 +13,8 @@
 #include <lmdb.h>
 
 #include <array>
+#include <fstream>
+#include <vector>
 
 namespace
 {
@@ -261,6 +263,31 @@ TEST(AssetManifestTests, ArtifactStorageFileNamesMatchSha256TestVectors)
         NLS::Core::Assets::BuildArtifactStorageFileName(abc.data(), abc.size()),
         "ba7816bf8f01cfea414140de5dae2223"
         "b00361a396177a9cb410ff61f20015ad");
+}
+
+TEST(AssetManifestTests, ArtifactStorageFileNameFromFileMatchesInMemoryHashAcrossChunkBoundaries)
+{
+    std::vector<uint8_t> bytes(768u * 1024u + 37u);
+    for (size_t index = 0u; index < bytes.size(); ++index)
+        bytes[index] = static_cast<uint8_t>((index * 17u + 29u) & 0xffu);
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_artifact_manifest_" + NLS::Guid::New().ToString());
+    const auto payloadPath = root / "payload.bin";
+    std::filesystem::create_directories(root);
+    {
+        std::ofstream stream(payloadPath, std::ios::binary);
+        ASSERT_TRUE(stream);
+        stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        ASSERT_TRUE(stream);
+    }
+
+    EXPECT_EQ(
+        NLS::Core::Assets::BuildArtifactStorageFileNameFromFile(payloadPath),
+        NLS::Core::Assets::BuildArtifactStorageFileName(bytes.data(), bytes.size()));
+    EXPECT_TRUE(NLS::Core::Assets::BuildArtifactStorageFileNameFromFile(root / "missing.bin").empty());
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(AssetManifestTests, PortableContentArtifactPathCanBeDerivedFromPhysicalLibraryPath)

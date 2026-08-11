@@ -348,6 +348,10 @@ namespace NLS::Render::Backend
 			capabilities.SetFeature(RHIDeviceFeature::FramebufferReadback, true);
 			capabilities.SetFeature(RHIDeviceFeature::EditorPickingReadback, true);
 			capabilities.SetFeature(RHIDeviceFeature::UITextureHandles, true);
+			capabilities.SetFeature(
+				RHIDeviceFeature::UITextureAtlasRegionUpload,
+				true,
+				"DX12 UI thumbnail atlas uploads use CopyTextureRegion with explicit row-pitch and resource-state validation");
 			capabilities.SetFeature(RHIDeviceFeature::Cubemaps, true);
 			capabilities.SetFeature(RHIDeviceFeature::MultiRenderTargets, true);
 			capabilities.SetFeature(RHIDeviceFeature::ParallelCommandRecording, true);

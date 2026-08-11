@@ -615,7 +615,7 @@ namespace NLS::Render::RHI
                 copyDesc.bufferOffset = 0u;
                 copyDesc.mipLevel = request.mipLevel;
                 copyDesc.arrayLayer = request.arrayLayer;
-                copyDesc.textureOffset = {};
+                copyDesc.textureOffset = request.textureOffset;
                 copyDesc.extent = request.extent;
                 copyDesc.rowPitch = request.rowPitch;
                 copyDesc.slicePitch = request.slicePitch;

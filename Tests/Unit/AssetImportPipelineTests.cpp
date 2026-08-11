@@ -2152,6 +2152,55 @@ TEST(AssetImportPipelineTests, NativeArtifactContainerViewPreservesValidationAnd
         << "The low-copy view must also keep native container dependency hash validation.";
 }
 
+TEST(AssetImportPipelineTests, ArtifactWriterRewrapsNativePayloadWithoutPayloadVectorCopy)
+{
+    using namespace NLS::Core::Assets;
+
+    const auto root = MakeImportTestRoot();
+    const auto stagingRoot = root / "Staging";
+    const auto commitRoot = root / "Committed";
+    const std::vector<uint8_t> rawPayload = {'r', 'e', 'w', 'r', 'a', 'p'};
+
+    NativeArtifactMetadata previousMetadata;
+    previousMetadata.artifactType = ArtifactType::Prefab;
+    previousMetadata.schemaName = "prefab";
+    previousMetadata.schemaVersion = 1u;
+    const auto existingContainer = WriteNativeArtifactContainer(std::move(previousMetadata), rawPayload);
+    ASSERT_FALSE(existingContainer.empty());
+
+    ArtifactWriteRequest request;
+    request.sourceAssetId = AssetId(NLS::Guid::Parse("78787878-7878-4788-8788-787878787878"));
+    request.importerId = "test-importer";
+    request.importerVersion = 1u;
+    request.targetPlatform = "editor";
+    request.primarySubAssetKey = "prefab:Rewrapped";
+    request.artifacts.push_back({
+        "prefab:Rewrapped",
+        ArtifactType::Prefab,
+        "prefab",
+        "Rewrapped",
+        "prefabs/rewrapped",
+        existingContainer
+    });
+
+    ClearArtifactLoadTelemetry();
+    ArtifactWriter writer(stagingRoot, commitRoot);
+    const auto result = writer.WriteAndCommit(request, nullptr);
+
+    ASSERT_TRUE(result.committed);
+    ASSERT_EQ(result.manifest.subAssets.size(), 1u);
+    const auto telemetry = SnapshotArtifactLoadTelemetry();
+    const auto stored = ReadArtifactFile(commitRoot, result.manifest.subAssets.front());
+    const auto storedContainer = ReadNativeArtifactContainer(stored, ArtifactType::Prefab, 1u);
+    ASSERT_TRUE(storedContainer.has_value());
+    EXPECT_EQ(storedContainer->payload, rawPayload);
+
+    EXPECT_GE(CountArtifactTelemetryStage(telemetry, ArtifactLoadTelemetryStage::NativeArtifactLowCopyView), 1u);
+    EXPECT_EQ(CountArtifactTelemetryStage(telemetry, ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy), 0u);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImportPipelineTests, NativeArtifactPayloadTextFromFileValidatesAndAvoidsPayloadVectorCopy)
 {
     using NLS::Core::Assets::ArtifactLoadTelemetryStage;
@@ -4664,6 +4713,34 @@ TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMes
     const auto* rightMesh = result.manifest.FindSubAsset("mesh:mesh/1");
     ASSERT_NE(rightMesh, nullptr);
 
+    ASSERT_NE(result.preparedPrefabPreviewSnapshot, nullptr);
+    ASSERT_EQ(result.preparedPrefabPreviewSnapshot->drawItems.size(), 2u);
+    ASSERT_EQ(result.preparedPrefabPreviewMeshPayloads.size(), 2u);
+    const std::set<std::string> committedMeshPaths {
+        std::filesystem::path(leftMesh->artifactPath).lexically_normal().generic_string(),
+        std::filesystem::path(rightMesh->artifactPath).lexically_normal().generic_string()
+    };
+    for (const auto& preparedPayload : result.preparedPrefabPreviewMeshPayloads)
+    {
+        EXPECT_NE(committedMeshPaths.find(
+            std::filesystem::path(preparedPayload.artifactPath)
+                .lexically_normal()
+                .generic_string()), committedMeshPaths.end());
+        ASSERT_NE(preparedPayload.bytes, nullptr);
+        EXPECT_FALSE(preparedPayload.bytes->empty());
+        EXPECT_TRUE(NLS::Render::Assets::DeserializeMeshArtifactBundle(*preparedPayload.bytes).has_value() ||
+            NLS::Render::Assets::DeserializeMeshArtifact(*preparedPayload.bytes).has_value());
+    }
+    for (const auto& drawItem : result.preparedPrefabPreviewSnapshot->drawItems)
+    {
+        const auto previewMeshPath =
+            std::filesystem::path(drawItem.meshPath).lexically_normal().generic_string();
+        EXPECT_NE(committedMeshPaths.find(previewMeshPath), committedMeshPaths.end())
+            << "The import-time preview snapshot must reference the final content-addressed mesh, not its provisional logical path.";
+        EXPECT_TRUE(std::filesystem::is_regular_file(ResolveTestArtifactPath(root, previewMeshPath)));
+        EXPECT_EQ(drawItem.meshAssetId, meta.id);
+    }
+
     const auto leftArtifact = NLS::Render::Assets::DeserializeMeshArtifact(ReadArtifactFile(root, *leftMesh));
     ASSERT_TRUE(leftArtifact.has_value());
     ASSERT_EQ(leftArtifact->vertices.size(), 3u);
@@ -4711,6 +4788,62 @@ TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMes
     ASSERT_NE(leftPosition, nullptr);
     EXPECT_DOUBLE_EQ(GetObjectNumber(leftPosition->value, "x"), 0.0);
     EXPECT_DOUBLE_EQ(GetObjectNumber(leftPosition->value, "y"), 5.0);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportPreparationDefersArtifactPublicationUntilCommit)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "PreparedScene.gltf";
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "PreparedRoot" }]
+        })");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("96969696-9696-4696-8696-969696969696"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(
+        NLS::Core::Assets::AssetType::ModelScene);
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureSettings;
+    textureSettings.autoImportMissingTextureFiles = false;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(meta, textureSettings);
+
+    NLS::Editor::Assets::ExternalModelImportRequest request;
+    request.sourcePath = sourcePath;
+    request.stagingRoot = root / "Staging";
+    request.committedRoot = root / "Library" / "Artifacts" / meta.id.ToString();
+    request.meta = meta;
+    request.sceneKey = "PreparedScene";
+    request.targetPlatform = "editor";
+    request.textureResourcePathPrefix = "Models";
+    request.projectRoot = root;
+    request.allowAutoImportMissingTextureFiles = false;
+    request.prepareOnly = true;
+
+    auto prepared = NLS::Editor::Assets::ImportExternalModelAsset(request);
+    ASSERT_TRUE(prepared.prepared) << JoinDiagnosticSummaries(prepared.diagnostics);
+    EXPECT_FALSE(prepared.imported);
+    EXPECT_FALSE(prepared.requiresSerialImport);
+    ASSERT_TRUE(prepared.preparedWriteRequest.has_value());
+    EXPECT_EQ(prepared.preparedPrefabPreviewSnapshot, nullptr)
+        << "A model with no renderable meshes should not publish an unusable preview snapshot.";
+    EXPECT_FALSE(std::filesystem::exists(request.committedRoot));
+
+    const auto committed = NLS::Editor::Assets::CommitPreparedExternalModelAsset(
+        request,
+        std::move(prepared));
+    ASSERT_TRUE(committed.imported) << JoinDiagnosticSummaries(committed.diagnostics);
+    const auto* prefabArtifact = committed.manifest.FindSubAsset("prefab:PreparedScene");
+    ASSERT_NE(prefabArtifact, nullptr);
+    EXPECT_TRUE(std::filesystem::is_regular_file(ResolveTestArtifactPath(root, prefabArtifact->artifactPath)));
 
     std::filesystem::remove_all(root);
 }
@@ -6544,7 +6677,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsMissingProjectTextu
     textureResolutionSettings.autoImportMissingTextureFiles = true;
     NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
 
-    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+    NLS::Editor::Assets::ExternalModelImportRequest importRequest {
         sourcePath,
         root / "Staging",
         root / "Library" / "Artifacts" / modelMeta.id.ToString(),
@@ -6557,7 +6690,16 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsMissingProjectTextu
         std::filesystem::path("Models"),
         root,
         {}
-    });
+    };
+    auto preparedRequest = importRequest;
+    preparedRequest.allowAutoImportMissingTextureFiles = false;
+    preparedRequest.prepareOnly = true;
+    const auto prepared = NLS::Editor::Assets::ImportExternalModelAsset(preparedRequest);
+    EXPECT_FALSE(prepared.prepared);
+    EXPECT_TRUE(prepared.requiresSerialImport);
+    EXPECT_FALSE(std::filesystem::exists(NLS::Core::Assets::GetAssetMetaPath(texturePath)));
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset(importRequest);
 
     ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
     EXPECT_EQ(
@@ -6600,7 +6742,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsMissingProjectTextu
     EXPECT_EQ(decodedTexture->format, NLS::Render::RHI::TextureFormat::BC1);
     EXPECT_EQ(decodedTexture->encoderId, "directxtex-bc");
 #else
-    EXPECT_EQ(decodedTexture->targetPlatform, "editor");
+    EXPECT_EQ(decodedTexture->targetPlatform, TextureArtifactTargetPlatformForTest());
     EXPECT_EQ(decodedTexture->format, NLS::Render::RHI::TextureFormat::RGBA8);
     EXPECT_EQ(decodedTexture->encoderId, "rgba8-passthrough");
 #endif
@@ -6615,6 +6757,82 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsMissingProjectTextu
     EXPECT_NE(payload.find("_BaseMap"), std::string::npos);
     EXPECT_NE(payload.find(importedTextureResourcePath), std::string::npos);
     ExpectNoLegacyTextureArtifactReference(payload, "texture%3Aimage%2F0");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportPreparationAllowsCurrentAutoImportedProjectTexture)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "PreparedCurrentTextureHero.gltf";
+    const auto texturePath = root / "Assets" / "Textures" / "PreparedCurrentAlbedo.png";
+    WriteBinaryFile(texturePath, TinyPng());
+    ASSERT_FALSE(WriteImportedTextureAssetForTest(
+        root,
+        texturePath,
+        "47474747-4747-4474-8474-474747474747",
+        "editor",
+        "PreparedCurrentAlbedo",
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb).empty());
+
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/PreparedCurrentAlbedo.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta modelMeta;
+    modelMeta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("48484848-4848-4484-8484-484848484848"));
+    modelMeta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    modelMeta.importerId = "scene-model";
+    modelMeta.importerVersion = CurrentModelSceneImporterVersion();
+    NLS::Editor::Assets::ModelTextureResolutionSettings textureResolutionSettings;
+    textureResolutionSettings.autoImportMissingTextureFiles = true;
+    NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
+
+    NLS::Editor::Assets::ExternalModelImportRequest request {
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / modelMeta.id.ToString(),
+        modelMeta,
+        "PreparedCurrentTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    };
+    request.allowAutoImportMissingTextureFiles = false;
+    request.prepareOnly = true;
+    const auto prepared = NLS::Editor::Assets::ImportExternalModelAsset(request);
+
+    EXPECT_TRUE(prepared.prepared) << JoinDiagnosticSummaries(prepared.diagnostics);
+    EXPECT_FALSE(prepared.requiresSerialImport);
+    EXPECT_FALSE(prepared.imported);
+    EXPECT_TRUE(prepared.autoImportedDependencies.empty());
+    EXPECT_TRUE(prepared.preparedWriteRequest.has_value());
+    EXPECT_TRUE(prepared.preparedTextureResolutionReport.has_value());
 
     std::filesystem::remove_all(root);
 }
@@ -7548,7 +7766,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsTextureWithExisting
     textureResolutionSettings.autoImportMissingTextureFiles = true;
     NLS::Editor::Assets::StoreModelTextureResolutionSettings(modelMeta, textureResolutionSettings);
 
-    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+    NLS::Editor::Assets::ExternalModelImportRequest importRequest {
         sourcePath,
         root / "Staging",
         root / "Library" / "Artifacts" / modelMeta.id.ToString(),
@@ -7561,7 +7779,16 @@ TEST(AssetImportPipelineTests, ExternalModelImportAutoImportsTextureWithExisting
         std::filesystem::path("Models"),
         root,
         {}
-    });
+    };
+    auto preparedRequest = importRequest;
+    preparedRequest.allowAutoImportMissingTextureFiles = false;
+    preparedRequest.prepareOnly = true;
+    const auto prepared = NLS::Editor::Assets::ImportExternalModelAsset(preparedRequest);
+    EXPECT_FALSE(prepared.prepared);
+    EXPECT_TRUE(prepared.requiresSerialImport);
+    EXPECT_FALSE(std::filesystem::exists(root / "Library" / "Artifacts"));
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset(importRequest);
 
     ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
     EXPECT_FALSE(ContainsDiagnostic(

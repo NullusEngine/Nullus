@@ -38,6 +38,7 @@ struct AsyncMaterialArtifactRequest
 			std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
 			size_t cancelableInterestCount = 0u;
 			size_t sharedInterestCount = 0u;
+			bool previewPriority = false;
 			bool retryCancelledCompletion = false;
 			NLS::Base::Jobs::JobHandle jobHandle;
 		std::future<std::string> future;
@@ -76,8 +77,11 @@ std::unordered_map<AsyncMaterialArtifactStateKey, AsyncMaterialArtifactRequest, 
 std::unordered_map<AsyncMaterialArtifactStateKey, FailedMaterialArtifactLoad, AsyncMaterialArtifactStateKeyHash> g_failedAsyncMaterialArtifacts;
 std::unordered_set<AsyncMaterialArtifactStateKey, AsyncMaterialArtifactStateKeyHash> g_cancelledAsyncMaterialArtifacts;
 std::atomic_size_t g_activeMaterialArtifactWorkers {0u};
-constexpr size_t kMaxPendingAsyncMaterialArtifactRequests = 32u;
-constexpr size_t kMaxQueuedAsyncMaterialArtifactRequests = 256u;
+	constexpr size_t kMaxPendingAsyncMaterialArtifactRequests = 32u;
+	// Keep a small bounded reserve for visible thumbnail preview dependencies.
+	constexpr size_t kMaxPreviewReservedAsyncMaterialArtifactRequests = 4u;
+	constexpr size_t kMaxQueuedAsyncMaterialArtifactRequests = 256u;
+	constexpr size_t kMaxTotalAsyncMaterialArtifactRequests = 512u;
 
 struct TrackedMaterialArtifactPaths
 {
@@ -162,6 +166,11 @@ auto FindAsyncMaterialRequestByEquivalentArtifactPath(
     const std::string& path,
     const std::string& realPath)
 {
+    // Preview polling usually reuses the exact request path that was queued.
+    // Keep that hot path O(1); the equivalent-path scan remains for callers
+    // that arrive through a source or absolute alias.
+    if (auto exact = requests.find({ &manager, path }); exact != requests.end())
+        return exact;
     return std::find_if(
         requests.begin(),
         requests.end(),
@@ -179,6 +188,8 @@ auto FindFailedMaterialLoadByEquivalentArtifactPath(
 	const std::string& path,
 	const std::string& realPath)
 {
+	if (auto exact = failures.find({ &manager, path }); exact != failures.end())
+		return exact;
 	return std::find_if(
 		failures.begin(),
 		failures.end(),
@@ -360,7 +371,15 @@ size_t CountActiveMaterialRequests()
 					return false;
 				}
 				return entry.second.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
-			}));
+		}));
+}
+
+bool HasMaterialArtifactStartCapacity(const bool previewPriority)
+{
+	const auto activeCount = CountActiveMaterialRequests();
+	const auto limit = kMaxPendingAsyncMaterialArtifactRequests +
+		(previewPriority ? kMaxPreviewReservedAsyncMaterialArtifactRequests : 0u);
+	return activeCount < limit;
 }
 
 size_t CountQueuedMaterialRequestsForOwner(const MaterialManager& manager)
@@ -381,7 +400,10 @@ void PromoteQueuedMaterialArtifactLoads(
 	for (;;)
 	{
 		const auto telemetryBegin = std::chrono::steady_clock::now();
-		if (CountActiveMaterialRequests() >= kMaxPendingAsyncMaterialArtifactRequests)
+		const auto activeCount = CountActiveMaterialRequests();
+		const bool regularCapacity = activeCount < kMaxPendingAsyncMaterialArtifactRequests;
+		if (activeCount >= kMaxPendingAsyncMaterialArtifactRequests +
+			kMaxPreviewReservedAsyncMaterialArtifactRequests)
 			return;
 
 		auto found = std::find_if(
@@ -391,8 +413,23 @@ void PromoteQueuedMaterialArtifactLoads(
 			{
 				if (entry.second.owner != &manager || entry.second.future.valid())
 					return false;
-				return paths == nullptr || MaterialRequestMatchesAnyTrackedPath(entry.second, *paths);
+				return entry.second.previewPriority &&
+					(paths == nullptr || MaterialRequestMatchesAnyTrackedPath(entry.second, *paths));
 			});
+		if (found == g_asyncMaterialRequests.end())
+		{
+			if (!regularCapacity)
+				return;
+			found = std::find_if(
+				g_asyncMaterialRequests.begin(),
+				g_asyncMaterialRequests.end(),
+				[&manager, paths](auto& entry)
+				{
+					if (entry.second.owner != &manager || entry.second.future.valid())
+						return false;
+					return paths == nullptr || MaterialRequestMatchesAnyTrackedPath(entry.second, *paths);
+				});
+		}
 		NLS::Core::Assets::RecordArtifactLoadTelemetry({
 			NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewPumpMaterialPromote,
 			std::chrono::duration_cast<std::chrono::microseconds>(
@@ -432,7 +469,9 @@ void PromoteQueuedMaterialArtifactLoads(
 void PumpAsyncMaterialArtifactLoads(
 	MaterialManager& manager,
 	const size_t maxCompletions,
-	const TrackedMaterialArtifactPaths* paths)
+	const TrackedMaterialArtifactPaths* paths,
+	const std::function<bool()>& shouldStop = {},
+	const bool allowReadyCompletionAfterStop = false)
 {
 	size_t completedCount = 0u;
 
@@ -463,7 +502,16 @@ void PumpAsyncMaterialArtifactLoads(
 				paths == nullptr ? std::string {} : std::string { "tracked-material-paths" }
 			});
 			if (found == g_asyncMaterialRequests.end())
+			{
 				return;
+			}
+
+            // Runtime materialization can parse and register a large material
+            // graph on this thread. Preview priority controls admission, but it
+            // must not override the caller's frame budget once the future is
+            // ready.
+            if (shouldStop && shouldStop() && !allowReadyCompletionAfterStop)
+                return;
 
 			request = std::move(found->second);
 			g_asyncMaterialRequests.erase(found);
@@ -732,12 +780,31 @@ Material* MaterialManager::FindRegisteredMaterialByEquivalentArtifactPath(const 
 	if (auto* cached = GetResource(path, false))
 		return cached;
 
-	const auto realPath = ResolveResourcePath(path);
+	return FindRegisteredMaterialByResolvedArtifactPath(ResolveResourcePath(path));
+}
+
+Material* MaterialManager::FindRegisteredMaterialByResolvedArtifactPath(const std::string& realPath) const
+{
 	const auto normalizedPath = NormalizeResolvedArtifactPath(realPath);
 	if (normalizedPath.empty())
 		return nullptr;
 
 	std::lock_guard lock(m_materialPathIndexMutex);
+	const auto found = m_materialPathIndex.find(normalizedPath);
+	return found != m_materialPathIndex.end() ? found->second : nullptr;
+}
+
+std::optional<Material*> MaterialManager::TryFindRegisteredMaterialByResolvedArtifactPath(
+	const std::string& realPath) const
+{
+	const auto normalizedPath = NormalizeResolvedArtifactPath(realPath);
+	if (normalizedPath.empty())
+		return std::optional<Material*> { nullptr };
+
+	std::unique_lock lock(m_materialPathIndexMutex, std::try_to_lock);
+	if (!lock.owns_lock())
+		return std::nullopt;
+
 	const auto found = m_materialPathIndex.find(normalizedPath);
 	return found != m_materialPathIndex.end() ? found->second : nullptr;
 }
@@ -860,7 +927,203 @@ Material* MaterialManager::LoadArtifactWithoutTextures(const std::string& path)
 	return nullptr;
 }
 
-Material* MaterialManager::RequestAsyncArtifact(const std::string& path, const bool cancelableInterest)
+Material* MaterialManager::RequestAsyncArtifact(
+	const std::string& path,
+	const bool cancelableInterest)
+{
+	return RequestAsyncArtifactInternal(path, cancelableInterest, false);
+}
+
+Material* MaterialManager::RequestAsyncArtifactForPreview(
+    const std::string& path,
+    const bool cancelableInterest)
+{
+	return RequestAsyncArtifactInternal(path, cancelableInterest, true);
+}
+
+std::optional<MaterialManager::AsyncPreviewRequestResult>
+MaterialManager::TryRequestAsyncArtifactForPreview(
+    const std::string& path,
+    const bool cancelableInterest,
+    const bool waitForResourceTable)
+{
+    AsyncPreviewRequestResult result;
+    if (path.empty())
+        return result;
+
+    Material* cached = nullptr;
+    if (!TryGetResource(path, cached))
+    {
+        if (!waitForResourceTable)
+            return std::nullopt;
+        cached = GetResource(path, false);
+    }
+    if (cached != nullptr)
+    {
+        result.resource = cached;
+        return result;
+    }
+
+    const auto realPath = ResolveResourcePath(path);
+    const auto registered = TryFindRegisteredMaterialByResolvedArtifactPath(realPath);
+    if (!registered.has_value())
+        return std::nullopt;
+    if (*registered != nullptr)
+    {
+        result.resource = *registered;
+        return result;
+    }
+
+    const bool trustedPreviewArtifactPath =
+        NLS::Core::Assets::IsContentStorageArtifactPath(path);
+    if (!trustedPreviewArtifactPath && !IsMaterialArtifactPath(realPath))
+        return result;
+
+    const auto writeTime = TryGetLastWriteTime(realPath);
+    AsyncMaterialArtifactRequest request;
+    request.owner = this;
+    request.path = path;
+    request.realPath = realPath;
+    request.writeTime = writeTime;
+    request.cancelableInterestCount = cancelableInterest ? 1u : 0u;
+    request.sharedInterestCount = cancelableInterest ? 0u : 1u;
+    request.previewPriority = true;
+
+    std::unique_lock lock(g_asyncMaterialMutex, std::try_to_lock);
+    if (!lock.owns_lock())
+        return std::nullopt;
+
+    if (auto existing = FindAsyncMaterialRequestByEquivalentArtifactPath(
+            g_asyncMaterialRequests,
+            *this,
+            path,
+            realPath);
+        existing != g_asyncMaterialRequests.end())
+    {
+        if (cancelableInterest)
+            ++existing->second.cancelableInterestCount;
+        else
+            ++existing->second.sharedInterestCount;
+        EraseCancelledMaterialArtifactByEquivalentPath(
+            g_cancelledAsyncMaterialArtifacts,
+            *this,
+            path,
+            realPath);
+        if (existing->second.cancelled)
+            existing->second.cancelled->store(false, std::memory_order_release);
+        existing->second.previewPriority = true;
+        existing->second.retryCancelledCompletion = true;
+        result.pending = true;
+        return result;
+    }
+
+    auto failed = FindFailedMaterialLoadByEquivalentArtifactPath(
+        g_failedAsyncMaterialArtifacts,
+        *this,
+        path,
+        realPath);
+    if (failed != g_failedAsyncMaterialArtifacts.end())
+    {
+        if (ArtifactPathMatchesResolvedPath(failed->second.realPath, realPath) &&
+            failed->second.writeTime == writeTime)
+        {
+            result.failed = true;
+            return result;
+        }
+        g_failedAsyncMaterialArtifacts.erase(failed);
+    }
+
+    EraseCancelledMaterialArtifactByEquivalentPath(
+        g_cancelledAsyncMaterialArtifacts,
+        *this,
+        path,
+        realPath);
+    const auto queuedRequestCount = CountQueuedMaterialRequestsForOwner(*this);
+    if (queuedRequestCount >= kMaxTotalAsyncMaterialArtifactRequests)
+        return result;
+
+    if (HasMaterialArtifactStartCapacity(true))
+    {
+        try
+        {
+            auto load = StartMaterialArtifactLoad(request);
+            if (load.future.valid())
+            {
+                request.jobHandle = load.handle;
+                request.future = std::move(load.future);
+            }
+            else if (NLS::Base::Jobs::IsJobSystemInitialized())
+            {
+                g_failedAsyncMaterialArtifacts[{ this, path }] = {
+                    this,
+                    realPath,
+                    writeTime
+                };
+                result.failed = true;
+                return result;
+            }
+        }
+        catch (...)
+        {
+            g_failedAsyncMaterialArtifacts[{ this, path }] = {
+                this,
+                realPath,
+                writeTime
+            };
+            result.failed = true;
+            return result;
+        }
+    }
+
+    g_asyncMaterialRequests.emplace(
+        AsyncMaterialArtifactStateKey { this, path },
+        std::move(request));
+    result.pending = true;
+    return result;
+}
+
+MaterialManager::AsyncArtifactLoadProbeResult
+MaterialManager::TryProbeAsyncArtifactLoad(const std::string& path) const
+{
+    const auto realPath = ResolveResourcePath(path);
+    std::optional<std::filesystem::file_time_type> failedWriteTime;
+    std::string failedRealPath;
+    {
+        std::unique_lock lock(g_asyncMaterialMutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            return AsyncArtifactLoadProbeResult::Busy;
+
+        if (FindAsyncMaterialRequestByEquivalentArtifactPath(
+                g_asyncMaterialRequests,
+                *this,
+                path,
+                realPath) != g_asyncMaterialRequests.end())
+        {
+            return AsyncArtifactLoadProbeResult::Pending;
+        }
+
+        const auto failed = FindFailedMaterialLoadByEquivalentArtifactPath(
+            g_failedAsyncMaterialArtifacts,
+            *this,
+            path,
+            realPath);
+        if (failed == g_failedAsyncMaterialArtifacts.end())
+            return AsyncArtifactLoadProbeResult::Missing;
+
+        failedRealPath = failed->second.realPath;
+        failedWriteTime = failed->second.writeTime;
+    }
+
+    return ArtifactPathMatchesResolvedPath(failedRealPath, realPath) &&
+            failedWriteTime == TryGetLastWriteTime(realPath)
+        ? AsyncArtifactLoadProbeResult::Failed
+        : AsyncArtifactLoadProbeResult::Missing;
+}
+
+Material* MaterialManager::RequestAsyncArtifactInternal(
+	const std::string& path,
+	const bool cancelableInterest,
+	const bool previewPriority)
 {
 	if (auto* cached = GetResource(path, false))
 		return cached;
@@ -868,7 +1131,12 @@ Material* MaterialManager::RequestAsyncArtifact(const std::string& path, const b
 	const auto realPath = ResolveResourcePath(path);
 	if (auto* cached = FindCachedMaterialByEquivalentArtifactPath(*this, realPath))
 		return cached;
-	if (!IsMaterialArtifactPath(realPath))
+	// Thumbnail preparation already resolved and budget-validated content
+	// artifacts. Do not read their payload header again on the UI thread; the
+	// background material loader remains the final type/validity check.
+	const bool trustedPreviewArtifactPath = previewPriority &&
+		NLS::Core::Assets::IsContentStorageArtifactPath(path);
+	if (!trustedPreviewArtifactPath && !IsMaterialArtifactPath(realPath))
 		return nullptr;
 
 		const auto writeTime = TryGetLastWriteTime(realPath);
@@ -879,6 +1147,7 @@ Material* MaterialManager::RequestAsyncArtifact(const std::string& path, const b
 		request.writeTime = writeTime;
 		request.cancelableInterestCount = cancelableInterest ? 1u : 0u;
 		request.sharedInterestCount = cancelableInterest ? 0u : 1u;
+		request.previewPriority = previewPriority;
 		{
 			std::lock_guard lock(g_asyncMaterialMutex);
 			if (auto existing = FindAsyncMaterialRequestByEquivalentArtifactPath(g_asyncMaterialRequests, *this, path, realPath);
@@ -893,9 +1162,10 @@ Material* MaterialManager::RequestAsyncArtifact(const std::string& path, const b
 					*this,
 					path,
 					realPath);
-				if (existing->second.cancelled)
-					existing->second.cancelled->store(false, std::memory_order_release);
-				existing->second.retryCancelledCompletion = true;
+			if (existing->second.cancelled)
+				existing->second.cancelled->store(false, std::memory_order_release);
+			existing->second.previewPriority = existing->second.previewPriority || previewPriority;
+			existing->second.retryCancelledCompletion = true;
 				return nullptr;
 			}
 		auto failed = FindFailedMaterialLoadByEquivalentArtifactPath(g_failedAsyncMaterialArtifacts, *this, path, realPath);
@@ -909,9 +1179,13 @@ Material* MaterialManager::RequestAsyncArtifact(const std::string& path, const b
 			g_failedAsyncMaterialArtifacts.erase(failed);
 		}
 		EraseCancelledMaterialArtifactByEquivalentPath(g_cancelledAsyncMaterialArtifacts, *this, path, realPath);
-		if (CountQueuedMaterialRequestsForOwner(*this) >= kMaxQueuedAsyncMaterialArtifactRequests)
+		const auto queuedRequestCount = CountQueuedMaterialRequestsForOwner(*this);
+		const auto queuedRequestLimit = previewPriority
+			? kMaxTotalAsyncMaterialArtifactRequests
+			: kMaxQueuedAsyncMaterialArtifactRequests;
+		if (queuedRequestCount >= queuedRequestLimit)
 			return nullptr;
-		if (CountActiveMaterialRequests() < kMaxPendingAsyncMaterialArtifactRequests)
+		if (HasMaterialArtifactStartCapacity(previewPriority))
 		{
 			try
 			{
@@ -938,18 +1212,6 @@ Material* MaterialManager::RequestAsyncArtifact(const std::string& path, const b
 
 		return nullptr;
 	}
-
-Material* MaterialManager::RequestAsyncArtifactForPreview(const std::string& path, const bool cancelableInterest)
-{
-	if (auto* cached = GetResource(path, false))
-		return cached;
-
-	const auto realPath = ResolveResourcePath(path);
-	if (auto* cached = FindCachedMaterialByEquivalentArtifactPath(*this, realPath))
-		return cached;
-
-	return RequestAsyncArtifact(path, cancelableInterest);
-}
 
 void MaterialManager::CancelAsyncArtifact(const std::string& path, const bool cancelableInterest)
 {
@@ -1014,9 +1276,18 @@ AsyncArtifactRequestDiagnostics MaterialManager::GetAsyncArtifactRequestDiagnost
 	diagnostics.totalRequests = g_asyncMaterialRequests.size();
 	diagnostics.activeRequests = CountActiveMaterialRequests();
 	diagnostics.failedRequests = g_failedAsyncMaterialArtifacts.size();
-	diagnostics.maxActiveRequests = kMaxPendingAsyncMaterialArtifactRequests;
+	diagnostics.maxActiveRequests =
+		kMaxPendingAsyncMaterialArtifactRequests + kMaxPreviewReservedAsyncMaterialArtifactRequests;
 	for (const auto& [_, request] : g_asyncMaterialRequests)
 	{
+		if (request.previewPriority)
+		{
+			++diagnostics.previewRequests;
+			if (!request.future.valid())
+				++diagnostics.previewQueuedRequests;
+			else if (request.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+				++diagnostics.previewActiveRequests;
+		}
 		if (!request.future.valid())
 		{
 			++diagnostics.queuedRequests;
@@ -1101,7 +1372,9 @@ void MaterialManager::PumpAsyncLoads(const size_t maxCompletions)
 
 void MaterialManager::PumpAsyncLoadsForPaths(
 	const std::unordered_set<std::string>& paths,
-	const size_t maxCompletions)
+	const size_t maxCompletions,
+	const std::function<bool()>& shouldStop,
+	const bool allowReadyCompletionAfterStop)
 {
 	if (paths.empty())
 		return;
@@ -1114,7 +1387,12 @@ void MaterialManager::PumpAsyncLoadsForPaths(
 		paths.size(),
 		std::string { "tracked-material-paths" }
 	});
-	PumpAsyncMaterialArtifactLoads(*this, maxCompletions, &trackedPaths);
+	PumpAsyncMaterialArtifactLoads(
+		*this,
+		maxCompletions,
+		&trackedPaths,
+		shouldStop,
+		allowReadyCompletionAfterStop);
 }
 
 void MaterialManager::ClearShaderReferences(const NLS::Render::Resources::Shader* shader)

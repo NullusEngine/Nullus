@@ -8,7 +8,9 @@
 #include "Assets/AssetPath.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/ExternalAssetImporter.h"
+#include "Assets/AssetImporterSettings.h"
 #include "Assets/ModelTextureReferenceResolver.h"
+#include "Assets/ResidentPrefabPreviewRegistry.h"
 #include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Guid.h"
 #include "Engine/Assets/PrefabAsset.h"
@@ -26,6 +28,7 @@
 #include "Rendering/ShaderLab/ShaderLabVariant.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cctype>
@@ -38,6 +41,7 @@
 #include <sstream>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_set>
 
 namespace NLS::Editor::Assets
@@ -73,6 +77,12 @@ size_t& ArtifactManifestCurrentCheckCountForTestingStorage()
 }
 
 size_t& SourceFileContentHashReadCountForTestingStorage()
+{
+    static size_t count = 0u;
+    return count;
+}
+
+size_t& PrefabArtifactLoadCountForTestingStorage()
 {
     static size_t count = 0u;
     return count;
@@ -2544,6 +2554,195 @@ bool AssetDatabaseFacade::ImportAssetFromCurrentDatabase(
     return ImportAsset(assetPath, &progressTracker, batchTotalAssets, false);
 }
 
+bool AssetDatabaseFacade::ImportAssetsWithParallelModelPreparation(
+    const std::span<const std::string> assetPaths,
+    ImportProgressTracker& progressTracker,
+    const bool forceReimport,
+    const size_t batchTotalAssets)
+{
+    if (!IsEditorMode())
+        return RejectRuntimeEditorApi("AssetDatabase.ImportAssetsWithParallelModelPreparation");
+
+    struct PreparedModelWork
+    {
+        std::string assetPath;
+        std::optional<NLS::Core::Assets::ArtifactManifest> previousManifest;
+        ExternalModelImportRequest request;
+        ExternalModelImportResult result;
+        ImportJobId job;
+    };
+
+    std::vector<std::string> serialAssetPaths;
+    std::vector<std::string> parallelModelAssetPaths;
+    serialAssetPaths.reserve(assetPaths.size());
+    parallelModelAssetPaths.reserve(assetPaths.size());
+    for (const auto& assetPath : assetPaths)
+    {
+        const auto* record = FindRecordByEditorAssetPath(assetPath);
+        const auto meta = LoadMetaForPath(assetPath);
+        if (!record || !meta.has_value() ||
+            record->assetType != NLS::Core::Assets::AssetType::ModelScene)
+        {
+            serialAssetPaths.push_back(assetPath);
+            continue;
+        }
+        parallelModelAssetPaths.push_back(assetPath);
+    }
+
+    bool allSucceeded = true;
+    for (const auto& assetPath : serialAssetPaths)
+    {
+        const auto imported = forceReimport
+            ? ReimportAsset(assetPath, &progressTracker, {}, batchTotalAssets, false)
+            : ImportAsset(assetPath, &progressTracker, batchTotalAssets, false);
+        if (!imported)
+            allSucceeded = false;
+    }
+    if (parallelModelAssetPaths.empty())
+        return allSucceeded;
+
+    std::vector<PreparedModelWork> workItems;
+    workItems.reserve(parallelModelAssetPaths.size());
+    for (const auto& assetPath : parallelModelAssetPaths)
+    {
+        const auto absolutePath = ResolveAssetPath(assetPath);
+        const auto* record = FindRecordByEditorAssetPath(assetPath);
+        const auto meta = LoadMetaForPath(assetPath);
+        if (absolutePath.empty() || !record || !meta.has_value())
+        {
+            allSucceeded = false;
+            continue;
+        }
+
+        if (forceReimport)
+        {
+            std::error_code error;
+            const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+            if (!stagingRoot.empty())
+                std::filesystem::remove_all(stagingRoot, error);
+        }
+
+        workItems.push_back({});
+        auto& work = workItems.back();
+        work.assetPath = assetPath;
+        work.job = progressTracker.BeginJob(
+            meta->id,
+            NormalizeEditorAssetPath(assetPath),
+            "editor",
+            batchTotalAssets);
+        progressTracker.ReportProgress(
+            work.job,
+            ImportPhase::Queued,
+            0.01,
+            "Preparing parallel model import");
+        if (!BuildExternalModelImportRequest(
+                *record,
+                *meta,
+                absolutePath,
+                &progressTracker,
+                work.job,
+                work.previousManifest,
+                work.request))
+        {
+            allSucceeded = false;
+            progressTracker.FinishJob(work.job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            work.assetPath.clear();
+        }
+    }
+
+    const auto snapshot = CreateReadOnlySnapshot(*this);
+    const auto prepareWork =
+        [&](PreparedModelWork& work)
+        {
+            if (work.assetPath.empty())
+                return;
+
+            auto request = work.request;
+            request.progressTracker = nullptr;
+            request.progressJob = {};
+            request.allowAutoImportMissingTextureFiles = false;
+            request.prepareOnly = true;
+            request.loadArtifactManifest =
+                [snapshot](
+                    const NLS::Core::Assets::AssetId sourceAssetId,
+                    const std::string& targetPlatform)
+                -> std::optional<NLS::Core::Assets::ArtifactManifest>
+                {
+                    const auto sourcePath = snapshot->m_editorPathById.find(sourceAssetId);
+                    if (sourcePath == snapshot->m_editorPathById.end())
+                        return std::nullopt;
+                    auto manifest = snapshot->GetArtifactManifestForAssetPath(sourcePath->second);
+                    if (!manifest.has_value() || manifest->targetPlatform != targetPlatform)
+                        return std::nullopt;
+                    return manifest;
+                };
+            work.result = ImportExternalModelAsset(request);
+        };
+
+    const auto workerCount = (std::min)(workItems.size(), size_t {4u});
+    if (workerCount < 2u)
+    {
+        for (auto& work : workItems)
+            prepareWork(work);
+    }
+    else
+    {
+        std::atomic_size_t nextWorkIndex {0u};
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount);
+        for (size_t workerIndex = 0u; workerIndex < workerCount; ++workerIndex)
+        {
+            workers.emplace_back(
+                [&]()
+                {
+                    while (true)
+                    {
+                        const auto workIndex = nextWorkIndex.fetch_add(1u, std::memory_order_relaxed);
+                        if (workIndex >= workItems.size())
+                            return;
+                        prepareWork(workItems[workIndex]);
+                    }
+                });
+        }
+        for (auto& worker : workers)
+            worker.join();
+    }
+
+    for (auto& work : workItems)
+    {
+        if (work.assetPath.empty())
+            continue;
+
+        bool imported = false;
+        if (work.result.prepared)
+        {
+            imported = RefreshSingle(work.assetPath, &progressTracker, work.job, false, &work.result);
+            if (imported)
+                ++m_completedImports;
+        }
+        else if (work.result.requiresSerialImport || !HasErrors(work.result.diagnostics))
+        {
+            imported = forceReimport
+                ? ReimportAsset(work.assetPath, &progressTracker, work.job, batchTotalAssets, false)
+                : ImportAsset(work.assetPath, &progressTracker, batchTotalAssets, false);
+        }
+        else
+        {
+            m_diagnostics.insert(
+                m_diagnostics.end(),
+                work.result.diagnostics.begin(),
+                work.result.diagnostics.end());
+            progressTracker.FinishJob(
+                work.job,
+                TerminalStatusForImportFailure(work.result.diagnostics),
+                work.result.diagnostics);
+        }
+        if (!imported)
+            allSucceeded = false;
+    }
+    return allSucceeded;
+}
+
 bool AssetDatabaseFacade::ImportAsset(
     const std::string& assetPath,
     ImportProgressTracker* progressTracker,
@@ -2636,6 +2835,33 @@ bool AssetDatabaseFacade::EndArtifactDatabaseFlushBatch()
         RefreshKnownCurrentArtifactManifestSnapshot();
         m_knownCurrentArtifactManifestSnapshotDirty = false;
     }
+    if (flushed && m_residentPrefabPreviewRegistry != nullptr)
+    {
+        for (auto& registration : m_pendingImportedPrefabPreviewRegistrations)
+        {
+            if (registration.snapshot != nullptr)
+            {
+                (void)m_residentPrefabPreviewRegistry->RegisterImportedPrefabSnapshot(
+                    registration.projectRoot,
+                    registration.assetId,
+                    registration.sourceAssetPath,
+                    registration.prefabSubAssetKey,
+                    registration.artifactPath,
+                    std::move(registration.snapshot),
+                    std::move(registration.meshPayloads));
+            }
+            else
+            {
+                (void)m_residentPrefabPreviewRegistry->RegisterImportedPrefabThumbnailContinuation(
+                    registration.projectRoot,
+                    registration.assetId,
+                    registration.sourceAssetPath,
+                    registration.prefabSubAssetKey,
+                    registration.artifactPath);
+            }
+        }
+    }
+    m_pendingImportedPrefabPreviewRegistrations.clear();
     return flushed;
 }
 
@@ -2924,6 +3150,9 @@ std::optional<NLS::Engine::Assets::PrefabArtifact> AssetDatabaseFacade::LoadPref
         "LoadPrefabArtifact",
         NLS::Base::Profiling::PerformanceStageThread::Main);
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ++PrefabArtifactLoadCountForTestingStorage();
+#endif
     if (!IsEditorMode())
         return std::nullopt;
 
@@ -3254,21 +3483,42 @@ std::string AssetDatabaseFacade::CreateFolder(
         return {};
     }
 
-    const auto parentPath = ResolveAssetPath(parentFolder);
+    const auto normalizedParentFolder = NormalizeEditorAssetPath(parentFolder);
+    auto parentPath = ResolveAssetPath(normalizedParentFolder);
+    if (parentPath.empty())
+    {
+        for (const auto& root : m_roots)
+        {
+            if (!root.mountPath.empty() &&
+                NormalizeEditorAssetPath(root.mountPath) == normalizedParentFolder)
+            {
+                parentPath = root.path;
+                break;
+            }
+        }
+    }
     if (parentPath.empty())
         return {};
     if (!IsWritableAssetPath(parentPath))
-        return {};
+    {
+        const auto* parentRoot = FindEditorAssetRootForAbsolutePath(m_roots, parentPath);
+        if (parentRoot == nullptr || parentRoot->readOnly || parentPath != parentRoot->path)
+            return {};
+    }
 
     if (!IsSingleEditorAssetName(folderName))
         return {};
 
     auto folderPath = NLS::Core::Assets::NormalizeAssetPath(parentPath / folderName);
-    if (ResolveAssetPath(ToEditorAssetPath(folderPath)).empty())
+    const auto absoluteFolderPath = ResolveAssetPath(ToEditorAssetPath(folderPath));
+    if (absoluteFolderPath.empty())
         return {};
 
-    std::filesystem::create_directories(folderPath);
-    return ToEditorAssetPath(folderPath);
+    std::error_code error;
+    std::filesystem::create_directories(absoluteFolderPath, error);
+    if (error)
+        return {};
+    return ToEditorAssetPath(absoluteFolderPath);
 }
 
 bool AssetDatabaseFacade::IsValidFolder(const std::string& assetPath) const
@@ -3423,9 +3673,13 @@ std::optional<std::string> AssetDatabaseFacade::ComputeModelTextureMappingDepend
     return BuildModelTextureMappingFingerprint(candidates);
 }
 
-bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPath(const std::string& assetPath) const
+bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPath(
+    const std::string& assetPath,
+    const bool startupCacheValidatedArtifacts) const
 {
-    const bool current = IsArtifactManifestCurrentForAssetPathUncached(assetPath);
+    const bool current = IsArtifactManifestCurrentForAssetPathUncached(
+        assetPath,
+        startupCacheValidatedArtifacts);
     if (!current)
     {
         const auto normalized = NormalizeEditorAssetPath(assetPath);
@@ -3444,7 +3698,9 @@ bool AssetDatabaseFacade::IsReadOnlyAssetPath(const std::string& assetPath) cons
     return record != nullptr && record->readOnly;
 }
 
-bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(const std::string& assetPath) const
+bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(
+    const std::string& assetPath,
+    const bool startupCacheValidatedArtifacts) const
 {
 #if defined(NLS_ENABLE_TEST_HOOKS)
     ++ArtifactManifestCurrentCheckCountForTestingStorage();
@@ -3487,11 +3743,14 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPathUncached(const st
         return false;
     }
 
-    for (const auto& artifact : manifestCopy.subAssets)
+    if (!startupCacheValidatedArtifacts)
     {
-        const auto artifactPath = ResolveArtifactPathForRecord(*record, artifact.artifactPath);
-        if (artifactPath.empty() || !std::filesystem::is_regular_file(artifactPath))
-            return false;
+        for (const auto& artifact : manifestCopy.subAssets)
+        {
+            const auto artifactPath = ResolveArtifactPathForRecord(*record, artifact.artifactPath);
+            if (artifactPath.empty() || !std::filesystem::is_regular_file(artifactPath))
+                return false;
+        }
     }
 
     const auto normalizedAssetPath = NormalizeEditorAssetPath(ToEditorAssetPath(record->absolutePath));
@@ -4404,27 +4663,80 @@ bool AssetDatabaseFacade::CreateTextAsset(
         return RejectRuntimeEditorApi("AssetDatabase.CreateTextAsset");
 
     const auto absolutePath = ResolveAssetPath(assetPath);
-    if (absolutePath.empty() || std::filesystem::exists(absolutePath) || !IsWritableAssetPath(absolutePath))
+    if (absolutePath.empty())
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-create-text-invalid-path",
+            assetPath,
+            "Text asset path cannot be resolved inside a mounted asset root.");
         return false;
+    }
+    if (std::filesystem::exists(absolutePath))
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-create-text-already-exists",
+            absolutePath,
+            "Text asset destination already exists.");
+        return false;
+    }
+    if (!IsWritableAssetPath(absolutePath))
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-create-text-read-only-path",
+            absolutePath,
+            "Text asset destination is outside a writable asset root: " + absolutePath.generic_string());
+        return false;
+    }
 
     std::error_code error;
     std::filesystem::create_directories(absolutePath.parent_path(), error);
     if (error)
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-create-text-directory-failed",
+            absolutePath.parent_path(),
+            error.message());
         return false;
+    }
 
     std::ofstream output(absolutePath, std::ios::binary | std::ios::trunc);
     if (!output)
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-create-text-open-failed",
+            absolutePath,
+            "Text asset destination could not be opened for writing.");
         return false;
+    }
     output << contents;
     output.close();
     if (!output)
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-create-text-write-failed",
+            absolutePath,
+            "Text asset contents could not be written.");
         return false;
+    }
 
     auto meta = NLS::Core::Assets::AssetMeta::CreateForAsset(absolutePath);
     if (assetId.IsValid())
         meta.id = assetId;
     if (!meta.Save(NLS::Core::Assets::GetAssetMetaPath(absolutePath)))
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-create-text-meta-write-failed",
+            NLS::Core::Assets::GetAssetMetaPath(absolutePath),
+            "Text asset metadata could not be written.");
         return false;
+    }
 
     return Refresh();
 }
@@ -4847,11 +5159,173 @@ bool AssetDatabaseFacade::RefreshKnownSourceAssetsInternal(
     return !HasErrors(m_diagnostics);
 }
 
+bool AssetDatabaseFacade::BuildExternalModelImportRequest(
+    const NLS::Core::Assets::SourceAssetRecord& record,
+    const NLS::Core::Assets::AssetMeta& meta,
+    const std::filesystem::path& absolutePath,
+    ImportProgressTracker* progressTracker,
+    ImportJobId& job,
+    std::optional<NLS::Core::Assets::ArtifactManifest>& previousManifest,
+    ExternalModelImportRequest& request)
+{
+    if (progressTracker && job.IsValid())
+    {
+        progressTracker->ReportProgress(
+            job,
+            ImportPhase::Queued,
+            0.02,
+            "Preparing model import paths");
+    }
+
+    const auto sceneKey = absolutePath.stem().generic_string();
+    const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath);
+    const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+    const auto editorAssetPath = ToEditorAssetPath(absolutePath);
+    const auto* assetRoot = FindEditorAssetRootForAbsolutePath(m_roots, absolutePath);
+    auto sourceParent = std::filesystem::path(editorAssetPath).parent_path();
+    std::filesystem::path editorPathRoot;
+    if (assetRoot)
+    {
+        const auto physicalSourceParent = absolutePath.parent_path().lexically_relative(assetRoot->path);
+        if (!physicalSourceParent.empty() && !physicalSourceParent.is_absolute())
+            sourceParent = physicalSourceParent.lexically_normal();
+
+        const auto libraryParent = GetEditorAssetRootLibraryPath(*assetRoot).parent_path().lexically_normal();
+        if (!assetRoot->mountPath.empty() && libraryParent == assetRoot->path.lexically_normal())
+            editorPathRoot = assetRoot->mountPath.lexically_normal();
+    }
+    else if (!sourceParent.empty() && *sourceParent.begin() == "Assets")
+    {
+        sourceParent = sourceParent.lexically_relative("Assets");
+    }
+
+    if (progressTracker && job.IsValid())
+    {
+        progressTracker->ReportProgress(
+            job,
+            ImportPhase::Queued,
+            0.03,
+            "Resolving model material shader");
+    }
+
+    if (artifactRoot.empty() || stagingRoot.empty() || !CanSaveArtifactManifestForAssetPath(absolutePath))
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-artifact-manifest-unwritable",
+            GetArtifactManifestPathForAssetPath(absolutePath),
+            "Imported artifact manifest cannot be written.");
+        return false;
+    }
+
+    previousManifest.reset();
+    std::optional<std::string> materialShaderResourcePath;
+    auto refreshModelMaterialShaderDependency =
+        [&]()
+    {
+        previousManifest = LoadPreviousArtifactManifestForRecord(record);
+
+        std::lock_guard manifestLock(m_manifestMutex);
+        const auto& manifests = ManifestsBySource();
+        if (FindImportedShaderArtifactResourcePath(
+                manifests,
+                m_editorPathById,
+                kStandardPbrShaderAssetPath).has_value())
+        {
+            materialShaderResourcePath = kStandardPbrShaderAssetPath;
+        }
+    };
+    refreshModelMaterialShaderDependency();
+
+    if (!materialShaderResourcePath.has_value() &&
+        !std::filesystem::is_regular_file(ResolveAssetPath(kStandardPbrShaderAssetPath)))
+    {
+        if (EnsureStandardPbrShaderLabSourceAvailable() && !RefreshSourceDatabase())
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-standard-pbr-refresh-failed",
+                kStandardPbrShaderAssetPath,
+                "Model material import could not refresh the synchronized StandardPBR ShaderLab source.");
+            return false;
+        }
+    }
+    if (!materialShaderResourcePath.has_value() && !ResolveAssetPath(kStandardPbrShaderAssetPath).empty())
+    {
+        if (progressTracker && job.IsValid())
+        {
+            progressTracker->ReportProgress(
+                job,
+                ImportPhase::Queued,
+                0.04,
+                "Importing StandardPBR shader dependency");
+        }
+        if (ImportAssetImmediateInternal(kStandardPbrShaderAssetPath, false))
+            refreshModelMaterialShaderDependency();
+    }
+    if (!materialShaderResourcePath.has_value() && !ResolveAssetPath(kStandardPbrShaderAssetPath).empty())
+        materialShaderResourcePath = kStandardPbrShaderAssetPath;
+    if (!materialShaderResourcePath.has_value())
+    {
+        AddDiagnostic(
+            NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+            "assetdatabase-model-material-shader-missing",
+            absolutePath,
+            "Model material import requires ShaderLab source Assets/Engine/Shaders/ShaderLab/StandardPBR.shader.");
+        return false;
+    }
+
+    if (progressTracker && job.IsValid())
+    {
+        progressTracker->ReportProgress(
+            job,
+            ImportPhase::Queued,
+            0.045,
+            "Preparing model artifact staging");
+    }
+    if (progressTracker && !job.IsValid())
+        job = progressTracker->BeginJob(meta.id, editorAssetPath, "editor", 1u);
+    if (progressTracker && job.IsValid())
+        progressTracker->ReportProgress(job, ImportPhase::SourceParse, 0.05, "Scanning source asset");
+
+    request = {
+        absolutePath,
+        stagingRoot,
+        artifactRoot,
+        meta,
+        sceneKey,
+        "editor",
+        previousManifest.has_value() ? &*previousManifest : nullptr,
+        progressTracker,
+        job,
+        sourceParent,
+        assetRoot ? GetEditorAssetRootLibraryPath(*assetRoot).parent_path() : std::filesystem::path {},
+        materialShaderResourcePath.value(),
+        editorPathRoot,
+        ShouldPreserveLegacyModelLocalTextureArtifacts(previousManifest),
+        [this](
+            const NLS::Core::Assets::AssetId sourceAssetId,
+            const std::string& targetPlatform)
+            -> std::optional<NLS::Core::Assets::ArtifactManifest>
+        {
+            const auto sourcePath = m_editorPathById.find(sourceAssetId);
+            if (sourcePath == m_editorPathById.end())
+                return std::nullopt;
+            auto manifest = GetArtifactManifestForAssetPath(sourcePath->second);
+            if (!manifest.has_value() || manifest->targetPlatform != targetPlatform)
+                return std::nullopt;
+            return manifest;
+        }
+    };
+    return true;
+}
+
 bool AssetDatabaseFacade::RefreshSingle(
     const std::string& assetPath,
     ImportProgressTracker* progressTracker,
     ImportJobId existingJob,
-    const bool refreshDatabase)
+    const bool refreshDatabase,
+    ExternalModelImportResult* preparedModelImport)
 {
     if (!IsEditorMode())
         return false;
@@ -5406,7 +5880,7 @@ bool AssetDatabaseFacade::RefreshSingle(
         return false;
     }
 
-    const auto importResult = ImportExternalModelAsset({
+    const auto importRequest = ExternalModelImportRequest {
         absolutePath,
         stagingRoot,
         artifactRoot,
@@ -5434,7 +5908,10 @@ bool AssetDatabaseFacade::RefreshSingle(
                 return std::nullopt;
             return manifest;
         }
-    });
+    };
+    auto importResult = preparedModelImport
+        ? CommitPreparedExternalModelAsset(importRequest, std::move(*preparedModelImport))
+        : ImportExternalModelAsset(importRequest);
 
     m_diagnostics.insert(
         m_diagnostics.end(),
@@ -5685,6 +6162,53 @@ bool AssetDatabaseFacade::RefreshSingle(
     for (auto& dependencyManifest : dependencyManifestsToPublish)
         PublishArtifactManifestToMemory(std::move(dependencyManifest), publishAsKnownCurrent);
     artifactRollback.Commit();
+    if (m_residentPrefabPreviewRegistry != nullptr)
+    {
+        const auto* prefabArtifact = importResult.manifest.FindSubAsset(
+            importResult.manifest.primarySubAssetKey);
+        if (prefabArtifact != nullptr &&
+            prefabArtifact->artifactType == NLS::Core::Assets::ArtifactType::Prefab)
+        {
+            const auto projectRoot = assetRoot != nullptr
+                ? GetEditorAssetRootLibraryPath(*assetRoot).parent_path()
+                : std::filesystem::path {};
+            if (m_artifactDatabaseFlushBatchDepth != 0u)
+            {
+                m_pendingImportedPrefabPreviewRegistrations.push_back({
+                    projectRoot,
+                    meta->id,
+                    editorAssetPath,
+                    prefabArtifact->subAssetKey,
+                    prefabArtifact->artifactPath,
+                    importResult.preparedPrefabPreviewSnapshot,
+                    std::move(importResult.preparedPrefabPreviewMeshPayloads)
+                });
+            }
+            else
+            {
+                if (importResult.preparedPrefabPreviewSnapshot != nullptr)
+                {
+                    (void)m_residentPrefabPreviewRegistry->RegisterImportedPrefabSnapshot(
+                        projectRoot,
+                        meta->id,
+                        editorAssetPath,
+                        prefabArtifact->subAssetKey,
+                        prefabArtifact->artifactPath,
+                        importResult.preparedPrefabPreviewSnapshot,
+                        std::move(importResult.preparedPrefabPreviewMeshPayloads));
+                }
+                else
+                {
+                    (void)m_residentPrefabPreviewRegistry->RegisterImportedPrefabThumbnailContinuation(
+                        projectRoot,
+                        meta->id,
+                        editorAssetPath,
+                        prefabArtifact->subAssetKey,
+                        prefabArtifact->artifactPath);
+                }
+            }
+        }
+    }
     if (progressTracker && job.IsValid())
         progressTracker->FinishJob(job, ImportJobTerminalStatus::Succeeded, importResult.diagnostics);
     return true;
@@ -6466,6 +6990,16 @@ void ResetAssetDatabaseSourceFileContentHashReadCountForTesting()
 size_t GetAssetDatabaseSourceFileContentHashReadCountForTesting()
 {
     return SourceFileContentHashReadCountForTestingStorage();
+}
+
+void ResetAssetDatabasePrefabArtifactLoadCountForTesting()
+{
+    PrefabArtifactLoadCountForTestingStorage() = 0u;
+}
+
+size_t GetAssetDatabasePrefabArtifactLoadCountForTesting()
+{
+    return PrefabArtifactLoadCountForTestingStorage();
 }
 #endif
 }

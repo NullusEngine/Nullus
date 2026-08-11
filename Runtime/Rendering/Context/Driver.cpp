@@ -2042,6 +2042,40 @@ namespace
             return false;
         }
 
+        // A recorded UI upload owns resources and a completion token from the
+        // device being replaced.  Dropping it silently would leave the editor
+        // waiting forever for the old request id.  Convert those requests to
+        // retryable failures after the old frame resources have retired;
+        // unrecorded CPU pixel requests remain queued and can be replayed on
+        // the replacement device.
+        {
+            std::lock_guard lock(impl.pendingUiRgba8TextureUploadMutex);
+            for (const auto& recorded : impl.recordedUiRgba8TextureUploads)
+            {
+                if (impl.canceledUiRgba8TextureUploadRequestIds.erase(recorded.requestId) != 0u)
+                    continue;
+                impl.completedUiRgba8TextureUploads[recorded.requestId] = {
+                    false,
+                    nullptr,
+                    nullptr,
+                    recorded.width,
+                    recorded.height,
+                    "UI RGBA8 texture upload invalidated by device replacement"
+                };
+            }
+            impl.recordedUiRgba8TextureUploads.clear();
+            for (auto& [_, completed] : impl.completedUiRgba8TextureUploads)
+            {
+                completed.success = false;
+                completed.texture.reset();
+                completed.textureView.reset();
+                if (completed.diagnostic.empty())
+                    completed.diagnostic = "UI RGBA8 texture upload invalidated by device replacement";
+            }
+            impl.canceledUiRgba8TextureUploadRequestIds.clear();
+            impl.uiRgba8TextureAtlasPages.clear();
+        }
+
         impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
         impl.deferredThreadedFrameScopedRetirementFrameContexts.clear();
         impl.deferredUiTextureRetirementFrameIdsByFrameContext.clear();
@@ -3340,7 +3374,15 @@ uint64_t DriverUIAccess::RequestUiRgba8TextureUpload(
             request.width,
             request.height,
             std::move(request.rgbaPixels),
-            std::move(request.debugName)
+            std::move(request.debugName),
+            request.colorSpace,
+            request.format,
+            request.rowPitch,
+            request.slicePitch,
+            std::move(request.atlasPageKey),
+            request.atlasPageSize,
+            request.atlasX,
+            request.atlasY
         });
     }
     {
@@ -3349,6 +3391,15 @@ uint64_t DriverUIAccess::RequestUiRgba8TextureUpload(
     }
     Detail::NotifyThreadedWorkers(*driver.m_impl);
     return requestId;
+}
+
+bool DriverUIAccess::SupportsUiRgba8TextureAtlasRegionUploads(const Driver& driver)
+{
+    if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
+        return false;
+    return driver.m_impl->explicitDevice->GetCapabilities()
+        .GetFeature(Render::RHI::RHIDeviceFeature::UITextureAtlasRegionUpload)
+        .supported;
 }
 
 DriverUIAccess::Rgba8TextureUploadResult DriverUIAccess::ConsumeUiRgba8TextureUploadResult(
@@ -3413,6 +3464,8 @@ uint64_t DriverResourceAccess::RequestMeshRuntimeUpload(
     if (driver.m_impl->nextMeshRuntimeUploadRequestId == 0u)
         driver.m_impl->nextMeshRuntimeUploadRequestId = 1u;
     driver.m_impl->pendingMeshRuntimeUploads.push_back({ requestId, std::move(request) });
+    driver.m_impl->meshRuntimeUploadLastRequestedId = requestId;
+    driver.m_impl->meshRuntimeUploadRequestedCount.fetch_add(1u, std::memory_order_relaxed);
     Detail::NotifyThreadedWorkers(*driver.m_impl);
     return requestId;
 }
@@ -3433,7 +3486,12 @@ MeshRuntimeUploadResult DriverResourceAccess::ConsumeMeshRuntimeUploadResult(
     result.ready = true;
     result.success = found->second.success;
     result.mesh = std::move(found->second.mesh);
+    result.uploadRequest = std::move(found->second.uploadRequest);
     result.diagnostic = std::move(found->second.diagnostic);
+    driver.m_impl->meshRuntimeUploadLastConsumedId = requestId;
+    driver.m_impl->meshRuntimeUploadConsumedCount.fetch_add(1u, std::memory_order_relaxed);
+    if (!result.success)
+        driver.m_impl->meshRuntimeUploadFailedCount.fetch_add(1u, std::memory_order_relaxed);
     driver.m_impl->completedMeshRuntimeUploads.erase(found);
     return result;
 }
@@ -3462,6 +3520,39 @@ void DriverResourceAccess::CancelMeshRuntimeUpload(
         driver.m_impl->completedMeshRuntimeUploads.erase(requestId) != 0u;
     if (!removedPending && !removedCompleted)
         driver.m_impl->canceledMeshRuntimeUploadRequestIds.insert(requestId);
+    driver.m_impl->meshRuntimeUploadLastCanceledId = requestId;
+    if (removedPending || removedCompleted)
+        driver.m_impl->meshRuntimeUploadCanceledCount.fetch_add(1u, std::memory_order_relaxed);
+}
+
+DriverResourceAccess::MeshRuntimeUploadDiagnostics
+DriverResourceAccess::GetMeshRuntimeUploadDiagnostics(const Driver& driver)
+{
+    MeshRuntimeUploadDiagnostics diagnostics;
+    if (driver.m_impl == nullptr)
+        return diagnostics;
+
+    {
+        std::lock_guard lock(driver.m_impl->pendingMeshRuntimeUploadMutex);
+        diagnostics.pendingRequestCount = driver.m_impl->pendingMeshRuntimeUploads.size();
+        diagnostics.completedResultCount = driver.m_impl->completedMeshRuntimeUploads.size();
+        diagnostics.driverInstanceIdentity = static_cast<uint64_t>(
+            reinterpret_cast<uintptr_t>(driver.m_impl.get()));
+        diagnostics.lastRequestedRequestId = driver.m_impl->meshRuntimeUploadLastRequestedId;
+        diagnostics.lastSwappedBatchCount = driver.m_impl->meshRuntimeUploadLastSwappedBatchCount;
+        diagnostics.emptyRecordTickCount = driver.m_impl->meshRuntimeUploadEmptyRecordTickCount;
+        diagnostics.lastRecordedRequestId = driver.m_impl->meshRuntimeUploadLastRecordedId;
+        diagnostics.lastConsumedRequestId = driver.m_impl->meshRuntimeUploadLastConsumedId;
+        diagnostics.lastCanceledRequestId = driver.m_impl->meshRuntimeUploadLastCanceledId;
+    }
+    diagnostics.requestedCount = driver.m_impl->meshRuntimeUploadRequestedCount.load(std::memory_order_relaxed);
+    diagnostics.recordTickCount = driver.m_impl->meshRuntimeUploadRecordTickCount.load(std::memory_order_relaxed);
+    diagnostics.rhiIdleTickCount = driver.m_impl->meshRuntimeUploadRhiIdleTickCount.load(std::memory_order_relaxed);
+    diagnostics.recordedCount = driver.m_impl->meshRuntimeUploadRecordedCount.load(std::memory_order_relaxed);
+    diagnostics.consumedCount = driver.m_impl->meshRuntimeUploadConsumedCount.load(std::memory_order_relaxed);
+    diagnostics.failedCount = driver.m_impl->meshRuntimeUploadFailedCount.load(std::memory_order_relaxed);
+    diagnostics.canceledCount = driver.m_impl->meshRuntimeUploadCanceledCount.load(std::memory_order_relaxed);
+    return diagnostics;
 }
 
 void DriverUIAccess::ReleaseUiTextureView(
@@ -4379,6 +4470,12 @@ void Driver::StartThreadedRenderingWorkers()
                 {
                     continue;
                 }
+            }
+
+            {
+                NLS_PROFILE_NAMED_SCOPE("RhiThread::TryProcessPendingMeshRuntimeUploads");
+                if (RhiThreadCoordinator::TryProcessPendingMeshRuntimeUploads(*this))
+                    continue;
             }
 
             {

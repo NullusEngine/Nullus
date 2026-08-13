@@ -271,7 +271,6 @@ namespace
         const auto trimmed = Trim(value);
         const auto* begin = trimmed.data();
         const auto* end = begin + trimmed.size();
-#if defined(__APPLE__) && defined(_LIBCPP_VERSION)
         errno = 0;
         char* parseEnd = nullptr;
         const float parsed = std::strtof(begin, &parseEnd);
@@ -279,10 +278,6 @@ namespace
             return false;
         output = parsed;
         return true;
-#else
-        const auto result = std::from_chars(begin, end, output);
-        return result.ec == std::errc{} && result.ptr == end;
-#endif
     }
 
     std::string ToLower(std::string value)

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cerrno>
+#include <cstdlib>
 #include <cstdint>
 #include <limits>
 #include <locale>
@@ -41,6 +43,13 @@ namespace NLS::Render::ShaderLab
             stream.imbue(std::locale::classic());
             stream >> value;
             return !stream.fail() && stream.eof();
+#elif defined(__GNUC__) && (__GNUC__ < 11)
+            // GCC 10's libstdc++ has no floating-point from_chars overload.
+            // Use the C locale-independent parser and reject trailing input.
+            char* parsedEnd = nullptr;
+            errno = 0;
+            value = std::strtof(text.c_str(), &parsedEnd);
+            return errno == 0 && parsedEnd == end;
 #else
             const auto [ptr, ec] = std::from_chars(begin, end, value);
             return ec == std::errc{} && ptr == end;

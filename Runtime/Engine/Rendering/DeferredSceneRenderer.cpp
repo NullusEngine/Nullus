@@ -1209,6 +1209,12 @@ namespace NLS::Engine::Rendering
 
 					{
 						NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginFrame::CaptureLighting");
+						if (!SelectDeferredLightingVariant())
+						{
+							m_skipThreadedFramePublish = true;
+							DiscardHZBObservationIfNoReadbackWasPublished();
+							return;
+						}
 						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
 						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferNormal", m_gBufferNormalTexture.get());
 						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferMaterial", m_gBufferMaterialTexture.get());
@@ -1626,7 +1632,7 @@ namespace NLS::Engine::Rendering
 		{
 			NLS_PROFILE_SCOPE();
 		using ShaderLoader = NLS::Render::Resources::Loaders::ShaderLoader;
-		const auto& projectAssetsRoot = NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot();
+	const auto& projectAssetsRoot = NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot();
 
 		m_gBufferShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("DeferredGBuffer.hlsl"), projectAssetsRoot);
 		m_deferredDecalShader = ShaderLoader::CreateBuiltInHlsl(ResolveEngineShaderPath("DeferredDecal.hlsl"), projectAssetsRoot);
@@ -1646,8 +1652,66 @@ namespace NLS::Engine::Rendering
 			MakeFullscreenVertex( 1.0f, -1.0f, 1.0f, 1.0f)
 		};
 		std::vector<uint32_t> indices{ 0, 1, 2, 0, 2, 3 };
-			m_fullscreenQuad = std::make_unique<NLS::Render::Resources::Mesh>(vertices, indices, 0);
+		m_fullscreenQuad = std::make_unique<NLS::Render::Resources::Mesh>(vertices, indices, 0);
 		}
+
+	bool DeferredSceneRenderer::SelectDeferredLightingVariant()
+	{
+		if (m_lightingMaterial == nullptr || m_lightingShader == nullptr)
+			return false;
+
+		const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver);
+		const bool usesVulkan = device != nullptr &&
+			device->GetNativeDeviceInfo().backend == NLS::Render::RHI::NativeBackendType::Vulkan;
+		if (!usesVulkan)
+		{
+			if (!m_deferredLightingVariantKeyword.empty())
+				m_lightingMaterial->DisableKeyword(m_deferredLightingVariantKeyword);
+			m_deferredLightingVariantKeyword.clear();
+			return true;
+		}
+
+		const size_t sceneLightCount = HasDescriptor<LightingDescriptor>()
+			? GetDescriptor<LightingDescriptor>().lights.size()
+			: 0u;
+		const uint32_t lightCount = static_cast<uint32_t>((std::min<size_t>)(sceneLightCount, 32u));
+		const std::string desiredKeyword = lightCount == 0u
+			? std::string{}
+			: "NLS_DEFERRED_LIGHT_COUNT_" + std::to_string(lightCount);
+		if (desiredKeyword == m_deferredLightingVariantKeyword)
+			return true;
+
+		if (!desiredKeyword.empty())
+		{
+			auto desiredKeywords = m_lightingMaterial->GetShaderLabKeywords();
+			if (!m_deferredLightingVariantKeyword.empty())
+				desiredKeywords.Disable(m_deferredLightingVariantKeyword);
+			desiredKeywords.Enable(desiredKeyword);
+			const std::vector<NLS::Render::ShaderCompiler::ShaderMacroDefinition> macros{
+				{"NLS_DEFERRED_LIGHT_COUNT", std::to_string(lightCount)}};
+			const auto& projectAssetsRoot = NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot();
+			if (!NLS::Render::Resources::Loaders::ShaderLoader::EnsureBuiltInHlslVariant(
+					*m_lightingShader,
+					m_lightingShader->path,
+					projectAssetsRoot,
+					NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV,
+					desiredKeywords.Hash(),
+					macros))
+			{
+				NLS_LOG_ERROR(
+					"DeferredSceneRenderer: failed to compile Vulkan deferred lighting variant for " +
+					std::to_string(lightCount) + " lights.");
+				return false;
+			}
+		}
+
+		if (!m_deferredLightingVariantKeyword.empty())
+			m_lightingMaterial->DisableKeyword(m_deferredLightingVariantKeyword);
+		if (!desiredKeyword.empty())
+			m_lightingMaterial->EnableKeyword(desiredKeyword);
+		m_deferredLightingVariantKeyword = desiredKeyword;
+		return true;
+	}
 
 		void DeferredSceneRenderer::EnsureDeferredPipelineResourceAssets()
 		{
@@ -2865,6 +2929,8 @@ namespace NLS::Engine::Rendering
 	{
 		NLS_PROFILE_SCOPE();
 		if (!m_lightingMaterial || !m_fullscreenQuad || !m_gBufferAlbedoTexture || !m_gBufferNormalTexture || !m_gBufferMaterialTexture)
+			return;
+		if (!SelectDeferredLightingVariant())
 			return;
 
 		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;

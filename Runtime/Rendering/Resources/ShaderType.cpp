@@ -146,9 +146,11 @@ namespace
     ShaderRootParameterMetadata BuildDeferredLightingParameters(std::string debugName)
     {
         return MakeRootMetadata(std::move(debugName), {
-            ShaderParameterStructBuilder("DeferredLightingFrameParameters")
-                .SetGroup(ShaderParameterGroupKind::Frame)
-                .Build(),
+            // Deferred lighting is a fullscreen pass, but it still follows the
+            // renderer's standard frame/object binding contract.  Keeping these
+            // groups empty makes Vulkan reject the engine descriptor sets even
+            // though the draw path binds them for every graphics pass.
+            BuildFrameParameters("DeferredLightingFrameParameters"),
             ShaderParameterStructBuilder("DeferredLightingMaterialParameters")
                 .SetGroup(ShaderParameterGroupKind::Material)
                 .AddUniformBuffer("MaterialConstants", 0u, 96u, NLS::Render::RHI::ShaderStageMask::Fragment)
@@ -159,7 +161,18 @@ namespace
                 .AddTexture("u_SkyboxCube", 4u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddSampler("u_LinearWrapSampler", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .Build(),
-            BuildEmptyObjectParameters("DeferredLightingObjectParameters"),
+            // The fullscreen draw still receives the renderer's ordinary object
+            // binding set.  It is a 64-byte UBO (not the indexed mesh ObjectData
+            // buffer used by material draws), so keep this layout compatible with
+            // EngineObjectBindingSet even though the lighting shader does not read it.
+            ShaderParameterStructBuilder("DeferredLightingObjectParameters")
+                .SetGroup(ShaderParameterGroupKind::Object)
+                .AddUniformBuffer(
+                    "ObjectConstants",
+                    0u,
+                    sizeof(NLS::Maths::Matrix4),
+                    NLS::Render::RHI::ShaderStageMask::AllGraphics)
+                .Build(),
             BuildLightGridGraphicsPassParameters("DeferredLightingPassParameters")
         });
     }

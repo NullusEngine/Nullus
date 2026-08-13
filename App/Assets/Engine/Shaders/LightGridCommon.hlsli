@@ -9,6 +9,7 @@ static const uint NLS_LIGHT_TYPE_SPOT = 2u;
 static const uint NLS_LIGHT_TYPE_AMBIENT_BOX = 3u;
 static const uint NLS_LIGHT_TYPE_AMBIENT_SPHERE = 4u;
 static const uint NLS_LIGHT_WORD_STRIDE = 16u;
+static const uint NLS_DEFERRED_SCENE_LIGHT_CAPACITY = 32u;
 static const uint NLS_NUM_CULLED_LIGHTS_GRID_STRIDE = 2u;
 static const uint NLS_LIGHT_LINK_STRIDE = 2u;
 static const float NLS_LIGHTING_SAFE_NORMAL_EPSILON = 1.0e-8f;
@@ -35,6 +36,7 @@ cbuffer ForwardLightData : register(b0, space1)
     float4 u_LightGridLightingParams;
     float4 u_LightGridZParams;
     float4 u_LightGridPixelParams;
+    uint4 u_DeferredSceneLightWords[128];
 };
 
 struct NLSLightGridLight
@@ -238,6 +240,37 @@ NLSLightGridLight NLSLoadLight(StructuredBuffer<uint> forwardLocalLightBuffer, u
     light.color = float3(asfloat(forwardLocalLightBuffer[baseIndex + 8u]), asfloat(forwardLocalLightBuffer[baseIndex + 9u]), asfloat(forwardLocalLightBuffer[baseIndex + 10u]));
     light.intensity = asfloat(forwardLocalLightBuffer[baseIndex + 11u]);
     light.outerCutoffDegrees = asfloat(forwardLocalLightBuffer[baseIndex + 12u]);
+    return light;
+}
+
+uint NLSLoadDeferredSceneLightWord(uint wordIndex)
+{
+    const uint4 packedWords = u_DeferredSceneLightWords[wordIndex >> 2u];
+    return packedWords[wordIndex & 3u];
+}
+
+NLSLightGridLight NLSLoadDeferredSceneLight(uint lightIndex)
+{
+    const uint baseIndex = lightIndex * NLS_LIGHT_WORD_STRIDE;
+    NLSLightGridLight light;
+    light.positionWS = float3(
+        asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 0u)),
+        asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 1u)),
+        asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 2u)));
+    light.range = asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 3u));
+    light.directionWS = NLSSafeLightingNormalize(
+        float3(
+            asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 4u)),
+            asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 5u)),
+            asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 6u))),
+        float3(0.0f, -1.0f, 0.0f));
+    light.type = NLSLoadDeferredSceneLightWord(baseIndex + 7u);
+    light.color = float3(
+        asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 8u)),
+        asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 9u)),
+        asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 10u)));
+    light.intensity = asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 11u));
+    light.outerCutoffDegrees = asfloat(NLSLoadDeferredSceneLightWord(baseIndex + 12u));
     return light;
 }
 
@@ -635,6 +668,26 @@ float3 NLSCombineAmbientAndDirectLighting(
     float directVisibility)
 {
     return ambientLighting + directLighting * directVisibility;
+}
+
+float3 NLSAccumulateSceneAmbientLightingPBR(
+    StructuredBuffer<uint> forwardLocalLightBuffer,
+    float3 albedo,
+    float ao)
+{
+    const float3 safeAlbedo = NLSSafePbrAlbedo(albedo);
+    const float safeAo = NLSSafePbrAo(ao);
+    float3 lighting = safeAlbedo * (NLSGetVisibleAmbientFloor() * safeAo);
+
+    [loop]
+    for (uint lightIndex = 0u; lightIndex < NLSGetSceneLightCount(); ++lightIndex)
+    {
+        const NLSLightGridLight light = NLSLoadLight(forwardLocalLightBuffer, lightIndex);
+        if (NLSIsAmbientLight(light))
+            lighting += safeAlbedo * light.color * max(light.intensity, 0.0f) * safeAo;
+    }
+
+    return lighting;
 }
 
 float3 NLSAccumulateSceneLightingPBR(

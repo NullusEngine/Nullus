@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+runtime_dir="$script_dir/../runtime"
+exec "$runtime_dir/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+    --library-path "$runtime_dir/lib/x86_64-linux-gnu:$runtime_dir/usr/lib/x86_64-linux-gnu:$script_dir/../lib" \
+    "$script_dir/dxc.real" "$@"

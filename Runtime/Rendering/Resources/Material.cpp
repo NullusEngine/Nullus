@@ -561,12 +561,6 @@ namespace
 		if (overrides.cullFace.has_value())
 			desc.rasterState.cullFace = *overrides.cullFace;
 
-		if (!desc.depthStencilState.depthTest &&
-			!desc.depthStencilState.depthWrite &&
-			!desc.depthStencilState.stencilTest)
-		{
-			desc.renderTargetLayout.hasDepth = false;
-		}
 	}
 
     bool ShouldLogMaterialBindingDiagnostics()
@@ -1367,7 +1361,9 @@ namespace NLS::Render::Resources
 			}
 
 			const auto* parameter = m_parameterBlock.TryGet(binding.name);
-			if (!parameter && !(binding.type == UniformType::UNIFORM_SAMPLER_2D && IsMaterialTextureBindingName(binding.name)))
+			if (!parameter &&
+				!(binding.type == UniformType::UNIFORM_SAMPLER_2D && IsMaterialTextureBindingName(binding.name)) &&
+				binding.type != UniformType::UNIFORM_SAMPLER_CUBE)
 				continue;
 
 			switch (binding.type)
@@ -1390,9 +1386,17 @@ namespace NLS::Render::Resources
 				}
 				break;
 			case UniformType::UNIFORM_SAMPLER_CUBE:
-				if (parameter->type() == typeid(TextureCube*))
+				if (parameter != nullptr && parameter->type() == typeid(TextureCube*))
 				{
 					const auto* texture = std::any_cast<TextureCube*>(*parameter);
+					const auto* resolvedTexture = texture != nullptr ? texture : GetDefaultWhiteTextureCube();
+					state.bindingSet.SetTexture(
+						binding.name,
+						resolvedTexture != nullptr ? resolvedTexture->GetTextureHandle() : nullptr);
+				}
+				else if (parameter == nullptr)
+				{
+					const auto* texture = GetDefaultWhiteTextureCube();
 					state.bindingSet.SetTexture(
 						binding.name,
 						texture != nullptr ? texture->GetTextureHandle() : nullptr);
@@ -2123,7 +2127,7 @@ namespace NLS::Render::Resources
 
 		for (const auto& entry : explicitLayout->GetDesc().entries)
 		{
-			RHI::RHIBindingSetEntry bindingEntry;
+			RHI::RHIBindingSetEntry bindingEntry{};
 			bindingEntry.binding = entry.binding;
 			bindingEntry.type = entry.type;
 
@@ -2175,9 +2179,15 @@ namespace NLS::Render::Resources
 				const auto* parameter = m_parameterBlock.TryGet(entry.name);
 				if (parameter == nullptr)
 				{
-					if (IsMaterialTextureBindingName(entry.name))
+					const auto reflectedType = shader != nullptr ? shader->GetUniformInfo(entry.name) : std::nullopt;
+					const bool isCube = reflectedType.has_value()
+						? reflectedType->type == UniformType::UNIFORM_SAMPLER_CUBE
+						: entry.name.find("Cube") != std::string::npos || entry.name.find("Sky") != std::string::npos;
+					// Sampled textures may safely use the engine's white fallback when a
+					// material omits an optional parameter. RWTexture must remain explicit.
+					if (entry.type == RHI::BindingType::Texture)
 					{
-						const auto* texture = GetDefaultWhiteTexture2D();
+						const Texture* texture = isCube ? static_cast<Texture*>(GetDefaultWhiteTextureCube()) : static_cast<Texture*>(GetDefaultWhiteTexture2D());
 						if (texture != nullptr && texture->GetTextureHandle())
 						{
 							bindingEntry.textureView = texture->GetOrCreateExplicitTextureView(entry.name + "View");
@@ -2408,9 +2418,6 @@ namespace NLS::Render::Resources
 		pipelineLayoutDesc.bindingLayouts.reserve(layoutDescs.size());
 		for (const auto& layoutDesc : layoutDescs)
 		{
-			if (layoutDesc.entries.empty())
-				continue;
-
 			pipelineLayoutDesc.bindingLayouts.push_back(device->CreateBindingLayout(layoutDesc));
 		}
 		state.explicitPipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);

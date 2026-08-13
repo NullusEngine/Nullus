@@ -156,6 +156,13 @@ endif()
 set(NLS_RENDER_API "${_nls_default_render_api}" CACHE STRING "Choose render api")
 set_property(CACHE NLS_RENDER_API PROPERTY STRINGS ${NLS_RENDER_API_LIST})
 
+if(NLS_RENDER_API STREQUAL "Vulkan" AND NOT Vulkan_FOUND)
+    message(FATAL_ERROR
+        "Vulkan render API was explicitly requested, but the Vulkan SDK/loader was not found. "
+        "Install the Vulkan SDK (including headers and vulkan-1.lib/libvulkan), or set "
+        "VULKAN_SDK/VK_SDK_PATH. The Vulkan path does not silently fall back to another backend.")
+endif()
+
 if(NLS_USE_SHARED_LIBRARY)
     add_definitions(-DNLS_SHARED_LIB)
     set(NLS_LIBRARY_TYPE "Shared")
@@ -410,6 +417,58 @@ if(NLS_ENABLE_CXX_MODULES)
 endif()
 
 add_subdirectory("ThirdParty")
+
+# Vulkan is an explicit runtime choice on both Linux and Windows. Fail during
+# configure when a required WSI or shader tool is absent instead of producing a
+# binary that can only fail later while compiling shaders or creating a window.
+if(NLS_RENDER_API STREQUAL "Vulkan")
+    if(NOT TARGET glfw)
+        message(FATAL_ERROR
+            "Vulkan requires the bundled GLFW target for Vulkan WSI. "
+            "Ensure ThirdParty/glfw is present and configure again.")
+    endif()
+
+    if(DEFINED ENV{DXC_PATH} AND NOT "$ENV{DXC_PATH}" STREQUAL "")
+        set(_nls_dxc_env_path "$ENV{DXC_PATH}")
+    endif()
+    if(WIN32)
+        set(_nls_dxc_names dxc.exe dxc)
+        set(_nls_dxc_paths
+            "${CMAKE_CURRENT_SOURCE_DIR}/Tools/DXC/1.9.2602/bin/x64"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Tools/DXC/bin/x64")
+    else()
+        set(_nls_dxc_names dxc)
+        set(_nls_dxc_paths
+            "${CMAKE_CURRENT_SOURCE_DIR}/Tools/DXC/1.7.2308/bin"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Tools/DXC/bin")
+    endif()
+    find_program(NLS_VULKAN_DXC_EXECUTABLE
+        NAMES ${_nls_dxc_names}
+        HINTS "${_nls_dxc_env_path}"
+        PATHS ${_nls_dxc_paths})
+    if(NOT NLS_VULKAN_DXC_EXECUTABLE)
+        message(FATAL_ERROR
+            "Vulkan requires a native dxc executable for SPIR-V shader compilation. "
+            "Set DXC_PATH or install DirectXShaderCompiler; the bundled path is "
+            "Tools/DXC/1.9.2602/bin/x64/dxc.exe on Windows or "
+            "Tools/DXC/1.7.2308/bin/dxc on Linux.")
+    endif()
+    set(DXC_PATH "${NLS_VULKAN_DXC_EXECUTABLE}" CACHE FILEPATH
+        "Native DXC executable used by the Vulkan shader compiler" FORCE)
+
+    if(NOT WIN32)
+        find_program(NLS_SPIRV_VALIDATOR_EXECUTABLE
+            NAMES spirv-val spirvValidator glslangValidator)
+        if(NOT NLS_SPIRV_VALIDATOR_EXECUTABLE)
+            message(FATAL_ERROR
+                "Linux Vulkan requires a SPIR-V validation tool (spirv-val or glslangValidator). "
+                "Install spirv-tools or the Vulkan SDK.")
+        endif()
+        set(NLS_SPIRV_VALIDATOR_EXECUTABLE "${NLS_SPIRV_VALIDATOR_EXECUTABLE}" CACHE FILEPATH
+            "SPIR-V validation tool used by the Vulkan build" FORCE)
+    endif()
+endif()
+
 add_subdirectory("Tools")
 add_subdirectory("Runtime")
 add_subdirectory("Project")

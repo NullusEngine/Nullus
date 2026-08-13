@@ -6134,7 +6134,7 @@ TEST(RendererFrameObjectBindingTests, MaterialClearsShaderLabPassReferencesWhenS
     NLS::Render::Resources::Shader::DestroyForTesting(depth);
 }
 
-TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutRejectsIndexedObjectDataOnUnsupportedBackend)
+TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutSupportsIndexedObjectDataOnVulkan)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -6143,17 +6143,29 @@ TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutRejectsIndexedObject
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::CreateBuiltInHlsl("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/VulkanIndexedObjectData.hlsl",
+        MakeIndexedObjectDataReflection(),
+        "shader:vulkan-indexed-object-data");
     ASSERT_NE(shader, nullptr);
-    ASSERT_TRUE(shader->HasParameterStructs());
+    ASSERT_TRUE(NLS::Render::Resources::ShaderSupportsIndexedObjectData(*shader));
 
     NLS::Render::Resources::Material material(shader);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
     explicitDevice->SetNativeBackendType(NLS::Render::RHI::NativeBackendType::Vulkan);
 
     const auto& pipelineLayout = material.GetExplicitPipelineLayout(explicitDevice);
-    EXPECT_EQ(pipelineLayout, nullptr);
-    EXPECT_EQ(explicitDevice->pipelineLayoutCreateCalls, 0u);
+    ASSERT_NE(pipelineLayout, nullptr);
+    EXPECT_EQ(explicitDevice->pipelineLayoutCreateCalls, 1u);
+    ASSERT_EQ(explicitDevice->lastPipelineLayoutDesc.pushConstants.size(), 1u);
+    const auto& objectConstantRange = explicitDevice->lastPipelineLayoutDesc.pushConstants.front();
+    EXPECT_EQ(objectConstantRange.size, sizeof(NLS::Render::Data::ObjectDrawConstants));
+    EXPECT_TRUE(NLS::Render::RHI::HasShaderStage(
+        objectConstantRange.stageMask,
+        NLS::Render::RHI::ShaderStageMask::Vertex));
+    EXPECT_TRUE(NLS::Render::RHI::HasShaderStage(
+        objectConstantRange.stageMask,
+        NLS::Render::RHI::ShaderStageMask::Fragment));
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
@@ -6418,13 +6430,19 @@ TEST(RendererFrameObjectBindingTests, DeferredLightingPipelineLayoutSkipsEmptyFr
     ASSERT_NE(pipelineLayout, nullptr);
 
     const auto& bindingLayouts = explicitDevice->lastPipelineLayoutDesc.bindingLayouts;
-    ASSERT_EQ(bindingLayouts.size(), 2u);
-    ASSERT_NE(bindingLayouts[0], nullptr);
-    ASSERT_NE(bindingLayouts[1], nullptr);
-    EXPECT_EQ(bindingLayouts[0]->GetDesc().entries[0].name, "MaterialConstants");
-    EXPECT_EQ(bindingLayouts[0]->GetDesc().entries[0].set, NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet);
-    EXPECT_EQ(bindingLayouts[1]->GetDesc().entries[0].name, "ForwardLightData");
-    EXPECT_EQ(bindingLayouts[1]->GetDesc().entries[0].set, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
+	// Vulkan requires empty descriptor-set placeholders so the vector index
+	// remains the reflected register-space/set index.
+	ASSERT_EQ(bindingLayouts.size(), 4u);
+	ASSERT_NE(bindingLayouts[0], nullptr);
+	ASSERT_NE(bindingLayouts[1], nullptr);
+	ASSERT_NE(bindingLayouts[2], nullptr);
+	ASSERT_NE(bindingLayouts[3], nullptr);
+	EXPECT_TRUE(bindingLayouts[0]->GetDesc().entries.empty());
+	EXPECT_EQ(bindingLayouts[1]->GetDesc().entries[0].name, "MaterialConstants");
+	EXPECT_EQ(bindingLayouts[1]->GetDesc().entries[0].set, NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet);
+	EXPECT_TRUE(bindingLayouts[2]->GetDesc().entries.empty());
+	EXPECT_EQ(bindingLayouts[3]->GetDesc().entries[0].name, "ForwardLightData");
+	EXPECT_EQ(bindingLayouts[3]->GetDesc().entries[0].set, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }

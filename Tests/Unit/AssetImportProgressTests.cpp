@@ -6,7 +6,7 @@
 #include "Guid.h"
 
 #include <algorithm>
-#include <barrier>
+#include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <filesystem>
@@ -16,6 +16,34 @@
 
 namespace
 {
+class StartGate
+{
+public:
+    explicit StartGate(const size_t participantCount)
+        : m_remaining(participantCount)
+    {
+    }
+
+    void ArriveAndWait()
+    {
+        std::unique_lock lock(m_mutex);
+        if (--m_remaining == 0u)
+        {
+            m_open = true;
+            m_condition.notify_all();
+            return;
+        }
+
+        m_condition.wait(lock, [this] { return m_open; });
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    size_t m_remaining = 0u;
+    bool m_open = false;
+};
+
 using NLS::Core::Assets::AssetId;
 using NLS::Editor::Assets::ImportJobId;
 using NLS::Editor::Assets::ImportJobTerminalStatus;
@@ -455,7 +483,7 @@ TEST(AssetImportProgressTests, ConcurrentImportProgressUpdatesKeepUniqueJobsAndB
     constexpr size_t jobsPerThread = 32u;
     constexpr size_t totalJobs = threadCount * jobsPerThread;
 
-    std::barrier startGate(static_cast<std::ptrdiff_t>(threadCount));
+    StartGate startGate(threadCount);
     std::mutex idsMutex;
     std::vector<ImportJobId> jobIds;
     jobIds.reserve(totalJobs);
@@ -466,7 +494,7 @@ TEST(AssetImportProgressTests, ConcurrentImportProgressUpdatesKeepUniqueJobsAndB
     {
         workers.emplace_back([&, threadIndex]
         {
-            startGate.arrive_and_wait();
+            startGate.ArriveAndWait();
             std::vector<ImportJobId> localIds;
             localIds.reserve(jobsPerThread);
             for (size_t jobIndex = 0u; jobIndex < jobsPerThread; ++jobIndex)

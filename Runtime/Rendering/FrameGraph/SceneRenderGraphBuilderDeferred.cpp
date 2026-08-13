@@ -1040,10 +1040,18 @@ namespace NLS::Render::FrameGraph
                     "Lighting");
                 passInput.requiresFrameData = true;
                 passInput.requiresLightingData = true;
-                passInput.targetsSwapchain = package.targetsSwapchain;
-                passInput.usesColorAttachment = true;
-                passInput.usesDepthStencilAttachment = false;
-                passInput.gbufferTextures = resources.gbufferTextures;
+				passInput.targetsSwapchain = package.targetsSwapchain;
+				passInput.usesColorAttachment = true;
+				// Lighting PSOs retain the frame depth attachment layout even though
+				// depth testing is disabled. On a swapchain pass the driver supplies the
+				// independent swapchain depth target; GBuffer depth remains shader-read
+				// input and must not be attached to the same pass.
+				passInput.usesDepthStencilAttachment =
+					package.targetsSwapchain || package.externalSceneOutputDepthView != nullptr;
+				passInput.writesDepthStencilAttachment = false;
+				if (!package.targetsSwapchain)
+					passInput.depthStencilAttachmentView = package.externalSceneOutputDepthView;
+				passInput.gbufferTextures = resources.gbufferTextures;
                 for (const auto& texture : resources.gbufferTextures)
                 {
                     AddFullTextureResourceAccess(
@@ -1052,9 +1060,20 @@ namespace NLS::Render::FrameGraph
                         NLS::Render::Context::ResourceAccessMode::Read,
                         NLS::Render::RHI::ResourceState::ShaderRead,
                         NLS::Render::RHI::PipelineStageMask::FragmentShader | NLS::Render::RHI::PipelineStageMask::ComputeShader,
-                        NLS::Render::RHI::AccessMask::ShaderRead);
-                }
-                break;
+						NLS::Render::RHI::AccessMask::ShaderRead);
+				}
+				if (resources.gbufferDepthView != nullptr &&
+					resources.gbufferDepthView->GetTexture() != nullptr)
+				{
+					AddFullTextureResourceAccess(
+						passInput,
+						resources.gbufferDepthView->GetTexture(),
+						NLS::Render::Context::ResourceAccessMode::Read,
+						NLS::Render::RHI::ResourceState::DepthRead,
+						NLS::Render::RHI::PipelineStageMask::DepthStencil,
+						NLS::Render::RHI::AccessMask::DepthStencilRead);
+				}
+				break;
             }
             case DeferredScenePassExecutionKind::Transparent:
             {

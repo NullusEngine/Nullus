@@ -376,6 +376,7 @@ namespace NLS::Render::Context
         std::vector<uint64_t> externalOutputIdentities;
         uint32_t externalOutputTextureCount = 0u;
         std::shared_ptr<RHI::RHITextureView> externalOutputColorView;
+        std::shared_ptr<RHI::RHITextureView> externalOutputDepthView;
         LargeSceneCullReasonDebugSnapshot largeSceneCullReasonSnapshot;
         std::vector<uint64_t> streamingDependencyPins;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
@@ -460,6 +461,7 @@ namespace NLS::Render::Context
         std::vector<uint64_t> externalSceneOutputIdentities;
         uint32_t externalSceneOutputTextureCount = 0u;
         std::shared_ptr<RHI::RHITextureView> externalSceneOutputColorView;
+        std::shared_ptr<RHI::RHITextureView> externalSceneOutputDepthView;
     };
 
     using PreparedRenderSceneBuilder = std::function<RenderScenePackage()>;

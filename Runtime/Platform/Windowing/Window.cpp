@@ -1,5 +1,6 @@
 #include "Windowing/Window.h"
 #include <Debug/Assertion.h>
+#include <Debug/Logger.h>
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <vector>
@@ -238,6 +239,21 @@ void NLS::Windowing::Window::Hide() const
 void NLS::Windowing::Window::Show() const
 {
 	glfwShowWindow(m_glfwWindow);
+#ifdef _WIN32
+	if (HWND hwnd = m_glfwWindow != nullptr ? glfwGetWin32Window(m_glfwWindow) : nullptr)
+	{
+		RECT rect{};
+		GetWindowRect(hwnd, &rect);
+		NLS_LOG_INFO(
+			"Window::Show title='" + m_title + "' glfwVisible=" +
+			std::to_string(glfwGetWindowAttrib(m_glfwWindow, GLFW_VISIBLE)) +
+			" hwnd=" + std::to_string(reinterpret_cast<uintptr_t>(hwnd)) +
+			" rect=" + std::to_string(rect.left) + "," + std::to_string(rect.top) + "," +
+			std::to_string(rect.right) + "," + std::to_string(rect.bottom) +
+			" minimized=" + std::to_string(IsIconic(hwnd) ? 1 : 0) +
+			" maximized=" + std::to_string(IsZoomed(hwnd) ? 1 : 0));
+	}
+#endif
 }
 
 void NLS::Windowing::Window::Focus() const

@@ -1116,6 +1116,103 @@ TEST(PBRShadingContractTests, DeferredLightingDecodesDualNormalsAndSamplesEachGb
     EXPECT_EQ(lightingArguments[8], "directVisibility");
 }
 
+TEST(PBRShadingContractTests, DeferredSpirvUsesLightCountVariantsWithLiteralSlots)
+{
+    const auto deferredSource = ReadTextFile(ShaderRootPath() / "DeferredLighting.hlsl");
+    const auto lightGridSource = ReadTextFile(ShaderRootPath() / "LightGridCommon.hlsli");
+    ASSERT_FALSE(deferredSource.empty());
+    ASSERT_FALSE(lightGridSource.empty());
+    const auto pixel = ExtractFunctionDefinition(deferredSource, "PSMain");
+    ASSERT_FALSE(pixel.empty());
+
+    EXPECT_NE(
+        deferredSource.find("StructuredBuffer<uint> u_ForwardLocalLightBuffer"),
+        std::string::npos);
+    EXPECT_NE(
+        lightGridSource.find("uint4 u_DeferredSceneLightWords[128]"),
+        std::string::npos);
+    EXPECT_NE(
+        lightGridSource.find("NLSLightGridLight NLSLoadDeferredSceneLight(uint lightIndex)"),
+        std::string::npos);
+    EXPECT_NE(deferredSource.find("#ifndef NLS_DEFERRED_LIGHT_COUNT"), std::string::npos);
+    EXPECT_NE(
+        deferredSource.find("#define NLS_ACCUMULATE_DEFERRED_DIRECT_LIGHT_SLOT(slot, base)"),
+        std::string::npos);
+    EXPECT_EQ(
+        CountOccurrences(deferredSource, "#if NLS_DEFERRED_LIGHT_COUNT > "),
+        32u);
+    EXPECT_EQ(
+        CountOccurrences(deferredSource, "    NLS_ACCUMULATE_DEFERRED_DIRECT_LIGHT_SLOT("),
+        32u);
+    EXPECT_NE(deferredSource.find("NLS_ACCUMULATE_DEFERRED_DIRECT_LIGHT_SLOT(0u, 0u);"), std::string::npos);
+    EXPECT_NE(deferredSource.find("NLS_ACCUMULATE_DEFERRED_DIRECT_LIGHT_SLOT(31u, 496u);"), std::string::npos);
+    EXPECT_NE(
+        deferredSource.find("u_ForwardLocalLightBuffer[base + 0u]"),
+        std::string::npos);
+    EXPECT_NE(deferredSource.find("if (NLSGetSceneLightCount() > slot)"), std::string::npos);
+    EXPECT_NE(deferredSource.find("attenuation = smoothFactor / distanceSquared;"), std::string::npos);
+    EXPECT_NE(
+        lightGridSource.find("float3 NLSAccumulateSceneAmbientLightingPBR("),
+        std::string::npos);
+    EXPECT_NE(pixel.find("NLSAccumulateSceneAmbientLightingPBR("), std::string::npos);
+    EXPECT_NE(
+        deferredSource.find("lightType != NLS_LIGHT_TYPE_AMBIENT_BOX &&"),
+        std::string::npos);
+    EXPECT_EQ(deferredSource.find("u_DeferredSceneLightWords[slot"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("NLSLightGridLight light;"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("float3 directLighting = 0.0f.xxx;"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("float3 NLSEvaluateDeferredLightGroup("), std::string::npos);
+    EXPECT_EQ(deferredSource.find("switch (lightIndex)"), std::string::npos);
+    EXPECT_EQ(
+        deferredSource.find("for (uint lightIndex = 0u; lightIndex < deferredLightCount; ++lightIndex)"),
+        std::string::npos);
+    EXPECT_EQ(deferredSource.find("NLSAccumulateDeferredLightingSpirv("), std::string::npos);
+    EXPECT_NE(pixel.find("NLS_ACCUMULATE_DEFERRED_DIRECT_LIGHT_SLOT(0u, 0u);"), std::string::npos);
+    EXPECT_NE(pixel.find("NLSAccumulateSceneLightingPBR("), std::string::npos)
+        << "DXIL must retain the original dynamic scene-light loop.";
+    EXPECT_NE(
+        lightGridSource.find("for (uint lightIndex = 0u; lightIndex < NLSGetSceneLightCount(); ++lightIndex)"),
+        std::string::npos);
+
+    const auto rendererSource = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
+    ASSERT_FALSE(rendererSource.empty());
+    const auto selectVariant = ExtractFunctionDefinition(
+        rendererSource,
+        "DeferredSceneRenderer::SelectDeferredLightingVariant");
+    ASSERT_FALSE(selectVariant.empty());
+    EXPECT_NE(selectVariant.find("NativeBackendType::Vulkan"), std::string::npos);
+    EXPECT_NE(selectVariant.find("NLS_DEFERRED_LIGHT_COUNT_"), std::string::npos);
+    EXPECT_NE(selectVariant.find("ShaderTargetPlatform::SPIRV"), std::string::npos);
+    EXPECT_NE(
+        selectVariant.find("{\"NLS_DEFERRED_LIGHT_COUNT\", std::to_string(lightCount)}"),
+        std::string::npos);
+    EXPECT_EQ(selectVariant.find("ShaderTargetPlatform::DXIL"), std::string::npos)
+        << "DX12 must retain the hash-zero dynamic scene-light loop.";
+}
+
+TEST(PBRShadingContractTests, TwoLightDeferredSpirvVariantStaysCompact)
+{
+    if (IsNativeDxcUnavailable())
+        GTEST_SKIP() << "Native dxc is unavailable in this environment.";
+
+    ScopedTemporaryDirectory temporaryDirectory;
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+    auto input = MakeNativeShaderCompileInput(
+        ShaderRootPath() / "DeferredLighting.hlsl",
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV,
+        temporaryDirectory.GetPath() / "DeferredTwoLightVariant");
+    input.options.macros.push_back({"NLS_DEFERRED_LIGHT_COUNT", "2"});
+
+    const auto output = compiler.Compile(input);
+    ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+        << output.diagnostics;
+    ASSERT_FALSE(output.bytecode.empty());
+    EXPECT_LT(output.bytecode.size(), 96u * 1024u)
+        << "The two-light literal variant must not regress to the 32-slot SPIR-V startup cost.";
+}
+
 TEST(PBRShadingContractTests, ForwardPixelShadersOrientConstrainAndPassGeometryThenShadingNormals)
 {
     const auto sharedSurfaceSource = ReadTextFile(

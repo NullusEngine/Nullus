@@ -1,6 +1,7 @@
 #include "Rendering/LightGridPrepass.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstring>
 #include <exception>
@@ -1027,6 +1028,29 @@ namespace NLS::Engine::Rendering
         outFrameData.forwardLocalLightData.reserve(preparedFrameInputs.lights.size() * kLightWordStride);
         for (const auto& light : preparedFrameInputs.lights)
             PackCapturedLight(light, outFrameData.forwardLocalLightData);
+
+        auto& deferredSceneLightWords = outFrameData.forwardLightData.deferredSceneLightWords;
+        deferredSceneLightWords.fill(0u);
+        const size_t deferredSceneLightCount = std::min<size_t>(
+            preparedFrameInputs.lights.size(),
+            kDeferredSceneLightCapacity);
+        std::copy_n(
+            outFrameData.forwardLocalLightData.begin(),
+            deferredSceneLightCount * kLightWordStride,
+            deferredSceneLightWords.begin());
+
+        if (preparedFrameInputs.lights.size() > kDeferredSceneLightCapacity)
+        {
+            static std::atomic_bool s_loggedDeferredLightTruncation = false;
+            bool expected = false;
+            if (s_loggedDeferredLightTruncation.compare_exchange_strong(expected, true))
+            {
+                NLS_LOG_WARNING(
+                    "Vulkan deferred lighting supports at most " +
+                    std::to_string(kDeferredSceneLightCapacity) +
+                    " scene lights; the remaining lights stay available to the clustered-light buffers but are omitted from the deferred Vulkan pass.");
+            }
+        }
 
         outFrameData.startOffsetGrid.resize(static_cast<size_t>(clusterCount));
         outFrameData.culledLightLinks.resize(static_cast<size_t>(culledLightLinksCount));

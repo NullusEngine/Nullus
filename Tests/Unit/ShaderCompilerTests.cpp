@@ -437,14 +437,16 @@ TEST(ShaderCompilerTests, ShaderCompilationCacheKeyIncludesDxcIdentityAndArgumen
     EXPECT_NE(baseKey, pathKey);
     EXPECT_NE(baseKey, versionKey);
     EXPECT_NE(baseKey, argumentsKey);
+
     EXPECT_EQ(baseKey, artifactDirectoryKey);
 }
 
 TEST(ShaderCompilerTests, ReflectDxcStructuredBuffersAsStructuredBuffersWithElementStride)
 {
-    const auto directory = std::filesystem::temp_directory_path() / "NullusShaderCompilerTests";
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("NullusShaderCompilerTests-" + NLS::Guid::New().ToString());
     std::filesystem::create_directories(directory);
-    const auto sourcePath = directory / ("structured-buffer-reflection-" + NLS::Guid::New().ToString() + ".hlsl");
+    const auto sourcePath = directory / "structured-buffer-reflection.hlsl";
     {
         std::ofstream source(sourcePath, std::ios::binary | std::ios::trunc);
         source <<
@@ -462,12 +464,13 @@ TEST(ShaderCompilerTests, ReflectDxcStructuredBuffersAsStructuredBuffersWithElem
     input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
     input.options.targetProfile = "cs_6_0";
     input.options.entryPoint = "Main";
+    input.options.artifactDirectory = (directory / "ShaderCache").string();
 
     NLS::Render::ShaderCompiler::ShaderCompiler compiler;
     const auto output = compiler.Compile(input);
     if (output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
     {
-        std::filesystem::remove(sourcePath);
+        std::filesystem::remove_all(directory);
         GTEST_SKIP() << "DXC is unavailable for shader reflection regression test: " << output.diagnostics;
     }
 
@@ -498,7 +501,7 @@ TEST(ShaderCompilerTests, ReflectDxcStructuredBuffersAsStructuredBuffersWithElem
     EXPECT_EQ(outputData->bindingSpace, 2u);
     EXPECT_EQ(outputData->byteSize, 4u);
 
-    std::filesystem::remove(sourcePath);
+    std::filesystem::remove_all(directory);
 }
 
 TEST(ShaderCompilerTests, ShaderArtifactStagingPlanUsesSameDirectoryTempFileAndLock)

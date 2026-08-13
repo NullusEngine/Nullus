@@ -2175,6 +2175,12 @@ TEST(RHIUiOverlayPassTests, OverlayRendererUsesFloatColorVertexAttributeLayout)
 
     const auto shaderSource = ReadSourceText(RepoPath("App/Assets/Engine/Shaders/RHIImGuiOverlay.hlsl"));
     EXPECT_NE(shaderSource.find("float4 Color : TEXCOORD1;"), std::string::npos);
+    EXPECT_NE(shaderSource.find("[[vk::location(0)]]"), std::string::npos);
+    EXPECT_NE(shaderSource.find("[[vk::location(1)]]"), std::string::npos);
+    EXPECT_NE(shaderSource.find("[[vk::location(3)]]"), std::string::npos);
+    EXPECT_NE(shaderSource.find("#if defined(NLS_SPIRV)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("[[vk::push_constant]] ConstantBuffer<OverlayProjection>"), std::string::npos);
+    EXPECT_NE(shaderSource.find("cbuffer OverlayProjection : register(b0, space0)"), std::string::npos);
     EXPECT_NE(shaderSource.find("return input.Color * FontAtlasTexture.Sample(FontAtlasSampler, input.UV);"), std::string::npos);
 }
 

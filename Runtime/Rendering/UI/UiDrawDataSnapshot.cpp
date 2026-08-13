@@ -3,6 +3,7 @@
 #include <bit>
 #include <cstdint>
 #include <chrono>
+#include <cstring>
 #include <string>
 
 #include "ImGui/imgui.h"
@@ -39,7 +40,9 @@ namespace NLS::Render::UI
 
             void AddFloat(const float value)
             {
-                AddUint32(std::bit_cast<uint32_t>(value));
+                uint32_t bits = 0u;
+                std::memcpy(&bits, &value, sizeof(bits));
+                AddUint32(bits);
             }
 
             void AddBool(const bool value)

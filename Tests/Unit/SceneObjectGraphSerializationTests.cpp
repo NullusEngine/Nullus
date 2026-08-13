@@ -52,7 +52,9 @@ std::string ReadTextFile(const std::filesystem::path& path)
     std::ifstream file(path);
     std::ostringstream stream;
     stream << file.rdbuf();
-    return stream.str();
+    auto text = stream.str();
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    return text;
 }
 
 NLS::Engine::Serialize::ObjectGraphDocument MakeSimpleSceneDocument()

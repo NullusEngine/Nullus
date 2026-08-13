@@ -290,6 +290,7 @@ Game::Context::Context(
 	window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
 	window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
 	inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
+	driverSettings.platformWindow = window->GetGlfwWindow();
 
 	/* Graphics context creation */
 	driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);

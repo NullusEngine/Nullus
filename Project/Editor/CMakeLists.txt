@@ -82,6 +82,10 @@ target_link_libraries(
   PRIVATE
     EditorProject
 )
+if(UNIX)
+  find_package(Threads REQUIRED)
+  target_link_libraries(Editor PRIVATE Threads::Threads)
+endif()
 nls_copy_shared_runtime_to_target(Editor)
 
 nls_target_precompile_headers(Editor "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")

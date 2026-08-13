@@ -993,6 +993,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
     window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
     inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
+	driverSettings.platformWindow = window->GetGlfwWindow();
 
     PresentStartupProgressFrame("Initializing graphics device", 0.18f);
     driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);

@@ -636,8 +636,10 @@ std::optional<NLS::Render::Context::FrameSnapshot> ABaseRenderer::BuildFrameSnap
     snapshot.externalOutputTextureCount = externalOutputSummary.textureCount;
     if (externalOutputSummary.hasExternalOutput)
     {
-        snapshot.externalOutputColorView =
-            NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(frameDescriptor).outputColorView;
+        const auto externalOutputSnapshot =
+            NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(frameDescriptor);
+        snapshot.externalOutputColorView = externalOutputSnapshot.outputColorView;
+        snapshot.externalOutputDepthView = externalOutputSnapshot.outputDepthStencilView;
     }
     const auto& camera = *frameDescriptor.camera;
     snapshot.clearColor = ResolveFrameClearColor(frameDescriptor);

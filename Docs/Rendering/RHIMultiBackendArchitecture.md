@@ -4,8 +4,8 @@
 
 This document defines the active migration target for the engine rendering architecture:
 
-- During the UE5 DX12 alignment phase, `DX12` is the only active runtime backend exposed for Editor/Game on the validated Windows path.
-- `Vulkan` remains in source only as a future backend implementation target behind backend-neutral architecture boundaries; it is not an active runtime path during this phase.
+- Windows defaults to `DX12`, macOS to `Metal`, and Linux/WSL defaults to the Vulkan 1.1 RHI backend.
+- The Linux Vulkan path uses GLFW WSI, classic Vulkan render passes (no Dynamic Rendering requirement), and is validated first on WSLg `llvmpipe`.
 - `DX11` and `OpenGL` remain in the source tree, but startup now gates them unsupported until their runtime path and evidence are repaired.
 - `Metal` is explicitly unsupported on non-Apple builds and must not be exposed through null-device fallback paths.
 - `runtime` and `editor` consume the same device, queue, swapchain, command buffer, binding, texture, and framebuffer semantics.
@@ -15,17 +15,11 @@ The old immediate-style `IRenderDevice` path is now a migration bridge only. New
 
 ## Backend Tiers
 
-### Active Phase-1 Runtime Backend
+### Platform Runtime Backends
 
-- `DX12` - Full native explicit RHI implementation
-
-This phase intentionally permits only one accepted runtime mainline so threaded ownership, RDG authority, editor-path unification, and startup failure behavior can converge without compatibility branches.
-
-### Preserved Future Backend Implementations
-
-- `Vulkan` - Kept in source as a future backend implementation target, but intentionally gated unsupported for the active UE5 DX12 alignment phase
-
-Only `DX12` may currently be reported as supported in docs, startup messaging, or UI/backend-selection flows for the active alignment phase.
+- `DX12` - Full native explicit RHI implementation on Windows
+- `Vulkan` - Vulkan 1.1 explicit RHI implementation on Linux/WSL, including WSI swapchain, scene/UI rendering, readback, and threaded foundation lifecycle
+- `Metal` - native implementation on macOS
 
 Validated backends receive new graphics capabilities first:
 - offscreen rendering
@@ -142,10 +136,10 @@ The following formal RHI objects are implemented natively in Tier A backends:
 - `NativeVulkanPipelineLayout`, `NativeVulkanShaderModule`, `NativeVulkanGraphicsPipeline`, `NativeVulkanComputePipeline`
 - `NativeVulkanCommandPool`, `NativeVulkanCommandBuffer`, `NativeVulkanFence`, `NativeVulkanSemaphore`
 
-### Current Windows Runtime Matrix For UE5 DX12 Alignment Phase (2026-04-21)
+### Current Platform Runtime Matrix
 
-- `DX12` - supported; this is the only accepted active runtime backend for the current alignment phase
-- `Vulkan` - preserved in source but intentionally gated unsupported while the DX12-only authoritative mainline is being closed
+- `DX12` - supported on Windows
+- `Vulkan` - supported on Linux/WSL; WSLg acceptance baseline is `llvmpipe`
 - `DX11` - gated unsupported; startup now reports explicit unsupported warnings and exits cleanly instead of attempting any alternate runtime route
 - `OpenGL` - gated unsupported on the current Windows build; startup now reports explicit unsupported warnings and exits cleanly instead of attempting any alternate runtime route
 - `Metal` - unsupported on non-Apple builds
@@ -171,19 +165,25 @@ The following formal RHI objects are implemented natively in Tier A backends:
 - Transient lifetime and readback visibility stay on `ResourceStateTracker` plus frame-graph/external-resource bridging.
 - Threaded diagnostics expose descriptor, PSO, transient-lifetime, and retirement mainline activity through `ThreadedFrameTelemetry`, `RendererStats`, and `FrameInfo`.
 
+## Vulkan WSLg Boundary
+
+The Vulkan backend deliberately reports the capabilities needed by the default threaded Render/RHI path, while keeping secondary command buffers, parallel command recording/translation, and render-pass child commands disabled. Queue submit/present calls are externally synchronized. Swapchain images retain logical RGBA semantics in the RHI; BGRA WSI formats are converted during presentation/readback.
+
+From WSL, run `./build_wsl_vulkan.sh --install-deps` once, then `./build_wsl_vulkan.sh`. The script requires Vulkan loader headers, GLFW, Ninja, and a native Linux `dxc`; it prints the selected device with `vulkaninfo` when available. Set `NLS_VULKAN_VALIDATION=1` for validation-layer smoke runs.
+
 ## Acceptance Matrix
 
 ### Runtime
 
 - `DX12` must launch and survive smoke for both `Editor` and `Game`
-- `Vulkan` must remain behind backend-neutral architecture boundaries and must not be exposed as an active runtime path during this phase
+- `Vulkan` must launch and survive the Linux/WSLg Editor smoke, with validation errors treated as failures
 - `DX11`, `OpenGL`, and `Metal` must report explicit unsupported/gated behavior instead of crashing or relying on silent fallback
 - backend support claims must be backed by direct smoke results plus RenderDoc capture evidence for supported explicit backends
 
 ### Editor
 
 - `DX12` must run without fallback (Tier A)
-- `Vulkan` editor execution is out of scope for the current alignment phase and must remain gated unsupported in runtime selection surfaces
+- `Vulkan` Editor execution must display ImGui and Scene View and support framebuffer readback on the WSLg baseline
 - `DX11` and `OpenGL` must not be presented as supported on the current Windows matrix until their runtime path is repaired and revalidated
 - `SceneView` and `GameView` must display valid imagery
 - launcher/logo and regular UI textures must render correctly

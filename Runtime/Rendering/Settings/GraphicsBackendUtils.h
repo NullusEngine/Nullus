@@ -30,6 +30,10 @@
 #define NLS_HAS_IMGUI_METAL_BACKEND 0
 #endif
 
+#ifndef NLS_HAS_VULKAN
+#define NLS_HAS_VULKAN 0
+#endif
+
 namespace NLS::Render::Settings
 {
 	struct RuntimeBackendReadinessDecision
@@ -232,6 +236,8 @@ namespace NLS::Render::Settings
 	{
 	#if defined(__APPLE__)
 		return EGraphicsBackend::METAL;
+	#elif defined(__linux__)
+		return EGraphicsBackend::VULKAN;
 	#else
 		return EGraphicsBackend::DX12;
 	#endif
@@ -245,12 +251,16 @@ namespace NLS::Render::Settings
 	inline bool IsBackendSelectableForPhase1(EGraphicsBackend backend)
 	{
 #if defined(_WIN32)
-		return IsPhase1RuntimeBackend(backend);
+			// DX12 remains the Windows default/phase-1 backend, while Vulkan is
+			// explicitly selectable when the Vulkan SDK and loader are available.
+			return backend == EGraphicsBackend::DX12 ||
+				(backend == EGraphicsBackend::VULKAN && NLS_HAS_VULKAN);
 #elif defined(__APPLE__)
 		return backend == EGraphicsBackend::METAL;
+#elif defined(__linux__)
+			return backend == EGraphicsBackend::VULKAN && NLS_HAS_VULKAN;
 #else
-		(void)backend;
-		return false;
+		return IsPhase1RuntimeBackend(backend);
 #endif
 	}
 
@@ -391,7 +401,13 @@ namespace NLS::Render::Settings
 		case EGraphicsBackend::DX11:
 			return "DX11 is disabled for the UE5 alignment phase-1 runtime because the accepted mainline only permits " + requiredBackend + ".";
 		case EGraphicsBackend::VULKAN:
-			return "Vulkan architecture boundaries remain in source for future multi-backend work, but the phase-1 runtime path is intentionally " + requiredBackend + "-only.";
+			if (IsPhase1RuntimeBackend(backend))
+				return "Vulkan is the active runtime backend and the only active runtime backend; Scene View and Game View use the Vulkan RHI path.";
+		#if defined(_WIN32)
+			if (IsBackendSelectableForPhase1(backend))
+				return "Vulkan is an explicitly selectable Windows runtime backend; Scene View and Game View use the Vulkan RHI path when requested.";
+		#endif
+			return "Vulkan is disabled for this platform because the active runtime backend is " + requiredBackend + ".";
 		case EGraphicsBackend::METAL:
 			if (IsPhase1RuntimeBackend(backend))
 				return "Metal is the only active runtime backend for the macOS phase-1 mainline; Scene View and Game View use the Metal-native viewport path.";
@@ -488,6 +504,7 @@ namespace NLS::Render::Settings
 		case NLS::Render::RHI::NativeBackendType::DX12:
 			return SupportsTierARenderFoundation(capabilities);
 		case NLS::Render::RHI::NativeBackendType::Vulkan:
+			return SupportsTierARenderFoundation(capabilities);
 		case NLS::Render::RHI::NativeBackendType::None:
 		case NLS::Render::RHI::NativeBackendType::DX11:
 		case NLS::Render::RHI::NativeBackendType::OpenGL:
@@ -529,6 +546,7 @@ namespace NLS::Render::Settings
 		case NLS::Render::RHI::NativeBackendType::DX12:
 			return SupportsTierARenderFoundation(capabilities);
 		case NLS::Render::RHI::NativeBackendType::Vulkan:
+			return SupportsTierARenderFoundation(capabilities);
 		case NLS::Render::RHI::NativeBackendType::None:
 		case NLS::Render::RHI::NativeBackendType::DX11:
 		case NLS::Render::RHI::NativeBackendType::OpenGL:

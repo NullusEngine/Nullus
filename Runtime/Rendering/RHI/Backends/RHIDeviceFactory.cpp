@@ -7,6 +7,9 @@
 #if defined(__APPLE__)
 #include "Rendering/RHI/Backends/Metal/MetalExplicitDeviceFactory.h"
 #endif
+#if NLS_HAS_VULKAN
+#include "Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.h"
+#endif
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -52,7 +55,19 @@ namespace NLS::Render::Backend
 			}
 			return device;
 		}
-#elif defined(__APPLE__)
+#endif
+
+#if NLS_HAS_VULKAN
+		if (settings.graphicsBackend == NLS::Render::Settings::EGraphicsBackend::VULKAN)
+		{
+			auto device = CreateVulkanRhiDevice(settings.platformWindow);
+			if (device == nullptr)
+				NLS_LOG_ERROR("CreateRhiDevice: Vulkan device creation failed.");
+			return device;
+		}
+#endif
+
+#if defined(__APPLE__)
 		if (settings.graphicsBackend == NLS::Render::Settings::EGraphicsBackend::METAL)
 		{
 			auto device = CreateMetalRhiDevice(settings.debugMode);
@@ -62,7 +77,6 @@ namespace NLS::Render::Backend
 			}
 			return device;
 		}
-#else
 #endif
 
 		NLS_LOG_ERROR(

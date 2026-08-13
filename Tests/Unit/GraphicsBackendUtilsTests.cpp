@@ -83,27 +83,43 @@ TEST(GraphicsBackendUtilsTests, SceneRendererSupportDescriptionsMatchCurrentSupp
 {
     const auto requiredBackend = RequiredBackend();
     const std::string requiredBackendName = NLS::Render::Settings::ToString(requiredBackend);
+    const auto requiredDescription =
+        NLS::Render::Settings::SceneRendererSupportDescription(requiredBackend);
     EXPECT_NE(
-        NLS::Render::Settings::SceneRendererSupportDescription(requiredBackend).find("only active runtime backend"),
+        requiredDescription.find(requiredBackend == EGraphicsBackend::VULKAN
+                ? "active runtime backend"
+                : "only active runtime backend"),
         std::string::npos);
-    EXPECT_NE(
-        NLS::Render::Settings::SceneRendererSupportDescription(EGraphicsBackend::VULKAN).find("future multi-backend"),
-        std::string::npos);
+    if (requiredBackend == EGraphicsBackend::VULKAN)
+    {
+        EXPECT_NE(requiredDescription.find("Vulkan"), std::string::npos);
+    }
+    else
+    {
+        const auto vulkanDescription =
+            NLS::Render::Settings::SceneRendererSupportDescription(EGraphicsBackend::VULKAN);
+        if (NLS::Render::Settings::IsBackendSelectableForPhase1(EGraphicsBackend::VULKAN))
+            EXPECT_NE(vulkanDescription.find("explicitly selectable"), std::string::npos);
+        else
+            EXPECT_NE(vulkanDescription.find("disabled"), std::string::npos);
+    }
     for (const auto backend : {EGraphicsBackend::DX12, EGraphicsBackend::DX11,
                                EGraphicsBackend::OPENGL, EGraphicsBackend::VULKAN,
                                EGraphicsBackend::METAL})
     {
         if (backend == requiredBackend)
             continue;
-        EXPECT_NE(
-            NLS::Render::Settings::SceneRendererSupportDescription(backend).find(requiredBackendName),
-            std::string::npos);
+        const auto description = NLS::Render::Settings::SceneRendererSupportDescription(backend);
+        if (NLS::Render::Settings::IsBackendSelectableForPhase1(backend))
+            EXPECT_NE(description.find("runtime backend"), std::string::npos);
+        else
+            EXPECT_NE(description.find(requiredBackendName), std::string::npos);
     }
 }
 
-TEST(GraphicsBackendUtilsTests, Phase1BackendSelectionOnlyAcceptsDX12)
+TEST(GraphicsBackendUtilsTests, Phase1BackendSelectionOnlyAcceptsPlatformRuntimeBackend)
 {
-#if defined(_WIN32) || defined(__APPLE__)
+#if defined(_WIN32) || defined(__APPLE__) || defined(__linux__)
     EXPECT_TRUE(NLS::Render::Settings::IsBackendSelectableForPhase1(
         RequiredBackend()));
 #else
@@ -114,10 +130,16 @@ TEST(GraphicsBackendUtilsTests, Phase1BackendSelectionOnlyAcceptsDX12)
                                EGraphicsBackend::VULKAN, EGraphicsBackend::OPENGL,
                                EGraphicsBackend::METAL})
     {
-        if (backend == RequiredBackend())
+        if (backend == RequiredBackend() ||
+            NLS::Render::Settings::IsBackendSelectableForPhase1(backend))
             continue;
         EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(backend));
     }
+#if defined(_WIN32)
+    EXPECT_EQ(
+        NLS::Render::Settings::IsBackendSelectableForPhase1(EGraphicsBackend::VULKAN),
+        NLS_HAS_VULKAN != 0);
+#endif
 }
 
 TEST(GraphicsBackendUtilsTests, Phase1BackendRestrictionMessageExplainsExplicitDX12Requirement)
@@ -491,9 +513,9 @@ TEST(GraphicsBackendUtilsTests, ThreadedRenderFoundationPathRequiresTierABackend
     EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
         NLS::Render::RHI::NativeBackendType::DX12,
         capabilities));
-    EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
-        NLS::Render::RHI::NativeBackendType::Vulkan,
-        capabilities));
+	EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+		NLS::Render::RHI::NativeBackendType::Vulkan,
+		capabilities));
     EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
         NLS::Render::RHI::NativeBackendType::OpenGL,
         capabilities));
@@ -523,14 +545,27 @@ TEST(GraphicsBackendUtilsTests, ThreadedRenderFoundationPathRejectsNonFoundation
         capabilities));
 }
 
-TEST(GraphicsBackendUtilsTests, Phase1ImGuiRuntimeRoutingRejectsAllNonDx12Backends)
+TEST(GraphicsBackendUtilsTests, ImGuiRuntimeRoutingAcceptsTheActiveVulkanOrNativeBackend)
 {
     EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
         NLS::Render::Settings::EGraphicsBackend::OPENGL));
     EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
-        NLS::Render::Settings::EGraphicsBackend::VULKAN));
-    EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
         NLS::Render::Settings::EGraphicsBackend::DX11));
+
+    if (RequiredBackend() == NLS::Render::Settings::EGraphicsBackend::VULKAN)
+    {
+        EXPECT_EQ(
+            NLS::Render::Settings::SupportsImGuiRendererBackend(
+                NLS::Render::Settings::EGraphicsBackend::VULKAN),
+            NLS::Render::Settings::HasCompiledOfficialImGuiBackend(
+                NLS::Render::Settings::EGraphicsBackend::VULKAN));
+    }
+    else
+    {
+        EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
+            NLS::Render::Settings::EGraphicsBackend::VULKAN));
+    }
+
     EXPECT_EQ(
         NLS::Render::Settings::SupportsImGuiRendererBackend(RequiredBackend()),
         NLS::Render::Settings::HasCompiledOfficialImGuiBackend(RequiredBackend()));
@@ -538,7 +573,7 @@ TEST(GraphicsBackendUtilsTests, Phase1ImGuiRuntimeRoutingRejectsAllNonDx12Backen
         NLS::Render::Settings::EGraphicsBackend::NONE));
 }
 
-TEST(GraphicsBackendUtilsTests, Phase1EditorAndGameConsumersShareTheSameDx12OnlyRestriction)
+TEST(GraphicsBackendUtilsTests, Phase1EditorAndGameConsumersShareTheSamePlatformRestriction)
 {
     const auto editorRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
         NLS::Render::Settings::EGraphicsBackend::VULKAN,
@@ -546,6 +581,13 @@ TEST(GraphicsBackendUtilsTests, Phase1EditorAndGameConsumersShareTheSameDx12Only
     const auto gameRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
         NLS::Render::Settings::EGraphicsBackend::VULKAN,
         "Game runtime");
+
+    if (RequiredBackend() == NLS::Render::Settings::EGraphicsBackend::VULKAN)
+    {
+        EXPECT_FALSE(editorRestriction.has_value());
+        EXPECT_FALSE(gameRestriction.has_value());
+        return;
+    }
 
     ASSERT_TRUE(editorRestriction.has_value());
     ASSERT_TRUE(gameRestriction.has_value());
@@ -560,15 +602,9 @@ TEST(GraphicsBackendUtilsTests, Phase1EditorAndGameConsumersShareTheSameDx12Only
 
 TEST(GraphicsBackendUtilsTests, WindowsPhase1DefaultBackendMatchesTheOnlyAcceptedRuntimeBackend)
 {
-#if defined(_WIN32) || defined(__APPLE__)
     EXPECT_EQ(
         NLS::Render::Settings::GetPlatformDefaultGraphicsBackend(),
         NLS::Render::Settings::GetPhase1RequiredRuntimeBackend());
-#else
-    EXPECT_NE(
-        NLS::Render::Settings::GetPlatformDefaultGraphicsBackend(),
-        NLS::Render::Settings::GetPhase1RequiredRuntimeBackend());
-#endif
 }
 
 TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportExplainsUnsupportedBackendFallback)
@@ -576,19 +612,22 @@ TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportExplainsUnsupportedBackend
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady, true);
 
+    const auto unsupportedBackend = UnsupportedBackend();
     const auto report = NLS::Render::Settings::EvaluateBackendPhaseGate(
-        NLS::Render::Settings::EGraphicsBackend::VULKAN,
+        unsupportedBackend,
         NLS::Render::Settings::RuntimeConsumer::Editor,
         capabilities);
 
-    EXPECT_EQ(report.requestedBackend, NLS::Render::Settings::EGraphicsBackend::VULKAN);
+    EXPECT_EQ(report.requestedBackend, unsupportedBackend);
     EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
     ASSERT_FALSE(report.gates.empty());
     EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::BackendSelection);
     EXPECT_EQ(report.gates.front().severity, NLS::Render::Settings::BackendPhaseGateSeverity::Error);
     EXPECT_NE(report.gates.front().reason.find(
         "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
-    EXPECT_NE(report.summary.find("Vulkan"), std::string::npos);
+    EXPECT_NE(
+        report.summary.find(NLS::Render::Settings::ToString(unsupportedBackend)),
+        std::string::npos);
     EXPECT_NE(report.summary.find("fallback=None"), std::string::npos);
 }
 
@@ -611,16 +650,8 @@ TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportIncludesMissingCapabilityR
         capabilities);
 
     ASSERT_FALSE(report.gates.empty());
-#if defined(_WIN32) || defined(__APPLE__)
     EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::CapabilityValidation);
     EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
     EXPECT_NE(report.gates.front().reason.find("Offscreen allocator missing"), std::string::npos);
     EXPECT_NE(report.summary.find("CapabilityValidation"), std::string::npos);
-#else
-    EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::BackendSelection);
-    EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
-    EXPECT_NE(report.gates.front().reason.find(
-        "only supports " + std::string(NLS::Render::Settings::ToString(RequiredBackend()))), std::string::npos);
-    EXPECT_NE(report.summary.find("BackendSelection"), std::string::npos);
-#endif
 }

@@ -17,7 +17,7 @@ nls_register_imgui_extension(
     IMGUI_DEFINE_MATH_OPERATORS
     WITH_PROFILING=${_timeline_profiler_with_profiling}
   COMPILE_OPTIONS
-    $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/FI"${CMAKE_CURRENT_LIST_DIR}/TimelineProfiler/NullusTimelineProfilerImGuiCompat.h">
+    $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/FI${CMAKE_CURRENT_LIST_DIR}/TimelineProfiler/NullusTimelineProfilerImGuiCompat.h>
   LIBS
     ${_timeline_profiler_libs}
 )

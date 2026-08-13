@@ -1231,6 +1231,7 @@ void Launcher::SetupContext()
     auto monSize = m_device->GetMonitorSize();
     auto winSize = m_window->GetSize();
     m_window->SetPosition(monSize.x / 2 - winSize.x / 2, monSize.y / 2 - winSize.y / 2);
+	driverSettings.platformWindow = m_window->GetGlfwWindow();
 
     m_driver = std::make_unique<Render::Context::Driver>(driverSettings);
     if (m_driver == nullptr || m_driver->GetActiveGraphicsBackend() == Render::Settings::EGraphicsBackend::NONE)

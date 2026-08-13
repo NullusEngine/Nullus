@@ -36,7 +36,7 @@ namespace NLS::Render::ShaderCompiler
 {
 	namespace
 	{
-		constexpr const char* kDxcArgumentSchemaVersion = "dxc-args-v1";
+		constexpr const char* kDxcArgumentSchemaVersion = "dxc-args-v3-vulkan-object-push-constants";
 
 		using ShaderReflection = Resources::ShaderReflection;
 		using ShaderPropertyDesc = Resources::ShaderPropertyDesc;
@@ -1241,6 +1241,30 @@ namespace NLS::Render::ShaderCompiler
 					arguments.push_back("-spirv");
 					arguments.push_back("-fspv-reflect");
 					arguments.push_back("-fspv-target-env=vulkan1.1");
+					arguments.push_back("-D");
+					arguments.push_back("NLS_SPIRV=1");
+					// DXC otherwise places b0/t0/s0/u0 at the same Vulkan
+					// binding number. Descriptor bindings are a single namespace
+					// in Vulkan, so keep the logical register spaces while giving
+					// each HLSL register class a disjoint range.
+					arguments.insert(arguments.end(), {
+						"-fvk-b-shift", "8", "0",
+						"-fvk-b-shift", "12", "1",
+						"-fvk-b-shift", "16", "2",
+						"-fvk-b-shift", "20", "3",
+						"-fvk-t-shift", "0", "0",
+						"-fvk-t-shift", "16", "1",
+						"-fvk-t-shift", "32", "2",
+						"-fvk-t-shift", "48", "3",
+						"-fvk-s-shift", "0", "0",
+						"-fvk-s-shift", "80", "1",
+						"-fvk-s-shift", "96", "2",
+						"-fvk-s-shift", "112", "3",
+						"-fvk-u-shift", "128", "0",
+						"-fvk-u-shift", "144", "1",
+						"-fvk-u-shift", "160", "2",
+						"-fvk-u-shift", "176", "3"
+					});
 				}
 
 				for (const auto& includeDirectory : includeDirectories)

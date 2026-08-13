@@ -126,36 +126,18 @@ inline std::optional<NLS::Core::Assets::ArtifactManifest> LoadArtifactManifestFr
         return std::nullopt;
 
     const auto databasePath = GetProjectArtifactDatabasePath(projectRoot);
-    const auto databaseKey = databasePath.lexically_normal().generic_string();
-    const auto databaseStamp = GetArtifactDatabaseDataFileStamp(databasePath);
     std::lock_guard databaseLock(GetProjectArtifactDatabaseManifestMutex(databasePath));
 
-    struct CachedArtifactDatabase
-    {
-        std::string stamp;
-        std::shared_ptr<NLS::Core::Assets::ArtifactDatabase> database;
-    };
-    static std::mutex cacheMutex;
-    static std::unordered_map<std::string, CachedArtifactDatabase> cacheByPath;
-
-    std::lock_guard cacheLock(cacheMutex);
-    auto& cached = cacheByPath[databaseKey];
-    if (cached.stamp != databaseStamp)
-    {
-        auto reloaded = std::make_shared<NLS::Core::Assets::ArtifactDatabase>();
-        if (databaseStamp.empty() || !reloaded->Load(databasePath))
-        {
-            cacheByPath.erase(databaseKey);
-            return std::nullopt;
-        }
-
-        cached.stamp = databaseStamp;
-        cached.database = std::move(reloaded);
-    }
-
-    if (cached.stamp.empty() || cached.database == nullptr)
+    // LMDB updates data.mdb through a memory mapping, so its mtime/ctime can
+    // remain unchanged after a successful write. A timestamp-keyed process
+    // cache can therefore return stale artifact hashes immediately after an
+    // import or reimport. Load the authoritative snapshot for each query while
+    // holding the project database mutex; callers still avoid concurrent LMDB
+    // access and get correct cache identities.
+    NLS::Core::Assets::ArtifactDatabase database;
+    if (!database.Load(databasePath))
         return std::nullopt;
-    return cached.database->BuildManifestForSource(sourceAssetId, targetPlatform);
+    return database.BuildManifestForSource(sourceAssetId, targetPlatform);
 }
 
 }

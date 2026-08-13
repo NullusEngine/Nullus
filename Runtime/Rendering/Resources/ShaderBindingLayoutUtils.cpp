@@ -48,16 +48,18 @@ namespace
 		const NLS::Render::RHI::ShaderStageMask stageMask,
 		const uint32_t elementStride = 0u)
 	{
+		// Vulkan requires binding numbers to be unique within a descriptor set.
+		// Reflection can report the same register from multiple stages with
+		// different source names; merge those records by their binding coordinate.
 		auto existingEntry = std::find_if(
 			layoutDesc.entries.begin(),
 			layoutDesc.entries.end(),
-			[&name, bindingType, setIndex, registerSpace, bindingIndex](const NLS::Render::RHI::RHIBindingLayoutEntry& entry)
+			[setIndex, registerSpace, bindingIndex, bindingType](const NLS::Render::RHI::RHIBindingLayoutEntry& entry)
 			{
-				return entry.name == name &&
-					entry.type == bindingType &&
-					entry.set == setIndex &&
+				return entry.set == setIndex &&
 					entry.registerSpace == registerSpace &&
-					entry.binding == bindingIndex;
+					entry.binding == bindingIndex &&
+					entry.type == bindingType;
 			});
 
 		if (existingEntry != layoutDesc.entries.end())

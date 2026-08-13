@@ -6425,6 +6425,7 @@ TEST(RendererFrameObjectBindingTests, DeferredLightingPipelineLayoutSkipsEmptyFr
 
     NLS::Render::Resources::Material material(shader);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->SetNativeBackendType(NLS::Render::RHI::NativeBackendType::Vulkan);
 
     const auto& pipelineLayout = material.GetExplicitPipelineLayout(explicitDevice);
     ASSERT_NE(pipelineLayout, nullptr);

@@ -478,7 +478,7 @@ namespace NLS::Render::ShaderCompiler
 			return *mutex;
 		}
 
-		bool IsUsableDxcExecutable(const std::filesystem::path& path)
+		bool IsUsableDxcExecutable(const std::filesystem::path& path, const bool probeNativeExecutable = true)
 		{
 			if (!std::filesystem::exists(path) || std::filesystem::is_directory(path))
 				return false;
@@ -500,6 +500,8 @@ namespace NLS::Render::ShaderCompiler
 
 			if (access(path.string().c_str(), X_OK) != 0)
 				return false;
+			if (!probeNativeExecutable)
+				return true;
 
 			// Unix executable permission is not sufficient here: the repository
 			// also carries a Linux DXC wrapper, which is visible and executable on
@@ -603,7 +605,7 @@ namespace NLS::Render::ShaderCompiler
 			if (const char* envPath = std::getenv("DXC_PATH"); envPath != nullptr && *envPath != '\0')
 			{
 				const std::filesystem::path path(envPath);
-				if (IsUsableDxcExecutable(path))
+				if (IsUsableDxcExecutable(path, false))
 					return path;
 			}
 

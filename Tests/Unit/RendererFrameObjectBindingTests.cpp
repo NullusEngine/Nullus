@@ -6423,6 +6423,8 @@ TEST(RendererFrameObjectBindingTests, DeferredLightingPipelineLayoutSkipsEmptyFr
     ASSERT_NE(shader, nullptr);
     ASSERT_TRUE(shader->HasParameterStructs());
 
+    NLS_FRAME_OBJECT_BINDING_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
+
     NLS::Render::Resources::Material material(shader);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
     explicitDevice->SetNativeBackendType(NLS::Render::RHI::NativeBackendType::Vulkan);

@@ -1057,6 +1057,17 @@ TEST(ShaderCompilerTests, ShaderCompilerConfiguredArtifactDirectoryConflictRetur
     input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
     input.options.targetProfile = "vs_6_0";
 
+#if !defined(_WIN32)
+    // The explicit test executable is intentionally a stub. Native Unix DXC
+    // probing rejects it, so keep this contract test focused on artifact path
+    // validation by skipping when the platform cannot execute the stub.
+    if (IsNativeDxcUnavailableForShader(shaderPath))
+    {
+        std::filesystem::remove_all(root);
+        GTEST_SKIP() << "Native dxc is unavailable for artifact directory conflict coverage.";
+    }
+#endif
+
     NLS::Render::ShaderCompiler::ShaderCompilationOutput output;
     EXPECT_NO_THROW(output = compiler.Compile(input));
 

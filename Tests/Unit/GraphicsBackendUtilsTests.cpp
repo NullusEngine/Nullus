@@ -552,19 +552,16 @@ TEST(GraphicsBackendUtilsTests, ImGuiRuntimeRoutingAcceptsTheActiveVulkanOrNativ
     EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
         NLS::Render::Settings::EGraphicsBackend::DX11));
 
-    if (RequiredBackend() == NLS::Render::Settings::EGraphicsBackend::VULKAN)
-    {
+    if (NLS::Render::Settings::IsBackendSelectableForPhase1(
+            NLS::Render::Settings::EGraphicsBackend::VULKAN))
         EXPECT_EQ(
             NLS::Render::Settings::SupportsImGuiRendererBackend(
                 NLS::Render::Settings::EGraphicsBackend::VULKAN),
             NLS::Render::Settings::HasCompiledOfficialImGuiBackend(
                 NLS::Render::Settings::EGraphicsBackend::VULKAN));
-    }
     else
-    {
         EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
             NLS::Render::Settings::EGraphicsBackend::VULKAN));
-    }
 
     EXPECT_EQ(
         NLS::Render::Settings::SupportsImGuiRendererBackend(RequiredBackend()),
@@ -575,19 +572,13 @@ TEST(GraphicsBackendUtilsTests, ImGuiRuntimeRoutingAcceptsTheActiveVulkanOrNativ
 
 TEST(GraphicsBackendUtilsTests, Phase1EditorAndGameConsumersShareTheSamePlatformRestriction)
 {
+    const auto unsupportedBackend = UnsupportedBackend();
     const auto editorRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
-        NLS::Render::Settings::EGraphicsBackend::VULKAN,
+        unsupportedBackend,
         "Editor runtime");
     const auto gameRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
-        NLS::Render::Settings::EGraphicsBackend::VULKAN,
+        unsupportedBackend,
         "Game runtime");
-
-    if (RequiredBackend() == NLS::Render::Settings::EGraphicsBackend::VULKAN)
-    {
-        EXPECT_FALSE(editorRestriction.has_value());
-        EXPECT_FALSE(gameRestriction.has_value());
-        return;
-    }
 
     ASSERT_TRUE(editorRestriction.has_value());
     ASSERT_TRUE(gameRestriction.has_value());
@@ -596,8 +587,8 @@ TEST(GraphicsBackendUtilsTests, Phase1EditorAndGameConsumersShareTheSamePlatform
         " during UE5 alignment phase 1";
     EXPECT_NE(editorRestriction->find(requiredMessage), std::string::npos);
     EXPECT_NE(gameRestriction->find(requiredMessage), std::string::npos);
-    EXPECT_NE(editorRestriction->find("Vulkan"), std::string::npos);
-    EXPECT_NE(gameRestriction->find("Vulkan"), std::string::npos);
+    EXPECT_NE(editorRestriction->find(NLS::Render::Settings::ToString(unsupportedBackend)), std::string::npos);
+    EXPECT_NE(gameRestriction->find(NLS::Render::Settings::ToString(unsupportedBackend)), std::string::npos);
 }
 
 TEST(GraphicsBackendUtilsTests, WindowsPhase1DefaultBackendMatchesTheOnlyAcceptedRuntimeBackend)

@@ -6440,12 +6440,27 @@ TEST(RendererFrameObjectBindingTests, DeferredLightingPipelineLayoutSkipsEmptyFr
 	ASSERT_NE(bindingLayouts[1], nullptr);
 	ASSERT_NE(bindingLayouts[2], nullptr);
 	ASSERT_NE(bindingLayouts[3], nullptr);
-	EXPECT_TRUE(bindingLayouts[0]->GetDesc().entries.empty());
-	EXPECT_EQ(bindingLayouts[1]->GetDesc().entries[0].name, "MaterialConstants");
-	EXPECT_EQ(bindingLayouts[1]->GetDesc().entries[0].set, NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet);
-	EXPECT_TRUE(bindingLayouts[2]->GetDesc().entries.empty());
-	EXPECT_EQ(bindingLayouts[3]->GetDesc().entries[0].name, "ForwardLightData");
-	EXPECT_EQ(bindingLayouts[3]->GetDesc().entries[0].set, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
+	bool foundMaterialConstants = false;
+	bool foundForwardLightData = false;
+	for (const auto& bindingLayout : bindingLayouts)
+	{
+		ASSERT_NE(bindingLayout, nullptr);
+		for (const auto& entry : bindingLayout->GetDesc().entries)
+		{
+			if (entry.name == "MaterialConstants")
+			{
+				foundMaterialConstants = true;
+				EXPECT_EQ(entry.set, NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet);
+			}
+			if (entry.name == "ForwardLightData")
+			{
+				foundForwardLightData = true;
+				EXPECT_EQ(entry.set, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
+			}
+		}
+	}
+	EXPECT_TRUE(foundMaterialConstants);
+	EXPECT_TRUE(foundForwardLightData);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }

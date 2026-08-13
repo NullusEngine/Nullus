@@ -20,7 +20,8 @@ TEST(UE5RenderArchitectureContractTests, PlatformBackendGateKeepsOnlyPlatformRun
                                NLS::Render::Settings::EGraphicsBackend::OPENGL,
                                NLS::Render::Settings::EGraphicsBackend::METAL})
     {
-        if (backend == requiredBackend)
+        if (backend == requiredBackend ||
+            NLS::Render::Settings::IsBackendSelectableForPhase1(backend))
             continue;
         EXPECT_FALSE(NLS::Render::Settings::IsBackendEnabledForCurrentBuild(backend));
     }
@@ -34,9 +35,18 @@ TEST(UE5RenderArchitectureContractTests, PlatformRestrictionMessageRejectsNonPla
         "Contract test");
     EXPECT_FALSE(requiredRestriction.has_value());
 
-    const auto unsupportedBackend = requiredBackend == NLS::Render::Settings::EGraphicsBackend::VULKAN
-        ? NLS::Render::Settings::EGraphicsBackend::METAL
-        : NLS::Render::Settings::EGraphicsBackend::VULKAN;
+    const auto unsupportedBackend = []()
+    {
+        using NLS::Render::Settings::EGraphicsBackend;
+        for (const auto backend : { EGraphicsBackend::DX12, EGraphicsBackend::DX11,
+                                    EGraphicsBackend::VULKAN, EGraphicsBackend::OPENGL,
+                                    EGraphicsBackend::METAL })
+        {
+            if (!NLS::Render::Settings::IsBackendSelectableForPhase1(backend))
+                return backend;
+        }
+        return EGraphicsBackend::NONE;
+    }();
     const auto restriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
         unsupportedBackend,
         "Contract test");

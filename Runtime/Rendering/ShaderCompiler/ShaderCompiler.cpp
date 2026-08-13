@@ -498,7 +498,18 @@ namespace NLS::Render::ShaderCompiler
 			if (extension == ".exe")
 				return false;
 
-			return access(path.string().c_str(), X_OK) == 0;
+			if (access(path.string().c_str(), X_OK) != 0)
+				return false;
+
+			// Unix executable permission is not sufficient here: the repository
+			// also carries a Linux DXC wrapper, which is visible and executable on
+			// macOS but cannot load its ELF runtime. Probe the candidate through the
+			// same process path used for compilation so incompatible binaries are
+			// rejected during discovery and native toolchains can be skipped.
+			ShaderProcessOptions probeOptions;
+			probeOptions.timeoutMilliseconds = 2000u;
+			const auto probe = ExecuteShaderCompilerProcess(path.string(), { "--version" }, probeOptions);
+			return probe.status == ShaderProcessStatus::Succeeded;
 #endif
 		}
 

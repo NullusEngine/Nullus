@@ -10813,7 +10813,8 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesPreparedRend
     ASSERT_EQ(lightingPass.gbufferTextures.size(), 4u);
     for (const auto& texture : lightingPass.gbufferTextures)
         EXPECT_NE(texture, nullptr);
-    ASSERT_EQ(lightingPass.textureResourceAccesses.size(), 4u);
+    // Lighting reads the four GBuffer textures plus the retained depth input.
+    ASSERT_EQ(lightingPass.textureResourceAccesses.size(), 5u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererSkipsThreadedPublishWhenPipelineResourcesAreMissing)

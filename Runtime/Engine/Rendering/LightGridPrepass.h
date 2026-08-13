@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -96,6 +97,9 @@ namespace NLS::Engine::Rendering
         std::vector<NLS::Render::Context::RecordedComputeDispatchInput> GetPreparedComputeDispatchInputs() const;
 
     private:
+        static constexpr uint32_t kDeferredSceneLightCapacity = 32u;
+        static constexpr uint32_t kPackedLightWordStride = 16u;
+
         struct ForwardLightData
         {
             NLS::Maths::Matrix4 viewMatrix;
@@ -108,7 +112,10 @@ namespace NLS::Engine::Rendering
             NLS::Maths::Vector4 lightingParams;
             NLS::Maths::Vector4 zParams;
             NLS::Maths::Vector4 pixelParams;
+            std::array<uint32_t, kDeferredSceneLightCapacity * kPackedLightWordStride> deferredSceneLightWords{};
         };
+
+        static_assert(sizeof(ForwardLightData) % 16u == 0u);
 
         struct PackedFrameData
         {

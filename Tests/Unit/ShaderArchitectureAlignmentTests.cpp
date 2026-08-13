@@ -445,3 +445,152 @@ TEST(ShaderArchitectureAlignmentTests, RecordedMaterialPsoUsesFrameOutputAttachm
     EXPECT_NE(helperBody.find("sampleCount"), std::string::npos);
     EXPECT_NE(helperBody.find("depthFormat"), std::string::npos);
 }
+
+TEST(ShaderArchitectureAlignmentTests, VulkanObjectDrawConstantsUsePushConstantShaderAbi)
+{
+    const auto readSource = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        EXPECT_TRUE(stream) << path.string();
+        std::ostringstream sourceBuffer;
+        sourceBuffer << stream.rdbuf();
+        return sourceBuffer.str();
+    };
+
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto commonTypes = readSource(root / "App/Assets/Engine/Shaders/CommonTypes.hlsli");
+    const auto instancing = readSource(root / "App/Assets/Engine/Shaders/NullusShaderLibrary/Instancing.hlsl");
+    const auto compiler = readSource(root / "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp");
+
+    for (const auto* shaderSource : { &commonTypes, &instancing })
+    {
+        EXPECT_NE(shaderSource->find("NLS_OBJECT_DRAW_CONSTANTS_INCLUDED"), std::string::npos);
+        EXPECT_NE(shaderSource->find("#if defined(NLS_SPIRV)"), std::string::npos);
+        EXPECT_NE(shaderSource->find("[[vk::push_constant]]"), std::string::npos);
+        EXPECT_NE(
+            shaderSource->find("cbuffer ObjectIndexConstants : register(b1, space3)"),
+            std::string::npos);
+    }
+
+    EXPECT_NE(compiler.find("NLS_SPIRV=1"), std::string::npos);
+    EXPECT_NE(
+        compiler.find("dxc-args-v3-vulkan-object-push-constants"),
+        std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, VulkanNegativeViewportPreservesRhiFrontFaceWinding)
+{
+    const std::filesystem::path backendPath =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
+    std::ifstream stream(backendPath, std::ios::binary);
+    ASSERT_TRUE(stream) << backendPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string source = sourceBuffer.str();
+
+    EXPECT_NE(source.find("vp.y = viewport.y + viewport.height"), std::string::npos);
+    EXPECT_NE(source.find("vp.height = -viewport.height"), std::string::npos);
+    EXPECT_NE(
+        source.find("VkFrontFace vkFrontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE"),
+        std::string::npos);
+    EXPECT_EQ(
+        source.find("VkFrontFace vkFrontFace = VK_FRONT_FACE_CLOCKWISE"),
+        std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, VulkanRasterizerPreservesDisabledAndExplicitCullModes)
+{
+    const std::filesystem::path backendPath =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
+    std::ifstream stream(backendPath, std::ios::binary);
+    ASSERT_TRUE(stream) << backendPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string source = sourceBuffer.str();
+
+    const auto mappingStart = source.find("VkCullModeFlags vkCullMode = VK_CULL_MODE_NONE");
+    ASSERT_NE(mappingStart, std::string::npos);
+    const auto mappingEnd = source.find("VkPipelineRasterizationStateCreateInfo rasterizer", mappingStart);
+    ASSERT_NE(mappingEnd, std::string::npos);
+    const auto mapping = source.substr(mappingStart, mappingEnd - mappingStart);
+
+    EXPECT_NE(mapping.find("if (m_desc.rasterState.cullEnabled)"), std::string::npos);
+    EXPECT_NE(mapping.find("VK_CULL_MODE_FRONT_BIT"), std::string::npos);
+    EXPECT_NE(mapping.find("VK_CULL_MODE_BACK_BIT"), std::string::npos);
+    EXPECT_NE(mapping.find("VK_CULL_MODE_FRONT_AND_BACK"), std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, VulkanTextureBarriersPublishLogicalStateForUiSampling)
+{
+    const std::filesystem::path backendPath =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
+    std::ifstream stream(backendPath, std::ios::binary);
+    ASSERT_TRUE(stream) << backendPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string source = sourceBuffer.str();
+
+    const auto barrierStart = source.find("void Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrier)");
+    ASSERT_NE(barrierStart, std::string::npos);
+    const auto barrierEnd = source.find("VkCommandBuffer GetCommandBuffer() const", barrierStart);
+    ASSERT_NE(barrierEnd, std::string::npos);
+    const auto barrierBody = source.substr(barrierStart, barrierEnd - barrierStart);
+
+    EXPECT_NE(
+        barrierBody.find("SetVulkanTextureLogicalState(tb.texture, tb.after)"),
+        std::string::npos);
+    EXPECT_NE(source.find("m_state.load(std::memory_order_acquire)"), std::string::npos);
+    EXPECT_NE(source.find("m_state.store(state, std::memory_order_release)"), std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, VulkanTextureFormatsPreserveRhiColorSpace)
+{
+    const std::filesystem::path backendPath =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
+    std::ifstream stream(backendPath, std::ios::binary);
+    ASSERT_TRUE(stream) << backendPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string source = sourceBuffer.str();
+
+    EXPECT_NE(source.find("TextureColorSpace::SRGB"), std::string::npos);
+    EXPECT_NE(source.find("VK_FORMAT_R8G8B8A8_SRGB"), std::string::npos);
+    EXPECT_NE(source.find("VK_FORMAT_BC1_RGBA_SRGB_BLOCK"), std::string::npos);
+    EXPECT_NE(source.find("VK_FORMAT_BC3_SRGB_BLOCK"), std::string::npos);
+    EXPECT_NE(source.find("VK_FORMAT_BC7_SRGB_BLOCK"), std::string::npos);
+    EXPECT_NE(source.find("effectiveColorSpace"), std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, VulkanSamplerPreservesIndependentFilterAndLodState)
+{
+    const std::filesystem::path backendPath =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.cpp";
+    std::ifstream stream(backendPath, std::ios::binary);
+    ASSERT_TRUE(stream) << backendPath.string();
+
+    std::ostringstream sourceBuffer;
+    sourceBuffer << stream.rdbuf();
+    const std::string source = sourceBuffer.str();
+    const auto samplerStart = source.find("class NativeVulkanSampler");
+    ASSERT_NE(samplerStart, std::string::npos);
+    const auto samplerEnd = source.find("class NativeVulkanBindingLayout", samplerStart);
+    ASSERT_NE(samplerEnd, std::string::npos);
+    const auto sampler = source.substr(samplerStart, samplerEnd - samplerStart);
+
+    EXPECT_NE(sampler.find("desc.magFilter"), std::string::npos);
+    EXPECT_NE(sampler.find("desc.mipFilter"), std::string::npos);
+    EXPECT_NE(sampler.find("desc.mipLodBias"), std::string::npos);
+    EXPECT_NE(sampler.find("desc.minLod"), std::string::npos);
+    EXPECT_NE(sampler.find("desc.maxLod"), std::string::npos);
+    EXPECT_NE(sampler.find("TextureWrap::MirrorRepeat"), std::string::npos);
+    EXPECT_NE(sampler.find("TextureWrap::ClampToBorder"), std::string::npos);
+}

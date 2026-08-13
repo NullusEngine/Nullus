@@ -42,9 +42,22 @@ jobs:
 
           $vulkanSdkPackageVersion = '1.4.341'
           $vulkanSdkInstallVersion = "$vulkanSdkPackageVersion.0"
-          & $choco.Source install vulkan-sdk --version=$vulkanSdkPackageVersion -y --no-progress
-          if ($LASTEXITCODE -ne 0) {
-            throw "Chocolatey failed to install Vulkan SDK with exit code $LASTEXITCODE."
+          $installExitCode = 1
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "Installing Vulkan SDK attempt $attempt/3"
+            & $choco.Source install vulkan-sdk --version=$vulkanSdkPackageVersion -y --no-progress
+            $installExitCode = $LASTEXITCODE
+            if ($installExitCode -eq 0) {
+              break
+            }
+
+            if ($attempt -lt 3) {
+              Write-Warning "Chocolatey Vulkan SDK install failed with exit code $installExitCode; retrying after a short delay."
+              Start-Sleep -Seconds 15
+            }
+          }
+          if ($installExitCode -ne 0) {
+            throw "Chocolatey failed to install Vulkan SDK after 3 attempts with exit code $installExitCode."
           }
 
           function Test-VulkanSdkRoot {

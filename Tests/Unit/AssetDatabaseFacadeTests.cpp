@@ -1260,7 +1260,7 @@ TEST(AssetDatabaseFacadeTests, EmptyOrFilesystemRootConfiguredRootsAreRejected)
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(root / "Assets" / "Materials" / "Hero.mat", "material");
 
-    AssetDatabaseFacade database({
+    AssetDatabaseFacade database(std::vector<EditorAssetRoot>{
         {{}, false, {}},
         {root.root_path(), false, {}},
         {root, false, {}}

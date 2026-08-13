@@ -36,6 +36,9 @@ namespace NLS::Render::Settings
 		bool enableLightGrid = true;
 		uint32_t threadedFrameSlotCount = 0;
 		uint32_t threadedPublishRetirementWaitMs = 0;
+		// Non-owning platform window used by WSI backends (for example Vulkan/GLFW).
+		// The application owns the window and keeps it alive for the Driver lifetime.
+		void* platformWindow = nullptr;
 		RenderDocSettings renderDoc{};
 		EngineDiagnosticsSettings diagnostics{};
 		std::optional<NLS::Render::Data::PipelineState> defaultPipelineState = std::nullopt;

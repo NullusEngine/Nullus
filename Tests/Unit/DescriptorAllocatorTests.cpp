@@ -1,12 +1,44 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <barrier>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 #include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
+
+namespace
+{
+class StartBarrier
+{
+public:
+    explicit StartBarrier(const uint32_t participantCount)
+        : m_remaining(participantCount)
+    {
+    }
+
+    void ArriveAndWait()
+    {
+        std::unique_lock lock(m_mutex);
+        if (--m_remaining == 0u)
+        {
+            m_open = true;
+            m_condition.notify_all();
+            return;
+        }
+
+        m_condition.wait(lock, [this] { return m_open; });
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    uint32_t m_remaining = 0u;
+    bool m_open = false;
+};
+}
 
 TEST(DescriptorAllocatorTests, PersistentAllocationsAreSafeUnderConcurrentCreateAndRelease)
 {
@@ -17,7 +49,7 @@ TEST(DescriptorAllocatorTests, PersistentAllocationsAreSafeUnderConcurrentCreate
     constexpr uint32_t iterationsPerThread = 2000u;
     constexpr uint32_t releaseBatchSize = 16u;
 
-    std::barrier startBarrier(static_cast<std::ptrdiff_t>(threadCount));
+    StartBarrier startBarrier(threadCount);
     std::atomic<uint32_t> invalidAllocationCount{ 0u };
     std::atomic<uint64_t> releasedDescriptorCount{ 0u };
     std::vector<std::thread> workers;
@@ -29,7 +61,7 @@ TEST(DescriptorAllocatorTests, PersistentAllocationsAreSafeUnderConcurrentCreate
         {
             std::vector<NLS::Render::RHI::DescriptorAllocation> pendingReleases;
             pendingReleases.reserve(releaseBatchSize);
-            startBarrier.arrive_and_wait();
+            startBarrier.ArriveAndWait();
 
             for (uint32_t iteration = 0u; iteration < iterationsPerThread; ++iteration)
             {

@@ -480,6 +480,113 @@ Shader* ShaderLoader::CreateBuiltInHlsl(const std::string& p_filePath, const std
 	return CreateHLSLShaderAsset(p_filePath, resolvedProjectAssetsPath);
 }
 
+bool ShaderLoader::EnsureBuiltInHlslVariant(
+	Shader& shader,
+	const std::string& filePath,
+	const std::string& projectAssetsPath,
+	const ShaderTargetPlatform targetPlatform,
+	const uint64_t keywordHash,
+	const std::vector<NLS::Render::ShaderCompiler::ShaderMacroDefinition>& macros)
+{
+	if (keywordHash == 0u ||
+		(targetPlatform != ShaderTargetPlatform::DXIL && targetPlatform != ShaderTargetPlatform::SPIRV) ||
+		!IsBuiltInHlslSourcePath(filePath, projectAssetsPath))
+	{
+		return false;
+	}
+
+	const auto hasArtifact = [&](const ShaderStage stage)
+	{
+		const auto artifacts = shader.GetCompiledArtifacts();
+		return std::any_of(artifacts.begin(), artifacts.end(), [&](const ShaderCompiledArtifact& artifact)
+		{
+			return artifact.stage == stage &&
+				artifact.targetPlatform == targetPlatform &&
+				artifact.keywordHash == keywordHash &&
+				HasUsableCompilationResult(artifact.output);
+		});
+	};
+
+	const bool needsVertex = !hasArtifact(ShaderStage::Vertex);
+	const bool needsPixel = !hasArtifact(ShaderStage::Pixel);
+	if (!needsVertex && !needsPixel)
+		return true;
+
+	const auto prepared = PrepareShaderSource(filePath, projectAssetsPath);
+	if (prepared.sourceText.empty())
+	{
+		NLS_LOG_ERROR("[HLSL VARIANT] \"" + filePath + "\": shader source could not be read or is empty.");
+		return false;
+	}
+
+	ShaderCompileOptions vertexOptions;
+	vertexOptions.sourceLanguage = ShaderSourceLanguage::HLSL;
+	vertexOptions.targetPlatform = targetPlatform;
+	vertexOptions.entryPoint = prepared.vertexEntry;
+	vertexOptions.targetProfile = "vs_6_0";
+	vertexOptions.includeDirectories = prepared.includeDirectories;
+	vertexOptions.macros = macros;
+
+	ShaderCompileOptions pixelOptions = vertexOptions;
+	pixelOptions.entryPoint = prepared.pixelEntry;
+	pixelOptions.targetProfile = "ps_6_0";
+
+	std::vector<ShaderCompilationInput> inputs;
+	if (needsVertex && HasEntryPointToken(prepared.sourceText, prepared.vertexEntry))
+		inputs.push_back({prepared.compileFilePath, ShaderStage::Vertex, vertexOptions});
+	if (needsPixel && HasEntryPointToken(prepared.sourceText, prepared.pixelEntry))
+		inputs.push_back({prepared.compileFilePath, ShaderStage::Pixel, pixelOptions});
+	if (inputs.empty())
+		return false;
+
+	NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+	compiler.SetCacheDatabasePath(GetCacheDatabasePath(filePath, projectAssetsPath));
+	auto outputs = compiler.CompileBatch(inputs);
+	if (outputs.size() != inputs.size())
+		return false;
+
+	for (auto& output : outputs)
+		NormalizeCompilationResult(output);
+	for (size_t index = 0u; index < outputs.size(); ++index)
+	{
+		if (!HasUsableCompilationResult(outputs[index]))
+		{
+			NLS_LOG_ERROR(
+				"[HLSL VARIANT] \"" + filePath + "\" stage=" +
+				std::to_string(static_cast<uint32_t>(inputs[index].stage)) +
+				" keywordHash=" + std::to_string(keywordHash) + ":\n" + outputs[index].diagnostics);
+			return false;
+		}
+	}
+
+	auto snapshot = shader.GetRuntimeDataSnapshot();
+	for (size_t index = 0u; index < outputs.size(); ++index)
+	{
+		ShaderCompiledArtifact artifact{
+			inputs[index].stage,
+			targetPlatform,
+			inputs[index].options.entryPoint,
+			inputs[index].options.targetProfile,
+			std::move(outputs[index]),
+			keywordHash};
+		const auto found = std::find_if(
+			snapshot.compiledArtifacts.begin(),
+			snapshot.compiledArtifacts.end(),
+			[&](const ShaderCompiledArtifact& existing)
+			{
+				return existing.stage == artifact.stage &&
+					existing.targetPlatform == artifact.targetPlatform &&
+					existing.keywordHash == artifact.keywordHash;
+			});
+		if (found == snapshot.compiledArtifacts.end())
+			snapshot.compiledArtifacts.push_back(std::move(artifact));
+		else
+			*found = std::move(artifact);
+	}
+	shader.ReplaceRuntimeData(std::move(snapshot));
+	return true;
+}
+
 std::string ShaderLoader::GetCacheDatabasePath(
 	const std::string& p_filePath,
 	const std::string& p_projectAssetsPath)

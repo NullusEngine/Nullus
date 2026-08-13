@@ -137,6 +137,7 @@ namespace NLS::Engine::Rendering
 		private:
 			void LoadPipelineResources();
 			void EnsureDeferredPipelineResourceAssets();
+			bool SelectDeferredLightingVariant();
 			void ReleaseDeferredDecalPipelineResources();
 			void EnsureGBufferTargets(uint16_t width, uint16_t height);
 		bool HasDeferredThreadedPipelineResources() const;
@@ -181,7 +182,8 @@ namespace NLS::Engine::Rendering
 	private:
 		NLS::Render::Buffers::MultiFramebuffer m_gBuffer;
 		std::unique_ptr<NLS::Render::Resources::Mesh> m_fullscreenQuad;
-		std::unique_ptr<NLS::Render::Resources::Material> m_lightingMaterial;
+			std::unique_ptr<NLS::Render::Resources::Material> m_lightingMaterial;
+			std::string m_deferredLightingVariantKeyword;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferAlbedoTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferNormalTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferMaterialTexture;

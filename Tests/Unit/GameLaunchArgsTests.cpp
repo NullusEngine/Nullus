@@ -73,9 +73,22 @@ namespace
     };
 }
 
-TEST_F(GameLaunchArgsTests, RejectsNonDx12BackendOverrideDuringPhase1)
+TEST_F(GameLaunchArgsTests, RejectsNonPlatformBackendOverrideDuringPhase1)
 {
-    const auto parsed = Parse({"Game.exe", "--backend", "vulkan", "TestProject.nullus"});
+    const auto unsupportedBackend = []()
+    {
+        using NLS::Render::Settings::EGraphicsBackend;
+        for (const auto backend : { EGraphicsBackend::DX12, EGraphicsBackend::DX11,
+                                    EGraphicsBackend::VULKAN, EGraphicsBackend::OPENGL,
+                                    EGraphicsBackend::METAL })
+        {
+            if (!NLS::Render::Settings::IsBackendSelectableForPhase1(backend))
+                return backend;
+        }
+        return EGraphicsBackend::NONE;
+    }();
+    const char* unsupportedBackendName = NLS::Render::Settings::ToString(unsupportedBackend);
+    const auto parsed = Parse({"Game.exe", "--backend", unsupportedBackendName, "TestProject.nullus"});
 
     EXPECT_TRUE(parsed.hasError);
     EXPECT_FALSE(parsed.showHelp);

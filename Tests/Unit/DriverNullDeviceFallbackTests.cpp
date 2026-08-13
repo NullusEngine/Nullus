@@ -116,7 +116,12 @@ TEST(DriverNullDeviceReadinessTests, DX12NullDeviceDoesNotExposeDirectExplicitLe
         EXPECT_NE(editorDecision.primaryWarning->find(
             "only supports " + std::string(NLS::Render::Settings::ToString(requiredBackend))), std::string::npos);
     ASSERT_TRUE(editorDecision.detailWarning.has_value());
-    EXPECT_NE(editorDecision.detailWarning->find("only active runtime backend"), std::string::npos);
+    EXPECT_NE(
+        editorDecision.detailWarning->find(
+            requiredBackend == NLS::Render::Settings::EGraphicsBackend::VULKAN
+                ? "active runtime backend"
+                : "only active runtime backend"),
+        std::string::npos);
 
     const auto gameDecision = driver.EvaluateGameMainRuntimeReadiness(requiredBackend);
     ASSERT_TRUE(gameDecision.primaryWarning.has_value());
@@ -126,7 +131,12 @@ TEST(DriverNullDeviceReadinessTests, DX12NullDeviceDoesNotExposeDirectExplicitLe
         EXPECT_NE(gameDecision.primaryWarning->find(
             "only supports " + std::string(NLS::Render::Settings::ToString(requiredBackend))), std::string::npos);
     ASSERT_TRUE(gameDecision.detailWarning.has_value());
-    EXPECT_NE(gameDecision.detailWarning->find("only active runtime backend"), std::string::npos);
+    EXPECT_NE(
+        gameDecision.detailWarning->find(
+            requiredBackend == NLS::Render::Settings::EGraphicsBackend::VULKAN
+                ? "active runtime backend"
+                : "only active runtime backend"),
+        std::string::npos);
 }
 
 TEST(DriverNullDeviceReadinessTests, DX12NullDeviceRejectsHarnessPublishSurfaces)

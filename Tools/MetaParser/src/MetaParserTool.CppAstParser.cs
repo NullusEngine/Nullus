@@ -101,11 +101,12 @@ internal static partial class MetaParserTool
             options.IncludeFolders.Add(Path.GetFullPath(includeDir));
 
         var normalizedSystemIncludes = config.SystemIncludeDirs.Where(static value => !string.IsNullOrWhiteSpace(value)).Select(Path.GetFullPath).Distinct().ToList();
-        if (!OperatingSystem.IsLinux())
-        {
-            foreach (var systemIncludeDir in normalizedSystemIncludes)
-                options.SystemIncludeFolders.Add(systemIncludeDir);
-        }
+        // libclang shipped through the NuGet runtime does not always inherit the
+        // distribution compiler's GCC include search path on Linux (notably on
+        // WSL images with multiple GCC versions). Keep the generated absolute
+        // system include directories explicit for every host platform.
+        foreach (var systemIncludeDir in normalizedSystemIncludes)
+            options.SystemIncludeFolders.Add(systemIncludeDir);
 
         foreach (var define in config.Defines.Where(static value => !string.IsNullOrWhiteSpace(value)).Distinct())
             options.Defines.Add(define);
@@ -134,13 +135,10 @@ internal static partial class MetaParserTool
             }
         }
 
-        if (!OperatingSystem.IsLinux())
+        foreach (var systemIncludeDir in normalizedSystemIncludes)
         {
-            foreach (var systemIncludeDir in normalizedSystemIncludes)
-            {
-                compilerArgs.Add("-isystem");
-                compilerArgs.Add(systemIncludeDir);
-            }
+            compilerArgs.Add("-isystem");
+            compilerArgs.Add(systemIncludeDir);
         }
 
         compilerArgs.AddRange(config.CompilerOptions.Where(static value => !string.IsNullOrWhiteSpace(value)));

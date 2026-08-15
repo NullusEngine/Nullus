@@ -59,6 +59,26 @@ TEST(EditorHitProxyPickingContractTests, PickingRebuildInvalidatesStaleCompleted
     EXPECT_LT(invalidate, immediate);
 }
 
+TEST(EditorHitProxyPickingContractTests, ExplicitSynchronousPickingRegistersGeneratedReadbackTexture)
+{
+    const std::string source = ReadRepositoryTextFile(
+        "Project/Editor/Rendering/PickingRenderPass.cpp");
+
+    const auto explicitBranch = source.find("DriverRendererAccess::HasExplicitRHI");
+    const auto beginSubmission = source.find("BeginReadbackTextureSubmission", explicitBranch);
+    const auto setActive = source.find("SetActiveReadbackTexture", beginSubmission);
+    const auto queue = source.find("QueueSubmittedFrame", setActive);
+    const auto immediate = source.find("MarkSubmittedFrameImmediatelyReadable", queue);
+    ASSERT_NE(explicitBranch, std::string::npos);
+    ASSERT_NE(beginSubmission, std::string::npos);
+    ASSERT_NE(setActive, std::string::npos);
+    ASSERT_NE(queue, std::string::npos);
+    ASSERT_NE(immediate, std::string::npos);
+    EXPECT_LT(beginSubmission, setActive);
+    EXPECT_LT(setActive, queue);
+    EXPECT_LT(queue, immediate);
+}
+
 TEST(EditorHitProxyPickingContractTests, PickingSignatureIncludesCameraAndLightHelpers)
 {
     const std::string source = ReadRepositoryTextFile(

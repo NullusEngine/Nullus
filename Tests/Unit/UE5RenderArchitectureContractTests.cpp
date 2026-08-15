@@ -56,7 +56,7 @@ TEST(UE5RenderArchitectureContractTests, PlatformRestrictionMessageRejectsNonPla
     EXPECT_NE(restriction->find(NLS::Render::Settings::ToString(unsupportedBackend)), std::string::npos);
 }
 
-TEST(UE5RenderArchitectureContractTests, ThreadedFoundationAcceptsDX12AndVulkan)
+TEST(UE5RenderArchitectureContractTests, ThreadedFoundationAcceptsDX12MetalAndVulkan)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.backendReady = true;
@@ -74,11 +74,14 @@ TEST(UE5RenderArchitectureContractTests, ThreadedFoundationAcceptsDX12AndVulkan)
         NLS::Render::RHI::NativeBackendType::DX12,
         capabilities));
     EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::Metal,
+        capabilities));
+    EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
         NLS::Render::RHI::NativeBackendType::Vulkan,
         capabilities));
 }
 
-TEST(UE5RenderArchitectureContractTests, OrderedParallelSubmissionAcceptsDX12AndVulkan)
+TEST(UE5RenderArchitectureContractTests, OrderedParallelSubmissionAcceptsDX12MetalAndVulkan)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.backendReady = true;
@@ -94,6 +97,9 @@ TEST(UE5RenderArchitectureContractTests, OrderedParallelSubmissionAcceptsDX12And
 
     EXPECT_TRUE(NLS::Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
         NLS::Render::RHI::NativeBackendType::DX12,
+        capabilities));
+    EXPECT_TRUE(NLS::Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
+        NLS::Render::RHI::NativeBackendType::Metal,
         capabilities));
     EXPECT_TRUE(NLS::Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
         NLS::Render::RHI::NativeBackendType::Vulkan,

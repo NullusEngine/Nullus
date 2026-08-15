@@ -154,6 +154,10 @@ namespace NLS::Render::Context
         static uint64_t BeginReadbackTextureSubmission(
             const Driver& driver,
             const std::shared_ptr<RHI::RHITexture>& texture);
+        static bool SetActiveReadbackTexture(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture,
+            uint64_t generation = 0u);
         static void InvalidateCompletedReadbackTexture(
             const Driver& driver,
             const std::shared_ptr<RHI::RHITexture>& texture);

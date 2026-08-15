@@ -110,6 +110,22 @@ namespace
         return state;
     }
 
+    std::shared_ptr<NLS::Render::RHI::RHITexture> ResolveFrameOutputColorTexture(
+        const Data::FrameDescriptor& frameDescriptor)
+    {
+        if (frameDescriptor.outputColorTexture != nullptr)
+            return frameDescriptor.outputColorTexture;
+        if (frameDescriptor.outputColorView != nullptr)
+            return frameDescriptor.outputColorView->GetTexture();
+        if (auto* outputFramebuffer =
+                NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(frameDescriptor);
+            outputFramebuffer != nullptr)
+        {
+            return outputFramebuffer->GetExplicitTextureHandle();
+        }
+        return nullptr;
+    }
+
     std::optional<Resources::MaterialPipelineStateOverrides> BuildMaterialPipelineStateOverrides(
         const Data::PipelineState& pipelineState,
         const Resources::Material& material,
@@ -201,18 +217,16 @@ namespace
         if (!overrides.sampleCount.has_value() && attachmentState.colorSampleCount.has_value())
             overrides.sampleCount = *attachmentState.colorSampleCount;
 
-        if (!overrides.depthFormat.has_value() && attachmentState.depthFormat.has_value())
-            overrides.depthFormat = *attachmentState.depthFormat;
+		if (!overrides.hasDepthAttachment.has_value())
+			overrides.hasDepthAttachment = attachmentState.depthFormat.has_value() || attachmentState.hasDepthAttachment;
 
-        if (!overrides.hasDepthAttachment.has_value())
-            overrides.hasDepthAttachment = attachmentState.depthFormat.has_value() || attachmentState.hasDepthAttachment;
-
-        if (attachmentState.depthFormat.has_value())
-        {
-            overrides.hasDepthAttachment = true;
-            if (!overrides.sampleCount.has_value())
-                overrides.sampleCount = attachmentState.depthSampleCount.value_or(1u);
-        }
+		if (overrides.hasDepthAttachment.value_or(false) && attachmentState.depthFormat.has_value())
+		{
+			if (!overrides.depthFormat.has_value())
+				overrides.depthFormat = *attachmentState.depthFormat;
+			if (!overrides.sampleCount.has_value())
+				overrides.sampleCount = attachmentState.depthSampleCount.value_or(1u);
+		}
 
         return true;
     }
@@ -412,6 +426,12 @@ void ABaseRenderer::BeginFrameInternal(
         !rendererFrameStarted)
     {
         return;
+    }
+    if (!usesThreadedRendering && usesExplicitRecording && externalOutputBuffer != nullptr)
+    {
+        Context::DriverRendererAccess::SetActiveReadbackTexture(
+            m_driver,
+            ResolveFrameOutputColorTexture(p_frameDescriptor));
     }
 
     m_basePipelineState = Context::DriverRendererAccess::CreatePipelineState(m_driver);

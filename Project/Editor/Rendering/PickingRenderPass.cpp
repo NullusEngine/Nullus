@@ -120,7 +120,7 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 	m_lightMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
 
 	/* Picking Material */
-	m_gameObjectPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.hlsl"]);
+	m_gameObjectPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.hlsl"]);
 	m_gameObjectPickingMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.0f));
 	m_gameObjectPickingMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
 	m_gameObjectPickingMaterial.Set("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
@@ -516,6 +516,29 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
     {
         ResetPickingFrameState();
         return;
+    }
+    else if (NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(m_renderer.GetDriver()))
+    {
+        const uint64_t readbackGeneration =
+            NLS::Render::Context::DriverRendererAccess::BeginReadbackTextureSubmission(
+                m_renderer.GetDriver(),
+                readbackTexture);
+        if (readbackGeneration == 0u ||
+            !NLS::Render::Context::DriverRendererAccess::SetActiveReadbackTexture(
+                m_renderer.GetDriver(),
+                readbackTexture,
+                readbackGeneration))
+        {
+            ResetPickingFrameState();
+            return;
+        }
+
+        m_readbackLifecycle.QueueSubmittedFrame(BuildSubmittedReadbackFrame(
+            sceneDescriptor.scene,
+            submittedSerial,
+            readbackGeneration,
+            pickingSignature));
+        recordPickingDiagnostics(1u, 0u, 0u);
     }
     else
     {
@@ -924,4 +947,3 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
             outDrawCommands);
     }
 }
-

@@ -14,6 +14,11 @@ namespace NLS::Render::Entities
     class Camera;
 }
 
+namespace NLS::Engine::SceneSystem
+{
+    class Scene;
+}
+
 namespace NLS::Render::RHI
 {
     class RHITextureView;
@@ -30,7 +35,11 @@ namespace NLS::Editor::Rendering
         MetalViewportRenderer(const MetalViewportRenderer&) = delete;
         MetalViewportRenderer& operator=(const MetalViewportRenderer&) = delete;
 
-        bool Render(uint16_t width, uint16_t height, const NLS::Render::Entities::Camera* camera);
+        bool Render(
+            uint16_t width,
+            uint16_t height,
+            const NLS::Render::Entities::Camera* camera,
+            const NLS::Engine::SceneSystem::Scene* scene);
         const std::shared_ptr<NLS::Render::RHI::RHITextureView>& GetOutputTextureView() const;
 
     private:

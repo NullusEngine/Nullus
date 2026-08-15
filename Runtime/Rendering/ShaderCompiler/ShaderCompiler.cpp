@@ -36,7 +36,8 @@ namespace NLS::Render::ShaderCompiler
 {
 	namespace
 	{
-		constexpr const char* kDxcArgumentSchemaVersion = "dxc-args-v3-vulkan-object-push-constants";
+		constexpr const char* kDxcArgumentSchemaVersion =
+			"dxc-args-v4-vulkan-object-push-constants-dx-layout";
 
 		using ShaderReflection = Resources::ShaderReflection;
 		using ShaderPropertyDesc = Resources::ShaderPropertyDesc;
@@ -1278,6 +1279,7 @@ namespace NLS::Render::ShaderCompiler
 						"-fvk-u-shift", "160", "2",
 						"-fvk-u-shift", "176", "3"
 					});
+					arguments.push_back("-fvk-use-dx-layout");
 				}
 
 				for (const auto& includeDirectory : includeDirectories)

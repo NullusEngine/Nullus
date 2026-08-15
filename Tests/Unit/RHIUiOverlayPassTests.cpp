@@ -2171,7 +2171,12 @@ TEST(RHIUiOverlayPassTests, OverlayRendererUsesFloatColorVertexAttributeLayout)
     const auto layoutBody = source.find("desc.vertexAttributes.push_back({ 0u, 0u, 0u, sizeof(float) * 2u });");
     ASSERT_NE(layoutBody, std::string::npos);
     EXPECT_NE(source.find("desc.vertexAttributes.push_back({ 1u, 0u, sizeof(float) * 2u, sizeof(float) * 2u });", layoutBody), std::string::npos);
-    EXPECT_NE(source.find("desc.vertexAttributes.push_back({ 3u, 0u, sizeof(float) * 4u, sizeof(float) * 4u });", layoutBody), std::string::npos);
+    const auto colorAttribute = source.find("RHI::RHIVertexSemantic::TexCoord", layoutBody);
+    ASSERT_NE(colorAttribute, std::string::npos);
+    const auto colorLocation = source.rfind("2u,", colorAttribute);
+    ASSERT_NE(colorLocation, std::string::npos);
+    EXPECT_GT(colorLocation, layoutBody);
+    EXPECT_NE(source.find("1u", colorAttribute), std::string::npos);
 
     const auto shaderSource = ReadSourceText(RepoPath("App/Assets/Engine/Shaders/RHIImGuiOverlay.hlsl"));
     EXPECT_NE(shaderSource.find("float4 Color : TEXCOORD1;"), std::string::npos);

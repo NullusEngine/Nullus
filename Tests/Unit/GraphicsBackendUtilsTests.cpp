@@ -496,7 +496,7 @@ TEST(GraphicsBackendUtilsTests, ParallelCommandFoundationRequiresRecordingAndTra
     EXPECT_TRUE(NLS::Render::Settings::SupportsParallelCommandFoundation(capabilities));
 }
 
-TEST(GraphicsBackendUtilsTests, ThreadedRenderFoundationPathRequiresTierABackendAndCapabilities)
+TEST(GraphicsBackendUtilsTests, ThreadedRenderFoundationPathAcceptsTierABackendsWithRequiredCapabilities)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.backendReady = true;
@@ -513,9 +513,12 @@ TEST(GraphicsBackendUtilsTests, ThreadedRenderFoundationPathRequiresTierABackend
     EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
         NLS::Render::RHI::NativeBackendType::DX12,
         capabilities));
-	EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
-		NLS::Render::RHI::NativeBackendType::Vulkan,
-		capabilities));
+    EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::Metal,
+        capabilities));
+    EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::Vulkan,
+        capabilities));
     EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
         NLS::Render::RHI::NativeBackendType::OpenGL,
         capabilities));
@@ -541,11 +544,45 @@ TEST(GraphicsBackendUtilsTests, ThreadedRenderFoundationPathRejectsNonFoundation
         NLS::Render::RHI::NativeBackendType::DX12,
         capabilities));
     EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::Metal,
+        capabilities));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
         NLS::Render::RHI::NativeBackendType::Vulkan,
         capabilities));
 }
 
-TEST(GraphicsBackendUtilsTests, ImGuiRuntimeRoutingAcceptsTheActiveVulkanOrNativeBackend)
+TEST(GraphicsBackendUtilsTests, OrderedParallelSubmissionAcceptsTierABackendsWithRequiredCapabilities)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.backendReady = true;
+    capabilities.supportsGraphics = true;
+    capabilities.supportsCompute = true;
+    capabilities.supportsSwapchain = true;
+    capabilities.supportsCurrentSceneRenderer = true;
+    capabilities.supportsOffscreenFramebuffers = true;
+    capabilities.supportsMultiRenderTargets = true;
+    capabilities.supportsExplicitBarriers = true;
+    capabilities.supportsCentralizedDescriptorManagement = true;
+    capabilities.supportsPipelineStateCache = true;
+
+    EXPECT_TRUE(NLS::Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
+        NLS::Render::RHI::NativeBackendType::DX12,
+        capabilities));
+    EXPECT_TRUE(NLS::Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
+        NLS::Render::RHI::NativeBackendType::Metal,
+        capabilities));
+    EXPECT_TRUE(NLS::Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
+        NLS::Render::RHI::NativeBackendType::Vulkan,
+        capabilities));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
+        NLS::Render::RHI::NativeBackendType::OpenGL,
+        capabilities));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
+        NLS::Render::RHI::NativeBackendType::DX11,
+        capabilities));
+}
+
+TEST(GraphicsBackendUtilsTests, Phase1ImGuiRuntimeRoutingRejectsAllNonDx12Backends)
 {
     EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
         NLS::Render::Settings::EGraphicsBackend::OPENGL));

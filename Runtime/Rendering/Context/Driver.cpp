@@ -2759,6 +2759,23 @@ uint64_t DriverRendererAccess::BeginReadbackTextureSubmission(
     return generation;
 }
 
+bool DriverRendererAccess::SetActiveReadbackTexture(
+    const Driver& driver,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture,
+    const uint64_t generation)
+{
+    if (driver.m_impl == nullptr || texture == nullptr)
+        return false;
+
+    auto* frameContext = Detail::GetActiveFrameContext(*driver.m_impl);
+    if (frameContext == nullptr)
+        return false;
+
+    frameContext->explicitReadbackTexture = texture;
+    frameContext->explicitReadbackTextureGeneration = generation;
+    return true;
+}
+
 void DriverRendererAccess::InvalidateCompletedReadbackTexture(
     const Driver& driver,
     const std::shared_ptr<Render::RHI::RHITexture>& texture)

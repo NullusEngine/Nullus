@@ -962,10 +962,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     /* Graphics context creation */
     NLS::Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = graphicsBackend;
-    // Metal currently owns ImGui submission directly, while scene frame submission is unfinished.
-    driverSettings.enableThreadedRendering =
-        runtimeSettings.enableThreadedRendering &&
-        graphicsBackend != Render::Settings::EGraphicsBackend::METAL;
+    driverSettings.enableThreadedRendering = runtimeSettings.enableThreadedRendering;
     driverSettings.enableLightGrid = Editor::Settings::EditorSettings::GetRenderingSettingsObject().enableLightGrid;
     driverSettings.threadedFrameSlotCount = Editor::Core::ResolveEditorThreadedFrameSlotCount(driverSettings.framesInFlight);
     driverSettings.threadedPublishRetirementWaitMs = Editor::Core::ResolveEditorThreadedPublishRetirementWaitMs();

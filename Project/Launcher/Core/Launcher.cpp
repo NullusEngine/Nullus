@@ -62,6 +62,27 @@ std::filesystem::path ResolveLauncherAssetsRoot()
     return Platform::Process::ResolveInstallResourceRoots().assetsRoot;
 }
 
+std::vector<std::filesystem::path> ResolveLauncherCjkFontCandidates()
+{
+#ifdef _WIN32
+    return {
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\msyhbd.ttc"
+    };
+#elif defined(__APPLE__)
+    return {
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf"
+    };
+#else
+    return {
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/arphic/uming.ttc"
+    };
+#endif
+}
+
 const char* Tr(LauncherTextKey key)
 {
     return GetLauncherLocalization().CStr(key);
@@ -180,13 +201,48 @@ std::string DescribeProjectEditorVersionDisplay(const std::string& projectPath)
     return std::string(Tr(LauncherTextKey::TimeUnknown));
 }
 
+std::string DescribeProjectBackendDisplay(const std::string& projectPath)
+{
+    const auto settingsFilePath = ResolveProjectSettingsFilePath(projectPath);
+    if (settingsFilePath.empty())
+        return std::string(Tr(LauncherTextKey::TimeUnknown));
+
+    Filesystem::IniFile settings(settingsFilePath.string());
+    const auto backendName = settings.GetOrDefault<std::string>("graphics_backend", "");
+    if (backendName.empty())
+        return std::string(Tr(LauncherTextKey::TimeUnknown));
+
+    if (const auto backend = Render::Settings::TryParseGraphicsBackend(backendName); backend.has_value())
+        return Render::Settings::ToString(backend.value());
+
+    return backendName;
+}
+
 } // namespace
 
 // ─── View enum ───
 enum class LauncherView { Projects, Installs, NewProject };
 
+const ImWchar* BuildLauncherGlyphRanges()
+{
+    static ImVector<ImWchar> ranges;
+    if (!ranges.empty())
+        return ranges.Data;
+
+    ImFontGlyphRangesBuilder builder;
+    builder.AddRanges(ImGui::GetIO().Fonts->GetGlyphRangesDefault());
+    for (int value = static_cast<int>(LauncherTextKey::LauncherTitle);
+         value <= static_cast<int>(LauncherTextKey::MissingText);
+         ++value)
+    {
+        builder.AddText(Tr(static_cast<LauncherTextKey>(value)));
+    }
+    builder.BuildRanges(&ranges);
+    return ranges.Data;
+}
+
 // ─── Sort helpers ───
-enum class SortColumn { Name, Modified, EditorVersion };
+enum class SortColumn { Name, Modified, Backend, EditorVersion };
 
 class LauncherPanel : public UI::PanelWindow
 {
@@ -570,6 +626,10 @@ private:
         colX += columns.modified;
 
         ImGui::SetCursorScreenPos(ImVec2(colX, y + 8.0f));
+        DrawColumnHeader(Tr(LauncherTextKey::Backend), SortColumn::Backend);
+        colX += columns.backend;
+
+        ImGui::SetCursorScreenPos(ImVec2(colX, y + 8.0f));
         DrawColumnHeader(Tr(LauncherTextKey::EditorVersion), SortColumn::EditorVersion);
     }
 
@@ -715,6 +775,15 @@ private:
         }
         colX += columns.modified;
 
+        // Backend column
+        {
+            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 22.0f));
+            PushHubText(HubColors::TextSecondary);
+            ImGui::TextUnformatted(DescribeProjectBackendDisplay(projectPath).c_str());
+            PopHubText();
+        }
+        colX += columns.backend;
+
         // Editor version column
         {
             ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 22.0f));
@@ -793,7 +862,15 @@ private:
 
         auto addInstallVersion = [this]()
         {
-            Dialogs::OpenFileDialog dialog(Tr(LauncherTextKey::SelectEngineExecutable), "", {"Executable", "*.exe"});
+            Dialogs::OpenFileDialog dialog(
+                Tr(LauncherTextKey::SelectEngineExecutable),
+                "",
+#ifdef _WIN32
+                {"Executable", "*.exe"}
+#else
+                {"Executable", "*"}
+#endif
+            );
             if (dialog.Result().empty())
                 return;
 
@@ -1035,6 +1112,12 @@ private:
                         cmp = (timeA < timeB) ? -1 : (timeA > timeB) ? 1 : 0;
                         break;
                     }
+                    case SortColumn::Backend:
+                    {
+                        cmp = DescribeProjectBackendDisplay(a.second).compare(
+                            DescribeProjectBackendDisplay(b.second));
+                        break;
+                    }
                     case SortColumn::EditorVersion:
                     {
                         const std::string versionA = DescribeProjectEditorVersionDisplay(a.second);
@@ -1130,8 +1213,11 @@ Launcher::Launcher(
     m_uiManager->SetCanvas(m_canvas);
     m_canvas.AddPanel(*m_mainPanel);
 
+    if (Core::ServiceLocator::Contains<Windowing::Window>())
+        throw std::runtime_error("Launcher startup failed: a Window service is already registered.");
     if (Core::ServiceLocator::Contains<ShaderManager>())
         throw std::runtime_error("Launcher startup failed: a ShaderManager service is already registered.");
+    Core::ServiceLocator::Provide<Windowing::Window>(*m_window);
     Core::ServiceLocator::Provide<ShaderManager>(m_shaderManager);
 }
 
@@ -1149,6 +1235,11 @@ Launcher::~Launcher()
         &Core::ServiceLocator::Get<ShaderManager>() == &m_shaderManager)
     {
         Core::ServiceLocator::Remove<ShaderManager>();
+    }
+    if (Core::ServiceLocator::Contains<Windowing::Window>() &&
+        &Core::ServiceLocator::Get<Windowing::Window>() == m_window.get())
+    {
+        Core::ServiceLocator::Remove<Windowing::Window>();
     }
 }
 
@@ -1242,11 +1333,12 @@ void Launcher::SetupContext()
 
     NLS::Core::ServiceLocator::Provide<Render::Context::Driver>(*m_driver);
 
+    const auto initialFramebufferSize = m_window->GetFramebufferSize();
     if (!m_driver->CreatePlatformSwapchain(
         m_window->GetGlfwWindow(),
         m_window->GetNativeWindowHandle(),
-        static_cast<uint32_t>(windowSettings.width),
-        static_cast<uint32_t>(windowSettings.height),
+        static_cast<uint32_t>(initialFramebufferSize.x),
+        static_cast<uint32_t>(initialFramebufferSize.y),
         true))
     {
         throw std::runtime_error("Launcher startup failed: CreatePlatformSwapchain returned false.");
@@ -1266,25 +1358,37 @@ void Launcher::SetupContext()
     });
     NLS::Core::ServiceLocator::Provide<UI::UIManager>(*m_uiManager);
 
-    // Load fonts with CJK support
+    // Load fonts with CJK support. Keep Ruda as a fallback for systems without a CJK font.
     {
         auto& io = ImGui::GetIO();
-        // Load CJK font (Microsoft YaHei on Windows, fall back to Ruda on other platforms)
-#ifdef _WIN32
-        // Windows: use system font msyh.ttc (Microsoft YaHei) with CJK glyph range
-        const char* cjkFontPath = "C:\\Windows\\Fonts\\msyh.ttc";
-        ImFont* cjkFont = io.Fonts->AddFontFromFileTTF(cjkFontPath, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
-        if (cjkFont)
+        ImFont* cjkFont = nullptr;
+        for (const auto& candidate : ResolveLauncherCjkFontCandidates())
+        {
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(candidate, ec))
+                continue;
+
+            ImFontConfig fontConfig;
+            fontConfig.FontNo = 0;
+            fontConfig.OversampleH = 1;
+            fontConfig.OversampleV = 1;
+            cjkFont = io.Fonts->AddFontFromFileTTF(
+                candidate.string().c_str(),
+                18.0f,
+                &fontConfig,
+                BuildLauncherGlyphRanges());
+            if (cjkFont != nullptr)
+                break;
+        }
+
+        if (cjkFont != nullptr)
         {
             UI::Icons::EnsureFontAwesomeIconFontLoaded(18.0f, cjkFont);
             m_uiManager->LoadFont("Ruda_Title", (assetsRoot / "Editor" / "Fonts" / "Ruda-Bold.ttf").string(), 30);
-            // Use the CJK font as the primary font
             io.FontDefault = cjkFont;
         }
         else
-#endif
         {
-            // Fallback: load Ruda without CJK support
             m_uiManager->LoadFont("Ruda_Medium", (assetsRoot / "Editor" / "Fonts" / "Ruda-Bold.ttf").string(), 18);
             m_uiManager->LoadFont("Ruda_Title", (assetsRoot / "Editor" / "Fonts" / "Ruda-Bold.ttf").string(), 30);
             m_uiManager->UseFont("Ruda_Medium");
@@ -1298,7 +1402,6 @@ void Launcher::SetupContext()
             m_driver->ResizePlatformSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
         }
     };
-    m_window->ResizeEvent.AddListener(resizeSwapchain);
     m_window->FramebufferResizeEvent.AddListener(resizeSwapchain);
     m_uiManager->EnableEditorLayoutSave(false);
     m_uiManager->EnableDocking(false);

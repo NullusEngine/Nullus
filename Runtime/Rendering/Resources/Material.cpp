@@ -560,7 +560,6 @@ namespace
 			desc.rasterState.cullEnabled = *overrides.culling;
 		if (overrides.cullFace.has_value())
 			desc.rasterState.cullFace = *overrides.cullFace;
-
 	}
 
     bool ShouldLogMaterialBindingDiagnostics()

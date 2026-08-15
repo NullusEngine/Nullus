@@ -722,7 +722,14 @@ namespace NLS::Render::UI
         desc.vertexBuffers.push_back({ 0u, static_cast<uint32_t>(sizeof(UiDrawVertex)), false });
         desc.vertexAttributes.push_back({ 0u, 0u, 0u, sizeof(float) * 2u });
         desc.vertexAttributes.push_back({ 1u, 0u, sizeof(float) * 2u, sizeof(float) * 2u });
-        desc.vertexAttributes.push_back({ 3u, 0u, sizeof(float) * 4u, sizeof(float) * 4u });
+        desc.vertexAttributes.push_back({
+            2u,
+            0u,
+            sizeof(float) * 4u,
+            sizeof(float) * 4u,
+            RHI::RHIVertexSemantic::TexCoord,
+            1u
+        });
 
         m_graphicsPipeline = device.CreateGraphicsPipeline(desc);
         if (m_graphicsPipeline == nullptr)

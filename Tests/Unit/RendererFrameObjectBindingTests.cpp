@@ -1212,6 +1212,18 @@ namespace
             PreparedRecordedDraw draw;
             return PrepareRecordedDraw(pipelineState, drawable, lightMode, draw);
         }
+
+        bool Prepare(
+            const NLS::Render::Entities::Drawable& drawable,
+            NLS::Render::Resources::MaterialPipelineStateOverrides overrides)
+        {
+            PreparedRecordedDraw draw;
+            return PrepareRecordedDraw(
+                drawable,
+                std::move(overrides),
+                NLS::Render::Settings::EComparaisonAlgorithm::LESS,
+                draw);
+        }
     };
 
     class TestPipelineLayout final : public NLS::Render::RHI::RHIPipelineLayout
@@ -6796,6 +6808,17 @@ TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesUseOutputViewForm
     EXPECT_EQ(desc.renderTargetLayout.depthFormat, NLS::Render::RHI::TextureFormat::Depth32F);
     EXPECT_EQ(desc.renderTargetLayout.sampleCount, 4u);
 
+    NLS::Render::Resources::MaterialPipelineStateOverrides colorOnlyOverrides;
+    colorOnlyOverrides.depthTest = false;
+    colorOnlyOverrides.depthWrite = false;
+    colorOnlyOverrides.hasDepthAttachment = false;
+    ASSERT_TRUE(renderer.Prepare(drawable, colorOnlyOverrides));
+    const auto& colorOnlyDesc = explicitDevice->lastGraphicsPipelineDesc;
+    EXPECT_FALSE(colorOnlyDesc.renderTargetLayout.hasDepth);
+    EXPECT_FALSE(colorOnlyDesc.depthStencilState.depthTest);
+    EXPECT_FALSE(colorOnlyDesc.depthStencilState.depthWrite);
+    EXPECT_EQ(colorOnlyDesc.renderTargetLayout.sampleCount, 4u);
+
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     renderer.EndFrame();
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
@@ -7061,6 +7084,52 @@ TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesCanForceBlending)
     EXPECT_TRUE(explicitDevice->lastGraphicsPipelineDesc.blendState.enabled);
     ASSERT_FALSE(explicitDevice->lastGraphicsPipelineDesc.blendState.renderTargets.empty());
     EXPECT_TRUE(explicitDevice->lastGraphicsPipelineDesc.blendState.renderTargets.front().blendEnable);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, DisabledDepthStateKeepsExplicitRenderPassDepthAttachment)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+
+    auto* shader = CreateTestGraphicsShader("App/Assets/Engine/Shaders/TestGraphics.shader");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto pipelineCache = NLS::Render::RHI::CreateDefaultPipelineCache();
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+    overrides.depthTest = false;
+    overrides.depthWrite = false;
+    overrides.stencilTest = false;
+    overrides.hasDepthAttachment = true;
+    overrides.depthFormat = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+
+    NLS::Render::Data::PipelineState pipelineState;
+    pipelineState.depthTest = false;
+    pipelineState.depthWriting = false;
+    pipelineState.stencilTest = false;
+
+    const auto pipeline = material.BuildRecordedGraphicsPipeline(
+        explicitDevice,
+        pipelineCache,
+        NLS::Render::Settings::EPrimitiveMode::TRIANGLES,
+        pipelineState,
+        overrides);
+
+    ASSERT_NE(pipeline, nullptr);
+    const auto& desc = explicitDevice->lastGraphicsPipelineDesc;
+    EXPECT_TRUE(desc.renderTargetLayout.hasDepth);
+    EXPECT_EQ(desc.renderTargetLayout.depthFormat, NLS::Render::RHI::TextureFormat::Depth24Stencil8);
+    EXPECT_FALSE(desc.depthStencilState.depthTest);
+    EXPECT_FALSE(desc.depthStencilState.depthWrite);
+    EXPECT_FALSE(desc.depthStencilState.stencilTest);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }

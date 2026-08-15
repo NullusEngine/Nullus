@@ -911,12 +911,18 @@ float UIManager::ResolveWindowContentScale() const
     if (m_glfwWindow == nullptr)
         return 1.0f;
 
+#if defined(__APPLE__)
+    // Retina framebuffer scaling is already provided through DisplayFramebufferScale.
+    // Applying the content scale here as well doubles the logical UI size on macOS.
+    return 1.0f;
+#else
     float xScale = 1.0f;
     float yScale = 1.0f;
     glfwGetWindowContentScale(m_glfwWindow, &xScale, &yScale);
 
     const float scale = std::max(xScale, yScale);
     return std::clamp(scale, 0.75f, 3.0f);
+#endif
 }
 
 void UIManager::RefreshScale()

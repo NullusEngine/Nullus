@@ -29,9 +29,9 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-    <!-- Keep CppAst restores hermetic when it is built directly or as a
-         project reference from MetaParser. -->
-    <RestoreSources>$(MSBuildThisFileDirectory)../../../../ThirdParty/LocalNuget</RestoreSources>
+    <!-- Prefer the repository-local feed, but allow clean CI checkouts to
+         restore package versions that are not vendored in the repository. -->
+    <RestoreSources>$(MSBuildThisFileDirectory)../../../../ThirdParty/LocalNuget;https://api.nuget.org/v3/index.json</RestoreSources>
     <RestorePackagesPath>$(MSBuildThisFileDirectory)../../../../ThirdParty/.nuget/packages</RestorePackagesPath>
     <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
   </PropertyGroup>

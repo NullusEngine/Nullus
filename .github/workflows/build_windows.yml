@@ -29,6 +29,17 @@ jobs:
         with:
           dotnet-version: '8.0.408'
 
+      - name: Restore managed scripting projects
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore 'Managed/Nullus.ScriptGenerator/Nullus.ScriptGenerator.csproj' --nologo
+          dotnet restore 'Managed/Nullus.ScriptAnalysis/Nullus.ScriptAnalysis.csproj' --nologo
+          dotnet restore 'Managed/Nullus.Managed/Nullus.Managed.csproj' --nologo
+          dotnet restore 'Managed/Nullus.EngineScripts/Nullus.EngineScripts.csproj' --nologo
+          dotnet restore 'Managed/Nullus.GameScripts/Nullus.GameScripts.csproj' --nologo
+
       - name: Install Vulkan SDK
         timeout-minutes: 30
         shell: powershell

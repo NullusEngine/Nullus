@@ -25,6 +25,16 @@ jobs:
         with:
           dotnet-version: '8.0.408'
 
+      - name: Restore managed scripting projects
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          dotnet restore Managed/Nullus.ScriptGenerator/Nullus.ScriptGenerator.csproj --nologo
+          dotnet restore Managed/Nullus.ScriptAnalysis/Nullus.ScriptAnalysis.csproj --nologo
+          dotnet restore Managed/Nullus.Managed/Nullus.Managed.csproj --nologo
+          dotnet restore Managed/Nullus.EngineScripts/Nullus.EngineScripts.csproj --nologo
+          dotnet restore Managed/Nullus.GameScripts/Nullus.GameScripts.csproj --nologo
+
       - name: Install system build dependencies
         timeout-minutes: 20
         run: |

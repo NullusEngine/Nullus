@@ -474,7 +474,7 @@ TEST(ShaderArchitectureAlignmentTests, VulkanObjectDrawConstantsUsePushConstantS
 
     EXPECT_NE(compiler.find("NLS_SPIRV=1"), std::string::npos);
     EXPECT_NE(
-        compiler.find("dxc-args-v3-vulkan-object-push-constants"),
+        compiler.find("dxc-args-v4-vulkan-object-push-constants-dx-layout"),
         std::string::npos);
 }
 

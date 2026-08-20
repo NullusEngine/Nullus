@@ -5141,28 +5141,30 @@ TEST(AssetThumbnailCacheTests, GpuPumpPollsPendingReadbackBeforeStartingAnotherP
     second.priority = ThumbnailRequestPriority::Visible;
     second.freshnessInputs = {{"source", "second:v1"}};
 
-    PendingThenReadyThumbnailPreviewRenderer renderer;
-    AssetThumbnailService service;
-    ASSERT_EQ(service.RequestAssetPreview(first).status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_EQ(service.RequestAssetPreview(second).status, AssetThumbnailServiceStatus::Pending);
+    {
+        PendingThenReadyThumbnailPreviewRenderer renderer;
+        AssetThumbnailService service;
+        ASSERT_EQ(service.RequestAssetPreview(first).status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_EQ(service.RequestAssetPreview(second).status, AssetThumbnailServiceStatus::Pending);
 
-    const auto pending = service.GenerateNextThumbnail(renderer, true);
-    ASSERT_TRUE(pending.has_value());
-    EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
-    ASSERT_TRUE(renderer.lastRenderRequest.has_value());
-    EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "material:First");
-    EXPECT_EQ(service.GetThumbnailState(first), ThumbnailState::WaitingForGpu);
+        const auto pending = service.GenerateNextThumbnail(renderer, true);
+        ASSERT_TRUE(pending.has_value());
+        EXPECT_EQ(pending->diagnostic, "thumbnail-gpu-preview-readback-pending");
+        ASSERT_TRUE(renderer.lastRenderRequest.has_value());
+        EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "material:First");
+        EXPECT_EQ(service.GetThumbnailState(first), ThumbnailState::WaitingForGpu);
 
-    const auto polled = service.GenerateNextThumbnail(renderer, true);
-    ASSERT_TRUE(polled.has_value());
-    EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending);
-    ASSERT_TRUE(renderer.lastRenderRequest.has_value());
-    EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "material:First")
-        << "A pending GPU readback must be polled before starting another preview; "
-           "switching requests retires the renderer readback and repeats GPU work.";
-    EXPECT_EQ(renderer.renderCount, 2u);
-    EXPECT_EQ(service.GetThumbnailState(first), ThumbnailState::Encoding);
-    EXPECT_EQ(service.GetThumbnailState(second), ThumbnailState::Queued);
+        const auto polled = service.GenerateNextThumbnail(renderer, true);
+        ASSERT_TRUE(polled.has_value());
+        EXPECT_EQ(polled->status, AssetThumbnailServiceStatus::Pending);
+        ASSERT_TRUE(renderer.lastRenderRequest.has_value());
+        EXPECT_EQ(renderer.lastRenderRequest->subAssetKey, "material:First")
+            << "A pending GPU readback must be polled before starting another preview; "
+               "switching requests retires the renderer readback and repeats GPU work.";
+        EXPECT_EQ(renderer.renderCount, 2u);
+        EXPECT_EQ(service.GetThumbnailState(first), ThumbnailState::Encoding);
+        EXPECT_EQ(service.GetThumbnailState(second), ThumbnailState::Queued);
+    }
 
     std::filesystem::remove_all(root);
 }

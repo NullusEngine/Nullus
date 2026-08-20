@@ -101,7 +101,7 @@ namespace
 		uint32_t largestDimension = (std::max)({ width, height, 1u });
 		while (largestDimension > 1u)
 		{
-			largestDimension >>= 1u;
+			largestDimension = (largestDimension + 1u) / 2u;
 			++mipCount;
 		}
 		return mipCount;
@@ -112,8 +112,13 @@ namespace
 		const uint32_t height,
 		const uint32_t mip)
 	{
-		const uint32_t mipWidth = mip < 32u ? (std::max)(1u, width >> mip) : 1u;
-		const uint32_t mipHeight = mip < 32u ? (std::max)(1u, height >> mip) : 1u;
+		uint32_t mipWidth = (std::max)(1u, static_cast<uint32_t>(width));
+		uint32_t mipHeight = (std::max)(1u, static_cast<uint32_t>(height));
+		for (uint32_t level = 0u; level < mip; ++level)
+		{
+			mipWidth = (mipWidth + 1u) / 2u;
+			mipHeight = (mipHeight + 1u) / 2u;
+		}
 		return {
 			(mipWidth + 7u) / 8u,
 			(mipHeight + 7u) / 8u,

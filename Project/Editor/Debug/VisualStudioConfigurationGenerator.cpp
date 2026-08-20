@@ -118,7 +118,9 @@ VisualStudioConfigurationResult GenerateVisualStudioConfiguration(
     if (manifest.mixedDebugAvailable)
     {
         profiles["Nullus: Editor + C# Mixed"] = makeProfile("mixed", false, "Debug");
+        profiles["Nullus: Editor + C# Mixed (Release)"] = makeProfile("mixed", false, "Release");
         profiles["Nullus: Mixed Attach and Play"] = makeProfile("mixed", true, "Debug");
+        profiles["Nullus: Mixed Attach and Play (Release)"] = makeProfile("mixed", true, "Release");
     }
     const Json launch = {
         {"profiles", profiles},

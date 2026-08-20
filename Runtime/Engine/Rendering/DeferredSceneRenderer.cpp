@@ -98,12 +98,10 @@ namespace
 	uint32_t CalculateHZBMipCount(const uint32_t width, const uint32_t height)
 	{
 		uint32_t mipCount = 1u;
-		uint32_t mipWidth = (std::max)(width, 1u);
-		uint32_t mipHeight = (std::max)(height, 1u);
-		while (mipWidth > 1u || mipHeight > 1u)
+		uint32_t largestDimension = (std::max)({ width, height, 1u });
+		while (largestDimension > 1u)
 		{
-			mipWidth = (std::max)(1u, (mipWidth + 1u) / 2u);
-			mipHeight = (std::max)(1u, (mipHeight + 1u) / 2u);
+			largestDimension >>= 1u;
 			++mipCount;
 		}
 		return mipCount;
@@ -114,9 +112,8 @@ namespace
 		const uint32_t height,
 		const uint32_t mip)
 	{
-		const uint32_t mipScale = 1u << mip;
-		const uint32_t mipWidth = (std::max)(1u, (width + mipScale - 1u) / mipScale);
-		const uint32_t mipHeight = (std::max)(1u, (height + mipScale - 1u) / mipScale);
+		const uint32_t mipWidth = mip < 32u ? (std::max)(1u, width >> mip) : 1u;
+		const uint32_t mipHeight = mip < 32u ? (std::max)(1u, height >> mip) : 1u;
 		return {
 			(mipWidth + 7u) / 8u,
 			(mipHeight + 7u) / 8u,
@@ -1232,6 +1229,7 @@ namespace NLS::Engine::Rendering
 						NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
 						compositeOverrides.depthTest = false;
 						compositeOverrides.depthWrite = false;
+						compositeOverrides.hasDepthAttachment = false;
 						compositeOverrides.culling = false;
 						compositeOverrides.colorWrite = true;
 
@@ -2969,6 +2967,7 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
 		compositeOverrides.depthTest = false;
 		compositeOverrides.depthWrite = false;
+		compositeOverrides.hasDepthAttachment = false;
 		compositeOverrides.culling = false;
 		compositeOverrides.colorWrite = true;
 

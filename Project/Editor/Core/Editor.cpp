@@ -2363,7 +2363,6 @@ void Editor::Core::Editor::PostUpdate()
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::PostUpdate: begin");
 
-    if (m_context.driver->GetActiveGraphicsBackend() != Render::Settings::EGraphicsBackend::METAL)
     {
         NLS_PROFILE_NAMED_SCOPE("DriverUIAccess::PresentSwapchain");
         const EditorCameraPerformanceStageScope stageScope(EditorCameraPerformanceStage::PresentSwapchain);

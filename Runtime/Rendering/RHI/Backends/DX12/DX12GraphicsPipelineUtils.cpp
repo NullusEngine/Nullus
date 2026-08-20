@@ -22,9 +22,20 @@ namespace
         }
     }
 
-    const char* ToSemanticName(const uint32_t location)
+    const char* ToSemanticName(const NLS::Render::RHI::RHIVertexAttributeDesc& attribute)
     {
-        switch (location)
+        using NLS::Render::RHI::RHIVertexSemantic;
+        switch (attribute.semantic)
+        {
+        case RHIVertexSemantic::Position: return "POSITION";
+        case RHIVertexSemantic::TexCoord: return "TEXCOORD";
+        case RHIVertexSemantic::Normal: return "NORMAL";
+        case RHIVertexSemantic::Color: return "COLOR";
+        case RHIVertexSemantic::Automatic:
+        default: break;
+        }
+
+        switch (attribute.location)
         {
         case 0u:
             return "POSITION";
@@ -40,9 +51,12 @@ namespace
         }
     }
 
-    UINT ToSemanticIndex(const uint32_t location)
+    UINT ToSemanticIndex(const NLS::Render::RHI::RHIVertexAttributeDesc& attribute)
     {
-        switch (location)
+        if (attribute.semantic != NLS::Render::RHI::RHIVertexSemantic::Automatic)
+            return attribute.semanticIndex;
+
+        switch (attribute.location)
         {
         case 1u:
             return 0u;
@@ -140,12 +154,12 @@ namespace NLS::Render::RHI::DX12
                 }
             }
 
-            const char* semanticName = ToSemanticName(attribute.location);
+            const char* semanticName = ToSemanticName(attribute);
             inputLayout.semanticNames.emplace_back(semanticName);
 
             D3D12_INPUT_ELEMENT_DESC element = {};
             element.SemanticName = semanticName;
-            element.SemanticIndex = ToSemanticIndex(attribute.location);
+            element.SemanticIndex = ToSemanticIndex(attribute);
             element.Format = ToDXGIFormat(attribute.elementSize);
             element.InputSlot = attribute.binding;
             element.AlignedByteOffset = attribute.offset;

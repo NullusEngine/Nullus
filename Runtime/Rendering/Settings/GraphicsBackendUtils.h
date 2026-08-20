@@ -502,13 +502,13 @@ namespace NLS::Render::Settings
 		switch (backend)
 		{
 		case NLS::Render::RHI::NativeBackendType::DX12:
+		case NLS::Render::RHI::NativeBackendType::Metal:
 			return SupportsTierARenderFoundation(capabilities);
 		case NLS::Render::RHI::NativeBackendType::Vulkan:
 			return SupportsTierARenderFoundation(capabilities);
 		case NLS::Render::RHI::NativeBackendType::None:
 		case NLS::Render::RHI::NativeBackendType::DX11:
 		case NLS::Render::RHI::NativeBackendType::OpenGL:
-		case NLS::Render::RHI::NativeBackendType::Metal:
 		default:
 			return false;
 		}
@@ -544,13 +544,13 @@ namespace NLS::Render::Settings
 		switch (backend)
 		{
 		case NLS::Render::RHI::NativeBackendType::DX12:
+		case NLS::Render::RHI::NativeBackendType::Metal:
 			return SupportsTierARenderFoundation(capabilities);
 		case NLS::Render::RHI::NativeBackendType::Vulkan:
 			return SupportsTierARenderFoundation(capabilities);
 		case NLS::Render::RHI::NativeBackendType::None:
 		case NLS::Render::RHI::NativeBackendType::DX11:
 		case NLS::Render::RHI::NativeBackendType::OpenGL:
-		case NLS::Render::RHI::NativeBackendType::Metal:
 		default:
 			return false;
 		}

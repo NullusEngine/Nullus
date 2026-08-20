@@ -1443,6 +1443,9 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	const auto occlusionSettings = [&]()
 	{
 		auto settings = m_largeSceneSettings;
+		const auto diagnostics = NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver);
+		if (diagnostics.editorValidationOcclusionStackCount != 0u)
+			settings.enableHZBOcclusion = true;
 		SceneOcclusionCapabilityRequest capabilityRequest;
 		capabilityRequest.opaqueDepthFormat =
 			static_cast<NLS::Render::RHI::TextureFormat>(ResolveDepthFormatKey(m_frameDescriptor));
@@ -1453,7 +1456,6 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 		settings.enableHZBOcclusion =
 			settings.enableHZBOcclusion &&
 			support.backendSupported;
-		const auto diagnostics = NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver);
 			if (diagnostics.editorValidationDisableHZBOcclusion)
 			{
 				settings.enableHZBOcclusion = false;
@@ -1674,7 +1676,9 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 				" occlusionCulled=" +
 				std::to_string(largeSceneTelemetry.occlusionCulledCount) +
 				" hzbPackets=" +
-				std::to_string(m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.size()));
+				std::to_string(m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.size()) +
+				" hzbRejected=" +
+				std::to_string(m_lastHZBOcclusionPrimitivePacketBuildResult.rejectedPrimitiveCount));
 		}
 
 		rawVisibleObjectCount += sceneStats.rawVisibleObjectCount;

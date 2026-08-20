@@ -528,6 +528,7 @@ namespace NLS::Render::RHI
 			case RHIDeviceFeature::FramebufferReadback: supportsFramebufferReadback = supported; break;
 			case RHIDeviceFeature::EditorPickingReadback: supportsEditorPickingReadback = supported; break;
 			case RHIDeviceFeature::UITextureHandles: supportsUITextureHandles = supported; break;
+			case RHIDeviceFeature::UITextureAtlasRegionUpload: break;
 			case RHIDeviceFeature::Cubemaps: supportsCubemaps = supported; break;
 			case RHIDeviceFeature::MultiRenderTargets: supportsMultiRenderTargets = supported; break;
 			case RHIDeviceFeature::ExplicitBarriers: supportsExplicitBarriers = supported; break;

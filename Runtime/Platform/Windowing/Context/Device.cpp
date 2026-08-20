@@ -243,7 +243,13 @@ NLS::Context::Device::~Device()
 
 NLS::Maths::Vector2 NLS::Context::Device::GetMonitorSize() const
 {
-	const GLFWvidmode * mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+	GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
+	if (primaryMonitor == nullptr)
+		return NLS::Maths::Vector2(1280.0f, 720.0f);
+
+	const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+	if (mode == nullptr || mode->width <= 0 || mode->height <= 0)
+		return NLS::Maths::Vector2(1280.0f, 720.0f);
 
 	return NLS::Maths::Vector2(mode->width, mode->height);
 }
@@ -255,11 +261,18 @@ NLS::Maths::Vector4 NLS::Context::Device::GetMonitorWorkarea() const
     int y = 0;
     int width = 0;
     int height = 0;
+
+    if (primaryMonitor == nullptr)
+        return NLS::Maths::Vector4(0.0f, 0.0f, 1280.0f, 720.0f);
+
     glfwGetMonitorWorkarea(primaryMonitor, &x, &y, &width, &height);
 
     if (width <= 0 || height <= 0)
     {
         const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+		if (mode == nullptr || mode->width <= 0 || mode->height <= 0)
+			return NLS::Maths::Vector4(0.0f, 0.0f, 1280.0f, 720.0f);
+
         return NLS::Maths::Vector4(0.0f, 0.0f, static_cast<float>(mode->width), static_cast<float>(mode->height));
     }
 

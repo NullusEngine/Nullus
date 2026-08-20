@@ -58,7 +58,7 @@ TEST(DX12GraphicsPipelineUtilsTests, BuildsImGuiOverlayInputLayoutWithFloatColor
     desc.vertexAttributes = {
         { 0u, 0u, 0u, 8u },
         { 1u, 0u, 8u, 8u },
-        { 3u, 0u, 16u, 16u }
+        { 2u, 0u, 16u, 16u, NLS::Render::RHI::RHIVertexSemantic::TexCoord, 1u }
     };
 
     const auto inputLayout = NLS::Render::RHI::DX12::BuildDX12OwnedInputLayout(desc);

@@ -11,7 +11,6 @@ namespace NLS::Render::RHI
 
 namespace NLS::Render::Backend
 {
-    // First Metal milestone: device, drawable surface, UI textures, and direct ImGui presentation.
-    // Generic scene command encoding and pipeline translation are intentionally not exposed as supported.
+    // Creates the explicit Metal backend used by scene, compute, UI-overlay, and presentation paths.
     NLS_RENDER_API std::shared_ptr<NLS::Render::RHI::RHIDevice> CreateMetalRhiDevice(bool debugMode = false);
 }

@@ -147,7 +147,8 @@ void Editor::Panels::AView::OnBeforeDrawWidgets()
                 if (m_metalViewportRenderer->Render(
                         m_lastResolvedViewSize.first,
                         m_lastResolvedViewSize.second,
-                        GetCamera()))
+                        GetCamera(),
+                        GetScene()))
                 {
                     m_image->textureView = m_metalViewportRenderer->GetOutputTextureView();
                     // The native preview submits outside the generic scene renderer, so

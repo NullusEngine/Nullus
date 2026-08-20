@@ -32,12 +32,23 @@ namespace NLS::Render::RHI
         std::string debugName;
     };
 
+    enum class NLS_RENDER_API RHIVertexSemantic : uint8_t
+    {
+        Automatic,
+        Position,
+        TexCoord,
+        Normal,
+        Color
+    };
+
     struct NLS_RENDER_API RHIVertexAttributeDesc
     {
         uint32_t location = 0;
         uint32_t binding = 0;
         uint32_t offset = 0;
         uint32_t elementSize = 0;
+        RHIVertexSemantic semantic = RHIVertexSemantic::Automatic;
+        uint32_t semanticIndex = 0;
     };
 
     struct NLS_RENDER_API RHIVertexBufferLayoutDesc

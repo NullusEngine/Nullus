@@ -18,6 +18,8 @@
 #include "Core/Filesystem/IniFile.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include <optional>
+#include <Eventing/Event.h>
+#include <Scripting/ScriptRuntime.h>
 
 namespace NLS::Game
 {
@@ -55,6 +57,9 @@ namespace NLS::Game
 		std::unique_ptr<Windowing::Inputs::InputManager> inputManager;
 		std::unique_ptr<NLS::Render::Context::Driver> driver;
 
+		// Context-owned scripting state.  It is declared before sceneManager so
+		// Scene/ScriptComponent destruction runs while the runtime is alive.
+		NLS::Scripting::ScriptRuntime scriptRuntime;
 		Engine::SceneSystem::SceneManager sceneManager;
 
 		NLS::Core::ResourceManagement::MeshManager meshManager;
@@ -69,5 +74,7 @@ namespace NLS::Game
 		std::optional<Render::Settings::RenderDocSettings> m_renderDocOverride;
 		std::optional<Render::Settings::EGraphicsBackend> m_backendOverride;
 		std::optional<std::string> m_projectPathOverride;
+		NLS::ListenerID m_sceneLoadListener = NLS::InvalidListenerID;
+		NLS::ListenerID m_sceneComponentAddedListener = NLS::InvalidListenerID;
 	};
 }

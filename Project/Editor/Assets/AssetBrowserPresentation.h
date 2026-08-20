@@ -397,9 +397,12 @@ AssetBrowserItemTypeColor AssetBrowserItemTypeDisplayColor(AssetBrowserItemType 
 
 const char* AssetBrowserFallbackIconId(AssetBrowserItemType type);
 
+const char* AssetBrowserScriptIconId(std::string_view sourceAssetPath);
+
 std::string_view ResolveAssetBrowserDisplayFallbackIconId(
     AssetBrowserItemType type,
-    std::string_view thumbnailFallbackIcon);
+    std::string_view thumbnailFallbackIcon,
+    std::string_view sourceAssetPath = {});
 
 AssetBrowserContentViewMode ResolveAssetBrowserContentViewMode(float thumbnailSize);
 

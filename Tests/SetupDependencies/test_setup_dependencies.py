@@ -62,6 +62,98 @@ def write_valid_macos_sdk(root: Path) -> None:
 
 
 class SetupDependenciesTests(unittest.TestCase):
+    def test_dotnet_manifest_is_pinned_for_all_supported_hosts(self):
+        manifest = setup.load_manifest(TOOLS_DIR / "dependency_manifest.json")
+        dependency = manifest["dependencies"]["dotnet-sdk"]
+
+        self.assertEqual(dependency["version"], "8.0.408")
+        self.assertEqual(set(dependency["platforms"]), {"windows", "linux", "macos"})
+        for platform in ("windows", "linux", "macos"):
+            for arch in ("x64", "arm64"):
+                with self.subTest(platform=platform, arch=arch):
+                    package = setup.resolve_dotnet_package(manifest, platform, arch)
+                    self.assertEqual(package.version, "8.0.408")
+                    self.assertRegex(package.sha512, r"^[0-9a-f]{128}$")
+                    self.assertTrue(package.url.startswith("https://builds.dotnet.microsoft.com/"))
+                    self.assertEqual(
+                        package.sdk_root,
+                        Path("Tools") / "Dotnet" / platform / arch,
+                    )
+
+    def test_dotnet_manifest_rejects_untrusted_host(self):
+        manifest = setup.load_manifest(TOOLS_DIR / "dependency_manifest.json")
+        manifest = json.loads(json.dumps(manifest))
+        manifest["dependencies"]["dotnet-sdk"]["platforms"]["windows"]["x64"]["url"] = (
+            "https://example.invalid/dotnet.zip"
+        )
+
+        with self.assertRaisesRegex(setup.SetupError, "builds.dotnet.microsoft.com"):
+            setup.resolve_dotnet_package(manifest, "windows", "x64")
+
+    def test_dotnet_dry_run_does_not_create_install_directories(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            code = setup.main(
+                [
+                    "--setup-dotnet",
+                    "--repo-root",
+                    temp_dir,
+                    "--platform",
+                    "windows",
+                    "--arch",
+                    "x64",
+                    "--dry-run",
+                    "--non-interactive",
+                ],
+                environ={},
+                stdout=stdout,
+                stderr=stderr,
+            )
+
+            self.assertEqual(code, 0, stderr.getvalue())
+            self.assertIn("8.0.408", stdout.getvalue())
+            self.assertIn("No files were modified", stdout.getvalue())
+            self.assertFalse((Path(temp_dir) / "Tools" / "Dotnet").exists())
+
+    def test_dotnet_zip_extraction_rejects_path_traversal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive_path = Path(temp_dir) / "unsafe.zip"
+            import zipfile
+
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("../../outside.txt", "unsafe")
+
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                with self.assertRaisesRegex(setup.SetupError, "unsafe archive member"):
+                    setup.safe_extract_zip(archive, Path(temp_dir) / "out")
+
+    def test_managed_and_codegen_projects_target_net8(self):
+        project_files = [
+            REPO_ROOT / "Managed" / "Nullus.ScriptGenerator" / "Nullus.ScriptGenerator.csproj",
+            REPO_ROOT / "Managed" / "Nullus.Managed" / "Nullus.Managed.csproj",
+            REPO_ROOT / "Managed" / "Nullus.GameScripts" / "Nullus.GameScripts.csproj",
+            REPO_ROOT / "Tools" / "MetaParser" / "src" / "MetaParser.csproj.in",
+            REPO_ROOT / "Tools" / "MetaParser" / "ThirdParty" / "CppAst.NET" / "src" / "CppAst" / "CppAst.csproj",
+        ]
+        for project in project_files:
+            with self.subTest(project=project):
+                self.assertIn("<TargetFramework>net8.0</TargetFramework>", project.read_text(encoding="utf-8"))
+
+    def test_cmake_uses_shared_dotnet_resolution_and_auto_install(self):
+        root_cmake = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        helper = (REPO_ROOT / "Tools" / "CMake" / "NullusDotnet.cmake").read_text(encoding="utf-8")
+        managed_cmake = (REPO_ROOT / "Managed" / "CMakeLists.txt").read_text(encoding="utf-8")
+        meta_cmake = (REPO_ROOT / "Tools" / "MetaParser" / "CMakeLists.txt").read_text(encoding="utf-8")
+        runtime_cmake = (REPO_ROOT / "Runtime" / "CMakeLists.txt").read_text(encoding="utf-8")
+
+        self.assertIn("nls_resolve_dotnet()", root_cmake)
+        self.assertIn("NLS_AUTO_INSTALL_DOTNET", helper)
+        self.assertIn("--dependency dotnet-sdk", helper)
+        self.assertIn("NLS_DOTNET_EXECUTABLE", managed_cmake)
+        self.assertIn("NLS_DOTNET_EXECUTABLE", meta_cmake)
+        self.assertIn("DOTNET_ROOT=${NLS_DOTNET_ROOT}", runtime_cmake)
+
     def test_manifest_contains_all_supported_platforms(self):
         manifest = setup.load_manifest(TOOLS_DIR / "dependency_manifest.json")
         package = setup.resolve_package(manifest, "autodesk-fbx-sdk", None)

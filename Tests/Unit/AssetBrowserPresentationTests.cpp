@@ -678,6 +678,28 @@ TEST(AssetBrowserPresentationTests, DisplayFallbackIconsPreserveExplicitThumbnai
         std::string_view("editor.icon.asset.texture"));
 }
 
+TEST(AssetBrowserPresentationTests, ScriptIconsFollowSourceExtension)
+{
+    using namespace NLS::Editor::Assets;
+
+    EXPECT_STREQ(AssetBrowserScriptIconId("Assets/Scripts/Player.cs"), "editor.icon.asset.script.csharp");
+    EXPECT_STREQ(AssetBrowserScriptIconId("Assets/Scripts/Player.CS"), "editor.icon.asset.script.csharp");
+    EXPECT_STREQ(AssetBrowserScriptIconId("Assets/Scripts/Enemy.lua"), "editor.icon.asset.script.lua");
+    EXPECT_STREQ(AssetBrowserScriptIconId("Assets/Scripts/Enemy.LUA"), "editor.icon.asset.script.lua");
+    EXPECT_EQ(
+        ResolveAssetBrowserDisplayFallbackIconId(
+            AssetBrowserItemType::Script,
+            "editor.icon.asset.default",
+            "Assets/Scripts/Player.cs"),
+        std::string_view("editor.icon.asset.script.csharp"));
+    EXPECT_EQ(
+        ResolveAssetBrowserDisplayFallbackIconId(
+            AssetBrowserItemType::Script,
+            "editor.icon.asset.script",
+            "Assets/Scripts/Enemy.lua"),
+        std::string_view("editor.icon.asset.script.lua"));
+}
+
 TEST(AssetBrowserPresentationTests, EditorResourcesUsePrefabFileIconIdForPrefabFiles)
 {
     EXPECT_STREQ(
@@ -700,6 +722,22 @@ TEST(AssetBrowserPresentationTests, EditorResourcesUseSceneFileIconIdForSceneFil
     EXPECT_STREQ(
         NLS::Editor::Core::EditorResources::GetFileIconId("Hero.scene"),
         "editor.icon.asset.scene");
+}
+
+TEST(AssetBrowserPresentationTests, EditorResourcesUseLanguageSpecificScriptFileIconIds)
+{
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Player.cs"),
+        "editor.icon.asset.script.csharp");
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Player.CS"),
+        "editor.icon.asset.script.csharp");
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Enemy.lua"),
+        "editor.icon.asset.script.lua");
+    EXPECT_STREQ(
+        NLS::Editor::Core::EditorResources::GetFileIconId("Enemy.LUA"),
+        "editor.icon.asset.script.lua");
 }
 
 TEST(AssetBrowserPresentationTests, OnlyModelAndPrefabSourceAssetsCanExposeGeneratedSubAssets)
@@ -869,6 +907,8 @@ TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusReso
     bool foundShaderIcon = false;
     bool foundPrefabIcon = false;
     bool foundMaterialIcon = false;
+    bool foundCSharpIcon = false;
+    bool foundLuaIcon = false;
     for (const auto& record : records)
     {
         if (record.type != NLS::Editor::Core::EditorResourceType::Icon ||
@@ -900,12 +940,18 @@ TEST(AssetBrowserPresentationTests, AssetTypeIconOverridesUseCatalogedNullusReso
             foundPrefabIcon = true;
         if (record.id == "editor.icon.asset.material")
             foundMaterialIcon = true;
+        if (record.id == "editor.icon.asset.script.csharp")
+            foundCSharpIcon = true;
+        if (record.id == "editor.icon.asset.script.lua")
+            foundLuaIcon = true;
     }
 
     EXPECT_TRUE(foundSceneIcon);
     EXPECT_TRUE(foundShaderIcon);
     EXPECT_TRUE(foundPrefabIcon);
     EXPECT_TRUE(foundMaterialIcon);
+    EXPECT_TRUE(foundCSharpIcon);
+    EXPECT_TRUE(foundLuaIcon);
 }
 
 TEST(AssetBrowserPresentationTests, GeneratedSubAssetsAreNestedUnderCollapsedSourceAssets)

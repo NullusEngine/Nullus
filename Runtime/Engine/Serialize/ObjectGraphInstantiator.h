@@ -1355,7 +1355,19 @@ namespace NLS::Engine::Serialize
         template<typename ObjectType>
         static bool RecordTypeMatches(const ObjectRecord& record)
         {
-            static const std::string typeName = NLS_TYPEOF(ObjectType).GetName();
+            static const std::string typeName = []
+            {
+                const auto reflectedType = NLS_TYPEOF(ObjectType);
+                if (reflectedType.IsValid())
+                    return reflectedType.GetName();
+
+                // Static-library consumers can reach object graph loading
+                // before the reflection database has been initialized. The
+                // generated metadata still provides the same stable type name
+                // used by serialized records, so matching must not depend on
+                // initialization order.
+                return std::string(ObjectType::StaticMetaTypeName());
+            }();
             return record.typeName == typeName;
         }
 
@@ -1787,6 +1799,9 @@ namespace NLS::Engine::Serialize
             const ObjectRecord& record,
             const LoadPolicy& policy = {})
         {
+            if (component.DeserializeObjectGraphProperties(record.properties))
+                return;
+
             if (RecordTypeMatchesComponent<Components::TransformComponent>(record) &&
                 TryApplyBatchedTransformState(component, record))
             {
@@ -3009,7 +3024,7 @@ namespace NLS::Engine::Serialize
                     continue;
 
                 const auto type = NLS::meta::Type::GetFromName(object.typeName);
-                if (type.IsValid())
+                if (type.IsValid() || IsGeneratedEngineTypeName(object.typeName))
                     continue;
 
                 diagnostics.Add({
@@ -3020,6 +3035,13 @@ namespace NLS::Engine::Serialize
                     "Object graph contains an unknown object type: " + object.typeName
                 });
             }
+        }
+
+        static bool IsGeneratedEngineTypeName(std::string_view typeName)
+        {
+            return typeName == Components::TransformComponent::StaticMetaTypeName() ||
+                typeName == GameObject::StaticMetaTypeName() ||
+                typeName == SceneSystem::Scene::StaticMetaTypeName();
         }
 
         static void AnalyzeReflectedObjectReferenceShapes(

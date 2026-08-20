@@ -11,7 +11,12 @@
 
 #include <Reflection/RuntimeMetaProperties.h>
 #include <Reflection/TypeCreator.h>
+#include <Scripting/ScriptComponent.h>
+#include <Scripting/ScriptRuntime.h>
 
+#include "Assets/BuiltInScriptRegistry.h"
+#include "Assets/ScriptAssetUtility.h"
+#include "Core/EditorActions.h"
 #include "Components/CameraComponent.h"
 #include "Components/Component.h"
 #include "Components/LightComponent.h"
@@ -26,6 +31,7 @@ namespace
 {
 using NLS::Engine::Components::Component;
 using NLS::Engine::Components::TransformComponent;
+using NLS::Scripting::ScriptComponent;
 
 constexpr std::string_view kComponentSuffix = "Component";
 constexpr std::string_view kPopupId = "##AddComponentPopup";
@@ -78,10 +84,44 @@ bool IsCandidateComponentType(const NLS::meta::Type& p_type)
     if (!p_type.IsValid() || !p_type.DerivesFrom(NLS_TYPEOF(Component)))
         return false;
 
-    if (p_type == NLS_TYPEOF(Component) || p_type == NLS_TYPEOF(TransformComponent))
+    if (p_type == NLS_TYPEOF(Component)
+        || p_type == NLS_TYPEOF(TransformComponent)
+        // ScriptComponent is the shared native implementation for concrete
+        // C#/Lua assets, not an empty component users should add directly.
+        || p_type == NLS_TYPEOF(ScriptComponent))
         return false;
 
     return !p_type.GetDynamicConstructors().empty();
+}
+
+bool HasScriptAsset(
+    const NLS::Engine::GameObject* p_gameObject,
+    const NLS::Scripting::ScriptAsset& p_asset)
+{
+    if (!p_gameObject || !p_asset.assetId.IsValid())
+        return false;
+
+    for (const auto& component : p_gameObject->GetComponents())
+    {
+        const auto* script = component
+            ? dynamic_cast<const ScriptComponent*>(component.get())
+            : nullptr;
+        if (script != nullptr && script->GetScriptAsset().assetId == p_asset.assetId)
+            return true;
+    }
+    return false;
+}
+
+std::string ScriptLanguageLabel(const NLS::Scripting::ScriptLanguage p_language)
+{
+    return p_language == NLS::Scripting::ScriptLanguage::CSharp ? "C#" : "Lua";
+}
+
+std::string ScriptDisplayName(const NLS::Scripting::ScriptAsset& p_asset)
+{
+    const auto stem = std::filesystem::path(p_asset.sourcePath).stem().string();
+    const auto name = stem.empty() ? p_asset.sourcePath : stem;
+    return name + " (" + ScriptLanguageLabel(p_asset.language) + ")";
 }
 
 std::vector<std::string> SplitMenuPath(std::string_view p_path)
@@ -171,14 +211,24 @@ void ComponentSearchPanel::OpenForGameObject(Engine::GameObject* p_GameObject)
 
 void ComponentSearchPanel::RefreshEntries()
 {
-    m_entries = BuildComponentEntries(m_targetGameObject, m_query);
-    m_categories = BuildCategoryTree(BuildComponentEntries(m_targetGameObject));
+    std::filesystem::path projectAssetsFolder;
+    const NLS::Scripting::ScriptRuntime* scriptRuntime = nullptr;
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
+    {
+        projectAssetsFolder = std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath));
+        scriptRuntime = &EDITOR_CONTEXT(scriptRuntime);
+    }
+
+    m_entries = BuildComponentEntries(m_targetGameObject, m_query, projectAssetsFolder, scriptRuntime);
+    m_categories = NormalizeSearchText(m_query).empty()
+        ? BuildCategoryTree(m_entries)
+        : std::vector<ComponentCategoryNode> {};
 
     if (!m_targetGameObject)
         SetStatusMessage("No GameObject selected", true);
     else if (GetViewModeForQuery(m_query) == ComponentPickerViewMode::SearchResults && m_entries.empty())
         SetStatusMessage("No components match your search", true);
-    else if (m_categories.empty())
+    else if (GetViewModeForQuery(m_query) == ComponentPickerViewMode::Categories && m_categories.empty())
         SetStatusMessage("No components available", true);
     else
         SetStatusMessage({}, false);
@@ -257,7 +307,11 @@ bool ComponentSearchPanel::IsTypeAddableToGameObject(const meta::Type& p_type, c
     return p_GameObject->GetComponent(p_type, false) == nullptr;
 }
 
-std::vector<ComponentSearchEntry> ComponentSearchPanel::BuildComponentEntries(Engine::GameObject* p_GameObject, std::string_view p_query)
+std::vector<ComponentSearchEntry> ComponentSearchPanel::BuildComponentEntries(
+    Engine::GameObject* p_GameObject,
+    std::string_view p_query,
+    const std::filesystem::path& p_projectAssetsFolder,
+    const NLS::Scripting::ScriptRuntime* p_scriptRuntime)
 {
     std::vector<ComponentSearchEntry> entries;
     if (!p_GameObject)
@@ -265,10 +319,21 @@ std::vector<ComponentSearchEntry> ComponentSearchPanel::BuildComponentEntries(En
 
     const std::string normalizedQuery = NormalizeSearchText(p_query);
 
-    for (const meta::Type& type : meta::Type::GetTypes())
+    const auto appendEntry = [&](const meta::Type& type)
     {
         if (!IsCandidateComponentType(type))
-            continue;
+            return;
+
+        if (std::any_of(
+                entries.begin(),
+                entries.end(),
+                [&type](const ComponentSearchEntry& entry)
+                {
+                    return entry.componentType == type;
+                }))
+        {
+            return;
+        }
 
         ComponentSearchEntry entry;
         entry.componentType = type;
@@ -280,9 +345,57 @@ std::vector<ComponentSearchEntry> ComponentSearchPanel::BuildComponentEntries(En
             entry.availabilityReason = "Already added";
 
         if (!normalizedQuery.empty() && entry.searchKey.find(normalizedQuery) == std::string::npos)
-            continue;
+            return;
 
         entries.push_back(std::move(entry));
+    };
+
+    for (const meta::Type& type : meta::Type::GetTypes())
+        appendEntry(type);
+
+    // ScriptComponent is the shared native type for concrete script assets.
+    // Keep it out of the generic list; the entries below carry the actual
+    // C#/Lua asset that should be mounted on the GameObject.
+    const auto scriptType = meta::Type::GetFromName("NLS::Scripting::ScriptComponent");
+    if (scriptType.IsValid())
+    {
+        const auto appendScriptEntry = [&](NLS::Scripting::ScriptAsset asset, std::string menuPath)
+        {
+            if (p_scriptRuntime)
+            {
+                if (const auto semanticComponent = p_scriptRuntime->IsScriptComponentAsset(asset); semanticComponent.has_value())
+                    asset.isComponent = *semanticComponent;
+            }
+            if (!asset.isComponent)
+                return;
+
+            ComponentSearchEntry entry;
+            entry.componentType = scriptType;
+            entry.scriptAsset = std::move(asset);
+            entry.displayName = ScriptDisplayName(*entry.scriptAsset);
+            entry.menuPath = menuPath.empty()
+                ? "Scripts/" + ScriptLanguageLabel(entry.scriptAsset->language)
+                : std::move(menuPath);
+            entry.searchKey = NormalizeSearchText(
+                entry.displayName + " " + entry.menuPath + " " + entry.scriptAsset->sourcePath);
+            entry.isAddable = !HasScriptAsset(p_GameObject, *entry.scriptAsset);
+            if (!entry.isAddable)
+                entry.availabilityReason = "Already added";
+
+            if (!normalizedQuery.empty() && entry.searchKey.find(normalizedQuery) == std::string::npos)
+                return;
+            entries.push_back(std::move(entry));
+        };
+
+        for (auto& asset : NLS::Editor::Assets::FindProjectScriptAssets(p_projectAssetsFolder))
+            appendScriptEntry(std::move(asset), {});
+
+        // Built-in scripts use the same concrete ScriptComponent entry as
+        // project scripts.  Their descriptor owns a stable AssetId and source
+        // payload, so selecting one is indistinguishable from selecting an
+        // imported project asset for mounting and serialization.
+        for (const auto& descriptor : NLS::Editor::Assets::BuiltInScriptRegistry::GetAll())
+            appendScriptEntry(descriptor.asset, descriptor.menuPath);
     }
 
     std::sort(
@@ -336,6 +449,25 @@ bool ComponentSearchPanel::TryAddComponentFromEntry(Engine::GameObject* p_GameOb
 {
     if (!p_GameObject || !p_entry.componentType.IsValid() || !p_entry.isAddable)
         return false;
+
+    if (p_entry.scriptAsset.has_value())
+    {
+        if (!p_entry.scriptAsset->isComponent ||
+            !p_entry.scriptAsset->assetId.IsValid() ||
+            HasScriptAsset(p_GameObject, *p_entry.scriptAsset))
+            return false;
+
+        auto* component = p_GameObject->AddComponent(p_entry.componentType);
+        auto* script = component ? dynamic_cast<ScriptComponent*>(component) : nullptr;
+        if (!script)
+        {
+            if (component)
+                p_GameObject->RemoveComponent(component);
+            return false;
+        }
+        script->SetScriptAsset(*p_entry.scriptAsset);
+        return true;
+    }
 
     if (!IsTypeAddableToGameObject(p_entry.componentType, p_GameObject))
         return false;
@@ -439,7 +571,8 @@ void ComponentSearchPanel::DrawCategoryNode(const ComponentCategoryNode& p_node)
 
             for (const ComponentSearchEntry& entry : p_node.entries)
             {
-                if (ImGui::MenuItem(entry.displayName.c_str(), nullptr, false, entry.isAddable))
+                const std::string label = entry.displayName + "##" + entry.searchKey;
+                if (ImGui::MenuItem(label.c_str(), nullptr, false, entry.isAddable))
                     TryCommitEntry(entry);
             }
 
@@ -453,7 +586,8 @@ void ComponentSearchPanel::DrawCategoryNode(const ComponentCategoryNode& p_node)
         if (p_node.entries.size() == 1)
         {
             const ComponentSearchEntry& entry = p_node.entries.front();
-            if (ImGui::MenuItem(p_node.label.c_str(), nullptr, false, entry.isAddable))
+            const std::string label = p_node.label + "##" + entry.searchKey;
+            if (ImGui::MenuItem(label.c_str(), nullptr, false, entry.isAddable))
                 TryCommitEntry(entry);
             return;
         }
@@ -462,7 +596,8 @@ void ComponentSearchPanel::DrawCategoryNode(const ComponentCategoryNode& p_node)
         {
             for (const ComponentSearchEntry& entry : p_node.entries)
             {
-                if (ImGui::MenuItem(entry.displayName.c_str(), nullptr, false, entry.isAddable))
+                const std::string label = entry.displayName + "##" + entry.searchKey;
+                if (ImGui::MenuItem(label.c_str(), nullptr, false, entry.isAddable))
                     TryCommitEntry(entry);
             }
 
@@ -475,7 +610,7 @@ void ComponentSearchPanel::DrawSearchResults()
 {
     for (const ComponentSearchEntry& entry : m_entries)
     {
-        const std::string label = entry.menuPath + "##" + entry.displayName;
+        const std::string label = entry.displayName + "##" + entry.searchKey;
         if (ImGui::MenuItem(label.c_str(), nullptr, false, entry.isAddable))
             TryCommitEntry(entry);
     }

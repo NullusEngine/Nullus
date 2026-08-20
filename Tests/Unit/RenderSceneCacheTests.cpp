@@ -47,6 +47,8 @@
 #include "Rendering/ShaderLab/ShaderLabTypes.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PPtr.h"
+#include "Components/CameraComponent.h"
+#include "Components/LightComponent.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "SceneSystem/Scene.h"
@@ -1220,7 +1222,7 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionTracksMeshWithoutValidCach
     delete mesh;
 }
 
-TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionFastPathIsDisabledWhilePlaying)
+TEST(RenderSceneCacheTests, TrustedSceneRevisionFastPathTracksChangesWhilePlaying)
 {
     RenderableFixture fixture;
     NLS::Engine::Rendering::RenderScene renderScene;
@@ -1230,14 +1232,43 @@ TEST(RenderSceneCacheTests, TrustedEditorSceneRevisionFastPathIsDisabledWhilePla
     options.trustSceneRenderContentRevision = true;
     ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).rebuiltCachedCommandCount, 1u);
 
-    fixture.scene.Play();
-    auto* transform = fixture.meshRenderer->gameobject()->GetTransform();
-    ASSERT_NE(transform, nullptr);
-    transform->TranslateLocal({ 1.0f, 0.0f, 0.0f });
+	fixture.scene.Play();
+	const auto firstPlaying = renderScene.Synchronize(fixture.scene, options);
+	EXPECT_FALSE(firstPlaying.usedSceneRenderContentRevisionFastPath);
+	EXPECT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
 
-    const auto playing = renderScene.Synchronize(fixture.scene, options);
-    EXPECT_FALSE(playing.usedSceneRenderContentRevisionFastPath);
-    EXPECT_EQ(playing.syncTouchedPrimitiveCount, 1u);
+	auto* transform = fixture.meshRenderer->gameobject()->GetTransform();
+	ASSERT_NE(transform, nullptr);
+	transform->TranslateLocal({ 1.0f, 0.0f, 0.0f });
+
+	const auto playing = renderScene.Synchronize(fixture.scene, options);
+	EXPECT_FALSE(playing.usedSceneRenderContentRevisionFastPath);
+	EXPECT_EQ(playing.syncTouchedPrimitiveCount, 1u);
+    EXPECT_TRUE(renderScene.Synchronize(fixture.scene, options).usedSceneRenderContentRevisionFastPath);
+}
+
+TEST(RenderSceneCacheTests, RenderComponentChangesAdvanceSceneRevision)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& cameraObject = scene.CreateGameObject("Camera");
+    auto* camera = cameraObject.AddComponent<NLS::Engine::Components::CameraComponent>();
+    ASSERT_NE(camera, nullptr);
+
+    const auto afterCameraAdded = scene.GetRenderContentRevision();
+    camera->SetFov(camera->GetFov() + 1.0f);
+    EXPECT_GT(scene.GetRenderContentRevision(), afterCameraAdded);
+
+    auto& lightObject = scene.CreateGameObject("Light");
+    auto* light = lightObject.AddComponent<NLS::Engine::Components::LightComponent>();
+    ASSERT_NE(light, nullptr);
+
+    const auto afterLightAdded = scene.GetRenderContentRevision();
+    light->SetIntensity(light->GetIntensity() + 1.0f);
+    EXPECT_GT(scene.GetRenderContentRevision(), afterLightAdded);
+
+    const auto afterComponentRemoval = scene.GetRenderContentRevision();
+    ASSERT_TRUE(lightObject.RemoveComponent(light));
+    EXPECT_GT(scene.GetRenderContentRevision(), afterComponentRemoval);
 }
 
 TEST(RenderSceneCacheTests, ReuseCheckValidatesCachedCommandStampBeforeMaterialDereference)

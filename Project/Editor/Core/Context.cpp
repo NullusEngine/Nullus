@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <Json/json.hpp>
 
 #include <fstream>
 #include <optional>
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstdlib>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -17,6 +19,8 @@
 #include <Core/ServiceLocator.h>
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/BuiltInScriptRegistry.h"
+#include "Assets/ScriptAssetUtility.h"
 #include <Debug/Logger.h>
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Assets/EditorAssetDatabase.h"
@@ -32,6 +36,12 @@
 #include "Settings/EditorSettings.h"
 #include "Settings/EditorSettingsPersistence.h"
 #include "Utils/PathParser.h"
+#include <Scripting/ScriptComponent.h>
+#include <Scripting/ScriptRuntimeSetup.h>
+#include "Scripting/ManagedScriptDebugSession.h"
+#include "Debug/ExternalCodeEditor.h"
+#include "Debug/ProjectDebugWorkspace.h"
+#include "Debug/EditorDebugEndpoint.h"
 
 #ifdef _WIN32
     #ifndef NOMINMAX
@@ -47,6 +57,54 @@ namespace NLS
 {
 namespace
 {
+    void BindScriptComponentToRuntime(
+        NLS::Engine::Components::Component* component,
+        NLS::Scripting::ScriptRuntime& runtime,
+        const std::filesystem::path& projectAssetsFolder)
+    {
+        if (auto* script = dynamic_cast<NLS::Scripting::ScriptComponent*>(component))
+        {
+            // Scene files intentionally persist only AssetId/type data.  Fill
+            // the transient source fields before Play invokes Awake.
+            const auto& serializedAsset = script->GetScriptAsset();
+            if (serializedAsset.assetId.IsValid() && serializedAsset.sourceText.empty())
+            {
+                bool resolved = false;
+                for (auto& imported : NLS::Editor::Assets::FindProjectScriptAssets(projectAssetsFolder))
+                {
+                    if (imported.assetId == serializedAsset.assetId)
+                    {
+                        script->ResolveScriptAsset(std::move(imported));
+                        resolved = true;
+                        break;
+                    }
+                }
+                if (!resolved)
+                {
+                    if (const auto* builtIn = NLS::Editor::Assets::BuiltInScriptRegistry::FindByAssetId(serializedAsset.assetId))
+                        script->ResolveScriptAsset(builtIn->asset);
+                }
+            }
+            script->SetRuntime(&runtime);
+        }
+    }
+
+    void BindScriptComponentsToRuntime(
+        NLS::Engine::SceneSystem::Scene* scene,
+        NLS::Scripting::ScriptRuntime& runtime,
+        const std::filesystem::path& projectAssetsFolder)
+    {
+        if (!scene)
+            return;
+        for (auto* gameObject : scene->GetGameObjects())
+        {
+            if (!gameObject)
+                continue;
+            for (const auto& component : gameObject->GetComponents())
+                BindScriptComponentToRuntime(component.get(), runtime, projectAssetsFolder);
+        }
+    }
+
     constexpr const char* kEditorRuntimeAssetTargetPlatform = "editor";
 
     std::string EnsureTrailingPathSeparator(const std::filesystem::path& path)
@@ -876,6 +934,26 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 {
     residentPrefabPreviewRegistry =
         NLS::Editor::Assets::ResidentPrefabPreviewRegistry::Create();
+    NLS::Editor::Assets::BuiltInScriptRegistry::Refresh(
+        NLS::Platform::Process::ResolveInstallResourceRoots().installRoot);
+
+    // Acquire the project instance lock before asset watching, scene loading,
+    // or the debug endpoint registration.  Broker F5 can therefore distinguish
+    // an Editor that is still starting from a project with no Editor at all.
+    {
+        const auto projectRoot = NLS::Editor::Debug::ResolveProjectRoot(std::filesystem::path(projectPath));
+        const auto lockRoot = projectRoot.empty() ? std::filesystem::path(projectPath) : projectRoot;
+        editorDebugEndpoint = std::make_unique<NLS::Editor::Debugging::EditorDebugEndpoint>(
+            lockRoot,
+            NLS::Editor::Debug::ComputeProjectId(lockRoot),
+            NLS::Platform::Process::GetCurrentExecutablePath());
+        if (!editorDebugEndpoint->HasInstanceLock())
+        {
+            throw std::runtime_error(
+                "This project is already open in another Nullus Editor: " +
+                editorDebugEndpoint->GetInstanceLockError());
+        }
+    }
     PresentStartupProgressFrame("Reading project settings", 0.02f);
 
     std::error_code projectAssetFolderError;
@@ -914,11 +992,38 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 		ResetProjectSettings();
 		projectSettings.Rewrite();
 	}
-    else if (!projectSettings.IsKeyExisting("last_opened_scene"))
-    {
-        projectSettings.Add<std::string>("last_opened_scene", "");
-        projectSettings.Rewrite();
-    }
+	else if (!projectSettings.IsKeyExisting("last_opened_scene"))
+	{
+		projectSettings.Add<std::string>("last_opened_scene", "");
+		projectSettings.Rewrite();
+	}
+	if (!projectSettings.IsKeyExisting("vscode_path"))
+	{
+		// Keep the executable path project-local and explicit. An empty value
+		// deliberately selects the platform's default file opener.
+		projectSettings.Add<std::string>("vscode_path", "");
+		projectSettings.Rewrite();
+	}
+	if (!projectSettings.IsKeyExisting("csharp_debugging"))
+	{
+		projectSettings.Add<bool>("csharp_debugging", false);
+		projectSettings.Rewrite();
+	}
+	if (!projectSettings.IsKeyExisting("lua_panda_debugging"))
+	{
+		projectSettings.Add<bool>("lua_panda_debugging", false);
+		projectSettings.Rewrite();
+	}
+	if (!projectSettings.IsKeyExisting("lua_panda_port"))
+	{
+		projectSettings.Add<int>("lua_panda_port", 8818);
+		projectSettings.Rewrite();
+	}
+	if (!projectSettings.IsKeyExisting("stop_on_entry"))
+	{
+		projectSettings.Add<bool>("stop_on_entry", false);
+		projectSettings.Rewrite();
+	}
 
     Editor::Settings::EditorSettingsRegistry editorSettingsRegistry;
     Editor::Settings::EditorSettings::RegisterSettingObjects(editorSettingsRegistry);
@@ -1168,11 +1273,320 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         }
     });
 
+    NLS::Scripting::ScriptRuntimeSetupOptions scriptingOptions;
+    scriptingOptions.projectRoot = std::filesystem::path(projectPath);
+    // Debugger protocols are context-scoped and driven by the project
+    // settings.  Keep the defaults off for existing projects, while allowing
+    // an explicitly enabled Play session to start both debugger backends
+    // before the first script lifecycle callback.
+    scriptingOptions.enableLuaPanda = projectSettings.GetOrDefault<bool>("lua_panda_debugging", false);
+    scriptingOptions.luaPandaHost = "127.0.0.1";
+    const auto configuredLuaPort = projectSettings.GetOrDefault<int>("lua_panda_port", 8818);
+    scriptingOptions.luaPandaPort = configuredLuaPort > 0 && configuredLuaPort <= 65535
+        ? static_cast<uint16_t>(configuredLuaPort)
+        : 8818;
+    const auto scriptingSetup = NLS::Scripting::InitializeScriptRuntime(scriptRuntime, scriptingOptions);
+    if (!scriptingSetup.status.Succeeded())
+    {
+        NLS_LOG_WARNING(
+            "Editor scripting runtime was not initialized: " + scriptingSetup.status.message +
+            " (managedAssembly='" + scriptingSetup.managedAssembly.string() +
+            "', runtimeConfig='" + scriptingSetup.managedRuntimeConfig.string() + "').");
+    }
+    else
+    {
+        const auto diagnosticsDisabled = [](const char* name)
+        {
+            const auto* value = std::getenv(name);
+            return value != nullptr && std::string(value) == "0";
+        };
+        if (scriptingSetup.csharpRegistered &&
+            (diagnosticsDisabled("DOTNET_EnableDiagnostics") ||
+             diagnosticsDisabled("COMPlus_EnableDiagnostics")))
+        {
+            NLS_LOG_ERROR(
+                "CoreCLR diagnostics are disabled by the process environment; "
+                "C# debugger attach will not work. The Editor did not modify the environment.");
+        }
+        NLS::Scripting::ScriptDebugSettings debugSettings;
+        debugSettings.enableCSharpDebugging = projectSettings.GetOrDefault<bool>("csharp_debugging", false);
+        // The setup helper may have disabled LuaPanda when this Editor was
+        // built without the optional debugger (Release/Player).  Reflect the
+        // effective capability instead of replaying the persisted request and
+        // reporting a second BackendUnavailable diagnostic.
+        debugSettings.enableLuaPanda = scriptingSetup.luaPandaEnabled;
+        debugSettings.luaPandaHost = scriptingOptions.luaPandaHost;
+        debugSettings.luaPandaPort = scriptingOptions.luaPandaPort;
+        debugSettings.stopOnEntry = projectSettings.GetOrDefault<bool>("stop_on_entry", false);
+        scriptDebugService = std::make_unique<NLS::Scripting::ScriptDebugService>(scriptRuntime, debugSettings);
+        scriptDebugService->SetDiagnosticOpener([this](const NLS::Scripting::ScriptError& error)
+        {
+            const auto configuredPath = projectSettings.GetOrDefault<std::string>("vscode_path", "");
+            const std::filesystem::path vscodePath = configuredPath.empty()
+                ? std::filesystem::path{}
+                : std::filesystem::path(configuredPath);
+            const auto result = NLS::Editor::Debug::ExternalCodeEditor::Open(
+                error.sourcePath,
+                error.line,
+                error.column,
+                vscodePath.is_absolute() ? vscodePath : std::filesystem::path{});
+            if (!result.success && !result.errorMessage.empty())
+                NLS_LOG_WARNING("Unable to open script diagnostic: " + result.errorMessage);
+            return result.success;
+        });
+        managedScriptDebugSession = std::make_unique<NLS::Editor::Scripting::ManagedScriptDebugSession>(
+            scriptRuntime,
+            std::filesystem::path(projectPath));
+#if NLS_ENABLE_CSHARP_SCRIPTING
+        // Editor C# compilation follows source imports, like Unity's script
+        // compilation. Debugger attachment remains opt-in, but PDB-producing
+        // Debug builds are prepared automatically so saving a .cs file never
+        // requires opening a debug menu first.
+        const bool autoBuildCSharp = true;
+#else
+        const bool autoBuildCSharp = false;
+#endif
+        managedScriptDebugSession->SetEnabled(autoBuildCSharp || debugSettings.enableCSharpDebugging);
+        if ((autoBuildCSharp || debugSettings.enableCSharpDebugging) &&
+            !managedScriptDebugSession->StartBuild())
+            NLS_LOG_WARNING("C# debug session could not start its repository-local .NET 8 build.");
+        NLS_LOG_INFO(
+            "Editor scripting runtime initialized (Lua=" +
+            std::string(scriptingSetup.luaRegistered ? "on" : "off") +
+            ", C#=" + std::string(scriptingSetup.csharpRegistered ? "on" : "off") +
+            ", schema=" + scriptRuntime.GetApi().GetSchemaHashHex() + ").");
+    }
+
+    const auto editorExecutable = NLS::Platform::Process::GetCurrentExecutablePath();
+    const auto brokerExecutable = editorExecutable.parent_path() /
+#ifdef _WIN32
+        "NullusDebugBroker.exe";
+#else
+        "NullusDebugBroker";
+#endif
+    const auto debugWorkspace = NLS::Editor::Debug::GenerateProjectDebugWorkspace(
+        std::filesystem::path(projectPath),
+        editorExecutable,
+        brokerExecutable,
+        scriptingOptions.luaPandaPort,
+        projectSettings.GetOrDefault<bool>("stop_on_entry", false));
+    if (!debugWorkspace.success)
+    {
+        NLS_LOG_WARNING("Project debug workspace could not be generated: " + debugWorkspace.errorMessage);
+    }
+    else
+    {
+        if (!editorDebugEndpoint)
+        {
+            editorDebugEndpoint = std::make_unique<NLS::Editor::Debugging::EditorDebugEndpoint>(
+                debugWorkspace.manifest.projectRoot,
+                debugWorkspace.manifest.projectId,
+                editorExecutable);
+        }
+        std::string endpointError;
+        if (!editorDebugEndpoint->Start(
+                [this](const nlohmann::json& request)
+                {
+                    const auto command = request.value("command", "");
+                    nlohmann::json response = {{"ok", true}};
+                    if (request.contains("protocolVersion") && request.at("protocolVersion").is_object() &&
+                        request.at("protocolVersion").value("major", 0u) != 2u)
+                    {
+                        response["ok"] = false;
+                        response["error"] = "Unsupported Editor debug protocol major version.";
+                    }
+                    const auto stateName = [this]()
+                    {
+                        // Preparation and Play are independent state
+                        // machines. While an IDE attach is waiting, expose
+                        // the managed state instead of hiding it behind the
+                        // ordinary Edit/Play state; once CoreCLR is ready,
+                        // return the actual Editor state again.
+                        if (managedScriptDebugSession)
+                        {
+                            switch (managedScriptDebugSession->GetPreparation().state)
+                            {
+                            case NLS::Editor::Scripting::ManagedDebugPreparationState::Building: return std::string("Building");
+                            case NLS::Editor::Scripting::ManagedDebugPreparationState::LoadingRuntime: return std::string("LoadingRuntime");
+                            case NLS::Editor::Scripting::ManagedDebugPreparationState::Failed: return std::string("Failed");
+                            default: break;
+                            }
+                        }
+                        if (debugStateProvider)
+                            return debugStateProvider();
+                        return managedScriptDebugSession ? std::string("Edit") : std::string("Unavailable");
+                    };
+                    if (!response.value("ok", false))
+                    {
+                        // The protocol gate above intentionally runs before
+                        // touching Editor state. A newer IDE must negotiate
+                        // explicitly instead of issuing unsafe commands.
+                    }
+                    else if (command == "Focus")
+                    {
+                        if (window != nullptr)
+                            window->Focus();
+                    }
+                    else if (command == "PrepareManagedDebug")
+                    {
+                        if (!managedScriptDebugSession || !managedScriptDebugSession->RequestPrepareForAttach())
+                        {
+                            response["ok"] = false;
+                            response["error"] = managedScriptDebugSession
+                                ? managedScriptDebugSession->GetPreparation().status.message
+                                : "Managed C# debug session is unavailable.";
+                        }
+                    }
+                    else if (command == "BuildManagedScripts")
+                    {
+                        if (!managedScriptDebugSession || !managedScriptDebugSession->RequestBuild())
+                        {
+                            response["ok"] = false;
+                            response["error"] = "Managed C# build could not be queued.";
+                        }
+                    }
+                    else if (command == "EnterPlay")
+                    {
+                        if (debugEnterPlay)
+                        {
+                            const bool alreadyPlaying = debugStateProvider &&
+                                debugStateProvider() == "Playing";
+                            response["playQueued"] = !alreadyPlaying;
+                            response["alreadyPlaying"] = alreadyPlaying;
+                        }
+                        else
+                        {
+                            response["ok"] = false;
+                            response["error"] = "Editor Play control is not ready.";
+                        }
+                    }
+                    else if (command == "PausePlay")
+                    {
+                        if (debugPausePlay)
+                            debugPausePlay();
+                        else
+                        {
+                            response["ok"] = false;
+                            response["error"] = "Editor Play control is not ready.";
+                        }
+                    }
+                    else if (command == "ResumePlay")
+                    {
+                        if (debugResumePlay)
+                            debugResumePlay();
+                        else
+                        {
+                            response["ok"] = false;
+                            response["error"] = "Editor Play control is not ready.";
+                        }
+                    }
+                    else if (command == "StopPlay")
+                    {
+                        if (debugStopPlay)
+                            debugStopPlay();
+                        else
+                        {
+                            response["ok"] = false;
+                            response["error"] = "Editor Play control is not ready.";
+                        }
+                    }
+                    else if (command != "Ping" && command != "GetDebugState" && command != "ReadEvents")
+                    {
+                        response["ok"] = false;
+                        response["error"] = "Unknown Editor debug command: " + command;
+                    }
+                    response["state"] = stateName();
+                    if (managedScriptDebugSession)
+                    {
+                        const auto& preparation = managedScriptDebugSession->GetPreparation();
+                        response["managedReady"] = preparation.state == NLS::Editor::Scripting::ManagedDebugPreparationState::Ready;
+                        response["assembly"] = preparation.assembly.string();
+                        response["symbols"] = preparation.symbols.string();
+                        response["message"] = preparation.status.message;
+                    }
+                    else
+                    {
+                        response["managedReady"] = false;
+                        response["message"] = "Managed C# debug session is unavailable.";
+                    }
+                    if (editorDebugEndpoint && command != "Ping" && command != "GetDebugState")
+                    {
+                        editorDebugEndpoint->PublishEvent({
+                            {"type", "DebugCommand"},
+                            {"command", command},
+                            {"ok", response.value("ok", false)},
+                            {"state", response.value("state", "Unavailable")}});
+                    }
+                    return response;
+                },
+                endpointError,
+                [this](const nlohmann::json& request, const nlohmann::json& response)
+                {
+                    if (!response.value("ok", false) || request.value("command", "") != "EnterPlay")
+                        return;
+                    if (!response.value("playQueued", false) || !debugEnterPlay)
+                        return;
+                    if (debugStateProvider && debugStateProvider() == "Playing")
+                        return;
+
+                    NLS_LOG_INFO("Attach and Play response delivered; entering Play mode.");
+                    debugEnterPlay();
+                }))
+        {
+            NLS_LOG_WARNING("Project Editor debug endpoint could not start: " + endpointError);
+            editorDebugEndpoint.reset();
+        }
+    }
+    m_sceneLoadListener = sceneManager.SceneLoadEvent.AddListener([this]
+    {
+        if (auto* scene = sceneManager.GetCurrentScene())
+        {
+            BindScriptComponentsToRuntime(scene, scriptRuntime, std::filesystem::path(projectAssetsPath));
+            m_sceneComponentAddedListener = scene->ComponentAddedEvent.AddListener([this](auto* component)
+            {
+                BindScriptComponentToRuntime(component, scriptRuntime, std::filesystem::path(projectAssetsPath));
+            });
+        }
+    });
+    if (auto* scene = sceneManager.GetCurrentScene())
+    {
+        BindScriptComponentsToRuntime(scene, scriptRuntime, std::filesystem::path(projectAssetsPath));
+        m_sceneComponentAddedListener = scene->ComponentAddedEvent.AddListener([this](auto* component)
+        {
+            BindScriptComponentToRuntime(component, scriptRuntime, std::filesystem::path(projectAssetsPath));
+        });
+    }
+
     ApplyProjectSettings();
+}
+
+void Editor::Core::Context::SetDebugControlCallbacks(
+    std::function<void()> enterPlay,
+    std::function<void()> pausePlay,
+    std::function<void()> resumePlay,
+    std::function<void()> stopPlay,
+    std::function<std::string()> stateProvider)
+{
+    debugEnterPlay = std::move(enterPlay);
+    debugPausePlay = std::move(pausePlay);
+    debugResumePlay = std::move(resumePlay);
+    debugStopPlay = std::move(stopPlay);
+    debugStateProvider = std::move(stateProvider);
 }
 
 Editor::Core::Context::~Context()
 {
+    if (m_sceneLoadListener != NLS::InvalidListenerID)
+    {
+        sceneManager.SceneLoadEvent.RemoveListener(m_sceneLoadListener);
+        m_sceneLoadListener = NLS::InvalidListenerID;
+    }
+    if (auto* scene = sceneManager.GetCurrentScene();
+        scene && m_sceneComponentAddedListener != NLS::InvalidListenerID)
+    {
+        scene->ComponentAddedEvent.RemoveListener(m_sceneComponentAddedListener);
+        m_sceneComponentAddedListener = NLS::InvalidListenerID;
+    }
     if (driver != nullptr)
         driver->SetSwapchainWillResizeCallback(nullptr);
     ShutdownThreadedRendering();
@@ -1226,6 +1640,11 @@ void Editor::Core::Context::ResetProjectSettings()
     projectSettings.Add<int>("opengl_major", 4);
     projectSettings.Add<int>("opengl_minor", 3);
     projectSettings.Add<bool>("dev_build", true);
+    projectSettings.Add<std::string>("vscode_path", "");
+    projectSettings.Add<bool>("csharp_debugging", false);
+    projectSettings.Add<bool>("lua_panda_debugging", false);
+    projectSettings.Add<int>("lua_panda_port", 8818);
+    projectSettings.Add<bool>("stop_on_entry", false);
 }
 
 bool Editor::Core::Context::IsProjectSettingsIntegrityVerified()

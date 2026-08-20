@@ -13,11 +13,15 @@
 #include "GameObject.generated.h"
 namespace NLS::Engine
 {
+namespace SceneSystem
+{
+    class Scene;
+}
 namespace Components
 {
     class TransformComponent;
 }
-CLASS(NLS_ENGINE_API GameObject) : public NLS::Object
+CLASS(NLS_ENGINE_API GameObject, Scriptable) : public NLS::Object
 {
 public:
     GENERATED_BODY()
@@ -42,16 +46,24 @@ public:
      * Enable or disable the actor
      * @param p_active
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetActive(bool p_active);
+
+    /**
+     * Creates a primitive child in the scene that owns this object.
+     * The returned object is owned by that scene and must not be deleted by
+     * the caller.
+     */
+    FUNCTION(Scriptable)
+    GameObject* CreatePrimitive(const std::string& p_typeName = "Cube");
 
     /**
      * Returns true if the actor is active, ignoring his parent (if any) active state
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     bool IsSelfActive() const;
 
-    FUNCTION()
+    FUNCTION(Scriptable)
     bool GetActive() const
     {
         return IsSelfActive();
@@ -62,12 +74,13 @@ public:
      */
     bool IsActive() const;
 
+    FUNCTION(Scriptable)
     Components::TransformComponent* GetTransform() const
     {
         return m_transform;
     }
 
-    FUNCTION()
+    FUNCTION(Scriptable)
     const std::string& GetName() const
     {
         return m_name;
@@ -76,7 +89,7 @@ public:
      * Defines a new name for the actor
      * @param p_name
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetName(const std::string& p_name)
     {
         m_name = p_name;
@@ -88,11 +101,12 @@ public:
     {
         return !m_destroyed;
     }
+    SceneSystem::Scene* GetScene() const { return m_scene; }
     /**
      * Defines a new tag for the actor
      * @param p_tag
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetTag(const std::string& p_tag)
     {
         m_tag = p_tag.empty() ? "Untagged" : p_tag;
@@ -100,7 +114,7 @@ public:
     /**
      * Return the current tag of the actor
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     const std::string& GetTag() const
     {
         return m_tag;
@@ -274,6 +288,11 @@ public:
     void OnLateUpdate(float p_deltaTime);
 
 private:
+    friend class SceneSystem::Scene;
+    friend class Components::Component;
+
+    void SetScene(SceneSystem::Scene* p_scene) { m_scene = p_scene; }
+
     /**
      * @brief Deleted copy constructor
      * @param p_actor
@@ -283,7 +302,7 @@ private:
 
     void RecursiveActiveUpdate();
     void RecursiveWasActiveUpdate();
-    void MarkRenderStateChanged() { ++m_renderStateRevision; }
+    void MarkRenderStateChanged();
 
 public:
     /* Some events that are triggered when an action occur on the actor instance */
@@ -318,6 +337,7 @@ protected:
     /* Parenting system stuff */
     GameObject* m_parent = nullptr;
     std::vector<GameObject*> m_children;
+    SceneSystem::Scene* m_scene = nullptr;
     Components::TransformComponent* m_transform = nullptr;
 };
 

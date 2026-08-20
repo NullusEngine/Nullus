@@ -74,6 +74,8 @@ internal static partial class MetaParserTool
         foreach (var generator in MetaParserGeneratorRegistry.All)
             generator.Generate(config, orderedTypes, reflectionTypeCatalog, outputDir);
 
+        WriteScriptApiManifest(rootDir, outputDir, config.TargetName, orderedTypes);
+
         Console.WriteLine($"[MetaParser] Target={config.TargetName}, Types={orderedTypes.Count}, Output={outputDir}");
         return 0;
     }

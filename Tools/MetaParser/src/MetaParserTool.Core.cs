@@ -96,7 +96,8 @@ internal static partial class MetaParserTool
                     Fields = type.Fields.DistinctBy(static field => field.Name).ToList(),
                     Methods = type.Methods.DistinctBy(static method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}").ToList(),
                     TypeMetas = (type.TypeMetas ?? []).DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}").ToList(),
-                    EnumValues = (type.EnumValues ?? []).DistinctBy(static value => value.Name).ToList()
+                    EnumValues = (type.EnumValues ?? []).DistinctBy(static value => value.Name).ToList(),
+                    IsScriptable = type.IsScriptable
                 };
                 continue;
             }
@@ -118,7 +119,8 @@ internal static partial class MetaParserTool
                 IsEnum = existing.IsEnum || type.IsEnum,
                 EnumValues = (existing.EnumValues ?? []).Concat(type.EnumValues ?? [])
                     .DistinctBy(static value => value.Name)
-                    .ToList()
+                    .ToList(),
+                IsScriptable = existing.IsScriptable || type.IsScriptable
             };
         }
 
@@ -532,7 +534,8 @@ internal static partial class MetaParserTool
                     $"&{cls.FullName}::{field.Name}",
                     $"&{cls.FullName}::{field.Name}",
                     isPrivateField,
-                    ExtractPropertyMetas(propertyAttributes)));
+                    ExtractPropertyMetas(propertyAttributes),
+                    HasScriptableMetadata(propertyAttributes, "Property")));
             }
             catch (Exception ex)
             {
@@ -554,7 +557,15 @@ internal static partial class MetaParserTool
         var candidateMethods = ExtractMethodCandidates(cls, visibleTypes);
 
         var inlineMethods = candidateMethods
-            .Select(candidate => new ReflectMethodInfo(candidate.Name, candidate.PointerExpression, candidate.IsStatic, candidate.IsPrivate))
+            .Select(candidate => new ReflectMethodInfo(
+                candidate.Name,
+                candidate.PointerExpression,
+                candidate.IsStatic,
+                candidate.IsPrivate,
+                candidate.ReturnTypeName,
+                candidate.ParameterTypeNames,
+                candidate.IsScriptable,
+                candidate.PropertyName))
             .ToList();
 
         return inlineMethods
@@ -605,6 +616,10 @@ internal static partial class MetaParserTool
                     .Select(parameter => NormalizeAstSignatureTypeName(parameter.Type, cls, visibleTypes))
                     .ToList();
                 var propertyName = ExtractPropertyNameOverride(method);
+                var functionAttributes = GetReflectionAttributes(method, "Function").ToList();
+                var isScriptable = HasScriptableMetadata(functionAttributes, "Function");
+                if (HasScriptableMetadata(GetReflectionAttributes(method, "Property"), "Property"))
+                    isScriptable = true;
 
                 methods.Add(new MethodCandidateInfo(
                     method.Name,
@@ -614,7 +629,8 @@ internal static partial class MetaParserTool
                     false,
                     false,
                     method.IsConst,
-                    propertyName));
+                    propertyName,
+                    isScriptable));
             }
             catch (Exception ex)
             {
@@ -692,11 +708,13 @@ internal static partial class MetaParserTool
     {
         foreach (var attribute in GetReflectionAttributes(method, "Property"))
         {
-            var body = StripAttributeMarker(attribute, "Property").Trim();
-            if (string.IsNullOrWhiteSpace(body))
+            var tokens = SplitTopLevel(StripAttributeMarker(attribute, "Property"), ',');
+            if (tokens.Count == 0)
                 continue;
 
-            return NormalizeRegistrationName(body);
+            var name = NormalizeRegistrationName(tokens[0]);
+            if (!IsPropertyMetadataToken(name))
+                return name;
         }
 
         return null;
@@ -707,7 +725,12 @@ internal static partial class MetaParserTool
         var metas = new List<ReflectTypeMetaInfo>();
         foreach (var attribute in propertyAttributes)
         {
-            foreach (var token in SplitTopLevel(StripAttributeMarker(attribute, "Property"), ','))
+            var tokens = SplitTopLevel(StripAttributeMarker(attribute, "Property"), ',');
+            var firstToken = tokens.Count > 0 ? tokens[0].Trim() : string.Empty;
+            var startIndex = tokens.Count > 0 && !IsPropertyMetadataToken(firstToken) ? 1 : 0;
+            if (startIndex == 1 && firstToken.Contains('(', StringComparison.Ordinal))
+                throw new FormatException($"Unsupported PROPERTY metadata token `{firstToken}`.");
+            foreach (var token in tokens.Skip(startIndex))
             {
                 var trimmed = token.Trim();
                 if (string.IsNullOrWhiteSpace(trimmed))
@@ -715,6 +738,8 @@ internal static partial class MetaParserTool
                 if (IsCppAstEmptyReflectionArgumentArtifact(trimmed))
                     continue;
 
+                if (string.Equals(trimmed, "Scriptable", StringComparison.Ordinal))
+                    continue;
                 if (string.Equals(trimmed, "RequiresRestart", StringComparison.Ordinal))
                     metas.Add(new ReflectTypeMetaInfo("NLS::meta::RequiresRestart", ""));
                 else if (TryParseRangeMeta(trimmed, out var rangeInitializer))
@@ -727,6 +752,27 @@ internal static partial class MetaParserTool
         return metas
             .DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}")
             .ToList();
+    }
+
+    private static bool IsPropertyMetadataToken(string token)
+    {
+        var trimmed = token.Trim();
+        return string.Equals(trimmed, "Scriptable", StringComparison.Ordinal)
+               || string.Equals(trimmed, "RequiresRestart", StringComparison.Ordinal)
+               || trimmed.StartsWith("Range(", StringComparison.Ordinal);
+    }
+
+    private static bool HasScriptableMetadata(IEnumerable<string> attributes, string marker)
+    {
+        foreach (var attribute in attributes)
+        {
+            foreach (var token in SplitTopLevel(StripAttributeMarker(attribute, marker), ','))
+            {
+                if (string.Equals(token.Trim(), "Scriptable", StringComparison.Ordinal))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static bool IsCppAstEmptyReflectionArgumentArtifact(string token)

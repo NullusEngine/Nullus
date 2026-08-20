@@ -9,6 +9,7 @@
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Layout/GroupCollapsable.h>
 #include <UI/Widgets/Selection/ComboBox.h>
+#include <UI/Plugins/DDTarget.h>
 #include <UI/GUIDrawer.h>
 #include <ServiceLocator.h>
 #include <ResourceManagement/TextureManager.h>
@@ -20,11 +21,17 @@
 #include "Components/TransformComponent.h"
 #include "Panels/ComponentSearchPanel.h"
 #include "Panels/ReflectedPropertyDrawer.h"
+#include "Assets/ScriptAssetUtility.h"
+#include <Scripting/SerializedObject.h>
+#include <Scripting/ScriptComponent.h>
 #include "GameObject.h"
 #include "Settings/TagLayerSettings.h"
 #include <algorithm>
 #include <functional>
 #include <map>
+#include <memory>
+#include <filesystem>
+#include <variant>
 
 namespace
 {
@@ -43,6 +50,193 @@ void DrawComponentFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Com
 {
     root.CreateWidget<NLS::UI::Widgets::Text>("No reflected fields");
     root.CreateWidget<NLS::UI::Widgets::Text>(component.GetType().GetName());
+}
+
+void DrawSerializedScriptObject(
+    NLS::UI::Internal::WidgetContainer& root,
+    const std::shared_ptr<NLS::Scripting::SerializedObject>& serializedObject,
+    const std::function<void()>& onApplied)
+{
+    if (!serializedObject || !serializedObject->IsValid())
+    {
+        root.CreateWidget<NLS::UI::Widgets::Text>("Script serialization is unavailable");
+        return;
+    }
+
+    const auto* descriptor = serializedObject->GetTarget()->GetScriptTypeDescriptor();
+    if (!descriptor)
+    {
+        root.CreateWidget<NLS::UI::Widgets::Text>("No script schema");
+        return;
+    }
+
+    const auto commit = [serializedObject, onApplied](NLS::Scripting::ScriptFieldId fieldId, const NLS::Scripting::ScriptValue& value)
+    {
+        auto* property = serializedObject->FindProperty(fieldId);
+        if (property && property->SetValue(value) && serializedObject->ApplyModifiedProperties() && onApplied)
+            onApplied();
+    };
+
+    // Script fields use the same two-column layout as native reflected
+    // components.  Keeping the label width and GUIDrawer controls identical
+    // makes C# / Lua fields visually indistinguishable from C++ fields.
+    auto& fields = root.CreateWidget<NLS::UI::Widgets::Columns>(2);
+    fields.widths[0] = NLS::Editor::Panels::ReflectedPropertyDrawerOptions{}.labelWidth;
+
+    for (const auto& field : descriptor->fields)
+    {
+        if (!field.serialized)
+            continue;
+        const auto fieldId = field.id;
+        const std::string label = NLS::Editor::Panels::FormatReflectedFieldLabel(field.name);
+        switch (field.type.kind)
+        {
+        case NLS::Scripting::ScriptValueKind::Bool:
+            NLS::UI::GUIDrawer::DrawBoolean(
+                fields,
+                label,
+                [serializedObject, fieldId]
+                {
+                    const auto* property = serializedObject->FindProperty(fieldId);
+                    const auto* value = property ? std::get_if<bool>(&property->GetValue()) : nullptr;
+                    return value ? *value : false;
+                },
+                [commit, fieldId](bool value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Int8:
+            NLS::UI::GUIDrawer::DrawScalar<int8_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<int8_t>(&p->GetValue()) : nullptr; return v ? *v : int8_t{}; },
+                [commit, fieldId](int8_t value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::UInt8:
+            NLS::UI::GUIDrawer::DrawScalar<uint8_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<uint8_t>(&p->GetValue()) : nullptr; return v ? *v : uint8_t{}; },
+                [commit, fieldId](uint8_t value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Int16:
+            NLS::UI::GUIDrawer::DrawScalar<int16_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<int16_t>(&p->GetValue()) : nullptr; return v ? *v : int16_t{}; },
+                [commit, fieldId](int16_t value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::UInt16:
+            NLS::UI::GUIDrawer::DrawScalar<uint16_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<uint16_t>(&p->GetValue()) : nullptr; return v ? *v : uint16_t{}; },
+                [commit, fieldId](uint16_t value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Int32:
+            NLS::UI::GUIDrawer::DrawScalar<int32_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<int32_t>(&p->GetValue()) : nullptr; return v ? *v : int32_t{}; },
+                [commit, fieldId](int32_t value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::UInt32:
+            NLS::UI::GUIDrawer::DrawScalar<uint32_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<uint32_t>(&p->GetValue()) : nullptr; return v ? *v : uint32_t{}; },
+                [commit, fieldId](uint32_t value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Int64:
+            NLS::UI::GUIDrawer::DrawScalar<int64_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<int64_t>(&p->GetValue()) : nullptr; return v ? *v : int64_t{}; },
+                [commit, fieldId](int64_t value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::UInt64:
+            NLS::UI::GUIDrawer::DrawScalar<uint64_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<uint64_t>(&p->GetValue()) : nullptr; return v ? *v : uint64_t{}; },
+                [commit, fieldId](uint64_t value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Float:
+            NLS::UI::GUIDrawer::DrawScalar<float>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<float>(&p->GetValue()) : nullptr; return v ? *v : 0.0f; },
+                [commit, fieldId](float value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Double:
+            NLS::UI::GUIDrawer::DrawScalar<double>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<double>(&p->GetValue()) : nullptr; return v ? *v : 0.0; },
+                [commit, fieldId](double value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::String:
+            NLS::UI::GUIDrawer::DrawString(
+                fields,
+                label,
+                [serializedObject, fieldId]
+                {
+                    const auto* property = serializedObject->FindProperty(fieldId);
+                    const auto* value = property ? std::get_if<std::string>(&property->GetValue()) : nullptr;
+                    return value ? *value : std::string{};
+                },
+                [commit, fieldId](std::string value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Vector2:
+            NLS::UI::GUIDrawer::DrawVec2(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<NLS::Maths::Vector2>(&p->GetValue()) : nullptr; return v ? *v : NLS::Maths::Vector2{}; },
+                [commit, fieldId](NLS::Maths::Vector2 value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Vector3:
+            NLS::UI::GUIDrawer::DrawVec3(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<NLS::Maths::Vector3>(&p->GetValue()) : nullptr; return v ? *v : NLS::Maths::Vector3{}; },
+                [commit, fieldId](NLS::Maths::Vector3 value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Vector4:
+            NLS::UI::GUIDrawer::DrawVec4(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<NLS::Maths::Vector4>(&p->GetValue()) : nullptr; return v ? *v : NLS::Maths::Vector4{}; },
+                [commit, fieldId](NLS::Maths::Vector4 value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Quaternion:
+            NLS::UI::GUIDrawer::DrawQuat(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<NLS::Maths::Quaternion>(&p->GetValue()) : nullptr; return v ? *v : NLS::Maths::Quaternion{}; },
+                [commit, fieldId](NLS::Maths::Quaternion value) { commit(fieldId, value); });
+            break;
+        case NLS::Scripting::ScriptValueKind::Color:
+            NLS::UI::GUIDrawer::DrawColor(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<NLS::Maths::Color>(&p->GetValue()) : nullptr; return v ? *v : NLS::Maths::Color{}; },
+                [commit, fieldId](NLS::Maths::Color value) { commit(fieldId, value); },
+                true);
+            break;
+        case NLS::Scripting::ScriptValueKind::Enum:
+            NLS::UI::GUIDrawer::DrawScalar<int64_t>(fields, label,
+                [serializedObject, fieldId] { const auto* p = serializedObject->FindProperty(fieldId); const auto* v = p ? std::get_if<NLS::Scripting::ScriptEnumValue>(&p->GetValue()) : nullptr; return v ? v->value : int64_t{}; },
+                [commit, fieldId, typeId = field.type.id](int64_t value) { commit(fieldId, NLS::Scripting::ScriptEnumValue{typeId, value}); });
+            break;
+        case NLS::Scripting::ScriptValueKind::ObjectReference:
+        case NLS::Scripting::ScriptValueKind::Struct:
+        case NLS::Scripting::ScriptValueKind::Null:
+        default:
+            fields.CreateWidget<NLS::UI::Widgets::Text>(label + " (unsupported script field)");
+            break;
+        }
+    }
+}
+
+void DrawScriptAssetSlot(
+    NLS::UI::Internal::WidgetContainer& root,
+    NLS::Scripting::ScriptComponent& component,
+    const std::function<void()>& onApplied)
+{
+    NLS::UI::GUIDrawer::CreateTitle(root, "Script Asset");
+    auto& slot = root.CreateWidget<NLS::UI::Widgets::Group>();
+    auto& display = slot.CreateWidget<NLS::UI::Widgets::Text>(
+        component.GetScriptAsset().sourcePath.empty()
+            ? "Drop a .cs or .lua script here"
+            : component.GetScriptAsset().sourcePath);
+    display.lineBreak = false;
+    auto& dispatcher = display.AddPlugin<NLS::UI::DataDispatcher<std::string>>();
+    dispatcher.RegisterGatherer([&component]
+    {
+        return component.GetScriptAsset().sourcePath.empty()
+            ? std::string("Drop a .cs or .lua script here")
+            : component.GetScriptAsset().sourcePath;
+    });
+    display.AddPlugin<NLS::UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
+        NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent +=
+        [&component, onApplied](NLS::Editor::Assets::EditorAssetDragPayload payload)
+    {
+        const auto asset = NLS::Editor::Assets::LoadScriptAsset(
+            std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)), payload);
+        if (!asset.has_value() || !asset->isComponent)
+            return;
+        component.SetScriptAsset(*asset);
+        if (onApplied)
+            onApplied();
+    };
 }
 
 const char* ToPrefabConnectionText(NLS::Editor::Assets::PrefabEditorConnectionState state)
@@ -531,6 +725,22 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
             }
         }));
     };
+
+    if (auto* scriptComponent = dynamic_cast<NLS::Scripting::ScriptComponent*>(p_component))
+    {
+        DrawScriptAssetSlot(
+            header,
+            *scriptComponent,
+            [this] { MarkTargetSceneDirty(); });
+        auto serializedObject = std::make_shared<NLS::Scripting::SerializedObject>(*scriptComponent);
+        DrawSerializedScriptObject(
+            header,
+            serializedObject,
+            [this] { MarkTargetSceneDirty(); });
+        m_gameObjectInfo->CreateWidget<UI::Widgets::Spacing>(1);
+        return;
+    }
+
     const auto componentType = p_component->GetType();
     const auto &fields = componentType.GetFields();
     if (fields.empty())

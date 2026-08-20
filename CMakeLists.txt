@@ -82,6 +82,15 @@ if(MSVC)
         endif()
     endif()
     add_compile_options(${_nls_msvc_compile_options})
+    # Release remains optimized (/O2), but Mixed debugging still needs
+    # portable native symbols for Editor and the first-party runtime DLLs.
+    # Keep this at the build-graph boundary so every native project uses the
+    # same PDB contract instead of only the top-level executable.
+    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE
+        "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /DEBUG")
+    set(CMAKE_SHARED_LINKER_FLAGS_RELEASE
+        "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEBUG")
 endif()
 
 # 确定编译目标为32位还是64位
@@ -121,6 +130,12 @@ option(NLS_ENABLE_TRACY "Enable Tracy profiler destination" OFF)
 option(NLS_ENABLE_TIMELINE_PROFILER "Enable TimelineProfiler editor destination" OFF)
 option(NLS_BUILD_TESTS "Build Nullus test targets" OFF)
 option(NLS_BUILD_PERFORMANCE_TESTS "Build Nullus performance and stress tests" OFF)
+option(NLS_ENABLE_CSHARP_SCRIPTING "Enable the optional CoreCLR scripting backend" ON)
+option(NLS_ENABLE_LUA_SCRIPTING "Enable the optional Lua scripting backend" ON)
+# LuaPanda is an Editor Debug dependency. Keep it opt-in so a fresh Release or
+# Player configure cannot accidentally ship the debugger and LuaSocket.
+option(NLS_ENABLE_LUAPANDA_DEBUGGING "Compile the optional LuaPanda debugger integration for Debug builds" OFF)
+set(NLS_PROJECT_ASSETS_DIR "" CACHE PATH "Project Assets directory whose .cs files are included in GameScripts.dll")
 set(NLS_ENABLE_TEST_HOOKS "AUTO" CACHE STRING "Expose test-only runtime hooks for Nullus tests: AUTO, ON, or OFF")
 set_property(CACHE NLS_ENABLE_TEST_HOOKS PROPERTY STRINGS AUTO ON OFF)
 string(TOUPPER "${NLS_ENABLE_TEST_HOOKS}" _nls_enable_test_hooks_mode)
@@ -174,6 +189,9 @@ endif()
 # ##############################################################################
 set(NLS_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(NLS_ThirdParty_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty")
+
+include("${NLS_ROOT_DIR}/Tools/CMake/NullusDotnet.cmake")
+nls_resolve_dotnet()
 
 function(nls_add_windows_app_icon target_name)
     if(NOT WIN32)
@@ -315,12 +333,29 @@ endfunction()
 
 function(nls_copy_editor_resources_to_target TARGET_NAME)
     nls_copy_app_assets_to_target(${TARGET_NAME})
+    set(_nls_engine_scripts_source "${NLS_ROOT_DIR}/Managed/Nullus.EngineScripts/Scripts")
+    if(EXISTS "${_nls_engine_scripts_source}")
+        add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:${TARGET_NAME}>/Assets/Engine/Scripts"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${_nls_engine_scripts_source}"
+                "$<TARGET_FILE_DIR:${TARGET_NAME}>/Assets/Engine/Scripts"
+            VERBATIM
+            COMMENT "Copying Nullus built-in scripts for ${TARGET_NAME}"
+        )
+    endif()
 endfunction()
 
 if(EXISTS "${NLS_ROOT_DIR}/App/Assets")
     install(
         DIRECTORY "${NLS_ROOT_DIR}/App/Assets/"
         DESTINATION "Assets")
+endif()
+if(EXISTS "${NLS_ROOT_DIR}/Managed/Nullus.EngineScripts/Scripts")
+    install(
+        DIRECTORY "${NLS_ROOT_DIR}/Managed/Nullus.EngineScripts/Scripts/"
+        DESTINATION "Assets/Engine/Scripts")
 endif()
 
 function(nls_target_precompile_headers TARGET_NAME PCH_HEADER)
@@ -471,8 +506,79 @@ endif()
 
 add_subdirectory("Tools")
 add_subdirectory("Runtime")
+if(NLS_ENABLE_CSHARP_SCRIPTING)
+    # Managed artifact commands consume the Engine-generated Script API. Keep
+    # this directory after Runtime so the file-level producer is already in
+    # the CMake graph when the command is declared.
+    add_subdirectory("Managed")
+endif()
 add_subdirectory("Project")
 if(NLS_BUILD_TESTS OR NLS_BUILD_PERFORMANCE_TESTS)
     add_subdirectory("Tests")
 endif()
 nls_generate_shared_runtime_manifests()
+
+# Describe the existing CMake/Visual Studio build graph for project-scoped
+# mixed debugging. The generated project solution references these projects;
+# it never creates a second native build tree or copies native sources.
+set(_nls_engine_workspace_projects
+    "Editor|Project/Editor/Editor.vcxproj|Project/Editor"
+    "EditorProject|Project/Editor/EditorProject.vcxproj|Project/Editor"
+    "NLS_Base|Runtime/Base/NLS_Base.vcxproj|Runtime/Base"
+    "NLS_Core|Runtime/Core/NLS_Core.vcxproj|Runtime/Core"
+    "NLS_Math|Runtime/Math/NLS_Math.vcxproj|Runtime/Math"
+    "NLS_Platform|Runtime/Platform/NLS_Platform.vcxproj|Runtime/Platform"
+    "NLS_Render|Runtime/Rendering/NLS_Render.vcxproj|Runtime/Rendering"
+    "NLS_UI|Runtime/UI/NLS_UI.vcxproj|Runtime/UI"
+    "NLS_Engine|Runtime/Engine/NLS_Engine.vcxproj|Runtime/Engine"
+    "NLS_Scripting|Runtime/Scripting/NLS_Scripting.vcxproj|Runtime/Scripting")
+
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    set(_nls_engine_workspace_visual_studio true)
+else()
+    set(_nls_engine_workspace_visual_studio false)
+endif()
+
+file(TO_CMAKE_PATH "${NLS_ROOT_DIR}" _nls_engine_workspace_source_root)
+file(TO_CMAKE_PATH "${CMAKE_BINARY_DIR}" _nls_engine_workspace_build_root)
+if(MSVC)
+    file(TO_CMAKE_PATH
+        "${NLS_ROOT_DIR}/App/${TARGET_PLATFORM_NAME}_Debug_Runtime_Shared/Editor.pdb"
+        _nls_engine_workspace_debug_pdb)
+    file(TO_CMAKE_PATH
+        "${NLS_ROOT_DIR}/App/${TARGET_PLATFORM_NAME}_Release_Runtime_Shared/Editor.pdb"
+        _nls_engine_workspace_release_pdb)
+else()
+    file(TO_CMAKE_PATH
+        "${NLS_ROOT_DIR}/App/${TARGET_PLATFORM_NAME}_Debug_Shared/Editor.pdb"
+        _nls_engine_workspace_debug_pdb)
+    file(TO_CMAKE_PATH
+        "${NLS_ROOT_DIR}/App/${TARGET_PLATFORM_NAME}_Release_Shared/Editor.pdb"
+        _nls_engine_workspace_release_pdb)
+endif()
+set(_nls_engine_workspace_project_json "")
+list(LENGTH _nls_engine_workspace_projects _nls_engine_workspace_project_count)
+set(_nls_engine_workspace_project_index 0)
+foreach(_nls_project IN LISTS _nls_engine_workspace_projects)
+    string(REPLACE "|" ";" _nls_project_parts "${_nls_project}")
+    list(GET _nls_project_parts 0 _nls_project_name)
+    list(GET _nls_project_parts 1 _nls_project_path)
+    list(GET _nls_project_parts 2 _nls_project_source_root)
+    math(EXPR _nls_engine_workspace_project_index "${_nls_engine_workspace_project_index} + 1")
+    set(_nls_project_comma ",")
+    if(_nls_engine_workspace_project_index EQUAL _nls_engine_workspace_project_count)
+        set(_nls_project_comma "")
+    endif()
+    string(APPEND _nls_engine_workspace_project_json
+        "    {\"name\": \"${_nls_project_name}\", \"path\": \"${_nls_project_path}\", \"sourceRoot\": \"${_nls_project_source_root}\", \"kind\": \"native\"}${_nls_project_comma}\n")
+endforeach()
+set(NLS_ENGINE_WORKSPACE_VISUAL_STUDIO "${_nls_engine_workspace_visual_studio}")
+set(NLS_ENGINE_WORKSPACE_SOURCE_ROOT "${_nls_engine_workspace_source_root}")
+set(NLS_ENGINE_WORKSPACE_BUILD_ROOT "${_nls_engine_workspace_build_root}")
+set(NLS_ENGINE_WORKSPACE_DEBUG_PDB "${_nls_engine_workspace_debug_pdb}")
+set(NLS_ENGINE_WORKSPACE_RELEASE_PDB "${_nls_engine_workspace_release_pdb}")
+set(NLS_ENGINE_WORKSPACE_PROJECTS "${_nls_engine_workspace_project_json}")
+configure_file(
+    "${NLS_ROOT_DIR}/Tools/CMake/NullusEngineWorkspace.json.in"
+    "${CMAKE_BINARY_DIR}/Nullus.EngineWorkspace.json"
+    @ONLY)

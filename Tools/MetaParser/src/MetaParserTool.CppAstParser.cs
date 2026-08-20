@@ -1,4 +1,5 @@
 using CppAst;
+using System.Text.RegularExpressions;
 
 internal static partial class MetaParserTool
 {
@@ -14,6 +15,7 @@ internal static partial class MetaParserTool
         }
 
         var normalizedHeader = Path.GetFullPath(headerPath);
+        var headerText = File.ReadAllText(normalizedHeader);
         var visibleTypes = BuildVisibleTypeLookup(compilation);
         foreach (var cls in EnumerateAllClasses(compilation))
         {
@@ -47,6 +49,12 @@ internal static partial class MetaParserTool
                 methods = TryExtract(() => ExtractMethods(cls, visibleTypes));
             }
 
+            var isScriptableType = HasScriptableMetadata(GetReflectionAttributes(cls, "Reflection"), "Reflection")
+                || Regex.IsMatch(
+                    headerText,
+                    $@"\b(?:CLASS|STRUCT)\s*\([^)]*\b{Regex.Escape(cls.Name)}\b[^)]*\bScriptable\b[^)]*\)",
+                    RegexOptions.CultureInvariant);
+
             yield return new ReflectTypeInfo(
                 cls.Name,
                 ExtractNamespace(fullTypeName, cls.Name),
@@ -57,7 +65,10 @@ internal static partial class MetaParserTool
                 fields,
                 methods,
                 ExtractTypeMetas(cls),
-                FindGeneratedBodyLineForType(normalizedHeader, cls.Name, cls.Span.Start.Offset, cls.Span.End.Offset));
+                FindGeneratedBodyLineForType(normalizedHeader, cls.Name, cls.Span.Start.Offset, cls.Span.End.Offset),
+                false,
+                null,
+                isScriptableType);
         }
 
         foreach (var cppEnum in EnumerateAllEnums(compilation))

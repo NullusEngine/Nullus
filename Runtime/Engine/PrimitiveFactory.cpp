@@ -99,6 +99,10 @@ bool ConfigurePrimitiveGameObject(
     if (meshRenderer != nullptr && material != nullptr)
         meshRenderer->FillWithMaterial(*material);
 
-    return meshFilter != nullptr && meshFilter->ResolveMesh() != nullptr;
+    // MeshFilter keeps the canonical built-in path and resolves it lazily
+    // when the resource service becomes available.  Script-created objects
+    // must not be discarded just because creation happens before that first
+    // resource lookup has completed.
+    return meshFilter != nullptr;
 }
 }

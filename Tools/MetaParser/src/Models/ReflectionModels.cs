@@ -4,9 +4,18 @@ internal sealed record ReflectFieldInfo(
     string GetterExpression,
     string SetterExpression,
     bool IsPrivate,
-    List<ReflectTypeMetaInfo>? FieldMetas = null);
+    List<ReflectTypeMetaInfo>? FieldMetas = null,
+    bool IsScriptable = false);
 
-internal sealed record ReflectMethodInfo(string Name, string PointerExpression, bool IsStatic, bool IsPrivate);
+internal sealed record ReflectMethodInfo(
+    string Name,
+    string PointerExpression,
+    bool IsStatic,
+    bool IsPrivate,
+    string? ReturnTypeName = null,
+    List<string>? ParameterTypeNames = null,
+    bool IsScriptable = false,
+    string? PropertyName = null);
 
 internal sealed record ReflectBaseInfo(string TypeName);
 
@@ -22,7 +31,8 @@ internal sealed record MethodCandidateInfo(
     bool IsStatic,
     bool IsPrivate,
     bool IsConst,
-    string? PropertyName);
+    string? PropertyName,
+    bool IsScriptable = false);
 
 internal sealed record ReflectTypeInfo(
     string ClassName,
@@ -36,7 +46,8 @@ internal sealed record ReflectTypeInfo(
     List<ReflectTypeMetaInfo>? TypeMetas = null,
     int? GeneratedBodyLine = null,
     bool IsEnum = false,
-    List<ReflectEnumValueInfo>? EnumValues = null)
+    List<ReflectEnumValueInfo>? EnumValues = null,
+    bool IsScriptable = false)
 {
     public string QualifiedName => FullTypeName;
 }

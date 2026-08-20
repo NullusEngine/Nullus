@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize Condition="'$(Configuration)' == 'Debug'">false</Optimize>
+    <Deterministic>true</Deterministic>
+    <!-- The source generator owns runtime script diagnostics. The optional
+         net48 analyzer is retained for IDE experiments but is excluded from
+         repository CLI builds to avoid mixing net8 System.Collections.Immutable
+         with the .NET Framework compiler reference set. -->
+    <NullusUseScriptAnalysis Condition="'$(NullusUseScriptAnalysis)' == ''">false</NullusUseScriptAnalysis>
+    <NullusUsePrebuiltScriptGenerator Condition="'$(NullusUsePrebuiltScriptGenerator)' == ''">false</NullusUsePrebuiltScriptGenerator>
+    <NullusUsePrebuiltScriptGenerator Condition="'$(BuildingInsideVisualStudio)' == 'true'">true</NullusUsePrebuiltScriptGenerator>
+    <NullusForceScriptGenerator Condition="'$(NullusForceScriptGenerator)' == ''">false</NullusForceScriptGenerator>
+    <NullusScriptGeneratorPath Condition="'$(NullusScriptGeneratorPath)' == ''">$(MSBuildProjectDirectory)\..\..\build-scripting-vs5\Managed\Debug\Nullus.ScriptGenerator.dll</NullusScriptGeneratorPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Nullus.ScriptAnalysis\Nullus.ScriptAnalysis.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      Condition="'$(NullusUseScriptAnalysis)' == 'true' and '$(BuildingInsideVisualStudio)' != 'true'" />
+    <ProjectReference Include="..\Nullus.ScriptGenerator\Nullus.ScriptGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      Condition="'$(NullusUsePrebuiltScriptGenerator)' != 'true'" />
+    <Analyzer Include="$(NullusScriptGeneratorPath)"
+              Condition="'$(NullusUsePrebuiltScriptGenerator)' == 'true' and ('$(BuildingInsideVisualStudio)' != 'true' or '$(NullusForceScriptGenerator)' == 'true')" />
+    <!-- Keep the fallback only for Visual Studio design-time builds, where the
+         analyzer is intentionally not loaded.  CLI/CMake builds always use a
+         real generator (project reference or prebuilt) and must not compile a
+         second ScriptApiManifest definition. -->
+    <Compile Remove="Generated\ScriptApiManifest.VisualStudio.cs"
+             Condition="'$(BuildingInsideVisualStudio)' != 'true' or '$(NullusForceScriptGenerator)' == 'true'" />
+    <AdditionalFiles Include="$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json" Condition="Exists('$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json')" />
+  </ItemGroup>
+</Project>

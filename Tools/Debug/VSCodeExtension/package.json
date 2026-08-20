@@ -1,0 +1,32 @@
+{
+  "name": "nullus-script-debugger",
+  "displayName": "Nullus Script Debugger",
+  "description": "Project-scoped F5 integration for Nullus C# and Lua scripts.",
+  "version": "1.0.0",
+  "publisher": "nullus",
+  "license": "MIT",
+  "engines": {
+    "vscode": ">=1.85.0"
+  },
+  "main": "./extension.js",
+  "categories": [
+    "Debuggers",
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:nullus.resolveEditorProcess",
+    "workspaceContains:**/Library/IDE/Nullus.Debug.json"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "nullus.resolveEditorProcess",
+        "title": "Nullus: Resolve Editor Process"
+      },
+      {
+        "command": "nullus.openDebugWorkspace",
+        "title": "Nullus: Open Project Debug Workspace"
+      }
+    ]
+  }
+}

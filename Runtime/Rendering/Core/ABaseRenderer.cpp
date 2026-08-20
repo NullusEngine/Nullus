@@ -2270,7 +2270,8 @@ bool ABaseRenderer::QueueThreadedRecordedDraw(PreparedRecordedDraw preparedDraw)
     if (preparedDraw.pipeline == nullptr ||
         preparedDraw.materialBindingSet == nullptr ||
         preparedDraw.mesh == nullptr ||
-        preparedDraw.instanceCount == 0u)
+        preparedDraw.instanceCount == 0u ||
+        (preparedDraw.usesObjectIndex && preparedDraw.objectBindingSet == nullptr))
     {
         return false;
     }

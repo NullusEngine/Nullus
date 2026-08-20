@@ -31,6 +31,12 @@
 #include "Assets/AssetThumbnailFeatureConfig.h"
 #include "Engine/Assets/RuntimeAssetDatabase.h"
 #include <filesystem>
+#include <Eventing/Event.h>
+#include <Scripting/ScriptRuntime.h>
+#include <Scripting/ScriptDebug.h>
+
+namespace NLS::Editor::Scripting { class ManagedScriptDebugSession; }
+namespace NLS::Editor::Debugging { class EditorDebugEndpoint; }
 namespace NLS
 {
 namespace Editor::Core
@@ -126,6 +132,16 @@ class Context
     void MarkEditorWindowShown() { m_editorWindowShown = true; }
     [[nodiscard]] bool IsEditorWindowShown() const { return m_editorWindowShown; }
 
+    // EditorActions is owned by Editor rather than Context. These callbacks
+    // let the project-local debug endpoint request Play controls without
+    // reaching into the transport thread or changing the scripting ABI.
+    void SetDebugControlCallbacks(
+        std::function<void()> enterPlay,
+        std::function<void()> pausePlay,
+        std::function<void()> resumePlay,
+        std::function<void()> stopPlay,
+        std::function<std::string()> stateProvider);
+
 	public:
     const std::string projectPath;
     const std::string projectName;
@@ -145,6 +161,28 @@ class Context
     std::unique_ptr<NLS::Render::Context::Driver> driver;
     std::unique_ptr<NLS::UI::UIManager> uiManager;
     std::unique_ptr<Editor::Core::EditorResources> editorResources;
+    // Keep the Context runtime alive until after Scene destroys its script
+    // components; the member is declared before sceneManager for that order.
+    NLS::Scripting::ScriptRuntime scriptRuntime;
+    // The build/ALC coordinator is main-thread polled and owns no process-wide
+    // debugger state.  Keep it ahead of the runtime's dependent UI services.
+    std::unique_ptr<NLS::Editor::Scripting::ManagedScriptDebugSession> managedScriptDebugSession;
+    std::unique_ptr<NLS::Editor::Debugging::EditorDebugEndpoint> editorDebugEndpoint;
+    // The debugger bridge is context-owned and is destroyed before the
+    // runtime so its error sink is detached while the runtime is still valid.
+    std::unique_ptr<NLS::Scripting::ScriptDebugService> scriptDebugService;
+    std::function<void()> debugEnterPlay;
+    std::function<void()> debugPausePlay;
+    std::function<void()> debugResumePlay;
+    std::function<void()> debugStopPlay;
+    std::function<std::string()> debugStateProvider;
+    // Event-stream cursors. They keep ReadEvents useful without emitting a
+    // per-frame duplicate while still reporting every state transition.
+    std::string debugLastManagedState;
+    std::filesystem::path debugLastManagedAssembly;
+    std::string debugLastManagedMessage;
+    std::string debugLastPlayState;
+    size_t debugLastDiagnosticCount = 0u;
     NLS::Engine::SceneSystem::SceneManager sceneManager;
     NLS::Editor::Assets::PrefabInstanceRegistry prefabInstanceRegistry;
     std::shared_ptr<NLS::Editor::Assets::ResidentPrefabPreviewRegistry> residentPrefabPreviewRegistry;
@@ -239,6 +277,8 @@ private:
     bool m_taskProgressVisible = false;
     bool m_sceneRenderingAvailable = false;
     bool m_editorWindowShown = false;
+    NLS::ListenerID m_sceneLoadListener = NLS::InvalidListenerID;
+    NLS::ListenerID m_sceneComponentAddedListener = NLS::InvalidListenerID;
 };
 } // namespace Editor::Core
 } // namespace NLS

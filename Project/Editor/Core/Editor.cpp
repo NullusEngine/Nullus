@@ -25,10 +25,13 @@
 #include <Profiling/TracyProfiler.h>
 #include <Reflection/ReflectionDiagnostics.h>
 #include <Rendering/Debug/DebugDrawService.h>
+#include <Scripting/ScriptEngineApi.h>
 #include <ServiceLocator.h>
 #include <imgui.h>
 
 #include "Core/Editor.h"
+#include "Scripting/ManagedScriptDebugSession.h"
+#include "Debug/EditorDebugEndpoint.h"
 #include "Core/EditorCameraPerformanceBenchmark.h"
 #include "Core/EditorJobSystemPolicy.h"
 #include "Core/ThumbnailTelemetrySummary.h"
@@ -73,6 +76,20 @@ std::size_t g_publishedReflectionDiagnosticCount = 0;
 constexpr uint32_t kEditorMainThreadContinuationDrainBudget = 64u;
 constexpr float kEditorValidationCameraForwardStep = 0.1f;
 constexpr auto kThumbnailTelemetrySummaryWriteInterval = std::chrono::seconds(2);
+
+std::string ManagedPreparationStateName(
+    NLS::Editor::Scripting::ManagedDebugPreparationState state)
+{
+    using State = NLS::Editor::Scripting::ManagedDebugPreparationState;
+    switch (state)
+    {
+    case State::Building: return "Building";
+    case State::LoadingRuntime: return "LoadingRuntime";
+    case State::Ready: return "Ready";
+    case State::Failed: return "Failed";
+    default: return "Idle";
+    }
+}
 
 enum class ValidationFocusTarget
 {
@@ -287,7 +304,8 @@ std::string FormatThumbnailTelemetrySummaryReport(
 
     struct StageAggregate
     {
-        ArtifactLoadTelemetryStage stage = ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender;
+        NLS::Core::Assets::ArtifactLoadTelemetryStage stage =
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::ThumbnailGpuPreviewRender;
         size_t recordCount = 0u;
         size_t totalBytes = 0u;
         std::chrono::microseconds totalElapsed {};
@@ -988,6 +1006,21 @@ Editor::Core::Editor::Editor(Context& p_context)
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Context>(m_context);
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Editor>(*this);
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Shortcuts::EditorShortcutService>(m_shortcutService);
+    m_context.SetDebugControlCallbacks(
+        [this] { m_editorActions.StartPlaying(); },
+        [this] { m_editorActions.PauseGame(); },
+        [this] { m_editorActions.StartPlaying(); },
+        [this] { m_editorActions.StopPlaying(); },
+        [this]
+        {
+            switch (m_editorActions.GetCurrentEditorMode())
+            {
+            case EditorActions::EEditorMode::PLAY: return std::string("Playing");
+            case EditorActions::EEditorMode::PAUSE: return std::string("Paused");
+            case EditorActions::EEditorMode::FRAME_BY_FRAME: return std::string("FrameByFrame");
+            default: return std::string("Edit");
+            }
+        });
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 
     if (!m_context.GetDiagnosticsSettings().editorThumbnailTelemetrySummaryOutput.empty())
@@ -1089,7 +1122,7 @@ void Editor::Core::Editor::SetupUI()
         settings,
         m_context.engineAssetsPath,
         m_context.projectAssetsPath,
-        "",
+        m_context.editorAssetsPath,
         m_context.GetAssetThumbnailFeatureConfig());
     logSetupStep("AssetBrowser");
     m_panelsManager.CreatePanel<Panels::ProfilerPanel>("Profiler", false, settings);
@@ -1296,8 +1329,75 @@ void Editor::Core::Editor::Update(float p_deltaTime)
     }
     logUpdateStage("HandleGlobalShortcuts");
     {
+        NLS_PROFILE_NAMED_SCOPE("Editor::PumpAssetFileWatchers");
+        m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").PumpFileWatchers();
+    }
+    if (m_context.editorDebugEndpoint)
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::PollDebugEndpoint");
+        m_context.editorDebugEndpoint->Poll();
+    }
+    if (m_context.managedScriptDebugSession)
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::PollManagedScriptDebugBuild");
+        m_context.managedScriptDebugSession->Poll();
+
+        if (m_context.editorDebugEndpoint)
+        {
+            const auto& preparation = m_context.managedScriptDebugSession->GetPreparation();
+            const auto state = ManagedPreparationStateName(preparation.state);
+            if (state != m_context.debugLastManagedState ||
+                preparation.assembly != m_context.debugLastManagedAssembly ||
+                preparation.status.message != m_context.debugLastManagedMessage)
+            {
+                m_context.editorDebugEndpoint->PublishEvent({
+                    {"type", "Build"},
+                    {"state", state},
+                    {"succeeded", preparation.state == NLS::Editor::Scripting::ManagedDebugPreparationState::Ready},
+                    {"assembly", preparation.assembly.string()},
+                    {"symbols", preparation.symbols.string()},
+                    {"message", preparation.status.message}});
+                m_context.debugLastManagedState = state;
+                m_context.debugLastManagedAssembly = preparation.assembly;
+                m_context.debugLastManagedMessage = preparation.status.message;
+            }
+        }
+    }
+    {
         NLS_PROFILE_NAMED_SCOPE("Editor::UpdateCurrentEditorMode");
         UpdateCurrentEditorMode(p_deltaTime);
+    }
+    if (m_context.editorDebugEndpoint && m_context.debugStateProvider)
+    {
+        const auto state = m_context.debugStateProvider();
+        if (state != m_context.debugLastPlayState)
+        {
+            m_context.editorDebugEndpoint->PublishEvent({
+                {"type", "PlayState"},
+                {"state", state}});
+            m_context.debugLastPlayState = state;
+        }
+    }
+    if (m_context.editorDebugEndpoint && m_context.scriptDebugService)
+    {
+        const auto& diagnostics = m_context.scriptDebugService->GetConsole().GetErrors();
+        // The console is bounded. If its front item was evicted, restart the
+        // cursor and publish the currently retained diagnostics once.
+        if (diagnostics.size() < m_context.debugLastDiagnosticCount)
+            m_context.debugLastDiagnosticCount = 0u;
+        while (m_context.debugLastDiagnosticCount < diagnostics.size())
+        {
+            const auto& error = diagnostics[m_context.debugLastDiagnosticCount++];
+            m_context.editorDebugEndpoint->PublishEvent({
+                {"type", "RuntimeDiagnostic"},
+                {"language", NLS::Scripting::ToString(error.language)},
+                {"asset", error.scriptAsset.ToString()},
+                {"sourcePath", error.sourcePath},
+                {"line", error.line},
+                {"column", error.column},
+                {"message", error.message},
+                {"stackTrace", error.stackTrace}});
+        }
     }
     logUpdateStage("UpdateCurrentEditorMode");
     {
@@ -2086,16 +2186,79 @@ void Editor::Core::Editor::UpdatePlayMode(float p_deltaTime)
 {
     NLS_PROFILE_SCOPE();
     auto currentScene = m_context.sceneManager.GetCurrentScene();
+	const float unscaledDelta = std::max(0.0f, p_deltaTime);
+	NLS::Scripting::ScriptEngineApi::SetInputManager(m_context.inputManager.get());
+	NLS::Scripting::ScriptEngineApi::SetSceneManager(&m_context.sceneManager);
+	NLS::Scripting::ScriptEngineApi::SetScene(currentScene);
+	const float delta = NLS::Scripting::ScriptEngineApi::ScaleDeltaTime(unscaledDelta);
+	NLS::Scripting::ScriptEngineApi::AdvanceFrame(unscaledDelta);
+	m_scriptUnscaledTime += unscaledDelta;
+	m_scriptTime += delta;
+	++m_scriptFrameIndex;
 
-    {
-        NLS_PROFILE_NAMED_SCOPE("Scene::Update");
-        currentScene->Update(p_deltaTime);
-    }
+	{
+		NLS_PROFILE_NAMED_SCOPE("Scene::Update");
+		NLS::Scripting::ScriptFrameContext scriptFrame;
+		scriptFrame.deltaTime = delta;
+		scriptFrame.unscaledDeltaTime = unscaledDelta;
+		scriptFrame.time = m_scriptTime;
+		scriptFrame.unscaledTime = m_scriptUnscaledTime;
+		scriptFrame.frameIndex = m_scriptFrameIndex;
+	scriptFrame.fixedDeltaTime = NLS::Scripting::ScriptEngineApi::GetFixedDeltaTime();
+	scriptFrame.timeScale = NLS::Scripting::ScriptEngineApi::GetTimeScale();
+		m_fixedAccumulator += delta;
+		while (m_fixedAccumulator + 1e-6f >= scriptFrame.fixedDeltaTime)
+		{
+			NLS::Scripting::ScriptFrameContext fixedFrame = scriptFrame;
+			fixedFrame.deltaTime = scriptFrame.fixedDeltaTime * scriptFrame.timeScale;
+			fixedFrame.unscaledDeltaTime = scriptFrame.fixedDeltaTime;
+			fixedFrame.fixedFrameIndex = ++m_scriptFixedFrameIndex;
+			const auto fixedSchedule = m_context.scriptRuntime.BeginScheduledFrame(
+				NLS::Scripting::ScriptCallback::FixedUpdate,
+				fixedFrame);
+			currentScene->FixedUpdate(fixedFrame.deltaTime);
+			if (fixedSchedule.Succeeded())
+			{
+				const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
+				if (!flushStatus.Succeeded())
+					NLS_LOG_WARNING("Script FixedUpdate batch failed: " + flushStatus.message);
+			}
+			m_fixedAccumulator -= scriptFrame.fixedDeltaTime;
+		}
+		const auto updateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
+			NLS::Scripting::ScriptCallback::Update,
+			scriptFrame);
+		currentScene->Update(delta);
+		if (updateSchedule.Succeeded())
+		{
+			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
+			if (!flushStatus.Succeeded())
+				NLS_LOG_WARNING("Script Update batch failed: " + flushStatus.message);
+		}
+	}
 
-    {
-        NLS_PROFILE_NAMED_SCOPE("Scene::LateUpdate");
-        currentScene->LateUpdate(p_deltaTime);
-    }
+	{
+		NLS_PROFILE_NAMED_SCOPE("Scene::LateUpdate");
+		NLS::Scripting::ScriptFrameContext scriptFrame;
+		scriptFrame.deltaTime = delta;
+		scriptFrame.unscaledDeltaTime = unscaledDelta;
+		scriptFrame.time = m_scriptTime;
+		scriptFrame.unscaledTime = m_scriptUnscaledTime;
+		scriptFrame.frameIndex = m_scriptFrameIndex;
+		scriptFrame.fixedDeltaTime = NLS::Scripting::ScriptEngineApi::GetFixedDeltaTime();
+		scriptFrame.timeScale = NLS::Scripting::ScriptEngineApi::GetTimeScale();
+		const auto lateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
+			NLS::Scripting::ScriptCallback::LateUpdate,
+			scriptFrame);
+		currentScene->LateUpdate(delta);
+		if (lateSchedule.Succeeded())
+	{
+			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
+			if (!flushStatus.Succeeded())
+				NLS_LOG_WARNING("Script LateUpdate batch failed: " + flushStatus.message);
+	}
+	NLS::Scripting::ScriptEngineApi::FlushDeferredDestructions();
+}
 
 
     if (m_editorActions.GetCurrentEditorMode() == EditorActions::EEditorMode::FRAME_BY_FRAME)

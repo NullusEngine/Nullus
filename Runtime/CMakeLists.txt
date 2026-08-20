@@ -352,6 +352,10 @@ function(nls_get_common_meta_include_dirs OUT_VAR)
     set(_dirs
         "${NLS_ROOT_DIR}/Runtime"
         "${NLS_ThirdParty_DIR}"
+        # Scripting headers are visible to the reflection catalog even when
+        # the current target is another runtime module (the catalog scans all
+        # reflected Runtime headers for supported base types).
+        "${NLS_ROOT_DIR}/Runtime/Scripting/Gen"
     )
 
     file(GLOB _runtime_children LIST_DIRECTORIES true "${NLS_ROOT_DIR}/Runtime/*")
@@ -552,6 +556,63 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     list(REMOVE_DUPLICATES _defines)
     list(REMOVE_DUPLICATES _compiler_options)
 
+    # MetaParser emits one generated header/source pair per reflected header
+    # in addition to the aggregate MetaGenerated.cpp/.h files. Register those
+    # side outputs with the build graph so an interrupted or stale generation
+    # cannot leave the compiler consuming a header stub while the old .cpp is
+    # still considered up to date.
+    set(_meta_generated_side_outputs "")
+    foreach(_meta_header IN LISTS _headers)
+        if(NOT EXISTS "${_meta_header}")
+            continue()
+        endif()
+
+        file(READ "${_meta_header}" _meta_header_text)
+        string(FIND "${_meta_header_text}" "CLASS(" _has_class)
+        string(FIND "${_meta_header_text}" "STRUCT(" _has_struct)
+        string(FIND "${_meta_header_text}" "ENUM(" _has_enum)
+        if(_has_class LESS 0 AND _has_struct LESS 0 AND _has_enum LESS 0)
+            continue()
+        endif()
+
+        # Match MetaParserTool.ToGeneratedIncludePath(): make the path
+        # relative to Runtime and strip its first directory component. This
+        # keeps Runtime/Base/Reflection/... under Gen/Reflection/... while
+        # Project/Editor/... remains under Gen/Project/Editor/....
+        file(RELATIVE_PATH _meta_relative_to_runtime
+            "${NLS_ROOT_DIR}/Runtime"
+            "${_meta_header}")
+        string(REPLACE "\\" "/" _meta_relative_to_runtime "${_meta_relative_to_runtime}")
+        string(FIND "${_meta_relative_to_runtime}" "/" _meta_first_slash)
+        if(_meta_first_slash GREATER -1)
+            math(EXPR _meta_generated_start "${_meta_first_slash} + 1")
+            string(SUBSTRING "${_meta_relative_to_runtime}" "${_meta_generated_start}" -1 _meta_generated_relative)
+        else()
+            set(_meta_generated_relative "${_meta_relative_to_runtime}")
+        endif()
+        get_filename_component(_meta_generated_base "${_meta_generated_relative}" NAME_WE)
+        get_filename_component(_meta_generated_dir "${_meta_generated_relative}" DIRECTORY)
+        if(_meta_generated_dir STREQUAL "." OR _meta_generated_dir STREQUAL "")
+            set(_meta_generated_relative_base "${_meta_generated_base}")
+        else()
+            set(_meta_generated_relative_base "${_meta_generated_dir}/${_meta_generated_base}")
+        endif()
+
+        list(APPEND _meta_generated_side_outputs
+            "${_gen_dir}/${_meta_generated_relative_base}.generated.h"
+            "${_gen_dir}/${_meta_generated_relative_base}.generated.cpp")
+    endforeach()
+    list(REMOVE_DUPLICATES _meta_generated_side_outputs)
+
+    # The Engine manifest is also the project-level input consumed by the
+    # managed generator. Keep both files in the same file-level build graph so
+    # a clean configure cannot race Managed against reflection generation.
+    if(_target_name STREQUAL "NLS_Engine")
+        list(APPEND _meta_generated_side_outputs
+            "${NLS_ROOT_DIR}/Library/ScriptApi/ScriptApi.json"
+            "${NLS_ROOT_DIR}/Library/ScriptApi/ScriptApi.bin")
+    endif()
+
     nls_join_json_array(NLS_META_HEADERS_JSON ${_headers})
     nls_join_json_array(NLS_META_INCLUDE_DIRS_JSON ${_include_dirs})
     nls_join_json_array(NLS_META_SYSTEM_INCLUDE_DIRS_JSON ${_system_include_dirs})
@@ -587,10 +648,14 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
             endif()
         endif()
     endif()
-    if(WIN32)
-        set(_nuget_root "$ENV{USERPROFILE}/.nuget/packages")
+    # MetaParser and its native ClangSharp payload are restored into the
+    # repository-local NuGet cache. Keep generation independent of the user's
+    # global ~/.nuget/packages directory so offline builds use exactly the
+    # checked-in package feed and extracted cache.
+    if(NLS_META_PARSER_NUGET_PACKAGES)
+        set(_nuget_root "${NLS_META_PARSER_NUGET_PACKAGES}")
     else()
-        set(_nuget_root "$ENV{HOME}/.nuget/packages")
+        set(_nuget_root "${NLS_ROOT_DIR}/Tools/MetaParser/ThirdParty/.nuget/packages")
     endif()
 
     if(WIN32)
@@ -618,7 +683,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         set(_meta_parser_launcher "${CMAKE_CURRENT_BINARY_DIR}/${_target_name}_run_metaparser_$<CONFIG>.cmd")
         file(GENERATE
             OUTPUT "${_meta_parser_launcher}"
-            CONTENT "@echo off\nsetlocal\nset \"Path=${_meta_parser_path_prefix};%Path%\"\nif not exist \"${_meta_parser_libclang_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_libclang_native} & exit /b 5\nif not exist \"${_meta_parser_clangsharp_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_clangsharp_native} & exit /b 5\n\"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" \"%~1\"\nexit /b %ERRORLEVEL%\n"
+            CONTENT "@echo off\nsetlocal\nset \"DOTNET_ROOT=${NLS_DOTNET_ROOT}\"\nset \"PATH=${_meta_parser_path_prefix};%PATH%\"\nif not exist \"${_meta_parser_libclang_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_libclang_native} & exit /b 5\nif not exist \"${_meta_parser_clangsharp_native}\" echo [MetaParser] Missing native dependency: ${_meta_parser_clangsharp_native} & exit /b 5\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"${NLS_ROOT_DIR}/Tools/BuildCleanEnvironment.ps1\" \"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" \"%~1\"\nexit /b %ERRORLEVEL%\n"
         )
         set(_meta_parser_command "${_meta_parser_launcher}")
     elseif(APPLE)
@@ -688,6 +753,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
             "${_gen_stamp}"
             "${_gen_cpp}"
             "${_gen_h}"
+            ${_meta_generated_side_outputs}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen_dir}"
         COMMAND ${CMAKE_COMMAND} -E env ${_meta_parser_env_args} "${_meta_parser_command}" "${_params_file}"
         COMMAND ${CMAKE_COMMAND} -E touch "${_gen_stamp}"
@@ -702,12 +768,10 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         COMMENT "Generating reflection bindings for ${_target_name}"
     )
 
-    set(_meta_generated_target "${_target_name}_MetaGenerated")
-    add_custom_target(${_meta_generated_target}
-        DEPENDS "${_gen_stamp}"
-    )
-
-    add_dependencies(${_target_name} MetaParser ${_meta_generated_target})
+    # The generated sources themselves are the dependency edge. A separate
+    # custom target only creates an empty Visual Studio project and makes every
+    # module look like it has a second build product.
+    add_dependencies(${_target_name} MetaParser)
     set_source_files_properties("${_gen_cpp}" "${_gen_h}" PROPERTIES GENERATED TRUE)
     set_source_files_properties("${_gen_cpp}" PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
     target_include_directories(${_target_name} PUBLIC "${_gen_dir}")
@@ -721,3 +785,4 @@ add_subdirectory("Core")
 add_subdirectory("Base")
 add_subdirectory("Rendering")
 add_subdirectory("UI")
+add_subdirectory("Scripting")

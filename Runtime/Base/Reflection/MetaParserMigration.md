@@ -96,16 +96,11 @@ cmake --build build --target ReflectionTest -j4
 
 ### 1) `dotnet: not found` 或 CMake 报缺少 dotnet
 
-安装 .NET 8 SDK 后重新配置：
+安装仓库固定的 .NET 8.0.408 SDK 后重新配置。推荐使用仓库 bootstrap（不会修改系统 PATH）：
 
 ```bash
-# Ubuntu / WSL (Microsoft feed)
-wget https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
-sudo dpkg -i packages-microsoft-prod.deb
-sudo apt-get update
-sudo apt-get install -y dotnet-sdk-8.0
-
-dotnet --info
+./SetupDependencies.sh --dependency dotnet-sdk
+Tools/Dotnet/dotnet --info
 ```
 
 然后：

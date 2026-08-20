@@ -2,12 +2,16 @@
 
 #include <cstdint>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <Debug/Logger.h>
+#include <Scripting/ScriptTypes.h>
 
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Layout/Group.h>
+#include <UI/Widgets/Texts/TextClickable.h>
 #include <UI/Widgets/Texts/TextColored.h>
 
 namespace NLS::Editor::Panels
@@ -60,18 +64,45 @@ namespace NLS::Editor::Panels
 		* @param p_logLevel
 		*/
 		bool IsAllowedByFilter(Debug::ELogLevel p_logLevel);
+		void AddScriptDiagnostic(const NLS::Scripting::ScriptError& error);
 
 	private:
+		enum class EntrySource
+		{
+			General,
+			CSharp,
+			Lua,
+			Build
+		};
+		struct EntryInfo
+		{
+			Debug::ELogLevel level;
+			EntrySource source;
+		};
+		struct ScriptEntryInfo
+		{
+			Debug::ELogLevel level;
+			EntrySource source;
+			NLS::Scripting::ScriptError error;
+			std::string header;
+			bool expanded = false;
+		};
 		void SetShowDefaultLogs(bool p_value);
 		void SetShowInfoLogs(bool p_value);
 		void SetShowWarningLogs(bool p_value);
 		void SetShowErrorLogs(bool p_value);
+		void SetShowCSharpLogs(bool p_value);
+		void SetShowLuaLogs(bool p_value);
+		void SetShowBuildLogs(bool p_value);
 		void AddLogWidget(const Debug::LogData& p_logData);
+		void FlushScriptDiagnostics();
+		bool IsAllowedBySource(EntrySource source) const;
 		void OnBeforeDrawWidgets() override;
 
 	private:
 		UI::Widgets::Group* m_logGroup;
-		std::unordered_map<UI::Widgets::TextColored*, Debug::ELogLevel> m_logTextWidgets;
+		std::unordered_map<UI::Widgets::TextColored*, EntryInfo> m_logTextWidgets;
+		std::unordered_map<UI::Widgets::TextClickable*, ScriptEntryInfo> m_scriptTextWidgets;
 		std::mutex m_pendingLogsMutex;
 		std::vector<Debug::LogData> m_pendingLogs;
 
@@ -80,6 +111,10 @@ namespace NLS::Editor::Panels
 		bool m_showInfoLog = true;
 		bool m_showWarningLog = true;
 		bool m_showErrorLog = true;
+		bool m_showCSharpLog = true;
+		bool m_showLuaLog = true;
+		bool m_showBuildLog = true;
+		size_t m_forwardedScriptErrors = 0;
 		uint64_t m_playListener = 0;
 		uint64_t m_logListener = 0;
 	};

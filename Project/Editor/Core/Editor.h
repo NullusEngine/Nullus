@@ -141,6 +141,11 @@ private:
     std::chrono::steady_clock::time_point m_lastThumbnailTelemetrySummaryWriteTime {};
     bool m_thumbnailTelemetrySummaryWriteAttemptLogged = false;
     bool m_logNextUpdateStages = false;
+    float m_fixedAccumulator = 0.0f;
+    double m_scriptTime = 0.0;
+    double m_scriptUnscaledTime = 0.0;
+    uint64_t m_scriptFrameIndex = 0;
+    uint64_t m_scriptFixedFrameIndex = 0;
     UI::Canvas			m_canvas;
     Context& m_context;
     PanelsManager	m_panelsManager;

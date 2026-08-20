@@ -14,12 +14,37 @@
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Utils/PathParser.h"
 #include "RuntimeAssetManifestStartup.h"
+#include <Scripting/ScriptComponent.h>
+#include <Scripting/ScriptRuntimeSetup.h>
 using namespace NLS;
 using namespace NLS::Core;
 using namespace NLS::Core::ResourceManagement;
 
 namespace
 {
+	void BindScriptComponentToRuntime(
+		NLS::Engine::Components::Component* component,
+		NLS::Scripting::ScriptRuntime& runtime)
+	{
+		if (auto* script = dynamic_cast<NLS::Scripting::ScriptComponent*>(component))
+			script->SetRuntime(&runtime);
+	}
+
+	void BindScriptComponentsToRuntime(
+		NLS::Engine::SceneSystem::Scene* scene,
+		NLS::Scripting::ScriptRuntime& runtime)
+	{
+		if (!scene)
+			return;
+		for (auto* gameObject : scene->GetGameObjects())
+		{
+			if (!gameObject)
+				continue;
+			for (const auto& component : gameObject->GetComponents())
+				BindScriptComponentToRuntime(component.get(), runtime);
+		}
+	}
+
 	std::string EnsureTrailingPathSeparator(const std::filesystem::path& path)
 	{
 		auto text = path.lexically_normal().string();
@@ -350,10 +375,56 @@ Game::Context::Context(
 			projectSettings.GetOrDefault<std::string>("runtime_prewarm_asset_packs", ""));
 		RuntimeAssets::PrewarmRuntimeMaterialAssets(*runtimeAssetDatabase, materialManager, prewarmOptions);
 	}
+
+	NLS::Scripting::ScriptRuntimeSetupOptions scriptingOptions;
+	scriptingOptions.projectRoot = std::filesystem::path(resolvedProjectPaths.assetsPath).parent_path();
+	const auto scriptingSetup = NLS::Scripting::InitializeScriptRuntime(scriptRuntime, scriptingOptions);
+	if (!scriptingSetup.status.Succeeded())
+	{
+		NLS_LOG_WARNING("Game scripting runtime was not initialized: " + scriptingSetup.status.message);
+	}
+	else
+	{
+		NLS_LOG_INFO(
+			"Game scripting runtime initialized (Lua=" +
+			std::string(scriptingSetup.luaRegistered ? "on" : "off") +
+			", C#=" + std::string(scriptingSetup.csharpRegistered ? "on" : "off") +
+			", schema=" + scriptRuntime.GetApi().GetSchemaHashHex() + ").");
+	}
+	m_sceneLoadListener = sceneManager.SceneLoadEvent.AddListener([this]
+	{
+		if (auto* scene = sceneManager.GetCurrentScene())
+		{
+			BindScriptComponentsToRuntime(scene, scriptRuntime);
+			m_sceneComponentAddedListener = scene->ComponentAddedEvent.AddListener([this](auto* component)
+			{
+				BindScriptComponentToRuntime(component, scriptRuntime);
+			});
+		}
+	});
+	if (auto* scene = sceneManager.GetCurrentScene())
+	{
+		BindScriptComponentsToRuntime(scene, scriptRuntime);
+		m_sceneComponentAddedListener = scene->ComponentAddedEvent.AddListener([this](auto* component)
+		{
+			BindScriptComponentToRuntime(component, scriptRuntime);
+		});
+	}
 }
 
 Game::Context::~Context()
 {
+	if (m_sceneLoadListener != NLS::InvalidListenerID)
+	{
+		sceneManager.SceneLoadEvent.RemoveListener(m_sceneLoadListener);
+		m_sceneLoadListener = NLS::InvalidListenerID;
+	}
+	if (auto* scene = sceneManager.GetCurrentScene();
+		scene && m_sceneComponentAddedListener != NLS::InvalidListenerID)
+	{
+		scene->ComponentAddedEvent.RemoveListener(m_sceneComponentAddedListener);
+		m_sceneComponentAddedListener = NLS::InvalidListenerID;
+	}
 	ShutdownThreadedRendering();
 	meshManager.UnloadResources();
 	textureManager.UnloadResources();

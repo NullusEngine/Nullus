@@ -432,7 +432,12 @@ internal static partial class MetaParserTool
                     stubOutputDir,
                     $"{GetGeneratedRelativeBasePath(includePath)}{generator.Manifest.Outputs.HeaderGeneratedHeaderSuffix}");
                 var isExternalGeneratedHeader = !IsPathInside(generatedHeaderPath, outputDir);
-                if (isExternalGeneratedHeader && File.Exists(generatedHeaderPath))
+                // Keep a previously generated header intact while parsing.  The
+                // parser only needs a stub when the output does not exist yet;
+                // replacing a valid header with a stub before parsing means an
+                // interrupted/failed parse can leave the C++ build with missing
+                // registrar declarations.
+                if (File.Exists(generatedHeaderPath))
                     continue;
 
                 var generatedDirectory = Path.GetDirectoryName(generatedHeaderPath);
@@ -495,7 +500,21 @@ internal static partial class MetaParserTool
                 return;
         }
 
-        File.WriteAllBytes(path, bytes);
+        // Publish generated files atomically.  The parser creates header stubs
+        // before parsing because source headers include them; a failed or
+        // interrupted generation must never leave a partially written final
+        // header/cpp file visible to the C++ compiler.
+        var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllBytes(temporaryPath, bytes);
+            File.Move(temporaryPath, path, true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+                File.Delete(temporaryPath);
+        }
     }
 
     private static bool IsPathInside(string path, string directory)

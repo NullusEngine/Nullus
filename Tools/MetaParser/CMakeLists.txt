@@ -1,14 +1,25 @@
 cmake_minimum_required(VERSION 3.22)
 
+if(NOT NLS_DOTNET_EXECUTABLE)
+    get_filename_component(NLS_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." REALPATH)
+    include("${NLS_ROOT_DIR}/Tools/CMake/NullusDotnet.cmake")
+    nls_resolve_dotnet()
+endif()
+
 set(NLS_META_PARSER_LIBCLANG_VERSION "18.1.3.2")
 set(NLS_META_PARSER_LIBCLANGSHARP_VERSION "18.1.3.1")
 
-find_program(DOTNET_EXECUTABLE dotnet REQUIRED)
-if(NOT DOTNET_EXECUTABLE)
-    message(FATAL_ERROR "dotnet SDK is required for C# MetaParser. Please install .NET 8 SDK.")
+if(NOT NLS_DOTNET_EXECUTABLE)
+    message(FATAL_ERROR "NLS_DOTNET_EXECUTABLE must resolve to the repository's .NET 8 SDK before configuring MetaParser.")
 endif()
 
-set(NLS_META_PARSER_DOTNET "${DOTNET_EXECUTABLE}" CACHE INTERNAL "dotnet executable" FORCE)
+set(DOTNET_EXECUTABLE "${NLS_DOTNET_EXECUTABLE}")
+set(NLS_META_PARSER_DOTNET "${NLS_DOTNET_EXECUTABLE}" CACHE INTERNAL "dotnet executable" FORCE)
+if(WIN32)
+    set(NLS_DOTNET_RUNNER "${CMAKE_CURRENT_SOURCE_DIR}/../../Tools/RunRepositoryDotnet.cmd")
+else()
+    set(NLS_DOTNET_RUNNER "${CMAKE_CURRENT_SOURCE_DIR}/../../Tools/RunRepositoryDotnet.sh")
+endif()
 
 set(NLS_META_PARSER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(NLS_META_PARSER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -16,6 +27,9 @@ set(NLS_META_PARSER_INTERMEDIATE_DIR "${NLS_META_PARSER_GENERATED_DIR}/src")
 set(NLS_META_PARSER_PROJECT_TEMPLATE "${NLS_META_PARSER_SOURCE_DIR}/MetaParser.csproj.in")
 set(NLS_META_PARSER_PROJECT "${NLS_META_PARSER_INTERMEDIATE_DIR}/MetaParser.csproj" CACHE INTERNAL "MetaParser csproj" FORCE)
 set(NLS_META_PARSER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/publish/$<CONFIG>" CACHE INTERNAL "MetaParser output directory" FORCE)
+set(NLS_META_PARSER_NUGET_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/LocalNuget;https://api.nuget.org/v3/index.json")
+set(NLS_META_PARSER_NUGET_PACKAGES "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/.nuget/packages" CACHE PATH "Repository-local MetaParser NuGet extraction cache")
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
     set(NLS_META_PARSER_HOST_ARCH "arm64")
@@ -58,6 +72,15 @@ file(MAKE_DIRECTORY "${NLS_META_PARSER_LAUNCH_SETTINGS_DIR}")
 configure_file("${NLS_META_PARSER_PROJECT_TEMPLATE}" "${NLS_META_PARSER_PROJECT}" @ONLY)
 configure_file("${NLS_META_PARSER_LAUNCH_SETTINGS_TEMPLATE}" "${NLS_META_PARSER_LAUNCH_SETTINGS}" @ONLY)
 
+# The CMake target below is intentionally kept as the hermetic build wrapper
+# used by the engine.  Expose the generated SDK-style project separately in a
+# Visual Studio solution so MetaParser's real C# sources and breakpoints are
+# visible in the IDE.
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    include_external_msproject(MetaParserSource "${NLS_META_PARSER_PROJECT}" PLATFORM AnyCPU)
+    set_property(TARGET MetaParserSource PROPERTY FOLDER Tools)
+endif()
+
 set(NLS_META_PARSER_WINDOWS_NATIVE FALSE)
 if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio" AND CMAKE_VERSION VERSION_LESS 3.25)
     set(NLS_META_PARSER_WINDOWS_NATIVE TRUE)
@@ -90,7 +113,12 @@ else()
 
     add_custom_command(
         OUTPUT "${NLS_META_PARSER_STAMP}"
-        COMMAND "${DOTNET_EXECUTABLE}" publish "${NLS_META_PARSER_PROJECT}" --configuration "$<CONFIG>" --runtime "${NLS_META_PARSER_RUNTIME_ID}" --self-contained false --nologo -o "${NLS_META_PARSER_OUTPUT_DIR}"
+        # Invoke the repository-local SDK by absolute path.  Do not rewrite
+        # PATH here: Visual Studio can preserve a differently-cased Path key,
+        # and cmake -E env would then create duplicate Windows environment
+        # entries that MSBuild rejects.
+        COMMAND "${NLS_DOTNET_RUNNER}"
+            "${DOTNET_EXECUTABLE}" publish "${NLS_META_PARSER_PROJECT}" --configuration "$<CONFIG>" --runtime "${NLS_META_PARSER_RUNTIME_ID}" --self-contained false --nologo -o "${NLS_META_PARSER_OUTPUT_DIR}"
         COMMAND "${CMAKE_COMMAND}" -E touch "${NLS_META_PARSER_STAMP}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         DEPENDS
@@ -109,4 +137,10 @@ else()
     )
 endif()
 
-set_target_properties(MetaParser PROPERTIES FOLDER Tools)
+set_target_properties(MetaParser PROPERTIES
+    FOLDER CMakePredefinedTargets
+    # The generated SDK project is also named MetaParser.  Give the CMake
+    # wrapper a distinct Visual Studio label while keeping its target name and
+    # build dependencies unchanged.
+    PROJECT_LABEL "MetaParserBuild"
+)

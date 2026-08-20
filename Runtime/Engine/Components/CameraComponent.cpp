@@ -19,41 +19,49 @@ void CameraComponent::OnCreate()
 void CameraComponent::SetFov(float p_value)
 {
 	m_camera->SetFov(p_value);
+	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetSize(float p_value)
 {
     m_camera->SetSize(p_value);
+	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetNear(float p_value)
 {
 	m_camera->SetNear(p_value);
+	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetFar(float p_value)
 {
 	m_camera->SetFar(p_value);
+	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetFrustumGeometryCulling(bool p_enable)
 {
 	m_camera->SetFrustumGeometryCulling(p_enable);
+	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetFrustumLightCulling(bool p_enable)
 {
 	m_camera->SetFrustumLightCulling(p_enable);
+	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetProjectionMode(Render::Settings::EProjectionMode p_projectionMode)
 {
     m_camera->SetProjectionMode(p_projectionMode);
+	MarkRenderStateChanged();
 }
 
 void CameraComponent::SetVisibleLayers(const NLS::Engine::LayerMask p_visibleLayers)
 {
 	m_camera->SetVisibleLayerMask(p_visibleLayers.GetMask());
+	MarkRenderStateChanged();
 }
 
 float CameraComponent::GetFov() const
@@ -89,6 +97,7 @@ bool CameraComponent::HasFrustumGeometryCulling() const
 void CameraComponent::SetClearColor(const Maths::Vector3 & p_clearColor)
 {
 	m_camera->SetClearColor(p_clearColor);
+	MarkRenderStateChanged();
 }
 
 bool CameraComponent::HasFrustumLightCulling() const

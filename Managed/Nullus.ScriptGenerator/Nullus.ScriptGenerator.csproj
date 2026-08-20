@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <!-- The generator is shipped as a project-local build tool, not a
+         separately published Roslyn analyzer package. -->
+    <NoWarn>$(NoWarn);RS1041;RS2008</NoWarn>
+
+    <!-- dotnet SDKs keep Roslyn under Roslyn/bincore, while the VS 2022
+         MSBuild used by the IDE keeps the same assemblies directly under
+         MSBuild/Current/Bin/Roslyn. Resolve both layouts without a package
+         download so the generator builds in CLI and Visual Studio. -->
+    <NullusProjectRoslynPath Condition="Exists('$(MSBuildThisFileDirectory)..\..\Tools\Dotnet\windows\x64\sdk\8.0.408\Roslyn\bincore\Microsoft.CodeAnalysis.dll')">$(MSBuildThisFileDirectory)..\..\Tools\Dotnet\windows\x64\sdk\8.0.408\Roslyn\bincore</NullusProjectRoslynPath>
+    <NullusRoslynPath Condition="'$(NullusProjectRoslynPath)' != ''">$(NullusProjectRoslynPath)</NullusRoslynPath>
+    <NullusRoslynPath Condition="'$(NullusRoslynPath)' == '' and Exists('$(MSBuildToolsPath)\Roslyn\bincore\Microsoft.CodeAnalysis.dll')">$(MSBuildToolsPath)\Roslyn\bincore</NullusRoslynPath>
+    <NullusRoslynPath Condition="'$(NullusRoslynPath)' == '' and Exists('$(MSBuildToolsPath)\Roslyn\Microsoft.CodeAnalysis.dll')">$(MSBuildToolsPath)\Roslyn</NullusRoslynPath>
+  </PropertyGroup>
+  <!--
+    Roslyn analyzers run inside the compiler process.  Keep the generator ABI
+    aligned with the compiler shipped by the project-local .NET SDK instead of
+    loading a newer NuGet Roslyn into the .NET 8 compiler (which reports
+    CS9057 and may skip the generator entirely).
+  -->
+  <ItemGroup>
+    <Reference Include="Microsoft.CodeAnalysis" Private="false">
+      <HintPath>$(NullusRoslynPath)\Microsoft.CodeAnalysis.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp" Private="false">
+      <HintPath>$(NullusRoslynPath)\Microsoft.CodeAnalysis.CSharp.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

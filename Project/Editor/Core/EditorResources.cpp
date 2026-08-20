@@ -1,5 +1,7 @@
 #include <UI/GUIDrawer.h>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -335,6 +337,17 @@ NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetFileIcon(co
 const char* Editor::Core::EditorResources::GetFileIconId(const std::string& p_filename)
 {
     using namespace Utils;
+    auto extension = std::filesystem::path(p_filename).extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    if (extension == ".lua")
+        return "editor.icon.asset.script.lua";
+    if (extension == ".cs")
+        return "editor.icon.asset.script.csharp";
+
     const auto fileType = PathParser::GetFileType(p_filename);
     switch (fileType)
     {

@@ -473,7 +473,6 @@ namespace NLS::Render::Backend
 		if (m_commandList == nullptr || m_boundDescriptorTables.empty())
 			return true;
 
-		ClearDescriptorTableBindingError();
 		if (!ValidateDescriptorTableBindings("FlushBoundDescriptorTables"))
 			return false;
 

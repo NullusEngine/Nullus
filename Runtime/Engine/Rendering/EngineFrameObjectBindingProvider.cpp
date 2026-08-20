@@ -298,15 +298,34 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedObjectBindingSet(
     if (!m_currentDrawPrepared)
         return false;
 
+    ObjectDataFrameSlot* indexedObjectDataSlot = nullptr;
     if (m_currentDrawUsesIndexedObjectData)
     {
-        auto* slot = ResolveActiveObjectDataSlot();
-        m_explicitObjectBindingSet = slot != nullptr ? RefreshExplicitIndexedObjectBindingSet(*slot) : nullptr;
+        indexedObjectDataSlot = ResolveActiveObjectDataSlot();
+        m_explicitObjectBindingSet = indexedObjectDataSlot != nullptr
+            ? RefreshExplicitIndexedObjectBindingSet(*indexedObjectDataSlot)
+            : nullptr;
     }
     else
     {
         RefreshExplicitObjectBindingSet();
     }
+
+    const bool hasObjectDescriptor =
+        drawable.TryGetDescriptor<NLS::Render::Data::DrawableObjectDescriptor>() != nullptr;
+    if ((m_currentDrawUsesIndexedObjectData || hasObjectDescriptor) &&
+        m_explicitObjectBindingSet == nullptr)
+    {
+        NLS_LOG_ERROR(
+            "[EngineFrameObjectBindingProvider] object binding capture failed: "
+            "indexed=" + std::to_string(m_currentDrawUsesIndexedObjectData ? 1u : 0u) +
+            " slot=" + std::to_string(indexedObjectDataSlot != nullptr ? 1u : 0u) +
+            " buffer=" + std::to_string(
+                indexedObjectDataSlot != nullptr && indexedObjectDataSlot->buffer != nullptr ? 1u : 0u) +
+            " device=" + std::to_string(m_explicitDevice != nullptr ? 1u : 0u));
+        return false;
+    }
+
     outBindings.objectBindingSet = m_explicitObjectBindingSet;
     outBindings.objectConstants = m_currentDrawObjectConstants;
     outBindings.usesObjectIndex = m_currentDrawUsesIndexedObjectData &&

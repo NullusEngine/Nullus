@@ -1,0 +1,12 @@
+{
+    "recommendations": [
+        "ms-dotnettools.csdevkit",
+        "ms-dotnettools.csharp",
+        "ms-vscode.vscode-dotnet-runtime",
+        "nullus.nullus-script-debugger",
+        "stuartwang.luapanda@3.3.1"
+    ],
+    "unwantedRecommendations": [
+        "stuartwang.luapanda"
+    ]
+}

@@ -1,0 +1,75 @@
+name: Build Scripting Matrix
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: scripting-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-latest, macos-15-intel]
+        profile:
+          - name: off
+            csharp: OFF
+            lua: OFF
+          - name: lua-only
+            csharp: OFF
+            lua: ON
+          - name: csharp-only
+            csharp: ON
+            lua: OFF
+          - name: csharp-lua
+            csharp: ON
+            lua: ON
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.408'
+
+      - name: Verify pinned .NET SDK
+        shell: bash
+        run: test "$(dotnet --version)" = "8.0.408"
+
+      - name: Verify repository SDK bootstrap manifest
+        shell: bash
+        run: python Tools/SetupDependencies/setup_dependencies.py --dependency dotnet-sdk --dry-run --non-interactive
+
+      - name: Restore managed scripting projects
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore Managed/Nullus.ScriptGenerator/Nullus.ScriptGenerator.csproj --nologo
+          dotnet restore Managed/Nullus.Managed/Nullus.Managed.csproj --nologo
+
+      - name: Configure and build
+        shell: bash
+        env:
+          CMAKE_GENERATOR: Ninja
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/scripting-${{ matrix.profile.name }} \
+            -DNLS_BUILD_TESTS=ON \
+            -DNLS_ENABLE_CSHARP_SCRIPTING=${{ matrix.profile.csharp }} \
+            -DNLS_ENABLE_LUA_SCRIPTING=${{ matrix.profile.lua }} \
+            -DNLS_ENABLE_LUAPANDA_DEBUGGING=ON \
+            -DNLS_RENDER_API=OpenGL
+          cmake --build build/scripting-${{ matrix.profile.name }} --target NLS_Scripting NullusUnitTests --parallel 2
+
+      - name: Run focused scripting tests
+        shell: bash
+        run: |
+          set -euo pipefail
+           find build/scripting-${{ matrix.profile.name }} -type f -name 'NullusUnitTests*' -print -exec {} --gtest_filter='ScriptRuntimeTests.*' \;

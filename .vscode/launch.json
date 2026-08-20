@@ -2,6 +2,18 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Nullus: C# Scripts",
+            "type": "coreclr",
+            "request": "attach",
+            "processId": "${command:nullus.resolveEditorProcess}",
+            "justMyCode": true,
+            "requireExactSource": false,
+            "enableStepFiltering": false,
+            "sourceFileMap": {
+                "${workspaceFolder}": "${workspaceFolder}"
+            }
+        },
+        {
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
@@ -31,6 +43,27 @@
                     "ignoreFailures": true
                 }
             ]
+        },
+        {
+            "name": "Nullus: Lua Scripts",
+            "type": "lua",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "luaFileExtension": ".lua",
+            "connectionPort": 8818,
+            "useCHook": false,
+            "autoPathMode": true,
+            "pathCaseSensitivity": false,
+            "stopOnEntry": false
+        },
+        {
+            "name": "Nullus: C# + Lua",
+            "type": "compound",
+            "configurations": [
+                "Nullus: C# Scripts",
+                "Nullus: Lua Scripts"
+            ],
+            "stopAll": true
         }
     ]
 }

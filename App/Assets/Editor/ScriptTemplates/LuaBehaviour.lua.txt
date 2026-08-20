@@ -1,0 +1,11 @@
+local Module = {}
+
+-- Start is called once before the first frame update.
+function Module:Start()
+end
+
+-- Update is called once per frame.
+function Module:Update()
+end
+
+return Module

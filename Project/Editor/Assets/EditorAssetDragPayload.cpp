@@ -1,5 +1,6 @@
 #include "Assets/EditorAssetDragPayload.h"
 
+#include "Assets/ScriptAssetUtility.h"
 #include "Guid.h"
 
 #include <algorithm>
@@ -49,6 +50,7 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     payload.artifactType = static_cast<uint32_t>(artifactType);
     payload.generatedModelPrefab = generatedModelPrefab ? 1u : 0u;
     payload.imported = imported ? 1u : 0u;
+    payload.scriptAsset = IsScriptAssetPath(assetPath) ? 1u : 0u;
     payload.reserved = 0u;
     payload.generatedBrowserSubAsset = generatedBrowserSubAsset ? 1u : 0u;
     return payload;
@@ -140,6 +142,13 @@ NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const Edit
 bool IsEditorAssetDragPayloadGeneratedBrowserSubAsset(const EditorAssetDragPayload& payload)
 {
     return payload.generatedBrowserSubAsset != 0u;
+}
+
+bool IsEditorAssetDragPayloadScript(const EditorAssetDragPayload& payload)
+{
+    if (payload.scriptAsset != 0u)
+        return true;
+    return IsScriptAssetPath(GetEditorAssetDragPayloadPath(payload));
 }
 
 bool CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(const EditorAssetDragPayload& payload)

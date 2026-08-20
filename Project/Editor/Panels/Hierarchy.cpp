@@ -5,6 +5,8 @@
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
 #include "Assets/EditorAssetPathUtils.h"
+#include "Assets/ScriptAssetUtility.h"
+#include <Scripting/ScriptComponent.h>
 
 #include <Math/Color.h>
 #include <UI/Widgets/Buttons/Button.h>
@@ -115,6 +117,32 @@ void DropAssetIntoHierarchy(
 	if (scene == nullptr)
 	{
 		NLS_LOG_WARNING("Skipped prefab drop because there is no active scene.");
+		return;
+	}
+
+	if (NLS::Editor::Assets::IsEditorAssetDragPayloadScript(payload))
+	{
+		if (parent == nullptr)
+			return;
+		const auto asset = NLS::Editor::Assets::LoadScriptAsset(
+			std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)), payload);
+		if (!asset.has_value())
+		{
+			NLS_LOG_WARNING("Skipped script drop because the ScriptAsset could not be loaded: " +
+				NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload));
+			return;
+		}
+		if (!asset->isComponent)
+		{
+			NLS_LOG_WARNING("Skipped script drop because the script is not a Behaviour component: " +
+				NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload));
+			return;
+		}
+		if (auto* component = parent->AddComponent<NLS::Scripting::ScriptComponent>())
+		{
+			component->SetScriptAsset(*asset);
+			EDITOR_EXEC(MarkOwningSceneDirty(*parent));
+		}
 		return;
 	}
 

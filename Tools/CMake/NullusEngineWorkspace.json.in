@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "visualStudioSupported": @NLS_ENGINE_WORKSPACE_VISUAL_STUDIO@,
+  "generator": "@CMAKE_GENERATOR@",
+  "sourceRoot": "@NLS_ENGINE_WORKSPACE_SOURCE_ROOT@",
+  "buildRoot": "@NLS_ENGINE_WORKSPACE_BUILD_ROOT@",
+  "cmakeExecutable": "@CMAKE_COMMAND@",
+  "editorTarget": "Editor",
+  "configurations": ["Debug", "Release"],
+  "pdb": {
+    "Debug": "@NLS_ENGINE_WORKSPACE_DEBUG_PDB@",
+    "Release": "@NLS_ENGINE_WORKSPACE_RELEASE_PDB@"
+  },
+  "projects": [
+@NLS_ENGINE_WORKSPACE_PROJECTS@
+  ]
+}

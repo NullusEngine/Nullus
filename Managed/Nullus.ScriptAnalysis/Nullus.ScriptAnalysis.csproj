@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- Keep the analyzer on the repository SDK's offline framework pack.
+         The compiler and VSIX both consume the same Roslyn contract. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);RS1036;RS1041;RS2008</NoWarn>
+    <NullusRoslynPath Condition="Exists('$(MSBuildThisFileDirectory)..\..\Tools\Dotnet\windows\x64\sdk\8.0.408\Roslyn\bincore\Microsoft.CodeAnalysis.dll')">$(MSBuildThisFileDirectory)..\..\Tools\Dotnet\windows\x64\sdk\8.0.408\Roslyn\bincore</NullusRoslynPath>
+    <NullusRoslynPath Condition="'$(NullusRoslynPath)' == ''">$(MSBuildToolsPath)\Roslyn\bincore</NullusRoslynPath>
+    <NullusImmutablePath Condition="Exists('$(MSBuildThisFileDirectory)..\..\Tools\Dotnet\windows\x64\shared\Microsoft.NETCore.App\8.0.15\System.Collections.Immutable.dll')">$(MSBuildThisFileDirectory)..\..\Tools\Dotnet\windows\x64\shared\Microsoft.NETCore.App\8.0.15</NullusImmutablePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ScriptAnalysisRules.cs" />
+    <Compile Include="NullusScriptAnalyzer.cs" />
+    <Reference Include="Microsoft.CodeAnalysis" Private="false"><HintPath>$(NullusRoslynPath)\Microsoft.CodeAnalysis.dll</HintPath></Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp" Private="false"><HintPath>$(NullusRoslynPath)\Microsoft.CodeAnalysis.CSharp.dll</HintPath></Reference>
+    <Reference Include="System.Collections.Immutable" Private="false"><HintPath>$(NullusImmutablePath)\System.Collections.Immutable.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

@@ -84,6 +84,7 @@ MeshRenderer& MeshRenderer::operator=(const MeshRenderer& other)
     m_customBoundingSphere = other.m_customBoundingSphere;
     m_frustumBehaviour = other.m_frustumBehaviour;
     m_transientRenderingSuppressed = false;
+    MarkRenderStateChanged();
     return *this;
 }
 
@@ -540,5 +541,6 @@ float MeshRenderer::GetUserMatrixElement(uint32_t p_row, uint32_t p_column) cons
 void MeshRenderer::MarkRenderStateChanged()
 {
     ++m_renderRevision;
+    Component::MarkRenderStateChanged();
 }
 }

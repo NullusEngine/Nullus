@@ -1,5 +1,49 @@
 set(third_party_folder "ThirdParty")
 
+# Lua is part of the scripting ABI rather than an optional system package.
+# Keep the exact upstream 5.4.8 sources in-tree so configure/build never needs
+# network access and every platform uses the same VM implementation.
+if(NLS_ENABLE_LUA_SCRIPTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Lua/CMakeLists.txt" AND NOT TARGET NLS_Lua)
+    add_subdirectory(Lua)
+endif()
+
+# LuaPanda's protocol uses LuaSocket only inside its private debugger
+# environment. Keep the 3.1.0 sources in-tree and link them to the scripting
+# target only when Lua scripting is enabled; gameplay globals never expose the
+# module. No configure-time download is allowed.
+if(NLS_ENABLE_LUA_SCRIPTING AND TARGET NLS_Lua AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/luasocket.c")
+    set(NLS_LUASOCKET_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/luasocket.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/timeout.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/buffer.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/io.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/auxiliar.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/compat.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/options.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/inet.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/except.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/select.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/tcp.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/udp.c)
+    if(WIN32)
+        list(APPEND NLS_LUASOCKET_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/wsocket.c)
+    else()
+        list(APPEND NLS_LUASOCKET_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src/usocket.c)
+    endif()
+    add_library(NLS_LuaSocket STATIC ${NLS_LUASOCKET_SOURCES})
+    target_include_directories(NLS_LuaSocket PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/LuaSocket/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/Lua/src)
+    target_compile_definitions(NLS_LuaSocket PRIVATE LUASOCKET_API=)
+    target_link_libraries(NLS_LuaSocket PUBLIC NLS_Lua)
+    if(WIN32)
+        target_link_libraries(NLS_LuaSocket PUBLIC ws2_32)
+    else()
+        target_link_libraries(NLS_LuaSocket PUBLIC ${CMAKE_DL_LIBS})
+    endif()
+    set_target_properties(NLS_LuaSocket PROPERTIES FOLDER ${third_party_folder}/LuaSocket)
+endif()
+
 option(NLS_ASSIMP_BUILD_ALL_FORMATS "Build Assimp with all upstream default importers/exporters" OFF)
 option(NLS_ENABLE_ASSIMP_FBX_IMPORTER "Enable Assimp FBX importer without enabling every Assimp format" ON)
 option(NLS_ENABLE_AUTODESK_FBX_SDK "Enable Autodesk FBX SDK integration when the bundled SDK is available" OFF)

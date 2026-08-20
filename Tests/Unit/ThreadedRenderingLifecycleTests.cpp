@@ -12775,6 +12775,7 @@ TEST(ThreadedRenderingLifecycleTests, ParallelRecordingFallsBackToSerialWhenReso
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
     explicitDevice->MutableCapabilities().supportsParallelCommandRecording = true;
+    explicitDevice->MutableCapabilities().supportsParallelCommandTranslation = true;
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
 
     auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
@@ -12832,11 +12833,13 @@ TEST(ThreadedRenderingLifecycleTests, ParallelRecordingFallsBackToSerialWhenReso
     opaqueWorkUnit.commandInput = opaquePassInput;
     opaqueWorkUnit.debugName = "TrackedOpaque";
     opaqueWorkUnit.eligibleForParallelRecording = true;
+    opaqueWorkUnit.eligibleForParallelTranslation = true;
 
     NLS::Render::Context::ParallelCommandWorkUnit transparentWorkUnit;
     transparentWorkUnit.commandInput = transparentPassInput;
     transparentWorkUnit.debugName = "TrackedTransparent";
     transparentWorkUnit.eligibleForParallelRecording = true;
+    transparentWorkUnit.eligibleForParallelTranslation = true;
 
     NLS::Render::Context::RenderScenePackage package;
     package.frameId = publishedSnapshot.frameId;
@@ -12864,10 +12867,12 @@ TEST(ThreadedRenderingLifecycleTests, ParallelRecordingFallsBackToSerialWhenReso
     EXPECT_EQ(copiedSlot->submissionFrame->recordedPassCount, 2u);
     EXPECT_EQ(copiedSlot->submissionFrame->recordedWorkUnitCount, 2u);
     EXPECT_EQ(copiedSlot->submissionFrame->parallelRecordingWorkerCount, 0u);
+    EXPECT_EQ(copiedSlot->submissionFrame->translatedWorkUnitCount, 0u);
     EXPECT_FALSE(copiedSlot->submissionFrame->usedParallelCommandPath);
+    EXPECT_FALSE(copiedSlot->submissionFrame->usedTranslationMerge);
     EXPECT_TRUE(copiedSlot->submissionFrame->usedSerialCommandPath);
-    EXPECT_EQ(explicitDevice->GetCreatedCommandPools().size(), 2u)
-        << "The ordered work-unit path may still use per-pass command buffers, but it must not record them concurrently while sharing the frame resource-state tracker.";
+    EXPECT_EQ(explicitDevice->GetCreatedCommandPools().size(), 0u)
+        << "Tracked resources must use the main command buffer instead of per-pass command buffers.";
 }
 
 TEST(ThreadedRenderingLifecycleTests, ParallelRecordingFailureMarksSubmissionAsFailedRetirement)

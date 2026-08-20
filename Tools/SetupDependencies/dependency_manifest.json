@@ -102,6 +102,80 @@
           }
         }
       }
+    },
+    "dotnet-sdk": {
+      "id": "dotnet-sdk",
+      "name": ".NET SDK",
+      "version": "8.0.408",
+      "installRoot": "Tools/Dotnet",
+      "platforms": {
+        "windows": {
+          "x64": {
+            "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.408/dotnet-sdk-8.0.408-win-x64.zip",
+            "fileName": "dotnet-sdk-8.0.408-win-x64.zip",
+            "sha512": "49ff4363663d28b8f55b7af4cad4cb469cf9ff1bc6e826117b2381180a7c5e7c8d5aaefd02c7b5ae06c87609816858bbf554c68a8308ac6260d3d5b432123272",
+            "sdkRoot": "Tools/Dotnet/windows/x64",
+            "archiveType": "zip",
+            "validation": {
+              "executable": "dotnet.exe"
+            }
+          },
+          "arm64": {
+            "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.408/dotnet-sdk-8.0.408-win-arm64.zip",
+            "fileName": "dotnet-sdk-8.0.408-win-arm64.zip",
+            "sha512": "d20039dbc61d684a5fccc081d9112c59fe36024831f32ed521b9bba0198e19a2d698a8fc113825f46ceb0d3c96e7de663eb8005ebdcaa48fbf2cd09467428762",
+            "sdkRoot": "Tools/Dotnet/windows/arm64",
+            "archiveType": "zip",
+            "validation": {
+              "executable": "dotnet.exe"
+            }
+          }
+        },
+        "linux": {
+          "x64": {
+            "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.408/dotnet-sdk-8.0.408-linux-x64.tar.gz",
+            "fileName": "dotnet-sdk-8.0.408-linux-x64.tar.gz",
+            "sha512": "a9a1e54d10a37f91e1bd9b2e9e8ce6ed31917559898e4d6d36296bd5324f67cc7a13a9106703003cbebc5a7ee50188747ba816f5d828c0cb3a4a9f9920ebac4a",
+            "sdkRoot": "Tools/Dotnet/linux/x64",
+            "archiveType": "tar.gz",
+            "validation": {
+              "executable": "dotnet"
+            }
+          },
+          "arm64": {
+            "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.408/dotnet-sdk-8.0.408-linux-arm64.tar.gz",
+            "fileName": "dotnet-sdk-8.0.408-linux-arm64.tar.gz",
+            "sha512": "99a03d7105c14614a1a8d69673a9278315ec762096b302c7632745b3890a6d2d801df7c1f185257c9af0374ae840b942a8b60dde0eace68abec0b6962fd9213c",
+            "sdkRoot": "Tools/Dotnet/linux/arm64",
+            "archiveType": "tar.gz",
+            "validation": {
+              "executable": "dotnet"
+            }
+          }
+        },
+        "macos": {
+          "x64": {
+            "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.408/dotnet-sdk-8.0.408-osx-x64.tar.gz",
+            "fileName": "dotnet-sdk-8.0.408-osx-x64.tar.gz",
+            "sha512": "77f536f65f5dff250e903abe560505955bbe4d6a7e5aa101c9711289d19b68ca318b7a03e536a396c912c6e75659205800ec916160fac4bf2007677f2e3ed36f",
+            "sdkRoot": "Tools/Dotnet/macos/x64",
+            "archiveType": "tar.gz",
+            "validation": {
+              "executable": "dotnet"
+            }
+          },
+          "arm64": {
+            "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.408/dotnet-sdk-8.0.408-osx-arm64.tar.gz",
+            "fileName": "dotnet-sdk-8.0.408-osx-arm64.tar.gz",
+            "sha512": "cec76e2598460fd0367a6d810cfad31dce7e64f52cb6471e05d9a69725827920c446015efaf4d11cd934884a6ba6bd90b8a872b4407cf518dee291d8006b2106",
+            "sdkRoot": "Tools/Dotnet/macos/arm64",
+            "archiveType": "tar.gz",
+            "validation": {
+              "executable": "dotnet"
+            }
+          }
+        }
+      }
     }
   }
 }

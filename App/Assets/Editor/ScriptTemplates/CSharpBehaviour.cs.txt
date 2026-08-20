@@ -1,0 +1,14 @@
+using Nullus;
+
+public class #SCRIPTNAME# : Behaviour
+{
+    // Start is called once before the first frame update.
+    private void Start()
+    {
+    }
+
+    // Update is called once per frame.
+    private void Update()
+    {
+    }
+}

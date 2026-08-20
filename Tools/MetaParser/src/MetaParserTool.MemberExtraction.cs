@@ -36,7 +36,14 @@ internal static partial class MetaParserTool
             if (ContainsUnsupportedReflectionType(fieldTypeName) || fieldTypeName.Contains('*', StringComparison.Ordinal))
                 continue;
 
-            fields.Add(new ReflectFieldInfo(propertyName, fieldTypeName, getter.PointerExpression, setter.PointerExpression, getter.IsPrivate || setter.IsPrivate));
+            fields.Add(new ReflectFieldInfo(
+                propertyName,
+                fieldTypeName,
+                getter.PointerExpression,
+                setter.PointerExpression,
+                getter.IsPrivate || setter.IsPrivate,
+                [],
+                getter.IsScriptable || setter.IsScriptable));
         }
 
         return fields;

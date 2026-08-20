@@ -2,6 +2,7 @@
 
 #include "Panels/ComponentSearchPanel.h"
 
+#include "Assets/BuiltInScriptRegistry.h"
 #include "Reflection/RuntimeMetaProperties.h"
 #include "Components/CameraComponent.h"
 #include "Components/Component.h"
@@ -10,8 +11,11 @@
 #include "Components/SkyBoxComponent.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
+#include "Scripting/ScriptComponent.h"
+#include "Assets/ScriptAssetUtility.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -26,6 +30,7 @@ using NLS::Engine::Components::LightComponent;
 using NLS::Engine::Components::MeshRenderer;
 using NLS::Engine::Components::SkyBoxComponent;
 using NLS::Engine::Components::TransformComponent;
+using NLS::Scripting::ScriptComponent;
 using NLS::Engine::GameObject;
 using NLS::meta::Type;
 
@@ -99,6 +104,124 @@ TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesUsesReflectionAndSorts
     ASSERT_GE(entries.size(), 2u);
     for (size_t index = 1; index < entries.size(); ++index)
         EXPECT_LE(entries[index - 1].displayName, entries[index].displayName);
+}
+
+TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesHidesEmptyScriptComponent)
+{
+    auto actor = MakeGameObject();
+    const auto scriptType = Type::GetFromName("NLS::Scripting::ScriptComponent");
+
+    ASSERT_TRUE(scriptType.IsValid());
+    ASSERT_TRUE(scriptType.DerivesFrom(NLS_TYPEOF(Component)));
+    ASSERT_FALSE(scriptType.GetDynamicConstructors().empty());
+
+    const auto entries = ComponentSearchPanel::BuildComponentEntries(&actor);
+    EXPECT_FALSE(ContainsDisplayName(entries, "Script"));
+    EXPECT_FALSE(ComponentSearchPanel::IsTypeAddableToGameObject(scriptType, &actor));
+    EXPECT_EQ(actor.GetComponent<ScriptComponent>(), nullptr);
+}
+
+TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesIncludesImportedCSharpAndLuaScripts)
+{
+    auto actor = MakeGameObject();
+    const auto entries = ComponentSearchPanel::BuildComponentEntries(
+        &actor,
+        {},
+        std::filesystem::path("TestProject/Assets"));
+
+    const auto* csharp = FindEntry(entries, "NewScript (C#)");
+    const auto* lua = FindEntry(entries, "NewScript (Lua)");
+    ASSERT_NE(csharp, nullptr);
+    ASSERT_NE(lua, nullptr);
+    ASSERT_TRUE(csharp->scriptAsset.has_value());
+    ASSERT_TRUE(lua->scriptAsset.has_value());
+    EXPECT_EQ(csharp->scriptAsset->language, NLS::Scripting::ScriptLanguage::CSharp);
+    EXPECT_EQ(lua->scriptAsset->language, NLS::Scripting::ScriptLanguage::Lua);
+    EXPECT_EQ(csharp->scriptAsset->sourcePath, "Assets/NewScript.cs");
+    EXPECT_EQ(lua->scriptAsset->sourcePath, "Assets/NewScript.lua");
+    EXPECT_TRUE(csharp->scriptAsset->isComponent);
+    EXPECT_TRUE(lua->scriptAsset->isComponent);
+}
+
+TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesIncludesRegisteredEngineScripts)
+{
+    NLS::Editor::Assets::BuiltInScriptRegistry::Refresh(std::filesystem::current_path());
+    auto actor = MakeGameObject();
+    const auto entries = ComponentSearchPanel::BuildComponentEntries(&actor);
+    const auto* transformMover = FindEntry(entries, "TransformMover (C#)");
+
+    ASSERT_NE(transformMover, nullptr);
+    ASSERT_TRUE(transformMover->scriptAsset.has_value());
+    EXPECT_TRUE(transformMover->scriptAsset->assetId.IsValid());
+    EXPECT_EQ(transformMover->scriptAsset->sourcePath, "TransformMover.cs");
+    EXPECT_EQ(transformMover->menuPath, "Scripts/Engine/C#");
+    EXPECT_TRUE(transformMover->scriptAsset->isComponent);
+    EXPECT_TRUE(ComponentSearchPanel::TryAddComponentFromEntry(&actor, *transformMover));
+    EXPECT_EQ(actor.GetComponents().size(), 2u);
+
+    const auto* registered = NLS::Editor::Assets::BuiltInScriptRegistry::FindByAssetId(
+        transformMover->scriptAsset->assetId);
+    ASSERT_NE(registered, nullptr);
+    EXPECT_EQ(registered->asset.sourcePath, "TransformMover.cs");
+}
+
+TEST_F(ReflectionRuntimeTestFixture, ScriptImporterDistinguishesComponentsFromUtilitySources)
+{
+    using NLS::Editor::Assets::IsScriptComponentSource;
+    using NLS::Scripting::ScriptLanguage;
+
+    EXPECT_TRUE(IsScriptComponentSource(
+        ScriptLanguage::CSharp,
+        "public sealed class PlayerBehaviour : Nullus.Managed.Behaviour {}"));
+    EXPECT_FALSE(IsScriptComponentSource(
+        ScriptLanguage::CSharp,
+        "public static class MathHelpers { public static int Add(int a, int b) => a + b; }"));
+    EXPECT_FALSE(IsScriptComponentSource(
+        ScriptLanguage::CSharp,
+        "public abstract class BaseBehaviour : Behaviour {}"));
+    EXPECT_FALSE(IsScriptComponentSource(
+        ScriptLanguage::CSharp,
+        "public static class Text { const string Example = \"\"\" class Fake : Behaviour {} \"\"\"; }"));
+
+    EXPECT_TRUE(IsScriptComponentSource(
+        ScriptLanguage::Lua,
+        "local Module = {}; function Module:Update(dt) end; return Module"));
+    EXPECT_TRUE(IsScriptComponentSource(ScriptLanguage::Lua, "return {}"));
+    EXPECT_FALSE(IsScriptComponentSource(
+        ScriptLanguage::Lua,
+        "local function helper() return {} end"));
+    EXPECT_FALSE(IsScriptComponentSource(
+        ScriptLanguage::Lua,
+        "local example = [[return FakeModule]]"));
+}
+
+TEST_F(ReflectionRuntimeTestFixture, AddingConcreteScriptBindsAssetAndAllowsAnotherLanguage)
+{
+    auto actor = MakeGameObject();
+    const auto entries = ComponentSearchPanel::BuildComponentEntries(
+        &actor,
+        {},
+        std::filesystem::path("TestProject/Assets"));
+    const auto* csharp = FindEntry(entries, "NewScript (C#)");
+    const auto* lua = FindEntry(entries, "NewScript (Lua)");
+    ASSERT_NE(csharp, nullptr);
+    ASSERT_NE(lua, nullptr);
+
+    ASSERT_TRUE(ComponentSearchPanel::TryAddComponentFromEntry(&actor, *csharp));
+    ASSERT_TRUE(ComponentSearchPanel::TryAddComponentFromEntry(&actor, *lua));
+
+    size_t scriptCount = 0u;
+    for (const auto& component : actor.GetComponents())
+    {
+        const auto* script = component ? dynamic_cast<const ScriptComponent*>(component.get()) : nullptr;
+        if (script == nullptr)
+            continue;
+        ++scriptCount;
+        EXPECT_TRUE(script->GetScriptAsset().assetId.IsValid());
+    }
+    EXPECT_EQ(scriptCount, 2u);
+
+    EXPECT_FALSE(ComponentSearchPanel::TryAddComponentFromEntry(&actor, *csharp));
 }
 
 TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesFiltersBaseAndTransformTypes)

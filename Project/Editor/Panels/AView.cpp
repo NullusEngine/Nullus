@@ -7,6 +7,8 @@
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Core/RendererStats.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
+#include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/Mesh.h"
 #include "Settings/EditorSettings.h"
 #include "Profiling/Profiler.h"
 #include "ServiceLocator.h"
@@ -630,6 +632,8 @@ uint64_t Editor::Panels::AView::BuildStaticFrameCacheKey(
     HashCombine(seed, static_cast<uint64_t>(width));
     HashCombine(seed, static_cast<uint64_t>(height));
     HashCombine(seed, scene.GetRenderContentRevision());
+    HashCombine(seed, Render::Resources::Material::GetGlobalMutationEpoch());
+    HashCombine(seed, Render::Resources::Mesh::GetGlobalMutationEpoch());
     HashCombine(seed, static_cast<uint64_t>(camera.GetProjectionMode()));
     HashCombine(seed, static_cast<uint64_t>(camera.GetVisibleLayerMask()));
     HashCombine(seed, camera.HasFrustumGeometryCulling() ? 1u : 0u);

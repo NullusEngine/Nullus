@@ -1,4 +1,12 @@
 <Project>
+  <PropertyGroup>
+    <!-- All repository .NET builds are offline by default.  Package restore
+         uses the repository-local NuGet feed configured at the repo root. -->
+    <NuGetAudit>false</NuGetAudit>
+    <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+    <RestoreSources>$(MSBuildThisFileDirectory)Tools/MetaParser/ThirdParty/LocalNuget</RestoreSources>
+    <RestorePackagesPath>$(MSBuildThisFileDirectory)Tools/MetaParser/ThirdParty/.nuget/packages</RestorePackagesPath>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectExtension)' == '.vcxproj'">
     <ForceImportAfterCppTargets>$(MSBuildThisFileDirectory)Build\MSBuild\Nullus.Cpp.After.targets</ForceImportAfterCppTargets>
   </PropertyGroup>

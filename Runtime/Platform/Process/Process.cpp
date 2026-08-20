@@ -44,6 +44,53 @@ namespace NLS::Platform::Process
 
 #ifdef _WIN32
 
+namespace
+{
+std::string QuoteWindowsCommandLineArgument(const std::string& value)
+{
+    // CommandLineToArgvW/CreateProcess use backslashes before quotes as
+    // escapes. Preserve them so /Command arguments remain valid for paths
+    // containing spaces, quotes, or trailing separators.
+    //
+    // Visual Studio's devenv parser also expects switches such as /Command
+    // to remain plain command-line tokens. Quoting a token that has no
+    // whitespace or embedded quote is unnecessary and makes devenv treat
+    // some switches as file names.
+    if (!value.empty())
+    {
+        const bool needsQuotes = value.find_first_of(" \t\r\n\"") != std::string::npos;
+        if (!needsQuotes)
+            return value;
+    }
+
+    std::string result;
+    result.reserve(value.size() + 2u);
+    result.push_back('"');
+    size_t backslashes = 0;
+    for (const char character : value)
+    {
+        if (character == '\\')
+        {
+            ++backslashes;
+            continue;
+        }
+        if (character == '"')
+        {
+            result.append(backslashes * 2u + 1u, '\\');
+            result.push_back('"');
+            backslashes = 0;
+            continue;
+        }
+        result.append(backslashes, '\\');
+        backslashes = 0;
+        result.push_back(character);
+    }
+    result.append(backslashes * 2u, '\\');
+    result.push_back('"');
+    return result;
+}
+}
+
 ProcessLaunchResult Launch(
     const std::filesystem::path& executablePath,
     const std::vector<std::string>& arguments)
@@ -57,18 +104,12 @@ ProcessLaunchResult Launch(
         return result;
     }
 
-    // Build command line: "executable" arg1 arg2 ...
-    // All arguments are quoted to handle spaces
-    auto quote = [](const std::string& s) -> std::string
-    {
-        return "\"" + s + "\"";
-    };
-
-    std::string cmdLine = quote(executablePath.string());
+    // Build a Windows command line with correct backslash/quote escaping.
+    std::string cmdLine = QuoteWindowsCommandLineArgument(executablePath.string());
     for (const auto& arg : arguments)
     {
         cmdLine += " ";
-        cmdLine += quote(arg);
+        cmdLine += QuoteWindowsCommandLineArgument(arg);
     }
 
     STARTUPINFOA si = {};

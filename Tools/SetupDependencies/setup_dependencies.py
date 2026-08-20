@@ -13,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, TextIO
 from urllib.parse import urlparse
@@ -36,6 +37,7 @@ DOWNLOAD_RETRY_COUNT = 3
 DOWNLOAD_TIMEOUT_SECONDS = 60
 INSTALLER_TIMEOUT_SECONDS = 30 * 60
 OFFICIAL_AUTODESK_PACKAGE_HOST = "damassets.autodesk.net"
+OFFICIAL_DOTNET_PACKAGE_HOST = "builds.dotnet.microsoft.com"
 FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
@@ -62,6 +64,21 @@ class PlatformPackage:
     validation: Dict
     eula: Dict
     arch: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class DotnetPackage:
+    dependency_id: str
+    dependency_name: str
+    version: str
+    platform_key: str
+    arch: str
+    url: str
+    file_name: str
+    sha512: str
+    sdk_root: Path
+    archive_type: str
+    validation: Dict
 
 
 def find_repo_root(start: Optional[Path] = None) -> Path:
@@ -98,6 +115,9 @@ def resolve_package(
     platform_key: Optional[str],
     arch: Optional[str] = None,
 ) -> PlatformPackage:
+    if dependency_id == "dotnet-sdk":
+        return resolve_dotnet_package(manifest, platform_key, arch)  # type: ignore[return-value]
+
     dependencies = manifest.get("dependencies", {})
     dependency = dependencies.get(dependency_id)
     if not dependency:
@@ -137,6 +157,112 @@ def resolve_package(
         validation=dict(_required_manifest_mapping(data, "validation", selected_platform)),
         eula=dict(dependency.get("eula", {})),
         arch=selected_arch,
+    )
+
+
+def detect_host_arch() -> str:
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    if machine in {"x86_64", "amd64", "x64", "i686", "i386", "x86"}:
+        return "x64"
+    raise SetupError(
+        f"Unsupported host architecture '{platform.machine()}'. Supported architectures: x64, arm64"
+    )
+
+
+def _validated_manifest_sha512(value: str, platform_key: str) -> str:
+    normalized = value.lower()
+    if len(normalized) != 128 or any(character not in "0123456789abcdef" for character in normalized):
+        raise SetupError(f"Manifest SHA512 for {platform_key} must be a 128-character hexadecimal digest.")
+    return normalized
+
+
+def _validated_dotnet_sdk_root(value: str, platform_key: str, arch: str) -> Path:
+    normalized = value.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    expected = PurePosixPath("Tools") / "Dotnet" / platform_key / arch
+    if path.is_absolute() or ".." in path.parts or path != expected:
+        raise SetupError(
+            f"Manifest sdkRoot for {platform_key}/{arch} must be exactly {expected}; got '{value}'."
+        )
+    return Path(*path.parts)
+
+
+def _validate_dotnet_install_root(value: object) -> None:
+    if not isinstance(value, str):
+        raise SetupError("Manifest installRoot for dotnet-sdk must be Tools/Dotnet.")
+    normalized = value.replace("\\", "/")
+    if PurePosixPath(normalized) != PurePosixPath("Tools") / "Dotnet":
+        raise SetupError(f"Manifest installRoot for dotnet-sdk must be Tools/Dotnet; got '{value}'.")
+
+
+def resolve_dotnet_package(
+    manifest: Mapping,
+    platform_key: Optional[str],
+    arch: Optional[str] = None,
+) -> DotnetPackage:
+    dependency = manifest.get("dependencies", {}).get("dotnet-sdk")
+    if not dependency:
+        raise SetupError("Dependency manifest does not contain the dotnet-sdk package.")
+    _validate_dotnet_install_root(dependency.get("installRoot"))
+
+    selected_platform = platform_key or detect_platform()
+    platforms = dependency.get("platforms", {})
+    platform_data = platforms.get(selected_platform)
+    if not isinstance(platform_data, Mapping):
+        known = ", ".join(sorted(platforms)) or "<none>"
+        raise SetupError(f"Unsupported platform '{selected_platform}'. Supported platforms: {known}")
+
+    selected_arch = (arch or detect_host_arch()).lower()
+    if selected_arch not in {"x64", "arm64"}:
+        raise SetupError(".NET SDK architecture must be x64 or arm64.")
+    data = platform_data.get(selected_arch)
+    if not isinstance(data, Mapping):
+        known = ", ".join(sorted(str(key) for key in platform_data)) or "<none>"
+        raise SetupError(
+            f"Unsupported .NET SDK architecture '{selected_arch}' on {selected_platform}. Supported: {known}"
+        )
+
+    url = _required_manifest_field(data, "url", f"{selected_platform}/{selected_arch}")
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != OFFICIAL_DOTNET_PACKAGE_HOST:
+        raise SetupError(
+            f"Manifest url for {selected_platform}/{selected_arch} must use https://{OFFICIAL_DOTNET_PACKAGE_HOST}; got '{url}'."
+        )
+    file_name = _validated_manifest_file_name(
+        _required_manifest_field(data, "fileName", f"{selected_platform}/{selected_arch}"),
+        f"{selected_platform}/{selected_arch}",
+    )
+    sha512 = _validated_manifest_sha512(
+        _required_manifest_field(data, "sha512", f"{selected_platform}/{selected_arch}"),
+        f"{selected_platform}/{selected_arch}",
+    )
+    sdk_root = _validated_dotnet_sdk_root(
+        _required_manifest_field(data, "sdkRoot", f"{selected_platform}/{selected_arch}"),
+        selected_platform,
+        selected_arch,
+    )
+    archive_type = _required_manifest_field(data, "archiveType", f"{selected_platform}/{selected_arch}")
+    if archive_type not in {"zip", "tar.gz"}:
+        raise SetupError(f"Unsupported .NET SDK archive type '{archive_type}'.")
+    validation = dict(_required_manifest_mapping(data, "validation", f"{selected_platform}/{selected_arch}"))
+    executable = str(validation.get("executable", ""))
+    if executable not in {"dotnet", "dotnet.exe"}:
+        raise SetupError(".NET SDK validation.executable must be dotnet or dotnet.exe.")
+
+    return DotnetPackage(
+        dependency_id="dotnet-sdk",
+        dependency_name=str(dependency.get("name", ".NET SDK")),
+        version=str(dependency.get("version", "")),
+        platform_key=selected_platform,
+        arch=selected_arch,
+        url=url,
+        file_name=file_name,
+        sha512=sha512,
+        sdk_root=sdk_root,
+        archive_type=archive_type,
+        validation=validation,
     )
 
 
@@ -232,6 +358,24 @@ def verify_package_hash(path: Path, expected_sha256: str) -> str:
     if actual != expected:
         raise SetupError(
             f"Package hash mismatch for {path}. Expected SHA256 {expected}, actual SHA256 {actual}."
+        )
+    return actual
+
+
+def hash_file_sha512(path: Path) -> str:
+    digest = hashlib.sha512()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().lower()
+
+
+def verify_package_sha512(path: Path, expected_sha512: str) -> str:
+    actual = hash_file_sha512(path)
+    expected = expected_sha512.lower()
+    if actual != expected:
+        raise SetupError(
+            f"Package SHA512 mismatch for {path}. Expected SHA512 {expected}, actual SHA512 {actual}."
         )
     return actual
 
@@ -402,6 +546,79 @@ def prepare_package(
     return package_path
 
 
+def resolve_dotnet_sdk_root(repo_root: Path, package: DotnetPackage) -> Path:
+    root = repo_root.resolve()
+    sdk_root = root / package.sdk_root
+    allowed_root = root / "Tools" / "Dotnet" / package.platform_key / package.arch
+    if sdk_root != allowed_root:
+        raise SetupError(f"Resolved .NET SDK root must be {allowed_root}; got {sdk_root}.")
+    _reject_symlinked_sdk_path(root, sdk_root)
+    return sdk_root
+
+
+def validate_dotnet_sdk_root(repo_root: Path, package: DotnetPackage) -> Path:
+    sdk_root = resolve_dotnet_sdk_root(repo_root, package)
+    executable = sdk_root / str(package.validation["executable"])
+    if not executable.is_file():
+        raise SetupError(f".NET SDK root '{sdk_root}' is incomplete; missing {package.validation['executable']}.")
+
+    environment = os.environ.copy()
+    environment["DOTNET_ROOT"] = str(sdk_root)
+    environment["DOTNET_MULTILEVEL_LOOKUP"] = "0"
+    try:
+        result = subprocess.run(
+            [str(executable), "--version"],
+            cwd=str(sdk_root),
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise SetupError(f"Unable to execute the .NET SDK at {executable}.") from exc
+
+    version = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    if version != package.version:
+        raise SetupError(
+            f".NET SDK at {sdk_root} reports version {version or '<unknown>'}; expected {package.version}."
+        )
+    return executable
+
+
+def resolve_dotnet_cache_dir(
+    repo_root: Path,
+    environ: Mapping[str, str],
+    args: Optional[argparse.Namespace] = None,
+) -> Path:
+    if args is not None and args.cache_dir:
+        return Path(args.cache_dir)
+    if environ.get("NLS_DOTNET_CACHE"):
+        return Path(environ["NLS_DOTNET_CACHE"])
+    return repo_root / "Tools" / "Dotnet" / "packages"
+
+
+def prepare_dotnet_package(
+    package: DotnetPackage,
+    package_path: Path,
+    stdout: TextIO,
+    downloader: Callable[[DotnetPackage, Path, TextIO], None] = download_package,
+) -> Path:
+    if package_path.exists():
+        verify_package_sha512(package_path, package.sha512)
+        print(f"Using verified cached package: {package_path}", file=stdout)
+        return package_path
+
+    downloader(package, package_path, stdout)  # type: ignore[arg-type]
+    try:
+        verify_package_sha512(package_path, package.sha512)
+    except SetupError:
+        package_path.unlink(missing_ok=True)
+        raise
+    print(f"Verified downloaded package: {package_path}", file=stdout)
+    return package_path
+
+
 def prompt_accepts_eula(package: PlatformPackage, input_func: Callable[[str], str], stdout: TextIO) -> bool:
     eula_url = package.eula.get("url", package.url)
     print(f"{package.dependency_name} requires accepting Autodesk's EULA before download/install.", file=stdout)
@@ -521,6 +738,162 @@ def safe_extract_tar(archive: tarfile.TarFile, destination: Path) -> None:
     archive.extractall(destination_root)
 
 
+def safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
+    destination_root = destination.resolve()
+    for member in archive.infolist():
+        member_path = PurePosixPath(member.filename.replace("\\", "/"))
+        if (
+            member_path.is_absolute()
+            or ".." in member_path.parts
+            or (member_path.parts and ":" in member_path.parts[0])
+        ):
+            raise SetupError(f"Refusing to extract unsafe archive member: {member.filename}")
+        target = (destination_root / Path(*member_path.parts)).resolve()
+        if target != destination_root and destination_root not in target.parents:
+            raise SetupError(f"Refusing to extract unsafe archive member: {member.filename}")
+        unix_mode = (member.external_attr >> 16) & 0o170000
+        if unix_mode == stat.S_IFLNK:
+            raise SetupError(f"Refusing to extract unsafe archive member type: {member.filename}")
+    archive.extractall(destination_root)
+
+
+def _find_dotnet_payload_root(root: Path, executable_name: str) -> Path:
+    direct = root / executable_name
+    if direct.is_file():
+        return root
+    matches = [path for path in root.rglob(executable_name) if path.is_file()]
+    if len(matches) != 1:
+        raise SetupError(
+            f"Expected exactly one {executable_name} in the .NET SDK archive; found {len(matches)}."
+        )
+    return matches[0].parent
+
+
+def install_dotnet_package(
+    package: DotnetPackage,
+    package_path: Path,
+    repo_root: Path,
+    stdout: TextIO,
+) -> None:
+    sdk_root = resolve_dotnet_sdk_root(repo_root, package)
+    sdk_root.parent.mkdir(parents=True, exist_ok=True)
+    executable_name = str(package.validation["executable"])
+    with tempfile.TemporaryDirectory(prefix="nullus-dotnet-", dir=str(sdk_root.parent)) as temp_dir:
+        temp_root = Path(temp_dir)
+        payload_root = temp_root / "payload"
+        payload_root.mkdir()
+        if package.archive_type == "zip":
+            with zipfile.ZipFile(package_path, "r") as archive:
+                safe_extract_zip(archive, payload_root)
+        elif package.archive_type == "tar.gz":
+            with tarfile.open(package_path, "r:gz") as archive:
+                safe_extract_tar(archive, payload_root)
+        else:
+            raise SetupError(f"Unsupported .NET SDK archive type '{package.archive_type}'.")
+
+        source_root = _find_dotnet_payload_root(payload_root, executable_name)
+        backup_root: Optional[Path] = None
+        if sdk_root.exists():
+            if sdk_root.is_symlink() or _is_windows_reparse_point(sdk_root):
+                raise UnsafeSdkPathError(f"Refusing to replace .NET SDK through a link: {sdk_root}")
+            if not sdk_root.is_dir():
+                raise SetupError(f"Refusing to replace non-directory .NET SDK path: {sdk_root}")
+            backup_root = sdk_root.parent / f"{sdk_root.name}.backup"
+            if backup_root.exists():
+                raise SetupError(f"Refusing to overwrite an existing SDK backup directory: {backup_root}")
+            sdk_root.replace(backup_root)
+        try:
+            shutil.move(str(source_root), str(sdk_root))
+        except Exception:
+            if backup_root is not None and backup_root.exists() and not sdk_root.exists():
+                backup_root.replace(sdk_root)
+            raise
+        if backup_root is not None:
+            shutil.rmtree(backup_root)
+
+    if not sdk_root.joinpath(executable_name).is_file():
+        raise SetupError(f"Installed .NET SDK is missing {executable_name}: {sdk_root}")
+    if package.platform_key != "windows":
+        executable = sdk_root / executable_name
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    print(f"Installed .NET SDK {package.version} to {sdk_root}", file=stdout)
+
+
+def write_dotnet_wrapper(repo_root: Path, package: DotnetPackage) -> Path:
+    wrapper_root = repo_root / "Tools" / "Dotnet"
+    wrapper_root.mkdir(parents=True, exist_ok=True)
+    relative_root = Path(package.platform_key) / package.arch
+    if package.platform_key == "windows":
+        wrapper = wrapper_root / "dotnet.cmd"
+        wrapper.write_text(
+            "@echo off\r\n"
+            f"set \"NLS_DOTNET_ROOT=%~dp0{relative_root.as_posix().replace('/', chr(92))}\"\r\n"
+            f"\"%NLS_DOTNET_ROOT%\\dotnet.exe\" %*\r\n",
+            encoding="ascii",
+        )
+    else:
+        wrapper = wrapper_root / "dotnet"
+        wrapper.write_text(
+            "#!/usr/bin/env sh\n"
+            "set -eu\n"
+            f"exec \"$(CDPATH= cd \"$(dirname \"$0\")\" && pwd)/{relative_root.as_posix()}/dotnet\" \"$@\"\n",
+            encoding="ascii",
+        )
+        wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return wrapper
+
+
+def run_dotnet_setup(
+    args: argparse.Namespace,
+    environ: Mapping[str, str],
+    stdout: TextIO,
+) -> int:
+    repo_root = Path(args.repo_root).resolve() if args.repo_root else find_repo_root()
+    manifest = load_manifest(Path(args.manifest))
+    package = resolve_dotnet_package(manifest, args.platform, args.arch)
+
+    try:
+        executable = validate_dotnet_sdk_root(repo_root, package)
+        if not args.force:
+            if not args.validate_only:
+                write_dotnet_wrapper(repo_root, package)
+            print(f"{package.dependency_name} {package.version} is already valid: {executable}", file=stdout)
+            return 0
+    except UnsafeSdkPathError:
+        raise
+    except SetupError:
+        if args.validate_only:
+            raise
+
+    if args.validate_only:
+        print(f"{package.dependency_name} SDK root is valid.", file=stdout)
+        return 0
+
+    cache_dir = resolve_dotnet_cache_dir(repo_root, environ, args)
+    package_path = cache_dir / package.file_name
+    if args.dry_run:
+        print(
+            f"Dry run: would prepare {package.dependency_name} {package.version} "
+            f"for {package.platform_key} ({package.arch}) at {repo_root / package.sdk_root}",
+            file=stdout,
+        )
+        print(f"Dry run: would use package cache {cache_dir}", file=stdout)
+        print("Dry run: No files were modified.", file=stdout)
+        return 0
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    prepare_dotnet_package(package, package_path, stdout)
+    try:
+        install_dotnet_package(package, package_path, repo_root, stdout)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        raise SetupError(f"Failed to extract or install the .NET SDK package: {package_path}") from exc
+    executable = validate_dotnet_sdk_root(repo_root, package)
+    wrapper = write_dotnet_wrapper(repo_root, package)
+    print(f"{package.dependency_name} {package.version} installed and validated: {executable}", file=stdout)
+    print(f"Use the repository-local launcher: {wrapper}", file=stdout)
+    return 0
+
+
 def run_setup(
     args: argparse.Namespace,
     environ: Mapping[str, str],
@@ -528,6 +901,11 @@ def run_setup(
     stdout: TextIO,
 ) -> int:
     repo_root = Path(args.repo_root).resolve() if args.repo_root else find_repo_root()
+    if getattr(args, "setup_dotnet", False):
+        args.dependency = "dotnet-sdk"
+    if args.dependency == "dotnet-sdk":
+        return run_dotnet_setup(args, environ, stdout)
+
     manifest = load_manifest(Path(args.manifest))
     package = resolve_package(manifest, args.dependency, args.platform, args.arch)
 
@@ -574,6 +952,11 @@ def run_setup(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare Nullus source dependencies.")
     parser.add_argument("--dependency", default="autodesk-fbx-sdk")
+    parser.add_argument(
+        "--setup-dotnet",
+        action="store_true",
+        help="Install the pinned repository-local .NET 8 SDK (equivalent to --dependency dotnet-sdk).",
+    )
     parser.add_argument("--platform", choices=("windows", "linux", "macos"))
     parser.add_argument("--arch", type=str.lower, choices=("x64", "arm64"), help="Windows SDK architecture to validate/install")
     parser.add_argument("--accept-autodesk-eula", action="store_true")

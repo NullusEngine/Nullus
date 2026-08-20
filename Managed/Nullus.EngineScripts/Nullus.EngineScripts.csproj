@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>EngineScripts</AssemblyName>
+    <RootNamespace>Nullus.EngineScripts</RootNamespace>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <RuntimeFrameworkVersion>8.0.0</RuntimeFrameworkVersion>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize Condition="'$(Configuration)' == 'Debug'">false</Optimize>
+    <Deterministic>true</Deterministic>
+    <DefineConstants>$(DefineConstants);NLS_ENGINE_SCRIPTS_PROJECT</DefineConstants>
+    <NullusUsePrebuiltScriptGenerator Condition="'$(NullusUsePrebuiltScriptGenerator)' == ''">false</NullusUsePrebuiltScriptGenerator>
+    <NullusUsePrebuiltScriptGenerator Condition="'$(BuildingInsideVisualStudio)' == 'true'">true</NullusUsePrebuiltScriptGenerator>
+    <NullusForceScriptGenerator Condition="'$(NullusForceScriptGenerator)' == ''">false</NullusForceScriptGenerator>
+    <NullusScriptGeneratorPath Condition="'$(NullusScriptGeneratorPath)' == ''">$(MSBuildProjectDirectory)\..\..\build-scripting-vs5\Managed\Debug\Nullus.ScriptGenerator.dll</NullusScriptGeneratorPath>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="EngineScriptsMarker.cs" />
+    <Compile Include="Scripts/**/*.cs" Condition="Exists('$(MSBuildProjectDirectory)/Scripts')" />
+    <ProjectReference Include="..\Nullus.Managed\Nullus.Managed.csproj" />
+    <ProjectReference Include="..\Nullus.ScriptGenerator\Nullus.ScriptGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      Condition="'$(NullusUsePrebuiltScriptGenerator)' != 'true'" />
+    <Analyzer Include="$(NullusScriptGeneratorPath)"
+              Condition="'$(NullusUsePrebuiltScriptGenerator)' == 'true' and ('$(BuildingInsideVisualStudio)' != 'true' or '$(NullusForceScriptGenerator)' == 'true')" />
+    <AdditionalFiles Include="$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json"
+                     Condition="Exists('$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json')" />
+  </ItemGroup>
+</Project>

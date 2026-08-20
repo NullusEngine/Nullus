@@ -38,8 +38,15 @@ Runtime/*/Gen/
 Project/*/Gen/
 
 # C# build artifacts
+Managed/**/bin/
+Managed/**/obj/
+Managed/Nullus.GameScripts/Generated/
 Tools/MetaParser/src/bin/
 Tools/MetaParser/src/obj/
+Tools/Debug/**/bin/
+Tools/Debug/**/obj/
+Tools/Debug/**/*.vsix
+Tools/MetaParser/ThirdParty/.nuget/packages/
 
 # Legacy tool output folder
 Tools/Tool/
@@ -67,3 +74,20 @@ specs/.tmp/
 # Autodesk FBX SDK local payloads. Keep ThirdParty/FBX/README.md tracked.
 ThirdParty/FBX/packages/
 ThirdParty/FBX/sdk/
+
+# Repository-local .NET SDK bootstrap payloads.
+Tools/Dotnet/packages/
+Tools/Dotnet/windows/
+Tools/Dotnet/linux/
+Tools/Dotnet/macos/
+Tools/Dotnet/dotnet
+Tools/Dotnet/dotnet.cmd
+
+# Local validation scratch and generated package feeds.
+.tmp-dotnet-home/
+tmp/
+tmp-*.log
+vc140.pdb
+Tools/Dotnet/.cli-home/
+Tools/MetaParser/ThirdParty/LocalNuget/*.nupkg
+Managed/**/*.csproj.user

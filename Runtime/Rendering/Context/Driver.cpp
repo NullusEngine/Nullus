@@ -62,6 +62,27 @@ namespace
 {
     constexpr const char* kDriverTelemetryDelimiter = " | driver: ";
 
+    bool PipelineRequiresBindingSet(
+        const RHI::RHIGraphicsPipelineDesc& pipelineDesc,
+        const uint32_t setIndex)
+    {
+        if (pipelineDesc.pipelineLayout == nullptr)
+            return false;
+
+        for (const auto& bindingLayout : pipelineDesc.pipelineLayout->GetDesc().bindingLayouts)
+        {
+            if (bindingLayout == nullptr)
+                continue;
+            for (const auto& entry : bindingLayout->GetDesc().entries)
+            {
+                if (entry.set == setIndex)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
     std::mutex& GetUnsafeGpuWorkQuarantineKeepAliveMutex()
     {
         static std::mutex mutex;
@@ -1233,6 +1254,19 @@ namespace
         }
 
         const auto& pipelineDesc = drawCommand.pipeline->GetDesc();
+        const bool requiresObjectBindingSet = PipelineRequiresBindingSet(
+            pipelineDesc,
+            ::NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet);
+        if (requiresObjectBindingSet && drawCommand.objectBindingSet == nullptr)
+        {
+            NLS_LOG_ERROR(
+                "[Driver] recorded draw rejected: pipeline requires object descriptor set " +
+                std::to_string(::NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet) +
+                " but no object binding set was captured; pipeline=" + pipelineDesc.debugName +
+                " usesObjectIndex=" + std::to_string(drawCommand.usesObjectIndex ? 1u : 0u));
+            return false;
+        }
+
         if (ShouldLogThreadedRenderingDiagnostics() &&
             pipelineDesc.renderTargetLayout.hasDepth &&
             (!passInput.usesDepthStencilAttachment || passInput.depthStencilAttachmentView == nullptr))

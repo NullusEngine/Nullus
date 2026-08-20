@@ -20,6 +20,7 @@ void LightComponent::OnCreate()
 void LightComponent::SetLightType(Render::Settings::ELightType type)
 {
 	m_data->type = type;
+	MarkRenderStateChanged();
 }
 
 const Render::Entities::Light* LightComponent::GetData() const
@@ -40,11 +41,13 @@ float LightComponent::GetIntensity() const
 void LightComponent::SetColor(const Maths::Vector3& p_color)
 {
 	m_data->color = p_color;
+	MarkRenderStateChanged();
 }
 
 void LightComponent::SetIntensity(float p_intensity)
 {
 	m_data->intensity = p_intensity;
+	MarkRenderStateChanged();
 }
 
 float LightComponent::GetRange() const
@@ -55,6 +58,7 @@ float LightComponent::GetRange() const
 void LightComponent::SetRange(float p_range)
 {
 	m_data->range = std::isfinite(p_range) ? std::max(p_range, 0.0f) : 0.0f;
+	MarkRenderStateChanged();
 }
 
 float LightComponent::GetCutoff() const
@@ -70,11 +74,13 @@ float LightComponent::GetOuterCutoff() const
 void LightComponent::SetCutoff(float p_cutoff)
 {
 	m_data->cutoff = p_cutoff;
+	MarkRenderStateChanged();
 }
 
 void LightComponent::SetOuterCutoff(float p_outerCutoff)
 {
 	m_data->outerCutoff = p_outerCutoff;
+	MarkRenderStateChanged();
 }
 
 Maths::Vector3 LightComponent::GetSize() const
@@ -85,6 +91,7 @@ Maths::Vector3 LightComponent::GetSize() const
 void LightComponent::SetSize(const Maths::Vector3& p_size)
 {
 	m_data->size = p_size;
+	MarkRenderStateChanged();
 }
 
 Render::Settings::ELightType LightComponent::GetLightType() const

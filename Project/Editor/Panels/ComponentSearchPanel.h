@@ -2,17 +2,25 @@
 
 #include <string>
 #include <string_view>
+#include <filesystem>
+#include <optional>
 #include <vector>
 
 #include <Eventing/Event.h>
 #include <UI/Widgets/AWidget.h>
 #include <Reflection/Type.h>
+#include <Scripting/ScriptTypes.h>
 
 struct ImVec2;
 
 namespace NLS::Engine
 {
 class GameObject;
+}
+
+namespace NLS::Scripting
+{
+class ScriptRuntime;
 }
 
 namespace NLS::Editor::Panels
@@ -23,6 +31,9 @@ struct ComponentSearchEntry
     std::string displayName;
     std::string menuPath;
     std::string searchKey;
+    // Concrete project script. The component type remains the shared
+    // ScriptComponent so all languages use the same native lifecycle.
+    std::optional<NLS::Scripting::ScriptAsset> scriptAsset;
     bool isAddable = false;
     std::string availabilityReason;
 };
@@ -59,7 +70,11 @@ public:
     static std::string MakeDisplayName(const meta::Type& p_type);
     static std::string GetComponentMenuPath(const meta::Type& p_type);
     static bool IsTypeAddableToGameObject(const meta::Type& p_type, const Engine::GameObject* p_GameObject);
-    static std::vector<ComponentSearchEntry> BuildComponentEntries(Engine::GameObject* p_GameObject, std::string_view p_query = {});
+    static std::vector<ComponentSearchEntry> BuildComponentEntries(
+        Engine::GameObject* p_GameObject,
+        std::string_view p_query = {},
+        const std::filesystem::path& p_projectAssetsFolder = {},
+        const NLS::Scripting::ScriptRuntime* p_scriptRuntime = nullptr);
     static std::vector<ComponentCategoryNode> BuildCategoryTree(const std::vector<ComponentSearchEntry>& p_entries);
     static ComponentPickerViewMode GetViewModeForQuery(std::string_view p_query);
     static bool TryAddComponentFromEntry(Engine::GameObject* p_GameObject, const ComponentSearchEntry& p_entry);

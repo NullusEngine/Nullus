@@ -991,7 +991,6 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	const auto synchronizationStamp = BuildSceneSynchronizationStamp(scene, options);
 	const bool canReuseSceneSynchronization =
 		options.trustSceneRenderContentRevision &&
-		!scene.IsPlaying() &&
 		!fastAccessMembershipChanged &&
 		m_lastSceneSynchronizationStamp.has_value() &&
 		*m_lastSceneSynchronizationStamp == synchronizationStamp &&

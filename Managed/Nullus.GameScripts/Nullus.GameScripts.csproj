@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>GameScripts</AssemblyName>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <RuntimeFrameworkVersion>8.0.0</RuntimeFrameworkVersion>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize Condition="'$(Configuration)' == 'Debug'">false</Optimize>
+    <Deterministic>true</Deterministic>
+    <DefineConstants>$(DefineConstants);NLS_GAME_SCRIPTS_PROJECT</DefineConstants>
+    <NullusEngineScriptsPath Condition="'$(NullusEngineScriptsPath)' == ''">$(MSBuildProjectDirectory)\..\Nullus.EngineScripts\bin\$(Configuration)\net8.0\EngineScripts.dll</NullusEngineScriptsPath>
+    <NullusUsePrebuiltScriptGenerator Condition="'$(NullusUsePrebuiltScriptGenerator)' == ''">false</NullusUsePrebuiltScriptGenerator>
+    <NullusUsePrebuiltScriptGenerator Condition="'$(BuildingInsideVisualStudio)' == 'true'">true</NullusUsePrebuiltScriptGenerator>
+    <NullusForceScriptGenerator Condition="'$(NullusForceScriptGenerator)' == ''">false</NullusForceScriptGenerator>
+    <NullusScriptGeneratorPath Condition="'$(NullusScriptGeneratorPath)' == ''">$(MSBuildProjectDirectory)\..\..\build-scripting-vs5\Managed\Debug\Nullus.ScriptGenerator.dll</NullusScriptGeneratorPath>
+    <!-- The editor passes NullusProjectAssets for a real project. Keep the
+         repository sample as the offline default so a normal build still
+         exercises project-script imports. -->
+    <NullusProjectAssets Condition="'$(NullusProjectAssets)' == ''">$(MSBuildProjectDirectory)\..\..\TestProject\Assets</NullusProjectAssets>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="GameScriptsMarker.cs" />
+    <Compile Include="$(NullusProjectAssets)/**/*.cs"
+             Condition="Exists('$(NullusProjectAssets)')"
+             Exclude="$(MSBuildProjectDirectory)/**/*.cs"
+             Link="Assets\%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- Visual Studio is an external editor/debug client. The running Editor
+         builds the runtime assembly with the repository-local SDK and source
+         generator; keeping the native export marker out of the IDE-only build
+         avoids loading a net8 analyzer into VS's compiler process. -->
+    <Compile Remove="GameScriptsMarker.cs"
+             Condition="'$(BuildingInsideVisualStudio)' == 'true' and '$(NullusForceScriptGenerator)' != 'true'" />
+    <ProjectReference Include="..\Nullus.Managed\Nullus.Managed.csproj" />
+    <ProjectReference Include="..\Nullus.ScriptAnalysis\Nullus.ScriptAnalysis.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      Condition="'$(NullusUseScriptAnalysis)' == 'true' and '$(BuildingInsideVisualStudio)' != 'true'" />
+    <Reference Include="EngineScripts" HintPath="$(NullusEngineScriptsPath)" Private="true" Condition="Exists('$(NullusEngineScriptsPath)')" />
+    <ProjectReference Include="..\Nullus.ScriptGenerator\Nullus.ScriptGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      Condition="'$(NullusUsePrebuiltScriptGenerator)' != 'true'" />
+    <Analyzer Include="$(NullusScriptGeneratorPath)"
+              Condition="'$(NullusUsePrebuiltScriptGenerator)' == 'true' and ('$(BuildingInsideVisualStudio)' != 'true' or '$(NullusForceScriptGenerator)' == 'true')" />
+    <AdditionalFiles Include="$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json" Condition="Exists('$(MSBuildProjectDirectory)\..\..\Library\ScriptApi\ScriptApi.json')" />
+  </ItemGroup>
+</Project>

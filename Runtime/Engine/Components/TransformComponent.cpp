@@ -145,6 +145,7 @@ uint64_t TransformComponent::GetRenderRevision() const
 void TransformComponent::MarkRenderTransformChanged()
 {
     ++m_renderRevision;
+    Component::MarkRenderStateChanged();
 }
 
 Maths::Vector3 TransformComponent::GetWorldForward() const

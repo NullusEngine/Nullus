@@ -2,6 +2,7 @@
 
 
 #include <unordered_set>
+#include <Eventing/Event.h>
 
 #include "GameObject.h"
 #include "Components/CameraComponent.h"
@@ -23,6 +24,10 @@ namespace NLS::Engine::SceneSystem
 	{
     public:
 		GENERATED_BODY()
+		// Engine publishes a type-agnostic component notification. Higher-level
+		// Contexts can bind optional systems such as scripting without creating a
+		// reverse dependency from Engine to those systems.
+		NLS::Event<Components::Component*> ComponentAddedEvent;
         enum class AddGameObjectActivation
         {
             Immediate,
@@ -54,8 +59,13 @@ namespace NLS::Engine::SceneSystem
 		/**
 		* Play the scene
 		*/
-        FUNCTION()
+		FUNCTION()
 		void Play();
+
+		/**
+		* Stop the scene and leave it in edit mode.
+		*/
+		void Stop();
 
 		/**
 		* Returns true if the scene is playing

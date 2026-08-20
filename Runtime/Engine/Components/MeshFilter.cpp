@@ -81,6 +81,7 @@ MeshFilter::~MeshFilter() = default;
 void MeshFilter::NotifyMeshChanged()
 {
     ++m_renderRevision;
+    Component::MarkRenderStateChanged();
     if (m_owner)
     {
         if (auto meshRenderer = m_owner->GetComponent<MeshRenderer>())

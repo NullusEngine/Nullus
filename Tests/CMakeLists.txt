@@ -69,6 +69,7 @@ function(nls_configure_test_target target_name)
         NLS_Render
         NLS_UI
         NLS_Engine
+        NLS_Scripting
         EditorProject
         GameProject
         LauncherProject
@@ -85,8 +86,10 @@ function(nls_configure_test_target target_name)
         target_link_libraries(${target_name} PRIVATE Comctl32)
     endif()
 
-    if(TARGET EditorProject_MetaGenerated)
-        add_dependencies(${target_name} EditorProject_MetaGenerated)
+    if(TARGET EditorProject)
+        # EditorProject owns its generated source custom commands. Depend on
+        # the real target rather than a generated-only wrapper project.
+        add_dependencies(${target_name} EditorProject)
     endif()
 
     set_target_properties(${target_name} PROPERTIES

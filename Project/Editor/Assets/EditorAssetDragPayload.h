@@ -24,6 +24,7 @@ struct EditorAssetDragPayload
     uint32_t artifactType = static_cast<uint32_t>(NLS::Core::Assets::ArtifactType::Unknown);
     uint8_t generatedModelPrefab = 0u;
     uint8_t imported = 0u;
+    uint8_t scriptAsset = 0u;
     uint8_t reserved = 0u;
     uint8_t generatedBrowserSubAsset = 0u;
 };
@@ -66,5 +67,6 @@ std::string GetEditorAssetDragPayloadSubAssetKey(const EditorAssetDragPayload& p
 NLS::Core::Assets::AssetId GetEditorAssetDragPayloadAssetId(const EditorAssetDragPayload& payload);
 NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const EditorAssetDragPayload& payload);
 bool IsEditorAssetDragPayloadGeneratedBrowserSubAsset(const EditorAssetDragPayload& payload);
+bool IsEditorAssetDragPayloadScript(const EditorAssetDragPayload& payload);
 bool CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(const EditorAssetDragPayload& payload);
 }

@@ -42,6 +42,7 @@ target_link_libraries(
   EditorProject
   PUBLIC
     NLS_Engine
+    NLS_Scripting
   PRIVATE
     DirectXTex::DirectXTex
     NLS_StaticMeshBuild

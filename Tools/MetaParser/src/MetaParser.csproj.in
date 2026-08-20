@@ -6,12 +6,16 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
-    <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-@NLS_META_PARSER_HOST_ARCH@</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-@NLS_META_PARSER_HOST_ARCH@</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-@NLS_META_PARSER_HOST_ARCH@</RuntimeIdentifier>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+    <!-- Prefer the repository-local feed/cache while retaining the official
+         NuGet source so clean CI checkouts do not depend on untracked packages. -->
+    <RestoreSources>@NLS_META_PARSER_NUGET_SOURCE@</RestoreSources>
+    <RestorePackagesPath>@NLS_META_PARSER_NUGET_PACKAGES@</RestorePackagesPath>
+    <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
   </PropertyGroup>
 
   <ItemGroup>

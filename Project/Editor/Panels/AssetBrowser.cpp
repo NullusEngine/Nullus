@@ -9,6 +9,7 @@
 #include <cstring>
 #include <exception>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -31,6 +32,13 @@
 #include <Json/json.hpp>
 
 #include "Assets/ArtifactLoadTelemetry.h"
+#include "Assets/ScriptAssetUtility.h"
+#include "Debug/ExternalCodeEditor.h"
+#include "Debug/VSCodeConfigurationGenerator.h"
+#include "Debug/VisualStudioConfigurationGenerator.h"
+#include "Debug/EditorDebugEndpoint.h"
+#include "Scripting/ManagedScriptDebugSession.h"
+#include "Scripting/ManagedScriptProjectPaths.h"
 
 #include <UI/Widgets/Texts/TextClickable.h>
 #include <UI/Widgets/Visual/Image.h>
@@ -47,6 +55,7 @@
 #include <Windowing/Dialogs/SaveFileDialog.h>
 #include <Windowing/Dialogs/OpenFileDialog.h>
 #include <Windowing/Window.h>
+#include <Platform/Process/Process.h>
 #include <Utils/SystemCalls.h>
 #include <Utils/PathParser.h>
 #include <Utils/String.h>
@@ -83,6 +92,7 @@
 #include "Assets/AssetImporterFacade.h"
 #include "Assets/EditorAssetDatabase.h"
 #include "Core/EditorActions.h"
+#include "Core/Context.h"
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/ShaderLabMaterialDefaults.h"
 #include "Assets/PrefabUtilityFacade.h"
@@ -114,6 +124,29 @@ constexpr auto kAssetBrowserThumbnailInitialVisibleTimeout = std::chrono::second
 constexpr double kAssetBrowserSceneLoadThumbnailEscapeSeconds = 2.0;
 constexpr double kAssetBrowserVisiblePendingPresentationRecoveryIntervalSeconds = 0.25;
 constexpr size_t kMaxAssetBrowserVisiblePendingPresentationProbesPerPump = 2u;
+
+std::optional<std::string> LoadScriptTemplate(
+	const std::filesystem::path& editorAssetFolder,
+	const std::string_view templateFileName,
+	const std::string_view scriptName)
+{
+	const auto templatePath = editorAssetFolder / "ScriptTemplates" / templateFileName;
+	std::ifstream input(templatePath, std::ios::binary);
+	if (!input)
+		return std::nullopt;
+
+	std::string contents {
+		std::istreambuf_iterator<char>(input),
+		std::istreambuf_iterator<char>() };
+	constexpr std::string_view scriptNameToken = "#SCRIPTNAME#";
+	for (size_t position = contents.find(scriptNameToken);
+		position != std::string::npos;
+		position = contents.find(scriptNameToken, position + scriptName.size()))
+	{
+		contents.replace(position, scriptNameToken.size(), scriptName);
+	}
+	return contents;
+}
 
 NLS::Render::RHI::TextureColorSpace CachedThumbnailTextureColorSpace(
 	const NLS::Editor::Assets::AssetThumbnailKind kind)
@@ -1841,7 +1874,13 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 		fileType != Utils::PathParser::EFileType::PREFAB &&
 		fileType != Utils::PathParser::EFileType::MATERIAL &&
 		fileType != Utils::PathParser::EFileType::TEXTURE &&
-		fileType != Utils::PathParser::EFileType::SHADER)
+		fileType != Utils::PathParser::EFileType::SHADER &&
+		fileType != Utils::PathParser::EFileType::SCRIPT)
+	{
+		return std::nullopt;
+	}
+	if (fileType == Utils::PathParser::EFileType::SCRIPT &&
+		!IsScriptAssetPath(absolutePath))
 	{
 		return std::nullopt;
 	}
@@ -1890,6 +1929,9 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 		artifactType = NLS::Core::Assets::ArtifactType::Shader;
 	}
 
+	if (fileType == Utils::PathParser::EFileType::SCRIPT && subAssetKey.empty())
+		subAssetKey = "script:" + std::filesystem::path(resourceFormatPath).stem().generic_string();
+
 	const auto projectRoot = ProjectRootFromAssetsFolder(projectAssetsFolder);
 	const auto manifest = NLS::Editor::Assets::LoadArtifactManifestFromProjectArtifactDB(projectRoot, meta->id);
 	if (manifest.has_value())
@@ -1924,10 +1966,10 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 			if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
 				continue;
 
-				artifactType = subAsset.artifactType;
-				imported = currentManifest && artifactType != NLS::Core::Assets::ArtifactType::Unknown;
-				break;
-			}
+			artifactType = subAsset.artifactType;
+			imported = currentManifest && artifactType != NLS::Core::Assets::ArtifactType::Unknown;
+			break;
+		}
 		}
 
 	if (!CanStoreEditorAssetDragPayload(resourceFormatPath, meta->id, subAssetKey))
@@ -1939,7 +1981,7 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 	return MakeEditorAssetDragPayload(
 		resourceFormatPath,
 		meta->id,
-			subAssetKey,
+		subAssetKey,
 			artifactType,
 			generatedModelPrefab,
 			imported);
@@ -1972,768 +2014,6 @@ void RemoveAsset(const std::string& p_toDelete)
 	}
 }
 
-class TexturePreview : public NLS::UI::IPlugin
-{
-public:
-	TexturePreview() : image(nullptr, { 80, 80 })
-	{
-
-	}
-
-	void SetPath(const std::string& p_path)
-	{
-        resourcePath = p_path;
-	}
-
-	virtual void Execute() override
-	{
-        if (NLS_SERVICE(NLS::UI::UIManager).IsItemHovered())
-		{
-            if (!texture && !resourcePath.empty())
-            {
-                texture = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>()[resourcePath];
-                image.textureView = texture != nullptr
-                    ? texture->GetOrCreateExplicitTextureView("AssetBrowser.Preview")
-                    : nullptr;
-            }
-			NLS_SERVICE(NLS::UI::UIManager).BeginTooltip();
-			image.Draw();
-            NLS_SERVICE(NLS::UI::UIManager).EndTooltip();
-		}
-	}
-
-	std::string resourcePath;
-	Render::Resources::Texture2D* texture = nullptr;
-	NLS::UI::Widgets::Image image;
-};
-
-class BrowserItemContextualMenu : public NLS::UI::ContextualMenu
-{
-public:
-	BrowserItemContextualMenu(const std::string p_filePath, bool p_protected = false) : m_protected(p_protected), filePath(p_filePath) {}
-
-	virtual void CreateList()
-	{
-		if (!m_protected)
-		{
-			auto& deleteAction = CreateWidget<MenuItem>("Delete");
-			deleteAction.ClickedEvent += [this] { DeleteItem(); };
-
-			auto& renameMenu = CreateWidget<MenuList>("Rename to...");
-
-			auto& nameEditor = renameMenu.CreateWidget<InputText>("");
-			nameEditor.selectAllOnClick = true;
-
-			renameMenu.ClickedEvent += [this, &nameEditor]
-			{
-				nameEditor.content = Utils::PathParser::GetElementName(filePath);
-
-				if (!std::filesystem::is_directory(filePath))
-					if (size_t pos = nameEditor.content.rfind('.'); pos != std::string::npos)
-						nameEditor.content = nameEditor.content.substr(0, pos);
-			};
-
-			nameEditor.EnterPressedEvent += [this](std::string p_newName)
-			{
-				if (!std::filesystem::is_directory(filePath))
-					p_newName += '.' + Utils::PathParser::GetExtension(filePath);
-
-				/* Clean the name (Remove special chars) */
-				p_newName.erase(std::remove_if(p_newName.begin(), p_newName.end(), [](auto& c)
-				{
-					return std::find(FILENAMES_CHARS.begin(), FILENAMES_CHARS.end(), c) == FILENAMES_CHARS.end();
-				}), p_newName.end());
-
-				std::string containingFolderPath = Utils::PathParser::GetContainingFolder(filePath);
-				std::string newPath = containingFolderPath + p_newName;
-				std::string oldPath = filePath;
-
-				if (filePath != newPath && !std::filesystem::exists(newPath))
-					filePath = newPath;
-
-				if (std::filesystem::is_directory(oldPath))
-					filePath += '\\';
-
-				RenamedEvent.Invoke(oldPath, newPath);
-			};
-		}
-	}
-
-	virtual void Execute() override
-	{
-		if (m_widgets.size() > 0)
-			ContextualMenu::Execute();
-	}
-
-	virtual void DeleteItem() = 0;
-
-public:
-	bool m_protected;
-	std::string filePath;
-	Event<std::string> DestroyedEvent;
-	Event<std::string, std::string> RenamedEvent;
-};
-
-class FolderContextualMenu : public BrowserItemContextualMenu
-{
-public:
-	FolderContextualMenu(const std::string& p_filePath, bool p_protected = false) : BrowserItemContextualMenu(p_filePath, p_protected) {}
-
-	virtual void CreateList() override
-	{
-		auto& showInExplorer = CreateWidget<MenuItem>("Show in explorer");
-		showInExplorer.ClickedEvent += [this]
-		{
-            Platform::SystemCalls::ShowInExplorer(filePath);
-		};
-
-		if (!m_protected)
-		{
-			auto& importAssetHere = CreateWidget<MenuItem>("Import Here...");
-			importAssetHere.ClickedEvent += [this]
-			{
-				if (EDITOR_EXEC(ImportAssetAtLocation(filePath)))
-				{
-					TreeNode* pluginOwner = reinterpret_cast<TreeNode*>(userData);
-					pluginOwner->Close();
-					EDITOR_EXEC(DelayAction(std::bind(&TreeNode::Open, pluginOwner)));
-				}
-			};
-
-			auto& createMenu = CreateWidget<MenuList>("Create..");
-
-			auto& createFolderMenu = createMenu.CreateWidget<MenuList>("Folder");
-			auto& createSceneMenu = createMenu.CreateWidget<MenuList>("Scene");
-			auto& createShaderMenu = createMenu.CreateWidget<MenuList>("Shader");
-			auto& createMaterialMenu = createMenu.CreateWidget<MenuList>("Material");
-
-			auto& createStandardShaderMenu = createShaderMenu.CreateWidget<MenuList>("Standard template");
-			auto& createStandardPBRShaderMenu = createShaderMenu.CreateWidget<MenuList>("Standard PBR template");
-			auto& createUnlitShaderMenu = createShaderMenu.CreateWidget<MenuList>("Unlit template");
-			auto& createUnlitTextureShaderMenu = createShaderMenu.CreateWidget<MenuList>("Unlit Texture template");
-
-			auto& createEmptyMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Empty");
-			auto& createStandardMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Standard");
-			auto& createStandardPBRMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Standard PBR");
-			auto& createUnlitMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Unlit");
-			auto& createDefaultSurfaceMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Default Surface");
-
-			auto& createFolder = createFolderMenu.CreateWidget<InputText>("");
-			auto& createScene = createSceneMenu.CreateWidget<InputText>("");
-
-			auto& createEmptyMaterial = createEmptyMaterialMenu.CreateWidget<InputText>("");
-			auto& createStandardMaterial = createStandardMaterialMenu.CreateWidget<InputText>("");
-			auto& createStandardPBRMaterial = createStandardPBRMaterialMenu.CreateWidget<InputText>("");
-			auto& createUnlitMaterial = createUnlitMaterialMenu.CreateWidget<InputText>("");
-			auto& createDefaultSurfaceMaterial = createDefaultSurfaceMaterialMenu.CreateWidget<InputText>("");
-
-			auto& createStandardShader = createStandardShaderMenu.CreateWidget<InputText>("");
-			auto& createStandardPBRShader = createStandardPBRShaderMenu.CreateWidget<InputText>("");
-			auto& createUnlitShader = createUnlitShaderMenu.CreateWidget<InputText>("");
-			auto& createUnlitTextureShader = createUnlitTextureShaderMenu.CreateWidget<InputText>("");
-
-			createFolderMenu.ClickedEvent += [&createFolder] { createFolder.content = ""; };
-			createSceneMenu.ClickedEvent += [&createScene] { createScene.content = ""; };
-			createStandardShaderMenu.ClickedEvent += [&createStandardShader] { createStandardShader.content = ""; };
-			createStandardPBRShaderMenu.ClickedEvent += [&createStandardPBRShader] { createStandardPBRShader.content = ""; };
-			createUnlitShaderMenu.ClickedEvent += [&createUnlitShader] { createUnlitShader.content = ""; };
-			createUnlitTextureShaderMenu.ClickedEvent += [&createUnlitTextureShader] { createUnlitTextureShader.content = ""; };
-			createEmptyMaterialMenu.ClickedEvent += [&createEmptyMaterial] { createEmptyMaterial.content = ""; };
-			createStandardMaterialMenu.ClickedEvent += [&createStandardMaterial] { createStandardMaterial.content = ""; };
-			createStandardPBRMaterialMenu.ClickedEvent += [&createStandardPBRMaterial] { createStandardPBRMaterial.content = ""; };
-			createUnlitMaterialMenu.ClickedEvent += [&createUnlitMaterial] { createUnlitMaterial.content = ""; };
-			createDefaultSurfaceMaterialMenu.ClickedEvent += [&createDefaultSurfaceMaterial] { createDefaultSurfaceMaterial.content = ""; };
-
-			createFolder.EnterPressedEvent += [this](std::string newFolderName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + (!fails ? newFolderName : newFolderName + " (" + std::to_string(fails) + ')');
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				std::filesystem::create_directory(finalPath);
-
-				ItemAddedEvent.Invoke(finalPath);
-				Close();
-			};
-
-			createScene.EnterPressedEvent += [this](std::string newSceneName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + (!fails ? newSceneName : newSceneName + " (" + std::to_string(fails) + ')') + ".scene";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				Engine::SceneSystem::Scene scene;
-				if (!Engine::SceneSystem::SceneManager::SaveSceneToPath(scene, finalPath))
-				{
-					NLS_LOG_ERROR("Failed to create scene asset: " + finalPath);
-					return;
-				}
-
-				ItemAddedEvent.Invoke(finalPath);
-				Close();
-			};
-
-			createStandardShader.EnterPressedEvent += [this](std::string newShaderName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\StandardPBR.shader", finalPath);
-				ItemAddedEvent.Invoke(finalPath);
-				Close();
-			};
-
-			createStandardPBRShader.EnterPressedEvent += [this](std::string newShaderName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + Utils::PathParser::Separator() + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders/ShaderLab/StandardPBR.shader", finalPath);
-				ItemAddedEvent.Invoke(finalPath);
-				Close();
-			};
-
-			createUnlitShader.EnterPressedEvent += [this](std::string newShaderName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitColor.shader", finalPath);
-				ItemAddedEvent.Invoke(finalPath);
-				Close();
-			};
-
-			createUnlitTextureShader.EnterPressedEvent += [this](std::string newShaderName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".shader";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\ShaderLab\\UnlitTexture.shader", finalPath);
-				ItemAddedEvent.Invoke(finalPath);
-				Close();
-			};
-			
-			createEmptyMaterial.EnterPressedEvent += [this](std::string materialName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				if (!CreateNativeMaterialAssetAtPath(
-						EDITOR_CONTEXT(projectAssetsPath),
-						finalPath,
-						BuildDefaultAssetBrowserMaterialPayload()))
-				{
-					Close();
-					return;
-				}
-
-				ItemAddedEvent.Invoke(finalPath);
-
-				if (auto instance = EDITOR_CONTEXT(materialManager)[EDITOR_EXEC(GetResourcePath(finalPath))])
-				{
-					auto& materialEditor = EDITOR_PANEL(NLS::Editor::Panels::MaterialEditor, "Material Editor");
-					materialEditor.SetTarget(*instance);
-					materialEditor.Open();
-					materialEditor.Focus();
-					materialEditor.Preview();
-				}
-				Close();
-			};
-
-			createStandardMaterial.EnterPressedEvent += [this](std::string materialName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				if (!CreateNativeMaterialAssetAtPath(
-						EDITOR_CONTEXT(projectAssetsPath),
-						finalPath,
-						BuildDefaultAssetBrowserMaterialPayload()))
-				{
-					Close();
-					return;
-				}
-
-				ItemAddedEvent.Invoke(finalPath);
-
-				if (auto instance = EDITOR_CONTEXT(materialManager)[EDITOR_EXEC(GetResourcePath(finalPath))])
-				{
-					auto& materialEditor = EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor");
-					materialEditor.SetTarget(*instance);
-					materialEditor.Open();
-					materialEditor.Focus();
-					materialEditor.Preview();
-				}
-				Close();
-			};
-
-			createStandardPBRMaterial.EnterPressedEvent += [this](std::string materialName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				if (!CreateNativeMaterialAssetAtPath(
-						EDITOR_CONTEXT(projectAssetsPath),
-						finalPath,
-						BuildDefaultAssetBrowserMaterialPayload()))
-				{
-					Close();
-					return;
-				}
-
-				ItemAddedEvent.Invoke(finalPath);
-
-				if (auto instance = EDITOR_CONTEXT(materialManager)[EDITOR_EXEC(GetResourcePath(finalPath))])
-				{
-					auto& materialEditor = EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor");
-					materialEditor.SetTarget(*instance);
-					materialEditor.Open();
-					materialEditor.Focus();
-					materialEditor.Preview();
-				}
-				Close();
-			};
-
-			createUnlitMaterial.EnterPressedEvent += [this](std::string materialName)
-			{
-				std::string newSceneName = "Material";
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				if (!CreateNativeMaterialAssetAtPath(
-						EDITOR_CONTEXT(projectAssetsPath),
-						finalPath,
-						BuildDefaultAssetBrowserMaterialPayload()))
-				{
-					Close();
-					return;
-				}
-
-				ItemAddedEvent.Invoke(finalPath);
-
-				if (auto instance = EDITOR_CONTEXT(materialManager)[EDITOR_EXEC(GetResourcePath(finalPath))])
-				{
-					auto& materialEditor = EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor");
-					materialEditor.SetTarget(*instance);
-					materialEditor.Open();
-					materialEditor.Focus();
-					materialEditor.Preview();
-				}
-				Close();
-			};
-
-			createDefaultSurfaceMaterial.EnterPressedEvent += [this](std::string materialName)
-			{
-				size_t fails = 0;
-				std::string finalPath;
-
-				do
-				{
-					finalPath = filePath + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-					++fails;
-				} while (std::filesystem::exists(finalPath));
-
-				if (!CreateNativeMaterialAssetAtPath(
-						EDITOR_CONTEXT(projectAssetsPath),
-						finalPath,
-						BuildDefaultAssetBrowserMaterialPayload()))
-				{
-					Close();
-					return;
-				}
-
-				ItemAddedEvent.Invoke(finalPath);
-
-				if (auto instance = EDITOR_CONTEXT(materialManager)[EDITOR_EXEC(GetResourcePath(finalPath))])
-				{
-					auto& materialEditor = EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor");
-					materialEditor.SetTarget(*instance);
-					materialEditor.Open();
-					materialEditor.Focus();
-					materialEditor.Preview();
-				}
-				Close();
-			};
-
-			BrowserItemContextualMenu::CreateList();
-		}
-	}
-
-	virtual void DeleteItem() override
-	{
-		using namespace NLS::Dialogs;
-		MessageBox message("Delete folder", "Deleting a folder (and all its content) is irreversible, are you sure that you want to delete \"" + filePath + "\"?", MessageBox::EMessageType::WARNING, MessageBox::EButtonLayout::YES_NO);
-
-		if (message.GetUserAction() == MessageBox::EUserAction::YES)
-		{
-			if (std::filesystem::exists(filePath) == true)
-			{
-				EDITOR_EXEC(PropagateFolderDestruction(filePath));
-				std::filesystem::remove_all(filePath);
-				DestroyedEvent.Invoke(filePath);
-			}
-		}
-	}
-
-public:
-	Event<std::string> ItemAddedEvent;
-};
-
-class ScriptFolderContextualMenu : public FolderContextualMenu
-{
-public:
-	ScriptFolderContextualMenu(const std::string& p_filePath, bool p_protected = false) : FolderContextualMenu(p_filePath, p_protected) {}
-
-	void CreateScript(const std::string& p_name, const std::string& p_path)
-	{
-		std::string fileContent = "local " + p_name + " =\n{\n}\n\nfunction " + p_name + ":OnStart()\nend\n\nfunction " + p_name + ":OnUpdate(deltaTime)\nend\n\nreturn " + p_name;
-		
-		std::ofstream outfile(p_path);
-		outfile << fileContent << std::endl; // Empty scene content
-
-		ItemAddedEvent.Invoke(p_path);
-		Close();
-	}
-
-	virtual void CreateList() override
-	{
-		FolderContextualMenu::CreateList();
-
-		auto& newScriptMenu = CreateWidget<MenuList>("New script...");
-		auto& nameEditor = newScriptMenu.CreateWidget<InputText>("");
-
-		newScriptMenu.ClickedEvent += [this, &nameEditor]
-		{
-			nameEditor.content = Utils::PathParser::GetElementName("");
-		};
-
-		nameEditor.EnterPressedEvent += [this](std::string p_newName)
-		{
-			/* Clean the name (Remove special chars) */
-			p_newName.erase(std::remove_if(p_newName.begin(), p_newName.end(), [](auto& c)
-			{
-				return std::find(FILENAMES_CHARS.begin(), FILENAMES_CHARS.end(), c) == FILENAMES_CHARS.end();
-			}), p_newName.end());
-
-			std::string newPath = filePath + p_newName + ".lua";
-
-			if (!std::filesystem::exists(newPath))
-			{
-				CreateScript(p_newName, newPath);
-			}
-		};
-	}
-};
-
-class FileContextualMenu : public BrowserItemContextualMenu
-{
-public:
-	FileContextualMenu(const std::string& p_filePath, bool p_protected = false) : BrowserItemContextualMenu(p_filePath, p_protected) {}
-
-	virtual void CreateList() override
-	{
-		auto& editAction = CreateWidget<MenuItem>("Open");
-
-		editAction.ClickedEvent += [this]
-		{
-			Platform::SystemCalls::OpenFile(filePath);
-		};
-
-		if (!m_protected)
-		{
-			auto& duplicateAction = CreateWidget<MenuItem>("Duplicate");
-
-			duplicateAction.ClickedEvent += [this]
-			{
-				std::string filePathWithoutExtension = filePath;
-
-				if (size_t pos = filePathWithoutExtension.rfind('.'); pos != std::string::npos)
-					filePathWithoutExtension = filePathWithoutExtension.substr(0, pos);
-
-				std::string extension = "." + Utils::PathParser::GetExtension(filePath);
-
-                auto filenameAvailable = [&extension](const std::string& target)
-                {
-                    return !std::filesystem::exists(target + extension);
-                };
-
-                const auto newNameWithoutExtension = Utils::String::GenerateUnique(filePathWithoutExtension, filenameAvailable);
-
-				std::string finalPath = newNameWithoutExtension + extension;
-				std::filesystem::copy(filePath, finalPath);
-
-				DuplicateEvent.Invoke(finalPath);
-			};
-		}
-
-		BrowserItemContextualMenu::CreateList();
-
-
-        auto& editMetadata = CreateWidget<MenuItem>("Properties");
-
-        editMetadata.ClickedEvent += [this]
-        {
-            auto& panel = EDITOR_PANEL(Editor::Panels::AssetProperties, "Asset Properties");
-            std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-            panel.SetTarget(resourcePath);
-            panel.Open();
-            panel.Focus();
-        };
-	}
-
-	virtual void DeleteItem() override
-	{
-		using namespace NLS::Dialogs;
-		MessageBox message("Delete file", "Deleting a file is irreversible, are you sure that you want to delete \"" + filePath + "\"?", MessageBox::EMessageType::WARNING, MessageBox::EButtonLayout::YES_NO);
-
-		if (message.GetUserAction() == MessageBox::EUserAction::YES)
-		{
-			RemoveAsset(filePath);
-			DestroyedEvent.Invoke(filePath);
-			EDITOR_EXEC(PropagateFileRename(filePath, "?"));
-		}
-	}
-
-public:
-	Event<std::string> DuplicateEvent;
-};
-
-template<typename Resource, typename ResourceLoader>
-class PreviewableContextualMenu : public FileContextualMenu
-{
-public:
-	PreviewableContextualMenu(const std::string& p_filePath, bool p_protected = false) : FileContextualMenu(p_filePath, p_protected) {}
-
-	virtual void CreateList() override
-	{
-		auto& previewAction = CreateWidget<MenuItem>("Preview");
-
-		previewAction.ClickedEvent += [this]
-		{
-			Resource* resource = NLS::Core::ServiceLocator::Get<ResourceLoader>()[EDITOR_EXEC(GetResourcePath(filePath, m_protected))];
-			auto& assetView = EDITOR_PANEL(Editor::Panels::AssetView, "Asset View");
-			assetView.SetResource(resource);
-			assetView.Open();
-			assetView.Focus();
-		};
-
-		FileContextualMenu::CreateList();
-	}
-};
-
-class ShaderContextualMenu : public FileContextualMenu
-{
-public:
-	ShaderContextualMenu(const std::string& p_filePath, bool p_protected = false) : FileContextualMenu(p_filePath, p_protected) {}
-
-	virtual void CreateList() override
-	{
-		FileContextualMenu::CreateList();
-
-		auto& compileAction = CreateWidget<MenuItem>("Compile");
-
-		compileAction.ClickedEvent += [this]
-		{
-            using namespace NLS::Core::ResourceManagement;
-			auto& shaderManager = NLS_SERVICE(ShaderManager);
-			std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-			if (shaderManager.IsResourceRegistered(resourcePath))
-			{
-				/* Trying to recompile */
-				Render::Resources::Loaders::ShaderLoader::Recompile(
-                    *shaderManager[resourcePath],
-                    filePath,
-                    ShaderManager::ProjectAssetsRoot());
-			}
-			else
-			{
-				/* Trying to compile */
-                Render::Resources::Shader* shader = NLS_SERVICE(ShaderManager)[resourcePath];
-				if (shader)
-					NLS_LOG_INFO("[COMPILE] \"" + filePath + "\": Success!");
-			}
-			
-		};
-	}
-};
-
-class ModelContextualMenu : public PreviewableContextualMenu<Render::Resources::Mesh, NLS::Core::ResourceManagement::MeshManager>
-{
-public:
-	ModelContextualMenu(const std::string& p_filePath, bool p_protected = false) : PreviewableContextualMenu(p_filePath, p_protected) {}
-
-	virtual void CreateList() override
-	{
-		auto& reimportAction = CreateWidget<MenuItem>("Reimport");
-
-		reimportAction.ClickedEvent += [this]
-		{
-			if (m_protected)
-				return;
-
-			ReimportProjectAssetAsync(EDITOR_CONTEXT(projectAssetsPath), filePath);
-		};
-
-		PreviewableContextualMenu::CreateList();
-	}
-};
-
-class TextureContextualMenu : public PreviewableContextualMenu<Render::Resources::Texture2D, NLS::Core::ResourceManagement::TextureManager>
-{
-public:
-	TextureContextualMenu(const std::string& p_filePath, bool p_protected = false) : PreviewableContextualMenu(p_filePath, p_protected) {}
-
-	virtual void CreateList() override
-	{
-		auto& reloadAction = CreateWidget<MenuItem>("Reload");
-
-		reloadAction.ClickedEvent += [this]
-		{
-			auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
-			std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-			if (textureManager.IsResourceRegistered(resourcePath))
-			{
-				/* Trying to recompile */
-				textureManager.AResourceManager::ReloadResource(resourcePath);
-				EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor").Refresh();
-			}
-		};
-
-		PreviewableContextualMenu::CreateList();
-	}
-};
-
-class SceneContextualMenu : public FileContextualMenu
-{
-public:
-	SceneContextualMenu(const std::string& p_filePath, bool p_protected = false) : FileContextualMenu(p_filePath, p_protected) {}
-
-	virtual void CreateList() override
-	{
-		auto& editAction = CreateWidget<MenuItem>("Edit");
-
-		editAction.ClickedEvent += [this]
-		{
-			EDITOR_EXEC(LoadSceneFromDisk(EDITOR_EXEC(GetResourcePath(filePath))));
-		};
-
-		FileContextualMenu::CreateList();
-	}
-};
-
-class MaterialContextualMenu : public PreviewableContextualMenu<NLS::Render::Resources::Material, NLS::Core::ResourceManagement::MaterialManager>
-{
-public:
-	MaterialContextualMenu(const std::string& p_filePath, bool p_protected = false) : PreviewableContextualMenu(p_filePath, p_protected) {}
-
-	virtual void CreateList() override
-	{
-		auto& editAction = CreateWidget<MenuItem>("Edit");
-
-		editAction.ClickedEvent += [this]
-		{
-            NLS::Render::Resources::Material* material = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager)[EDITOR_EXEC(GetResourcePath(filePath, m_protected))];
-			if (material)
-			{
-				auto& materialEditor = EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor");
-				materialEditor.SetTarget(*material);
-				materialEditor.Open();
-				materialEditor.Focus();
-				
-				NLS::Render::Resources::Material* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>()[EDITOR_EXEC(GetResourcePath(filePath, m_protected))];
-				auto& assetView = EDITOR_PANEL(Editor::Panels::AssetView, "Asset View");
-				assetView.SetResource(resource);
-				assetView.Open();
-				assetView.Focus();
-			}
-		};
-
-		auto& reload = CreateWidget<MenuItem>("Reload");
-		reload.ClickedEvent += [this]
-		{
-			auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
-			auto resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-            NLS::Render::Resources::Material* material = materialManager[resourcePath];
-			if (material)
-			{
-				materialManager.AResourceManager::ReloadResource(resourcePath);
-				EDITOR_PANEL(Editor::Panels::MaterialEditor, "Material Editor").Refresh();
-			}
-		};
-
-		PreviewableContextualMenu::CreateList();
-	}
-};
-
 Editor::Panels::AssetBrowser::AssetBrowser
 (
 	const std::string& p_title,
@@ -2741,12 +2021,13 @@ Editor::Panels::AssetBrowser::AssetBrowser
 	const UI::PanelWindowSettings& p_windowSettings,
 	const std::string& p_engineAssetFolder,
 	const std::string& p_projectAssetFolder,
-	const std::string& p_projectScriptFolder,
+	const std::string& p_editorAssetFolder,
 	NLS::Editor::Assets::AssetThumbnailFeatureConfig thumbnailFeatureConfig
 ) :
 	PanelWindow(p_title, p_opened, p_windowSettings),
 	m_engineAssetFolder(p_engineAssetFolder),
 	m_projectAssetFolder(p_projectAssetFolder),
+	m_editorAssetFolder(p_editorAssetFolder),
 	m_thumbnailFeatureConfig(std::move(thumbnailFeatureConfig)),
 	m_thumbnailService(m_thumbnailFeatureConfig)
 {
@@ -2786,7 +2067,6 @@ Editor::Panels::AssetBrowser::AssetBrowser
 		);
 	}
 
-	m_assetList = &CreateWidget<Group>();
 	m_assetThumbnailPool = std::make_shared<NLS::Editor::Assets::AssetThumbnailPool>();
 	m_assetThumbnailPool->SetTextureCallbacks(
 		[](const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView) -> void*
@@ -2871,8 +2151,6 @@ void Editor::Panels::AssetBrowser::Fill()
 
 void Editor::Panels::AssetBrowser::Clear()
 {
-	if (m_assetList != nullptr)
-		m_assetList->RemoveAllWidgets();
 	ReleaseAssetBrowserTextureHandleCache(false);
 	DestroyCachedThumbnailTextures(false);
 	m_thumbnailResultsByItemKey.clear();
@@ -3090,13 +2368,6 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 			sceneViewCameraNavigationActive);
 	}
 
-	if (!m_watchersStartupQueued)
-		StartWatchersAsync();
-
-	CompleteWatcherStartupIfReady();
-	if (m_startupWatcherPreimportGateOpen)
-		ConsumeWatcherChangesAndSchedulePreimport();
-
 	const bool canApplyRequestedRefresh =
 		!interactive &&
 		m_refreshRequested &&
@@ -3120,6 +2391,16 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 void Editor::Panels::AssetBrowser::OnAfterDrawWidgets()
 {
 	DrawProjectAssetBrowser();
+}
+
+void Editor::Panels::AssetBrowser::PumpFileWatchers()
+{
+	if (!m_watchersStartupQueued)
+		StartWatchersAsync();
+
+	CompleteWatcherStartupIfReady();
+	if (m_startupWatcherPreimportGateOpen)
+		ConsumeWatcherChangesAndSchedulePreimport();
 }
 
 void Editor::Panels::AssetBrowser::PrepareStartupWatchers()
@@ -3248,6 +2529,32 @@ void Editor::Panels::AssetBrowser::ConsumeWatcherChangesAndSchedulePreimport()
 	const auto projectAssetChanges = m_projectAssetsWatcher.ConsumeChangedPaths();
 	const bool engineAssetsChanged = !engineAssetChanges.empty();
 	const bool projectAssetsChanged = !projectAssetChanges.empty();
+	const bool csharpSourceChanged = std::any_of(
+		projectAssetChanges.begin(),
+		projectAssetChanges.end(),
+		[](const std::filesystem::path& path)
+		{
+			auto extension = path.extension().string();
+			std::transform(
+				extension.begin(),
+				extension.end(),
+				extension.begin(),
+				[](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+			return extension == ".cs";
+		});
+	const bool scriptSourceChanged = std::any_of(
+		projectAssetChanges.begin(),
+		projectAssetChanges.end(),
+		[](const std::filesystem::path& path)
+		{
+			auto extension = path.extension().string();
+			std::transform(
+				extension.begin(),
+				extension.end(),
+				extension.begin(),
+				[](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+			return extension == ".cs" || extension == ".lua";
+		});
 	if (projectAssetsChanged)
 	{
 		std::vector<std::filesystem::path> relativeChanges;
@@ -3264,6 +2571,41 @@ void Editor::Panels::AssetBrowser::ConsumeWatcherChangesAndSchedulePreimport()
 			NLS::Editor::Assets::AssetPreimportReason::FileWatcherChanged,
 			std::move(relativeChanges)
 		});
+	}
+	if (csharpSourceChanged && EDITOR_CONTEXT(managedScriptDebugSession) != nullptr)
+	{
+		if (!EDITOR_CONTEXT(managedScriptDebugSession)->RequestBuild())
+			NLS_LOG_WARNING("C# source changed, but the managed script build session is disabled or unavailable.");
+	}
+	if (scriptSourceChanged)
+	{
+		// WorkspaceRevision is content-derived. Re-run the generator after a
+		// script add/remove/move so CPS and VS Code see the same project view;
+		// WriteTextIfChanged keeps idle frames free of filesystem writes.
+		const auto editorExecutable = NLS::Platform::Process::GetCurrentExecutablePath();
+		const auto brokerExecutable = editorExecutable.parent_path() /
+#ifdef _WIN32
+			"NullusDebugBroker.exe";
+#else
+			"NullusDebugBroker";
+#endif
+		NLS::Scripting::ScriptDebugSettings debugSettings;
+		if (EDITOR_CONTEXT(scriptDebugService) != nullptr)
+			debugSettings = EDITOR_CONTEXT(scriptDebugService)->GetSettings();
+		const auto workspace = NLS::Editor::Debug::GenerateProjectDebugWorkspace(
+			ProjectRootFromAssetsFolder(m_projectAssetFolder),
+			editorExecutable,
+			brokerExecutable,
+			debugSettings.luaPandaPort,
+			debugSettings.stopOnEntry);
+		if (!workspace.success)
+			NLS_LOG_WARNING("Script workspace synchronization failed: " + workspace.errorMessage);
+		else if (EDITOR_CONTEXT(editorDebugEndpoint) != nullptr)
+			EDITOR_CONTEXT(editorDebugEndpoint)->PublishEvent({
+				{"type", "WorkspaceChanged"},
+				{"workspaceRevision", workspace.manifest.workspaceRevision},
+				{"visualStudioSolution", workspace.manifest.visualStudioSolution.string()},
+				{"visualStudioProject", workspace.manifest.visualStudioProject.string()}});
 	}
 	if (engineAssetsChanged && !projectAssetsChanged)
 		RequestRefresh();
@@ -4163,13 +3505,67 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	if (targetFolder.empty())
 		targetFolder = (ProjectRootFromAssetsFolder(m_projectAssetFolder) / m_selectedProjectFolder).lexically_normal();
 
-	auto createTextAsset = [&](const std::string& extension, const std::string& contents)
+	auto makeScriptIdentifier = [](std::string value)
 	{
-		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, extension);
-		std::filesystem::create_directories(finalPath.parent_path());
+		value.erase(
+			std::remove_if(
+				value.begin(),
+				value.end(),
+				[](const unsigned char character)
+				{
+					return !((character >= 'A' && character <= 'Z') ||
+						(character >= 'a' && character <= 'z') ||
+						(character >= '0' && character <= '9') ||
+						character == '_');
+				}),
+			value.end());
+		if (value.empty())
+			value = "NewScript";
+		if (value.front() >= '0' && value.front() <= '9')
+			value.insert(value.begin(), '_');
+		return value;
+	};
+	auto buildUniqueScriptPath = [&](const std::string& extension)
+	{
+		const auto scriptName = makeScriptIdentifier(name);
+		size_t suffix = 0u;
+		for (;; ++suffix)
+		{
+			const auto candidateName = suffix == 0u
+				? scriptName
+				: scriptName + "_" + std::to_string(suffix);
+			const auto candidate = (targetFolder / (candidateName + extension)).lexically_normal();
+			if (!std::filesystem::exists(candidate))
+				return candidate;
+		}
+	};
+	auto createScriptAsset = [&](const std::filesystem::path& finalPath, const std::string& contents)
+	{
+		std::error_code error;
+		std::filesystem::create_directories(finalPath.parent_path(), error);
+		if (error)
+			return false;
+
 		std::ofstream output(finalPath, std::ios::binary | std::ios::trunc);
-		output << contents << std::endl;
+		if (!output)
+			return false;
+		output << contents;
+		output.flush();
+		if (!output)
+		{
+			std::filesystem::remove(finalPath, error);
+			return false;
+		}
+		output.close();
+
+		auto meta = NLS::Core::Assets::AssetMeta::CreateForAsset(finalPath);
+		if (!meta.Save(NLS::Core::Assets::GetAssetMetaPath(finalPath)))
+		{
+			std::filesystem::remove(finalPath, error);
+			return false;
+		}
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
+		return !createdOrChangedProjectPath.empty();
 	};
 	auto createMaterialAsset = [&](const std::string& contents)
 	{
@@ -4231,6 +3627,39 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 			return false;
 		}
 		createdOrChangedProjectPath = EditorAssetPathFromAbsolutePath(m_projectAssetFolder, finalPath.string());
+		break;
+	}
+	case ProjectBrowserTextDialogKind::CreateCSharpScript:
+	{
+		const auto finalPath = buildUniqueScriptPath(".cs");
+		const auto scriptName = makeScriptIdentifier(finalPath.stem().string());
+		const auto contents = LoadScriptTemplate(
+			m_editorAssetFolder,
+			"CSharpBehaviour.cs.txt",
+			scriptName);
+		if (!contents.has_value())
+		{
+			NLS_LOG_ERROR("Failed to load C# script template from engine assets.");
+			return false;
+		}
+		if (!createScriptAsset(finalPath, *contents))
+			return false;
+		break;
+	}
+	case ProjectBrowserTextDialogKind::CreateLuaScript:
+	{
+		const auto finalPath = buildUniqueScriptPath(".lua");
+		const auto contents = LoadScriptTemplate(
+			m_editorAssetFolder,
+			"LuaBehaviour.lua.txt",
+			finalPath.stem().string());
+		if (!contents.has_value())
+		{
+			NLS_LOG_ERROR("Failed to load Lua script template from engine assets.");
+			return false;
+		}
+		if (!createScriptAsset(finalPath, *contents))
+			return false;
 		break;
 	}
 	case ProjectBrowserTextDialogKind::CreateStandardShader:
@@ -4778,6 +4207,26 @@ void Editor::Panels::AssetBrowser::DrawProjectCurrentFolderContextMenu(
 				projectRelativeFolder,
 				{},
 				"New Scene");
+		}
+		if (ImGui::MenuItem("C# Script"))
+		{
+			RequestProjectBrowserTextDialog(
+				ProjectBrowserTextDialogKind::CreateCSharpScript,
+				"Create C# Script",
+				absoluteFolder,
+				projectRelativeFolder,
+				{},
+				"NewScript");
+		}
+		if (ImGui::MenuItem("Lua Script"))
+		{
+			RequestProjectBrowserTextDialog(
+				ProjectBrowserTextDialogKind::CreateLuaScript,
+				"Create Lua Script",
+				absoluteFolder,
+				projectRelativeFolder,
+				{},
+				"NewScript");
 		}
 		if (ImGui::BeginMenu("Shader"))
 		{
@@ -8930,7 +8379,9 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 					item,
 					AssetBrowserThumbnailRequestSize(m_thumbnailSize)));
 		}
-		const char* iconId = NLS::Editor::Assets::AssetBrowserFallbackIconId(item.type);
+		const char* iconId = item.type == NLS::Editor::Assets::AssetBrowserItemType::Script
+			? NLS::Editor::Assets::AssetBrowserScriptIconId(item.absolutePath.string())
+			: NLS::Editor::Assets::AssetBrowserFallbackIconId(item.type);
 				if (void* textureHandle = ResolveAssetBrowserTextureHandle(
 						EDITOR_CONTEXT(editorResources)->GetTexture(iconId),
 					"AssetBrowser.TypeIcon"))
@@ -9116,7 +8567,8 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemThumbnail(
 		const auto fallbackIconId =
 			NLS::Editor::Assets::ResolveAssetBrowserDisplayFallbackIconId(
 				item.type,
-				thumbnail.fallbackIcon);
+				thumbnail.fallbackIcon,
+				item.absolutePath.string());
 		if (!fallbackIconId.empty())
 		{
 			const std::string fallbackIconKey(fallbackIconId);
@@ -9176,7 +8628,9 @@ void Editor::Panels::AssetBrowser::DrawProjectGridItemDragSource(
 		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Prefab ||
 		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Material ||
 		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Texture ||
-		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Shader);
+		 item.type == NLS::Editor::Assets::AssetBrowserItemType::Shader ||
+         (item.type == NLS::Editor::Assets::AssetBrowserItemType::Script &&
+          NLS::Editor::Assets::IsScriptAssetPath(item.dragResourcePath)));
 	const bool generatedEditorPayload =
 		item.kind == NLS::Editor::Assets::AssetBrowserItemKind::GeneratedSubAsset &&
 		!item.dragResourcePath.empty() &&
@@ -9514,6 +8968,146 @@ void Editor::Panels::AssetBrowser::SelectProjectGridItem(
 	m_selectedProjectItem = NLS::Editor::Assets::BuildAssetBrowserActionIdentity(item);
 }
 
+void Editor::Panels::AssetBrowser::PrepareCSharpScriptDebugProject(
+	const NLS::Editor::Assets::AssetBrowserItem& item)
+{
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+
+	std::filesystem::path vscodePath;
+	const auto configuredVscodePath =
+		EDITOR_CONTEXT(projectSettings).GetOrDefault<std::string>("vscode_path", "");
+	if (!configuredVscodePath.empty())
+	{
+		const auto candidate = std::filesystem::path(configuredVscodePath);
+		if (candidate.is_absolute() && std::filesystem::exists(candidate))
+			vscodePath = candidate;
+		else
+			NLS_LOG_WARNING(
+				"Configured VS Code path is not an existing absolute path: " +
+				configuredVscodePath);
+	}
+
+	const auto editorExecutable = NLS::Platform::Process::GetCurrentExecutablePath();
+	const auto brokerExecutable = editorExecutable.parent_path() /
+#ifdef _WIN32
+		"NullusDebugBroker.exe";
+#else
+		"NullusDebugBroker";
+#endif
+	const auto workspace = NLS::Editor::Debug::GenerateProjectDebugWorkspace(
+		projectRoot,
+		editorExecutable,
+		brokerExecutable);
+	if (!workspace.success)
+	{
+		NLS_LOG_ERROR("Could not generate the project C# debug workspace: " + workspace.errorMessage);
+		return;
+	}
+
+	const auto projectOpen = NLS::Editor::Debug::ExternalCodeEditor::OpenDebugWorkspace(
+		workspace.manifest,
+		item.absolutePath,
+		vscodePath);
+	if (!projectOpen.success)
+	{
+		NLS_LOG_ERROR("Could not open generated C# project: " + projectOpen.errorMessage);
+		return;
+	}
+
+	NLS_LOG_INFO(
+		"C# project debug workspace opened for " + item.absolutePath.string() +
+		". Press F5 in the IDE to reuse or start the matching Editor and attach C#.");
+}
+
+void Editor::Panels::AssetBrowser::PrepareLuaScriptDebugWorkspace(
+	const NLS::Editor::Assets::AssetBrowserItem& item)
+{
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	if (projectRoot.empty())
+	{
+		NLS_LOG_ERROR("Cannot prepare Lua debugging: project root is empty.");
+		return;
+	}
+
+	std::filesystem::path vscodePath;
+	const auto configuredVscodePath =
+		EDITOR_CONTEXT(projectSettings).GetOrDefault<std::string>("vscode_path", "");
+	if (!configuredVscodePath.empty())
+	{
+		const auto candidate = std::filesystem::path(configuredVscodePath);
+		if (candidate.is_absolute() && std::filesystem::exists(candidate))
+			vscodePath = candidate;
+		else
+			NLS_LOG_WARNING(
+				"Configured VS Code path is not an existing absolute path: " +
+				configuredVscodePath);
+	}
+
+	NLS::Scripting::ScriptDebugSettings debugSettings;
+	if (EDITOR_CONTEXT(scriptDebugService) != nullptr)
+		debugSettings = EDITOR_CONTEXT(scriptDebugService)->GetSettings();
+	debugSettings.enableLuaPanda = true;
+	if (EDITOR_CONTEXT(scriptDebugService) != nullptr)
+	{
+		const auto status = EDITOR_CONTEXT(scriptDebugService)->SetSettings(debugSettings);
+		if (!status.Succeeded())
+			NLS_LOG_WARNING("LuaPanda debugging could not be enabled: " + status.message);
+	}
+
+	const auto editorExecutable = NLS::Platform::Process::GetCurrentExecutablePath();
+	const auto brokerExecutable = editorExecutable.parent_path() /
+#ifdef _WIN32
+		"NullusDebugBroker.exe";
+#else
+		"NullusDebugBroker";
+#endif
+	const auto workspace = NLS::Editor::Debug::GenerateProjectDebugWorkspace(
+		projectRoot,
+		editorExecutable,
+		brokerExecutable,
+		debugSettings.luaPandaPort,
+		debugSettings.stopOnEntry);
+	if (!workspace.success)
+	{
+		NLS_LOG_WARNING("Could not generate Lua project debug workspace: " + workspace.errorMessage);
+		return;
+	}
+
+	if (vscodePath.empty())
+	{
+		NLS_LOG_WARNING(
+			"LuaPanda configuration is ready, but no absolute VS Code path is configured; "
+			"set project setting 'vscode_path' to attach LuaPanda automatically.");
+	}
+
+	const auto workspaceOpen = vscodePath.empty()
+		? NLS::Editor::Debug::ExternalCodeEditor::OpenWorkspace(projectRoot, vscodePath)
+		: NLS::Editor::Debug::ExternalCodeEditor::OpenDebugWorkspace(
+			workspace.manifest,
+			item.absolutePath,
+			vscodePath);
+	if (!workspaceOpen.success)
+	{
+		NLS_LOG_ERROR("Could not open Lua project workspace: " + workspaceOpen.errorMessage);
+		return;
+	}
+
+	if (vscodePath.empty())
+	{
+		const auto sourceOpen = NLS::Editor::Debug::ExternalCodeEditor::Open(
+			item.absolutePath,
+			1,
+			1,
+			vscodePath);
+		if (!sourceOpen.success)
+			NLS_LOG_WARNING("Could not open Lua script source: " + sourceOpen.errorMessage);
+	}
+
+	NLS_LOG_INFO(
+		"LuaPanda debugging prepared for " + item.absolutePath.string() +
+		" (workspace opened, port=" + std::to_string(debugSettings.luaPandaPort) + ").");
+}
+
 void Editor::Panels::AssetBrowser::OpenProjectGridItem(
 	const NLS::Editor::Assets::AssetBrowserItem& item)
 {
@@ -9528,6 +9122,29 @@ void Editor::Panels::AssetBrowser::OpenProjectGridItem(
 
 	if (item.dragResourcePath.empty())
 		return;
+
+	auto scriptExtension = item.absolutePath.extension().string();
+	std::transform(
+		scriptExtension.begin(),
+		scriptExtension.end(),
+		scriptExtension.begin(),
+		[](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+	if (item.kind == AssetBrowserItemKind::SourceAsset &&
+		item.type == AssetBrowserItemType::Script &&
+		scriptExtension == ".cs")
+	{
+		SelectProjectGridItem(item);
+		PrepareCSharpScriptDebugProject(item);
+		return;
+	}
+	if (item.kind == AssetBrowserItemKind::SourceAsset &&
+		item.type == AssetBrowserItemType::Script &&
+		scriptExtension == ".lua")
+	{
+		SelectProjectGridItem(item);
+		PrepareLuaScriptDebugWorkspace(item);
+		return;
+	}
 
 	if (item.type == AssetBrowserItemType::Scene)
 	{
@@ -9614,488 +9231,6 @@ void Editor::Panels::AssetBrowser::OpenProjectGridItem(
 		assetProperties.Preview();
 		assetView.Open();
 		assetView.Focus();
-	}
-}
-
-void Editor::Panels::AssetBrowser::ParseFolder(TreeNode& p_root, const std::filesystem::directory_entry& p_directory, bool p_isEngineItem, bool p_scriptFolder)
-{
-	/* Iterates another time to display list files */
-	for (auto& item : std::filesystem::directory_iterator(p_directory))
-		if (item.is_directory())
-			ConsiderItem(&p_root, item, p_isEngineItem, false, p_scriptFolder);
-
-	/* Iterates another time to display list files */
-	for (auto& item : std::filesystem::directory_iterator(p_directory))
-		if (!item.is_directory())
-			ConsiderItem(&p_root, item, p_isEngineItem, false, p_scriptFolder);
-}
-
-void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen, bool p_scriptFolder)
-{
-	bool isDirectory = p_entry.is_directory();
-	std::string path = p_entry.path().string();
-	while (!path.empty() && (path.back() == '\\' || path.back() == '/'))
-		path.pop_back();
-	std::string itemname = Utils::PathParser::GetElementName(path);
-	if (isDirectory && path.back() != '\\') // Add '\\' if is directory and backslash is missing
-		path += '\\';
-	std::string resourceFormatPath = EDITOR_EXEC(GetResourcePath(path, p_isEngineItem));
-	bool protectedItem = !p_root || p_isEngineItem;
-
-	Utils::PathParser::EFileType fileType = Utils::PathParser::GetFileType(itemname);
-
-	// Unknown file, so we skip it
-	if (fileType == Utils::PathParser::EFileType::UNKNOWN && !isDirectory)
-	{
-		return;
-	}
-
-	/* If there is a given treenode (p_root) we attach the new widget to it */
-	auto& itemGroup = p_root ? p_root->CreateWidget<Group>() : m_assetList->CreateWidget<Group>();
-
-	/* Find the icon to apply to the item */
-    auto* iconTexture = isDirectory
-        ? EDITOR_CONTEXT(editorResources)->GetTexture("editor.icon.asset.folder")
-        : EDITOR_CONTEXT(editorResources)->GetFileIcon(itemname);
-
-	itemGroup.CreateWidget<UI::Widgets::Image>(
-        iconTexture != nullptr ? iconTexture->GetOrCreateExplicitTextureView("AssetBrowser.ItemIcon") : nullptr,
-        Maths::Vector2{ 16, 16 }).lineBreak = false;
-
-	/* If the entry is a directory, the content must be a tree node, otherwise (= is a file), a text will suffice */
-	if (isDirectory)
-	{
-		auto& treeNode = itemGroup.CreateWidget<TreeNode>(itemname);
-
-		if (p_autoOpen || m_expandedFolders.contains(path))
-			treeNode.Open();
-
-		auto& ddSource = treeNode.AddPlugin<UI::DDSource<std::pair<std::string, Group*>>>("Folder", resourceFormatPath, std::make_pair(resourceFormatPath, &itemGroup));
-
-		if (!p_root || p_scriptFolder)
-			treeNode.RemoveAllPlugins();
-
-		auto& contextMenu = !p_scriptFolder ? treeNode.AddPlugin<FolderContextualMenu>(path, protectedItem && resourceFormatPath != "") : treeNode.AddPlugin<ScriptFolderContextualMenu>(path, protectedItem && resourceFormatPath != "");
-		contextMenu.userData = static_cast<void*>(&treeNode);
-
-		contextMenu.ItemAddedEvent += [this, &treeNode, path, p_isEngineItem, p_scriptFolder] (std::string p_string)
-		{
-			treeNode.Open();
-			treeNode.RemoveAllWidgets();
-			ParseFolder(treeNode, std::filesystem::directory_entry(Utils::PathParser::GetContainingFolder(p_string)), p_isEngineItem, p_scriptFolder);
-		};
-
-		if (!p_scriptFolder)
-		{
-			if (!p_isEngineItem) /* Prevent engine item from being DDTarget (Can't Drag and drop to engine folder) */
-			{
-				treeNode.AddPlugin<UI::DDTarget<std::pair<std::string, Group*>>>("Folder").DataReceivedEvent += [this, &treeNode, path, p_isEngineItem](std::pair<std::string, Group*> p_data)
-				{
-					if (p_data.first.empty())
-						return;
-
-					const std::string correctPath = m_pathUpdate.find(&treeNode) != m_pathUpdate.end() ? m_pathUpdate.at(&treeNode) : path;
-					const bool movedOrCopied = MoveOrCopyProjectBrowserFolderIntoFolder(
-						p_data.first,
-						correctPath);
-					if (!movedOrCopied)
-						return;
-
-					treeNode.Open();
-					treeNode.RemoveAllWidgets();
-					ParseFolder(treeNode, std::filesystem::directory_entry(correctPath), p_isEngineItem);
-
-					const bool isEngineFolder = p_data.first.front() == ':';
-					if (!isEngineFolder && p_data.second)
-						p_data.second->Destroy();
-				};
-
-				auto moveOrCopyFileIntoFolder = [this, &treeNode, path, p_isEngineItem](
-					const std::string& receivedResourcePath,
-					UI::Widgets::Group* receivedGroup)
-				{
-					if (receivedResourcePath.empty())
-						return;
-
-					const std::string correctPath = m_pathUpdate.find(&treeNode) != m_pathUpdate.end() ? m_pathUpdate.at(&treeNode) : path;
-					const bool movedOrCopied = MoveOrCopyProjectBrowserFileIntoFolder(
-						receivedResourcePath,
-						correctPath);
-					if (!movedOrCopied)
-						return;
-
-					treeNode.Open();
-					treeNode.RemoveAllWidgets();
-					ParseFolder(treeNode, std::filesystem::directory_entry(correctPath), p_isEngineItem);
-
-					const bool isEngineFile = receivedResourcePath.front() == ':';
-					if (!isEngineFile && receivedGroup)
-						receivedGroup->Destroy();
-				};
-
-				treeNode.AddPlugin<UI::DDTarget<std::pair<std::string, Group*>>>("File").DataReceivedEvent += [moveOrCopyFileIntoFolder](std::pair<std::string, Group*> p_data)
-				{
-					moveOrCopyFileIntoFolder(p_data.first, p_data.second);
-				};
-
-				treeNode.AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
-					NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent += [moveOrCopyFileIntoFolder](NLS::Editor::Assets::EditorAssetDragPayload p_data)
-				{
-					if (NLS::Editor::Assets::CanMoveEditorAssetDragPayloadAsPhysicalProjectFile(p_data))
-						moveOrCopyFileIntoFolder(NLS::Editor::Assets::GetEditorAssetDragPayloadPath(p_data), nullptr);
-				};
-
-				treeNode.AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject").DataReceivedEvent += [this, &treeNode, path, p_isEngineItem](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_data)
-				{
-					if (!p_data.first || p_isEngineItem)
-						return;
-
-					const std::string correctPath = m_pathUpdate.find(&treeNode) != m_pathUpdate.end() ? m_pathUpdate.at(&treeNode) : path;
-					const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
-					const auto destinationFolder = EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, correctPath);
-					if (projectRoot.empty() || destinationFolder.empty())
-					{
-						NLS_LOG_ERROR("Failed to resolve prefab destination folder for hierarchy drop: " + correctPath);
-						return;
-					}
-
-					NLS::Editor::Assets::AssetDatabaseFacade database(
-						NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
-					if (!database.Refresh())
-					{
-						NLS_LOG_ERROR("Failed to refresh asset database before saving prefab from hierarchy drop.");
-						return;
-					}
-
-					NLS::Core::Assets::AssetId sceneAssetId;
-					const auto currentSceneSourcePath = EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath();
-					if (!currentSceneSourcePath.empty())
-					{
-						const auto sceneMeta = NLS::Core::Assets::AssetMeta::Load(
-							NLS::Core::Assets::GetAssetMetaPath(std::filesystem::path(currentSceneSourcePath).lexically_normal()));
-						if (sceneMeta.has_value())
-							sceneAssetId = sceneMeta->id;
-					}
-
-					const auto result = NLS::Editor::Assets::AssetDragDropWorkflow().Execute({
-						{NLS::Editor::Assets::DragPayloadKind::HierarchyObject, {}, {}, nullptr, p_data.first},
-						{NLS::Editor::Assets::DropTargetKind::AssetBrowserFolder, nullptr, nullptr, 0u, false, destinationFolder},
-						sceneAssetId,
-						NLS::Editor::Assets::DragDropOperationKind::SaveAsPrefab,
-						&database,
-						&EDITOR_CONTEXT(prefabInstanceRegistry)
-					});
-
-					if (result.status != NLS::Editor::Assets::DragDropOperationStatus::Committed)
-					{
-						for (const auto& diagnostic : result.diagnostics)
-							NLS_LOG_ERROR(diagnostic.code + ": " + diagnostic.message);
-						return;
-					}
-
-					EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
-					if (result.instance.has_value() && result.instance->instanceRoot != nullptr)
-					{
-						EDITOR_PANEL(NLS::Editor::Panels::Hierarchy, "Hierarchy")
-							.RefreshPrefabPresentation(*result.instance->instanceRoot);
-					}
-					treeNode.Open();
-					treeNode.RemoveAllWidgets();
-					ParseFolder(treeNode, std::filesystem::directory_entry(correctPath), p_isEngineItem);
-				};
-			}
-
-			contextMenu.DestroyedEvent += [&itemGroup](std::string p_deletedPath) { itemGroup.Destroy(); };
-
-			contextMenu.RenamedEvent += [this, &treeNode, path, &ddSource, p_isEngineItem](std::string p_prev, std::string p_newPath)
-			{
-				p_newPath += '\\';
-
-				if (!std::filesystem::exists(p_newPath)) // Do not rename a folder if it already exists
-				{
-					RenameAsset(p_prev, p_newPath);
-					EDITOR_EXEC(PropagateFolderRename(p_prev, p_newPath));
-					std::string elementName = Utils::PathParser::GetElementName(p_newPath);
-					std::string data = Utils::PathParser::GetContainingFolder(ddSource.data.first) + elementName + "\\";
-					ddSource.data.first = data;
-					ddSource.tooltip = data;
-					treeNode.name = elementName;
-					treeNode.Open();
-					treeNode.RemoveAllWidgets();
-					ParseFolder(treeNode, std::filesystem::directory_entry(p_newPath), p_isEngineItem);
-					m_pathUpdate[&treeNode] = p_newPath;
-				}
-				else
-				{
-					using namespace NLS::Dialogs;
-
-					MessageBox errorMessage("Folder already exists", "You can't rename this folder because the given name is already taken", MessageBox::EMessageType::ERROR, MessageBox::EButtonLayout::OK);
-				}
-			};
-
-			contextMenu.ItemAddedEvent += [this, &treeNode, p_isEngineItem](std::string p_path)
-			{
-				treeNode.RemoveAllWidgets();
-				ParseFolder(treeNode, std::filesystem::directory_entry(Utils::PathParser::GetContainingFolder(p_path)), p_isEngineItem);
-			};
-
-		}
-		
-		contextMenu.CreateList();
-
-		treeNode.OpenedEvent += [this, &treeNode, path, p_isEngineItem, p_scriptFolder]
-		{
-			m_expandedFolders.insert(path);
-			treeNode.RemoveAllWidgets();
-			ParseFolder(treeNode, std::filesystem::directory_entry(path), p_isEngineItem, p_scriptFolder);
-		};
-
-		treeNode.ClosedEvent += [this, &treeNode, path]
-		{
-			m_expandedFolders.erase(path);
-			treeNode.RemoveAllWidgets();
-		};
-	}
-	else
-	{
-		auto& clickableText = itemGroup.CreateWidget<TextClickable>(itemname);
-
-		FileContextualMenu* contextMenu = nullptr;
-
-		switch (fileType)
-		{
-		case Utils::PathParser::EFileType::MODEL:		contextMenu = &clickableText.AddPlugin<ModelContextualMenu>(path, protectedItem);		break;
-		case Utils::PathParser::EFileType::TEXTURE:	contextMenu = &clickableText.AddPlugin<TextureContextualMenu>(path, protectedItem); 	break;
-		case Utils::PathParser::EFileType::SHADER:		contextMenu = &clickableText.AddPlugin<ShaderContextualMenu>(path, protectedItem);		break;
-		case Utils::PathParser::EFileType::MATERIAL:	contextMenu = &clickableText.AddPlugin<MaterialContextualMenu>(path, protectedItem);	break;
-		case Utils::PathParser::EFileType::SCENE:		contextMenu = &clickableText.AddPlugin<SceneContextualMenu>(path, protectedItem);		break;
-		default: contextMenu = &clickableText.AddPlugin<FileContextualMenu>(path, protectedItem); break;
-		}
-
-		contextMenu->CreateList();
-
-		contextMenu->DestroyedEvent += [&itemGroup](std::string p_deletedPath)
-		{
-			itemGroup.Destroy();
-
-			if (EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath() == p_deletedPath) // Modify current scene source path if the renamed file is the current scene
-				EDITOR_CONTEXT(sceneManager).ForgetCurrentSceneSourcePath();
-		};
-
-		const auto assetPayload = p_isEngineItem
-			? std::optional<NLS::Editor::Assets::EditorAssetDragPayload> {}
-			: BuildEditorAssetDragPayloadForFile(m_projectAssetFolder, path, resourceFormatPath, fileType);
-		const bool assetPayloadReplacesFileDrag =
-			assetPayload.has_value() &&
-			(fileType == Utils::PathParser::EFileType::MODEL ||
-			 fileType == Utils::PathParser::EFileType::PREFAB);
-		UI::DDSource<std::pair<std::string, Group*>>* fileDragSource = nullptr;
-		if (!assetPayloadReplacesFileDrag)
-		{
-			fileDragSource = &clickableText.AddPlugin<UI::DDSource<std::pair<std::string, Group*>>>
-			(
-				"File",
-				resourceFormatPath,
-				std::make_pair(resourceFormatPath, &itemGroup)
-			);
-		}
-		UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>* editorAssetDragSource = nullptr;
-		if (assetPayload)
-		{
-			editorAssetDragSource = &clickableText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
-				NLS::Editor::Assets::kEditorAssetDragPayloadType,
-				resourceFormatPath,
-				*assetPayload);
-			editorAssetDragSource->hasTooltip = !assetPayloadReplacesFileDrag;
-		}
-
-		if (!p_isEngineItem && fileType == Utils::PathParser::EFileType::MODEL)
-		{
-			NLS::Editor::Assets::AssetDatabaseFacade database(
-				NLS::Editor::Assets::MakeProjectEditorAssetRoots(ProjectRootFromAssetsFolder(m_projectAssetFolder)));
-			if (database.Refresh())
-			{
-				for (const auto& subAsset : NLS::Editor::Assets::BuildAssetBrowserSubAssetEntries(
-					database,
-					resourceFormatPath))
-				{
-					if (!NLS::Editor::Assets::CanStoreEditorAssetDragPayload(
-						subAsset.dragResourcePath,
-						subAsset.assetId,
-						subAsset.subAssetKey))
-					{
-						continue;
-					}
-
-					auto& subAssetText = itemGroup.CreateWidget<TextClickable>("  " + subAsset.displayName);
-					auto& subAssetDragSource = subAssetText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
-						NLS::Editor::Assets::kEditorAssetDragPayloadType,
-						subAsset.dragResourcePath,
-							NLS::Editor::Assets::MakeEditorAssetDragPayload(
-								subAsset.dragResourcePath,
-								subAsset.assetId,
-								subAsset.subAssetKey,
-								subAsset.artifactType,
-								false,
-								true,
-								true));
-					subAssetDragSource.hasTooltip = false;
-				}
-			}
-		}
-
-		clickableText.ClickedEvent += [this, &clickableText, resourceFormatPath]
-		{
-			if (m_selectedAsset && m_selectedAsset != &clickableText)
-				m_selectedAsset->selected = false;
-			m_selectedAsset = &clickableText;
-			clickableText.selected = true;
-
-			auto& assetProperties = EDITOR_PANEL(Editor::Panels::AssetProperties, "Asset Properties");
-			assetProperties.SetTarget(resourceFormatPath);
-			assetProperties.Open();
-			assetProperties.Focus();
-		};
-
-		contextMenu->RenamedEvent += [
-			this,
-			fileDragSource,
-			editorAssetDragSource,
-			&clickableText,
-			p_scriptFolder](std::string p_prev, std::string p_newPath)
-		{
-			if (p_newPath != p_prev)
-			{
-				if (!std::filesystem::exists(p_newPath))
-				{
-					RenameAsset(p_prev, p_newPath);
-					std::string elementName = Utils::PathParser::GetElementName(p_newPath);
-					const auto newResourceFormatPath =
-						EditorAssetPathFromAbsolutePath(m_projectAssetFolder, p_newPath).generic_string();
-					if (fileDragSource != nullptr)
-					{
-						fileDragSource->data.first = newResourceFormatPath.empty()
-							? Utils::PathParser::GetContainingFolder(fileDragSource->data.first) + elementName
-							: newResourceFormatPath;
-						fileDragSource->tooltip = fileDragSource->data.first;
-					}
-					if (editorAssetDragSource != nullptr && !newResourceFormatPath.empty())
-					{
-						const auto updatedPayload = BuildEditorAssetDragPayloadForFile(
-							m_projectAssetFolder,
-							p_newPath,
-							newResourceFormatPath,
-							Utils::PathParser::GetFileType(p_newPath));
-						if (updatedPayload.has_value())
-						{
-							editorAssetDragSource->data = *updatedPayload;
-							editorAssetDragSource->tooltip = newResourceFormatPath;
-						}
-					}
-
-					if (!p_scriptFolder)
-					{
-						EDITOR_EXEC(PropagateFileRename(p_prev, p_newPath));
-						if (EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath() == p_prev) // Modify current scene source path if the renamed file is the current scene
-							EDITOR_CONTEXT(sceneManager).StoreCurrentSceneSourcePath(p_newPath);
-					}
-					else
-					{
-						EDITOR_EXEC(PropagateScriptRename(p_prev, p_newPath));
-					}
-
-					clickableText.content = elementName;
-				}
-				else
-				{
-					using namespace NLS::Dialogs;
-
-					MessageBox errorMessage("File already exists", "You can't rename this file because the given name is already taken", MessageBox::EMessageType::ERROR, MessageBox::EButtonLayout::OK);
-				}
-			}
-		};
-
-		contextMenu->DuplicateEvent += [this, &clickableText, p_root, path, p_isEngineItem] (std::string newItem)
-		{
-			EDITOR_EXEC(DelayAction(std::bind(&AssetBrowser::ConsiderItem, this, p_root, std::filesystem::directory_entry{ newItem }, p_isEngineItem, false, false), 0));
-		};
-
-		if (fileType == Utils::PathParser::EFileType::TEXTURE)
-		{
-			auto& texturePreview = clickableText.AddPlugin<TexturePreview>();
-			texturePreview.SetPath(resourceFormatPath);
-		}
-
-		if (fileType == Utils::PathParser::EFileType::PREFAB)
-		{
-			clickableText.DoubleClickedEvent += [this, resourceFormatPath]
-			{
-				const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
-				NLS::Editor::Assets::AssetDatabaseFacade database(
-					NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
-				if (!database.Refresh())
-				{
-					NLS_LOG_ERROR("Failed to refresh asset database before opening prefab: " + resourceFormatPath);
-					return;
-				}
-				if (!database.IsArtifactManifestCurrentForAssetPath(resourceFormatPath))
-				{
-					NLS_LOG_ERROR("Skipped opening stale prefab artifact: " + resourceFormatPath);
-					return;
-				}
-
-				const auto prefabSubAssetKey = "prefab:" + std::filesystem::path(resourceFormatPath).stem().generic_string();
-				auto prefab = database.LoadPrefabArtifactAtPath(resourceFormatPath, prefabSubAssetKey);
-				if (!prefab.has_value())
-				{
-					NLS_LOG_ERROR("Failed to load prefab artifact for prefab stage: " + resourceFormatPath);
-					return;
-				}
-
-				auto stage = NLS::Editor::Assets::PrefabUtilityFacade().LoadPrefabContents({
-					&*prefab,
-					prefab->assetId,
-					prefabSubAssetKey,
-					prefab->generatedModelPrefab,
-					resourceFormatPath
-				});
-				if (stage.status != NLS::Editor::Assets::PrefabOperationStatus::Committed)
-				{
-					for (const auto& diagnostic : stage.diagnostics)
-						NLS_LOG_ERROR(diagnostic.code + ": " + diagnostic.message);
-					return;
-				}
-
-				EDITOR_EXEC(GetContext()).activePrefabStage = std::move(stage.stage);
-				EDITOR_EXEC(NotifyPrefabStageOpened());
-				EDITOR_PANEL(NLS::Editor::Panels::Hierarchy, "Hierarchy").RebuildFromCurrentScene();
-				EDITOR_PANEL(NLS::Editor::Panels::SceneView, "Scene View").Focus();
-				NLS_LOG_INFO("Opened prefab stage: " + resourceFormatPath);
-			};
-		}
-		else if (fileType == Utils::PathParser::EFileType::MODEL ||
-			fileType == Utils::PathParser::EFileType::TEXTURE ||
-			fileType == Utils::PathParser::EFileType::MATERIAL)
-		{
-			clickableText.DoubleClickedEvent += [resourceFormatPath]
-			{
-				auto& assetProperties = EDITOR_PANEL(Editor::Panels::AssetProperties, "Asset Properties");
-				assetProperties.SetTarget(resourceFormatPath);
-
-				auto& assetView = EDITOR_PANEL(Editor::Panels::AssetView, "Asset View");
-				assetProperties.Preview();
-				assetView.Open();
-				assetView.Focus();
-			};
-		}
-		else if (fileType == Utils::PathParser::EFileType::SCENE)
-		{
-			clickableText.DoubleClickedEvent += [path]
-			{
-				EDITOR_EXEC(LoadSceneFromDisk(EDITOR_EXEC(GetResourcePath(path))));
-			};
-		}
-
 	}
 }
 

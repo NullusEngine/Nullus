@@ -5218,6 +5218,7 @@ namespace NLS::Render::Context
                 canPreserveOrderedPathWithChildFallback;
             const bool useOrderedWorkUnitPath =
                 supportsOrderedWorkUnitSubmission &&
+                frameContext.resourceStateTracker == nullptr &&
                 canPreserveOrderedPathWithChildFallback;
             if (packageContainsOrderedSlicedWorkUnits &&
                 (!allowOrderedSlicedSubmission ||

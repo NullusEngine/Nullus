@@ -51,12 +51,14 @@ void SkyBoxComponent::SetCubeMap(Render::Resources::TextureCube* cubmap)
     if (cubmap != nullptr)
         mSkyMode = SkyMode::CubeMap;
     ApplySkyMode();
+	MarkRenderStateChanged();
 }
 
 void SkyBoxComponent::SetSkyMode(SkyMode mode)
 {
     mSkyMode = mode;
     ApplySkyMode();
+	MarkRenderStateChanged();
 }
 
 void SkyBoxComponent::ApplySkyMode()

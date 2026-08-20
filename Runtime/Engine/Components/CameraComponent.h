@@ -19,7 +19,7 @@ namespace NLS::Engine::Components
 	/**
 	* Represents a camera entity. Its position will determine its view matrix
 	*/
-	CLASS(NLS_ENGINE_API CameraComponent, ComponentMenu("Rendering/Camera")) : public Component
+	CLASS(NLS_ENGINE_API CameraComponent, Scriptable, ComponentMenu("Rendering/Camera")) : public Component
 	{
     public:
 		GENERATED_BODY()
@@ -38,36 +38,36 @@ namespace NLS::Engine::Components
 		* Sets the fov of the camera to the given value
 		* @param p_value
 		*/
-        FUNCTION()
-		void SetFov(float p_value);
+        FUNCTION(Scriptable)
+        void SetFov(float p_value);
 
         /**
         * Sets the size of the camera to the given value
         * @param p_value
         */
-        FUNCTION()
+        FUNCTION(Scriptable)
         void SetSize(float p_value);
 
 		/**
 		* Sets the near of the camera to the given value
 		* @param p_value
 		*/
-        FUNCTION()
-		void SetNear(float p_value);
+        FUNCTION(Scriptable)
+        void SetNear(float p_value);
 
 		/**
 		* Sets the far of the camera to the given value
 		* @param p_value
 		*/
-        FUNCTION()
-		void SetFar(float p_value);
+        FUNCTION(Scriptable)
+        void SetFar(float p_value);
 
 		/**
 		* Sets the clear color of the camera to the given value
 		* @param p_value
 		*/
-        FUNCTION()
-		void SetClearColor(const Maths::Vector3& p_clearColor);
+        FUNCTION(Scriptable)
+        void SetClearColor(const Maths::Vector3& p_clearColor);
 
 		/**
 		* Defines if the camera should apply frustum geometry culling in rendering
@@ -87,7 +87,7 @@ namespace NLS::Engine::Components
         * Defines the projection mode the camera should adopt
         * @param p_projectionMode
         */
-        FUNCTION()
+        FUNCTION(Scriptable)
         void SetProjectionMode(NLS::Render::Settings::EProjectionMode p_projectionMode);
 
 		/**
@@ -100,32 +100,32 @@ namespace NLS::Engine::Components
 		/**
 		* Returns the fov of the camera
 		*/
-        FUNCTION()
-		float GetFov() const;
+        FUNCTION(Scriptable)
+        float GetFov() const;
 
         /**
         * Returns the size of the camera
         */
-        FUNCTION()
+        FUNCTION(Scriptable)
         float GetSize() const;
 
 		/**
 		* Returns the near of the camera
 		*/
-        FUNCTION()
-		float GetNear() const;
+        FUNCTION(Scriptable)
+        float GetNear() const;
 
 		/**
 		* Returns the far of the camera
 		*/
-        FUNCTION()
-		float GetFar() const;
+        FUNCTION(Scriptable)
+        float GetFar() const;
 
 		/**
 		* Returns the clear color of the camera
 		*/
-        FUNCTION()
-		const Maths::Vector3& GetClearColor() const;
+        FUNCTION(Scriptable)
+        const Maths::Vector3& GetClearColor() const;
 
 		/**
 		* Returns true if the frustum geometry culling is enabled
@@ -142,7 +142,7 @@ namespace NLS::Engine::Components
         /**
         * Returns the current projection mode
         */
-        FUNCTION()
+        FUNCTION(Scriptable)
         NLS::Render::Settings::EProjectionMode GetProjectionMode() const;
 
 		/**

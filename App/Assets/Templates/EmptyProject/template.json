@@ -1,6 +1,6 @@
 {
   "name": "Empty Project",
-  "description": "A blank project with default settings. Start from scratch.",
+  "description": "A blank project with C# and Lua Behaviour starter scripts.",
   "category": "Core",
   "sortOrder": 0
 }

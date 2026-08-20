@@ -1099,17 +1099,17 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		}
 		outDraw.frameBindingSet = m_threadedFrameBindingSet;
 		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
-		if (bindingProvider->CapturePreparedObjectBindingSet(pso, drawable, bindingSets))
+		if (!bindingProvider->CapturePreparedObjectBindingSet(pso, drawable, bindingSets))
+			return false;
+
+		if (m_threadedFrameBindingSet == nullptr && bindingSets.frameBindingSet != nullptr)
 		{
-			if (m_threadedFrameBindingSet == nullptr && bindingSets.frameBindingSet != nullptr)
-			{
-				m_threadedFrameBindingSet = std::move(bindingSets.frameBindingSet);
-				outDraw.frameBindingSet = m_threadedFrameBindingSet;
-			}
-			outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
-			outDraw.objectConstants = bindingSets.objectConstants;
-			outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+			m_threadedFrameBindingSet = std::move(bindingSets.frameBindingSet);
+			outDraw.frameBindingSet = m_threadedFrameBindingSet;
 		}
+		outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+		outDraw.objectConstants = bindingSets.objectConstants;
+		outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
 	}
 
 	outDraw.commandBuffer.reset();
@@ -1180,17 +1180,17 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		}
 		outDraw.frameBindingSet = m_threadedFrameBindingSet;
 		Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindingSets;
-		if (bindingProvider->CapturePreparedObjectBindingSet(effectivePso, drawable, bindingSets))
+		if (!bindingProvider->CapturePreparedObjectBindingSet(effectivePso, drawable, bindingSets))
+			return false;
+
+		if (m_threadedFrameBindingSet == nullptr && bindingSets.frameBindingSet != nullptr)
 		{
-			if (m_threadedFrameBindingSet == nullptr && bindingSets.frameBindingSet != nullptr)
-			{
-				m_threadedFrameBindingSet = std::move(bindingSets.frameBindingSet);
-				outDraw.frameBindingSet = m_threadedFrameBindingSet;
-			}
-			outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
-			outDraw.objectConstants = bindingSets.objectConstants;
-			outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
+			m_threadedFrameBindingSet = std::move(bindingSets.frameBindingSet);
+			outDraw.frameBindingSet = m_threadedFrameBindingSet;
 		}
+		outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+		outDraw.objectConstants = bindingSets.objectConstants;
+		outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
 	}
 
 	outDraw.commandBuffer.reset();

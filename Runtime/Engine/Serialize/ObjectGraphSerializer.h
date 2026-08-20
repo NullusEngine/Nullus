@@ -92,8 +92,12 @@ namespace NLS::Engine::Serialize
             record.localIdentifierInFile = MakeLocalIdentifierInFile(objectId);
             record.typeName = type.IsValid() ? type.GetName() : object.GetObjectTypeName();
             record.debugName = record.typeName;
-            if (type.IsValid())
-                WriteReflectedFields(object, type, record);
+            if (const auto* component = dynamic_cast<const Components::Component*>(&object);
+                component == nullptr || !component->SerializeObjectGraphProperties(record.properties))
+            {
+                if (type.IsValid())
+                    WriteReflectedFields(object, type, record);
+            }
             return record;
         }
 

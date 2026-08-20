@@ -17,6 +17,11 @@
     <RepositoryUrl>https://github.com/xoofx/CppAst</RepositoryUrl>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NeutralLanguage>en-US</NeutralLanguage>
+    <!-- CppAst is consumed as a repository-local MetaParser dependency.  Its
+         package release version must not make the engine build depend on a
+         globally installed Git executable. -->
+    <MinVerSkip>true</MinVerSkip>
+    <Version>1.0.0</Version>
     <NoWarn>$(NoWarn);CS1591;CS0618;CS8321;CS8632;CS1573</NoWarn>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -24,6 +29,11 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- Keep CppAst restores hermetic when it is built directly or as a
+         project reference from MetaParser. -->
+    <RestoreSources>$(MSBuildThisFileDirectory)../../../../ThirdParty/LocalNuget</RestoreSources>
+    <RestorePackagesPath>$(MSBuildThisFileDirectory)../../../../ThirdParty/.nuget/packages</RestorePackagesPath>
+    <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
   </PropertyGroup>
 
   <ItemGroup>

@@ -5665,24 +5665,22 @@ void Editor::Core::EditorActions::StartPlaying()
 {
     if (m_editorMode == EEditorMode::EDIT)
     {
-        // 		m_context.scriptInterpreter->RefreshAll();
-        // 		EDITOR_PANEL(Panels::Inspector, "Inspector").Refresh();
-        //
-        // 		if (m_context.scriptInterpreter->IsOk())
-        // 		{
-        // 			PlayEvent.Invoke();
-        // 			m_sceneBackup.Clear();
-        // 			tinyxml2::XMLNode* node = m_sceneBackup.NewElement("root");
-        // 			m_sceneBackup.InsertFirstChild(node);
-        // 			m_context.sceneManager.GetCurrentScene()->OnSerialize(m_sceneBackup, node);
-        // 			m_panelsManager.GetPanelAs<Editor::Panels::GameView>("Game View").Focus();
-        // 			m_context.sceneManager.GetCurrentScene()->Play();
-        // 			SetEditorMode(EEditorMode::PLAY);
-        // 		}
+        auto* scene = m_context.sceneManager.GetCurrentScene();
+        if (!scene)
+        {
+            NLS_LOG_ERROR("Cannot enter Play mode because no scene is loaded.");
+            return;
+        }
+
+        // Play the current in-memory scene so unsaved editor changes are
+        // visible to scripts, matching the runtime SceneManager path.
+        PlayEvent.Invoke();
+        scene->Play();
+        SetEditorMode(EEditorMode::PLAY);
+        NLS_LOG_INFO("Editor entered Play mode.");
     }
     else
     {
-        // m_context.audioEngine->Unsuspend();
         SetEditorMode(EEditorMode::PLAY);
     }
 }
@@ -5695,27 +5693,13 @@ void Editor::Core::EditorActions::PauseGame()
 
 void Editor::Core::EditorActions::StopPlaying()
 {
-    // 	if (m_editorMode != EEditorMode::EDIT)
-    // 	{
-    // 		ImGui::GetIO().DisableMouseUpdate = false;
-    // 		m_context.window->SetCursorMode(Windowing::Cursor::ECursorMode::NORMAL);
-    // 		SetEditorMode(EEditorMode::EDIT);
-    // 		bool loadedFromDisk = m_context.sceneManager.IsCurrentSceneLoadedFromDisk();
-    // 		std::string sceneSourcePath = m_context.sceneManager.GetCurrentSceneSourcePath();
-    //
-    // 		int64_t focusedActorID = -1;
-    //
-    // 		if (auto targetActor = EDITOR_PANEL(Panels::Inspector, "Inspector").GetTargetGameObject())
-    // 			focusedActorID = targetActor->GetID();
-    //
-    // 		m_context.sceneManager.LoadSceneFromMemory(m_sceneBackup);
-    // 		if (loadedFromDisk)
-    // 			m_context.sceneManager.StoreCurrentSceneSourcePath(sceneSourcePath); // To bo able to save or reload the scene whereas the scene is loaded from memory (Supposed to have no path)
-    // 		m_sceneBackup.Clear();
-    // 		EDITOR_PANEL(Panels::SceneView, "Scene View").Focus();
-    // 		if (auto actorInstance = m_context.sceneManager.GetCurrentScene()->FindGameObjectByName(focusedActorName))
-    // 			EDITOR_PANEL(Panels::Inspector, "Inspector").FocusGameObject(*actorInstance);
-    // 	}
+    if (m_editorMode == EEditorMode::EDIT)
+        return;
+
+    if (auto* scene = m_context.sceneManager.GetCurrentScene())
+        scene->Stop();
+    SetEditorMode(EEditorMode::EDIT);
+    NLS_LOG_INFO("Editor exited Play mode.");
 }
 
 void Editor::Core::EditorActions::NextFrame()

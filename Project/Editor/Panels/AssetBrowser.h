@@ -130,7 +130,6 @@ public:
      * @param p_windowSettings
      * @param p_engineAssetFolder
      * @param p_projectAssetFolder
-     * @param p_projectScriptFolder
      */
     AssetBrowser(
         const std::string& p_title,
@@ -138,7 +137,7 @@ public:
         const UI::PanelWindowSettings& p_windowSettings,
         const std::string& p_engineAssetFolder = "",
         const std::string& p_projectAssetFolder = "",
-        const std::string& p_projectScriptFolder = "",
+        const std::string& p_editorAssetFolder = "",
         NLS::Editor::Assets::AssetThumbnailFeatureConfig thumbnailFeatureConfig = {});
     ~AssetBrowser();
 
@@ -160,6 +159,9 @@ public:
     void AdoptStartupWatchers(
         Core::AssetFileWatcher engineAssetsWatcher,
         Core::AssetFileWatcher projectAssetsWatcher);
+    // Pump file watchers from the Editor frame, independent of whether the
+    // Asset Browser window is currently visible.
+    void PumpFileWatchers();
     NLS::Editor::Assets::StartupWatcherPreimportResult RunStartupWatcherPreimport(
         const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
 	    NLS::Editor::Assets::StartupWatcherPreimportResult CompleteStartupWatcherPreimportGate(
@@ -174,6 +176,8 @@ public:
         RenameFile,
         CreateFolder,
         CreateScene,
+        CreateCSharpScript,
+        CreateLuaScript,
         CreateStandardShader,
         CreateStandardPBRShader,
         CreateUnlitShader,
@@ -292,6 +296,8 @@ public:
         const std::string& projectRelativeFolder,
         const std::filesystem::path& absoluteFolder);
     void SelectProjectGridItem(const NLS::Editor::Assets::AssetBrowserItem& item);
+    void PrepareCSharpScriptDebugProject(const NLS::Editor::Assets::AssetBrowserItem& item);
+    void PrepareLuaScriptDebugWorkspace(const NLS::Editor::Assets::AssetBrowserItem& item);
     void OpenProjectGridItem(const NLS::Editor::Assets::AssetBrowserItem& item);
     void OpenProjectGridItemProperties(const NLS::Editor::Assets::AssetBrowserItem& item);
     void PreviewProjectGridItem(const NLS::Editor::Assets::AssetBrowserItem& item);
@@ -383,17 +389,13 @@ public:
     void ReleaseCachedThumbnailTexture(const std::string& normalizedPath);
     void PruneCachedThumbnailTextures();
     void UpdateThumbnailGenerationScope();
-    void ParseFolder(UI::Widgets::TreeNode& p_root, const std::filesystem::directory_entry& p_directory, bool p_isEngineItem, bool p_scriptFolder = false);
-    void ConsiderItem(UI::Widgets::TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen = false, bool p_scriptFolder = false);
-
 public:
     static const std::string __FILENAMES_CHARS;
 
 private:
     std::string m_engineAssetFolder;
     std::string m_projectAssetFolder;
-    UI::Widgets::Group* m_assetList;
-    NLS::UI::Widgets::TextClickable* m_selectedAsset = nullptr;
+    std::string m_editorAssetFolder;
     std::string m_selectedProjectFolder = "Assets";
     std::optional<NLS::Editor::Assets::AssetBrowserActionIdentity> m_selectedProjectItem;
     std::string m_projectSearchQuery;
@@ -680,8 +682,6 @@ private:
     double m_projectDeleteActionSuppressedUntil = 0.0;
     NLS::Editor::Assets::AssetBrowserExternalDroppedFileQueue m_pendingExternalDroppedFiles;
     uint64_t m_windowDroppedFilesListener = 0u;
-    std::unordered_map<UI::Widgets::TreeNode*, std::string> m_pathUpdate;
-    std::unordered_set<std::string> m_expandedFolders;
     std::unordered_set<std::string> m_expandedProjectFolders;
     std::unordered_set<std::string> m_expandedProjectAssetItems;
     Core::AssetFileWatcher m_engineAssetsWatcher;

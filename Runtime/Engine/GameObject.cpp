@@ -1,7 +1,10 @@
-#include "GameObject.h"
+﻿#include "GameObject.h"
 #include <algorithm>
+#include <cctype>
 #include "Components/TransformComponent.h"
+#include "PrimitiveFactory.h"
 #include "Reflection/TypeCreator.h"
+#include "SceneSystem/Scene.h"
 
 namespace NLS::Engine
 {
@@ -163,6 +166,37 @@ void GameObject::SetActive(bool p_active)
 	}
 }
 
+void GameObject::MarkRenderStateChanged()
+{
+    ++m_renderStateRevision;
+    if (m_scene != nullptr)
+        m_scene->MarkRenderContentChanged();
+}
+
+GameObject* GameObject::CreatePrimitive(const std::string& p_typeName)
+{
+    if (m_scene == nullptr || m_destroyed)
+        return nullptr;
+
+    std::string requested = p_typeName.empty() ? "Cube" : p_typeName;
+    for (auto& character : requested)
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+
+    const auto primitiveType = TryGetPrimitiveTypeFromMeshResourcePath(
+        std::string("builtin:Primitive/") + requested);
+    if (!primitiveType.has_value())
+        return nullptr;
+
+    auto& primitive = m_scene->CreateGameObject(GetPrimitiveName(*primitiveType));
+    primitive.SetParent(*this);
+    if (!ConfigurePrimitiveGameObject(primitive, *primitiveType))
+    {
+        m_scene->DestroyGameObject(primitive);
+        return nullptr;
+    }
+    return &primitive;
+}
+
 bool GameObject::IsSelfActive() const
 {
 	return m_active;
@@ -295,7 +329,7 @@ void GameObject::OnStart()
 	m_started = true;
 	std::for_each(m_vComponents.begin(), m_vComponents.end(), [](auto& element)
     {
-        if (auto* component = element.get())
+        if (auto* component = element.get(); component && component->IsSelfEnabled())
             component->OnStart();
     });
 }
@@ -304,7 +338,7 @@ void GameObject::OnEnable()
 {
 	std::for_each(m_vComponents.begin(), m_vComponents.end(), [](auto& element)
     {
-        if (auto* component = element.get())
+        if (auto* component = element.get(); component && component->IsSelfEnabled())
             component->OnEnable();
     });
 }
@@ -313,7 +347,7 @@ void GameObject::OnDisable()
 {
 	std::for_each(m_vComponents.begin(), m_vComponents.end(), [](auto& element)
     {
-        if (auto* component = element.get())
+        if (auto* component = element.get(); component && component->IsSelfEnabled())
             component->OnDisable();
     });
 }
@@ -333,7 +367,7 @@ void GameObject::OnUpdate(float p_deltaTime)
 	{
 		std::for_each(m_vComponents.begin(), m_vComponents.end(), [&](auto& element)
         {
-            if (auto* component = element.get())
+            if (auto* component = element.get(); component && component->IsSelfEnabled())
                 component->OnUpdate(p_deltaTime);
         });
 	}
@@ -345,7 +379,7 @@ void GameObject::OnFixedUpdate(float p_deltaTime)
 	{
 		std::for_each(m_vComponents.begin(), m_vComponents.end(), [&](auto& element)
         {
-            if (auto* component = element.get())
+            if (auto* component = element.get(); component && component->IsSelfEnabled())
                 component->OnFixedUpdate(p_deltaTime);
         });
 	}
@@ -357,7 +391,7 @@ void GameObject::OnLateUpdate(float p_deltaTime)
 	{
 		std::for_each(m_vComponents.begin(), m_vComponents.end(), [&](auto& element)
         {
-            if (auto* component = element.get())
+            if (auto* component = element.get(); component && component->IsSelfEnabled())
                 component->OnLateUpdate(p_deltaTime);
         });
 	}

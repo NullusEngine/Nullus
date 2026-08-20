@@ -82,7 +82,10 @@ Scene::~Scene()
 
 void Scene::Play()
 {
+	if (m_isPlaying)
+		return;
 	m_isPlaying = true;
+	MarkRenderContentChanged();
 
 	/* Wake up actors to allow them to react to OnEnable, OnDisable and OnDestroy, */
 	std::for_each(m_gameobject.begin(), m_gameobject.end(), [](GameObject * p_element) { p_element->SetSleeping(false); });
@@ -90,6 +93,14 @@ void Scene::Play()
 	std::for_each(m_gameobject.begin(), m_gameobject.end(), [](GameObject * p_element) { if (p_element->IsActive()) p_element->OnAwake(); });
 	std::for_each(m_gameobject.begin(), m_gameobject.end(), [](GameObject * p_element) { if (p_element->IsActive()) p_element->OnEnable(); });
 	std::for_each(m_gameobject.begin(), m_gameobject.end(), [](GameObject * p_element) { if (p_element->IsActive()) p_element->OnStart(); });
+}
+
+void Scene::Stop()
+{
+	if (!m_isPlaying)
+		return;
+	m_isPlaying = false;
+	MarkRenderContentChanged();
 }
 
 bool Scene::IsPlaying() const
@@ -189,6 +200,8 @@ bool Scene::AddGameObject(GameObject* gameObject, AddGameObjectActivation activa
 		    {
 			    if (!go)
 				    return;
+
+                go->SetScene(this);
 
                 ++hashTrackedLookupCount;
 			    if (trackedObjects.insert(go).second)
@@ -368,14 +381,16 @@ Engine::Components::CameraComponent* Scene::FindMainCamera() const
 
 void Scene::OnComponentAdded(Components::Component* p_compononent)
 {
-    (void)p_compononent;
     RequestFastAccessComponentsRebuild();
+    MarkRenderContentChanged();
+    ComponentAddedEvent.Invoke(p_compononent);
 }
 
 void Scene::OnComponentRemoved(Components::Component* p_compononent)
 {
     (void)p_compononent;
     RequestFastAccessComponentsRebuild();
+    MarkRenderContentChanged();
 }
 
 std::vector<Engine::GameObject*>& Scene::GetGameObjects()

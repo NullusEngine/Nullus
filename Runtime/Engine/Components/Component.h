@@ -4,6 +4,13 @@
 #include "Reflection/Object.h"
 #include "Components/Component.generated.h"
 
+#include <vector>
+
+namespace NLS::Engine::Serialize
+{
+struct PropertyRecord;
+}
+
 namespace NLS::Engine
 {
 class GameObject;
@@ -67,7 +74,27 @@ public:
      */
     virtual void OnLateUpdate(float p_deltaTime) {}
 
+    // Optional persistence extension for components whose state is not a
+    // reflected native field set (for example, script asset metadata and
+    // generated field overrides).  The engine owns the graph format while
+    // the component owns its payload, so the dependency stays one-way.
+    virtual bool SerializeObjectGraphProperties(
+        std::vector<NLS::Engine::Serialize::PropertyRecord>& properties) const
+    {
+        (void)properties;
+        return false;
+    }
+
+    virtual bool DeserializeObjectGraphProperties(
+        const std::vector<NLS::Engine::Serialize::PropertyRecord>& properties)
+    {
+        (void)properties;
+        return false;
+    }
+
     bool IsSelfEnabled() const { return m_enabled; }
+    bool IsActiveAndEnabled() const;
+    void SetEnabled(bool enabled);
 
     GameObject* gameobject() const
     {
@@ -75,6 +102,10 @@ public:
     }
 
 protected:
+    // Propagate render-affecting component changes to the owning scene without
+    // making the component depend on SceneSystem headers.
+    void MarkRenderStateChanged();
+
     GameObject* m_owner = nullptr;
     bool m_enabled = true;
     bool m_destroyedFromOwner = false;

@@ -56,5 +56,10 @@ namespace NLS::Game::Core
 		std::optional<Launch::MaterialValidationLaunchSettings> m_materialValidation;
 		uint32_t m_presentedFrames = 0u;
 		bool m_materialValidationCaptured = false;
+		float m_fixedAccumulator = 0.0f;
+		double m_time = 0.0;
+		double m_unscaledTime = 0.0;
+		uint64_t m_frameIndex = 0;
+		uint64_t m_fixedFrameIndex = 0;
 	};
 }

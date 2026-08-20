@@ -14,6 +14,7 @@
 #include <Rendering/Settings/EPixelDataFormat.h>
 #include <Rendering/Settings/EPixelDataType.h>
 #include <Rendering/Tooling/MaterialVisualEvidence.h>
+#include <Scripting/ScriptEngineApi.h>
 
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
@@ -178,6 +179,14 @@ namespace
 
 void Game::Core::Game::Update(float p_deltaTime)
 {
+	const float unscaledDelta = std::max(0.0f, p_deltaTime);
+	NLS::Scripting::ScriptEngineApi::SetInputManager(m_context.inputManager.get());
+	NLS::Scripting::ScriptEngineApi::SetSceneManager(&m_context.sceneManager);
+	const float delta = NLS::Scripting::ScriptEngineApi::ScaleDeltaTime(unscaledDelta);
+	NLS::Scripting::ScriptEngineApi::AdvanceFrame(unscaledDelta);
+	m_unscaledTime += unscaledDelta;
+	m_time += delta;
+	++m_frameIndex;
 	if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_F11))
 	{
 		if (m_context.inputManager->GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
@@ -188,8 +197,55 @@ void Game::Core::Game::Update(float p_deltaTime)
 
 	if (auto currentScene = m_context.sceneManager.GetCurrentScene())
 	{
-		currentScene->Update(p_deltaTime);
-		currentScene->LateUpdate(p_deltaTime);
+		NLS::Scripting::ScriptEngineApi::SetScene(currentScene);
+		NLS::Scripting::ScriptFrameContext scriptFrame;
+		scriptFrame.deltaTime = delta;
+		scriptFrame.unscaledDeltaTime = unscaledDelta;
+		scriptFrame.time = m_time;
+		scriptFrame.unscaledTime = m_unscaledTime;
+		scriptFrame.frameIndex = m_frameIndex;
+		scriptFrame.fixedDeltaTime = NLS::Scripting::ScriptEngineApi::GetFixedDeltaTime();
+		scriptFrame.timeScale = NLS::Scripting::ScriptEngineApi::GetTimeScale();
+		m_fixedAccumulator += delta;
+		while (m_fixedAccumulator + 1e-6f >= scriptFrame.fixedDeltaTime)
+		{
+			NLS::Scripting::ScriptFrameContext fixedFrame = scriptFrame;
+			fixedFrame.deltaTime = scriptFrame.fixedDeltaTime * scriptFrame.timeScale;
+			fixedFrame.unscaledDeltaTime = scriptFrame.fixedDeltaTime;
+			fixedFrame.fixedFrameIndex = ++m_fixedFrameIndex;
+			const auto fixedSchedule = m_context.scriptRuntime.BeginScheduledFrame(
+				NLS::Scripting::ScriptCallback::FixedUpdate,
+				fixedFrame);
+			currentScene->FixedUpdate(fixedFrame.deltaTime);
+			if (fixedSchedule.Succeeded())
+			{
+				const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
+				if (!flushStatus.Succeeded())
+					NLS_LOG_WARNING("Script FixedUpdate batch failed: " + flushStatus.message);
+			}
+			m_fixedAccumulator -= scriptFrame.fixedDeltaTime;
+		}
+		const auto updateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
+			NLS::Scripting::ScriptCallback::Update,
+			scriptFrame);
+		currentScene->Update(delta);
+		if (updateSchedule.Succeeded())
+		{
+			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
+			if (!flushStatus.Succeeded())
+				NLS_LOG_WARNING("Script Update batch failed: " + flushStatus.message);
+		}
+
+		const auto lateSchedule = m_context.scriptRuntime.BeginScheduledFrame(
+			NLS::Scripting::ScriptCallback::LateUpdate,
+			scriptFrame);
+		currentScene->LateUpdate(delta);
+		if (lateSchedule.Succeeded())
+		{
+			const auto flushStatus = m_context.scriptRuntime.FlushScheduledFrame();
+			if (!flushStatus.Succeeded())
+				NLS_LOG_WARNING("Script LateUpdate batch failed: " + flushStatus.message);
+		}
 		if (m_materialValidation.has_value() &&
 			!m_materialValidationCaptured &&
 			m_presentedFrames + 1u >= std::max(1u, m_materialValidation->captureAfterFrames))
@@ -207,6 +263,9 @@ void Game::Core::Game::Update(float p_deltaTime)
 		}
 	}
 
+	NLS::Scripting::ScriptEngineApi::FlushDeferredDestructions();
+	if (auto currentScene = m_context.sceneManager.GetCurrentScene())
+		currentScene->CollectGarbages();
 	m_context.sceneManager.Update();
 
 #ifdef _DEBUG

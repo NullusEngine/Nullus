@@ -18,7 +18,7 @@ namespace NLS::Engine::Components
 /**
  * Base class for any light
  */
-CLASS(NLS_ENGINE_API LightComponent, ComponentMenu("Rendering/Light")) : public Component
+CLASS(NLS_ENGINE_API LightComponent, Scriptable, ComponentMenu("Rendering/Light")) : public Component
 {
 public:
     GENERATED_BODY()
@@ -30,10 +30,10 @@ public:
 
     void OnCreate()override;
 
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetLightType(Render::Settings::ELightType type);
 
-    FUNCTION()
+    FUNCTION(Scriptable)
     Render::Settings::ELightType GetLightType() const;
     /**
      * Returns light data
@@ -44,35 +44,35 @@ public:
     /**
      * Returns light color
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     const Maths::Vector3& GetColor() const;
 
     /**
      * Returns light intensity
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     float GetIntensity() const;
 
     /**
      * Defines a new color for the light
      * @param p_color
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetColor(const Maths::Vector3& p_color);
 
     /**
      * Defines the intensity for the light
      * @param p_intensity
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetIntensity(float p_intensity);
 
     /** Returns the explicit light influence range. */
-    FUNCTION()
+    FUNCTION(Scriptable)
     float GetRange() const;
 
     /** Sets the explicit light influence range; invalid values become zero. */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetRange(float p_range);
 
     /**
@@ -84,7 +84,7 @@ public:
     /**
      * Returns the light outercutoff
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     float GetOuterCutoff() const;
 
     /**
@@ -98,7 +98,7 @@ public:
      * Defines the light outercutoff
      * @param p_cutoff
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetOuterCutoff(float p_outerCutoff);
 
     /**

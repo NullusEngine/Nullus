@@ -43,3 +43,20 @@ set_tests_properties(NullusUnitTests PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     LABELS behavior
 )
+
+# Keep the scripting contract independently buildable. The aggregate target
+# contains a VS2019-sensitive DX12 test; this focused target lets CI and local
+# debugger work validate the C#/Lua runtime without compiling unrelated suites.
+add_executable(NullusScriptRuntimeTests
+    "${CMAKE_CURRENT_SOURCE_DIR}/ScriptRuntimeTests.cpp"
+    # Keep the configuration generator independently testable without making
+    # the focused scripting test depend on the full Editor executable.
+    "${CMAKE_SOURCE_DIR}/Project/Editor/Debug/VisualStudioConfigurationGenerator.cpp"
+    "${CMAKE_SOURCE_DIR}/Tests/NullusTestMain.cpp"
+)
+nls_configure_test_target(NullusScriptRuntimeTests)
+add_test(NAME NullusScriptRuntimeTests COMMAND NullusScriptRuntimeTests)
+set_tests_properties(NullusScriptRuntimeTests PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    LABELS scripting
+)

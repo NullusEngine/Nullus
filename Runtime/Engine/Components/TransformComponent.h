@@ -17,7 +17,7 @@ using namespace NLS::Maths;
 
 namespace NLS::Engine::Components
 {
-CLASS(NLS_ENGINE_API TransformComponent) : public Component
+CLASS(NLS_ENGINE_API TransformComponent, Scriptable) : public Component
 {
 public:
     GENERATED_BODY()
@@ -45,21 +45,21 @@ public:
      * Set the position of the transform in the local space
      * @param p_newPosition
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetLocalPosition(struct Maths::Vector3 p_newPosition);
 
     /**
      * Set the rotation of the transform in the local space
      * @param p_newRotation
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetLocalRotation(Maths::Quaternion p_newRotation);
 
     /**
      * Set the scale of the transform in the local space
      * @param p_newScale
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     void SetLocalScale(struct Maths::Vector3 p_newScale);
 
     void SetLocalTransform(
@@ -107,19 +107,19 @@ public:
     /**
      * Return the position in local space
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     const Maths::Vector3& GetLocalPosition() const;
 
     /**
      * Return the rotation in local space
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     const Maths::Quaternion& GetLocalRotation() const;
 
     /**
      * Return the scale in local space
      */
-    FUNCTION()
+    FUNCTION(Scriptable)
     const Maths::Vector3& GetLocalScale() const;
 
     /**

@@ -122,11 +122,12 @@ jobs:
         timeout-minutes: 10
         shell: powershell
         run: |
-          $dotnet = (Resolve-Path 'Tools\Dotnet\windows\x64\dotnet.exe').Path
-          & '.\Tools\RunRepositoryDotnet.cmd' $dotnet restore 'build\windows\Tools\MetaParser\generated\src\MetaParser.csproj' --nologo
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+          $dotnetVersion = (dotnet --version).Trim()
+          if ($dotnetVersion -ne '8.0.408') {
+            Write-Error "Expected .NET SDK 8.0.408, found $dotnetVersion"
+            exit 1
           }
+          dotnet restore 'build\windows\Tools\MetaParser\generated\src\MetaParser.csproj' --nologo
 
       - name: Build
         id: build_step

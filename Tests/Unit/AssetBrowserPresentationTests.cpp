@@ -3263,6 +3263,8 @@ TEST(AssetBrowserPresentationTests, SharedRuntimeCMakeStagesDynamicLibrariesOnEv
     EXPECT_NE(rootCMake.find("function(nls_register_external_runtime_file"), std::string::npos);
     EXPECT_NE(rootCMake.find("NLS_EXTERNAL_RUNTIME_FILES"), std::string::npos);
     EXPECT_NE(rootCMake.find("NLS_EXTERNAL_RUNTIME_PRODUCERS"), std::string::npos);
+    EXPECT_NE(rootCMake.find("add_dependencies(${_nls_runtime_consumer} ${_nls_runtime_targets})"), std::string::npos)
+        << "Consumers configured before Runtime must still wait for every shared runtime target.";
     EXPECT_NE(rootCMake.find("add_dependencies(${_nls_runtime_consumer}"), std::string::npos)
         << "External runtime producers must finish before consumer deployment.";
     EXPECT_EQ(copyHelper.find("copy_directory"), std::string::npos)

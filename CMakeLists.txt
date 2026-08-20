@@ -317,6 +317,11 @@ function(nls_generate_shared_runtime_manifests)
 
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/runtime-manifests")
     foreach(_nls_runtime_consumer IN LISTS _nls_runtime_consumers)
+        # Some consumers are declared before Runtime, so their copy helper
+        # cannot see the complete shared-runtime target list yet.
+        if(_nls_runtime_targets)
+            add_dependencies(${_nls_runtime_consumer} ${_nls_runtime_targets})
+        endif()
         if(_nls_external_runtime_producers)
             add_dependencies(${_nls_runtime_consumer} ${_nls_external_runtime_producers})
         endif()

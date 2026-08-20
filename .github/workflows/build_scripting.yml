@@ -63,7 +63,10 @@ jobs:
         run: |
           set -euo pipefail
           dotnet restore Managed/Nullus.ScriptGenerator/Nullus.ScriptGenerator.csproj --nologo
+          dotnet restore Managed/Nullus.ScriptAnalysis/Nullus.ScriptAnalysis.csproj --nologo
           dotnet restore Managed/Nullus.Managed/Nullus.Managed.csproj --nologo
+          dotnet restore Managed/Nullus.EngineScripts/Nullus.EngineScripts.csproj --nologo
+          dotnet restore Managed/Nullus.GameScripts/Nullus.GameScripts.csproj --nologo
 
       - name: Configure and build
         shell: bash

@@ -10,3 +10,7 @@ nls_add_runtime_target(
 target_compile_definitions(NLS_Core PUBLIC
   $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
 )
+
+if(WIN32)
+  target_link_libraries(NLS_Core PRIVATE bcrypt)
+endif()

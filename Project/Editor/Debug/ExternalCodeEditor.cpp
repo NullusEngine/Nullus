@@ -35,7 +35,7 @@ std::optional<std::filesystem::path> FindVisualStudio2022()
 {
     constexpr wchar_t kVisualStudioKey[] = L"SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VS7";
 
-    const auto readRegistryInstallPath = [](REGSAM view) -> std::optional<std::filesystem::path>
+    const auto readRegistryInstallPath = [&kVisualStudioKey](REGSAM view) -> std::optional<std::filesystem::path>
     {
         HKEY key = nullptr;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVisualStudioKey, 0, KEY_READ | view, &key) != ERROR_SUCCESS)

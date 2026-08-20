@@ -72,6 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           cmake -S . -B build/scripting-${{ matrix.profile.name }} \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DNLS_BUILD_TESTS=ON \
             -DNLS_ENABLE_CSHARP_SCRIPTING=${{ matrix.profile.csharp }} \
             -DNLS_ENABLE_LUA_SCRIPTING=${{ matrix.profile.lua }} \

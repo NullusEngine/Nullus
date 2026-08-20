@@ -294,7 +294,9 @@ std::string FileStamp(const std::filesystem::path& path)
     const auto timestamp = std::filesystem::last_write_time(path, error);
     if (error)
         return std::to_string(size);
-    return std::to_string(size) + ":" + std::to_string(timestamp.time_since_epoch().count());
+    const auto timestampCount = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        timestamp.time_since_epoch()).count();
+    return std::to_string(size) + ":" + std::to_string(timestampCount);
 }
 
 std::filesystem::path EditorExecutableForConfiguration(

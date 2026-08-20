@@ -77,7 +77,7 @@ target_link_libraries(
 )
 
 if(WIN32)
-    target_link_libraries(ImGui PRIVATE d3d12 dxgi dxguid d3d11)
+    target_link_libraries(ImGui PRIVATE d3d12 dxgi dxguid d3d11 d3dcompiler dwmapi)
     target_compile_definitions(ImGui
         PUBLIC
             NLS_HAS_IMGUI_DX12_BACKEND=1

@@ -1,0 +1,122 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <TargetVsixContainerName Condition="'$(TargetVsixContainerName)' == ''">Nullus.ScriptDebugger.vsix</TargetVsixContainerName>
+    <TargetVsixContainer Condition="'$(TargetVsixContainer)' == ''">$(MSBuildProjectDirectory)\bin\$(Configuration)\$(TargetFramework)\Nullus.ScriptDebugger.vsix</TargetVsixContainer>
+    <RootNamespace>Nullus.ScriptDebugger</RootNamespace>
+    <AssemblyName>Nullus.ScriptDebugger</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <!-- The package is loaded from the VSIX extension directory. Without an
+         explicit codebase, VS resolves only the assembly name and cannot find
+         Nullus.ScriptDebugger.dll in the per-user extension folder. -->
+    <RegisterWithCodebase>true</RegisterWithCodebase>
+    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
+    <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- Use the installed VS 2022 SDK packaging tasks when available. The
+         build script can override this path for a non-default VS install. -->
+    <VSSDKTargetsPath Condition="'$(VSSDKTargetsPath)' == ''">$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v17.0\VSSDK\Microsoft.VsSDK.targets</VSSDKTargetsPath>
+    <FileManifest Condition="'$(FileManifest)' == ''">$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\files.json</FileManifest>
+    <TemplateFileManifest Condition="'$(TemplateFileManifest)' == ''">$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\templateFiles.json</TemplateFileManifest>
+    <ResourceManifest Condition="'$(ResourceManifest)' == ''">$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\resources.json</ResourceManifest>
+    <CtoFileManifest Condition="'$(CtoFileManifest)' == ''">$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\ctoFiles.json</CtoFileManifest>
+    <CtoCacheFile Condition="'$(CtoCacheFile)' == ''">$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\mergeCto.cache</CtoCacheFile>
+    <TemplateOutputDirectory Condition="'$(TemplateOutputDirectory)' == ''">$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\templates</TemplateOutputDirectory>
+    <CreateTemplateManifestsCacheFile Condition="'$(CreateTemplateManifestsCacheFile)' == ''">$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\createTemplateManifests.cache</CreateTemplateManifestsCacheFile>
+    <CreatePkgDefAssemblyToProcess Condition="'$(CreatePkgDefAssemblyToProcess)' == ''">$(MSBuildProjectDirectory)\bin\$(Configuration)\$(TargetFramework)\Nullus.ScriptDebugger.dll</CreatePkgDefAssemblyToProcess>
+    <VSInstallRoot Condition="'$(VSInstallRoot)' == ''">$(MSBuildProgramFiles64)\Microsoft Visual Studio\2022\Enterprise</VSInstallRoot>
+    <VSRoslynPath Condition="'$(VSRoslynPath)' == ''">$(VSInstallRoot)\Common7\IDE\CommonExtensions\Microsoft\VBCSharp\LanguageServices</VSRoslynPath>
+    <VSCompositionPath Condition="'$(VSCompositionPath)' == ''">$(VSInstallRoot)\Common7\IDE\PublicAssemblies</VSCompositionPath>
+  </PropertyGroup>
+  <Import Project="$(VSSDKTargetsPath)" Condition="Exists('$(VSSDKTargetsPath)')" />
+  <ItemGroup>
+    <Reference Include="System.ComponentModel.Composition" />
+    <Reference Include="System.Composition.AttributedModel"><HintPath>$(VSCompositionPath)\System.Composition.AttributedModel.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="System.Collections.Immutable"><HintPath>$(VSCompositionPath)\System.Collections.Immutable.dll</HintPath><Private>false</Private></Reference>
+    <Compile Include="NullusDebugPackage.cs" />
+    <Compile Include="NullusBrokerClient.cs" />
+    <Compile Include="NullusDebugLaunchProvider.cs" />
+    <Compile Include="NullusCodeFixProvider.cs" />
+    <Compile Include="NullusDiagnosticsService.cs" />
+    <VSCTCompile Include="NullusDebugPackage.vsct" />
+    <None Include="source.extension.vsixmanifest" />
+    <EmbeddedResource Update="Resources\VSPackage.resx">
+      <MergeWithCTO>true</MergeWithCTO>
+      <ManifestResourceName>VSPackage</ManifestResourceName>
+    </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="EnvDTE">
+      <HintPath>$(VSPublicAssembliesPath)\envdte.dll</HintPath>
+    </Reference>
+    <Reference Include="EnvDTE80">
+      <HintPath>$(VSPublicAssembliesPath)\envdte80.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Shell.15.0">
+      <HintPath>$(VSPublicAssembliesPath)\Microsoft.VisualStudio.Shell.15.0.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Shell.Framework">
+      <HintPath>$(VSPublicAssembliesPath)\Microsoft.VisualStudio.Shell.Framework.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Interop">
+      <HintPath>$(VSPublicAssembliesPath)\Microsoft.VisualStudio.Interop.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.OLE.Interop">
+      <HintPath>$(VSPublicAssembliesPath)\Microsoft.VisualStudio.OLE.Interop.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Shell.Interop.8.0">
+      <HintPath>$(VSPublicAssembliesPath)\Microsoft.VisualStudio.Shell.Interop.8.0.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Shell.Interop.10.0">
+      <HintPath>$(VSPublicAssembliesPath)\Microsoft.VisualStudio.Shell.Interop.10.0.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Threading">
+      <HintPath>$(VSThreadingPath)</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.ProjectSystem">
+      <HintPath>$(VSProjectSystemPath)\Microsoft.VisualStudio.ProjectSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.ProjectSystem.VS">
+      <HintPath>$(VSProjectSystemPath)\Microsoft.VisualStudio.ProjectSystem.VS.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.ProjectSystem.Managed">
+      <HintPath>$(VSManagedProjectSystemPath)\Microsoft.VisualStudio.ProjectSystem.Managed.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.ProjectSystem.Managed.VS">
+      <HintPath>$(VSManagedProjectSystemPath)\Microsoft.VisualStudio.ProjectSystem.Managed.VS.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis"><HintPath>$(VSRoslynPath)\Microsoft.CodeAnalysis.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp"><HintPath>$(VSRoslynPath)\Microsoft.CodeAnalysis.CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.CodeAnalysis.Workspaces"><HintPath>$(VSRoslynPath)\Microsoft.CodeAnalysis.Workspaces.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp.Workspaces"><HintPath>$(VSRoslynPath)\Microsoft.CodeAnalysis.CSharp.Workspaces.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.CodeAnalysis.Features"><HintPath>$(VSRoslynPath)\Microsoft.CodeAnalysis.Features.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.VisualStudio.Utilities">
+      <HintPath>$(VSInstallRoot)\Common7\IDE\Microsoft.VisualStudio.Utilities.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Imaging">
+      <HintPath>$(VSInstallRoot)\Common7\IDE\Microsoft.VisualStudio.Imaging.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Internal.VisualStudio.Interop">
+      <HintPath>$(VSInstallRoot)\Common7\IDE\PrivateAssemblies\Microsoft.Internal.VisualStudio.Interop.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Web.Extensions">
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Design">
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="CompileNullusCommandTable" BeforeTargets="PrepareResources" Condition="'$(VSCTPath)' != ''">
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <Exec Command="&quot;$(VSCTPath)&quot; &quot;$(MSBuildProjectDirectory)\NullusDebugPackage.vsct&quot; &quot;$(IntermediateOutputPath)NullusDebugPackage.cto&quot; -nologo -I&quot;$(VSCTIncludePath)&quot;" />
+  </Target>
+</Project>

@@ -49,7 +49,7 @@ Nullus 是一个仍在持续演进中的 C++ 3D 引擎项目，当前聚焦于�
 
 - CMake 3.16 及以上
 - 支持 C++20 的编译器
-- .NET SDK 8.0 及以上
+- .NET SDK 8.0.408（CMake 配置时默认自动安装到仓库内）
 - Python 3.8 及以上（用于源码依赖准备脚本）
 - Git
 
@@ -62,6 +62,16 @@ git submodule update --init --recursive
 ```
 
 ### 准备第三方依赖
+
+代码生成、MetaParser 和 C# 游戏脚本统一使用仓库固定的 .NET SDK 8.0.408。CMake 配置时如果本地缺失，会自动下载、校验并安装到 `Tools/Dotnet/<platform>/<arch>`，不会修改系统 PATH。也可以手动执行：
+
+```powershell
+.\SetupDependencies.bat --dependency dotnet-sdk
+```
+
+```bash
+./SetupDependencies.sh --dependency dotnet-sdk
+```
 
 源码构建前先运行依赖准备脚本。它会在明确接受 Autodesk FBX SDK EULA 后，从官方地址下载并校验 FBX SDK，然后安装到 `ThirdParty/FBX/sdk/<platform>`：
 
@@ -88,6 +98,12 @@ Windows CI 如需固定目标架构，可附加 `--arch x64` 或 `--arch ARM64`�
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Debug
+```
+
+如果当前终端由工具宿主启动并报告 `MSB6001`（`Path` 与 `PATH` 重复），使用项目内的环境清理入口构建；它只清理构建子进程，不修改系统 PATH：
+
+```powershell
+.\Tools\BuildCleanEnvironment.cmd cmake --build build --config Debug
 ```
 
 也可以使用仓库脚本：
@@ -119,8 +135,24 @@ build_windows.bat Debug ARM64
 - `Editor`
 - `Game`
 
+### C# 脚本调试（VS Code / Visual Studio）
+
+Editor 会使用仓库内 .NET 8 SDK 自动构建 `Debug` 版 `GameScripts.dll` 和 portable PDB。Editor 启动后会准备一次构建，保存 `Assets/**/*.cs` 后由 Asset Watcher 自动排队增量重建；构建完成后在帧边界热重载。C# 调试器附加到正在运行的 Editor 进程。在 Editor 的 `Debug` 菜单中：
+
+1. 使用 `Generate VS Code Configuration` 或 `Generate Visual Studio Configuration`（仅生成 IDE 配置，不是编译前置条件）。
+2. VS Code 打开项目生成的 `Library/IDE/VSCode/Nullus.code-workspace`；Visual Studio 打开 `Library/IDE/VisualStudio/Nullus.Project.sln`，直接按 F5。两者都会复用或启动正确的 Editor，不需要选择进程。
+3. 进入 Play，在 `Assets/**/*.cs` 或 `Managed/Nullus.GameScripts/Scripts/**/*.cs` 设置断点；保存 `Assets/**/*.cs` 后等待自动 Debug 构建完成即可命中新程序集。
+
+成功的脚本构建会在帧边界切换 collectible CoreCLR 加载上下文并保留字段；构建失败时旧程序集继续运行。调试配置只写项目内 `Library/IDE`，不会修改系统 `PATH`。
+
+Visual Studio 的原生 Editor 配置直接读取当前方案配置：选择 `Debug|x64` 会启动 `App/Win64_Debug_Runtime_Shared/Editor.exe`，选择 `Release|x64` 会启动 `App/Win64_Release_Runtime_Shared/Editor.exe`。不需要维护单独的 Release 调试 profile；`Nullus: C# Scripts`、`Nullus: C# Attach and Play` 和 `Nullus: Editor + C# Mixed` 都遵循当前的 `Debug|x64` / `Release|x64` 选择。VSIX 位于 `Tools/Debug/VisualStudioExtension/Nullus.ScriptDebugger.vsix`，安装后重启 VS；完整流程见 [脚本调试指南](Docs/Scripting/ScriptDebugging.zh-CN.md)。
+
 ## 文档入口
 
+- 脚本 API（中文）：`Docs/Scripting/ScriptingApi.zh-CN.md`
+- Scripting API (English): `Docs/Scripting/ScriptingApi.en.md`
+- 脚本调试指南（中文）：`Docs/Scripting/ScriptDebugging.zh-CN.md`
+- Script debugging guide (English): `Docs/Scripting/ScriptDebugging.en.md`
 - 反射工作流（中文）：`Docs/Reflection/ReflectionWorkflow.zh-CN.md`
 - Reflection workflow (English): `Docs/Reflection/ReflectionWorkflow.en.md`
 - 测试说明：`Docs/Testing.md`
@@ -160,7 +192,7 @@ CI 会正常构建工程，并继续执行反射与单元测试相关目标。
 
 请优先检查：
 
-- 是否安装了 .NET 8 SDK
+- 是否已通过 CMake 或 `SetupDependencies --dependency dotnet-sdk` 安装 .NET 8.0.408 SDK
 - 是否正确执行了 `dotnet restore`
 - 是否误用了系统里的旧版 `libclang`
 

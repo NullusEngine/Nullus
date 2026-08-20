@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable">
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+  <Commands package="guidNullusScriptDebuggerPkg">
+    <Groups>
+      <Group guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" priority="0x0600" />
+    </Groups>
+    <Buttons>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusStartCSharp" type="Button" priority="0x0100">
+        <Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" />
+        <Strings>
+          <ButtonText>Nullus: C# Scripts</ButtonText>
+        </Strings>
+      </Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusAttachAndPlay" type="Button" priority="0x0110"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: C# Attach and Play</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusFocusEditor" type="Button" priority="0x0120"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Focus Editor</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusBuildScripts" type="Button" priority="0x0130"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Build Scripts</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusPlay" type="Button" priority="0x0140"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Play</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusPause" type="Button" priority="0x0150"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Pause</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusResume" type="Button" priority="0x0160"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Resume</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusStop" type="Button" priority="0x0170"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Stop Play</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusAttachMixed" type="Button" priority="0x0180"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Editor + C# Mixed</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusClearDiagnostics" type="Button" priority="0x0190"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Clear Script Diagnostics</ButtonText></Strings></Button>
+      <Button guid="guidNullusScriptDebuggerCmdSet" id="cmdidNullusBuildEditor" type="Button" priority="0x01A0"><Parent guid="guidNullusScriptDebuggerCmdSet" id="NullusDebugGroup" /><Strings><ButtonText>Nullus: Build Editor</ButtonText></Strings></Button>
+    </Buttons>
+  </Commands>
+  <Symbols>
+    <GuidSymbol name="guidNullusScriptDebuggerPkg" value="{7df2b87c-86b1-4de3-b40e-6baaa5c19c41}" />
+    <GuidSymbol name="guidNullusScriptDebuggerCmdSet" value="{6e0eb88c-5cb2-4ff6-9f9d-df3d7b03c8f0}">
+      <IDSymbol name="NullusDebugGroup" value="0x1020" />
+      <IDSymbol name="cmdidNullusStartCSharp" value="0x0100" />
+      <IDSymbol name="cmdidNullusAttachAndPlay" value="0x0101" />
+      <IDSymbol name="cmdidNullusFocusEditor" value="0x0102" />
+      <IDSymbol name="cmdidNullusBuildScripts" value="0x0103" />
+      <IDSymbol name="cmdidNullusPlay" value="0x0104" />
+      <IDSymbol name="cmdidNullusPause" value="0x0105" />
+      <IDSymbol name="cmdidNullusResume" value="0x0106" />
+      <IDSymbol name="cmdidNullusStop" value="0x0107" />
+      <IDSymbol name="cmdidNullusAttachMixed" value="0x0108" />
+      <IDSymbol name="cmdidNullusClearDiagnostics" value="0x0109" />
+      <IDSymbol name="cmdidNullusBuildEditor" value="0x010A" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>

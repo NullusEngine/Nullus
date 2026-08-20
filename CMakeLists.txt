@@ -91,6 +91,10 @@ if(MSVC)
         "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /DEBUG")
     set(CMAKE_SHARED_LINKER_FLAGS_RELEASE
         "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEBUG")
+elseif(MINGW)
+    # MetaParser can generate translation units that exceed the default
+    # GNU assembler section limit on Windows.
+    add_compile_options(-Wa,-mbig-obj)
 endif()
 
 # 确定编译目标为32位还是64位

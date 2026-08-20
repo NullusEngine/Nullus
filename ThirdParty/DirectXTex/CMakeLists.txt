@@ -1,10 +1,11 @@
 set(NLS_DIRECTXTEX_VERSION "jul2025" CACHE STRING "Pinned DirectXTex source drop expected by Nullus.")
 set(NLS_DIRECTXTEX_COMMIT "32b2a8e" CACHE STRING "Pinned DirectXTex commit prefix expected by Nullus.")
 set(NLS_DIRECTXTEX_LICENSE "MIT" CACHE STRING "Pinned DirectXTex license.")
+option(NLS_ENABLE_DIRECTXTEX "Build the vendored DirectXTex encoder when available." ON)
 
 set(_nls_directxtex_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-if(WIN32 AND EXISTS "${_nls_directxtex_source_dir}/DirectXTex/DirectXTex.h")
+if(NLS_ENABLE_DIRECTXTEX AND WIN32 AND EXISTS "${_nls_directxtex_source_dir}/DirectXTex/DirectXTex.h")
     if(EXISTS "${_nls_directxtex_source_dir}/.git")
         execute_process(
             COMMAND git -C "${_nls_directxtex_source_dir}" rev-parse --short=7 HEAD

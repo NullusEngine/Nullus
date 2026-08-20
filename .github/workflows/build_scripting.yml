@@ -47,6 +47,17 @@ jobs:
         shell: bash
         run: python Tools/SetupDependencies/setup_dependencies.py --dependency dotnet-sdk --dry-run --non-interactive
 
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config clang \
+            libwayland-dev libwayland-bin wayland-protocols \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libxfixes-dev libxkbcommon-dev \
+            libgl1-mesa-dev libglu1-mesa-dev libvulkan-dev spirv-tools
+
       - name: Restore managed scripting projects
         shell: bash
         run: |
@@ -65,6 +76,7 @@ jobs:
             -DNLS_ENABLE_CSHARP_SCRIPTING=${{ matrix.profile.csharp }} \
             -DNLS_ENABLE_LUA_SCRIPTING=${{ matrix.profile.lua }} \
             -DNLS_ENABLE_LUAPANDA_DEBUGGING=ON \
+            -DNLS_ENABLE_DIRECTXTEX=OFF \
             -DNLS_RENDER_API=OpenGL
           cmake --build build/scripting-${{ matrix.profile.name }} --target NLS_Scripting NullusUnitTests --parallel 2
 

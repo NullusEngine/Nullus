@@ -27,7 +27,7 @@ jobs:
         timeout-minutes: 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '8.0.408'
 
       - name: Install Vulkan SDK
         timeout-minutes: 30
@@ -121,7 +121,12 @@ jobs:
       - name: Restore MetaParser
         timeout-minutes: 10
         shell: powershell
-        run: dotnet restore build\windows\Tools\MetaParser\generated\src\MetaParser.csproj
+        run: |
+          $dotnet = (Resolve-Path 'Tools\Dotnet\windows\x64\dotnet.exe').Path
+          & '.\Tools\RunRepositoryDotnet.cmd' $dotnet restore 'build\windows\Tools\MetaParser\generated\src\MetaParser.csproj' --nologo
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Build
         id: build_step

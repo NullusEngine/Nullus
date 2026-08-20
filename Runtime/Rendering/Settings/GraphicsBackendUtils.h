@@ -464,7 +464,7 @@ namespace NLS::Render::Settings
 	}
 
 	// Thread-local diagnostics settings - set when Driver is created, read by subsystems without driver access
-	inline thread_local Render::Settings::EngineDiagnosticsSettings g_threadDiagnosticsSettings;
+	extern thread_local Render::Settings::EngineDiagnosticsSettings g_threadDiagnosticsSettings;
 
 	inline const Render::Settings::EngineDiagnosticsSettings& GetThreadDiagnosticsSettings()
 	{

@@ -56,6 +56,9 @@ NLS::Render::Context::MeshRuntimeUploadResult::operator=(MeshRuntimeUploadResult
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Utils/Conversions.h"
 
+thread_local NLS::Render::Settings::EngineDiagnosticsSettings
+    NLS::Render::Settings::g_threadDiagnosticsSettings;
+
 namespace NLS::Render::Context
 {
 namespace

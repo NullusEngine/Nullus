@@ -419,7 +419,6 @@ void EditorDebugEndpoint::Stop()
     {
         ::shutdown(m_serverHandle, SHUT_RDWR);
     }
-    std::error_code error;
 #endif
     if (m_thread.joinable())
         m_thread.join();

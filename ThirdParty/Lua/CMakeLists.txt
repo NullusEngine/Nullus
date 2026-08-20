@@ -36,4 +36,7 @@ set(NLS_LUA_SOURCES
 add_library(NLS_Lua STATIC ${NLS_LUA_SOURCES})
 target_include_directories(NLS_Lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(NLS_Lua PRIVATE LUA_USE_C89=1)
+if(NLS_USE_SHARED_LIBRARY)
+    set_target_properties(NLS_Lua PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 set_target_properties(NLS_Lua PROPERTIES FOLDER ${third_party_folder}/Lua)

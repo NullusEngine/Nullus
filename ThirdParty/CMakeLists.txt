@@ -41,6 +41,9 @@ if(NLS_ENABLE_LUA_SCRIPTING AND TARGET NLS_Lua AND EXISTS "${CMAKE_CURRENT_SOURC
     else()
         target_link_libraries(NLS_LuaSocket PUBLIC ${CMAKE_DL_LIBS})
     endif()
+    if(NLS_USE_SHARED_LIBRARY)
+        set_target_properties(NLS_LuaSocket PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
     set_target_properties(NLS_LuaSocket PROPERTIES FOLDER ${third_party_folder}/LuaSocket)
 endif()
 

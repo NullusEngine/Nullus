@@ -267,6 +267,12 @@ endfunction()
 
 function(nls_copy_shared_runtime_to_target TARGET_NAME)
     if(NLS_USE_SHARED_LIBRARY)
+        get_property(_nls_runtime_targets GLOBAL PROPERTY NLS_SHARED_RUNTIME_TARGETS)
+        if(_nls_runtime_targets)
+            # The deployment manifest contains every shared runtime module, so
+            # the consumer must wait for all of them before its post-build copy.
+            add_dependencies(${TARGET_NAME} ${_nls_runtime_targets})
+        endif()
         set_property(GLOBAL APPEND PROPERTY NLS_SHARED_RUNTIME_CONSUMERS ${TARGET_NAME})
         add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND}

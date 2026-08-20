@@ -56,8 +56,23 @@ NLS::Render::Context::MeshRuntimeUploadResult::operator=(MeshRuntimeUploadResult
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Utils/Conversions.h"
 
-thread_local NLS::Render::Settings::EngineDiagnosticsSettings
-    NLS::Render::Settings::g_threadDiagnosticsSettings;
+namespace NLS::Render::Settings
+{
+namespace
+{
+thread_local EngineDiagnosticsSettings g_threadDiagnosticsSettings;
+}
+
+NLS_RENDER_API const EngineDiagnosticsSettings& GetThreadDiagnosticsSettings()
+{
+    return g_threadDiagnosticsSettings;
+}
+
+NLS_RENDER_API void SetThreadDiagnosticsSettings(const EngineDiagnosticsSettings& settings)
+{
+    g_threadDiagnosticsSettings = settings;
+}
+}
 
 namespace NLS::Render::Context
 {

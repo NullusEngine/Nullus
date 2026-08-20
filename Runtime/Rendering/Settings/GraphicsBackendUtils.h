@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "Rendering/RHI/RHITypes.h"
+#include "Rendering/RenderDef.h"
 #include "Rendering/Settings/EngineDiagnosticsSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 
@@ -463,18 +464,9 @@ namespace NLS::Render::Settings
 			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::TransientResourceAllocator).supported;
 	}
 
-	// Thread-local diagnostics settings - set when Driver is created, read by subsystems without driver access
-	extern thread_local Render::Settings::EngineDiagnosticsSettings g_threadDiagnosticsSettings;
-
-	inline const Render::Settings::EngineDiagnosticsSettings& GetThreadDiagnosticsSettings()
-	{
-		return g_threadDiagnosticsSettings;
-	}
-
-	inline void SetThreadDiagnosticsSettings(const Render::Settings::EngineDiagnosticsSettings& settings)
-	{
-		g_threadDiagnosticsSettings = settings;
-	}
+	// Thread-local diagnostics settings - set when Driver is created, read by subsystems without driver access.
+	NLS_RENDER_API const EngineDiagnosticsSettings& GetThreadDiagnosticsSettings();
+	NLS_RENDER_API void SetThreadDiagnosticsSettings(const EngineDiagnosticsSettings& settings);
 
 
 	inline bool SupportsAsyncComputeFoundation(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)

@@ -246,6 +246,12 @@ std::future<ManagedScriptBuildResult> ManagedScriptBuildService::Start(ManagedSc
 std::filesystem::path ManagedScriptBuildService::ResolveRepositoryDotnet(
     const std::filesystem::path& projectRoot)
 {
+    if (const auto* configured = std::getenv("NLS_DOTNET_EXECUTABLE");
+        configured != nullptr && configured[0] != '\0')
+    {
+        return configured;
+    }
+
     std::error_code error;
     auto normalizedRoot = std::filesystem::weakly_canonical(projectRoot, error);
     if (error)
@@ -264,13 +270,9 @@ std::filesystem::path ManagedScriptBuildService::ResolveRepositoryDotnet(
         if (root == root.parent_path())
             break;
     }
-#if defined(_WIN32)
-    return normalizedRoot / "Tools" / "Dotnet" / "windows" / "x64" / "dotnet.exe";
-#elif defined(__APPLE__)
-    return normalizedRoot / "Tools" / "Dotnet" / "macos" / "x64" / "dotnet";
-#else
-    return normalizedRoot / "Tools" / "Dotnet" / "linux" / "x64" / "dotnet";
-#endif
+    // CMake accepts a pinned host SDK when the repository-local bootstrap is
+    // absent. Keep the editor build service consistent with that resolution.
+    return "dotnet";
 }
 
 std::string ManagedScriptBuildService::BuildCommand(const ManagedScriptBuildRequest& request)
@@ -388,7 +390,7 @@ ManagedScriptBuildResult ManagedScriptBuildService::Build(const ManagedScriptBui
     const auto dotnet = request.dotnetPath.empty()
         ? ResolveRepositoryDotnet(request.projectRoot)
         : request.dotnetPath;
-    if (!std::filesystem::exists(dotnet))
+    if (dotnet != std::filesystem::path("dotnet") && !std::filesystem::exists(dotnet))
     {
         result.output = "Repository-local .NET SDK was not found: " + dotnet.string();
         return result;

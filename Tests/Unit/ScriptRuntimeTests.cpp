@@ -168,11 +168,20 @@ private:
 
 std::filesystem::path FindNullusRoot()
 {
+#ifdef NLS_ROOT_DIR
+    const auto configuredRoot = std::filesystem::path(NLS_ROOT_DIR);
+    if (std::filesystem::is_regular_file(
+            configuredRoot / "Managed" / "Nullus.GameScripts" / "Nullus.GameScripts.csproj"))
+    {
+        return configuredRoot;
+    }
+#endif
+
     auto candidate = std::filesystem::current_path();
     while (!candidate.empty())
     {
-        if (std::filesystem::exists(candidate / "Managed" / "Nullus.GameScripts")
-            && std::filesystem::exists(candidate / "Tools" / "Dotnet"))
+        if (std::filesystem::is_regular_file(
+                candidate / "Managed" / "Nullus.GameScripts" / "Nullus.GameScripts.csproj"))
             return candidate;
         const auto parent = candidate.parent_path();
         if (parent == candidate)

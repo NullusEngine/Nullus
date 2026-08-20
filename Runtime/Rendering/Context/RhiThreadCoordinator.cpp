@@ -5212,13 +5212,27 @@ namespace NLS::Render::Context
                 !packageContainsInRenderPassChildWorkUnits ||
                 inRenderPassChildCommandRecordingReady ||
                 packageContainsNonChildOrderedSlicedWorkUnits;
+            const bool packageRequiresOrderedScheduling =
+                renderScenePackage.hasAsyncComputeWorkload ||
+                packageContainsInRenderPassChildWorkUnits ||
+                std::any_of(
+                    renderScenePackage.parallelCommandWorkUnits.begin(),
+                    renderScenePackage.parallelCommandWorkUnits.end(),
+                    [](const ParallelCommandWorkUnit& workUnit)
+                    {
+                        return workUnit.commandInput.kind == RenderPassCommandKind::Compute ||
+                            workUnit.commandInput.queueType == Render::RHI::QueueType::Compute ||
+                            workUnit.commandInput.requiresDependencyVisibility ||
+                            !workUnit.incomingDependencyEdges.empty();
+                    });
             const bool allowOrderedSlicedSubmission =
                 supportsOrderedWorkUnitSubmission &&
                 packageContainsOrderedSlicedWorkUnits &&
                 canPreserveOrderedPathWithChildFallback;
             const bool useOrderedWorkUnitPath =
                 supportsOrderedWorkUnitSubmission &&
-                frameContext.resourceStateTracker == nullptr &&
+                (frameContext.resourceStateTracker == nullptr ||
+                    packageRequiresOrderedScheduling) &&
                 canPreserveOrderedPathWithChildFallback;
             if (packageContainsOrderedSlicedWorkUnits &&
                 (!allowOrderedSlicedSubmission ||

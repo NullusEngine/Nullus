@@ -12,10 +12,28 @@ namespace NLS::Editor::Scripting
 {
 namespace
 {
+std::filesystem::path EnvironmentPath(const char* name)
+{
+    const auto* value = std::getenv(name);
+    return value && *value ? std::filesystem::path(value) : std::filesystem::path{};
+}
+
 std::filesystem::path ResolveDotnetRoot(const std::filesystem::path& projectRoot)
 {
     const auto dotnet = ManagedScriptBuildService::ResolveRepositoryDotnet(projectRoot);
-    return dotnet.parent_path();
+    if (dotnet != std::filesystem::path("dotnet") && !dotnet.parent_path().empty())
+        return dotnet.parent_path();
+
+    for (const char* name : {
+        "NLS_DOTNET_ROOT",
+        "DOTNET_ROOT_X64",
+        "DOTNET_ROOT",
+        "DOTNET_ROOT(x86)"})
+    {
+        if (const auto environment = EnvironmentPath(name); !environment.empty())
+            return environment;
+    }
+    return {};
 }
 
 bool DiagnosticsDisabled()

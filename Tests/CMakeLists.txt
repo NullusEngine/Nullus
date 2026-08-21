@@ -56,6 +56,7 @@ function(nls_configure_test_target target_name)
     target_compile_definitions(${target_name} PRIVATE
         NLS_ROOT_DIR="${CMAKE_SOURCE_DIR}"
         NLS_BUILD_DIR="${CMAKE_BINARY_DIR}"
+        NLS_BUILD_CONFIGURATION="$<CONFIG>"
         $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
         $<$<BOOL:${NLS_ENABLE_TIMELINE_PROFILER}>:NLS_ENABLE_TIMELINE_PROFILER=1>
         WITH_PROFILING=$<AND:$<BOOL:${WIN32}>,$<BOOL:${NLS_ENABLE_TIMELINE_PROFILER}>>

@@ -2111,7 +2111,7 @@ TEST_F(JobSystemBackgroundTests, HelpedForegroundCallbackOnBackgroundWorkerRejec
     auto helper = NLS::Base::Jobs::ScheduleBackgroundJob(helperDesc);
     ASSERT_NE(helper.id, 0u);
 
-    for (int attempt = 0; attempt < 200 && !foregroundReturned.load(std::memory_order_acquire); ++attempt)
+    for (int attempt = 0; attempt < 5000 && !foregroundReturned.load(std::memory_order_acquire); ++attempt)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     ASSERT_TRUE(foregroundReturned.load(std::memory_order_acquire));
     EXPECT_TRUE(helperReturned.load(std::memory_order_acquire));

@@ -2,6 +2,7 @@
 
 #include "Panels/ComponentSearchPanel.h"
 
+#include "Assets/AssetMeta.h"
 #include "Assets/BuiltInScriptRegistry.h"
 #include "Reflection/RuntimeMetaProperties.h"
 #include "Components/CameraComponent.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -62,6 +64,47 @@ const ComponentSearchEntry* FindEntry(const std::vector<ComponentSearchEntry>& p
 
     return it != p_entries.end() ? &(*it) : nullptr;
 }
+
+class TemporaryScriptAssets
+{
+public:
+    TemporaryScriptAssets()
+        : m_assetsRoot(std::filesystem::temp_directory_path() /
+            ("NullusComponentPicker-" + NLS::Core::Assets::AssetId::New().ToString()))
+    {
+        std::filesystem::create_directories(m_assetsRoot);
+        WriteScript("NewScript.cs", "public sealed class NewScript : Nullus.Managed.Behaviour {}\n");
+        WriteScript("NewScript.lua", "return {}\n");
+    }
+
+    ~TemporaryScriptAssets()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(m_assetsRoot, error);
+    }
+
+    const std::filesystem::path& Root() const { return m_assetsRoot; }
+
+    bool Ready() const
+    {
+        return std::filesystem::is_regular_file(m_assetsRoot / "NewScript.cs") &&
+            std::filesystem::is_regular_file(m_assetsRoot / "NewScript.cs.meta") &&
+            std::filesystem::is_regular_file(m_assetsRoot / "NewScript.lua") &&
+            std::filesystem::is_regular_file(m_assetsRoot / "NewScript.lua.meta");
+    }
+
+private:
+    void WriteScript(const char* name, const char* source)
+    {
+        const auto path = m_assetsRoot / name;
+        std::ofstream output(path, std::ios::binary);
+        output << source;
+        auto meta = NLS::Core::Assets::AssetMeta::CreateForAsset(path);
+        meta.Save(NLS::Core::Assets::GetAssetMetaPath(path));
+    }
+
+    std::filesystem::path m_assetsRoot;
+};
 } // namespace
 
 TEST_F(ReflectionRuntimeTestFixture, NormalizeSearchTextRemovesWhitespaceAndIgnoresCase)
@@ -123,11 +166,13 @@ TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesHidesEmptyScriptCompon
 
 TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesIncludesImportedCSharpAndLuaScripts)
 {
+    const TemporaryScriptAssets scriptAssets;
+    ASSERT_TRUE(scriptAssets.Ready());
     auto actor = MakeGameObject();
     const auto entries = ComponentSearchPanel::BuildComponentEntries(
         &actor,
         {},
-        std::filesystem::path("TestProject/Assets"));
+        scriptAssets.Root());
 
     const auto* csharp = FindEntry(entries, "NewScript (C#)");
     const auto* lua = FindEntry(entries, "NewScript (Lua)");
@@ -197,11 +242,13 @@ TEST_F(ReflectionRuntimeTestFixture, ScriptImporterDistinguishesComponentsFromUt
 
 TEST_F(ReflectionRuntimeTestFixture, AddingConcreteScriptBindsAssetAndAllowsAnotherLanguage)
 {
+    const TemporaryScriptAssets scriptAssets;
+    ASSERT_TRUE(scriptAssets.Ready());
     auto actor = MakeGameObject();
     const auto entries = ComponentSearchPanel::BuildComponentEntries(
         &actor,
         {},
-        std::filesystem::path("TestProject/Assets"));
+        scriptAssets.Root());
     const auto* csharp = FindEntry(entries, "NewScript (C#)");
     const auto* lua = FindEntry(entries, "NewScript (Lua)");
     ASSERT_NE(csharp, nullptr);

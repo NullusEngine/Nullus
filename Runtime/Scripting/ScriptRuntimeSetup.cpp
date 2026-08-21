@@ -88,8 +88,15 @@ std::filesystem::path ResolveDotnetRoot(
 {
     if (!options.dotnetRoot.empty())
         return options.dotnetRoot;
-    if (const auto environment = EnvironmentPath("NLS_DOTNET_ROOT"); !environment.empty())
-        return environment;
+    for (const char* name : {
+        "NLS_DOTNET_ROOT",
+        "DOTNET_ROOT_X64",
+        "DOTNET_ROOT",
+        "DOTNET_ROOT(x86)"})
+    {
+        if (const auto environment = EnvironmentPath(name); !environment.empty())
+            return environment;
+    }
 
 #if defined(_WIN32)
     constexpr const char* platform = "windows";

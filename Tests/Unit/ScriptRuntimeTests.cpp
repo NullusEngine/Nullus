@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -201,20 +202,20 @@ std::string ReadTextFile(const std::filesystem::path& path)
 
 std::filesystem::path ResolveManagedOutput(const std::filesystem::path& root)
 {
+    std::vector<std::filesystem::path> candidates;
 #ifdef NLS_BUILD_DIR
-    const auto configured = std::filesystem::path(NLS_BUILD_DIR) / "Managed" / "Debug";
-    if (std::filesystem::is_regular_file(configured / "GameScripts.dll")
-        && std::filesystem::is_regular_file(configured / "GameScripts.runtimeconfig.json"))
-    {
-        return configured;
-    }
+    #ifdef NLS_BUILD_CONFIGURATION
+    candidates.push_back(std::filesystem::path(NLS_BUILD_DIR) / "Managed" / NLS_BUILD_CONFIGURATION);
+    #endif
+    candidates.push_back(std::filesystem::path(NLS_BUILD_DIR) / "Managed" / "Debug");
+    candidates.push_back(std::filesystem::path(NLS_BUILD_DIR) / "Managed" / "Release");
 #endif
 
-    const auto candidates = {
+    candidates.insert(candidates.end(), {
         root / "Library" / "ScriptBuild" / "Managed",
         root / "build-scripting-vs5" / "Managed" / "Debug",
-        root / "Managed" / "Nullus.GameScripts" / "bin" / "Debug" / "net8.0"
-    };
+        root / "Managed" / "Nullus.GameScripts" / "bin" / "Debug" / "net8.0",
+        root / "Managed" / "Nullus.GameScripts" / "bin" / "Release" / "net8.0"});
     for (const auto& candidate : candidates)
     {
         if (std::filesystem::is_regular_file(candidate / "GameScripts.dll")
@@ -222,6 +223,39 @@ std::filesystem::path ResolveManagedOutput(const std::filesystem::path& root)
         {
             return candidate;
         }
+    }
+    return {};
+}
+
+std::filesystem::path ResolveDotnetRoot(const std::filesystem::path& root)
+{
+    std::vector<std::filesystem::path> candidates;
+    for (const char* name : {
+        "NLS_DOTNET_ROOT",
+        "DOTNET_ROOT_X64",
+        "DOTNET_ROOT",
+        "DOTNET_ROOT(x86)"})
+    {
+        if (const auto* value = std::getenv(name); value != nullptr && *value != '\0')
+            candidates.emplace_back(value);
+    }
+
+#if defined(_WIN32)
+    constexpr const char* platform = "windows";
+    constexpr const char* architecture = "x64";
+#elif defined(__APPLE__)
+    constexpr const char* platform = "macos";
+    constexpr const char* architecture = "x64";
+#else
+    constexpr const char* platform = "linux";
+    constexpr const char* architecture = "x64";
+#endif
+    candidates.push_back(root / "Tools" / "Dotnet" / platform / architecture);
+
+    for (const auto& candidate : candidates)
+    {
+        if (std::filesystem::is_directory(candidate / "host" / "fxr"))
+            return candidate;
     }
     return {};
 }
@@ -472,9 +506,13 @@ TEST(ScriptRuntimeTests, ProjectDebugWorkspaceIsDeterministicAndUsesBrokerComman
     ASSERT_TRUE(second.success) << second.errorMessage;
     EXPECT_EQ(first.manifest.projectId, second.manifest.projectId);
     EXPECT_EQ(first.manifest.workspaceRoot, second.manifest.workspaceRoot);
-    EXPECT_TRUE(first.manifest.engineSourceAvailable);
-    EXPECT_TRUE(first.manifest.mixedDebugAvailable);
-    EXPECT_FALSE(first.manifest.engineProjects.empty());
+    auto editorPdb = editor;
+    editorPdb.replace_extension(".pdb");
+    EXPECT_EQ(first.manifest.nativeSymbolsAvailable,
+        std::filesystem::is_regular_file(editorPdb));
+    EXPECT_EQ(first.manifest.mixedDebugAvailable,
+        first.manifest.engineSourceAvailable && first.manifest.nativeSymbolsAvailable &&
+            !first.manifest.editorExecutable.empty());
     EXPECT_TRUE(std::filesystem::is_regular_file(
         first.manifest.visualStudioSolution.parent_path() / "Nullus.Debug.vs.json"));
     EXPECT_TRUE(std::filesystem::is_regular_file(first.manifest.visualStudioScriptsFilter));
@@ -495,8 +533,28 @@ TEST(ScriptRuntimeTests, ProjectDebugWorkspaceIsDeterministicAndUsesBrokerComman
     EXPECT_EQ(generatedProject.find("Nullus.ScriptGenerator.csproj"), std::string::npos);
     const auto generatedSolution = ReadTextFile(first.manifest.visualStudioSolution);
     EXPECT_EQ(generatedSolution.find("Nullus.ScriptGenerator"), std::string::npos);
-    EXPECT_NE(generatedSolution.find("Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \"Editor\""), std::string::npos);
-    EXPECT_NE(generatedSolution.find("Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \"NLS_Scripting\""), std::string::npos);
+    const auto hasNativeVcxproj = [&first](const char* name)
+    {
+        return std::any_of(
+            first.manifest.engineProjects.begin(),
+        first.manifest.engineProjects.end(),
+        [&first, name](const auto& project)
+            {
+                return project.name == name &&
+                    std::filesystem::is_regular_file(first.manifest.engineBuildRoot / project.path);
+            });
+    };
+    const auto expectNativeProject = [&generatedSolution, &hasNativeVcxproj](const char* name)
+    {
+        const std::string marker =
+            std::string("Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \"") + name + "\"";
+        if (hasNativeVcxproj(name))
+            EXPECT_NE(generatedSolution.find(marker), std::string::npos);
+        else
+            EXPECT_EQ(generatedSolution.find(marker), std::string::npos);
+    };
+    expectNativeProject("Editor");
+    expectNativeProject("NLS_Scripting");
 
     const auto roundTrip = NLS::Editor::Debug::ReadProjectDebugManifest(projectRoot);
     ASSERT_TRUE(roundTrip.has_value());
@@ -1600,7 +1658,7 @@ TEST(ScriptRuntimeTests, CoreClrExecutesGeneratedCSharpBehaviourAgainstNativeTra
     ASSERT_FALSE(managedOutput.empty());
     const auto runtimeConfig = managedOutput / "GameScripts.runtimeconfig.json";
     const auto assembly = managedOutput / "GameScripts.dll";
-    const auto dotnetRoot = root / "Tools" / "Dotnet" / "windows" / "x64";
+    const auto dotnetRoot = ResolveDotnetRoot(root);
     ASSERT_TRUE(std::filesystem::exists(runtimeConfig)) << runtimeConfig.string();
     ASSERT_TRUE(std::filesystem::exists(assembly)) << assembly.string();
     ASSERT_TRUE(std::filesystem::exists(dotnetRoot / "host" / "fxr")) << dotnetRoot.string();
@@ -1699,7 +1757,7 @@ TEST(ScriptRuntimeTests, CoreClrInvokesPrivateCSharpLifecycleMethods)
     ASSERT_TRUE(ScriptApiManifest::FromJson(manifest, api).Succeeded());
     const auto managedOutput = ResolveManagedOutput(root);
     ASSERT_FALSE(managedOutput.empty());
-    const auto dotnetRoot = root / "Tools" / "Dotnet" / "windows" / "x64";
+    const auto dotnetRoot = ResolveDotnetRoot(root);
 
     auto backend = std::make_unique<CoreClrScriptBackend>(ScriptBackendId{42});
     auto* backendPtr = backend.get();
@@ -1766,7 +1824,7 @@ TEST(ScriptRuntimeTests, CoreClrRotatingCubeScriptCreatesAndRotatesScenePrimitiv
 
     const auto managedOutput = ResolveManagedOutput(root);
     ASSERT_FALSE(managedOutput.empty());
-    const auto dotnetRoot = root / "Tools" / "Dotnet" / "windows" / "x64";
+    const auto dotnetRoot = ResolveDotnetRoot(root);
     auto backend = std::make_unique<CoreClrScriptBackend>(ScriptBackendId{45});
     auto* backendPtr = backend.get();
     backendPtr->SetDotnetRoot(dotnetRoot);
@@ -1823,7 +1881,7 @@ TEST(ScriptRuntimeTests, CoreClrExceptionReportsPortablePdbSourceLocation)
     ASSERT_FALSE(managedOutput.empty());
     const auto runtimeConfig = managedOutput / "GameScripts.runtimeconfig.json";
     const auto assembly = managedOutput / "GameScripts.dll";
-    const auto dotnetRoot = root / "Tools" / "Dotnet" / "windows" / "x64";
+    const auto dotnetRoot = ResolveDotnetRoot(root);
     ASSERT_TRUE(std::filesystem::exists(runtimeConfig));
     ASSERT_TRUE(std::filesystem::exists(assembly));
 
@@ -1877,7 +1935,7 @@ TEST(ScriptRuntimeTests, CoreClrHotReloadPreservesFieldsRollsBackAndCollectsOldA
     ASSERT_FALSE(managedOutput.empty());
     const auto runtimeConfig = managedOutput / "GameScripts.runtimeconfig.json";
     const auto assembly = managedOutput / "GameScripts.dll";
-    const auto dotnetRoot = root / "Tools" / "Dotnet" / "windows" / "x64";
+    const auto dotnetRoot = ResolveDotnetRoot(root);
     ASSERT_TRUE(std::filesystem::exists(runtimeConfig)) << runtimeConfig.string();
     ASSERT_TRUE(std::filesystem::exists(assembly)) << assembly.string();
     ASSERT_TRUE(std::filesystem::exists(dotnetRoot / "host" / "fxr")) << dotnetRoot.string();
@@ -1989,7 +2047,7 @@ TEST(ScriptRuntimeTests, CoreClrBatchInvocationReducesManagedAbiBoundaries)
     ASSERT_FALSE(managedOutput.empty());
     const auto runtimeConfig = managedOutput / "GameScripts.runtimeconfig.json";
     const auto assembly = managedOutput / "GameScripts.dll";
-    const auto dotnetRoot = root / "Tools" / "Dotnet" / "windows" / "x64";
+    const auto dotnetRoot = ResolveDotnetRoot(root);
     ASSERT_TRUE(std::filesystem::exists(runtimeConfig)) << runtimeConfig.string();
     ASSERT_TRUE(std::filesystem::exists(assembly)) << assembly.string();
     ASSERT_TRUE(std::filesystem::exists(dotnetRoot / "host" / "fxr")) << dotnetRoot.string();
@@ -2074,7 +2132,7 @@ TEST(ScriptRuntimeTests, CSharpAndLuaComponentsShareOwnerLifecycleAndIsolateErro
     ASSERT_FALSE(managedOutput.empty());
     const auto runtimeConfig = managedOutput / "GameScripts.runtimeconfig.json";
     const auto assembly = managedOutput / "GameScripts.dll";
-    const auto dotnetRoot = root / "Tools" / "Dotnet" / "windows" / "x64";
+    const auto dotnetRoot = ResolveDotnetRoot(root);
     ASSERT_TRUE(std::filesystem::exists(runtimeConfig)) << runtimeConfig.string();
     ASSERT_TRUE(std::filesystem::exists(assembly)) << assembly.string();
     ASSERT_TRUE(std::filesystem::exists(dotnetRoot / "host" / "fxr")) << dotnetRoot.string();

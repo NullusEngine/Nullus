@@ -90,4 +90,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-           find build/scripting-${{ matrix.profile.name }} -type f -name 'NullusUnitTests*' -print -exec {} --gtest_filter='ScriptRuntimeTests.*' \;
+          test_binary="$(find build/scripting-${{ matrix.profile.name }} -type f -name 'NullusUnitTests*' -print -quit)"
+          test -n "${test_binary}"
+          "${test_binary}" --gtest_filter='ScriptRuntimeTests.*'

@@ -21,7 +21,7 @@
     <!-- The editor passes NullusProjectAssets for a real project. Keep the
          repository sample as the offline default so a normal build still
          exercises project-script imports. -->
-    <NullusProjectAssets Condition="'$(NullusProjectAssets)' == ''">$(MSBuildProjectDirectory)\..\..\TestProject\Assets</NullusProjectAssets>
+    <NullusProjectAssets Condition="'$(NullusProjectAssets)' == ''">$(MSBuildProjectDirectory)/../../TestProject/Assets</NullusProjectAssets>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>

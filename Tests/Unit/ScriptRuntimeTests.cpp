@@ -2281,6 +2281,7 @@ TEST(ScriptRuntimeTests, CSharpAndLuaComponentsShareOwnerLifecycleAndIsolateErro
 }
 #endif
 
+#if NLS_ENABLE_LUA_SCRIPTING && NLS_HAS_LUA_VM
 TEST(ScriptRuntimeTests, LuaSourceValidationReportsAssetLocation)
 {
     LuaScriptBackend backend;
@@ -2302,6 +2303,7 @@ TEST(ScriptRuntimeTests, LuaSourceValidationReportsAssetLocation)
     EXPECT_TRUE(backend.LoadScript(asset).Succeeded());
     backend.Shutdown();
 }
+#endif
 
 #if NLS_HAS_LUA_VM
 TEST(ScriptRuntimeTests, LuaPandaUsesPrivateEnvironmentAndLeavesGameplaySandboxClosed)

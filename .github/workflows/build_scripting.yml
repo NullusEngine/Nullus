@@ -92,4 +92,14 @@ jobs:
           set -euo pipefail
           test_binary="$(python -c 'import os, sys; root=sys.argv[1]; names=("NullusUnitTests.exe", "NullusUnitTests"); matches=[os.path.join(directory, name) for directory, _, files in os.walk(root) for name in names if name in files]; print(matches[0] if matches else "")' "build/scripting-${{ matrix.profile.name }}")"
           test -n "${test_binary}"
-          "${test_binary}" --gtest_filter='ScriptRuntimeTests.*'
+          python - "${test_binary}" <<'PY'
+          import subprocess
+          import sys
+
+          raise SystemExit(
+              subprocess.run(
+                  [sys.argv[1], "--gtest_filter=ScriptRuntimeTests.*"],
+                  check=False,
+              ).returncode
+          )
+          PY

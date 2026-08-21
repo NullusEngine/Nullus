@@ -587,10 +587,20 @@ TEST(ScriptRuntimeTests, VisualStudioConfigurationGeneratesProjectScopedF5Config
     EXPECT_EQ(launch["profiles"]["Nullus: C# Scripts"]["commandName"], "NullusEditor");
     EXPECT_FALSE(launch["profiles"]["Nullus: C# Scripts"]["nullusPlayAfterAttach"].get<bool>());
     EXPECT_TRUE(launch["profiles"].contains("Nullus: C# Attach and Play"));
-    EXPECT_TRUE(launch["profiles"].contains("Nullus: Editor + C# Mixed"));
-    EXPECT_TRUE(launch["profiles"].contains("Nullus: Editor + C# Mixed (Release)"));
-    EXPECT_EQ(launch["profiles"]["Nullus: Editor + C# Mixed"]["nullusConfiguration"], "Debug");
-    EXPECT_EQ(launch["profiles"]["Nullus: Editor + C# Mixed (Release)"]["nullusConfiguration"], "Release");
+    const auto manifest = NLS::Editor::Debug::ReadProjectDebugManifest(root);
+    ASSERT_TRUE(manifest.has_value());
+    if (manifest->mixedDebugAvailable)
+    {
+        EXPECT_TRUE(launch["profiles"].contains("Nullus: Editor + C# Mixed"));
+        EXPECT_TRUE(launch["profiles"].contains("Nullus: Editor + C# Mixed (Release)"));
+        EXPECT_EQ(launch["profiles"]["Nullus: Editor + C# Mixed"]["nullusConfiguration"], "Debug");
+        EXPECT_EQ(launch["profiles"]["Nullus: Editor + C# Mixed (Release)"]["nullusConfiguration"], "Release");
+    }
+    else
+    {
+        EXPECT_FALSE(launch["profiles"].contains("Nullus: Editor + C# Mixed"));
+        EXPECT_FALSE(launch["profiles"].contains("Nullus: Editor + C# Mixed (Release)"));
+    }
     EXPECT_TRUE(result.guidePath.empty());
     EXPECT_TRUE(result.attachScriptPath.empty());
     std::filesystem::remove_all(root);

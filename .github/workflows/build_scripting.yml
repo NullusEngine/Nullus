@@ -86,20 +86,27 @@ jobs:
             -DNLS_RENDER_API=OpenGL
           cmake --build build/scripting-${{ matrix.profile.name }} --target NLS_Scripting NullusUnitTests --parallel 2
 
-      - name: Run focused scripting tests
+      - name: Run focused scripting tests (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $testBinary = Get-ChildItem "build/scripting-${{ matrix.profile.name }}" -Recurse -File |
+            Where-Object { $_.Name -eq "NullusUnitTests.exe" -or $_.Name -eq "NullusUnitTests" } |
+            Select-Object -First 1
+          if ($null -eq $testBinary) {
+            throw "NullusUnitTests binary was not found."
+          }
+          $testCommand = '"' + $testBinary.FullName + '" --gtest_filter=ScriptRuntimeTests.*'
+          cmd /d /c $testCommand
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Run focused scripting tests (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          test_binary="$(python -c 'import os, sys; root=sys.argv[1]; names=("NullusUnitTests.exe", "NullusUnitTests"); matches=[os.path.join(directory, name) for directory, _, files in os.walk(root) for name in names if name in files]; print(matches[0] if matches else "")' "build/scripting-${{ matrix.profile.name }}")"
+          test_binary="$(find "build/scripting-${{ matrix.profile.name }}" -type f \( -name 'NullusUnitTests.exe' -o -name 'NullusUnitTests' \) -print -quit)"
           test -n "${test_binary}"
-          python - "${test_binary}" <<'PY'
-          import subprocess
-          import sys
-
-          raise SystemExit(
-              subprocess.run(
-                  [sys.argv[1], "--gtest_filter=ScriptRuntimeTests.*"],
-                  check=False,
-              ).returncode
-          )
-          PY
+          "${test_binary}" --gtest_filter='ScriptRuntimeTests.*'

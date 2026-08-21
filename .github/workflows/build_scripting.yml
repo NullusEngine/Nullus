@@ -90,6 +90,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test_binary="$(find build/scripting-${{ matrix.profile.name }} -type f \( -name 'NullusUnitTests.exe' -o -name 'NullusUnitTests' \) -print -quit)"
+          test_binary="$(python -c 'import os, sys; root=sys.argv[1]; names=("NullusUnitTests.exe", "NullusUnitTests"); matches=[os.path.join(directory, name) for directory, _, files in os.walk(root) for name in names if name in files]; print(matches[0] if matches else "")' "build/scripting-${{ matrix.profile.name }}")"
           test -n "${test_binary}"
           "${test_binary}" --gtest_filter='ScriptRuntimeTests.*'

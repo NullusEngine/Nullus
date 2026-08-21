@@ -1851,7 +1851,16 @@ TEST(ScriptRuntimeTests, CoreClrRotatingCubeScriptCreatesAndRotatesScenePrimitiv
     asset.sourceText = ReadTextFile(root / "TestProject" / "Assets" / "RotatingCube.cs");
     ASSERT_FALSE(asset.sourceText.empty());
     const auto* descriptor = backendPtr->FindScriptType(asset.scriptType);
-    ASSERT_NE(descriptor, nullptr);
+    std::ostringstream manifestSummary;
+    for (const auto& entry : backendPtr->GetBehaviourManifest())
+    {
+        manifestSummary << " [assetPath='" << entry.assetPath
+                        << "', fileName='" << entry.fileName
+                        << "', typeName='" << entry.typeName
+                        << "', scriptTypeId=" << entry.scriptTypeId << "]";
+    }
+    ASSERT_NE(descriptor, nullptr) << "Expected scriptTypeId=" << asset.scriptType
+                                   << "; managed manifest:" << manifestSummary.str();
     const auto angleField = std::find_if(
         descriptor->fields.begin(),
         descriptor->fields.end(),

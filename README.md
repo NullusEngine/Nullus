@@ -1,59 +1,94 @@
 # Nullus
+
 <p align="center">
-    <img src="NullusLogo.png" width="400" alt="Nullus Engine logo">
+    <img src="NullusLogo.png" width="320" alt="Nullus Engine logo">
+</p>
+
+<p align="center">
+    <strong>面向实时 3D 创作的 C++20 原生引擎</strong><br>
+    从场景、资产和脚本，到 Editor、运行时与多后端渲染，使用同一条引擎主链路。
+</p>
+
+<p align="center">
+    <a href="./README.md">中文</a> | <a href="./README.en.md">English</a>
 </p>
 
 ![License Source Available](https://img.shields.io/badge/License-Source%20Available-blue.svg)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C)
-![CMake >=3.16](https://img.shields.io/badge/CMake-%E2%89%A53.16-064F8C)
+![CMake >=3.18](https://img.shields.io/badge/CMake-%E2%89%A53.18-064F8C)
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)
 ![Build Windows](https://github.com/NullusEngine/Nullus/workflows/Build%20Windows/badge.svg)
 ![Build Linux](https://github.com/NullusEngine/Nullus/workflows/Build%20Linux/badge.svg)
 ![Build macOS](https://github.com/NullusEngine/Nullus/workflows/Build%20MacOS/badge.svg)
 
-[中文版](./README.md) | [English](./README.en.md)
+![Nullus Editor: Sponza scene, hierarchy, inspector, transform gizmo, and Asset Browser](Docs/Screenshots/editor.png)
 
-Nullus 是一个仍在持续演进中的 C++ 3D 引擎项目，当前聚焦于场景系统、资源系统、编辑器、反射代码生成和现代渲染管线。
+## 为实时创作而生
 
-## 界面预览
+Nullus 是一个持续演进的 C++ 3D 引擎。它将原生运行时、项目启动器、可视化 Editor、资产导入、场景序列化与游戏脚本放在同一套工作流中：既能直接在 Editor 中组织和运行场景，也保留了面向引擎研发的清晰模块边界与显式 RHI 架构。
 
-### Launcher
+### 现代且可演进的渲染主线
 
-![Nullus Launcher](Docs/Screenshots/launcher.png)
+- **显式多后端 RHI**：Windows 的 DX12 与 Linux/WSL 的 Vulkan 1.1 是当前已验证的运行时主线；macOS 的 Metal 原生后端和构建目标也已纳入工程。
+- **FrameGraph 驱动的场景渲染**：前向与延迟路径覆盖 GBuffer、clustered lighting、decal、skybox、透明物体和编辑器视图输出，资源依赖与状态转换由图管理。
+- **统一 HLSL 工作流**：HLSL 是唯一维护的着色器源，DXIL、SPIR-V 与反射数据由编译产物生成，材质、Pass 和 Object 的绑定空间保持一致。
+- **面向大场景的渲染优化**：已有可见性收集、绘制命令缓存、实例化合批、静态网格 LOD 构建与运行时选择；DX12 上的 HZB 遮挡剔除按设备能力保守启用。
 
-### Editor
+### 可视化的材质与 ShaderLab 工作流
 
-![Nullus Editor](Docs/Screenshots/editor.png)
+- **内置 StandardPBR 基线**：引擎自带 `StandardPBR` ShaderLab 资源；模型导入会将材质、纹理和子资源接入这一套 PBR 内容链路。
+- **由着色器定义材质面板**：ShaderLab 属性支持 Float、Int、Color、Vector 与 Texture。材质还可管理关键词集合和渲染队列覆盖，使参数、变体与渲染状态保持在同一资源对象中。
+- **Editor 内直接编辑和预览**：Material Editor 可选择或拖入材质与着色器，按当前着色器生成参数面板，并提供预览与重置操作；Asset Browser 为材质提供 GPU 缩略图预览。
+- **资源化与安全重载**：材质作为可异步加载和预热的资源工件管理。ShaderLab 重载先校验请求的变体，成功后更新关联材质并使受影响的管线代次失效。
 
-## 项目亮点
+### 从源文件到可用资产
 
-- 运行时模块完整拆分为 `Base`、`Core`、`Engine`、`Math`、`Platform`、`Rendering`、`UI`
-- 内置编辑器与运行时 `Game` 程序，共享同一套引擎主链路
-- 基于 MetaParser 的代码生成式反射系统
-- 基于反射的场景与对象序列化链路
-- 前向与延迟两套场景渲染路径，并已接入 `FrameGraph`
-- 支持 Windows、Linux、macOS 的跨平台构建流程
+- **项目级 Asset Browser**：资源浏览、搜索、拖放、缩略图、预览、对象引用选择和资源目录贯穿 Editor 工作流。
+- **模型与材质导入**：支持 glTF / FBX 场景和模型导入，生成网格、材质、纹理与子资源；静态网格可配置 LOD 导入、简化和打包。
+- **PBR 内容管线**：标准 PBR 材质、纹理颜色空间处理、Mip 与压缩构建、材质资源和 ShaderLab 资产导入已经接入资产数据库。
+- **Prefab 与场景资产**：可从场景对象创建 Prefab Variant，并通过反射式对象图序列化保存场景、对象关系和组件字段。
 
-## 当前包含的核心能力
+### 一套对象模型，两种脚本语言
 
-- 场景系统：`Scene / SceneManager / GameObject / Component`
-- 资源系统：`Model / Texture / Shader / Material`
-- 反射系统：MetaParser 驱动的代码生成式反射
-- 序列化：场景与对象数据的反射式序列化
-- 渲染系统：前向渲染、延迟渲染、GBuffer、clustered shading
-- 编辑器能力：基础视图、调试绘制、选取、Gizmo、资源预览
+- **C# 与 Lua 并行可用**：CoreCLR 与 Lua 后端通过同一套原生脚本 ABI 和 API 清单连接 `GameObject`、`Transform`、`Component`、`Camera`、`Light`、输入与时间系统。
+- **熟悉的组件化生命周期**：`Awake`、`OnEnable`、`Start`、`Update`、`OnDisable` 和 `OnDestroy` 让脚本逻辑直接贴合场景对象。
+- **迭代不离开 Editor**：保存 C# 脚本后由 Asset Watcher 增量构建，成功程序集会在帧边界热重载并保留字段；失败时继续运行上一份有效程序集。
+- **面向调试的工具链**：可生成 VS Code / Visual Studio 配置，附加到正在运行的 Editor，支持 C# 断点和混合调试工作流。
+
+### 让创作流程留在 Editor 内
+
+- **项目启动器**：创建、打开和管理项目，统一进入对应 Editor。
+- **可视化场景编辑**：Hierarchy、Scene View、Game View、Inspector、组件选择器、播放控制、变换 Gizmo 与命中代理选取组成日常编辑闭环。
+- **资源即时可见**：模型、材质、贴图、Prefab 与脚本在 Asset Browser 中拥有分类、图标和异步预览能力。
+- **材质调试在场景旁完成**：从资源选择、属性编辑到球体预览均在 Editor 内完成，不需要离开当前项目上下文。
+- **性能可观察**：共享 Profiling facade 可接入 Tracy 或 Editor Timeline Profiler，渲染线程与 RHI 线程具备统一的 CPU/GPU 标记入口。
+
+### 原生引擎基础设施
+
+- `Scene / SceneManager / GameObject / Component` 组件化场景系统。
+- MetaParser 代码生成反射，驱动类型注册、Inspector、对象序列化和脚本 API 清单。
+- 原生 JobSystem 提供依赖、批处理、并行 for 和后台任务调度。
+- Runtime 分为 `Base`、`Core`、`Engine`、`Math`、`Platform`、`Rendering`、`Scripting` 与 `UI`，Editor 与 Game 共享运行时主链路。
+
+## 项目启动器
+
+<p align="center">
+    <img src="Docs/Screenshots/launcher.png" width="760" alt="Nullus Hub project launcher">
+</p>
+
+从 Launcher 创建或打开项目后，即可进入上方展示的 Editor 工作区。
 
 ## 快速开始
 
 ### 环境要求
 
-- CMake 3.16 及以上
-- 支持 C++20 的编译器
-- .NET SDK 8.0.408（CMake 配置时默认自动安装到仓库内）
-- Python 3.8 及以上（用于源码依赖准备脚本）
 - Git
+- CMake 3.18 及以上
+- 支持 C++20 的编译器
+- Python 3.8 及以上（依赖准备脚本）
+- .NET SDK 8.0.408：CMake 会在缺失时下载安装到仓库内，不修改系统 `PATH`
 
-### 获取源码
+### 获取代码并准备依赖
 
 ```bash
 git clone https://github.com/NullusEngine/Nullus.git
@@ -61,145 +96,61 @@ cd Nullus
 git submodule update --init --recursive
 ```
 
-### 准备第三方依赖
-
-代码生成、MetaParser 和 C# 游戏脚本统一使用仓库固定的 .NET SDK 8.0.408。CMake 配置时如果本地缺失，会自动下载、校验并安装到 `Tools/Dotnet/<platform>/<arch>`，不会修改系统 PATH。也可以手动执行：
-
-```powershell
-.\SetupDependencies.bat --dependency dotnet-sdk
-```
-
-```bash
-./SetupDependencies.sh --dependency dotnet-sdk
-```
-
-源码构建前先运行依赖准备脚本。它会在明确接受 Autodesk FBX SDK EULA 后，从官方地址下载并校验 FBX SDK，然后安装到 `ThirdParty/FBX/sdk/<platform>`：
-
-```bash
-./SetupDependencies.sh
-```
-
-Windows 也可以使用：
+在 Windows：
 
 ```powershell
 .\SetupDependencies.bat
-```
-
-CI / headless 环境必须显式传入接受信号：
-
-```bash
-NLS_ACCEPT_AUTODESK_FBX_EULA=1 ./SetupDependencies.sh --non-interactive
-```
-
-Windows CI 如需固定目标架构，可附加 `--arch x64` 或 `--arch ARM64`。
-
-### Windows 构建
-
-```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Debug
+cmake --build build --config Debug --target Editor
 ```
 
-如果当前终端由工具宿主启动并报告 `MSB6001`（`Path` 与 `PATH` 重复），使用项目内的环境清理入口构建；它只清理构建子进程，不修改系统 PATH：
-
-```powershell
-.\Tools\BuildCleanEnvironment.cmd cmake --build build --config Debug
-```
-
-也可以使用仓库脚本：
-
-```powershell
-build_windows.bat Debug
-build_windows.bat Release
-build_windows.bat Debug ARM64
-```
-
-### Linux 构建
+在 Linux：
 
 ```bash
+./SetupDependencies.sh
 ./build_linux.sh debug
-./build_linux.sh release
 ```
 
-### macOS 构建
+在 macOS：
 
 ```bash
+./SetupDependencies.sh
 ./build_macos.sh debug
-./build_macos.sh release
 ```
 
-### 运行
+构建完成后运行 `Editor` 开始创建项目和场景；`Game` 使用同一套运行时主链路运行项目内容。
 
-构建完成后可以运行：
+若构建宿主环境报出 `MSB6001` 且提示 `Path` / `PATH` 重复，可使用仅影响构建子进程的环境清理入口：
 
-- `Editor`
-- `Game`
+```powershell
+.\Tools\BuildCleanEnvironment.cmd cmake --build build --config Debug --target Editor
+```
 
-### C# 脚本调试（VS Code / Visual Studio）
+### 图形后端说明
 
-Editor 会使用仓库内 .NET 8 SDK 自动构建 `Debug` 版 `GameScripts.dll` 和 portable PDB。Editor 启动后会准备一次构建，保存 `Assets/**/*.cs` 后由 Asset Watcher 自动排队增量重建；构建完成后在帧边界热重载。C# 调试器附加到正在运行的 Editor 进程。在 Editor 的 `Debug` 菜单中：
+- Windows 默认选择 `DX12`。
+- Linux / WSL 默认选择 `Vulkan`；首次在 WSL 中可使用 `./build_wsl_vulkan.sh --install-deps` 安装脚本所需依赖，再运行 `./build_wsl_vulkan.sh`。
+- macOS 构建默认选择 `Metal`。
+- DX11 与 OpenGL 代码仍在迁移中，当前被显式限制为非主线运行时后端，不应作为项目交付目标。
 
-1. 使用 `Generate VS Code Configuration` 或 `Generate Visual Studio Configuration`（仅生成 IDE 配置，不是编译前置条件）。
-2. VS Code 打开项目生成的 `Library/IDE/VSCode/Nullus.code-workspace`；Visual Studio 打开 `Library/IDE/VisualStudio/Nullus.Project.sln`，直接按 F5。两者都会复用或启动正确的 Editor，不需要选择进程。
-3. 进入 Play，在 `Assets/**/*.cs` 或 `Managed/Nullus.GameScripts/Scripts/**/*.cs` 设置断点；保存 `Assets/**/*.cs` 后等待自动 Debug 构建完成即可命中新程序集。
+## 深入了解
 
-成功的脚本构建会在帧边界切换 collectible CoreCLR 加载上下文并保留字段；构建失败时旧程序集继续运行。调试配置只写项目内 `Library/IDE`，不会修改系统 `PATH`。
+- [多后端 RHI 架构](Docs/Rendering/RHIMultiBackendArchitecture.md)
+- [HLSL 与资源绑定约定](Docs/Rendering/ShaderConventions.md)
+- [HZB 遮挡剔除验证](Docs/Rendering/HZBOcclusionValidation.md)
+- [C# / Lua 脚本 API](Docs/Scripting/ScriptingApi.zh-CN.md)
+- [C# 脚本调试指南](Docs/Scripting/ScriptDebugging.zh-CN.md)
+- [反射工作流](Docs/Reflection/ReflectionWorkflow.zh-CN.md)
+- [原生 JobSystem](Docs/Jobs.md)
+- [测试说明](Docs/Testing.md)
 
-Visual Studio 的原生 Editor 配置直接读取当前方案配置：选择 `Debug|x64` 会启动 `App/Win64_Debug_Runtime_Shared/Editor.exe`，选择 `Release|x64` 会启动 `App/Win64_Release_Runtime_Shared/Editor.exe`。不需要维护单独的 Release 调试 profile；`Nullus: C# Scripts`、`Nullus: C# Attach and Play` 和 `Nullus: Editor + C# Mixed` 都遵循当前的 `Debug|x64` / `Release|x64` 选择。VSIX 位于 `Tools/Debug/VisualStudioExtension/Nullus.ScriptDebugger.vsix`，安装后重启 VS；完整流程见 [脚本调试指南](Docs/Scripting/ScriptDebugging.zh-CN.md)。
+## 跨平台与 CI
 
-## 文档入口
+工程提供 Windows、Linux 与 macOS 的构建脚本，GitHub Actions 覆盖三平台构建，并继续执行反射和单元测试相关目标。具体构建选项与依赖准备方式见各平台脚本和上方文档。
 
-- 脚本 API（中文）：`Docs/Scripting/ScriptingApi.zh-CN.md`
-- Scripting API (English): `Docs/Scripting/ScriptingApi.en.md`
-- 脚本调试指南（中文）：`Docs/Scripting/ScriptDebugging.zh-CN.md`
-- Script debugging guide (English): `Docs/Scripting/ScriptDebugging.en.md`
-- 反射工作流（中文）：`Docs/Reflection/ReflectionWorkflow.zh-CN.md`
-- Reflection workflow (English): `Docs/Reflection/ReflectionWorkflow.en.md`
-- 测试说明：`Docs/Testing.md`
-- AI 工作流与仓库规范：`Docs/AIWorkflow.md`
+## 参与贡献
 
-## 反射与生成说明
-
-Nullus 当前统一使用 MetaParser 生成反射代码：
-
-1. 构建主工程时会先构建 `Tools/MetaParser`
-2. `Runtime` 模块会在编译前运行 MetaParser
-3. 生成对应的 `*.generated.h` / `*.generated.cpp`
-4. 运行时通过生成代码完成类型声明、定义和注册
-
-请不要手动修改 `Runtime/*/Gen/` 下的生成文件。
-
-## 平台与 CI
-
-GitHub Actions 当前覆盖：
-
-- Windows
-- Linux
-- macOS
-
-CI 会正常构建工程，并继续执行反射与单元测试相关目标。
-
-## 常见问题
-
-### `Failed to Init GLFW`
-
-通常是图形环境没有准备好。请优先检查：
-
-- 本机是否有可用桌面环境
-- Linux / WSL 下 `DISPLAY` 是否正确
-
-### MetaParser / libclang 相关崩溃
-
-请优先检查：
-
-- 是否已通过 CMake 或 `SetupDependencies --dependency dotnet-sdk` 安装 .NET 8.0.408 SDK
-- 是否正确执行了 `dotnet restore`
-- 是否误用了系统里的旧版 `libclang`
-
-## 贡献
-
-提交 Issue、建议或 Pull Request 前，请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)
-和 [CLA.md](./CLA.md)。向 Nullus Engine 提交贡献即表示你接受其中的贡献授权条款。
+欢迎通过 Issue、建议或 Pull Request 参与。提交前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md) 与 [CLA.md](./CLA.md)。
 
 ## License
 

@@ -1,59 +1,94 @@
 # Nullus
+
 <p align="center">
-    <img src="NullusLogo.png" width="400" alt="Nullus Engine logo">
+    <img src="NullusLogo.png" width="320" alt="Nullus Engine logo">
+</p>
+
+<p align="center">
+    <strong>A native C++20 engine for real-time 3D creation</strong><br>
+    Scenes, assets, scripts, the Editor, runtime, and multi-backend rendering share one engine mainline.
+</p>
+
+<p align="center">
+    <a href="./README.md">中文</a> | <a href="./README.en.md">English</a>
 </p>
 
 ![License Source Available](https://img.shields.io/badge/License-Source%20Available-blue.svg)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C)
-![CMake >=3.16](https://img.shields.io/badge/CMake-%E2%89%A53.16-064F8C)
+![CMake >=3.18](https://img.shields.io/badge/CMake-%E2%89%A53.18-064F8C)
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)
 ![Build Windows](https://github.com/NullusEngine/Nullus/workflows/Build%20Windows/badge.svg)
 ![Build Linux](https://github.com/NullusEngine/Nullus/workflows/Build%20Linux/badge.svg)
 ![Build macOS](https://github.com/NullusEngine/Nullus/workflows/Build%20MacOS/badge.svg)
 
-[中文版](./README.md) | [English](./README.en.md)
+![Nullus Editor: Sponza scene, hierarchy, inspector, transform gizmo, and Asset Browser](Docs/Screenshots/editor.png)
 
-Nullus is an evolving C++ 3D engine project focused on the scene system, resource system, editor tooling, reflection code generation, and a modern rendering pipeline.
+## Built For Real-Time Creation
 
-## Preview
+Nullus is an evolving C++ 3D engine. It brings a native runtime, project launcher, visual Editor, asset importing, scene serialization, and game scripting into one workflow: build and run scenes directly in the Editor while retaining clear engine-module boundaries and an explicit RHI architecture.
 
-### Launcher
+### A Modern, Extensible Rendering Mainline
 
-![Nullus Launcher](Docs/Screenshots/launcher.png)
+- **Explicit multi-backend RHI**: DX12 on Windows and Vulkan 1.1 on Linux/WSL are the currently validated runtime mainlines. A native Metal backend and macOS build target are included as well.
+- **FrameGraph scene rendering**: Forward and deferred paths cover GBuffer, clustered lighting, decals, skybox, transparent objects, and Editor-view output, with graph-managed resource dependencies and state transitions.
+- **One HLSL workflow**: HLSL is the single maintained shader source. DXIL, SPIR-V, and reflection data are generated from compiled artifacts, while material, pass, and object binding spaces stay consistent.
+- **Large-scene rendering tools**: Visibility collection, cached draw commands, instanced draw merging, static-mesh LOD construction and runtime selection are in place. DX12 HZB occlusion is enabled conservatively according to device capabilities.
 
-### Editor
+### A Visual Material And ShaderLab Workflow
 
-![Nullus Editor](Docs/Screenshots/editor.png)
+- **Built-in StandardPBR baseline**: The engine ships a `StandardPBR` ShaderLab asset. Model import connects materials, textures, and sub-assets to the same PBR content path.
+- **Shader-defined material panels**: ShaderLab properties support Float, Int, Color, Vector, and Texture values. Materials also manage keyword sets and render-queue overrides, keeping parameters, variants, and render state on one resource object.
+- **Edit and preview in the Editor**: The Material Editor can select or accept dropped materials and shaders, generate parameter controls from the active shader, and provide preview and reset actions. The Asset Browser supplies GPU thumbnail previews for materials.
+- **Asset-managed, validated reloads**: Materials are managed as asynchronously loadable and prewarmable resource artifacts. ShaderLab reloads validate requested variants first, then update dependent materials and invalidate affected pipeline generations on success.
 
-## Highlights
+### From Source Files To Usable Assets
 
-- Runtime modules are split into `Base`, `Core`, `Engine`, `Math`, `Platform`, `Rendering`, and `UI`
-- Ships both an editor and a runtime `Game` application on the same engine mainline
-- MetaParser-based code-generated reflection system
-- Reflection-driven scene and object serialization flow
-- Forward and deferred scene rendering paths with `FrameGraph` integration
-- Cross-platform build flow for Windows, Linux, and macOS
+- **Project-level Asset Browser**: Browsing, search, drag and drop, thumbnails, previews, object-reference picking, and a resource catalog are part of the Editor workflow.
+- **Model and material import**: glTF / FBX scenes and models can produce meshes, materials, textures, and sub-assets. Static meshes support configurable LOD import, reduction, and packaging.
+- **PBR content pipeline**: Standard PBR materials, texture color-space handling, mip and compression builds, material assets, and ShaderLab asset importing are connected to the asset database.
+- **Prefab and scene assets**: Create Prefab Variants from scene objects and persist scenes, object graphs, and component fields through reflection-driven serialization.
 
-## Core Capabilities
+### One Object Model, Two Scripting Languages
 
-- scene system: `Scene / SceneManager / GameObject / Component`
-- resource system: `Model / Texture / Shader / Material`
-- reflection system: MetaParser-driven code-generated reflection
-- serialization: reflection-based scene and object serialization
-- rendering system: forward rendering, deferred rendering, GBuffer, clustered shading
-- editor tooling: core views, debug drawing, picking, Gizmo, and resource preview
+- **C# and Lua side by side**: CoreCLR and Lua backends use one native scripting ABI and API manifest to access `GameObject`, `Transform`, `Component`, `Camera`, `Light`, input, and time.
+- **Familiar component lifecycle**: `Awake`, `OnEnable`, `Start`, `Update`, `OnDisable`, and `OnDestroy` keep gameplay code close to scene objects.
+- **Iterate inside the Editor**: Saving a C# script queues an incremental Asset Watcher build. A successful assembly hot-reloads at a frame boundary while preserving fields; a failed build keeps the last valid assembly alive.
+- **Debugging-oriented tooling**: Generate VS Code / Visual Studio configuration, attach to the running Editor, and use C# breakpoints or a mixed-debug workflow.
+
+### Keep The Creative Loop In The Editor
+
+- **Project launcher**: Create, open, and manage projects before entering the matching Editor.
+- **Visual scene editing**: Hierarchy, Scene View, Game View, Inspector, component picker, play controls, transform Gizmos, and hit-proxy picking support the day-to-day loop.
+- **Assets stay visible**: Models, materials, textures, Prefabs, and scripts have categories, icons, and asynchronous previews in the Asset Browser.
+- **Material debugging stays beside the scene**: Resource selection, property editing, and sphere preview happen in the Editor without leaving the active project context.
+- **Performance is observable**: A shared profiling facade can feed Tracy or the Editor Timeline Profiler, with common CPU/GPU marker entry points for Render and RHI threads.
+
+### Native Engine Foundations
+
+- A component-based `Scene / SceneManager / GameObject / Component` system.
+- MetaParser code-generated reflection for type registration, the Inspector, object serialization, and the scripting API manifest.
+- A native JobSystem with dependencies, batching, parallel-for scheduling, and background work.
+- Runtime modules for `Base`, `Core`, `Engine`, `Math`, `Platform`, `Rendering`, `Scripting`, and `UI`; Editor and Game share the same runtime mainline.
+
+## Project Launcher
+
+<p align="center">
+    <img src="Docs/Screenshots/launcher.png" width="760" alt="Nullus Hub project launcher">
+</p>
+
+Create or open a project in the Launcher, then enter the Editor workspace shown above.
 
 ## Quick Start
 
 ### Requirements
 
-- CMake 3.16 or newer
-- a compiler with C++20 support
-- .NET SDK 8.0.408 (CMake bootstraps it into the repository when missing)
-- Python 3.8 or newer for the source dependency setup script
 - Git
+- CMake 3.18 or newer
+- A C++20-capable compiler
+- Python 3.8 or newer for the dependency preparation script
+- .NET SDK 8.0.408: CMake installs the pinned SDK inside the repository when needed and does not modify the system `PATH`
 
-### Clone
+### Get The Code And Prepare Dependencies
 
 ```bash
 git clone https://github.com/NullusEngine/Nullus.git
@@ -61,150 +96,62 @@ cd Nullus
 git submodule update --init --recursive
 ```
 
-### Prepare Third-Party Dependencies
-
-Code generation, MetaParser, and C# game scripts use the pinned .NET SDK
-8.0.408. CMake downloads and verifies it into
-`Tools/Dotnet/<platform>/<arch>` by default when it is missing, without changing
-the system PATH. You can install it explicitly:
-
-```powershell
-.\SetupDependencies.bat --dependency dotnet-sdk
-```
-
-```bash
-./SetupDependencies.sh --dependency dotnet-sdk
-```
-
-Run the dependency setup script before configuring a source build. After explicit Autodesk FBX SDK EULA acceptance, it downloads the official package, verifies its hash, and installs it to `ThirdParty/FBX/sdk/<platform>`:
-
-```bash
-./SetupDependencies.sh
-```
-
-On Windows, you can also use:
+On Windows:
 
 ```powershell
 .\SetupDependencies.bat
-```
-
-CI / headless environments must pass the acceptance signal explicitly:
-
-```bash
-NLS_ACCEPT_AUTODESK_FBX_EULA=1 ./SetupDependencies.sh --non-interactive
-```
-
-Windows CI jobs can append `--arch x64` or `--arch ARM64` when the target architecture is fixed.
-
-### Build on Windows
-
-```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Debug
+cmake --build build --config Debug --target Editor
 ```
 
-If the host terminal reports `MSB6001` because `Path` and `PATH` are duplicated, use the repository environment wrapper. It only cleans the build child process and does not modify the system PATH:
-
-```powershell
-.\Tools\BuildCleanEnvironment.cmd cmake --build build --config Debug
-```
-
-You can also use the bundled scripts:
-
-```powershell
-build_windows.bat Debug
-build_windows.bat Release
-build_windows.bat Debug ARM64
-```
-
-### Build on Linux
+On Linux:
 
 ```bash
+./SetupDependencies.sh
 ./build_linux.sh debug
-./build_linux.sh release
 ```
 
-### Build on macOS
+On macOS:
 
 ```bash
+./SetupDependencies.sh
 ./build_macos.sh debug
-./build_macos.sh release
 ```
 
-### Run
+Run `Editor` after the build to create a project and scene. `Game` runs project content through the same runtime mainline.
 
-After the build, you can run:
+If a host environment reports `MSB6001` because both `Path` and `PATH` exist, use the repository wrapper. It cleans only the build child process:
 
-- `Editor`
-- `Game`
+```powershell
+.\Tools\BuildCleanEnvironment.cmd cmake --build build --config Debug --target Editor
+```
 
-### C# Script Debugging (VS Code / Visual Studio)
+### Graphics Backend Notes
 
-The Editor uses the repository-local .NET 8 SDK to build `GameScripts.dll` and a portable PDB automatically. It prepares a build at startup and queues an incremental Debug rebuild whenever the Asset Watcher sees a saved `Assets/**/*.cs` file; the new assembly is hot-reloaded at a frame boundary. The C# debugger attaches to the running Editor process. In the Editor `Debug` menu:
+- Windows selects `DX12` by default.
+- Linux / WSL selects `Vulkan` by default. In WSL, run `./build_wsl_vulkan.sh --install-deps` once for script prerequisites, then run `./build_wsl_vulkan.sh`.
+- macOS selects `Metal` by default.
+- DX11 and OpenGL remain migration-stage backends and are explicitly gated out of the current runtime mainline; do not target them for project delivery.
 
-1. Choose `Generate VS Code Configuration` or `Generate Visual Studio Configuration` (configuration generation is not a build prerequisite).
-2. In VS Code open the project-generated `Library/IDE/VSCode/Nullus.code-workspace`. In Visual Studio open `Library/IDE/VisualStudio/Nullus.Project.sln` and press F5. Both workflows reuse or start the correct Editor without a process picker.
-3. Enter Play and set breakpoints in `Assets/**/*.cs` or `Managed/Nullus.GameScripts/Scripts/**/*.cs`; after saving an `Assets/**/*.cs` file, wait for the automatic Debug build before hitting the new code.
+## Learn More
 
-A successful build swaps the collectible CoreCLR load context at a frame boundary and preserves fields; a failed build leaves the previous assembly running. Debug configuration is written only inside the project `Library/IDE` directory and does not modify the system `PATH`.
+- [Multi-backend RHI architecture](Docs/Rendering/RHIMultiBackendArchitecture.md)
+- [HLSL and resource-binding conventions](Docs/Rendering/ShaderConventions.md)
+- [HZB occlusion validation](Docs/Rendering/HZBOcclusionValidation.md)
+- [C# / Lua scripting API](Docs/Scripting/ScriptingApi.en.md)
+- [C# script debugging guide](Docs/Scripting/ScriptDebugging.en.md)
+- [Reflection workflow](Docs/Reflection/ReflectionWorkflow.en.md)
+- [Native JobSystem](Docs/Jobs.md)
+- [Testing guide](Docs/Testing.md)
 
-Visual Studio reads the active solution configuration for the native Editor: `Debug|x64` starts `App/Win64_Debug_Runtime_Shared/Editor.exe`, while `Release|x64` starts `App/Win64_Release_Runtime_Shared/Editor.exe`. There is no separate Release launch profile; `Nullus: C# Scripts`, `Nullus: C# Attach and Play`, and `Nullus: Editor + C# Mixed` all follow the current `Debug|x64` / `Release|x64` selection. The VSIX is bundled at `Tools/Debug/VisualStudioExtension/Nullus.ScriptDebugger.vsix`; install it once and restart VS. See the [script debugging guide](Docs/Scripting/ScriptDebugging.en.md) for the complete workflow.
+## Cross-Platform And CI
 
-## Documentation
-
-- Scripting API (English): `Docs/Scripting/ScriptingApi.en.md`
-- 脚本 API (Chinese): `Docs/Scripting/ScriptingApi.zh-CN.md`
-- Script debugging guide (English): `Docs/Scripting/ScriptDebugging.en.md`
-- 脚本调试指南（中文）：`Docs/Scripting/ScriptDebugging.zh-CN.md`
-- Reflection workflow (Chinese): `Docs/Reflection/ReflectionWorkflow.zh-CN.md`
-- Reflection workflow (English): `Docs/Reflection/ReflectionWorkflow.en.md`
-- Testing guide: `Docs/Testing.md`
-- AI workflow and repository rules: `Docs/AIWorkflow.md`
-
-## Reflection And Generation
-
-Nullus uses MetaParser to generate reflection code:
-
-1. the main build first builds `Tools/MetaParser`
-2. `Runtime` modules run MetaParser before compilation
-3. matching `*.generated.h` / `*.generated.cpp` files are emitted
-4. runtime type declaration, definition, and registration are completed through generated code
-
-Do not hand-edit anything under `Runtime/*/Gen/`.
-
-## Platforms And CI
-
-GitHub Actions currently covers:
-
-- Windows
-- Linux
-- macOS
-
-CI builds the project normally and continues with reflection-related and unit-test targets.
-
-## Troubleshooting
-
-### `Failed to Init GLFW`
-
-This usually means the graphics environment is not ready. Check:
-
-- whether the machine has a working desktop environment
-- whether `DISPLAY` is set correctly on Linux / WSL
-
-### MetaParser / libclang crashes
-
-Check these first:
-
-- the .NET 8.0.408 SDK was installed through CMake or `SetupDependencies --dependency dotnet-sdk`
-- `dotnet restore` completed correctly
-- you did not accidentally force the generator onto an old system `libclang`
+The project includes build scripts for Windows, Linux, and macOS. GitHub Actions covers builds on all three platforms and continues with reflection- and unit-test-related targets. See the platform scripts and the documentation above for configuration and dependency details.
 
 ## Contributing
 
-Before submitting issues, suggestions, or pull requests, please read
-[CONTRIBUTING.md](./CONTRIBUTING.md) and [CLA.md](./CLA.md). By contributing to
-Nullus Engine, you accept the contribution license terms described there.
+Issues, suggestions, and pull requests are welcome. Read [CONTRIBUTING.md](./CONTRIBUTING.md) and [CLA.md](./CLA.md) before contributing.
 
 ## License
 
-Nullus Engine uses a custom Source-Available License. You may view and modify the source code, use it commercially, and publish games made with Nullus Engine; you may not distribute the engine source code or use this project to create a competing engine. See [LICENSE](./LICENSE) for details.
+Nullus Engine uses a custom Source-Available License. You may view and modify the source code, use it commercially, and publish games made with Nullus Engine; you may not distribute the engine source code or use this project to create a competing engine. See [LICENSE](./LICENSE).

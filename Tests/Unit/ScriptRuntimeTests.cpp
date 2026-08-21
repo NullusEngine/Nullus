@@ -689,8 +689,8 @@ TEST(ScriptRuntimeTests, RuntimeSetupDiscoversContentAddressedManagedArtifacts)
     options.enableLua = false;
     const auto setup = InitializeScriptRuntime(runtime, options);
     ASSERT_TRUE(setup.status.Succeeded()) << setup.status.message;
-    EXPECT_EQ(setup.managedAssembly, assembly);
-    EXPECT_EQ(setup.managedRuntimeConfig, runtimeConfig);
+    EXPECT_TRUE(std::filesystem::equivalent(setup.managedAssembly, assembly));
+    EXPECT_TRUE(std::filesystem::equivalent(setup.managedRuntimeConfig, runtimeConfig));
     EXPECT_FALSE(setup.csharpRegistered);
     EXPECT_FALSE(setup.luaRegistered);
     std::filesystem::remove_all(projectRoot);

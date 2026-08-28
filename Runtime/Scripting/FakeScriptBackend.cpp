@@ -21,6 +21,8 @@ void FakeScriptBackend::Shutdown()
 {
     m_instances.clear();
     m_scripts.clear();
+    m_callables.clear();
+    m_eventSubscriptions.clear();
     m_initialized = false;
 }
 
@@ -92,6 +94,60 @@ ScriptStatus FakeScriptBackend::InvokeBatch(
     ++m_batchCallCount;
     m_batchInstanceCount += instances.size();
     return IScriptBackend::InvokeBatch(callback, instances, context);
+}
+
+ScriptStatus FakeScriptBackend::CreateCallable(
+    const ScriptInstanceHandle instance,
+    const ScriptMemberId member,
+    ScriptCallableHandle& output)
+{
+    output = {};
+    if (!m_initialized)
+        return ScriptStatus::Error(ScriptStatusCode::BackendClosed, "Fake backend is not initialized.");
+    if (!m_instances.contains(instance) || member == 0u)
+        return ScriptStatus::Error(ScriptStatusCode::InvalidHandle, "The fake callable owner does not exist.");
+    output = { m_id.value, m_nextGeneration++, m_nextIndex++ };
+    m_callables.emplace(output, Callable { instance, member });
+    return ScriptStatus::Ok();
+}
+
+ScriptStatus FakeScriptBackend::InvokeCallable(
+    const ScriptCallableHandle callable,
+    const std::span<const ScriptValue> arguments,
+    ScriptValue* result)
+{
+    if (!m_callables.contains(callable))
+        return ScriptStatus::Error(ScriptStatusCode::InvalidHandle, "The fake callable does not exist.");
+    if (result)
+        *result = std::monostate {};
+    if (m_callableObserver)
+        m_callableObserver(callable, arguments);
+    return ScriptStatus::Ok();
+}
+
+void FakeScriptBackend::ReleaseCallable(const ScriptCallableHandle callable)
+{
+    m_callables.erase(callable);
+}
+
+ScriptStatus FakeScriptBackend::SubscribeEvent(
+    const NativeObjectHandle owner,
+    const ScriptMemberId eventMember,
+    const ScriptCallableHandle callable,
+    ScriptEventSubscriptionHandle& output)
+{
+    output = {};
+    if (!m_callables.contains(callable) || eventMember == 0u)
+        return ScriptStatus::Error(ScriptStatusCode::InvalidArgument, "The fake event subscription is invalid.");
+    (void)owner;
+    output = { m_id.value, m_nextGeneration++, m_nextIndex++ };
+    m_eventSubscriptions.insert(output);
+    return ScriptStatus::Ok();
+}
+
+void FakeScriptBackend::ReleaseEventSubscription(const ScriptEventSubscriptionHandle subscription)
+{
+    m_eventSubscriptions.erase(subscription);
 }
 
 ScriptStatus FakeScriptBackend::Reload(const NLS::Core::Assets::AssetId& assetId, const ScriptApiDatabase& api)

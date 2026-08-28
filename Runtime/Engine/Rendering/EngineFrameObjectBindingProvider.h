@@ -81,7 +81,7 @@ protected:
 
 private:
     void RefreshExplicitFrameBindingSet();
-    void RefreshExplicitObjectBindingSet();
+    void RefreshExplicitLegacyObjectBindingSet();
     struct ObjectDataFrameSlot;
     std::optional<size_t> ResolveActiveObjectDataSlotIndex(
         std::optional<std::chrono::steady_clock::time_point> retirementDeadline = std::nullopt);
@@ -106,13 +106,13 @@ private:
     std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_hlslObjectBuffer;
     std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_hlslObjectBufferAlt;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_explicitFrameBindingSet;
-    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_explicitObjectBindingSet;
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_explicitLegacyObjectBindingSet;
     std::shared_ptr<NLS::Render::RHI::RHIDevice> m_explicitDevice;
     std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_objectDataBindingLayout;
     uint64_t m_objectDataBindingLayoutDeviceIdentity = 0u;
     uint64_t m_cachedObjectDataDeviceIdentity = 0u;
     bool m_explicitFrameBindingSetDirty = true;
-    bool m_explicitObjectBindingSetDirty = true;
+    bool m_explicitLegacyObjectBindingSetDirty = true;
     bool m_currentDrawUsesIndexedObjectData = false;
     bool m_currentDrawRequiresIndexedObjectData = false;
     bool m_currentDrawPrepared = true;
@@ -151,7 +151,7 @@ private:
     };
 
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_deferredFrameBindingSet;
-    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_deferredObjectBindingSet;
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_deferredLegacyObjectBindingSet;
     std::vector<ObjectDataFrameSlot> m_objectDataSlots;
     std::vector<Maths::Matrix4> m_objectDataTransposeScratch;
     mutable std::unordered_map<uint64_t, std::pair<uint64_t, bool>>

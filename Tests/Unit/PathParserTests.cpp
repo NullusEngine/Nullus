@@ -41,7 +41,11 @@ TEST(PathParserTests, ClassifiesAssetBrowserProjectExtensionsConsistently)
         {"Assets/Scenes/Hero.objectgraph.json", FileType::SCENE},
         {"Assets/Scripts/Hero.cs", FileType::SCRIPT},
         {"Assets/Scripts/Hero.py", FileType::SCRIPT},
-        {"Assets/Materials/Hero.mat", FileType::MATERIAL}
+        {"Assets/Materials/Hero.mat", FileType::MATERIAL},
+        {"Assets/UI/HUD.ui", FileType::UI_DOCUMENT},
+        {"Assets/UI/Theme.style", FileType::UI_STYLE},
+        {"Assets/Localization/Strings.loc", FileType::LOCALIZATION},
+        {"Assets/Fonts/NotoSans.woff2", FileType::FONT}
     };
 
     for (const auto& testCase : cases)
@@ -50,4 +54,12 @@ TEST(PathParserTests, ClassifiesAssetBrowserProjectExtensionsConsistently)
             NLS::Utils::PathParser::GetFileType(testCase.path),
             testCase.expected) << testCase.path;
     }
+}
+
+TEST(PathParserTests, DoesNotTreatLegacyPrefixedUiExtensionsAsNativeAssetTypes)
+{
+    using FileType = NLS::Utils::PathParser::EFileType;
+    EXPECT_EQ(NLS::Utils::PathParser::GetFileType("Assets/UI/HUD.nui"), FileType::UNKNOWN);
+    EXPECT_EQ(NLS::Utils::PathParser::GetFileType("Assets/UI/Theme.nstyle"), FileType::UNKNOWN);
+    EXPECT_EQ(NLS::Utils::PathParser::GetFileType("Assets/Localization/Strings.nloc"), FileType::UNKNOWN);
 }

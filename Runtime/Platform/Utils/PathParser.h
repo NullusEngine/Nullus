@@ -22,6 +22,9 @@ namespace NLS::Utils
 			PREFAB,
 			SCRIPT,
 			FONT,
+			UI_DOCUMENT,
+			UI_STYLE,
+			LOCALIZATION,
 			COUNT
 		};
 

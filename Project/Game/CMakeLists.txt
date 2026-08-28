@@ -36,6 +36,10 @@ target_link_libraries(
     NLS_Scripting
 )
 
+target_compile_definitions(GameProject PUBLIC
+  $<$<BOOL:${NLS_ENABLE_GAME_UI}>:NLS_ENABLE_GAME_UI=1>
+)
+
 nls_target_precompile_headers(GameProject "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")
 
 add_executable(Game ${GAME_ENTRY_SOURCE})

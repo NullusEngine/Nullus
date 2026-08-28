@@ -1424,6 +1424,9 @@ TEST(AssetBrowserPresentationTests, CurrentFolderSourceAssetTypesMatchPathParser
     WriteTextFile(root / "Assets" / "Hero.py", "script");
     WriteTextFile(root / "Assets" / "Hero.wav", "sound");
     WriteTextFile(root / "Assets" / "Hero.ttf", "font");
+    WriteTextFile(root / "Assets" / "HUD.ui", "ui document");
+    WriteTextFile(root / "Assets" / "Theme.style", "ui style");
+    WriteTextFile(root / "Assets" / "Strings.loc", "localization");
 
     const auto items = BuildCurrentFolderAssetItems(root, "Assets", nullptr);
 
@@ -1442,7 +1445,10 @@ TEST(AssetBrowserPresentationTests, CurrentFolderSourceAssetTypesMatchPathParser
         {"Hero.cs", AssetBrowserItemType::Script, FileType::SCRIPT},
         {"Hero.py", AssetBrowserItemType::Script, FileType::SCRIPT},
         {"Hero.wav", AssetBrowserItemType::Other, FileType::SOUND},
-        {"Hero.ttf", AssetBrowserItemType::Other, FileType::FONT}
+        {"Hero.ttf", AssetBrowserItemType::Other, FileType::FONT},
+        {"HUD.ui", AssetBrowserItemType::Other, FileType::UI_DOCUMENT},
+        {"Theme.style", AssetBrowserItemType::Other, FileType::UI_STYLE},
+        {"Strings.loc", AssetBrowserItemType::Other, FileType::LOCALIZATION}
     };
 
     for (const auto& testCase : cases)
@@ -9334,6 +9340,38 @@ TEST(AssetBrowserPresentationTests, ObjectReferencePickerBuildsFromSnapshotRecor
     EXPECT_EQ(GetEditorAssetDragPayloadArtifactType(entries[0].payload), ArtifactType::Mesh);
     EXPECT_TRUE(IsEditorAssetDragPayloadGeneratedBrowserSubAsset(entries[0].payload));
     EXPECT_EQ(entries[1].displayName, "Assets/Models/Hero.fbx / Texture:Body");
+}
+
+TEST(AssetBrowserPresentationTests, UiDocumentCanBeSelectedOrDraggedAsAnObjectReference)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto documentAssetId = ParseAssetId("a2020202-0202-4202-8202-020202020202");
+    ObjectReferencePickerAssetSnapshot snapshot;
+    snapshot.sourceAssetPath = "Assets/UI/Hud.ui";
+    snapshot.assetId = documentAssetId;
+    snapshot.subAssets.push_back({
+        "ui-document:Hud",
+        "Library/Artifacts/a2020202-0202-4202-8202-020202020202/hud.bin",
+        ArtifactType::UIDocument
+    });
+
+    const auto pickerEntries = BuildObjectReferencePickerEntriesFromSnapshots({ snapshot });
+    ASSERT_EQ(pickerEntries.size(), 1u);
+    EXPECT_EQ(pickerEntries[0].displayName, "Assets/UI/Hud.ui / ui-document:Hud");
+    EXPECT_EQ(GetEditorAssetDragPayloadArtifactType(pickerEntries[0].payload), ArtifactType::UIDocument);
+    EXPECT_EQ(GetEditorAssetDragPayloadSubAssetKey(pickerEntries[0].payload), "ui-document:Hud");
+
+    AssetBrowserItem sourceItem;
+    sourceItem.kind = AssetBrowserItemKind::SourceAsset;
+    sourceItem.type = AssetBrowserItemType::Other;
+    sourceItem.assetId = documentAssetId;
+    sourceItem.dragResourcePath = "Assets/UI/Hud.ui";
+    const auto dragPayload = MakeAssetBrowserItemDragPayload(sourceItem, nullptr);
+    ASSERT_TRUE(dragPayload.has_value());
+    EXPECT_EQ(GetEditorAssetDragPayloadArtifactType(*dragPayload), ArtifactType::UIDocument);
+    EXPECT_EQ(GetEditorAssetDragPayloadSubAssetKey(*dragPayload), "ui-document:Hud");
 }
 
 TEST(AssetBrowserPresentationTests, ObjectReferencePickerReadsSnapshotWithoutRebuildingOnOpen)

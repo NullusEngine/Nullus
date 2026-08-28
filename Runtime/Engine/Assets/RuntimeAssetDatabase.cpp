@@ -562,6 +562,9 @@ bool IsRuntimePackagedAssetPath(const std::string& path)
         extension == ".jpeg" ||
         extension == ".tga" ||
         extension == ".scene" ||
+        extension == ".ui" ||
+        extension == ".style" ||
+        extension == ".loc" ||
         extension == ".meta")
     {
         return false;

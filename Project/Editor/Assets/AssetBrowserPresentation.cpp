@@ -81,7 +81,8 @@ bool IsInspectorReferenceableSubAsset(const NLS::Core::Assets::ArtifactType p_ty
     return p_type == ArtifactType::Mesh ||
            p_type == ArtifactType::Material ||
            p_type == ArtifactType::Texture ||
-           p_type == ArtifactType::Shader;
+           p_type == ArtifactType::Shader ||
+           p_type == ArtifactType::UIDocument;
 }
 
 bool IsGridVisibleGeneratedSubAsset(const NLS::Core::Assets::ArtifactType p_type)
@@ -1816,6 +1817,9 @@ AssetBrowserItemType AssetBrowserItemTypeFromPathParserFileType(
         return AssetBrowserItemType::Script;
     case NLS::Utils::PathParser::EFileType::SOUND:
     case NLS::Utils::PathParser::EFileType::FONT:
+    case NLS::Utils::PathParser::EFileType::UI_DOCUMENT:
+    case NLS::Utils::PathParser::EFileType::UI_STYLE:
+    case NLS::Utils::PathParser::EFileType::LOCALIZATION:
     case NLS::Utils::PathParser::EFileType::UNKNOWN:
     case NLS::Utils::PathParser::EFileType::COUNT:
         return AssetBrowserItemType::Other;
@@ -2727,10 +2731,22 @@ std::optional<EditorAssetDragPayload> MakeAssetBrowserItemDragPayload(
     auto artifactType = item.artifactType;
     if (item.kind == AssetBrowserItemKind::SourceAsset)
     {
+        const bool isUiDocument =
+            NLS::Core::Assets::InferAssetType(item.dragResourcePath) ==
+            NLS::Core::Assets::AssetType::UIDocument;
         if (subAssetKey.empty())
-            subAssetKey = DefaultDragSubAssetKeyForSourceAsset(item.type, item.dragResourcePath);
+        {
+            const auto stem = std::filesystem::path(item.dragResourcePath).stem().generic_string();
+            subAssetKey = isUiDocument && !stem.empty()
+                ? "ui-document:" + stem
+                : DefaultDragSubAssetKeyForSourceAsset(item.type, item.dragResourcePath);
+        }
         if (artifactType == NLS::Core::Assets::ArtifactType::Unknown)
-            artifactType = DefaultDragArtifactTypeForSourceAssetType(item.type);
+        {
+            artifactType = isUiDocument
+                ? NLS::Core::Assets::ArtifactType::UIDocument
+                : DefaultDragArtifactTypeForSourceAssetType(item.type);
+        }
     }
     const bool scriptAsset = IsScriptAssetPath(item.dragResourcePath);
     if (subAssetKey.empty() || (!scriptAsset && artifactType == NLS::Core::Assets::ArtifactType::Unknown))

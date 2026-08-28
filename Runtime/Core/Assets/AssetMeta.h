@@ -21,6 +21,10 @@ enum class AssetType
     Scene,
     Script,
     Prefab,
+    UIDocument,
+    UIStyleSheet,
+    Font,
+    LocalizationTable,
     Count
 };
 

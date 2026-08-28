@@ -122,6 +122,7 @@ namespace NLS::Render::UI
         signature.AddBool(snapshot.hasVisibleDraws);
         signature.AddBool(snapshot.containsUnsupportedUserCallback);
         signature.AddBool(snapshot.containsUnsupportedTextureId);
+        signature.AddBool(snapshot.containsDeferredText);
         signature.AddUint64(snapshot.drawLists.size());
 
         for (const auto& drawList : snapshot.drawLists)
@@ -158,6 +159,25 @@ namespace NLS::Render::UI
                 signature.AddUint32(static_cast<uint32_t>(command.callbackKind));
                 signature.AddBool(command.hasUnsupportedTextureId);
             }
+        }
+
+        signature.AddUint64(snapshot.textRuns.size());
+        for (const auto& textRun : snapshot.textRuns)
+        {
+            signature.AddUint64(textRun.text.size());
+            for (const auto character : textRun.text)
+                signature.AddUint32(static_cast<uint8_t>(character));
+            signature.AddFloat(textRun.x);
+            signature.AddFloat(textRun.y);
+            signature.AddFloat(textRun.width);
+            signature.AddFloat(textRun.height);
+            signature.AddFloat(textRun.fontSize);
+            for (const auto color : textRun.color)
+                signature.AddFloat(color);
+            signature.AddUint32(textRun.clipIndex);
+            signature.AddUint64(textRun.fontAssetId);
+            signature.AddUint64(textRun.sortKey);
+            signature.AddUint32(textRun.fontPixelSize);
         }
 
         return signature.Finish();

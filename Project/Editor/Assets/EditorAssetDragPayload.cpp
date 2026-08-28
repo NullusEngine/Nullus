@@ -131,6 +131,10 @@ NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const Edit
     case ArtifactType::Scene:
     case ArtifactType::Shader:
     case ArtifactType::Audio:
+    case ArtifactType::UIDocument:
+    case ArtifactType::UIStyleSheet:
+    case ArtifactType::Font:
+    case ArtifactType::LocalizationTable:
         return artifactType;
     case ArtifactType::Unknown:
     case ArtifactType::Count:

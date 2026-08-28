@@ -81,6 +81,9 @@ std::string NLS::Utils::PathParser::FileTypeToString(EFileType p_fileType)
 	case NLS::Utils::PathParser::EFileType::PREFAB:		return "Prefab";
 	case NLS::Utils::PathParser::EFileType::SCRIPT:		return "Script";
 	case NLS::Utils::PathParser::EFileType::FONT:		return "Font";
+	case NLS::Utils::PathParser::EFileType::UI_DOCUMENT:	return "UI Document";
+	case NLS::Utils::PathParser::EFileType::UI_STYLE:		return "UI Style";
+	case NLS::Utils::PathParser::EFileType::LOCALIZATION:	return "Localization";
 	case NLS::Utils::PathParser::EFileType::UNKNOWN:
 	case NLS::Utils::PathParser::EFileType::COUNT:
 		break;
@@ -106,6 +109,11 @@ NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std:
 	else if (ext == "prefab")													return EFileType::PREFAB;
 	else if (ext == "lua" || ext == "cs" || ext == "py")						return EFileType::SCRIPT;
 	else if (ext == "ttf")														return EFileType::FONT;
+
+	else if (ext == "otf" || ext == "woff" || ext == "woff2")						return EFileType::FONT;
+	else if (ext == "ui")																	return EFileType::UI_DOCUMENT;
+	else if (ext == "style")																return EFileType::UI_STYLE;
+	else if (ext == "loc")																	return EFileType::LOCALIZATION;
 
 	return EFileType::UNKNOWN;
 }

@@ -9,4 +9,5 @@ nls_add_runtime_target(
 
 target_compile_definitions(NLS_Engine PUBLIC
   $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
+  $<$<BOOL:${NLS_ENABLE_GAME_UI}>:NLS_ENABLE_GAME_UI=1>
 )

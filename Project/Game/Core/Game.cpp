@@ -8,6 +8,7 @@
 #include <Debug/Logger.h>
 
 #include <Rendering/Context/DriverAccess.h>
+#include <Rendering/UI/UIDrawSnapshotAdapter.h>
 #include <Rendering/RHI/Core/RHIDevice.h>
 #include <Rendering/RHI/Core/RHIResource.h>
 #include <Rendering/FrameGraph/ExternalResourceBridge.h>
@@ -15,6 +16,7 @@
 #include <Rendering/Settings/EPixelDataType.h>
 #include <Rendering/Tooling/MaterialVisualEvidence.h>
 #include <Scripting/ScriptEngineApi.h>
+#include <Components/UICanvasComponent.h>
 
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
@@ -74,16 +76,70 @@ void Game::Core::Game::PreUpdate()
 	m_context.device->PollEvents();
 }
 
-namespace
-{
-	std::string BuildDefaultSummaryPath(const std::string& outputPath)
+	namespace
 	{
-		std::filesystem::path summaryPath(outputPath);
-		summaryPath.replace_extension(".txt");
-		return summaryPath.string();
-	}
+		std::string BuildDefaultSummaryPath(const std::string& outputPath)
+		{
+			std::filesystem::path summaryPath(outputPath);
+			summaryPath.replace_extension(".txt");
+			return summaryPath.string();
+		}
 
-	void RenderCurrentScene(
+		std::filesystem::path ResolveProjectUIDocumentPath(
+			const std::string& projectAssetsPath,
+			const std::string& documentPath)
+		{
+			if (projectAssetsPath.empty() || documentPath.empty())
+				return {};
+
+			const std::filesystem::path sourcePath(documentPath);
+			if (sourcePath.is_absolute())
+				return sourcePath.lexically_normal();
+
+			const auto assetsPath = std::filesystem::path(projectAssetsPath).lexically_normal();
+			const auto normalizedSource = sourcePath.lexically_normal();
+			const auto genericSource = normalizedSource.generic_string();
+			const auto resolved = genericSource == "Assets" || genericSource.rfind("Assets/", 0u) == 0u
+				? (assetsPath.parent_path() / normalizedSource).lexically_normal()
+				: (assetsPath / normalizedSource).lexically_normal();
+
+			// A scene may only use a relative document reference below Assets.
+			// Absolute references remain useful for tools and explicit development
+			// workflows, but cannot be smuggled in through a relative ../ path.
+			const auto relativeToAssets = resolved.lexically_relative(assetsPath);
+			if (relativeToAssets.empty() || relativeToAssets.is_absolute())
+				return {};
+			for (const auto& part : relativeToAssets)
+			{
+				if (part == "..")
+					return {};
+			}
+			return resolved;
+		}
+
+		void ResolvePendingUIDocuments(
+			Engine::UI::UIRuntimeService& uiRuntimeService,
+			const std::string& projectAssetsPath)
+		{
+			for (auto* canvas : uiRuntimeService.GetCanvases())
+			{
+				if (canvas == nullptr || canvas->GetDocument() != nullptr || canvas->GetDocumentPath().empty())
+					continue;
+
+				const auto resolvedPath = ResolveProjectUIDocumentPath(
+					projectAssetsPath,
+					canvas->GetDocumentPath());
+				std::error_code error;
+				if (resolvedPath.empty() || !std::filesystem::is_regular_file(resolvedPath, error) || error)
+					continue;
+
+				// Keep the scene's Assets/... reference intact. The resolved source
+				// path is development-time data and must never be serialized back.
+				(void)canvas->LoadDocumentResolvedPath(resolvedPath.string(), nullptr);
+			}
+		}
+
+		void RenderCurrentScene(
 		Engine::Rendering::BaseSceneRenderer& p_renderer,
 		const Game::Context& p_context
 	)
@@ -198,6 +254,110 @@ void Game::Core::Game::Update(float p_deltaTime)
 	if (auto currentScene = m_context.sceneManager.GetCurrentScene())
 	{
 		NLS::Scripting::ScriptEngineApi::SetScene(currentScene);
+		#if defined(NLS_ENABLE_GAME_UI)
+		m_uiRuntimeService.SyncCanvases(currentScene->GetFastAccessComponents().uiCanvases);
+		ResolvePendingUIDocuments(m_uiRuntimeService, m_context.projectAssetsPath);
+		const auto windowSize = m_context.window->GetSize();
+		const Engine::UI::UIVector2 uiViewport {
+			std::max(0.0f, windowSize.x),
+			std::max(0.0f, windowSize.y) };
+		const auto mousePosition = m_context.inputManager->GetMousePosition();
+		for (auto* canvas : m_uiRuntimeService.GetCanvases())
+		{
+			if (canvas && canvas->IsRenderable())
+				// Establish layout before hit testing. The normal frame tick below
+				// reuses the same tree after scene/script updates.
+				canvas->Tick(0.0f, uiViewport, 1.0f, m_frameIndex);
+		}
+		Engine::UI::InputEventQueue inputEvents;
+		inputEvents.Push({
+			Engine::UI::UIEventType::PointerMove,
+			Engine::UI::UIInputDevice::Mouse,
+			m_frameIndex,
+			0u,
+			0u,
+			0u,
+			0u,
+			{ mousePosition.x, mousePosition.y },
+			{},
+			0.0f,
+			{},
+			false });
+		if (m_context.inputManager->IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT))
+		{
+			inputEvents.Push({
+				Engine::UI::UIEventType::PointerDown,
+				Engine::UI::UIInputDevice::Mouse,
+				m_frameIndex,
+				0u,
+				0u,
+				0u,
+				0u,
+				{ mousePosition.x, mousePosition.y },
+				{},
+				0.0f,
+				{},
+				false });
+		}
+		if (m_context.inputManager->IsMouseButtonReleased(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT))
+		{
+			inputEvents.Push({
+				Engine::UI::UIEventType::PointerUp,
+				Engine::UI::UIInputDevice::Mouse,
+				m_frameIndex,
+				0u,
+				0u,
+				0u,
+				0u,
+				{ mousePosition.x, mousePosition.y },
+				{},
+				0.0f,
+				{},
+				false });
+		}
+		std::vector<std::pair<uint32_t, Windowing::Inputs::EKeyState>> keyEvents;
+		keyEvents.reserve(m_context.inputManager->GetKeyEvents().size());
+		for (const auto& [key, state] : m_context.inputManager->GetKeyEvents())
+			keyEvents.emplace_back(static_cast<uint32_t>(key), state);
+		std::sort(keyEvents.begin(), keyEvents.end(), [](const auto& lhs, const auto& rhs) {
+			return lhs.first < rhs.first;
+		});
+		for (const auto& [keyCode, state] : keyEvents)
+		{
+			inputEvents.Push({
+				state == Windowing::Inputs::EKeyState::KEY_DOWN
+					? Engine::UI::UIEventType::KeyDown
+					: Engine::UI::UIEventType::KeyUp,
+				Engine::UI::UIInputDevice::Keyboard,
+				m_frameIndex,
+				0u,
+				0u,
+				keyCode,
+				0u,
+				{},
+				{},
+				0.0f,
+				{},
+				false });
+		}
+		const auto wheel = m_context.inputManager->GetWheelMovement();
+		if (wheel.y != 0.0f)
+		{
+			inputEvents.Push({
+				Engine::UI::UIEventType::Scroll,
+				Engine::UI::UIInputDevice::Mouse,
+				m_frameIndex,
+				0u,
+				0u,
+				0u,
+				0u,
+				{ mousePosition.x, mousePosition.y },
+				{},
+				wheel.y,
+				{},
+				false });
+		}
+		m_uiRuntimeService.DispatchInputQueue(inputEvents);
 		NLS::Scripting::ScriptFrameContext scriptFrame;
 		scriptFrame.deltaTime = delta;
 		scriptFrame.unscaledDeltaTime = unscaledDelta;
@@ -246,6 +406,17 @@ void Game::Core::Game::Update(float p_deltaTime)
 			if (!flushStatus.Succeeded())
 				NLS_LOG_WARNING("Script LateUpdate batch failed: " + flushStatus.message);
 		}
+		m_uiRuntimeService.Tick(delta, uiViewport, 1.0f, m_frameIndex);
+		m_uiSnapshot = m_uiRuntimeService.GetLatestSnapshot();
+		// Publish only the immutable render snapshot. The RHI overlay keeps
+		// ownership until the corresponding frame has retired, so neither the
+		// UI tree nor script-owned elements cross the render-thread boundary.
+		Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(
+			*m_context.driver,
+			Render::UI::AdaptUIDrawSnapshot(m_uiSnapshot));
+		#else
+		m_uiSnapshot.reset();
+		#endif
 		if (m_materialValidation.has_value() &&
 			!m_materialValidationCaptured &&
 			m_presentedFrames + 1u >= std::max(1u, m_materialValidation->captureAfterFrames))
@@ -261,9 +432,18 @@ void Game::Core::Game::Update(float p_deltaTime)
 		{
 			RenderCurrentScene(*m_sceneRenderer, m_context);
 		}
-	}
+		}
+	#if defined(NLS_ENABLE_GAME_UI)
+		else
+		{
+			m_uiSnapshot.reset();
+			Render::Context::DriverUIAccess::PublishUiDrawDataSnapshot(
+				*m_context.driver,
+				nullptr);
+		}
+	#endif
 
-	NLS::Scripting::ScriptEngineApi::FlushDeferredDestructions();
+		NLS::Scripting::ScriptEngineApi::FlushDeferredDestructions();
 	if (auto currentScene = m_context.sceneManager.GetCurrentScene())
 		currentScene->CollectGarbages();
 	m_context.sceneManager.Update();

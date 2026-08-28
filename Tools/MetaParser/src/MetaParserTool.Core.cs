@@ -650,6 +650,7 @@ internal static partial class MetaParserTool
             return string.Empty;
 
         normalized = NormalizeStdTypeName(normalized);
+        normalized = NormalizeFixedWidthIntegerTypeName(normalized);
         normalized = QualifyTypeNameInExpression(normalized, ExtractNamespace(owner.FullName, owner.Name), visibleTypes);
 
         foreach (var nestedEnum in owner.Enums)
@@ -1182,6 +1183,7 @@ internal static partial class MetaParserTool
             return string.Empty;
 
         normalized = NormalizeStdTypeName(normalized);
+        normalized = NormalizeFixedWidthIntegerTypeName(normalized);
         normalized = NormalizeTrailingConstReference(normalized);
         normalized = QualifyTypeName(normalized, ExtractNamespace(owner.FullName, owner.Name), visibleTypes);
 

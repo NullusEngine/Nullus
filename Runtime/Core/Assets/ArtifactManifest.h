@@ -26,6 +26,10 @@ enum class ArtifactType
     Scene,
     Shader,
     Audio,
+    UIDocument,
+    UIStyleSheet,
+    Font,
+    LocalizationTable,
     Count
 };
 

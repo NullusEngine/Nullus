@@ -1,6 +1,7 @@
 #include "Panels/Inspector.h"
 
 #include <UI/Widgets/Buttons/Button.h>
+#include <UI/Widgets/Buttons/ButtonSmall.h>
 #include <UI/Widgets/Layout/Spacing.h>
 #include <UI/Widgets/Layout/Columns.h>
 #include <UI/Widgets/Texts/Text.h>
@@ -17,20 +18,26 @@
 #include <Reflection/Variant.h>
 #include <imgui.h>
 #include "Assets/PrefabUtilityFacade.h"
+#include "Assets/AssetBrowserPresentation.h"
+#include "Assets/EditorAssetDragPayload.h"
 #include "Core/EditorActions.h"
 #include "Components/TransformComponent.h"
+#include "Components/UICanvasComponent.h"
 #include "Panels/ComponentSearchPanel.h"
 #include "Panels/ReflectedPropertyDrawer.h"
+#include "Panels/UIDocumentDesigner.h"
 #include "Assets/ScriptAssetUtility.h"
 #include <Scripting/SerializedObject.h>
 #include <Scripting/ScriptComponent.h>
 #include "GameObject.h"
 #include "Settings/TagLayerSettings.h"
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <map>
 #include <memory>
 #include <filesystem>
+#include <system_error>
 #include <variant>
 
 namespace
@@ -347,7 +354,376 @@ private:
     std::function<int()> m_gatherer;
     std::function<void(int)> m_provider;
 };
+
+bool IsUIDocumentAssetPath(const std::filesystem::path& path)
+{
+    auto extension = path.extension().string();
+    std::transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    return extension == ".ui";
+}
+
+bool IsPathWithinProjectAssets(
+    const std::filesystem::path& projectAssetsPath,
+    const std::filesystem::path& resolvedPath)
+{
+    const auto relativePath = resolvedPath.lexically_relative(projectAssetsPath);
+    if (relativePath.empty() || relativePath.is_absolute())
+        return false;
+    for (const auto& part : relativePath)
+    {
+        if (part == "..")
+            return false;
+    }
+    return true;
+}
+
+std::filesystem::path ResolveProjectUIDocumentPath(
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath)
+{
+    if (projectAssetsPath.empty() || documentPath.empty())
+        return {};
+
+    const auto normalizedAssetsPath = projectAssetsPath.lexically_normal();
+    const std::filesystem::path sourcePath(documentPath);
+    const auto normalizedSourcePath = sourcePath.lexically_normal();
+    const auto genericSourcePath = normalizedSourcePath.generic_string();
+    const auto resolvedPath = sourcePath.is_absolute()
+        ? normalizedSourcePath
+        : (genericSourcePath == "Assets" || genericSourcePath.rfind("Assets/", 0u) == 0u
+            ? (normalizedAssetsPath.parent_path() / normalizedSourcePath).lexically_normal()
+            : (normalizedAssetsPath / normalizedSourcePath).lexically_normal());
+    return IsPathWithinProjectAssets(normalizedAssetsPath, resolvedPath)
+        ? resolvedPath
+        : std::filesystem::path {};
+}
+
+std::string NormalizeProjectUIDocumentReference(
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath)
+{
+    const auto resolvedPath = ResolveProjectUIDocumentPath(projectAssetsPath, documentPath);
+    if (resolvedPath.empty() || !IsUIDocumentAssetPath(resolvedPath))
+        return {};
+
+    const auto normalizedAssetsPath = projectAssetsPath.lexically_normal();
+    const auto relativePath = resolvedPath.lexically_relative(normalizedAssetsPath);
+    return IsPathWithinProjectAssets(normalizedAssetsPath, resolvedPath)
+        ? (std::filesystem::path("Assets") / relativePath).generic_string()
+        : std::string {};
+}
+
+void AppendUIDocumentChoice(
+    std::vector<std::string>& documents,
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath)
+{
+    const auto normalizedPath = NormalizeProjectUIDocumentReference(projectAssetsPath, documentPath);
+    if (!normalizedPath.empty())
+        documents.push_back(normalizedPath);
+}
+
+std::map<int, std::string> BuildUIDocumentChoices(
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& selectedDocumentPath = {})
+{
+    std::map<int, std::string> choices {{ 0, "None" }};
+    std::vector<std::string> documents;
+    for (const auto& entry : NLS::Editor::Assets::GetObjectReferencePickerEntries())
+    {
+        if (NLS::Editor::Assets::GetEditorAssetDragPayloadArtifactType(entry.payload) !=
+            NLS::Core::Assets::ArtifactType::UIDocument)
+            continue;
+
+        AppendUIDocumentChoice(
+            documents,
+            projectAssetsPath,
+            NLS::Editor::Assets::GetEditorAssetDragPayloadPath(entry.payload));
+    }
+
+    // The published Asset Browser index is normally ready before Inspector
+    // interaction. Keep a narrow source scan for documents created or copied
+    // during the import hand-off, so an empty index never hides valid .ui files.
+    if (documents.empty() &&
+        !projectAssetsPath.empty() &&
+        std::filesystem::is_directory(projectAssetsPath))
+    {
+        std::error_code error;
+        std::filesystem::recursive_directory_iterator iterator(
+            projectAssetsPath,
+            std::filesystem::directory_options::skip_permission_denied,
+            error);
+        const std::filesystem::recursive_directory_iterator end;
+        for (; iterator != end && !error; iterator.increment(error))
+        {
+            const auto status = iterator->symlink_status(error);
+            if (error)
+            {
+                error.clear();
+                continue;
+            }
+            if (!std::filesystem::is_regular_file(status) || std::filesystem::is_symlink(status) ||
+                !IsUIDocumentAssetPath(iterator->path()))
+            {
+                continue;
+            }
+
+            AppendUIDocumentChoice(documents, projectAssetsPath, iterator->path().string());
+        }
+    }
+
+    // The Asset Browser index is rebuilt asynchronously. Keep the currently
+    // assigned asset visible while that snapshot catches up.
+    AppendUIDocumentChoice(documents, projectAssetsPath, selectedDocumentPath);
+
+    std::sort(documents.begin(), documents.end());
+    documents.erase(std::unique(documents.begin(), documents.end()), documents.end());
+    for (size_t index = 0; index < documents.size(); ++index)
+        choices.emplace(static_cast<int>(index + 1u), std::move(documents[index]));
+    return choices;
+}
+
+int FindUIDocumentChoice(
+    const std::map<int, std::string>& choices,
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath)
+{
+    const auto normalizedPath = NormalizeProjectUIDocumentReference(projectAssetsPath, documentPath);
+    if (normalizedPath.empty())
+        return 0;
+    for (const auto& [value, path] : choices)
+    {
+        if (path == normalizedPath)
+            return value;
+    }
+    return 0;
+}
+
+bool AssignUIDocumentReference(
+    NLS::Engine::Components::UICanvasComponent& canvas,
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath)
+{
+    if (documentPath.empty())
+    {
+        canvas.SetDocumentPath({});
+        return true;
+    }
+
+    const auto normalizedPath = NormalizeProjectUIDocumentReference(projectAssetsPath, documentPath);
+    const auto resolvedPath = ResolveProjectUIDocumentPath(projectAssetsPath, normalizedPath);
+    std::error_code error;
+    if (normalizedPath.empty() || resolvedPath.empty() ||
+        !std::filesystem::is_regular_file(resolvedPath, error) || error)
+        return false;
+
+    // Scene serialization keeps a logical Assets/... path. Loading uses the
+    // resolved local source path so the Inspector can preview the assignment
+    // immediately without leaking an absolute machine-specific reference.
+    canvas.SetDocumentPath(normalizedPath);
+    return canvas.LoadDocumentResolvedPath(resolvedPath.string(), nullptr);
+}
+
+bool AssignUIDocumentChoice(
+    NLS::Engine::Components::UICanvasComponent& canvas,
+    const std::filesystem::path& projectAssetsPath,
+    const std::map<int, std::string>& choices,
+    const int value)
+{
+    const auto choice = choices.find(value);
+    return AssignUIDocumentReference(
+        canvas,
+        projectAssetsPath,
+        choice == choices.end() ? std::string {} : choice->second);
+}
+
+void DrawUICanvasDocumentSlot(
+    NLS::UI::Internal::WidgetContainer& root,
+    NLS::Engine::Components::UICanvasComponent& canvas,
+    const std::function<void()>& onApplied)
+{
+    const std::filesystem::path projectAssetsPath(EDITOR_CONTEXT(projectAssetsPath));
+    NLS::UI::GUIDrawer::CreateTitle(root, "Document");
+    auto& slot = root.CreateWidget<NLS::UI::Widgets::Group>();
+    // The Asset Browser publishes its picker index asynchronously. Keep one
+    // map for a whole ImGui draw so a click is resolved against the item that
+    // was actually displayed, rather than a newly rebuilt numeric ordering.
+    auto choicesSnapshot = std::make_shared<std::map<int, std::string>>();
+    auto& picker = slot.CreateWidget<HeaderComboBox>(
+        [projectAssetsPath, &canvas, choicesSnapshot]
+        {
+            *choicesSnapshot = BuildUIDocumentChoices(projectAssetsPath, canvas.GetDocumentPath());
+            return *choicesSnapshot;
+        },
+        [projectAssetsPath, &canvas, choicesSnapshot]
+        {
+            return FindUIDocumentChoice(*choicesSnapshot, projectAssetsPath, canvas.GetDocumentPath());
+        },
+        [projectAssetsPath, &canvas, onApplied, choicesSnapshot](const int value)
+        {
+            if (AssignUIDocumentChoice(canvas, projectAssetsPath, *choicesSnapshot, value) && onApplied)
+                onApplied();
+        });
+    picker.AddPlugin<NLS::UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
+        NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent +=
+        [projectAssetsPath, &canvas, onApplied](NLS::Editor::Assets::EditorAssetDragPayload payload)
+    {
+        const auto documentPath = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
+        const auto artifactType = NLS::Editor::Assets::GetEditorAssetDragPayloadArtifactType(payload);
+        if (artifactType != NLS::Core::Assets::ArtifactType::Unknown &&
+            artifactType != NLS::Core::Assets::ArtifactType::UIDocument)
+        {
+            return;
+        }
+        if (!IsUIDocumentAssetPath(documentPath))
+            return;
+        if (AssignUIDocumentReference(canvas, projectAssetsPath, documentPath) && onApplied)
+            onApplied();
+    };
+
+    auto& openButton = slot.CreateWidget<NLS::UI::Widgets::ButtonSmall>("Open Designer");
+    openButton.ClickedEvent += [projectAssetsPath, &canvas]
+    {
+        const auto documentPath = canvas.GetDocumentPath();
+        const auto resolvedPath = ResolveProjectUIDocumentPath(projectAssetsPath, documentPath);
+        std::error_code error;
+        if (resolvedPath.empty() || !std::filesystem::is_regular_file(resolvedPath, error) || error)
+            return;
+        auto& designer = EDITOR_PANEL(NLS::Editor::Panels::UIDocumentDesigner, "UI Designer");
+        (void)designer.OpenDocument(resolvedPath);
+    };
+}
+
+void DrawUICanvasSettings(
+    NLS::UI::Internal::WidgetContainer& root,
+    NLS::Engine::Components::UICanvasComponent& canvas,
+    const std::function<void()>& onApplied,
+    const std::function<void()>& onFieldLayoutChanged)
+{
+    using Canvas = NLS::Engine::Components::UICanvasComponent;
+
+    NLS::UI::GUIDrawer::CreateTitle(root, "Render Mode");
+    root.CreateWidget<HeaderComboBox>(
+        std::map<int, std::string> {
+            { static_cast<int>(Canvas::RenderMode::ScreenOverlay), "Screen Overlay" },
+            { static_cast<int>(Canvas::RenderMode::ScreenCamera), "Screen Camera" },
+            { static_cast<int>(Canvas::RenderMode::World), "World" }
+        },
+        [&canvas] { return static_cast<int>(canvas.GetRenderMode()); },
+        [&canvas, onApplied, onFieldLayoutChanged](const int value)
+        {
+            canvas.SetRenderModeValue(static_cast<uint32_t>(value));
+            if (onApplied)
+                onApplied();
+            if (onFieldLayoutChanged)
+                onFieldLayoutChanged();
+        });
+
+    NLS::UI::GUIDrawer::DrawScalar<int>(
+        root,
+        "Sort Order",
+        [&canvas] { return canvas.GetSortOrder(); },
+        [&canvas, onApplied](const int value)
+        {
+            canvas.SetSortOrder(value);
+            if (onApplied)
+                onApplied();
+        });
+
+    if (canvas.GetRenderMode() != Canvas::RenderMode::World)
+        return;
+
+    NLS::UI::GUIDrawer::CreateTitle(root, "World Path");
+    root.CreateWidget<HeaderComboBox>(
+        std::map<int, std::string> {
+            { static_cast<int>(Canvas::WorldRenderPath::Auto), "Auto" },
+            { static_cast<int>(Canvas::WorldRenderPath::Direct), "Direct" },
+            { static_cast<int>(Canvas::WorldRenderPath::RenderTarget), "Render Target" }
+        },
+        [&canvas] { return static_cast<int>(canvas.GetWorldRenderPath()); },
+        [&canvas, onApplied](const int value)
+        {
+            canvas.SetWorldRenderPathValue(static_cast<uint32_t>(value));
+            if (onApplied)
+                onApplied();
+        });
+
+    NLS::UI::GUIDrawer::DrawScalar<float>(
+        root,
+        "Pixels Per Unit",
+        [&canvas] { return canvas.GetPixelsPerUnit(); },
+        [&canvas, onApplied](const float value)
+        {
+            canvas.SetPixelsPerUnit(value);
+            if (onApplied)
+                onApplied();
+        },
+        1.0f,
+        1.0f,
+        10000.0f);
+    NLS::UI::GUIDrawer::DrawBoolean(
+        root,
+        "Depth Test",
+        [&canvas] { return canvas.GetDepthTest(); },
+        [&canvas, onApplied](const bool value)
+        {
+            canvas.SetDepthTest(value);
+            if (onApplied)
+                onApplied();
+        });
+    NLS::UI::GUIDrawer::DrawBoolean(
+        root,
+        "Always On Top",
+        [&canvas] { return canvas.GetAlwaysOnTop(); },
+        [&canvas, onApplied](const bool value)
+        {
+            canvas.SetAlwaysOnTop(value);
+            if (onApplied)
+                onApplied();
+        });
+}
 } // namespace
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+namespace NLS::Editor::Panels::TestHooks
+{
+std::map<int, std::string> BuildUICanvasDocumentChoicesForTesting(
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& selectedDocumentPath)
+{
+    return BuildUIDocumentChoices(projectAssetsPath, selectedDocumentPath);
+}
+
+int FindUICanvasDocumentChoiceForTesting(
+    const std::map<int, std::string>& choices,
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath)
+{
+    return FindUIDocumentChoice(choices, projectAssetsPath, documentPath);
+}
+
+bool AssignUICanvasDocumentReferenceForTesting(
+    Engine::Components::UICanvasComponent& canvas,
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath)
+{
+    return AssignUIDocumentReference(canvas, projectAssetsPath, documentPath);
+}
+
+bool AssignUICanvasDocumentChoiceForTesting(
+    Engine::Components::UICanvasComponent& canvas,
+    const std::filesystem::path& projectAssetsPath,
+    const std::map<int, std::string>& choices,
+    const int value)
+{
+    return AssignUIDocumentChoice(canvas, projectAssetsPath, choices, value);
+}
+}
+#endif
 
 namespace NLS::Editor::Panels
 {
@@ -741,17 +1117,48 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
         return;
     }
 
+    auto* uiCanvas = dynamic_cast<UICanvasComponent*>(p_component);
+    if (uiCanvas)
+    {
+        const auto onCanvasApplied = [this]
+        {
+            MarkTargetSceneDirty();
+        };
+        const auto onCanvasFieldLayoutChanged = [this]
+        {
+            auto lifetimeToken = m_lifetimeToken;
+            EDITOR_EXEC(DelayAction([this, lifetimeToken]
+            {
+                if (lifetimeToken && *lifetimeToken)
+                    Refresh();
+            }));
+        };
+        DrawUICanvasDocumentSlot(header, *uiCanvas, onCanvasApplied);
+        DrawUICanvasSettings(header, *uiCanvas, onCanvasApplied, onCanvasFieldLayoutChanged);
+    }
+
     const auto componentType = p_component->GetType();
     const auto &fields = componentType.GetFields();
-    if (fields.empty())
+    const bool hasVisibleFields = std::any_of(
+        fields.begin(),
+        fields.end(),
+        [uiCanvas](const meta::Field& field)
+        {
+            return !uiCanvas || field.GetName() != "documentPath";
+        });
+    if (!hasVisibleFields)
     {
-        DrawComponentFallback(header, *p_component);
+        if (!uiCanvas)
+            DrawComponentFallback(header, *p_component);
         m_gameObjectInfo->CreateWidget<UI::Widgets::Spacing>(1);
         return;
     }
 
     ReflectedPropertyDrawerOptions options;
     options.labelWidth = 104.0f;
+    options.sceneObjectPickerScene = p_component->gameobject()
+        ? p_component->gameobject()->GetScene()
+        : nullptr;
     options.onFieldChanged = [this](const meta::Field&)
     {
         MarkTargetSceneDirty();
@@ -766,6 +1173,13 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
                 Refresh();
         }));
     };
+    if (uiCanvas)
+    {
+        options.shouldDrawField = [](const meta::Field& field)
+        {
+            return field.GetName() != "documentPath";
+        };
+    }
     DrawReflectedObject(header, meta::Variant(p_component, meta::variant_policy::WrapObject {}), options);
 
     m_gameObjectInfo->CreateWidget<UI::Widgets::Spacing>(1);

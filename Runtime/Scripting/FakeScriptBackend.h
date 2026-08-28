@@ -22,7 +22,7 @@ public:
     ScriptLanguage GetLanguage() const override { return m_language; }
     ScriptBackendCapabilities GetCapabilities() const override
     {
-        return {true, true, true, true};
+        return {true, true, true, true, true, true};
     }
 
     ScriptStatus Initialize(const ScriptApiDatabase& api) override;
@@ -37,16 +37,35 @@ public:
         ScriptCallback callback,
         std::span<const ScriptInstanceHandle> instances,
         const ScriptInvocationContext& context) override;
+    ScriptStatus CreateCallable(
+        ScriptInstanceHandle instance,
+        ScriptMemberId member,
+        ScriptCallableHandle& output) override;
+    ScriptStatus InvokeCallable(
+        ScriptCallableHandle callable,
+        std::span<const ScriptValue> arguments,
+        ScriptValue* result) override;
+    void ReleaseCallable(ScriptCallableHandle callable) override;
+    ScriptStatus SubscribeEvent(
+        NativeObjectHandle owner,
+        ScriptMemberId eventMember,
+        ScriptCallableHandle callable,
+        ScriptEventSubscriptionHandle& output) override;
+    void ReleaseEventSubscription(ScriptEventSubscriptionHandle subscription) override;
     ScriptStatus Reload(const NLS::Core::Assets::AssetId& assetId, const ScriptApiDatabase& api) override;
     bool GetField(ScriptInstanceHandle instance, ScriptFieldId field, ScriptValue& output) override;
     bool SetField(ScriptInstanceHandle instance, ScriptFieldId field, const ScriptValue& value) override;
 
     using InvocationObserver = std::function<void(ScriptInstanceHandle, ScriptCallback, const ScriptInvocationContext&)>;
+    using CallableObserver = std::function<void(ScriptCallableHandle, std::span<const ScriptValue>)>;
     void SetInvocationObserver(InvocationObserver observer) { m_observer = std::move(observer); }
+    void SetCallableObserver(CallableObserver observer) { m_callableObserver = std::move(observer); }
     const std::vector<ScriptCallback>& GetCallbacks() const { return m_callbacks; }
     const std::vector<ScriptFrameContext>& GetFrames() const { return m_frames; }
     size_t GetBatchCallCount() const { return m_batchCallCount; }
     size_t GetBatchInstanceCount() const { return m_batchInstanceCount; }
+    size_t GetCallableCount() const { return m_callables.size(); }
+    size_t GetEventSubscriptionCount() const { return m_eventSubscriptions.size(); }
     bool WasDestroyed(ScriptInstanceHandle instance) const { return m_destroyed.contains(instance); }
     bool IsInitialized() const { return m_initialized; }
     void ClearTrace();
@@ -59,15 +78,24 @@ private:
         SerializedScriptFields fields;
     };
 
+    struct Callable
+    {
+        ScriptInstanceHandle instance;
+        ScriptMemberId member = 0u;
+    };
+
     ScriptBackendId m_id;
     ScriptLanguage m_language;
     ScriptApiDatabase m_api;
     std::unordered_map<NLS::Core::Assets::AssetId, ScriptAsset> m_scripts;
     std::unordered_map<ScriptInstanceHandle, Instance> m_instances;
     std::unordered_set<ScriptInstanceHandle> m_destroyed;
+    std::unordered_map<ScriptCallableHandle, Callable> m_callables;
+    std::unordered_set<ScriptEventSubscriptionHandle> m_eventSubscriptions;
     std::vector<ScriptCallback> m_callbacks;
     std::vector<ScriptFrameContext> m_frames;
     InvocationObserver m_observer;
+    CallableObserver m_callableObserver;
     size_t m_batchCallCount = 0;
     size_t m_batchInstanceCount = 0;
     uint32_t m_nextIndex = 1;

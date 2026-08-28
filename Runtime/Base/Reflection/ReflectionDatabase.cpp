@@ -134,9 +134,7 @@ namespace NLS::meta
 
         TypeID ReflectionDatabase::FindType(const std::string &name) const
         {
-            std::scoped_lock lock(mutex);
-            auto search = ids.find(name);
-            return search != ids.end( ) ? search->second : InvalidTypeID;
+            return FindType(MakeTypeKey(name.c_str( )));
         }
 
         unsigned ReflectionDatabase::GetGeneration(TypeID id) const

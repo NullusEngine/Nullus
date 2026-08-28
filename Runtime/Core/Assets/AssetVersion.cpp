@@ -194,6 +194,10 @@ AssetHotReloadPolicy GetHotReloadPolicy(ArtifactType artifactType)
         return AssetHotReloadPolicy::MarkInstancesDirty;
     case ArtifactType::Scene:
     case ArtifactType::Audio:
+    case ArtifactType::UIDocument:
+    case ArtifactType::UIStyleSheet:
+    case ArtifactType::Font:
+    case ArtifactType::LocalizationTable:
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         return AssetHotReloadPolicy::RequiresExplicitReload;

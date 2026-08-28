@@ -41,6 +41,7 @@
 #include "Settings/EditorSettings.h"
 #include "Settings/TagLayerSettings.h"
 
+#include <algorithm>
 #include <vector>
 
 namespace NLS::Editor::Panels::Tests
@@ -1718,7 +1719,7 @@ TEST(ReflectedPropertyDrawerTests, ObjectReferenceWidgetDisplaysAndClearsScenePo
 
     auto* display = dynamic_cast<NLS::UI::Widgets::Text*>(objectGroup->GetWidgets()[0].first);
     ASSERT_NE(display, nullptr);
-    EXPECT_NE(display->content.find("Assigned (GameObject)"), std::string::npos);
+    EXPECT_NE(display->content.find("Linked Actor (GameObject)"), std::string::npos);
 
     auto* clearButton = dynamic_cast<NLS::UI::Widgets::ButtonSmall*>(objectGroup->GetWidgets()[2].first);
     ASSERT_NE(clearButton, nullptr);
@@ -1877,6 +1878,140 @@ TEST(ReflectedPropertyDrawerTests, ObjectReferenceWidgetUsesReflectedPointerType
     ASSERT_NE(clearButton, nullptr);
     clearButton->ClickedEvent.Invoke();
     EXPECT_EQ(object.targetMeshRenderer, nullptr);
+}
+
+TEST(ReflectedPropertyDrawerTests, SceneObjectPickerBuildsCompatibleEntriesWithinItsScene)
+{
+    NLS::meta::ReflectionDatabase::Instance();
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& root = scene.CreateGameObject("Picker Root");
+    auto& child = scene.CreateGameObject("Picker Child");
+    child.SetParent(root);
+    auto* light = root.AddComponent<NLS::Engine::Components::LightComponent>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(light, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    const auto type = NLS_TYPEOF(NLS::Editor::Panels::Tests::InspectorCoreFieldFixture);
+    const auto& gameObjectField = type.GetField("targetGameObject");
+    const auto& componentField = type.GetField("targetComponent");
+    const auto& lightField = type.GetField("targetLightComponent");
+    const auto& meshRendererField = type.GetField("targetMeshRenderer");
+    ASSERT_TRUE(gameObjectField.IsValid());
+    ASSERT_TRUE(componentField.IsValid());
+    ASSERT_TRUE(lightField.IsValid());
+    ASSERT_TRUE(meshRendererField.IsValid());
+
+    const auto gameObjectEntries = NLS::Editor::Panels::BuildSceneObjectReferencePickerEntries(
+        gameObjectField.GetType(),
+        &scene);
+    ASSERT_EQ(gameObjectEntries.size(), 2u);
+    EXPECT_EQ(gameObjectEntries[0].gameObject, &root);
+    EXPECT_EQ(gameObjectEntries[0].component, nullptr);
+    EXPECT_EQ(gameObjectEntries[0].displayName, "Picker Root (GameObject)");
+    EXPECT_EQ(gameObjectEntries[1].gameObject, &child);
+    EXPECT_EQ(gameObjectEntries[1].displayName, "Picker Root/Picker Child (GameObject)");
+
+    const auto componentEntries = NLS::Editor::Panels::BuildSceneObjectReferencePickerEntries(
+        componentField.GetType(),
+        &scene);
+    EXPECT_EQ(componentEntries.size(), 4u);
+
+    const auto lightEntries = NLS::Editor::Panels::BuildSceneObjectReferencePickerEntries(
+        lightField.GetType(),
+        &scene);
+    ASSERT_EQ(lightEntries.size(), 1u);
+    EXPECT_EQ(lightEntries[0].gameObject, &root);
+    EXPECT_EQ(lightEntries[0].component, light);
+    EXPECT_EQ(lightEntries[0].displayName, "Picker Root (Light Component)");
+
+    const auto searchedMeshEntries = NLS::Editor::Panels::BuildSceneObjectReferencePickerEntries(
+        meshRendererField.GetType(),
+        &scene,
+        "mesh renderer");
+    ASSERT_EQ(searchedMeshEntries.size(), 1u);
+    EXPECT_EQ(searchedMeshEntries[0].component, meshRenderer);
+}
+
+TEST(ReflectedPropertyDrawerTests, SceneObjectPickerUsesTheSelectedComponentInsteadOfAnArbitraryMatch)
+{
+    NLS::meta::ReflectionDatabase::Instance();
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("Multi Component Target");
+    auto* light = actor.AddComponent<NLS::Engine::Components::LightComponent>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(light, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    NLS::Editor::Panels::Tests::InspectorCoreFieldFixture object;
+    const auto type = NLS_TYPEOF(NLS::Editor::Panels::Tests::InspectorCoreFieldFixture);
+    const auto& componentField = type.GetField("targetComponent");
+    const auto& meshRendererField = type.GetField("targetMeshRenderer");
+    ASSERT_TRUE(componentField.IsValid());
+    ASSERT_TRUE(meshRendererField.IsValid());
+
+    const auto componentEntries = NLS::Editor::Panels::BuildSceneObjectReferencePickerEntries(
+        componentField.GetType(),
+        &scene);
+    const auto meshEntry = std::find_if(
+        componentEntries.begin(),
+        componentEntries.end(),
+        [meshRenderer](const NLS::Editor::Panels::SceneObjectReferencePickerEntry& entry)
+        {
+            return entry.component == meshRenderer;
+        });
+    ASSERT_NE(meshEntry, componentEntries.end());
+
+    auto instance = NLS::meta::Variant(object, NLS::meta::variant_policy::NoCopy {});
+    ASSERT_TRUE(NLS::Editor::Panels::ApplySceneObjectReferencePickerSelection(
+        instance,
+        componentField,
+        *meshEntry));
+    EXPECT_EQ(object.targetComponent, meshRenderer);
+
+    const auto concreteEntries = NLS::Editor::Panels::BuildSceneObjectReferencePickerEntries(
+        meshRendererField.GetType(),
+        &scene);
+    ASSERT_EQ(concreteEntries.size(), 1u);
+    EXPECT_EQ(concreteEntries[0].component, meshRenderer);
+    ASSERT_TRUE(NLS::Editor::Panels::ApplySceneObjectReferencePickerSelection(
+        instance,
+        meshRendererField,
+        concreteEntries[0]));
+    EXPECT_EQ(object.targetMeshRenderer, meshRenderer);
+}
+
+TEST(ReflectedPropertyDrawerTests, ObjectReferenceClearDoesNotNotifyForAnEmptyReference)
+{
+    NLS::Editor::Panels::Tests::ScopedImGuiContext imguiContext;
+    NLS::meta::ReflectionDatabase::Instance();
+
+    NLS::Editor::Panels::Tests::InspectorCoreFieldFixture object;
+    int changedFields = 0;
+    NLS::Editor::Panels::ReflectedPropertyDrawerOptions options;
+    options.onFieldChanged = [&changedFields](const NLS::meta::Field&) { ++changedFields; };
+
+    const auto type = NLS_TYPEOF(NLS::Editor::Panels::Tests::InspectorCoreFieldFixture);
+    const auto& gameObjectField = type.GetField("targetGameObject");
+    ASSERT_TRUE(gameObjectField.IsValid());
+
+    NLS::UI::Internal::WidgetContainer root;
+    ASSERT_TRUE(NLS::Editor::Panels::DrawReflectedField(
+        root,
+        NLS::meta::Variant(object, NLS::meta::variant_policy::NoCopy {}),
+        gameObjectField,
+        options));
+
+    auto* objectGroup = dynamic_cast<NLS::UI::Widgets::Group*>(root.GetWidgets()[1].first);
+    ASSERT_NE(objectGroup, nullptr);
+    auto* clearButton = NLS::Editor::Panels::Tests::FindButtonSmallByLabel(*objectGroup, "x");
+    ASSERT_NE(clearButton, nullptr);
+    clearButton->ClickedEvent.Invoke();
+
+    EXPECT_EQ(object.targetGameObject, nullptr);
+    EXPECT_EQ(changedFields, 0);
 }
 
 TEST(ReflectedPropertyDrawerTests, ObjectReferenceWidgetAcceptsHierarchyDropForConstScenePointers)

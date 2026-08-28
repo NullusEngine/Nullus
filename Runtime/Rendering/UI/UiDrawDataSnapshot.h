@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "RenderDef.h"
+#include "Rendering/UI/UIDrawSnapshot.h"
 
 struct ImDrawData;
 
@@ -66,6 +68,25 @@ namespace NLS::Render::UI
         uint32_t copiedCommandCount = 0u;
     };
 
+    // Text remains metadata until the shaping/font atlas path is available.
+    // Keeping it on the common snapshot prevents a text-only change from
+    // being mistaken for an unchanged frame and gives future UI renderers a
+    // stable hand-off without another adapter type.
+    struct NLS_RENDER_API UiTextRunSnapshot
+    {
+        std::string text;
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+        float fontSize = 16.0f;
+        float color[4] { 1.0f, 1.0f, 1.0f, 1.0f };
+        uint32_t clipIndex = UIClipIndexNone;
+        uint64_t fontAssetId = 0u;
+        uint64_t sortKey = 0u;
+        uint16_t fontPixelSize = 16u;
+    };
+
     struct NLS_RENDER_API UiDrawDataSnapshot
     {
         uint64_t frameId = 0u;
@@ -79,8 +100,10 @@ namespace NLS::Render::UI
         bool hasVisibleDraws = false;
         bool containsUnsupportedUserCallback = false;
         bool containsUnsupportedTextureId = false;
+        bool containsDeferredText = false;
         UiDrawDataCopyDiagnostics copyDiagnostics;
         std::vector<UiDrawListSnapshot> drawLists;
+        std::vector<UiTextRunSnapshot> textRuns;
     };
 
     NLS_RENDER_API uint64_t PackUiTextureIdForImGui(UiTextureId id);

@@ -55,6 +55,10 @@ const char* ToString(const AssetType type)
     case AssetType::Scene: return "scene";
     case AssetType::Script: return "script";
     case AssetType::Prefab: return "prefab";
+    case AssetType::UIDocument: return "ui-document";
+    case AssetType::UIStyleSheet: return "ui-style-sheet";
+    case AssetType::Font: return "font";
+    case AssetType::LocalizationTable: return "localization";
     case AssetType::Unknown:
     case AssetType::Count:
         break;
@@ -81,6 +85,14 @@ AssetType AssetTypeFromString(const std::string& text)
         return AssetType::Script;
     if (lowered == "prefab")
         return AssetType::Prefab;
+    if (lowered == "ui-document")
+        return AssetType::UIDocument;
+    if (lowered == "ui-style-sheet")
+        return AssetType::UIStyleSheet;
+    if (lowered == "font")
+        return AssetType::Font;
+    if (lowered == "localization")
+        return AssetType::LocalizationTable;
     return AssetType::Unknown;
 }
 
@@ -112,6 +124,13 @@ AssetType InferAssetType(const std::filesystem::path& assetPath)
     case NLS::Utils::PathParser::EFileType::PREFAB:
         return AssetType::Prefab;
     case NLS::Utils::PathParser::EFileType::FONT:
+        return AssetType::Font;
+    case NLS::Utils::PathParser::EFileType::UI_DOCUMENT:
+        return AssetType::UIDocument;
+    case NLS::Utils::PathParser::EFileType::UI_STYLE:
+        return AssetType::UIStyleSheet;
+    case NLS::Utils::PathParser::EFileType::LOCALIZATION:
+        return AssetType::LocalizationTable;
     case NLS::Utils::PathParser::EFileType::UNKNOWN:
     case NLS::Utils::PathParser::EFileType::COUNT:
         break;
@@ -131,6 +150,10 @@ std::string InferImporterId(const AssetType type)
     case AssetType::Scene: return "scene";
     case AssetType::Script: return "script";
     case AssetType::Prefab: return "prefab";
+    case AssetType::UIDocument: return "ui-document";
+    case AssetType::UIStyleSheet: return "ui-style-sheet";
+    case AssetType::Font: return "font";
+    case AssetType::LocalizationTable: return "localization";
     case AssetType::Unknown:
     case AssetType::Count:
         break;
@@ -152,6 +175,10 @@ uint32_t GetCurrentImporterVersion(const AssetType type)
     case AssetType::Scene:
     case AssetType::Script:
     case AssetType::Prefab:
+    case AssetType::UIDocument:
+    case AssetType::UIStyleSheet:
+    case AssetType::Font:
+    case AssetType::LocalizationTable:
     case AssetType::Unknown:
     case AssetType::Count:
         return 1u;

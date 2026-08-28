@@ -159,6 +159,10 @@ const char* SchemaNameForArtifactType(const ArtifactType artifactType)
     case ArtifactType::AnimationClip: return "animationClip";
     case ArtifactType::MorphTarget: return "morphTarget";
     case ArtifactType::Model: return "model";
+    case ArtifactType::UIDocument: return "ui-document";
+    case ArtifactType::UIStyleSheet: return "ui-style-sheet";
+    case ArtifactType::Font: return "font";
+    case ArtifactType::LocalizationTable: return "localization";
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         break;
@@ -185,6 +189,10 @@ uint32_t SchemaVersionForArtifactType(const ArtifactType artifactType)
     case ArtifactType::AnimationClip:
     case ArtifactType::MorphTarget:
     case ArtifactType::Model:
+    case ArtifactType::UIDocument:
+    case ArtifactType::UIStyleSheet:
+    case ArtifactType::Font:
+    case ArtifactType::LocalizationTable:
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         return 1u;

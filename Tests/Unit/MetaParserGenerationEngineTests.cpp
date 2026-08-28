@@ -20,6 +20,7 @@ TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
     const std::filesystem::path lightSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/LightComponent.generated.cpp";
     const std::filesystem::path meshFilterSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/MeshFilter.generated.cpp";
     const std::filesystem::path meshSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/MeshRenderer.generated.cpp";
+    const std::filesystem::path uiCanvasSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/UICanvasComponent.generated.cpp";
     const std::filesystem::path gameObjectSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/GameObject.generated.cpp";
     const std::filesystem::path sceneSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/SceneSystem/Scene.generated.cpp";
     const std::filesystem::path engineMetaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/MetaGenerated.cpp";
@@ -29,6 +30,7 @@ TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
     const std::string lightText = ReadAllText(lightSource);
     const std::string meshFilterText = ReadAllText(meshFilterSource);
     const std::string meshText = ReadAllText(meshSource);
+    const std::string uiCanvasText = ReadAllText(uiCanvasSource);
     const std::string gameObjectText = ReadAllText(gameObjectSource);
     const std::string sceneText = ReadAllText(sceneSource);
     const std::string metaText = ReadAllText(engineMetaSource);
@@ -57,6 +59,9 @@ TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Render::Geometry::BoundingSphere>(\"customBoundingSphere\"");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Array<NLS::Engine::Serialize::PPtr<NLS::Render::Resources::Material>>>(\"materials\"");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Array<float>>(\"userMatrixValues\"");
+    ExpectContains(uiCanvasText, "AddField<NLS::Engine::Components::UICanvasComponent, uint64_t>(\"cameraId\"");
+    ExpectContains(uiCanvasText, "db.ResolveRegisteredType(moduleKey, \"uint64_t\", reportMissingType)");
+    ExpectNotContains(uiCanvasText, "unsigned long long");
     ExpectContains(gameObjectText, "AllocateType(typeKey, \"NLS::Engine::GameObject\", moduleKey)");
     ExpectContains(gameObjectText, "type.AddField<NLS::Engine::GameObject, bool>(\"active\"");
     ExpectContains(gameObjectText, "type.AddField<NLS::Engine::GameObject, std::string>(\"name\"");

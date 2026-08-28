@@ -57,6 +57,45 @@ namespace NLS::meta
                 }
             }
 
+            // CppAst may expose a fixed-width typedef using the compiler's
+            // underlying spelling. Keep the reflection key stable across
+            // platforms by resolving the unambiguous 64-bit spellings to the
+            // canonical names registered by ReflectionDatabase.
+            if (normalized == "long long"
+                || normalized == "long long int"
+                || normalized == "signed long long"
+                || normalized == "signed long long int"
+                || normalized == "int64_t"
+                || normalized == "std::int64_t"
+                || normalized == "__int64"
+                || normalized == "signed __int64")
+            {
+                normalized = "int64_t";
+            }
+            else if (normalized == "unsigned long long"
+                || normalized == "unsigned long long int"
+                || normalized == "uint64_t"
+                || normalized == "std::uint64_t"
+                || normalized == "unsigned __int64")
+            {
+                normalized = "uint64_t";
+            }
+
+            if (sizeof(long) == sizeof(int64_t)
+                && (normalized == "long"
+                    || normalized == "long int"
+                    || normalized == "signed long"
+                    || normalized == "signed long int"))
+            {
+                normalized = "int64_t";
+            }
+            else if (sizeof(unsigned long) == sizeof(uint64_t)
+                && (normalized == "unsigned long"
+                    || normalized == "unsigned long int"))
+            {
+                normalized = "uint64_t";
+            }
+
             return normalized;
         }
 
@@ -239,12 +278,11 @@ namespace NLS::meta
 
         Type Type::GetFromName(const std::string &name)
         {
-            auto search = gDatabase.ids.find( name );
-
-            if (search == gDatabase.ids.end( ))
+            const auto id = gDatabase.FindType(name);
+            if (id == InvalidTypeID)
                 return Invalid( );
 
-            return { search->second };
+            return { id };
         }
 
         ///////////////////////////////////////////////////////////////////////

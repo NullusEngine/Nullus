@@ -9,6 +9,7 @@
 #include "Components/LightComponent.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/MeshRenderer.h"
+#include "Components/UICanvasComponent.h"
 
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
@@ -44,6 +45,7 @@ namespace NLS::Engine::SceneSystem
 			std::vector<Components::CameraComponent*>			cameras;
 			std::vector<Components::LightComponent*>			lights;
 			std::vector<Components::SkyBoxComponent*>			skyboxs;
+			std::vector<Components::UICanvasComponent*>			uiCanvases;
 		};
 
 		/**

@@ -16,6 +16,8 @@ set(NLS_SCRIPTING_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ScriptComponent.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/FakeScriptBackend.h
     ${CMAKE_CURRENT_SOURCE_DIR}/FakeScriptBackend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/UIScriptEventBinding.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/UIScriptEventBinding.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaScriptBackend.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaScriptBackend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CoreClrScriptBackend.h

@@ -8,8 +8,10 @@
 #include "Components/LightComponent.h"
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
+#include "Components/UICanvasComponent.h"
 #include "GameObject.h"
 #include "Reflection/Object.h"
+#include "Reflection/ReflectionDiagnostics.h"
 
 namespace
 {
@@ -36,6 +38,23 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersEngineReflectionTypes)
 
     for (const TypeExpectation& expectation : expectations)
         ExpectReflectedType(expectation);
+}
+
+TEST_F(ReflectionRuntimeTestFixture, UICanvasReflectionResolvesCompilerUnderlyingUint64Type)
+{
+    const Type canvasType = Type::GetFromName("NLS::Engine::Components::UICanvasComponent");
+    ASSERT_TRUE(canvasType.IsValid());
+
+    ExpectFieldTypeName(canvasType, "cameraId", "uint64_t");
+
+    for (const auto& diagnostic : NLS::meta::ReflectionDiagnostics::Snapshot())
+    {
+        if (diagnostic.typeName != "NLS::Engine::Components::UICanvasComponent")
+            continue;
+
+        EXPECT_NE(diagnostic.subject, "missing referenced type")
+            << NLS::meta::ReflectionDiagnostics::Format(diagnostic);
+    }
 }
 
 TEST_F(ReflectionRuntimeTestFixture, RegistersSpecialCasePropertyBindingsWithExpectedTypes)

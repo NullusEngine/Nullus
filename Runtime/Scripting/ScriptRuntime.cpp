@@ -210,7 +210,27 @@ void ScriptRuntime::Shutdown()
     m_scheduledFrameActive = false;
     m_scheduledCallback = ScriptCallback::Count;
     if (!m_initialized)
+    {
+        m_callables.clear();
+        m_eventSubscriptions.clear();
         return;
+    }
+    // Backend-owned callbacks must be released before the VM/managed host is
+    // closed.  This also makes a UI event bridge safe across context teardown.
+    for (const auto& [handle, callable] : m_eventSubscriptions)
+    {
+        (void)callable;
+        if (auto* backend = GetBackend(ScriptBackendId { handle.backendId }))
+            backend->ReleaseEventSubscription(handle);
+    }
+    for (const auto& [handle, instance] : m_callables)
+    {
+        (void)instance;
+        if (auto* backend = GetBackend(ScriptBackendId { handle.backendId }))
+            backend->ReleaseCallable(handle);
+    }
+    m_eventSubscriptions.clear();
+    m_callables.clear();
     for (auto& [id, backend] : m_backends)
     {
         (void)id;
@@ -319,6 +339,7 @@ ScriptStatus ScriptRuntime::DestroyInstance(ScriptInstanceHandle instance)
     }
     try
     {
+        ReleaseHooksForInstance(instance);
         const auto status = backend->DestroyInstance(instance);
         if (status.Succeeded())
         {
@@ -335,6 +356,143 @@ ScriptStatus ScriptRuntime::DestroyInstance(ScriptInstanceHandle instance)
     {
         return Report(ScriptStatus::Error(ScriptStatusCode::Exception, "Unknown exception while destroying a script instance."), backend->GetLanguage(), instance);
     }
+}
+
+ScriptStatus ScriptRuntime::CreateCallable(
+    const ScriptInstanceHandle instance,
+    const ScriptMemberId member,
+    ScriptCallableHandle& output)
+{
+    output = {};
+    if (!instance.IsValid() || member == 0u)
+        return ScriptStatus::Error(ScriptStatusCode::InvalidArgument, "A callable requires a valid instance and member.");
+    auto* backend = FindBackend(instance);
+    if (!backend || !m_instanceAssets.contains(instance))
+        return ScriptStatus::Error(ScriptStatusCode::InvalidHandle, "The callable owner is not owned by this runtime.");
+    if (!m_initialized)
+        return ScriptStatus::Error(ScriptStatusCode::BackendClosed, "The script runtime is already shut down.");
+    try
+    {
+        const auto status = backend->CreateCallable(instance, member, output);
+        if (status.Succeeded() && (!output.IsValid() || output.backendId != backend->GetBackendId().value))
+        {
+            output = {};
+            return Report(
+                ScriptStatus::Error(ScriptStatusCode::RuntimeError, "Backend returned an invalid callable handle."),
+                backend->GetLanguage(), instance);
+        }
+        if (status.Succeeded())
+            m_callables.emplace(output, instance);
+        return Report(status, backend->GetLanguage(), instance);
+    }
+    catch (const std::exception& exception)
+    {
+        return Report(ScriptStatus::Error(ScriptStatusCode::Exception, exception.what()), backend->GetLanguage(), instance);
+    }
+    catch (...)
+    {
+        return Report(ScriptStatus::Error(ScriptStatusCode::Exception, "Unknown exception while creating a script callable."), backend->GetLanguage(), instance);
+    }
+}
+
+ScriptStatus ScriptRuntime::InvokeCallable(
+    const ScriptCallableHandle callable,
+    const std::span<const ScriptValue> arguments,
+    ScriptValue* result)
+{
+    if (!callable.IsValid())
+        return ScriptStatus::Error(ScriptStatusCode::InvalidHandle, "The callable handle is invalid.");
+    const auto owner = m_callables.find(callable);
+    if (owner == m_callables.end())
+        return ScriptStatus::Error(ScriptStatusCode::InvalidHandle, "The callable handle is not owned by this runtime.");
+    auto* backend = GetBackend(ScriptBackendId { callable.backendId });
+    if (!backend)
+        return ScriptStatus::Error(ScriptStatusCode::InvalidHandle, "The callable backend is no longer available.");
+    if (!m_initialized)
+        return ScriptStatus::Error(ScriptStatusCode::BackendClosed, "The script runtime is already shut down.");
+    try
+    {
+        return Report(backend->InvokeCallable(callable, arguments, result), backend->GetLanguage(), owner->second);
+    }
+    catch (const std::exception& exception)
+    {
+        return Report(ScriptStatus::Error(ScriptStatusCode::Exception, exception.what()), backend->GetLanguage(), owner->second);
+    }
+    catch (...)
+    {
+        return Report(ScriptStatus::Error(ScriptStatusCode::Exception, "Unknown exception while invoking a script callable."), backend->GetLanguage(), owner->second);
+    }
+}
+
+void ScriptRuntime::ReleaseCallable(const ScriptCallableHandle callable)
+{
+    if (!callable.IsValid())
+        return;
+    std::vector<ScriptEventSubscriptionHandle> subscriptions;
+    for (const auto& [subscription, linkedCallable] : m_eventSubscriptions)
+        if (linkedCallable == callable)
+            subscriptions.push_back(subscription);
+    for (const auto subscription : subscriptions)
+        ReleaseEventSubscription(subscription);
+    if (auto* backend = GetBackend(ScriptBackendId { callable.backendId }))
+        backend->ReleaseCallable(callable);
+    m_callables.erase(callable);
+}
+
+ScriptStatus ScriptRuntime::SubscribeEvent(
+    const NativeObjectHandle owner,
+    const ScriptMemberId eventMember,
+    const ScriptCallableHandle callable,
+    ScriptEventSubscriptionHandle& output)
+{
+    output = {};
+    const auto callableOwner = m_callables.find(callable);
+    if (!callable.IsValid() || eventMember == 0u || callableOwner == m_callables.end())
+        return ScriptStatus::Error(ScriptStatusCode::InvalidArgument, "An event subscription requires a valid callable and member.");
+    auto* backend = GetBackend(ScriptBackendId { callable.backendId });
+    if (!backend)
+        return ScriptStatus::Error(ScriptStatusCode::InvalidHandle, "The callable backend is no longer available.");
+    if (!m_initialized)
+        return ScriptStatus::Error(ScriptStatusCode::BackendClosed, "The script runtime is already shut down.");
+    try
+    {
+        const auto status = backend->SubscribeEvent(owner, eventMember, callable, output);
+        if (status.Succeeded() && (!output.IsValid() || output.backendId != backend->GetBackendId().value))
+        {
+            output = {};
+            return Report(ScriptStatus::Error(ScriptStatusCode::RuntimeError, "Backend returned an invalid event subscription handle."), backend->GetLanguage(), callableOwner->second);
+        }
+        if (status.Succeeded())
+            m_eventSubscriptions.emplace(output, callable);
+        return Report(status, backend->GetLanguage(), callableOwner->second);
+    }
+    catch (const std::exception& exception)
+    {
+        return Report(ScriptStatus::Error(ScriptStatusCode::Exception, exception.what()), backend->GetLanguage(), callableOwner->second);
+    }
+    catch (...)
+    {
+        return Report(ScriptStatus::Error(ScriptStatusCode::Exception, "Unknown exception while subscribing a script event."), backend->GetLanguage(), callableOwner->second);
+    }
+}
+
+void ScriptRuntime::ReleaseEventSubscription(const ScriptEventSubscriptionHandle subscription)
+{
+    if (!subscription.IsValid())
+        return;
+    if (auto* backend = GetBackend(ScriptBackendId { subscription.backendId }))
+        backend->ReleaseEventSubscription(subscription);
+    m_eventSubscriptions.erase(subscription);
+}
+
+void ScriptRuntime::ReleaseHooksForInstance(const ScriptInstanceHandle instance)
+{
+    std::vector<ScriptCallableHandle> callables;
+    for (const auto& [callable, owner] : m_callables)
+        if (owner == instance)
+            callables.push_back(callable);
+    for (const auto callable : callables)
+        ReleaseCallable(callable);
 }
 
 ScriptStatus ScriptRuntime::Invoke(ScriptInstanceHandle instance, ScriptCallback callback, const ScriptInvocationContext& context)
@@ -593,6 +751,10 @@ ScriptStatus ScriptRuntime::ReloadAtFrameBoundary(const ScriptAsset& asset, cons
         const auto disableStatus = Invoke(instance, ScriptCallback::OnDisable, context);
         if (!disableStatus.Succeeded() && firstLifecycleError.Succeeded())
             firstLifecycleError = disableStatus;
+        // Callable identities belong to the old script generation.  Drop them
+        // at the same frame boundary as the prototype swap so UI/event
+        // bridges cannot invoke a stale managed or Lua closure.
+        ReleaseHooksForInstance(instance);
     }
 
     // Snapshot after OnDisable so lifecycle code can intentionally update a

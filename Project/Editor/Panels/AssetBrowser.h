@@ -44,7 +44,7 @@ namespace NLS::Engine
 {
 class GameObject;
 }
-namespace UI::Widgets::Layout
+namespace NLS::UI::Widgets
 {
 class Group;
 }
@@ -178,6 +178,7 @@ public:
         CreateScene,
         CreateCSharpScript,
         CreateLuaScript,
+        CreateUIDocument,
         CreateStandardShader,
         CreateStandardPBRShader,
         CreateUnlitShader,

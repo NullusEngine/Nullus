@@ -55,6 +55,10 @@ const char* ToMetadataString(const ArtifactType type)
     case ArtifactType::Scene: return "scene";
     case ArtifactType::Shader: return "shader";
     case ArtifactType::Audio: return "audio";
+    case ArtifactType::UIDocument: return "ui-document";
+    case ArtifactType::UIStyleSheet: return "ui-style-sheet";
+    case ArtifactType::Font: return "font";
+    case ArtifactType::LocalizationTable: return "localization";
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         break;
@@ -76,6 +80,10 @@ ArtifactType ArtifactTypeFromMetadataString(const std::string& value)
     if (value == "scene") return ArtifactType::Scene;
     if (value == "shader") return ArtifactType::Shader;
     if (value == "audio") return ArtifactType::Audio;
+    if (value == "ui-document") return ArtifactType::UIDocument;
+    if (value == "ui-style-sheet") return ArtifactType::UIStyleSheet;
+    if (value == "font") return ArtifactType::Font;
+    if (value == "localization") return ArtifactType::LocalizationTable;
     return ArtifactType::Unknown;
 }
 

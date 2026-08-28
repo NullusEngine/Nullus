@@ -136,6 +136,7 @@ option(NLS_BUILD_TESTS "Build Nullus test targets" OFF)
 option(NLS_BUILD_PERFORMANCE_TESTS "Build Nullus performance and stress tests" OFF)
 option(NLS_ENABLE_CSHARP_SCRIPTING "Enable the optional CoreCLR scripting backend" ON)
 option(NLS_ENABLE_LUA_SCRIPTING "Enable the optional Lua scripting backend" ON)
+option(NLS_ENABLE_GAME_UI "Enable retained-mode game UI runtime and input injection" ON)
 # LuaPanda is an Editor Debug dependency. Keep it opt-in so a fresh Release or
 # Player configure cannot accidentally ship the debugger and LuaSocket.
 option(NLS_ENABLE_LUAPANDA_DEBUGGING "Compile the optional LuaPanda debugger integration for Debug builds" OFF)

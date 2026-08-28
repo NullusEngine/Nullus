@@ -345,7 +345,10 @@ if(NOT TARGET assimp)
     set_target_properties(assimp PROPERTIES FOLDER ${third_party_folder}/assimp)
     nls_configure_shared_runtime_output(assimp)
     if(MSVC)
-        target_compile_options(assimp PRIVATE "$<$<CONFIG:Debug>:/O2>")
+        target_compile_options(assimp PRIVATE
+            "$<$<CONFIG:Debug>:/O2>"
+            "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
+        )
     endif()
     if(TARGET UpdateAssimpLibsDebugSymbolsAndDLLs)
     set_target_properties(UpdateAssimpLibsDebugSymbolsAndDLLs PROPERTIES FOLDER ${third_party_folder}/assimp)

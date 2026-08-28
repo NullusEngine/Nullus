@@ -34,6 +34,53 @@ public:
         ScriptCallback callback,
         std::span<const ScriptInstanceHandle> instances,
         const ScriptInvocationContext& context);
+    // Callable/event hooks are optional during the migration. Keeping the
+    // contract on the shared backend interface guarantees C# and Lua receive
+    // the same handle semantics once their adapters opt in.
+    virtual ScriptStatus CreateCallable(
+        ScriptInstanceHandle instance,
+        ScriptMemberId member,
+        ScriptCallableHandle& output)
+    {
+        output = {};
+        (void)instance;
+        (void)member;
+        return ScriptStatus::Error(
+            ScriptStatusCode::Unsupported,
+            "Script backend does not support callable handles.");
+    }
+    virtual ScriptStatus InvokeCallable(
+        ScriptCallableHandle callable,
+        std::span<const ScriptValue> arguments,
+        ScriptValue* result)
+    {
+        (void)callable;
+        (void)arguments;
+        if (result != nullptr)
+            *result = std::monostate {};
+        return ScriptStatus::Error(
+            ScriptStatusCode::Unsupported,
+            "Script backend does not support callable invocation.");
+    }
+    virtual void ReleaseCallable(ScriptCallableHandle callable) { (void)callable; }
+    virtual ScriptStatus SubscribeEvent(
+        NativeObjectHandle owner,
+        ScriptMemberId eventMember,
+        ScriptCallableHandle callable,
+        ScriptEventSubscriptionHandle& output)
+    {
+        output = {};
+        (void)owner;
+        (void)eventMember;
+        (void)callable;
+        return ScriptStatus::Error(
+            ScriptStatusCode::Unsupported,
+            "Script backend does not support event subscriptions.");
+    }
+    virtual void ReleaseEventSubscription(ScriptEventSubscriptionHandle subscription)
+    {
+        (void)subscription;
+    }
     virtual ScriptStatus Reload(
         const NLS::Core::Assets::AssetId& assetId,
         const ScriptApiDatabase& api) = 0;

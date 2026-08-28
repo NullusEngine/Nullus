@@ -7,7 +7,7 @@ namespace Nullus;
 
 public static partial class ScriptApiManifest
 {
-    public const string SchemaHash = "fd2e1dea58d983246cfa193461f86ad0856ca63602451b866288d26250ad302c";
+    public const string SchemaHash = "0c5ee312d3213f85dd2917ece42291acc7d788b1e497cf149f6f2d470fc0e855";
 
     public static ulong StableId(string value)
     {

@@ -14,6 +14,9 @@
 #include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Guid.h"
 #include "Engine/Assets/PrefabAsset.h"
+#include "Engine/UI/UIDocument.h"
+#include "Engine/UI/UILocalizationTable.h"
+#include "Engine/UI/UIStyleSheet.h"
 #include "Profiling/PerformanceStageStats.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
@@ -629,7 +632,10 @@ bool ShouldPublishKnownCurrentManifestSnapshotForAssetType(
     using NLS::Core::Assets::AssetType;
     return assetType == AssetType::ModelScene ||
         assetType == AssetType::Prefab ||
-        assetType == AssetType::Shader;
+        assetType == AssetType::Shader ||
+        assetType == AssetType::UIDocument ||
+        assetType == AssetType::UIStyleSheet ||
+        assetType == AssetType::LocalizationTable;
 }
 
 bool HasCurrentExternalTextureBuildPipelineDependency(
@@ -1903,6 +1909,10 @@ std::string ToArtifactTypeKey(const NLS::Core::Assets::ArtifactType type)
     case ArtifactType::Scene: return "scene";
     case ArtifactType::Shader: return "shader";
     case ArtifactType::Audio: return "audio";
+    case ArtifactType::UIDocument: return "ui-document";
+    case ArtifactType::UIStyleSheet: return "ui-style-sheet";
+    case ArtifactType::Font: return "font";
+    case ArtifactType::LocalizationTable: return "localization";
     case ArtifactType::Unknown:
     case ArtifactType::Count:
         break;
@@ -5638,6 +5648,182 @@ bool AssetDatabaseFacade::RefreshSingle(
         return true;
     }
 
+    if (record->assetType == NLS::Core::Assets::AssetType::UIDocument ||
+        record->assetType == NLS::Core::Assets::AssetType::UIStyleSheet ||
+        record->assetType == NLS::Core::Assets::AssetType::LocalizationTable)
+    {
+        const auto artifactRoot = GetArtifactRootForAssetPath(absolutePath);
+        const auto stagingRoot = GetArtifactStagingRootForAssetPath(absolutePath);
+        const auto editorAssetPath = ToEditorAssetPath(absolutePath);
+        const auto editorMetaPath = ToEditorAssetPath(NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+        if (artifactRoot.empty() ||
+            stagingRoot.empty() ||
+            !CanSaveArtifactManifestForAssetPath(absolutePath))
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-ui-artifact-manifest-unwritable",
+                GetArtifactDatabasePathForAssetPath(absolutePath),
+                "Imported UI artifact manifest cannot be written.");
+            return false;
+        }
+
+        const auto sourceBytes = ReadBinaryFile(absolutePath);
+        if (sourceBytes.empty())
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-ui-source-read-failed",
+                absolutePath,
+                "UI source file could not be read or is empty.");
+            return false;
+        }
+        const std::string sourceText(sourceBytes.begin(), sourceBytes.end());
+
+        ImportJobId job = existingJob;
+        if (progressTracker && !job.IsValid())
+            job = progressTracker->BeginJob(meta->id, editorAssetPath, "editor", 1u);
+        if (progressTracker && job.IsValid())
+            progressTracker->ReportProgress(job, ImportPhase::SourceParse, 0.05, "Validating UI source");
+
+        bool valid = false;
+        std::string diagnosticPath;
+        std::string diagnosticMessage;
+        if (record->assetType == NLS::Core::Assets::AssetType::UIDocument)
+        {
+            std::vector<NLS::Engine::UI::UIDocumentDiagnostic> diagnostics;
+            valid = NLS::Engine::UI::UIDocument::LoadFromJson(sourceText, &diagnostics).has_value();
+            if (!diagnostics.empty())
+            {
+                diagnosticPath = diagnostics.front().path;
+                diagnosticMessage = diagnostics.front().message;
+            }
+        }
+        else if (record->assetType == NLS::Core::Assets::AssetType::UIStyleSheet)
+        {
+            std::vector<NLS::Engine::UI::UIStyleDiagnostic> diagnostics;
+            valid = NLS::Engine::UI::UIStyleSheet::LoadFromJson(sourceText, &diagnostics).has_value();
+            if (!diagnostics.empty())
+            {
+                diagnosticPath = diagnostics.front().path;
+                diagnosticMessage = diagnostics.front().message;
+            }
+        }
+        else
+        {
+            std::vector<NLS::Engine::UI::UILocalizationDiagnostic> diagnostics;
+            valid = NLS::Engine::UI::UILocalizationTable::LoadFromJson(sourceText, &diagnostics).has_value();
+            if (!diagnostics.empty())
+            {
+                diagnosticPath = diagnostics.front().path;
+                diagnosticMessage = diagnostics.front().message;
+            }
+        }
+        if (!valid)
+        {
+            auto message = std::string("UI source validation failed");
+            if (!diagnosticPath.empty())
+                message += " at " + diagnosticPath;
+            if (!diagnosticMessage.empty())
+                message += ": " + diagnosticMessage;
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-ui-source-invalid",
+                absolutePath,
+                std::move(message));
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
+        std::string loaderId;
+        switch (record->assetType)
+        {
+        case NLS::Core::Assets::AssetType::UIDocument:
+            artifactType = NLS::Core::Assets::ArtifactType::UIDocument;
+            loaderId = "ui-document";
+            break;
+        case NLS::Core::Assets::AssetType::UIStyleSheet:
+            artifactType = NLS::Core::Assets::ArtifactType::UIStyleSheet;
+            loaderId = "ui-style-sheet";
+            break;
+        case NLS::Core::Assets::AssetType::LocalizationTable:
+            artifactType = NLS::Core::Assets::ArtifactType::LocalizationTable;
+            loaderId = "localization";
+            break;
+        default:
+            break;
+        }
+        const auto subAssetKey = loaderId + ":" + absolutePath.stem().generic_string();
+        auto previousManifest = LoadPreviousArtifactManifestForRecord(*record);
+
+        if (progressTracker && job.IsValid())
+            progressTracker->ReportProgress(job, ImportPhase::ArtifactWrite, 0.85, "Writing UI artifact");
+
+        std::lock_guard publishLock(GetArtifactPublishMutex(artifactRoot));
+        ArtifactRootRollback artifactRollback(artifactRoot);
+        if (!artifactRollback.Prepare())
+        {
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-ui-artifact-rollback-prepare-failed",
+                artifactRoot,
+                "Previous imported UI artifact root could not be prepared for rollback.");
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        const auto manifest = ImportSingleNativeArtifact(
+            *record,
+            *meta,
+            absolutePath,
+            editorAssetPath,
+            editorMetaPath,
+            artifactRoot,
+            stagingRoot,
+            subAssetKey,
+            artifactType,
+            loaderId,
+            absolutePath.stem().generic_string(),
+            sourceBytes,
+            std::move(previousManifest),
+            m_diagnostics,
+            "editor",
+            NLS::Core::Assets::ComputeNativeArtifactPayloadHash(sourceBytes));
+        if (!manifest.has_value())
+        {
+            std::error_code restoreError;
+            if (!artifactRollback.Restore(&restoreError))
+                ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, restoreError);
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        if (!SaveArtifactManifestForAssetPath(absolutePath, *manifest))
+        {
+            std::error_code restoreError;
+            if (!artifactRollback.Restore(&restoreError))
+                ReportArtifactRollbackRestoreFailure(m_diagnostics, artifactRoot, restoreError);
+            AddDiagnostic(
+                NLS::Core::Assets::AssetDiagnosticSeverity::Error,
+                "assetdatabase-ui-artifact-manifest-write-failed",
+                GetArtifactDatabasePathForAssetPath(absolutePath),
+                "Imported UI artifact manifest could not be written.");
+            if (progressTracker && job.IsValid())
+                progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+            return false;
+        }
+
+        AddArtifactManifest(*manifest);
+        artifactRollback.Commit();
+        if (progressTracker && job.IsValid())
+            progressTracker->FinishJob(job, ImportJobTerminalStatus::Succeeded, {});
+        return true;
+    }
+
     if (record->assetType == NLS::Core::Assets::AssetType::Material ||
         record->assetType == NLS::Core::Assets::AssetType::Texture)
     {
@@ -6311,7 +6497,10 @@ void AssetDatabaseFacade::LoadPersistedArtifactManifests()
             record.assetType != NLS::Core::Assets::AssetType::Prefab &&
             record.assetType != NLS::Core::Assets::AssetType::Shader &&
             record.assetType != NLS::Core::Assets::AssetType::Texture &&
-            record.assetType != NLS::Core::Assets::AssetType::Material)
+            record.assetType != NLS::Core::Assets::AssetType::Material &&
+            record.assetType != NLS::Core::Assets::AssetType::UIDocument &&
+            record.assetType != NLS::Core::Assets::AssetType::UIStyleSheet &&
+            record.assetType != NLS::Core::Assets::AssetType::LocalizationTable)
         {
             continue;
         }

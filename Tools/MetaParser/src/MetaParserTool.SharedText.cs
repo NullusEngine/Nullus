@@ -36,6 +36,36 @@ internal static partial class MetaParserTool
         if (normalized.StartsWith("const ", StringComparison.Ordinal) && !normalized.Contains('*'))
             normalized = normalized["const ".Length..].Trim();
 
+        return NormalizeFixedWidthIntegerTypeName(normalized);
+    }
+
+    private static string NormalizeFixedWidthIntegerTypeName(string typeName)
+    {
+        if (string.IsNullOrWhiteSpace(typeName))
+            return typeName;
+
+        var normalized = Regex.Replace(
+            typeName,
+            @"(?<![\w:])unsigned\s+long\s+long(?:\s+int)?(?![\w:])",
+            "uint64_t",
+            RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(
+            normalized,
+            @"(?<![\w:])unsigned\s+__int64(?![\w:])",
+            "uint64_t",
+            RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(
+            normalized,
+            @"(?<![\w:])(?:signed\s+)?long\s+long(?:\s+int)?(?![\w:])",
+            "int64_t",
+            RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(
+            normalized,
+            @"(?<![\w:])(?:signed\s+)?__int64(?![\w:])",
+            "int64_t",
+            RegexOptions.CultureInvariant);
+        normalized = normalized.Replace("std::int64_t", "int64_t", StringComparison.Ordinal)
+            .Replace("std::uint64_t", "uint64_t", StringComparison.Ordinal);
         return normalized;
     }
 

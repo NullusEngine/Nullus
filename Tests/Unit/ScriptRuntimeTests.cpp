@@ -10,6 +10,7 @@
 #include "Scripting/ScriptScheduler.h"
 #include "Scripting/ScriptRuntimeSetup.h"
 #include "Scripting/ScriptDebug.h"
+#include "Scripting/UIScriptEventBinding.h"
 #include "Debug/ExternalCodeEditor.h"
 #include "Debug/ProjectDebugWorkspace.h"
 #include "Debug/VSCodeConfigurationGenerator.h"
@@ -23,6 +24,7 @@
 #include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/PrefabDocument.h"
 #include "SceneSystem/Scene.h"
+#include "Engine/UI/UIInputRouter.h"
 
 #include <gtest/gtest.h>
 #include <Json/json.hpp>
@@ -1105,6 +1107,65 @@ TEST(ScriptRuntimeTests, FakeBackendCanBeConfiguredForEitherLanguage)
     ScriptInstanceHandle instance;
     ASSERT_TRUE(runtime.CreateInstance(asset, {}, instance).Succeeded());
     EXPECT_TRUE(runtime.Invoke(instance, ScriptCallback::Awake, {}).Succeeded());
+}
+
+TEST(ScriptRuntimeTests, FakeBackendCallableSubscriptionAndUiBindingLifecycle)
+{
+    auto backend = std::make_unique<FakeScriptBackend>(ScriptBackendId{41}, ScriptLanguage::Lua);
+    auto* backendPointer = backend.get();
+    ScriptRuntime runtime;
+    ASSERT_TRUE(runtime.RegisterBackend(std::move(backend)).Succeeded());
+    ASSERT_TRUE(runtime.Initialize({}).Succeeded());
+
+    ScriptAsset asset;
+    asset.assetId = NLS::Core::Assets::AssetId::New();
+    asset.language = ScriptLanguage::Lua;
+    asset.sourceText = "return {}";
+    ASSERT_TRUE(runtime.LoadScript(asset).Succeeded());
+    ScriptInstanceHandle instance;
+    ASSERT_TRUE(runtime.CreateInstance(asset, NativeObjectHandle::FromInstanceId(99), instance).Succeeded());
+
+    size_t callCount = 0u;
+    size_t argumentCount = 0u;
+    backendPointer->SetCallableObserver([&](ScriptCallableHandle, std::span<const ScriptValue> arguments) {
+        ++callCount;
+        argumentCount = arguments.size();
+    });
+
+    ScriptCallableHandle callable;
+    ASSERT_TRUE(runtime.CreateCallable(instance, 7u, callable).Succeeded());
+    ASSERT_TRUE(callable.IsValid());
+    EXPECT_EQ(backendPointer->GetCallableCount(), 1u);
+    ScriptEventSubscriptionHandle subscription;
+    ASSERT_TRUE(runtime.SubscribeEvent(
+        NativeObjectHandle::FromInstanceId(99), 8u, callable, subscription).Succeeded());
+    ASSERT_TRUE(subscription.IsValid());
+    EXPECT_EQ(backendPointer->GetEventSubscriptionCount(), 1u);
+
+    NLS::Engine::UI::UIElement button(NLS::Engine::UI::UIElementType::Button, "Button");
+    NLS::Scripting::UIScriptEventBinding binding;
+    ASSERT_TRUE(binding.Bind(
+        button,
+        NLS::Engine::UI::UIEventType::Click,
+        runtime,
+        instance,
+        7u));
+    NLS::Engine::UI::UIEvent click;
+    click.type = NLS::Engine::UI::UIEventType::Click;
+    click.position = { 12.0f, 4.0f };
+    button.InvokeEventListeners(click, false);
+    EXPECT_EQ(callCount, 1u);
+    EXPECT_EQ(argumentCount, 7u);
+
+    binding.Unbind();
+    button.InvokeEventListeners(click, false);
+    EXPECT_EQ(callCount, 1u);
+
+    runtime.ReleaseEventSubscription(subscription);
+    EXPECT_EQ(backendPointer->GetEventSubscriptionCount(), 0u);
+    runtime.ReleaseCallable(callable);
+    EXPECT_EQ(backendPointer->GetCallableCount(), 0u);
+    EXPECT_EQ(runtime.InvokeCallable(callable, {}).code, ScriptStatusCode::InvalidHandle);
 }
 
 TEST(ScriptRuntimeTests, RuntimeCanRegisterAndInitializeBackendAfterStartup)

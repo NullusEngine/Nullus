@@ -529,6 +529,7 @@ void Scene::RebuildFastAccessComponents()
 	m_fastAccessComponents.cameras.clear();
 	m_fastAccessComponents.lights.clear();
 	m_fastAccessComponents.skyboxs.clear();
+	m_fastAccessComponents.uiCanvases.clear();
 
 	std::unordered_set<GameObject*> visited;
 	std::function<void(GameObject*)> collectComponents = [this, &visited, &collectComponents](GameObject* go)
@@ -542,6 +543,7 @@ void Scene::RebuildFastAccessComponents()
 		CollectExactComponents(*go, m_fastAccessComponents.cameras);
 		CollectExactComponents(*go, m_fastAccessComponents.lights);
 		CollectExactComponents(*go, m_fastAccessComponents.skyboxs);
+		CollectExactComponents(*go, m_fastAccessComponents.uiCanvases);
 
 		for (auto* child : go->GetChildren())
 			collectComponents(child);

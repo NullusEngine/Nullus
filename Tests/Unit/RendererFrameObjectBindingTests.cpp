@@ -482,7 +482,13 @@ namespace
             ++bindGraphicsPipelineCalls;
         }
         void BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>&) override {}
-        void BindBindingSet(uint32_t, const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>&) override {}
+        void BindBindingSet(
+            const uint32_t setIndex,
+            const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet) override
+        {
+            if (setIndex == NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet)
+                lastObjectBindingSet = bindingSet;
+        }
         void PushConstants(
             NLS::Render::RHI::ShaderStageMask stageMask,
             uint32_t,
@@ -520,6 +526,7 @@ namespace
             NLS::Render::RHI::ShaderStageMask::None;
         uint32_t lastPushConstantSize = 0u;
         std::vector<uint8_t> lastPushConstantBytes;
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> lastObjectBindingSet;
     };
 
     class TestCommandPool final : public NLS::Render::RHI::RHICommandPool
@@ -2602,6 +2609,101 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRestoresIndexedObjectBinding
     ASSERT_NE(secondIndexedBindings.objectBindingSet, nullptr);
     ASSERT_EQ(secondIndexedBindings.objectBindingSet->GetDesc().entries.size(), 1u);
     EXPECT_EQ(secondIndexedBindings.objectBindingSet->GetDesc().entries[0].type,
+        NLS::Render::RHI::BindingType::StructuredBuffer);
+
+    provider.EndFrame();
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, EngineProviderKeepsLegacyObjectBindingAfterIndexedObjectDraw)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 51u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    ProviderAwareRenderer renderer(driver);
+    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    provider.BeginFrame(frameDescriptor);
+
+    NLS::Render::Entities::Drawable legacyDrawable;
+    legacyDrawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
+        NLS::Maths::Matrix4::Identity,
+        NLS::Maths::Matrix4::Identity
+    });
+
+    NLS::Render::Entities::Drawable indexedDrawable;
+    indexedDrawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
+        NLS::Maths::Matrix4::Translation({ 1.0f, 0.0f, 0.0f }),
+        NLS::Maths::Matrix4::Identity,
+        5u
+    });
+
+    NLS::Render::Entities::Drawable descriptorlessLegacyDrawable;
+    NLS::Render::Data::PipelineState pso;
+
+    ASSERT_TRUE(provider.PrepareDraw(pso, legacyDrawable));
+    NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets initialLegacyBindings;
+    ASSERT_TRUE(provider.CapturePreparedBindingSets(pso, legacyDrawable, initialLegacyBindings));
+    ASSERT_NE(initialLegacyBindings.objectBindingSet, nullptr);
+    ASSERT_EQ(initialLegacyBindings.objectBindingSet->GetDesc().entries.size(), 1u);
+    EXPECT_EQ(initialLegacyBindings.objectBindingSet->GetDesc().entries[0].type,
+        NLS::Render::RHI::BindingType::UniformBuffer);
+
+    ASSERT_TRUE(provider.PrepareDraw(pso, indexedDrawable));
+    NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets indexedBindings;
+    ASSERT_TRUE(provider.CapturePreparedBindingSets(pso, indexedDrawable, indexedBindings));
+    ASSERT_NE(indexedBindings.objectBindingSet, nullptr);
+    ASSERT_EQ(indexedBindings.objectBindingSet->GetDesc().entries.size(), 1u);
+    EXPECT_EQ(indexedBindings.objectBindingSet->GetDesc().entries[0].type,
+        NLS::Render::RHI::BindingType::StructuredBuffer);
+
+    ASSERT_TRUE(provider.PrepareDraw(pso, descriptorlessLegacyDrawable));
+    NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets descriptorlessLegacyBindings;
+    ASSERT_TRUE(provider.CapturePreparedBindingSets(
+        pso,
+        descriptorlessLegacyDrawable,
+        descriptorlessLegacyBindings));
+    EXPECT_EQ(descriptorlessLegacyBindings.objectBindingSet, initialLegacyBindings.objectBindingSet);
+    ASSERT_NE(descriptorlessLegacyBindings.objectBindingSet, nullptr);
+    ASSERT_EQ(descriptorlessLegacyBindings.objectBindingSet->GetDesc().entries.size(), 1u);
+    EXPECT_EQ(descriptorlessLegacyBindings.objectBindingSet->GetDesc().entries[0].type,
+        NLS::Render::RHI::BindingType::UniformBuffer);
+
+    TestCommandBuffer commandBuffer;
+    provider.PrepareExplicitDraw(commandBuffer, pso, descriptorlessLegacyDrawable);
+    EXPECT_EQ(commandBuffer.lastObjectBindingSet, initialLegacyBindings.objectBindingSet);
+    ASSERT_NE(commandBuffer.lastObjectBindingSet, nullptr);
+    ASSERT_EQ(commandBuffer.lastObjectBindingSet->GetDesc().entries.size(), 1u);
+    EXPECT_EQ(commandBuffer.lastObjectBindingSet->GetDesc().entries[0].type,
+        NLS::Render::RHI::BindingType::UniformBuffer);
+
+    ASSERT_TRUE(provider.PrepareDraw(pso, indexedDrawable));
+    provider.PrepareExplicitDraw(commandBuffer, pso, indexedDrawable);
+    EXPECT_EQ(commandBuffer.lastObjectBindingSet, indexedBindings.objectBindingSet);
+    ASSERT_NE(commandBuffer.lastObjectBindingSet, nullptr);
+    ASSERT_EQ(commandBuffer.lastObjectBindingSet->GetDesc().entries.size(), 1u);
+    EXPECT_EQ(commandBuffer.lastObjectBindingSet->GetDesc().entries[0].type,
         NLS::Render::RHI::BindingType::StructuredBuffer);
 
     provider.EndFrame();

@@ -53,6 +53,10 @@ namespace NLS::Windowing::Inputs
 		*/
 		bool IsKeyReleased(EKey p_key) const;
 
+		// Read-only event view used by the retained-mode UI bridge. The map is
+		// cleared at the frame boundary together with the legacy polling state.
+		const std::unordered_map<EKey, EKeyState>& GetKeyEvents() const { return m_keyEvents; }
+
 		/**
 		* Return true if the given mouse button has been pressed during the frame
 		* @param p_button

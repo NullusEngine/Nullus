@@ -77,6 +77,7 @@
 #include "Panels/AssetProperties.h"
 #include "Panels/Hierarchy.h"
 #include "Panels/SceneView.h"
+#include "Panels/UIDocumentDesigner.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetThumbnailPool.h"
 #include "Assets/AssetDatabaseRetirementScheduler.h"
@@ -98,6 +99,7 @@
 #include "Assets/PrefabUtilityFacade.h"
 #include "Core/EditorResources.h"
 #include "Core/RecentBackgroundWorkGate.h"
+#include "UI/UIDocumentDesignerModel.h"
 #include "GameObject.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "SceneSystem/SceneManager.h"
@@ -3580,6 +3582,19 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 		createdOrChangedProjectPath = projectRelativePath;
 		return true;
 	};
+	std::optional<std::filesystem::path> createdUIDocumentPath;
+	auto createUIDocument = [&]
+	{
+		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".ui");
+		if (!createScriptAsset(
+				finalPath,
+				NLS::Editor::UIDocumentTools::UIDocumentDesignerModel::CreateDocumentSource(name)))
+		{
+			return false;
+		}
+		createdUIDocumentPath = finalPath;
+		return true;
+	};
 	bool shouldPreimportCreatedAsset = true;
 
 	switch (kind)
@@ -3662,6 +3677,10 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 			return false;
 		break;
 	}
+	case ProjectBrowserTextDialogKind::CreateUIDocument:
+		if (!createUIDocument())
+			return false;
+		break;
 	case ProjectBrowserTextDialogKind::CreateStandardShader:
 	{
 		const auto finalPath = BuildUniqueAssetPath(targetFolder, name, ".shader");
@@ -3731,6 +3750,11 @@ bool Editor::Panels::AssetBrowser::CommitProjectBrowserTextDialog()
 	if (!createdOrChangedProjectPath.empty() && shouldPreimportCreatedAsset)
 		ScheduleProjectAssetPreimportForPath(createdOrChangedProjectPath);
 	RebuildProjectAssetPresentationAfterWorkflow();
+	if (createdUIDocumentPath.has_value())
+	{
+		auto& designer = EDITOR_PANEL(Editor::Panels::UIDocumentDesigner, "UI Designer");
+		(void)designer.OpenDocument(*createdUIDocumentPath);
+	}
 	return true;
 }
 
@@ -4228,6 +4252,8 @@ void Editor::Panels::AssetBrowser::DrawProjectCurrentFolderContextMenu(
 				{},
 				"NewScript");
 		}
+		if (ImGui::MenuItem("UI Document"))
+			RequestProjectBrowserTextDialog(ProjectBrowserTextDialogKind::CreateUIDocument, "Create UI Document", absoluteFolder, projectRelativeFolder, {}, "New UI");
 		if (ImGui::BeginMenu("Shader"))
 		{
 			if (ImGui::MenuItem("Standard template"))
@@ -9143,6 +9169,14 @@ void Editor::Panels::AssetBrowser::OpenProjectGridItem(
 	{
 		SelectProjectGridItem(item);
 		PrepareLuaScriptDebugWorkspace(item);
+		return;
+	}
+	if (item.kind == AssetBrowserItemKind::SourceAsset && scriptExtension == ".ui")
+	{
+		SelectProjectGridItem(item);
+		auto& designer = EDITOR_PANEL(Editor::Panels::UIDocumentDesigner, "UI Designer");
+		if (!designer.OpenDocument(item.absolutePath))
+			NLS_LOG_ERROR("Failed to open UI document in Designer: " + item.absolutePath.string());
 		return;
 	}
 

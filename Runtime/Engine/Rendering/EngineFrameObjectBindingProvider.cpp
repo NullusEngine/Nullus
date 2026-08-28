@@ -217,7 +217,6 @@ bool EngineFrameObjectBindingProvider::OnPrepareDraw(
         if (m_currentDrawRequiresIndexedObjectData)
         {
             m_currentDrawPrepared = false;
-            m_explicitObjectBindingSet.reset();
             return false;
         }
 
@@ -235,12 +234,11 @@ bool EngineFrameObjectBindingProvider::OnPrepareDraw(
 
         auto& writeBuffer = m_useAltObjectBuffer ? *m_hlslObjectBufferAlt : *m_hlslObjectBuffer;
         writeBuffer.SetSubData(Maths::Matrix4::Transpose(descriptor->modelMatrix), 0);
-        m_explicitObjectBindingSetDirty = true;
+        m_explicitLegacyObjectBindingSetDirty = true;
     }
     else if (m_currentDrawRequiresIndexedObjectData)
     {
         m_currentDrawPrepared = false;
-        m_explicitObjectBindingSet.reset();
         return false;
     }
 
@@ -253,20 +251,22 @@ void EngineFrameObjectBindingProvider::OnPrepareExplicitDraw(
     const NLS::Render::Entities::Drawable& drawable)
 {
     RefreshExplicitFrameBindingSet();
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> objectBindingSet;
     if (m_currentDrawUsesIndexedObjectData)
     {
         auto* slot = ResolveActiveObjectDataSlot();
-        m_explicitObjectBindingSet = slot != nullptr ? RefreshExplicitIndexedObjectBindingSet(*slot) : nullptr;
+        objectBindingSet = slot != nullptr ? RefreshExplicitIndexedObjectBindingSet(*slot) : nullptr;
     }
-	else
-	{
-		RefreshExplicitObjectBindingSet();
+    else
+    {
+        RefreshExplicitLegacyObjectBindingSet();
+        objectBindingSet = m_explicitLegacyObjectBindingSet;
     }
 
     if (m_explicitFrameBindingSet != nullptr)
         commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kFrameDescriptorSet, m_explicitFrameBindingSet);
-    if (m_explicitObjectBindingSet != nullptr)
-        commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet, m_explicitObjectBindingSet);
+    if (objectBindingSet != nullptr)
+        commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet, objectBindingSet);
 }
 
 bool EngineFrameObjectBindingProvider::OnCaptureFrameBindingSet(
@@ -299,22 +299,24 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedObjectBindingSet(
         return false;
 
     ObjectDataFrameSlot* indexedObjectDataSlot = nullptr;
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> objectBindingSet;
     if (m_currentDrawUsesIndexedObjectData)
     {
         indexedObjectDataSlot = ResolveActiveObjectDataSlot();
-        m_explicitObjectBindingSet = indexedObjectDataSlot != nullptr
+        objectBindingSet = indexedObjectDataSlot != nullptr
             ? RefreshExplicitIndexedObjectBindingSet(*indexedObjectDataSlot)
             : nullptr;
     }
     else
     {
-        RefreshExplicitObjectBindingSet();
+        RefreshExplicitLegacyObjectBindingSet();
+        objectBindingSet = m_explicitLegacyObjectBindingSet;
     }
 
     const bool hasObjectDescriptor =
         drawable.TryGetDescriptor<NLS::Render::Data::DrawableObjectDescriptor>() != nullptr;
     if ((m_currentDrawUsesIndexedObjectData || hasObjectDescriptor) &&
-        m_explicitObjectBindingSet == nullptr)
+        objectBindingSet == nullptr)
     {
         NLS_LOG_ERROR(
             "[EngineFrameObjectBindingProvider] object binding capture failed: "
@@ -326,7 +328,7 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedObjectBindingSet(
         return false;
     }
 
-    outBindings.objectBindingSet = m_explicitObjectBindingSet;
+    outBindings.objectBindingSet = std::move(objectBindingSet);
     outBindings.objectConstants = m_currentDrawObjectConstants;
     outBindings.usesObjectIndex = m_currentDrawUsesIndexedObjectData &&
         m_currentDrawObjectConstants.objectIndex !=
@@ -358,11 +360,11 @@ void EngineFrameObjectBindingProvider::RefreshExplicitFrameBindingSet()
     m_explicitFrameBindingSetDirty = false;
 }
 
-void EngineFrameObjectBindingProvider::RefreshExplicitObjectBindingSet()
+void EngineFrameObjectBindingProvider::RefreshExplicitLegacyObjectBindingSet()
 {
     if (!IsFramePrepared())
         InvalidateObjectDataDeviceCachesIfNeeded();
-    if (!m_explicitObjectBindingSetDirty)
+    if (!m_explicitLegacyObjectBindingSetDirty)
         return;
 
     NLS::Render::Core::ABaseRenderer::ExplicitUniformBufferBindingDesc bindingDesc;
@@ -379,9 +381,9 @@ void EngineFrameObjectBindingProvider::RefreshExplicitObjectBindingSet()
     auto& writeBuffer = m_useAltObjectBuffer ? *m_hlslObjectBufferAlt : *m_hlslObjectBuffer;
     auto newBindingSet = m_renderer.CreateExplicitUniformBufferBindingSet(writeBuffer, bindingDesc);
 
-    m_deferredObjectBindingSet = std::move(m_explicitObjectBindingSet);
-    m_explicitObjectBindingSet = std::move(newBindingSet);
-    m_explicitObjectBindingSetDirty = false;
+    m_deferredLegacyObjectBindingSet = std::move(m_explicitLegacyObjectBindingSet);
+    m_explicitLegacyObjectBindingSet = std::move(newBindingSet);
+    m_explicitLegacyObjectBindingSetDirty = false;
     m_currentDrawUsesIndexedObjectData = false;
 }
 
@@ -502,11 +504,11 @@ void EngineFrameObjectBindingProvider::InvalidateObjectDataDeviceCachesIfNeeded(
 
     m_cachedObjectDataDeviceIdentity = deviceIdentity;
     m_explicitFrameBindingSet.reset();
-    m_explicitObjectBindingSet.reset();
+    m_explicitLegacyObjectBindingSet.reset();
     m_deferredFrameBindingSet.reset();
-    m_deferredObjectBindingSet.reset();
+    m_deferredLegacyObjectBindingSet.reset();
     m_explicitFrameBindingSetDirty = true;
-    m_explicitObjectBindingSetDirty = true;
+    m_explicitLegacyObjectBindingSetDirty = true;
     m_objectDataBindingLayout.reset();
     m_objectDataBindingLayoutDeviceIdentity = 0u;
     for (auto& slot : m_objectDataSlots)
@@ -905,7 +907,7 @@ bool EngineFrameObjectBindingProvider::ShaderRequiresIndexedObjectData(
 void EngineFrameObjectBindingProvider::OnDeferredReset()
 {
     m_deferredFrameBindingSet.reset();
-    m_deferredObjectBindingSet.reset();
+    m_deferredLegacyObjectBindingSet.reset();
     for (auto& slot : m_objectDataSlots)
         slot.deferredBindingSet.reset();
 }

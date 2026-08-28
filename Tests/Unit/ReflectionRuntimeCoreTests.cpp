@@ -58,6 +58,21 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersBaseReflectionTypes)
         ExpectReflectedType(expectation);
 }
 
+TEST_F(ReflectionRuntimeTestFixture, FixedWidthIntegerAliasesResolveToCanonicalReflectionTypes)
+{
+    const auto int64Type = NLS::meta::Type::GetFromName("int64_t");
+    const auto uint64Type = NLS::meta::Type::GetFromName("uint64_t");
+
+    ASSERT_TRUE(int64Type.IsValid());
+    ASSERT_TRUE(uint64Type.IsValid());
+
+    EXPECT_EQ(NLS::meta::Type::GetFromName("long long"), int64Type);
+    EXPECT_EQ(NLS::meta::Type::GetFromName("signed long long"), int64Type);
+    EXPECT_EQ(NLS::meta::Type::GetFromName("__int64"), int64Type);
+    EXPECT_EQ(NLS::meta::Type::GetFromName("unsigned long long"), uint64Type);
+    EXPECT_EQ(NLS::meta::Type::GetFromName("unsigned __int64"), uint64Type);
+}
+
 TEST_F(ReflectionRuntimeTestFixture, ArrayWrapperOwnsWrapperContainerWithMoveOnlySemantics)
 {
     static_assert(!std::is_copy_constructible_v<NLS::meta::ArrayWrapper>);

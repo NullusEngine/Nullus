@@ -6,6 +6,8 @@
 #include <Components/CameraComponent.h>
 #include <Engine/Rendering/SceneRendererFactory.h>
 #include <Rendering/Buffers/Framebuffer.h>
+#include <Engine/UI/UIRuntimeService.h>
+#include <Rendering/UI/UIDrawSnapshot.h>
 
 #include "Core/Context.h"
 #include "LaunchArgs.h"
@@ -47,6 +49,11 @@ namespace NLS::Game::Core
 		*/
 		void PostUpdate();
 
+		[[nodiscard]] std::shared_ptr<const NLS::Render::UI::UIDrawSnapshot> GetLatestUISnapshot() const
+		{
+			return m_uiSnapshot;
+		}
+
 	private:
 		Context& m_context;
 
@@ -61,5 +68,7 @@ namespace NLS::Game::Core
 		double m_unscaledTime = 0.0;
 		uint64_t m_frameIndex = 0;
 		uint64_t m_fixedFrameIndex = 0;
+		Engine::UI::UIRuntimeService m_uiRuntimeService;
+		std::shared_ptr<const NLS::Render::UI::UIDrawSnapshot> m_uiSnapshot;
 	};
 }

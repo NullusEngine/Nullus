@@ -55,6 +55,7 @@
 #include "Panels/AssetView.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Panels/MaterialEditor.h"
+#include "Panels/UIDocumentDesigner.h"
 #include "Panels/ProjectSettings.h"
 #include "Panels/AssetProperties.h"
 #include "Panels/ProfilerPanel.h"
@@ -1146,6 +1147,8 @@ void Editor::Core::Editor::SetupUI()
     logSetupStep("FrameInfo");
     m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor", false, settings);
     logSetupStep("MaterialEditor");
+    m_panelsManager.CreatePanel<Panels::UIDocumentDesigner>("UI Designer", false, settings);
+    logSetupStep("UIDocumentDesigner");
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
     logSetupStep("ProjectSettings");
     m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings").enabled = false;
@@ -1163,6 +1166,7 @@ void Editor::Core::Editor::SetupUI()
     topBar.RegisterWindowPanel("Scene View", m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
     topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
     topBar.RegisterWindowPanel("Material Editor", m_panelsManager.GetPanelAs<Panels::MaterialEditor>("Material Editor"));
+    topBar.RegisterWindowPanel("UI Designer", m_panelsManager.GetPanelAs<Panels::UIDocumentDesigner>("UI Designer"));
     topBar.RegisterWindowPanel("Asset Properties", m_panelsManager.GetPanelAs<Panels::AssetProperties>("Asset Properties"));
     logSetupStep("RegisterWindows");
     // Needs to be called after all panels got created, because some settings in this menu depend on other panels

@@ -12,6 +12,7 @@
 
 #include <lmdb.h>
 
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <vector>
@@ -809,6 +810,171 @@ TEST(AssetManifestTests, BuildManifestIncludesNestedPrefabDependencyClosure)
     EXPECT_NE(RuntimeAssetDatabase(result.manifest).Resolve(child, "prefab:Child"), nullptr);
 }
 
+TEST(AssetManifestTests, BuildManifestIncludesUiArtifactDependencyClosure)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Engine::Assets;
+
+    const auto document = MakeAssetId("7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a");
+    const auto style = MakeAssetId("7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b7b");
+    const auto localization = MakeAssetId("7c7c7c7c-7c7c-4c7c-8c7c-7c7c7c7c7c7c");
+
+    auto documentManifest = MakeManifest(document, "ui-document:HUD", {
+        MakeArtifact(
+            document,
+            "ui-document:HUD",
+            ArtifactType::UIDocument,
+            "ui-document",
+            RuntimeArtifactPathForHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+    });
+    documentManifest.dependencies.push_back({
+        AssetDependencyKind::ImportedArtifact,
+        style.ToString(),
+        "ui-style-sheet:HUD"
+    });
+    documentManifest.dependencies.push_back({
+        AssetDependencyKind::ImportedArtifact,
+        localization.ToString(),
+        "localization:HUD"
+    });
+
+    const auto styleManifest = MakeManifest(style, "ui-style-sheet:HUD", {
+        MakeArtifact(
+            style,
+            "ui-style-sheet:HUD",
+            ArtifactType::UIStyleSheet,
+            "ui-style-sheet",
+            RuntimeArtifactPathForHash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    });
+    const auto localizationManifest = MakeManifest(localization, "localization:HUD", {
+        MakeArtifact(
+            localization,
+            "localization:HUD",
+            ArtifactType::LocalizationTable,
+            "localization",
+            RuntimeArtifactPathForHash("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"))
+    });
+
+    RuntimeManifestBuilder builder;
+    builder.AddArtifactManifest(documentManifest);
+    builder.AddArtifactManifest(styleManifest);
+    builder.AddArtifactManifest(localizationManifest);
+
+    const auto result = builder.Build({{document, "ui-document:HUD"}}, "win64");
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    ASSERT_EQ(result.manifest.entries.size(), 3u);
+
+    const RuntimeAssetDatabase database(result.manifest);
+    const auto* documentEntry = database.Resolve(document, "ui-document:HUD");
+    const auto* styleEntry = database.Resolve(style, "ui-style-sheet:HUD");
+    const auto* localizationEntry = database.Resolve(localization, "localization:HUD");
+    ASSERT_NE(documentEntry, nullptr);
+    ASSERT_NE(styleEntry, nullptr);
+    ASSERT_NE(localizationEntry, nullptr);
+    EXPECT_EQ(documentEntry->artifactType, ArtifactType::UIDocument);
+    EXPECT_EQ(styleEntry->artifactType, ArtifactType::UIStyleSheet);
+    EXPECT_EQ(localizationEntry->artifactType, ArtifactType::LocalizationTable);
+    EXPECT_EQ(documentEntry->loaderId, "ui-document");
+    EXPECT_EQ(styleEntry->loaderId, "ui-style-sheet");
+    EXPECT_EQ(localizationEntry->loaderId, "localization");
+    EXPECT_EQ(documentEntry->dependencies.size(), 2u);
+    EXPECT_NE(
+        std::find(
+            documentEntry->dependencies.begin(),
+            documentEntry->dependencies.end(),
+            RuntimeAssetRef {style, "ui-style-sheet:HUD"}),
+        documentEntry->dependencies.end());
+    EXPECT_NE(
+        std::find(
+            documentEntry->dependencies.begin(),
+            documentEntry->dependencies.end(),
+            RuntimeAssetRef {localization, "localization:HUD"}),
+        documentEntry->dependencies.end());
+
+    const auto localIdentifier = NLS::Engine::Serialize::MakeLocalIdentifierInFile(
+        document.GetGuid(),
+        "ui-document:HUD");
+    EXPECT_EQ(database.ResolveByLocalIdentifierInFile(document, localIdentifier), documentEntry);
+}
+
+TEST(AssetManifestTests, BuildAssetPacksIncludeUiArtifactsAndVariants)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Engine::Assets;
+
+    const auto document = MakeAssetId("7d7d7d7d-7d7d-4d7d-8d7d-7d7d7d7d7d7d");
+    const auto style = MakeAssetId("7e7e7e7e-7e7e-4e7e-8e7e-7e7e7e7e7e7e");
+
+    auto documentManifest = MakeManifest(document, "ui-document:Menu", {
+        MakeArtifact(
+            document,
+            "ui-document:Menu",
+            ArtifactType::UIDocument,
+            "ui-document",
+            RuntimeArtifactPathForHash("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"))
+    });
+    documentManifest.dependencies.push_back({
+        AssetDependencyKind::ImportedArtifact,
+        style.ToString(),
+        "ui-style-sheet:Menu"
+    });
+    const auto styleManifest = MakeManifest(style, "ui-style-sheet:Menu", {
+        MakeArtifact(
+            style,
+            "ui-style-sheet:Menu",
+            ArtifactType::UIStyleSheet,
+            "ui-style-sheet",
+            RuntimeArtifactPathForHash("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"))
+    });
+
+    RuntimeManifestBuilder builder;
+    builder.AddArtifactManifest(documentManifest);
+    builder.AddArtifactManifest(styleManifest);
+
+    const auto result = builder.BuildAssetPacks(
+        {
+            {"ui", "desktop", {document, "ui-document:Menu"}},
+            {"ui", "desktop", {style, "ui-style-sheet:Menu"}},
+            {"ui", "mobile", {document, "ui-document:Menu"}}
+        },
+        "win64");
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+    ASSERT_EQ(result.manifest.assetPacks.size(), 2u);
+    ASSERT_EQ(result.manifest.assetPacks[0].packName, "ui");
+    ASSERT_EQ(result.manifest.assetPacks[0].packVariant, "desktop");
+    ASSERT_EQ(result.manifest.assetPacks[1].packName, "ui");
+    ASSERT_EQ(result.manifest.assetPacks[1].packVariant, "mobile");
+
+    for (const auto& pack : result.manifest.assetPacks)
+    {
+        ASSERT_EQ(pack.entries.size(), 2u);
+        const auto documentEntry = std::find_if(
+            pack.entries.begin(),
+            pack.entries.end(),
+            [](const RuntimeAssetPackEntry& entry)
+            {
+                return entry.artifactType == ArtifactType::UIDocument;
+            });
+        const auto styleEntry = std::find_if(
+            pack.entries.begin(),
+            pack.entries.end(),
+            [](const RuntimeAssetPackEntry& entry)
+            {
+                return entry.artifactType == ArtifactType::UIStyleSheet;
+            });
+        ASSERT_NE(documentEntry, pack.entries.end());
+        ASSERT_NE(styleEntry, pack.entries.end());
+        EXPECT_EQ(documentEntry->loaderId, "ui-document");
+        EXPECT_EQ(styleEntry->loaderId, "ui-style-sheet");
+        EXPECT_TRUE(IsRuntimePackagedAssetPath(documentEntry->artifactPath));
+        EXPECT_TRUE(IsRuntimePackagedAssetPath(styleEntry->artifactPath));
+        EXPECT_EQ(documentEntry->contentHash, "sha256:" + document.ToString());
+        EXPECT_EQ(styleEntry->contentHash, "sha256:" + style.ToString());
+    }
+}
+
 TEST(AssetManifestTests, RuntimeManifestBuildSelectsArtifactManifestByTargetPlatform)
 {
     using namespace NLS::Core::Assets;
@@ -1065,6 +1231,9 @@ TEST(AssetManifestTests, RuntimeResolverRejectsSourceOnlyPaths)
     EXPECT_FALSE(IsRuntimePackagedAssetPath("Assets/Models/Hero.glb"));
     EXPECT_FALSE(IsRuntimePackagedAssetPath("Assets/Models/Hero.fbx"));
     EXPECT_FALSE(IsRuntimePackagedAssetPath("Assets/Models/Hero.obj"));
+    EXPECT_FALSE(IsRuntimePackagedAssetPath("Assets/UI/HUD.ui"));
+    EXPECT_FALSE(IsRuntimePackagedAssetPath("Assets/UI/Theme.style"));
+    EXPECT_FALSE(IsRuntimePackagedAssetPath("Assets/Localization/Strings.loc"));
     EXPECT_FALSE(IsRuntimePackagedAssetPath("Assets/Models/Hero.gltf.meta"));
     EXPECT_FALSE(IsRuntimePackagedAssetPath("Library/SourceAssetDatabase.json"));
     EXPECT_FALSE(IsRuntimePackagedAssetPath("Artifacts/material1023"));

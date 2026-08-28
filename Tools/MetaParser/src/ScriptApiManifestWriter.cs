@@ -98,7 +98,9 @@ internal static partial class MetaParserTool
             .ThenBy(static method => string.Join(",", method.ParameterTypeNames ?? []), StringComparer.Ordinal)
             .Select(method =>
             {
-                var parameters = method.ParameterTypeNames ?? [];
+                var parameters = (method.ParameterTypeNames ?? [])
+                    .Select(NormalizeScriptSignatureTypeName)
+                    .ToList();
                 var signature = $"{method.Name}({string.Join(",", parameters)})";
                 return new ScriptApiManifestMethod(
                     StableScriptId($"{type.QualifiedName}::{signature}"),
@@ -171,7 +173,8 @@ internal static partial class MetaParserTool
         var allowed = normalized is "void" or "bool" or "char" or "signed char" or "unsigned char"
             or "short" or "unsigned short" or "int" or "unsigned int"
             or "int8_t" or "uint8_t" or "int16_t" or "uint16_t" or "int32_t" or "uint32_t"
-            or "int64_t" or "uint64_t" or "float" or "double" or "std::string"
+            or "int64_t" or "uint64_t" or "long" or "unsigned long" or "long long" or "unsigned long long"
+            or "float" or "double" or "std::string"
             or "NLS::Maths::Vector2" or "NLS::Maths::Vector3" or "NLS::Maths::Vector4"
             or "NLS::Maths::Quaternion" or "NLS::Maths::Color"
             or "NLS::Render::Settings::EProjectionMode"
@@ -217,7 +220,35 @@ internal static partial class MetaParserTool
         normalized = whitespace.ToString();
         while (normalized.EndsWith('&') && !normalized.EndsWith("&&", StringComparison.Ordinal))
             normalized = normalized[..^1];
-        return normalized.Trim();
+        normalized = normalized.Trim();
+        return normalized switch
+        {
+            "long long"
+                or "long long int"
+                or "signed long long"
+                or "signed long long int"
+                or "int64_t"
+                or "std::int64_t"
+                or "__int64"
+                or "signed __int64" => "int64_t",
+            "unsigned long long"
+                or "unsigned long long int"
+                or "uint64_t"
+                or "std::uint64_t"
+                or "unsigned __int64" => "uint64_t",
+            _ => normalized
+        };
+    }
+
+    private static string NormalizeScriptSignatureTypeName(string typeName)
+    {
+        var trimmed = typeName.Trim();
+        var normalized = NormalizePortableTypeName(trimmed);
+        if (trimmed.EndsWith("&&", StringComparison.Ordinal))
+            return normalized + "&&";
+        if (trimmed.EndsWith('&'))
+            return normalized + "&";
+        return normalized;
     }
 
     private static ulong StableScriptId(string value)
@@ -272,8 +303,8 @@ internal static partial class MetaParserTool
             "unsigned short" or "uint16_t" => (5u, 2u, 2u),
             "int" or "int32_t" => (6u, 4u, 4u),
             "unsigned int" or "uint32_t" => (7u, 4u, 4u),
-            "int64_t" => (8u, 8u, 8u),
-            "uint64_t" => (9u, 8u, 8u),
+            "int64_t" or "long" or "long long" => (8u, 8u, 8u),
+            "uint64_t" or "unsigned long" or "unsigned long long" => (9u, 8u, 8u),
             "float" => (10u, 4u, 4u),
             "double" => (11u, 8u, 8u),
             "std::string" => (12u, 0u, 0u),

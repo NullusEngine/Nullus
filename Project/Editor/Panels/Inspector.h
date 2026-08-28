@@ -2,7 +2,10 @@
 
 #include <UI/Panels/PanelWindow.h>
 
+#include <filesystem>
+#include <map>
 #include <memory>
+#include <string>
 
 #include "Panels/Hierarchy.h"
 #include "Panels/AssetBrowser.h"
@@ -15,6 +18,7 @@ class GameObject;
 namespace NLS::Engine::Components
 {
 class Component;
+class UICanvasComponent;
 }
 
 namespace NLS::UI::Widgets
@@ -25,6 +29,28 @@ class Group;
 namespace NLS::Editor::Panels
 {
 class ComponentSearchPanel;
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+namespace TestHooks
+{
+std::map<int, std::string> BuildUICanvasDocumentChoicesForTesting(
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& selectedDocumentPath = {});
+int FindUICanvasDocumentChoiceForTesting(
+    const std::map<int, std::string>& choices,
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath);
+bool AssignUICanvasDocumentReferenceForTesting(
+    Engine::Components::UICanvasComponent& canvas,
+    const std::filesystem::path& projectAssetsPath,
+    const std::string& documentPath);
+bool AssignUICanvasDocumentChoiceForTesting(
+    Engine::Components::UICanvasComponent& canvas,
+    const std::filesystem::path& projectAssetsPath,
+    const std::map<int, std::string>& choices,
+    int value);
+}
+#endif
 
 class Inspector : public NLS::UI::PanelWindow
 {

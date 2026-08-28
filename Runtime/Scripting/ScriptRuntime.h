@@ -52,6 +52,21 @@ public:
         ScriptInstanceHandle instance,
         ScriptCallback callback,
         const ScriptInvocationContext& context);
+    ScriptStatus CreateCallable(
+        ScriptInstanceHandle instance,
+        ScriptMemberId member,
+        ScriptCallableHandle& output);
+    ScriptStatus InvokeCallable(
+        ScriptCallableHandle callable,
+        std::span<const ScriptValue> arguments,
+        ScriptValue* result = nullptr);
+    void ReleaseCallable(ScriptCallableHandle callable);
+    ScriptStatus SubscribeEvent(
+        NativeObjectHandle owner,
+        ScriptMemberId eventMember,
+        ScriptCallableHandle callable,
+        ScriptEventSubscriptionHandle& output);
+    void ReleaseEventSubscription(ScriptEventSubscriptionHandle subscription);
     ScriptStatus InvokeBatch(
         ScriptCallback callback,
         std::span<const ScriptInstanceHandle> instances,
@@ -92,6 +107,8 @@ private:
         const ScriptAsset* asset = nullptr);
     IScriptBackend* FindBackend(ScriptInstanceHandle instance) const;
 
+    void ReleaseHooksForInstance(ScriptInstanceHandle instance);
+
     std::unordered_map<uint16_t, std::unique_ptr<IScriptBackend>> m_backends;
     std::unordered_map<NLS::Core::Assets::AssetId, ScriptAsset> m_loadedAssets;
     std::unordered_map<ScriptInstanceHandle, ScriptAsset> m_instanceAssets;
@@ -99,6 +116,8 @@ private:
     // enough to make repeated destruction idempotent while rejecting stale
     // handles from another runtime/context before they reach a backend.
     std::unordered_set<ScriptInstanceHandle> m_destroyedInstances;
+    std::unordered_map<ScriptCallableHandle, ScriptInstanceHandle> m_callables;
+    std::unordered_map<ScriptEventSubscriptionHandle, ScriptCallableHandle> m_eventSubscriptions;
     ScriptApiDatabase m_api;
     ErrorSink m_errorSink;
     std::vector<ScriptError> m_errors;

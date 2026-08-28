@@ -4,6 +4,12 @@
 #include <Reflection/ArrayWrapper.h>
 #include <Reflection/Argument.h>
 #include <Reflection/RuntimeMetaProperties.h>
+#include <Core/ResourceManagement/MaterialManager.h>
+#include <Core/ResourceManagement/MeshManager.h>
+#include <Core/ResourceManagement/ShaderManager.h>
+#include <Core/ResourceManagement/TextureManager.h>
+#include <Core/ServiceLocator.h>
+#include <Engine/Assets/RuntimeAssetDatabase.h>
 #include <UI/GUIDrawer.h>
 #include <UI/Plugins/DDTarget.h>
 #include <UI/Widgets/AWidget.h>
@@ -23,11 +29,14 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <cmath>
 #include <cstdint>
 #include <string_view>
+#include <unordered_set>
+#include <vector>
 
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/EditorAssetDragPayload.h"
@@ -41,7 +50,9 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/Texture.h"
 #include "Rendering/Resources/Texture2D.h"
+#include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphDocument.h"
 #include "Serialize/PPtr.h"
 #include "Serialize/PPtrResourceTypes.h"
@@ -134,6 +145,9 @@ private:
 };
 
 bool IsSupportedIdentityObjectReferenceType(const meta::Type& p_type);
+bool IsResourceObjectReferenceType(const meta::Type& p_type);
+bool IsAssetObjectReferenceType(const meta::Type& p_type);
+bool IsSceneObjectReferenceType(const meta::Type& p_type);
 bool IsCompatibleArtifactType(const meta::Type& p_type, NLS::Core::Assets::ArtifactType p_artifactType);
 void NotifyChanged(
     const NLS::Editor::Panels::ReflectedPropertyDrawerOptions& p_options,
@@ -153,6 +167,15 @@ bool SetIdentityObjectReferenceField(
     meta::Variant& p_instance,
     const meta::Field& p_field,
     const NLS::Engine::Serialize::ObjectIdentifier& p_identifier);
+bool SetAssetObjectReferenceField(
+    meta::Variant& p_instance,
+    const meta::Field& p_field,
+    const NLS::Editor::Assets::EditorAssetDragPayload& p_payload);
+bool SetSceneObjectReferenceField(
+    meta::Variant& p_instance,
+    const meta::Field& p_field,
+    NLS::Engine::GameObject* p_gameObject,
+    NLS::Engine::Components::Component* p_component = nullptr);
 
 class ObjectReferencePickerPlugin final : public NLS::UI::IPlugin
 {
@@ -209,19 +232,62 @@ private:
 
     void DrawEntries()
     {
-        if (m_entries.empty())
+        if (IsAssetObjectReferenceType(m_field.GetType()))
+        {
+            DrawAssetEntries();
+            return;
+        }
+
+        DrawSceneEntries();
+    }
+
+    void DrawAssetEntries()
+    {
+        if (m_assetEntries.empty())
         {
             ImGui::TextUnformatted("No matching assets");
             return;
         }
 
-        for (const auto& entry : m_entries)
+        for (const auto& entry : m_assetEntries)
         {
+            ImGui::PushID(entry.displayName.c_str());
             if (!ImGui::MenuItem(entry.displayName.c_str()))
+            {
+                ImGui::PopID();
                 continue;
+            }
 
-            const auto identifier = MakeObjectReferenceIdentifier(m_field.GetType(), entry.payload);
-            if (identifier.has_value() && SetIdentityObjectReferenceField(*m_instance, m_field, *identifier))
+            ImGui::PopID();
+            if (SetAssetObjectReferenceField(*m_instance, m_field, entry.payload))
+                NotifyChanged(m_options, m_field);
+            ImGui::CloseCurrentPopup();
+            return;
+        }
+    }
+
+    void DrawSceneEntries()
+    {
+        if (m_sceneEntries.empty())
+        {
+            ImGui::TextUnformatted("No matching scene objects");
+            return;
+        }
+
+        for (const auto& entry : m_sceneEntries)
+        {
+            const auto* identity = entry.component != nullptr
+                ? static_cast<const void*>(entry.component)
+                : static_cast<const void*>(entry.gameObject);
+            ImGui::PushID(identity);
+            if (!ImGui::MenuItem(entry.displayName.c_str()))
+            {
+                ImGui::PopID();
+                continue;
+            }
+
+            ImGui::PopID();
+            if (NLS::Editor::Panels::ApplySceneObjectReferencePickerSelection(*m_instance, m_field, entry))
                 NotifyChanged(m_options, m_field);
             ImGui::CloseCurrentPopup();
             return;
@@ -230,15 +296,32 @@ private:
 
     void RefreshEntries()
     {
-        m_entries.clear();
-        if (!IsSupportedIdentityObjectReferenceType(m_field.GetType()))
+        m_assetEntries.clear();
+        m_sceneEntries.clear();
+
+        const auto fieldType = m_field.GetType();
+        if (IsAssetObjectReferenceType(fieldType))
+        {
+            RefreshAssetEntries(fieldType);
+            return;
+        }
+
+        if (!IsSceneObjectReferenceType(fieldType) || m_options.sceneObjectPickerScene == nullptr)
             return;
 
+        m_sceneEntries = NLS::Editor::Panels::BuildSceneObjectReferencePickerEntries(
+            fieldType,
+            m_options.sceneObjectPickerScene,
+            m_query);
+    }
+
+    void RefreshAssetEntries(const meta::Type& p_fieldType)
+    {
         const auto query = NLS::Editor::Panels::NormalizeReflectedSearchText(m_query);
         for (const auto& entry : NLS::Editor::Assets::GetObjectReferencePickerEntries())
         {
             if (!IsCompatibleArtifactType(
-                    m_field.GetType(),
+                    p_fieldType,
                     NLS::Editor::Assets::GetEditorAssetDragPayloadArtifactType(entry.payload)))
                 continue;
 
@@ -246,34 +329,35 @@ private:
                 NLS::Editor::Panels::NormalizeReflectedSearchText(entry.displayName).find(query) == std::string::npos)
                 continue;
 
-            m_entries.push_back(entry);
+            m_assetEntries.push_back(entry);
         }
 
         std::sort(
-            m_entries.begin(),
-            m_entries.end(),
+            m_assetEntries.begin(),
+            m_assetEntries.end(),
             [](const NLS::Editor::Assets::ObjectReferencePickerEntry& p_left,
                const NLS::Editor::Assets::ObjectReferencePickerEntry& p_right)
             {
                 return p_left.displayName < p_right.displayName;
             });
-        m_entries.erase(
+        m_assetEntries.erase(
             std::unique(
-                m_entries.begin(),
-                m_entries.end(),
+                m_assetEntries.begin(),
+                m_assetEntries.end(),
                 [](const NLS::Editor::Assets::ObjectReferencePickerEntry& p_left,
                    const NLS::Editor::Assets::ObjectReferencePickerEntry& p_right)
                 {
                     return p_left.displayName == p_right.displayName;
                 }),
-            m_entries.end());
+            m_assetEntries.end());
     }
 
     ReflectedVariantHandle m_instance;
     meta::Field m_field;
     NLS::Editor::Panels::ReflectedPropertyDrawerOptions m_options;
     std::string m_query;
-    std::vector<NLS::Editor::Assets::ObjectReferencePickerEntry> m_entries;
+    std::vector<NLS::Editor::Assets::ObjectReferencePickerEntry> m_assetEntries;
+    std::vector<NLS::Editor::Panels::SceneObjectReferencePickerEntry> m_sceneEntries;
     bool m_openRequested = false;
 };
 
@@ -378,6 +462,12 @@ bool IsResourceObjectReferenceType(const meta::Type& p_type)
            p_type == NLS_TYPEOF(NLS::Render::Resources::Material*);
 }
 
+bool IsAssetObjectReferenceType(const meta::Type& p_type)
+{
+    return IsSupportedIdentityObjectReferenceType(p_type) ||
+           IsResourceObjectReferenceType(p_type);
+}
+
 bool IsIdentityObjectReferenceType(const meta::Type& p_type)
 {
     const auto typeName = p_type.GetName();
@@ -391,6 +481,54 @@ bool IsSupportedIdentityObjectReferenceType(const meta::Type& p_type)
     NLS_ENGINE_SERIALIZE_PPTR_RESOURCE_TARGETS(NLS_EDITOR_MATCH_PPTR_RESOURCE_TYPE)
 #undef NLS_EDITOR_MATCH_PPTR_RESOURCE_TYPE
     return false;
+}
+
+std::string ShortTypeName(const meta::Type& p_type)
+{
+    auto name = p_type.IsValid() ? p_type.GetName() : std::string {};
+    const auto namespaceEnd = name.rfind("::");
+    if (namespaceEnd != std::string::npos)
+        name.erase(0u, namespaceEnd + 2u);
+    return name;
+}
+
+std::string BuildGameObjectHierarchyPath(
+    const NLS::Engine::GameObject& p_gameObject,
+    const NLS::Engine::SceneSystem::Scene* p_scene)
+{
+    std::vector<std::string> names;
+    std::unordered_set<const NLS::Engine::GameObject*> visited;
+    const auto* current = &p_gameObject;
+    while (current != nullptr && current->GetScene() == p_scene && visited.insert(current).second)
+    {
+        names.push_back(current->GetName().empty() ? "<Unnamed>" : current->GetName());
+        current = current->GetParent();
+    }
+
+    std::reverse(names.begin(), names.end());
+    std::string path;
+    for (const auto& name : names)
+    {
+        if (!path.empty())
+            path += "/";
+        path += name;
+    }
+    return path;
+}
+
+bool IsAssignableSceneComponent(
+    const meta::Type& p_fieldType,
+    const NLS::Engine::Components::Component* p_component)
+{
+    if (p_component == nullptr || !IsComponentPointerType(p_fieldType))
+        return false;
+
+    const auto requiredType = p_fieldType.GetDecayedType();
+    const auto actualType = p_component->GetType();
+    const auto componentType = NLS_TYPEOF(NLS::Engine::Components::Component);
+    return requiredType == componentType ||
+           actualType == requiredType ||
+           actualType.DerivesFrom(requiredType);
 }
 
 bool IsReflectedValueElementType(const meta::Type& p_type)
@@ -512,6 +650,15 @@ bool IsCompatibleArtifactType(
     NLS_ENGINE_SERIALIZE_PPTR_RESOURCE_TARGETS(NLS_EDITOR_MATCH_PPTR_RESOURCE_ARTIFACT)
 #undef NLS_EDITOR_MATCH_PPTR_RESOURCE_ARTIFACT
 
+    if (p_type == NLS_TYPEOF(NLS::Render::Resources::Texture2D*))
+        return p_artifactType == NLS::Core::Assets::ArtifactType::Texture;
+    if (p_type == NLS_TYPEOF(NLS::Render::Resources::Mesh*))
+        return p_artifactType == NLS::Core::Assets::ArtifactType::Mesh;
+    if (p_type == NLS_TYPEOF(NLS::Render::Resources::Shader*))
+        return p_artifactType == NLS::Core::Assets::ArtifactType::Shader;
+    if (p_type == NLS_TYPEOF(NLS::Render::Resources::Material*))
+        return p_artifactType == NLS::Core::Assets::ArtifactType::Material;
+
     return false;
 }
 
@@ -591,6 +738,104 @@ bool SetIdentityObjectReferenceField(
     return false;
 }
 
+std::string ResolveAssetObjectReferenceLoadPath(
+    const NLS::Editor::Assets::EditorAssetDragPayload& p_payload)
+{
+    const auto assetId = NLS::Editor::Assets::GetEditorAssetDragPayloadAssetId(p_payload);
+    const auto subAssetKey = NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(p_payload);
+    const auto artifactType = NLS::Editor::Assets::GetEditorAssetDragPayloadArtifactType(p_payload);
+    if (assetId.IsValid() &&
+        !subAssetKey.empty() &&
+        NLS::Core::ServiceLocator::Contains<NLS::Engine::Assets::RuntimeAssetDatabase>())
+    {
+        const auto& database = NLS::Core::ServiceLocator::Get<NLS::Engine::Assets::RuntimeAssetDatabase>();
+        const auto* entry = database.Resolve(assetId, subAssetKey);
+        if (entry != nullptr &&
+            entry->artifactType == artifactType &&
+            !entry->artifactPath.empty())
+        {
+            return entry->artifactPath;
+        }
+    }
+
+    return NLS::Editor::Assets::GetEditorAssetDragPayloadPath(p_payload);
+}
+
+bool SetAssetObjectReferenceField(
+    meta::Variant& p_instance,
+    const meta::Field& p_field,
+    const NLS::Editor::Assets::EditorAssetDragPayload& p_payload)
+{
+    const auto fieldType = p_field.GetType();
+    const auto artifactType = NLS::Editor::Assets::GetEditorAssetDragPayloadArtifactType(p_payload);
+    if (!IsCompatibleArtifactType(fieldType, artifactType))
+        return false;
+
+    if (IsSupportedIdentityObjectReferenceType(fieldType))
+    {
+        const auto identifier = MakeObjectReferenceIdentifier(fieldType, p_payload);
+        return identifier.has_value() && SetIdentityObjectReferenceField(p_instance, p_field, *identifier);
+    }
+
+    const auto resourcePath = ResolveAssetObjectReferenceLoadPath(p_payload);
+    if (resourcePath.empty())
+        return false;
+
+    if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Texture2D*))
+    {
+        if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+            return false;
+        auto* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().GetArtifactResource(
+            resourcePath,
+            true);
+        if (resource == nullptr)
+            return false;
+        SetFieldValue(p_instance, p_field, resource);
+        return true;
+    }
+
+    if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Mesh*))
+    {
+        if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MeshManager>())
+            return false;
+        auto* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MeshManager>().GetResource(
+            resourcePath,
+            true);
+        if (resource == nullptr)
+            return false;
+        SetFieldValue(p_instance, p_field, resource);
+        return true;
+    }
+
+    if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Shader*))
+    {
+        if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::ShaderManager>())
+            return false;
+        auto* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>().GetResource(
+            resourcePath,
+            true);
+        if (resource == nullptr)
+            return false;
+        SetFieldValue(p_instance, p_field, resource);
+        return true;
+    }
+
+    if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Material*))
+    {
+        if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
+            return false;
+        auto* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResource(
+            resourcePath,
+            true);
+        if (resource == nullptr)
+            return false;
+        SetFieldValue(p_instance, p_field, resource);
+        return true;
+    }
+
+    return false;
+}
+
 bool SetIdentityObjectReferenceArrayElement(
     meta::ArrayWrapper& p_array,
     const meta::Type& p_elementType,
@@ -639,23 +884,46 @@ std::string ObjectReferenceTypeLabel(const meta::Type& p_type)
 }
 
 template <typename T>
-std::string RawPointerObjectReferenceDisplay(T* p_value, const char* p_label)
+std::string RawPointerObjectReferenceDisplay(
+    T* p_value,
+    const char* p_label,
+    const std::string& p_resourcePath = {})
 {
-    return p_value != nullptr
-        ? std::string("Assigned (") + p_label + ")"
-        : std::string("Empty (") + p_label + ")";
+    if (p_value == nullptr)
+        return std::string("Empty (") + p_label + ")";
+
+    if (p_resourcePath.empty())
+        return std::string("Assigned (") + p_label + ")";
+
+    const auto fileName = std::filesystem::path(p_resourcePath).filename().generic_string();
+    return (fileName.empty() ? p_resourcePath : fileName) + " (" + p_label + ")";
 }
 
 std::string RawObjectPointerReferenceDisplay(NLS::Object* p_value, const meta::Type& p_type)
 {
-    const auto labelType = p_type.GetDecayedType();
-    auto label = labelType.IsValid() ? labelType.GetName() : p_type.GetName();
-    const auto namespaceEnd = label.rfind("::");
-    if (namespaceEnd != std::string::npos)
-        label.erase(0, namespaceEnd + 2u);
-    return p_value != nullptr
-        ? "Assigned (" + label + ")"
-        : "Empty (" + label + ")";
+    const auto label = ShortTypeName(p_type.GetDecayedType());
+    if (p_value == nullptr)
+        return "Empty (" + label + ")";
+
+    if (const auto* gameObject = dynamic_cast<const NLS::Engine::GameObject*>(p_value))
+    {
+        const auto& name = gameObject->GetName();
+        return (name.empty() ? std::string("<Unnamed>") : name) + " (GameObject)";
+    }
+
+    if (const auto* component = dynamic_cast<const NLS::Engine::Components::Component*>(p_value))
+    {
+        const auto* owner = component->gameobject();
+        const auto ownerName = owner == nullptr || owner->GetName().empty()
+            ? std::string("<Unnamed>")
+            : owner->GetName();
+        auto componentLabel = NLS::Editor::Panels::FormatReflectedFieldLabel(ShortTypeName(component->GetType()));
+        if (componentLabel.empty())
+            componentLabel = label;
+        return ownerName + " (" + componentLabel + ")";
+    }
+
+    return "Assigned (" + label + ")";
 }
 
 std::string BuildObjectReferenceDisplay(meta::Variant& p_instance, const meta::Field& p_field)
@@ -684,13 +952,25 @@ std::string BuildObjectReferenceDisplay(meta::Variant& p_instance, const meta::F
         return RawObjectPointerReferenceDisplay(GetFieldValue<NLS::Object*>(p_instance, p_field), fieldType);
 
     if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Texture2D*))
-        return RawPointerObjectReferenceDisplay(GetFieldValue<NLS::Render::Resources::Texture2D*>(p_instance, p_field), "Texture2D");
+    {
+        auto* texture = GetFieldValue<NLS::Render::Resources::Texture2D*>(p_instance, p_field);
+        return RawPointerObjectReferenceDisplay(texture, "Texture2D", texture == nullptr ? std::string {} : texture->path);
+    }
     if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Mesh*))
-        return RawPointerObjectReferenceDisplay(GetFieldValue<NLS::Render::Resources::Mesh*>(p_instance, p_field), "Mesh");
+    {
+        auto* mesh = GetFieldValue<NLS::Render::Resources::Mesh*>(p_instance, p_field);
+        return RawPointerObjectReferenceDisplay(mesh, "Mesh", mesh == nullptr ? std::string {} : mesh->GetName());
+    }
     if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Shader*))
-        return RawPointerObjectReferenceDisplay(GetFieldValue<NLS::Render::Resources::Shader*>(p_instance, p_field), "Shader");
+    {
+        auto* shader = GetFieldValue<NLS::Render::Resources::Shader*>(p_instance, p_field);
+        return RawPointerObjectReferenceDisplay(shader, "Shader", shader == nullptr ? std::string {} : shader->path);
+    }
     if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Material*))
-        return RawPointerObjectReferenceDisplay(GetFieldValue<NLS::Render::Resources::Material*>(p_instance, p_field), "Material");
+    {
+        auto* material = GetFieldValue<NLS::Render::Resources::Material*>(p_instance, p_field);
+        return RawPointerObjectReferenceDisplay(material, "Material", material == nullptr ? std::string {} : material->path);
+    }
 
     return "Empty (" + fieldType.GetName() + ")";
 }
@@ -698,7 +978,8 @@ std::string BuildObjectReferenceDisplay(meta::Variant& p_instance, const meta::F
 bool SetSceneObjectReferenceField(
     meta::Variant& p_instance,
     const meta::Field& p_field,
-    NLS::Engine::GameObject* p_gameObject)
+    NLS::Engine::GameObject* p_gameObject,
+    NLS::Engine::Components::Component* p_component)
 {
     if (p_gameObject == nullptr)
         return false;
@@ -711,87 +992,98 @@ bool SetSceneObjectReferenceField(
         return p_field.SetValue(p_instance, value);
     }
 
-    if (fieldType.GetDecayedType() == NLS_TYPEOF(NLS::Engine::Components::Component))
+    if (!IsComponentPointerType(fieldType))
+        return false;
+
+    if (p_component != nullptr && p_component->gameobject() != p_gameObject)
+        return false;
+
+    if (p_component == nullptr && fieldType.GetDecayedType() == NLS_TYPEOF(NLS::Engine::Components::Component))
     {
-        NLS::Engine::Components::Component* component = nullptr;
         for (const auto& entry : p_gameObject->GetComponents())
         {
             if (!entry || entry.get() == p_gameObject->GetTransform())
                 continue;
 
-            component = entry.get();
+            p_component = entry.get();
             break;
         }
 
-        if (component == nullptr)
-            component = p_gameObject->GetTransform();
-        if (component == nullptr)
-            return false;
-
-        auto* object = static_cast<NLS::Object*>(component);
-        auto value = ObjectVariant(object);
-        return p_field.SetValue(p_instance, value);
+        if (p_component == nullptr)
+            p_component = p_gameObject->GetTransform();
     }
-
-    if (IsComponentPointerType(fieldType))
+    else if (p_component == nullptr)
     {
-        const auto componentType = fieldType.GetDecayedType();
-
-        auto* component = p_gameObject->GetComponent(componentType, true);
-        if (component == nullptr)
-            return false;
-
-        auto* object = static_cast<NLS::Object*>(component);
-        auto value = ObjectVariant(object);
-        return p_field.SetValue(p_instance, value);
+        p_component = p_gameObject->GetComponent(fieldType.GetDecayedType(), true);
     }
 
-    return false;
+    if (!IsAssignableSceneComponent(fieldType, p_component))
+        return false;
+
+    auto* object = static_cast<NLS::Object*>(p_component);
+    auto value = ObjectVariant(object);
+    return p_field.SetValue(p_instance, value);
 }
 
-void ClearObjectReferenceField(meta::Variant& p_instance, const meta::Field& p_field)
+bool ClearObjectReferenceField(meta::Variant& p_instance, const meta::Field& p_field)
 {
     const auto fieldType = p_field.GetType();
     if (IsIdentityObjectReferenceType(fieldType))
     {
-        ClearIdentityObjectReferenceField(p_instance, p_field);
-        return;
+        if (GetIdentityObjectReferenceInstanceID(p_instance, p_field).value_or(
+                NLS::Engine::Serialize::InstanceID_None) == NLS::Engine::Serialize::InstanceID_None)
+        {
+            return false;
+        }
+        return ClearIdentityObjectReferenceField(p_instance, p_field);
     }
 
     if (IsSceneObjectReferenceType(fieldType))
     {
+        if (GetFieldValue<NLS::Object*>(p_instance, p_field) == nullptr)
+            return false;
         NLS::Object* empty = nullptr;
         auto value = ObjectVariant(empty);
-        p_field.SetValue(p_instance, value);
-        return;
+        return p_field.SetValue(p_instance, value);
     }
 
     if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Texture2D*))
     {
+        if (GetFieldValue<NLS::Render::Resources::Texture2D*>(p_instance, p_field) == nullptr)
+            return false;
         NLS::Render::Resources::Texture2D* empty = nullptr;
         SetFieldValue(p_instance, p_field, empty);
-        return;
+        return true;
     }
 
     if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Mesh*))
     {
+        if (GetFieldValue<NLS::Render::Resources::Mesh*>(p_instance, p_field) == nullptr)
+            return false;
         NLS::Render::Resources::Mesh* empty = nullptr;
         SetFieldValue(p_instance, p_field, empty);
-        return;
+        return true;
     }
 
     if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Shader*))
     {
+        if (GetFieldValue<NLS::Render::Resources::Shader*>(p_instance, p_field) == nullptr)
+            return false;
         NLS::Render::Resources::Shader* empty = nullptr;
         SetFieldValue(p_instance, p_field, empty);
-        return;
+        return true;
     }
 
     if (fieldType == NLS_TYPEOF(NLS::Render::Resources::Material*))
     {
+        if (GetFieldValue<NLS::Render::Resources::Material*>(p_instance, p_field) == nullptr)
+            return false;
         NLS::Render::Resources::Material* empty = nullptr;
         SetFieldValue(p_instance, p_field, empty);
+        return true;
     }
+
+    return false;
 }
 
 void AddAssetObjectReferenceTarget(
@@ -804,8 +1096,7 @@ void AddAssetObjectReferenceTarget(
         NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent +=
         [p_instance, p_field, p_options](NLS::Editor::Assets::EditorAssetDragPayload p_payload) mutable
     {
-        const auto identifier = MakeObjectReferenceIdentifier(p_field.GetType(), p_payload);
-        if (!identifier.has_value() || !SetIdentityObjectReferenceField(*p_instance, p_field, *identifier))
+        if (!SetAssetObjectReferenceField(*p_instance, p_field, p_payload))
             return;
 
         NotifyChanged(p_options, p_field);
@@ -823,8 +1114,13 @@ void AddSceneObjectReferenceTarget(
         [p_instance, p_field, p_options](
             std::pair<NLS::Engine::GameObject*, NLS::UI::Widgets::TreeNode*> p_payload) mutable
     {
-        if (!SetSceneObjectReferenceField(*p_instance, p_field, p_payload.first))
+        if (p_payload.first == nullptr ||
+            (p_options.sceneObjectPickerScene != nullptr &&
+             p_payload.first->GetScene() != p_options.sceneObjectPickerScene) ||
+            !SetSceneObjectReferenceField(*p_instance, p_field, p_payload.first))
+        {
             return;
+        }
 
         NotifyChanged(p_options, p_field);
     };
@@ -849,7 +1145,7 @@ void DrawObjectReferenceField(
         return BuildObjectReferenceDisplay(*p_instance, p_field);
     });
 
-    if (IsSupportedIdentityObjectReferenceType(p_field.GetType()))
+    if (IsAssetObjectReferenceType(p_field.GetType()))
         AddAssetObjectReferenceTarget(display, p_instance, p_field, p_options);
     else if (IsSceneObjectReferenceType(p_field.GetType()))
         AddSceneObjectReferenceTarget(display, p_instance, p_field, p_options);
@@ -859,24 +1155,26 @@ void DrawObjectReferenceField(
     pickerButton.idleBackgroundColor = {0.18f, 0.19f, 0.20f};
     pickerButton.hoveredBackgroundColor = {0.25f, 0.26f, 0.28f};
     pickerButton.clickedBackgroundColor = {0.31f, 0.33f, 0.36f};
-    if (IsSupportedIdentityObjectReferenceType(p_field.GetType()))
+    if (IsAssetObjectReferenceType(p_field.GetType()) || IsSceneObjectReferenceType(p_field.GetType()))
     {
         auto& pickerPlugin = pickerButton.AddPlugin<ObjectReferencePickerPlugin>(p_instance, p_field, p_options);
         pickerButton.ClickedEvent += [&pickerPlugin]()
         {
             pickerPlugin.RequestOpen();
         };
-        AddAssetObjectReferenceTarget(pickerButton, p_instance, p_field, p_options);
+
+        if (IsAssetObjectReferenceType(p_field.GetType()))
+            AddAssetObjectReferenceTarget(pickerButton, p_instance, p_field, p_options);
+        else
+            AddSceneObjectReferenceTarget(pickerButton, p_instance, p_field, p_options);
     }
-    else if (IsSceneObjectReferenceType(p_field.GetType()))
-        AddSceneObjectReferenceTarget(pickerButton, p_instance, p_field, p_options);
 
     auto& clearButton = rightSide.CreateWidget<NLS::UI::Widgets::ButtonSmall>("x");
     clearButton.idleBackgroundColor = NLS::UI::GUIDrawer::ClearButtonColor;
     clearButton.ClickedEvent += [p_instance, p_field, p_options]() mutable
     {
-        ClearObjectReferenceField(*p_instance, p_field);
-        NotifyChanged(p_options, p_field);
+        if (ClearObjectReferenceField(*p_instance, p_field))
+            NotifyChanged(p_options, p_field);
     };
 }
 
@@ -1811,6 +2109,63 @@ std::string NormalizeReflectedSearchText(std::string_view p_text)
     return result;
 }
 
+std::vector<SceneObjectReferencePickerEntry> BuildSceneObjectReferencePickerEntries(
+    const meta::Type& p_fieldType,
+    const Engine::SceneSystem::Scene* p_scene,
+    std::string_view p_searchText)
+{
+    std::vector<SceneObjectReferencePickerEntry> entries;
+    if (p_scene == nullptr || !IsSceneObjectReferenceType(p_fieldType))
+        return entries;
+
+    const auto query = NormalizeReflectedSearchText(p_searchText);
+    const auto appendIfMatched = [&entries, &query](SceneObjectReferencePickerEntry entry)
+    {
+        if (!query.empty() && NormalizeReflectedSearchText(entry.displayName).find(query) == std::string::npos)
+            return;
+        entries.push_back(std::move(entry));
+    };
+
+    for (auto* gameObject : p_scene->GetGameObjects())
+    {
+        if (gameObject == nullptr || !gameObject->IsAlive() || gameObject->GetScene() != p_scene)
+            continue;
+
+        const auto hierarchyPath = BuildGameObjectHierarchyPath(*gameObject, p_scene);
+        if (IsGameObjectPointerType(p_fieldType))
+        {
+            appendIfMatched({gameObject, nullptr, hierarchyPath + " (GameObject)"});
+            continue;
+        }
+
+        for (const auto& component : gameObject->GetComponents())
+        {
+            if (!component || !IsAssignableSceneComponent(p_fieldType, component.get()))
+                continue;
+
+            auto componentLabel = FormatReflectedFieldLabel(ShortTypeName(component->GetType()));
+            if (componentLabel.empty())
+                componentLabel = "Component";
+            appendIfMatched({gameObject, component.get(), hierarchyPath + " (" + componentLabel + ")"});
+        }
+    }
+
+    return entries;
+}
+
+bool ApplySceneObjectReferencePickerSelection(
+    meta::Variant& p_instance,
+    const meta::Field& p_field,
+    const SceneObjectReferencePickerEntry& p_entry)
+{
+    if (p_entry.gameObject == nullptr)
+        return false;
+    if (p_entry.component != nullptr && p_entry.component->gameobject() != p_entry.gameObject)
+        return false;
+
+    return SetSceneObjectReferenceField(p_instance, p_field, p_entry.gameObject, p_entry.component);
+}
+
 ReflectedPropertySupport GetReflectedPropertySupport(const meta::Field& p_field)
 {
     if (!p_field.IsValid())
@@ -1885,7 +2240,9 @@ bool DrawReflectedFieldInternal(
 {
     using NLS::Editor::Panels::ReflectedPropertySupport;
 
-    if (!p_field.IsValid() || !NLS::Editor::Panels::ReflectedFieldMatchesSearch(p_field, p_options.searchText))
+    if (!p_field.IsValid() ||
+        (p_options.shouldDrawField && !p_options.shouldDrawField(p_field)) ||
+        !NLS::Editor::Panels::ReflectedFieldMatchesSearch(p_field, p_options.searchText))
         return false;
 
     const auto fieldType = p_field.GetType();

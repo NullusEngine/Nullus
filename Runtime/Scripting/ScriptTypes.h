@@ -100,6 +100,29 @@ struct NLS_SCRIPTING_API ScriptInstanceHandle
     friend constexpr bool operator==(ScriptInstanceHandle, ScriptInstanceHandle) = default;
 };
 
+// Backend-owned callback identities. They deliberately mirror the
+// generation/index shape of ScriptInstanceHandle, but remain distinct types
+// so a UI event subscription can never be passed as a script instance.
+struct NLS_SCRIPTING_API ScriptCallableHandle
+{
+    uint16_t backendId = 0;
+    uint16_t generation = 0;
+    uint32_t index = 0;
+
+    constexpr bool IsValid() const { return backendId != 0 && generation != 0 && index != 0; }
+    friend constexpr bool operator==(ScriptCallableHandle, ScriptCallableHandle) = default;
+};
+
+struct NLS_SCRIPTING_API ScriptEventSubscriptionHandle
+{
+    uint16_t backendId = 0;
+    uint16_t generation = 0;
+    uint32_t index = 0;
+
+    constexpr bool IsValid() const { return backendId != 0 && generation != 0 && index != 0; }
+    friend constexpr bool operator==(ScriptEventSubscriptionHandle, ScriptEventSubscriptionHandle) = default;
+};
+
 enum class ScriptValueKind : uint8_t
 {
     Null = 0,
@@ -330,6 +353,8 @@ struct NLS_SCRIPTING_API ScriptBackendCapabilities
     bool supportsHotReload = false;
     bool supportsFieldAccess = false;
     bool supportsFrameSnapshot = false;
+    bool supportsCallables = false;
+    bool supportsEventSubscriptions = false;
 };
 
 class NLS_SCRIPTING_API ScriptApiDatabase final
@@ -380,6 +405,28 @@ template<> struct hash<NLS::Scripting::ScriptInstanceHandle>
         size_t result = handle.backendId;
         result = result * 31u + handle.generation;
         return result * 31u + handle.index;
+    }
+};
+
+template<> struct hash<NLS::Scripting::ScriptCallableHandle>
+{
+    size_t operator()(NLS::Scripting::ScriptCallableHandle handle) const noexcept
+    {
+        size_t result = handle.backendId;
+        result = result * 31u + handle.generation;
+        result = result * 31u + handle.index;
+        return result;
+    }
+};
+
+template<> struct hash<NLS::Scripting::ScriptEventSubscriptionHandle>
+{
+    size_t operator()(NLS::Scripting::ScriptEventSubscriptionHandle handle) const noexcept
+    {
+        size_t result = handle.backendId;
+        result = result * 31u + handle.generation;
+        result = result * 31u + handle.index;
+        return result;
     }
 };
 }

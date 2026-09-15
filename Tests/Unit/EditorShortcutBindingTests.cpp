@@ -11,7 +11,12 @@ TEST(EditorShortcutBindingTests, FormatsModifiersInStableDisplayOrder)
         EKey::KEY_S,
         EShortcutModifier::Shift | EShortcutModifier::Ctrl | EShortcutModifier::Alt);
 
+#if defined(__APPLE__)
+    // macOS keeps its native modifier order: Cmd, Shift, Alt, Ctrl.
+    EXPECT_EQ(ToDisplayString(binding), "Shift + Alt + Ctrl + S");
+#else
     EXPECT_EQ(ToDisplayString(binding), "Ctrl + Shift + Alt + S");
+#endif
 }
 
 TEST(EditorShortcutBindingTests, FormatsLogicalPrimaryForTheCurrentPlatform)

@@ -1514,24 +1514,7 @@ internal static partial class MetaParserTool
         CppType? type,
         CppClass owner,
         IReadOnlyDictionary<string, List<string>> visibleTypes)
-    {
-        var typeName = GetAstTypeName(type);
-
-        // A fixed-width typedef can surface as the compiler's underlying
-        // spelling.  `long` is only 64-bit on LP64 targets, so consult the
-        // parsed size instead of assuming the Windows LLP64 data model.
-        if (type is not null && type.SizeOf == 8)
-        {
-            typeName = typeName switch
-            {
-                "long" => "int64_t",
-                "unsigned long" => "uint64_t",
-                _ => typeName,
-            };
-        }
-
-        return NormalizeAstMemberTypeName(typeName, owner, visibleTypes);
-    }
+        => NormalizeAstMemberTypeName(GetAstTypeName(type), owner, visibleTypes);
 
     private static string NormalizeAstMemberTypeName(
         string typeName,

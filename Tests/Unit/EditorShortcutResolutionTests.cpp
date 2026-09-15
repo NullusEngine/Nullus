@@ -272,7 +272,11 @@ TEST(EditorShortcutResolutionTests, RegistersDefaultEditorShortcutCommandIds)
 
     EXPECT_EQ(service.GetBindingDisplayText("file.new-scene"), "Ctrl + N");
     EXPECT_EQ(service.GetBindingDisplayText("file.save-scene"), "Ctrl + S");
+#if defined(__APPLE__)
+    EXPECT_EQ(service.GetBindingDisplayText("file.save-scene-as"), "Shift + Ctrl + S");
+#else
     EXPECT_EQ(service.GetBindingDisplayText("file.save-scene-as"), "Ctrl + Shift + S");
+#endif
     EXPECT_EQ(service.GetBindingDisplayText("editor.play"), "F5");
     EXPECT_EQ(service.GetBindingDisplayText("editor.stop"), "Esc");
     EXPECT_EQ(service.GetBindingDisplayText("debug.renderdoc.capture-next-frame"), "F11");

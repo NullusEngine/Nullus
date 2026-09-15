@@ -64,6 +64,23 @@ internal static partial class MetaParserTool
             @"(?<![\w:])(?:signed\s+)?__int64(?![\w:])",
             "int64_t",
             RegexOptions.CultureInvariant);
+
+        // LP64 targets expand uint64_t to `unsigned long` and int64_t to
+        // `long`, so canonicalize those underlying spellings as well.
+        if (s_targetLongIs64Bit)
+        {
+            normalized = Regex.Replace(
+                normalized,
+                @"(?<![\w:])unsigned\s+long(?:\s+int)?(?![\w:])",
+                "uint64_t",
+                RegexOptions.CultureInvariant);
+            normalized = Regex.Replace(
+                normalized,
+                @"(?<![\w:])(?<!unsigned\s)(?:signed\s+)?long(?:\s+int)?(?!\s+double\b)(?![\w:])",
+                "int64_t",
+                RegexOptions.CultureInvariant);
+        }
+
         normalized = normalized.Replace("std::int64_t", "int64_t", StringComparison.Ordinal)
             .Replace("std::uint64_t", "uint64_t", StringComparison.Ordinal);
         return normalized;
